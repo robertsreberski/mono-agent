@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
 import "./styles.css";
 
@@ -27,6 +27,9 @@ const storeMock = vi.hoisted(() => ({
   setShowOfflineAgents: vi.fn(),
   selectAgent: vi.fn(),
   clearCachedData: vi.fn(async () => undefined),
+  clearError: vi.fn(),
+  retry: vi.fn(),
+  hasServerSnapshot: true,
 }));
 
 vi.mock("./console-store", () => ({
@@ -101,6 +104,31 @@ describe("App viewport layout", () => {
 
     expect(document.title).toBe("console-host · mono-agent");
     expect(document.documentElement).toHaveAttribute("data-console-theme", "ocean");
+  });
+});
+
+describe("App snapshot failure", () => {
+  afterEach(() => {
+    storeMock.error = null;
+    storeMock.hasServerSnapshot = true;
+  });
+
+  it("keeps a failed snapshot in front of the operator, behind what the device restored", () => {
+    // The console now draws before anything is asked for, so `error` is no
+    // longer only the fatal screen's business: without a banner, a dead server
+    // behind a restored listing shows as stale content and a small pill.
+    storeMock.error = "The web console request failed." as unknown as null;
+    storeMock.hasServerSnapshot = false;
+    render(<App />);
+
+    const banner = screen.getByRole("alert");
+    expect(banner).toHaveTextContent("The web console request failed.");
+    expect(banner).toHaveTextContent("Showing what this browser had stored.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(storeMock.retry).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
+    expect(storeMock.clearError).toHaveBeenCalledTimes(1);
   });
 });
 

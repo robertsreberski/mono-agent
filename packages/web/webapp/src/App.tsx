@@ -174,7 +174,7 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
             window.dispatchEvent(new CustomEvent("mono-agent:notice", {
               detail: { message: "Cleared the conversations this browser had stored." },
             }));
-          });
+          }).catch(() => undefined);
         },
       },
       ...(store.hiddenOfflineAgentCount > 0
@@ -285,7 +285,16 @@ function FatalError() {
 }
 
 export function App() {
-  const { loading, bootstrap, error, actionError, clearActionError } = useConsoleStore();
+  const {
+    loading,
+    bootstrap,
+    error,
+    actionError,
+    clearActionError,
+    clearError,
+    hasServerSnapshot,
+    retry,
+  } = useConsoleStore();
   const [agentDrawer, setAgentDrawer] = useState(false);
   const [threadDrawer, setThreadDrawer] = useState(false);
   const [palette, setPalette] = useState(false);
@@ -455,6 +464,26 @@ export function App() {
         <ThreadSidebar onSelect={closeDrawers} />
       </div>
 
+      {/*
+        * The console draws before anything is asked for now, so a snapshot that
+        * FAILED no longer reaches the fatal screen -- there is a projection, and
+        * it is this browser's copy from the last visit. Persistent and
+        * dismissible rather than a toast: it is a state, not an event.
+        */}
+      {error && (
+        <div className="console-error" role="alert">
+          <span>
+            {hasServerSnapshot
+              ? error
+              // The one thing the message itself cannot say.
+              : `${error} Showing what this browser had stored.`}
+          </span>
+          <button type="button" className="console-error-retry" onClick={retry}>Try again</button>
+          <button type="button" aria-label="Dismiss error" onClick={clearError}>
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
       <CommandPalette open={palette} onClose={closePalette} />
       <AgentSettingsDialog open={agentSettings} onClose={closeAgentSettings} dialogRef={agentSettingsRef} />
       {(notice || actionError) && (

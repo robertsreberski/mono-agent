@@ -131,6 +131,17 @@ interface ConsoleStoreValue {
    * is keeping in memory except the conversation on screen.
    */
   readonly clearCachedData: () => Promise<void>;
+  /**
+   * Whether the listing on screen came from the SERVER, or is what this device
+   * kept from the last visit.
+   *
+   * A cold start now draws before anything is asked for, so "there is a
+   * projection" and "the server answered" are no longer the same question --
+   * and everything that treats the listing as fact has to ask this one instead.
+   */
+  readonly hasServerSnapshot: boolean;
+  /** Dismiss the failure banner. The next successful snapshot clears it too. */
+  readonly clearError: () => void;
 }
 
 const ConsoleStore = createContext<ConsoleStoreValue | null>(null);
@@ -583,6 +594,39 @@ export const REFRESH_DEBOUNCE_MS = 300;
  * them.
  */
 export const PERSIST_DEBOUNCE_MS = 1_000;
+
+/**
+ * How long the boot waits for the device before going to the network anyway.
+ *
+ * `indexedDB.open` is not guaranteed to answer: WebKit has shipped several
+ * versions where an open from a page resumed out of suspension never fires
+ * `success`, `error` OR `blocked`, and the request simply sits there. Awaiting
+ * that unbounded is a console that never loads and a "Try again" that awaits
+ * the same dead promise. The device is an optimisation; the network is the
+ * product, so the network always goes out.
+ */
+export const HYDRATION_DEADLINE_MS = 1_500;
+
+/**
+ * Wait for hydration, or for {@link HYDRATION_DEADLINE_MS}, whichever is first.
+ *
+ * Never rejects and never leaves a timer behind. What it does NOT do is cancel
+ * the hydration: a read that answers late is still a read that answered, and
+ * the applier refuses it on its own terms.
+ */
+export const withHydrationDeadline = async (hydration: Promise<void>): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      hydration,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, HYDRATION_DEADLINE_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 
 /**
  * How long a selection has to settle before the stream re-points at it.
@@ -1262,6 +1306,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [connection, setConnectionState] = useState<ConnectionState>("connecting");
+  /**
+   * Whether a snapshot from the SERVER has landed.
+   *
+   * False on a console that opened on what the device kept and has not been
+   * answered yet -- which is a console whose listing, whose agents and whose
+   * run state are all last-visit facts. See {@link ConsoleStoreValue.hasServerSnapshot}.
+   */
+  const [hasServerSnapshot, setHasServerSnapshot] = useState(false);
   const [skillRegistryState, setSkillRegistryState] = useState<{
     readonly sourceId: string | null;
     readonly registry: SkillRegistryState;
@@ -1468,6 +1520,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * console stayed offline behind a banner it could not clear.
    */
   const connectionRef = useRef<ConnectionState>("connecting");
+  /** {@link hasServerSnapshot}, for the handlers that run between commits. */
+  const hasServerSnapshotRef = useRef(false);
+  /**
+   * The last connection decision as it was MADE, before the snapshot gate
+   * below turned it down.
+   *
+   * A socket can be up while the snapshot is still in flight or has failed
+   * outright. Remembering that it said so is what lets the console promote
+   * itself the moment the gate opens, rather than waiting for an event that may
+   * not come for hours on a quiet fleet.
+   */
+  const streamLiveRef = useRef(false);
   /**
    * A resume this console owes because the tab was still in the background
    * when it was asked for.
@@ -1554,8 +1618,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * handlers that decide what a resume owes run between commits.
    */
   const applyConnection = useCallback((next: ConnectionState) => {
-    connectionRef.current = next;
-    setConnectionState(next);
+    streamLiveRef.current = next === "live";
+    // "live" is a claim about the CONSOLE, not about the socket: it is what
+    // enables the composer, the run controls and the model picker. A tab that
+    // opened on what this device kept and whose snapshot has not landed is
+    // showing a listing no server stands behind, and a stream that connects
+    // anyway is not evidence about that listing -- so it may not promote it.
+    const gated: ConnectionState = next === "live" && !hasServerSnapshotRef.current
+      ? "reconnecting"
+      : next;
+    connectionRef.current = gated;
+    setConnectionState(gated);
   }, []);
 
   /**
@@ -1579,16 +1652,28 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       persistTimerRef.current = null;
       const persistence = persistenceRef.current;
       if (persistence === null) return;
+      const bucket = persistedBucketRef.current;
       void persistence.save({
         entries: threadCacheRef.current.snapshot(),
         ...(persistedSnapshotRef.current === undefined
           ? {}
           : { snapshot: persistedSnapshotRef.current }),
-        ...(persistedBucketRef.current === undefined
+        // ONLY a listing this bucket was actually filled with. `visibleThreads`
+        // is filtered from whatever the projection holds, and an agent switch
+        // moves the key one commit before the page that fills it lands -- so
+        // for that window the pair is the NEW bucket's key and the OLD bucket's
+        // rows, which is an empty listing written over a good one.
+        ...(bucket === undefined || !seededBucketsRef.current.has(bucket.key)
           ? {}
-          : { bucket: persistedBucketRef.current }),
+          : { bucket }),
       });
     }, PERSIST_DEBOUNCE_MS);
+  }, []);
+  /** Disarm the pending flush. What it would have written is no longer wanted. */
+  const cancelPersist = useCallback(() => {
+    if (persistTimerRef.current === null) return;
+    window.clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = null;
   }, []);
   // Assigned during render, like `scheduleRefreshRef`: the cache's commit hook
   // is created once, and an effect would leave it a commit behind.
@@ -1653,6 +1738,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // here on can only delete rows this tab genuinely stopped holding.
       persistReadyRef.current = true;
       if (restored === null) return;
+      // TOO LATE. The boot did not wait past {@link HYDRATION_DEADLINE_MS} and
+      // has been answered since, so everything below would put a last-visit
+      // transcript over one the server just gave -- `restore` replaces the
+      // entry it names, and it always lands stale. The device is not a
+      // second opinion about live data; it is what there is before there is
+      // any.
+      if (initialBootstrapRef.current === "answered") return;
       hydratedHostRef.current = restored.host;
       const cache = threadCacheRef.current;
       for (const stored of restored.threads) {
@@ -1667,6 +1759,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           pagedInIds: new Set(stored.pagedInIds),
         });
       }
+      // These entries ARE the stored rows, so the first flush has nothing to
+      // write for them: without this every cold start rewrote all eight
+      // transcripts a second after restoring them.
+      persistence?.markPersisted(cache.snapshot());
       const agentId = selectedAgentRef.current;
       const bucket = agentId === null
         ? undefined
@@ -1729,6 +1825,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (wrote === null) return;
     hydratedHostRef.current = null;
     if (wrote === hostName) return;
+    // Before anything else: an armed flush still describes the other console's
+    // conversations, and letting it fire would write them straight back.
+    cancelPersist();
     threadCacheRef.current.clear();
     selectedThreadRef.current = null;
     setDetail(null);
@@ -1739,8 +1838,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // transcript on screen -- and it quotes nothing, because there is nothing
     // left to quote.
     scheduleRefreshRef.current({ detail: true });
+    // Fired rather than awaited, because the caller is `applyBootstrap` and it
+    // is synchronous -- and it is safe to: the armed flush is cancelled above,
+    // this clear's transaction is created before any later one, and `clearAll`
+    // forgets what it believed was stored BEFORE it deletes, so a flush that
+    // starts meanwhile writes its rows fresh rather than skipping them.
     void persistenceRef.current?.clearAll();
-  }, []);
+  }, [cancelPersist]);
 
   const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
     // BEFORE anything is read off the current selection: what a different
@@ -1772,8 +1876,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     setBootstrap(next);
     hasBootstrapRef.current = true;
+    // The listing on screen is the SERVER's from here on, whatever the device
+    // seeded before it.
+    hasServerSnapshotRef.current = true;
+    setHasServerSnapshot(true);
     setError(null);
     setLoading(false);
+    // The gate just opened. A stream that came up while the snapshot was in
+    // flight -- or while it was failing -- already reported itself live and
+    // will not say so again until the next event, which on a quiet fleet can
+    // be hours away.
+    if (streamLiveRef.current) applyConnection("live");
     // A conversation this tab has TOMBSTONED is not a selection to keep,
     // however this answer describes it: the operator asked for it to go, and
     // the automatic re-resolution to a survivor is what a failed delete then
@@ -1827,7 +1940,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         persistThreadId(selection.agentId, selected.archivedAt ? null : selected.id);
       }
     }
-  }, [discardOtherHostData]);
+  }, [applyConnection, discardOtherHostData]);
 
   /**
    * The bucket a bootstrap should carry: the one this tab is showing.
@@ -1845,10 +1958,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const loadBootstrap = useCallback(async () => {
     try {
-      // BEFORE the first request goes out. What this device kept is on screen
-      // while this read is on the wire, and the entries it restored are what
-      // make the conversation read that follows a conditional one.
-      await hydrateFromDevice();
+      // BEFORE the first request goes out -- but never for longer than
+      // {@link HYDRATION_DEADLINE_MS}. What this device kept is on screen while
+      // this read is on the wire, and the entries it restored are what make the
+      // conversation read that follows a conditional one; an `indexedDB.open`
+      // that never answers must not be able to hold the whole console at a
+      // spinner.
+      await withHydrationDeadline(hydrateFromDevice());
       // Bounded like every other read. See `THREAD_READ_TIMEOUT_MS`: the
       // tombstone's lifetime is only an upper bound on late responses while
       // the responses themselves have one.
@@ -1864,7 +1980,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       initialBootstrapRef.current = "answered";
     }
-  }, [applyBootstrap, bootstrapScope, hydrateFromDevice]);
+  }, [applyBootstrap, applyConnection, bootstrapScope, hydrateFromDevice]);
 
   useEffect(() => {
     void loadBootstrap();
@@ -1935,11 +2051,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // `loading` is still true until the first bootstrap has been applied or has
     // failed; fetching before then races the answer that seeds this bucket.
     //
-    // A bootstrap that FAILED leaves no projection at all, and a page has
-    // nowhere to land: `loadThreadBucket` no-ops when there is no bootstrap to
-    // merge into, so the request would be spent and discarded. The console
-    // shows its error state and the operator's retry is what fills the sidebar.
-    if (selectedAgentId === null || loading || !hasBootstrap) return;
+    // A bootstrap that FAILED no longer leaves nothing behind -- the device may
+    // have seeded a projection, and `hasBootstrap` is then true -- so the guard
+    // that used to be implicit is explicit: a page request into the server that
+    // just refused the snapshot is one more failure to show for nothing. The
+    // operator's retry, or the next successful refresh, is what fills the
+    // sidebar.
+    if (selectedAgentId === null || loading || !hasBootstrap || error !== null) return;
     // Already delivered by a bootstrap -- see `seededBucketsRef`.
     if (seededBucketsRef.current.has(threadBucketKey(selectedAgentId, showArchived))) return;
     void loadThreadBucket(selectedAgentId, showArchived).then((page) => {
@@ -1965,7 +2083,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }).catch((loadError: unknown) => {
       setActionError(errorMessage(loadError));
     });
-  }, [hasBootstrap, loadThreadBucket, loading, selectedAgentId, showArchived]);
+  }, [error, hasBootstrap, loadThreadBucket, loading, selectedAgentId, showArchived]);
 
   /**
    * The conversation on screen is gone: a read of it was answered "not found".
@@ -2630,6 +2748,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     refreshTimerRef.current = null;
     threadListTimerRef.current = null;
     persistTimerRef.current = null;
+    // A connection held open blocks another tab's delete or upgrade. NOT a
+    // disable: StrictMode tears this down and sets it back up on the same
+    // instance, and the next call simply reopens.
+    persistenceRef.current?.close();
   }, []);
 
   useEffect(() => {
@@ -3347,9 +3469,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * the moment this returns; ordinary use fills the device again from here.
    */
   const clearCachedData = useCallback(async () => {
-    await persistenceRef.current?.clearAll();
+    // The armed flush FIRST. It carries the snapshot, the listing and every
+    // entry held as of a moment ago, so leaving it to fire wrote all of it back
+    // a second after the "Cleared…" toast. The cache goes next, so anything a
+    // frame arriving DURING the clear arms can only describe what is left --
+    // and the second cancel drops even that.
+    cancelPersist();
     threadCacheRef.current.clear(selectedThreadRef.current ?? undefined);
-  }, []);
+    await persistenceRef.current?.clearAll();
+    cancelPersist();
+  }, [cancelPersist]);
 
   useEffect(() => {
     void refreshCron();
@@ -4559,6 +4688,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadCronRunActivity,
       loadFullToolCall,
       clearCachedData,
+      hasServerSnapshot,
+      clearError: () => setError(null),
     }),
     [
       actionError,
@@ -4586,6 +4717,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hiddenOfflineAgentCount,
       hasMoreThreads,
       hasOlderMessages,
+      hasServerSnapshot,
       loadBootstrap,
       loadMoreThreads,
       loadOlderMessages,

@@ -11,6 +11,7 @@ import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
   ConsoleStoreProvider,
+  HYDRATION_DEADLINE_MS,
   PERSIST_DEBOUNCE_MS,
   cronChannelPath,
   preferenceKeyForThread,
@@ -27,6 +28,7 @@ import {
   useConsoleStore,
 } from "./console-store";
 import type { RequestLanding } from "./console-store";
+import { canSendInConsole } from "./capabilities";
 import { agent, bootstrap, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
 import { createThreadPersistence } from "./thread-persistence";
@@ -180,6 +182,47 @@ const detail = (threadSummary = cronThread, text = "first"): ThreadDetail => ({
  * what these tests use to seed a visit and to read back what one wrote.
  */
 const deviceStore = createThreadPersistence();
+
+/** The real (fake-indexeddb) factory, kept for the tests that stub a broken one. */
+const realIndexedDb = globalThis.indexedDB;
+
+/** An `indexedDB.open` that answers nothing at all -- WebKit, after a suspension. */
+const deafIndexedDb = (): IDBFactory => ({
+  open: () => ({
+    onsuccess: null,
+    onerror: null,
+    onblocked: null,
+    onupgradeneeded: null,
+  }) as unknown as IDBOpenDBRequest,
+}) as unknown as IDBFactory;
+
+/** A real open, answered late. */
+const slowIndexedDb = (delayMs: number): IDBFactory => ({
+  open: (name: string, version?: number) => {
+    const inner = version === undefined
+      ? realIndexedDb.open(name)
+      : realIndexedDb.open(name, version);
+    const proxy: Record<string, unknown> = {
+      result: undefined,
+      onsuccess: null,
+      onerror: null,
+      onblocked: null,
+      onupgradeneeded: null,
+    };
+    inner.onupgradeneeded = (event) => {
+      proxy.result = inner.result;
+      (proxy.onupgradeneeded as ((value: Event) => void) | null)?.(event);
+    };
+    inner.onsuccess = () => {
+      proxy.result = inner.result;
+      setTimeout(() => (proxy.onsuccess as (() => void) | null)?.(), delayMs);
+    };
+    inner.onerror = () => {
+      setTimeout(() => (proxy.onerror as (() => void) | null)?.(), delayMs);
+    };
+    return proxy as unknown as IDBOpenDBRequest;
+  },
+}) as unknown as IDBFactory;
 
 describe("ConsoleStoreProvider integration", () => {
   beforeEach(async () => {
@@ -5575,6 +5618,187 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
       expect(vi.mocked(api.thread).mock.calls.slice(reads).map((call) => call[0]))
         .toEqual([beta.id]);
+    });
+
+
+    it("asks the server anyway when the device never answers", async () => {
+      // An `indexedDB.open` that fires nothing at all -- no success, no error,
+      // no blocked. Awaiting that unbounded is a console stuck on its spinner
+      // with a "Try again" that awaits the same dead promise.
+      vi.stubGlobal("indexedDB", deafIndexedDb());
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: alpha,
+        messages: [kept("m1", "from the server")],
+        etag: 'W/"alpha-1"',
+      });
+
+      const store = openConsole();
+
+      await waitFor(
+        () => expect(store.current.loading).toBe(false),
+        { timeout: HYDRATION_DEADLINE_MS + 3_000 },
+      );
+      expect(vi.mocked(api.bootstrap)).toHaveBeenCalledTimes(1);
+      expect(store.current.agents.map((item) => item.sourceId)).toEqual(["alpha", "beta"]);
+    });
+
+    it("ignores what the device says once the server has answered", async () => {
+      // The device's listing carries a conversation the server's does not, so
+      // the two are told apart by what is on screen and not only by the
+      // transcript.
+      const ghost = thread("ghost-thread", "alpha", { updatedAt: "2026-07-17T08:00:00.000Z" });
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "last visit")], 'W/"alpha-1"')],
+        listing: [alpha, ghost],
+        openedOn: alpha.id,
+      });
+      // Late, but not never: the boot goes without it and this lands afterwards.
+      vi.stubGlobal("indexedDB", slowIndexedDb(HYDRATION_DEADLINE_MS + 700));
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: alpha,
+        messages: [kept("m2", "from the server")],
+        etag: 'W/"alpha-2"',
+      });
+
+      const store = openConsole();
+      await waitFor(
+        () => expect(screen.queryByTestId("kept-m2")).not.toBeNull(),
+        { timeout: HYDRATION_DEADLINE_MS + 3_000 },
+      );
+      await quiet(HYDRATION_DEADLINE_MS + 1_200);
+
+      // `restore` replaces the entry it names and always lands stale, so a late
+      // hydration would put a last-visit transcript over the one the server
+      // just gave. Nothing republishes on its own, so the damage is in the
+      // CACHE and in the listing: the next event that draws from either is what
+      // shows it.
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-1", status: "running" } },
+      });
+      await quiet();
+
+      expect(screen.queryByTestId("kept-m1")).toBeNull();
+      expect(store.current.detail?.messages.map((item) => item.id)).toEqual(["m2"]);
+      expect(store.current.visibleThreads.map((item) => item.id)).toEqual([alpha.id]);
+      expect(vi.mocked(api.threadIfChanged)).not.toHaveBeenCalled();
+    });
+
+    it("says so, and stays disconnected, when the snapshot fails behind what it restored", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "last visit")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockRejectedValue(new Error("The web console request failed."));
+      vi.mocked(api.threadIfChanged).mockRejectedValue(new Error("The web console request failed."));
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.error).not.toBeNull());
+      // The stream comes up anyway -- it is a different socket to a different
+      // route, and it says nothing whatever about the listing.
+      act(() => FakeEventSource.latest?.emit("ready", {
+        id: "device-ready", version: 1, type: "ready", at: "2026-08-14T09:00:00.000Z",
+      }));
+      await quiet();
+
+      expect(store.current.hasServerSnapshot).toBe(false);
+      expect(store.current.connection).not.toBe("live");
+      // Which is what keeps the composer shut: sending into a listing no server
+      // stands behind targets a conversation this tab cannot vouch for.
+      expect(canSendInConsole(
+        store.current.connection,
+        store.current.selectedAgent,
+        store.current.selectedThread,
+      )).toBe(false);
+      // And what it restored is still readable, which is the point of keeping it.
+      expect(screen.queryByTestId("kept-m1")).not.toBeNull();
+    });
+
+    it("promotes itself the moment a snapshot finally lands", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "last visit")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockRejectedValueOnce(new Error("The web console request failed."));
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.error).not.toBeNull());
+      // The stream reports itself live BEFORE the retry answers, and will not
+      // say so again on a quiet fleet.
+      act(() => FakeEventSource.latest?.emit("ready", {
+        id: "device-ready-2", version: 1, type: "ready", at: "2026-08-14T09:00:00.000Z",
+      }));
+
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+      expect(store.current.error).toBeNull();
+    });
+
+    it("does not write back what the operator just cleared", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      const store = openConsole();
+      await waitFor(() => expect(store.current.loading).toBe(false));
+
+      // A commit half a second before the action, so a flush is armed and
+      // carries the snapshot, the listing and the entry on screen.
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-1", status: "running" } },
+      });
+      await quiet(PERSIST_DEBOUNCE_MS / 2);
+
+      await act(async () => { await store.current.clearCachedData(); });
+      await written();
+
+      expect(await deviceStore.hydrate())
+        .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+    });
+
+    it("keeps the listing it stored while an agent switch is still in flight", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      const store = openConsole();
+      await waitFor(() => expect(store.current.loading).toBe(false));
+      await written();
+      const before = (await deviceStore.hydrate())?.buckets;
+      expect(before?.map((item) => item.key)).toEqual([threadBucketKey("alpha", false)]);
+
+      // Beta's page never answers, so for that whole window the listing on
+      // screen is filtered from rows that belong to ANOTHER bucket -- which is
+      // to say, from nothing.
+      vi.mocked(api.threads).mockReturnValue(new Promise(() => undefined));
+      act(() => { store.current.selectAgent("beta"); });
+      await written();
+
+      expect((await deviceStore.hydrate())?.buckets).toEqual(before);
     });
 
     it("throws away what a different console left on this device", async () => {

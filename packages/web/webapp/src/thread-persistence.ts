@@ -107,6 +107,23 @@ export interface ThreadPersistence {
   readonly hydrate: () => Promise<HydratedConsole | null>;
   readonly save: (state: PersistableState) => Promise<void>;
   readonly clearAll: () => Promise<void>;
+  /**
+   * These entries ARE what is stored, so the next flush has nothing to write
+   * for them.
+   *
+   * What {@link ThreadPersistence.hydrate} returned comes back into the cache
+   * as NEW objects, and the change tracking below is by identity -- so without
+   * this every cold start rewrote all eight transcripts a second after
+   * restoring them.
+   */
+  readonly markPersisted: (entries: readonly ThreadCacheEntry[]) => void;
+  /**
+   * Let go of the connection, WITHOUT disabling: the next call reopens.
+   *
+   * A connection held open blocks another tab's delete or upgrade until the
+   * browser gives up on it.
+   */
+  readonly close: () => void;
 }
 
 export interface StrippedTranscript {
@@ -168,6 +185,17 @@ const isSummary = (value: unknown): value is ThreadSummary =>
 const stringsOf = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
+const isStoredMessage = (value: unknown): value is WebMessage =>
+  isRecord(value)
+  && typeof value.id === "string"
+  && typeof value.role === "string"
+  && typeof value.createdAt === "string"
+  // The two the renderer AND the write path walk unconditionally. A row that
+  // reached the cache without them turned the next flush into a `TypeError` --
+  // an unhandled rejection, with persistence dead behind it.
+  && Array.isArray(value.parts)
+  && Array.isArray(value.attachments);
+
 /**
  * A row this build can actually use, or nothing.
  *
@@ -179,10 +207,7 @@ const stringsOf = (value: unknown): readonly string[] =>
 const readThreadRow = (value: unknown): PersistedThread | undefined => {
   if (!isRecord(value)) return undefined;
   if (typeof value.id !== "string" || !isSummary(value.thread)) return undefined;
-  if (!Array.isArray(value.messages)) return undefined;
-  if (!value.messages.every((message) => isRecord(message) && typeof message.id === "string")) {
-    return undefined;
-  }
+  if (!Array.isArray(value.messages) || !value.messages.every(isStoredMessage)) return undefined;
   return {
     id: value.id,
     thread: value.thread,
@@ -266,30 +291,65 @@ export const createThreadPersistence = (
    */
   const written = new Map<string, ThreadCacheEntry>();
 
-  const disable = (): void => {
+  const disable = (reason: string): void => {
+    if (disabled) return;
     disabled = true;
     written.clear();
+    // One line, once. A store that silently stops keeping anything is a
+    // support question nobody can answer; this is what makes it answerable
+    // without putting a failure the operator cannot act on in front of them.
+    console.debug(`[mono-agent] on-device conversation store disabled: ${reason}`);
     const pending = connection;
     connection = null;
     void pending?.then((db) => db?.close()).catch(() => undefined);
+  };
+
+  /** The row this entry becomes on the device. */
+  const rowFor = (entry: ThreadCacheEntry, savedAt: number): PersistedThread => {
+    const transcript = stripCapabilityUrls(entry.messages);
+    return {
+      id: entry.thread.id,
+      thread: entry.thread,
+      messages: transcript.messages,
+      ...(entry.messagesNextCursor === undefined
+        ? {}
+        : { messagesNextCursor: entry.messagesNextCursor }),
+      // Only with the bytes it describes. See the file header.
+      ...(entry.etag === undefined || transcript.stripped ? {} : { etag: entry.etag }),
+      repairedToolCallIds: [...entry.repairedToolCallIds],
+      pagedInIds: [...entry.pagedInIds],
+      savedAt,
+    };
   };
 
   const open = (): Promise<IDBDatabase | null> => {
     if (disabled) return Promise.resolve(null);
     if (connection !== null) return connection;
     connection = new Promise<IDBDatabase | null>((resolve) => {
+      // Whichever handler answers first owns this open. A blocked open that
+      // later succeeds would otherwise hand back a connection nobody holds --
+      // and that connection is exactly what blocks the next tab.
+      let settledOpen = false;
+      const answer = (db: IDBDatabase | null): void => {
+        if (settledOpen) {
+          db?.close();
+          return;
+        }
+        settledOpen = true;
+        resolve(db);
+      };
       let request: IDBOpenDBRequest;
       try {
         const factory = reachFactory();
         if (factory === undefined || factory === null) {
-          disabled = true;
-          resolve(null);
+          disable("this browser has no IndexedDB");
+          answer(null);
           return;
         }
         request = factory.open(PERSISTENCE_DB_NAME, PERSISTENCE_DB_VERSION);
-      } catch {
-        disabled = true;
-        resolve(null);
+      } catch (openError) {
+        disable(`opening it was refused (${String(openError)})`);
+        answer(null);
         return;
       }
       request.onupgradeneeded = () => {
@@ -306,6 +366,8 @@ export const createThreadPersistence = (
         const db = request.result;
         // Another tab (or a test) is deleting or upgrading this database. Hold
         // it open and the delete blocks forever; the next operation reopens.
+        // What is on disk may be gone with it, so nothing may be assumed
+        // written any more either.
         db.onversionchange = () => {
           db.close();
           connection = null;
@@ -315,17 +377,19 @@ export const createThreadPersistence = (
           connection = null;
           written.clear();
         };
-        resolve(db);
+        answer(db);
       };
       // A version error (a database a newer build owns), storage that is not
       // there, a corrupt file: all the same answer.
       request.onerror = () => {
-        disabled = true;
-        resolve(null);
+        disable(`it could not be opened (${String(request.error)})`);
+        answer(null);
       };
+      // Another connection is holding the version this open would replace.
+      // Not a permanent failure: the next call opens again.
       request.onblocked = () => {
         connection = null;
-        resolve(null);
+        answer(null);
       };
     });
     return connection;
@@ -360,8 +424,8 @@ export const createThreadPersistence = (
             return entry === undefined ? [] : [entry];
           }),
         };
-      } catch {
-        disable();
+      } catch (readError) {
+        disable(`it could not be read (${String(readError)})`);
         return null;
       }
     },
@@ -369,33 +433,18 @@ export const createThreadPersistence = (
     save: async (state) => {
       const db = await open();
       if (db === null) return;
-      const savedAt = now();
-      const rows = state.entries.map((entry) => {
-        const transcript = stripCapabilityUrls(entry.messages);
-        return {
-          entry,
-          row: {
-            id: entry.thread.id,
-            thread: entry.thread,
-            messages: transcript.messages,
-            ...(entry.messagesNextCursor === undefined
-              ? {}
-              : { messagesNextCursor: entry.messagesNextCursor }),
-            // Only with the bytes it describes. See the file header.
-            ...(entry.etag === undefined || transcript.stripped ? {} : { etag: entry.etag }),
-            repairedToolCallIds: [...entry.repairedToolCallIds],
-            pagedInIds: [...entry.pagedInIds],
-            savedAt,
-          } satisfies PersistedThread,
-        };
-      });
+      // EVERYTHING below is inside the try, the row build included. Stripping a
+      // transcript walks its parts and its attachments, and a row that reached
+      // the cache malformed threw there -- outside any catch, as an unhandled
+      // rejection, with persistence dead behind it.
       try {
+        const savedAt = now();
         const transaction = db.transaction(
           [THREAD_STORE, BUCKET_STORE, META_STORE],
           "readwrite",
         );
         const threads = transaction.objectStore(THREAD_STORE);
-        const held = new Set(rows.map(({ row }) => row.id));
+        const held = new Set(state.entries.map((entry) => entry.thread.id));
         // Issued inside the same transaction as the writes, and answered by its
         // own callback rather than an `await`: nothing else may run in between
         // or the transaction commits without the deletes.
@@ -405,8 +454,27 @@ export const createThreadPersistence = (
             if (typeof key === "string" && !held.has(key)) threads.delete(key);
           }
         };
-        for (const { entry, row } of rows) {
-          if (written.get(row.id) === entry) continue;
+        const next = new Map<string, ThreadCacheEntry>();
+        for (const entry of state.entries) {
+          const id = entry.thread.id;
+          // The identity check FIRST, so a flush during a streaming turn does
+          // not walk the seven transcripts that did not move.
+          if (written.get(id) === entry) {
+            next.set(id, entry);
+            continue;
+          }
+          let row: PersistedThread;
+          try {
+            row = rowFor(entry, savedAt);
+          } catch {
+            // ONE conversation the device cannot represent -- a transcript some
+            // other path put in the cache malformed. It is skipped, its stored
+            // row (if any) is left alone because its id is still "held", and
+            // every other conversation is written. Deliberately not a disable:
+            // this is a fact about one value, not about this browser's storage.
+            continue;
+          }
+          next.set(id, entry);
           threads.put(row);
         }
         if (state.bucket !== undefined) {
@@ -419,19 +487,36 @@ export const createThreadPersistence = (
         }
         await settled(transaction);
         written.clear();
-        for (const { entry, row } of rows) written.set(row.id, entry);
-      } catch {
+        for (const [id, entry] of next) written.set(id, entry);
+      } catch (writeError) {
         // A full quota, a database that went away, a value the browser refused
         // to clone. What is already stored stays stored -- it is a valid, older
         // copy, and every restored entry is read conditionally anyway -- and
         // this tab stops writing rather than retrying into the same wall.
-        disable();
+        disable(`a write was refused (${String(writeError)})`);
       }
+    },
+
+    markPersisted: (entries) => {
+      for (const entry of entries) written.set(entry.thread.id, entry);
+    },
+
+    close: () => {
+      const pending = connection;
+      // Deliberately NOT `disable`, and `written` is deliberately kept: the
+      // rows are still on disk and still exactly these entries. Only the
+      // connection goes.
+      connection = null;
+      void pending?.then((db) => db?.close()).catch(() => undefined);
     },
 
     clearAll: async () => {
       const db = await open();
       if (db === null) return;
+      // BEFORE the transaction, not after it. A flush that starts while this
+      // one is committing would otherwise skip every entry it believes is
+      // already stored -- and this is about to delete exactly those rows.
+      written.clear();
       try {
         const transaction = db.transaction(
           [THREAD_STORE, BUCKET_STORE, META_STORE],
@@ -441,9 +526,8 @@ export const createThreadPersistence = (
         transaction.objectStore(BUCKET_STORE).clear();
         transaction.objectStore(META_STORE).clear();
         await settled(transaction);
-        written.clear();
-      } catch {
-        disable();
+      } catch (clearError) {
+        disable(`it could not be cleared (${String(clearError)})`);
       }
     },
   };
