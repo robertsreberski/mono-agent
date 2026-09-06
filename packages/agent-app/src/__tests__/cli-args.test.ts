@@ -683,6 +683,10 @@ describe("parseCliArgs", () => {
     expect(help).toContain("presets list|show <id>");
     expect(help).not.toContain("mono-agent init [--preset");
     expect(help).not.toContain("Effort levels:");
+
+    const webHelp = helpTopicText("web");
+    expect(webHelp).toContain("[--name <label>]");
+    expect(webHelp).toContain("PWA, tab, and rail label");
     expect(help).not.toContain("--fallback-effort");
     expect(help).not.toContain("--artifact-dir");
     expect(help).not.toContain("web reset --all --yes");

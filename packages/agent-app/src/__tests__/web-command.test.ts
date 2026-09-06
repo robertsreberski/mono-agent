@@ -414,7 +414,7 @@ describe("runWebCommand", () => {
     }
   });
 
-  it("does not silently ignore a theme passed to start when the managed service is already loaded", async () => {
+  it("does not silently ignore presentation flags passed to start when the managed service is already loaded", async () => {
     const home = await testHome();
     const ensureManagedRuntime = vi.fn();
     const launchctl = vi.fn(async (args: readonly string[]) => (
@@ -440,6 +440,23 @@ describe("runWebCommand", () => {
     )).resolves.toBe(1);
 
     expect(errors).toContain("mono-agent web restart --theme ocean");
+
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {}, name: "Robert's Console" },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        ensureManagedRuntime,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    )).resolves.toBe(1);
+
+    expect(errors).toContain("mono-agent web restart --name 'Robert'\"'\"'s Console'");
     expect(ensureManagedRuntime).not.toHaveBeenCalled();
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootout"]));
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));

@@ -49,6 +49,8 @@ describe("Web Push service worker", () => {
     expect(showNotification).toHaveBeenCalledWith("Agent replied", expect.objectContaining({
       body: "Plain preview",
       tag: "mono-agent-event",
+      icon: "/icon-192.png",
+      badge: "/badge-96.png",
       data: expect.objectContaining({
         eventId: "event-1",
         threadId: "thread-1",

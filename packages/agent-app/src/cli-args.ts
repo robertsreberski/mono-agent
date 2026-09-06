@@ -65,6 +65,7 @@ type CliCommand =
 export interface ParsedCliArgs {
   readonly command: CliCommand;
   readonly configPath?: string;
+  /** init: public agent name; web: console display label. */
   readonly name?: string;
   readonly model?: string;
   readonly fallbacks?: readonly CliFallbackArg[];
