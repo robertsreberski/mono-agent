@@ -12,6 +12,7 @@ import {
   publishReplyImageBlob,
   releaseReplyImageBlob,
   replyImageKey,
+  retainedReplyImageBytes,
 } from "./reply-image-cache";
 
 const originalCreateObjectUrl = URL.createObjectURL;
@@ -114,6 +115,54 @@ describe("shared reply image blobs", () => {
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:image-1");
     expect(acquireReplyImageBlob(first)).toBeUndefined();
     expect(acquireReplyImageBlob(second)).toBe("blob:image-2");
+  });
+
+  it("gives back the bytes of every image whose window has already closed", () => {
+    vi.useFakeTimers();
+    const { revokeObjectURL } = stubObjectUrls();
+    const size = Math.ceil(REPLY_IMAGE_RETENTION_BYTES / 4);
+    // Eight complete lifetimes — published, released, and left to expire — is
+    // twice the ceiling in bytes that have come and gone.
+    for (let index = 0; index < 8; index += 1) {
+      const key = replyImageKey(`sha256:expired-${index}`, size);
+      publishReplyImageBlob(key, { size } as Blob);
+      releaseReplyImageBlob(key);
+      vi.advanceTimersByTime(REPLY_IMAGE_RETENTION_MS);
+    }
+
+    expect(revokeObjectURL).toHaveBeenCalledTimes(8);
+    // Nothing is being held for anybody, so nothing counts against the ceiling.
+    expect(retainedReplyImageBytes()).toBe(0);
+
+    // The ceiling is about what the store is holding NOW. A picture released
+    // after all of that gets its whole window, or "scroll away and back" pays
+    // for the same bytes again for the life of the document.
+    const current = replyImageKey("sha256:current", size);
+    publishReplyImageBlob(current, { size } as Blob);
+    releaseReplyImageBlob(current);
+
+    expect(revokeObjectURL).toHaveBeenCalledTimes(8);
+    expect(retainedReplyImageBytes()).toBe(size);
+    expect(acquireReplyImageBlob(current)).toBe("blob:image-9");
+    expect(retainedReplyImageBytes()).toBe(0);
+  });
+
+  it("gives back the bytes of an image a viewer took back before its window closed", () => {
+    vi.useFakeTimers();
+    const { revokeObjectURL } = stubObjectUrls();
+    const size = Math.ceil(REPLY_IMAGE_RETENTION_BYTES / 2);
+    const reclaimed = replyImageKey("sha256:reclaimed", size);
+    publishReplyImageBlob(reclaimed, { size } as Blob);
+    releaseReplyImageBlob(reclaimed);
+    // Shown again inside its window, so it is no longer waiting for anybody.
+    expect(acquireReplyImageBlob(reclaimed)).toBe("blob:image-1");
+
+    const next = replyImageKey("sha256:next", size);
+    publishReplyImageBlob(next, { size } as Blob);
+    releaseReplyImageBlob(next);
+
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    expect(acquireReplyImageBlob(next)).toBe("blob:image-2");
   });
 
   it("counts only what nobody is holding against the byte ceiling", () => {
@@ -226,6 +275,19 @@ describe("shared reply image requests", () => {
     expect(retry).not.toBe(request);
     dropReplyImageFetch(key, retry);
     await expect(retry).rejects.toThrow();
+  });
+
+  it("clears an abandoned request's deadline exactly once", async () => {
+    const key = replyImageKey("sha256:abc", 4);
+    const clearTimeout = vi.spyOn(window, "clearTimeout");
+    const request = joinReplyImageFetch(key, pendingFetch);
+
+    dropReplyImageFetch(key, request);
+    await expect(request).rejects.toThrow();
+
+    // The abandon path and the request's own settle both close the slot; only
+    // one of them owns the timer id.
+    expect(clearTimeout).toHaveBeenCalledTimes(1);
   });
 
   it("hands its bytes to every viewer that joined the one request", async () => {

@@ -386,6 +386,16 @@ const storedReplyImageUrl = (part: { readonly mediaType: string; readonly stored
 /** How far ahead of the viewport a picture starts loading. */
 const REPLY_IMAGE_PRELOAD_MARGIN = "600px";
 
+/**
+ * How many times a picture may be tried again after a transient failure.
+ *
+ * The capability is re-minted on every projection of the message — about once a
+ * second while a turn runs — so "retry on the next capability" alone is a retry
+ * loop at the turn's own rate behind a card the operator can already download
+ * from. A few attempts cover the failure this is for: one dropped connection.
+ */
+export const REPLY_IMAGE_RETRY_LIMIT = 3;
+
 type ReplyImageStatus = "pending" | "ready" | "unavailable";
 
 interface ReplyImageState {
@@ -474,6 +484,7 @@ function useReplyImage(
   identityRef.current = identity;
   /** The access generation whose transient failure is waiting for a newer one. */
   const retryAfterRef = useRef<number | undefined>(undefined);
+  const retriesRef = useRef(0);
 
   // A slot recycled to a different picture keeps nothing of the last one: not
   // the bytes on screen, not its failure, and not the fact that it was in view.
@@ -487,10 +498,12 @@ function useReplyImage(
     setInViewport(!viewportGated);
     setAttempt(0);
     retryAfterRef.current = undefined;
+    retriesRef.current = 0;
   }
 
   // A transient failure re-arms on the next capability the service mints, which
-  // is what keying the effect on the URL used to do by accident.
+  // is what keying the effect on the URL used to do by accident — but a bounded
+  // number of times, because those mints arrive at the rate of the running turn.
   const generation = access.current?.identity === identity ? access.current.generation : undefined;
   if (
     retryAfterRef.current !== undefined
@@ -498,7 +511,10 @@ function useReplyImage(
     && generation > retryAfterRef.current
   ) {
     retryAfterRef.current = undefined;
-    setAttempt((value) => value + 1);
+    if (retriesRef.current < REPLY_IMAGE_RETRY_LIMIT) {
+      retriesRef.current += 1;
+      setAttempt((value) => value + 1);
+    }
   }
 
   useEffect(() => {

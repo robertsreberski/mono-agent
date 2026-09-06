@@ -59,6 +59,7 @@ import {
   mcpAppArgumentPreview,
   mcpAppPreferredHeight,
   openExternalMcpAppLink,
+  REPLY_IMAGE_RETRY_LIMIT,
   safeMcpAppResourceMetadata,
   secureMcpAppHtml,
   startReplyAttachmentDownload,
@@ -496,6 +497,30 @@ describe("assistant reply files", () => {
     view.rerender(attachment(imagePart));
     await act(async () => { await Promise.resolve(); });
     expect(fetchContent).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it("stops re-asking for a picture that keeps failing, however often the token turns", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockRejectedValue(new Error("connection lost"));
+    stubImageObjectUrls();
+    const view = render(attachment(imagePart));
+    expect(await screen.findByRole("button", { name: "Download cover.png" })).toBeVisible();
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+
+    // A live turn re-mints the capability about once a second, which is not a
+    // reason to re-download a picture that has failed every time so far.
+    for (let mint = 1; mint <= 5; mint += 1) {
+      view.rerender(attachment({
+        ...imagePart,
+        contentUrl: imagePart.contentUrl
+          .replace("1234567890", `${String(1234567890 + mint)}`)
+          .replace(/token=[^&]+/u, `token=${String(mint).repeat(43)}`),
+      }));
+      await act(async () => { await Promise.resolve(); });
+    }
+
+    expect(fetchContent).toHaveBeenCalledTimes(1 + REPLY_IMAGE_RETRY_LIMIT);
+    expect(screen.getByRole("button", { name: "Download cover.png" })).toBeVisible();
     view.unmount();
   });
 

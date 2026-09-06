@@ -43,7 +43,8 @@ interface SharedReplyImage {
 
 interface SharedReplyImageRequest {
   readonly controller: AbortController;
-  readonly timer: number;
+  /** Closes this request's slot and its deadline, however often it is called. */
+  readonly settle: () => void;
   readonly promise: Promise<Blob>;
   waiters: number;
 }
@@ -54,11 +55,21 @@ const retained: string[] = [];
 let retainedBytes = 0;
 const inFlight = new Map<string, SharedReplyImageRequest>();
 
-const forgetRetained = (key: string): void => {
+/**
+ * Takes one key out of the queue and its bytes off the total.
+ *
+ * The size is passed in from the entry the caller already has rather than read
+ * back out of the map: reading it back made the arithmetic depend on whether the
+ * caller had deleted the entry yet, and the caller that had — the retention
+ * timer, which is how every released picture normally ends — subtracted nothing.
+ * The leak then ate the whole ceiling and every release evicted what it had just
+ * retained, so the window stopped existing for the life of the document.
+ */
+const forgetRetained = (key: string, size: number): void => {
   const at = retained.indexOf(key);
   if (at === -1) return;
   retained.splice(at, 1);
-  retainedBytes -= sharedImages.get(key)?.size ?? 0;
+  retainedBytes -= size;
 };
 
 const revokeShared = (key: string): void => {
@@ -66,7 +77,7 @@ const revokeShared = (key: string): void => {
   if (image === undefined || image.refs > 0) return;
   if (image.timer !== undefined) window.clearTimeout(image.timer);
   sharedImages.delete(key);
-  forgetRetained(key);
+  forgetRetained(key, image.size);
   URL.revokeObjectURL(image.objectUrl);
 };
 
@@ -85,13 +96,16 @@ const evictRetained = (): void => {
   }
 };
 
+/** Everything the store is holding for nobody, in bytes. Tests read it. */
+export const retainedReplyImageBytes = (): number => retainedBytes;
+
 const hold = (image: SharedReplyImage, key: string): string => {
   image.refs += 1;
   if (image.timer !== undefined) {
     window.clearTimeout(image.timer);
     image.timer = undefined;
   }
-  forgetRetained(key);
+  forgetRetained(key, image.size);
   return image.objectUrl;
 };
 
@@ -131,12 +145,6 @@ export const releaseReplyImageBlob = (key: string): void => {
   evictRetained();
 };
 
-/** Closes out one request's slot, but only while that request still owns it. */
-const settleRequest = (key: string, controller: AbortController, timer: number): void => {
-  window.clearTimeout(timer);
-  if (inFlight.get(key)?.controller === controller) inFlight.delete(key);
-};
-
 /**
  * Joins the request already in flight for this content, or starts one.
  *
@@ -158,20 +166,29 @@ export const joinReplyImageFetch = (
     return existing.promise;
   }
   const controller = new AbortController();
-  const timer = window.setTimeout(
+  let timer: number | undefined = window.setTimeout(
     () => controller.abort(new DOMException("The reply image request timed out.", "TimeoutError")),
     REPLY_IMAGE_REQUEST_TIMEOUT_MS,
   );
+  // Both the last waiter leaving and the request answering close this slot, and
+  // either can come first, so the deadline is owned here and cleared once.
+  const settle = (): void => {
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      timer = undefined;
+    }
+    if (inFlight.get(key)?.controller === controller) inFlight.delete(key);
+  };
   const promise = (async () => {
     try {
       return await start(controller.signal);
     } finally {
-      settleRequest(key, controller, timer);
+      settle();
     }
   })();
   // Nothing is left unhandled if every waiter leaves before it settles.
   promise.catch(() => undefined);
-  inFlight.set(key, { controller, timer, promise, waiters: 1 });
+  inFlight.set(key, { controller, settle, promise, waiters: 1 });
   return promise;
 };
 
@@ -187,7 +204,7 @@ export const dropReplyImageFetch = (key: string, request: Promise<Blob>): void =
   if (pending === undefined || pending.promise !== request) return;
   pending.waiters -= 1;
   if (pending.waiters > 0) return;
-  settleRequest(key, pending.controller, pending.timer);
+  pending.settle();
   pending.controller.abort(new DOMException("The reply image is no longer shown.", "AbortError"));
 };
 
@@ -206,8 +223,8 @@ export const clearReplyImageBlobs = (): void => {
   }
   retained.length = 0;
   retainedBytes = 0;
-  for (const [key, request] of inFlight) {
-    settleRequest(key, request.controller, request.timer);
+  for (const request of [...inFlight.values()]) {
+    request.settle();
     request.controller.abort(new DOMException("The reply image is no longer shown.", "AbortError"));
   }
 };
