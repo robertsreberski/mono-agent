@@ -156,6 +156,36 @@ jobs:
       - name: Audit every built page for accessibility
         run: pnpm run test:a11y
 
+  webapp-browser:
+    name: Webapp browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: packages/web/webapp
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@11.18.0
+
+      - name: Install webapp dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Test webapp in Chromium
+        run: pnpm run test:browser
+
   release-dry-run:
     name: Release dry run
     if: github.event_name == 'pull_request'
@@ -202,6 +232,7 @@ jobs:
     needs:
       - verify
       - website
+      - webapp-browser
       - release-dry-run
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -212,6 +243,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           VERIFY_RESULT: ${{ needs.verify.result }}
           WEBSITE_RESULT: ${{ needs.website.result }}
+          WEBAPP_BROWSER_RESULT: ${{ needs.webapp-browser.result }}
           RELEASE_DRY_RUN_RESULT: ${{ needs.release-dry-run.result }}
         run: |
           set -euo pipefail
@@ -220,10 +252,11 @@ jobs:
             echo
             echo "- Package matrix: $VERIFY_RESULT"
             echo "- Website: $WEBSITE_RESULT"
+            echo "- Webapp browser: $WEBAPP_BROWSER_RESULT"
             echo "- Release dry run: $RELEASE_DRY_RUN_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [[ "$VERIFY_RESULT" != "success" || "$WEBSITE_RESULT" != "success" ]]; then
+          if [[ "$VERIFY_RESULT" != "success" || "$WEBSITE_RESULT" != "success" || "$WEBAPP_BROWSER_RESULT" != "success" ]]; then
             echo "CI VERDICT: FAILED"
             exit 1
           fi

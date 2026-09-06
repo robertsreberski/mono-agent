@@ -222,8 +222,21 @@ describe("verify-all", () => {
 
   it("requires a PR release dry run and publishes one aggregate CI verdict", () => {
     const workflow = parseDocument(readCiWorkflow(), { uniqueKeys: true }).toJS();
+    const webappBrowser = workflow.jobs["webapp-browser"];
     const releaseDryRun = workflow.jobs["release-dry-run"];
     const verdict = workflow.jobs.verdict;
+
+    expect(webappBrowser.name).toBe("Webapp browser");
+    expect(webappBrowser.defaults.run["working-directory"]).toBe("packages/web/webapp");
+    expect(webappBrowser.steps.map((step) => step.name)).toEqual([
+      "Checkout",
+      "Setup Node",
+      "Install pinned pnpm",
+      "Install webapp dependencies",
+      "Install Chromium",
+      "Test webapp in Chromium",
+    ]);
+    expect(webappBrowser.steps.at(-1).run).toBe("pnpm run test:browser");
 
     expect(releaseDryRun.name).toBe("Release dry run");
     expect(releaseDryRun.if).toBe("github.event_name == 'pull_request'");
@@ -235,7 +248,7 @@ describe("verify-all", () => {
 
     expect(verdict.name).toBe("Required verdict");
     expect(verdict.if).toBe("always()");
-    expect(verdict.needs).toEqual(["verify", "website", "release-dry-run"]);
+    expect(verdict.needs).toEqual(["verify", "website", "webapp-browser", "release-dry-run"]);
     expect(verdict.steps).toHaveLength(1);
     expect(verdict.steps[0].run).toContain("CI VERDICT: GREEN");
     expect(verdict.steps[0].run).toContain("CI VERDICT: FAILED");
@@ -883,11 +896,12 @@ function parseCiVerifyJob(source) {
   const jobFields = readYamlMap(jobs, "ci.yml jobs");
   assertExactMapFields(
     jobFields,
-    ["verify", "website", "release-dry-run", "verdict"],
+    ["verify", "website", "webapp-browser", "release-dry-run", "verdict"],
     "CI workflow jobs",
   );
   const verifyJob = requireMapField(jobFields, "verify", "ci.yml jobs");
   requireYamlMap(jobFields.get("website"), "ci.yml website job");
+  requireYamlMap(jobFields.get("webapp-browser"), "ci.yml webapp-browser job");
   requireYamlMap(jobFields.get("release-dry-run"), "ci.yml release-dry-run job");
   requireYamlMap(jobFields.get("verdict"), "ci.yml verdict job");
 
