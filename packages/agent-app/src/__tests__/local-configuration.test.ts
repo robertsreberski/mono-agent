@@ -95,9 +95,14 @@ describe("RFC 6902 configuration proposals", () => {
       },
     };
     expect(isLocalConfigurationRequest(marked)).toBe(true);
+    expect(isLocalConfigurationRequest({
+      source: "web",
+      configuration: marked.tui,
+    })).toBe(true);
     expect(isLocalConfigurationRequest({ source: "tui", tui: { configuration: true } })).toBe(false);
     expect(isLocalConfigurationRequest({ source: "tui", tui: { ...marked.tui, configurationPhase: "unknown" } })).toBe(false);
     expect(isLocalConfigurationRequest({ source: "telegram", tui: marked.tui })).toBe(false);
+    expect(isLocalConfigurationRequest({ source: "web", tui: marked.tui })).toBe(false);
   });
 
   it("applies add/remove/replace/copy/move/test without mutating the source", () => {

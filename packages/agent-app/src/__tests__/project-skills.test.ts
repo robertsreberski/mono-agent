@@ -43,9 +43,10 @@ describe("managed project skills", () => {
       skillDisclosure: "index",
     });
     expect((await checkManagedProjectSkills(dir)).ok).toBe(true);
-    expect(PROJECT_SKILL_VERSION).toBe("1.2.0");
+    expect(PROJECT_SKILL_VERSION).toBe("1.3.0");
     const configureSkill = await readFile(join(dir, "skills", "mono-agent-configure", "SKILL.md"), "utf8");
     expect(configureSkill).toContain("ProposeAgentConfiguration once");
+    expect(configureSkill).toContain("web console's Configure agent action");
     expect(configureSkill).toContain("IDENTITY.md → ## Role");
     expect(configureSkill).toContain("authoritative background agent");
     expect(configureSkill).toContain("dedicated, multi-turn SELF-CONFIG session");
