@@ -65,7 +65,10 @@ const JSON_RUNTIME_SOURCES: readonly {
   readonly env: string;
   readonly path: string;
   readonly read: (json: MonoAgentConfigJson) => unknown;
-  readonly overriddenByEnv?: readonly string[];
+  readonly isOverriddenByEnv?: (
+    json: MonoAgentConfigJson,
+    env: Record<string, string | undefined>,
+  ) => boolean;
 }[] = [
   { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
   { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
@@ -77,9 +80,14 @@ const JSON_RUNTIME_SOURCES: readonly {
   {
     env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV",
     path: "tools.web.search.ollama.apiKeyEnv",
-    read: (json) => json.tools?.web?.search?.ollama?.apiKeyEnv
-      ?? json.tools?.web?.search?.ollama?.baseUrl,
-    overriddenByEnv: ["MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL"],
+    read: (json) => {
+      const ollama = json.tools?.web?.search?.ollama;
+      return ollama?.apiKeyEnv !== undefined ? ollama.apiKeyEnv : ollama?.baseUrl;
+    },
+    isOverriddenByEnv: (json, env) => (
+      json.tools?.web?.search?.ollama?.apiKeyEnv === undefined
+      && hasValue(env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL)
+    ),
   },
   { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL", path: "tools.web.search.ollama.trustPublicUrl", read: (json) => json.tools?.web?.search?.ollama?.trustPublicUrl },
 ];
@@ -97,7 +105,7 @@ function remapJsonRuntimeError(
   if (mapping === undefined) return error;
   if (
     hasValue(env[source])
-    || mapping.overriddenByEnv?.some((candidate) => hasValue(env[candidate])) === true
+    || mapping.isOverriddenByEnv?.(json, env) === true
     || mapping.read(json) === undefined
   ) return error;
   return remapConfigErrorToJson(error, source, mapping.path);

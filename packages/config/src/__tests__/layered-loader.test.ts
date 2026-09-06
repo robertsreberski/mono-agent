@@ -2815,6 +2815,32 @@ describe("JSON-sourced runtime failures name the JSON path, not an env var", () 
     expect(error.message).not.toContain("MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV");
   });
 
+  it("keeps explicit JSON apiKeyEnv ownership when env overrides only baseUrl", async () => {
+    const error = await failureOf(
+      {
+        ...base,
+        runtime: { model: "openai-codex:gpt-5.5" },
+        tools: {
+          web: {
+            search: {
+              backend: "ollama",
+              ollama: {
+                baseUrl: "http://127.0.0.1:11434",
+                apiKeyEnv: "NOT ALLOWED",
+              },
+            },
+          },
+        },
+      },
+      { MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://ollama.com" },
+    );
+    expect(error.code).toBe("invalid_json");
+    expect(error.details.path).toBe("tools.web.search.ollama.apiKeyEnv");
+    expect(error.details.env).toBeUndefined();
+    expect(error.message).toContain("tools.web.search.ollama.apiKeyEnv");
+    expect(error.message).not.toContain("MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV");
+  });
+
   it("keeps an env-owned hosted Ollama missing apiKeyEnv attributed to env", async () => {
     const error = await failureOf(
       {
