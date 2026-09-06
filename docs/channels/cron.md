@@ -170,13 +170,15 @@ The config schema intentionally has no `overlap`, `maxQueueDepth`, or `overflow`
 Pick an `expression` whose interval comfortably exceeds the job's typical runtime. The web channel records an overlapping firing as `skipped_overlap`; it never pretends that the firing ran.
 :::
 
-## Web-console state and controls
+## Web console and operator APIs
 
-The running agent is authoritative for configured/effective state, last and next run, health, run records, and the redacted configuration view. The console never reads `source.configPath` or computes a next run from the expression. Agents that do not advertise the additive cron capability remain readable through cached history, with next run and health shown as unknown.
+The web cron header is a quiet, read-only schedule line: human-language cadence plus the agent-authored next run in the viewer's local date/time. Wall-clock cadence names the scheduler timezone (UTC by default), while the next-run time exposes the viewer timezone. Unsupported cadence expressions remain normalized cron text plus timezone. Removed and disabled jobs say so; missing, invalid, past, or offline/stale next-run state says **Next run unavailable**. The console never reads `source.configPath` or computes a next run. Configuration stays in files/config JSON, and agents without cron capability remain readable through cached history.
+
+The running agent remains authoritative for configured/effective state, last and next run, health, run records, and the redacted configuration view exposed through operator APIs. The web HTTP config-view, run-now, and effective-enabled proxies remain available to operator clients; the browser header has no configuration view or action controls.
 
 Run records use a durable per-job admission sequence. Scheduled ids are `cron:<encodedJobId>:<scheduledAt>`; manual ids use the disjoint `cron:<encodedJobId>:<observedAt>:m<sequence>` form. The feed orders every admitted, running, queued, succeeded, failed, cancelled, skipped, or dropped record by immutable `(orderedAt, sequence, runId)`. The artifact run id is a separate link when one exists.
 
-Controls require all three gates: `cron.operatorActions.enabled`, an operator API key, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
+Operator control APIs require all three gates: `cron.operatorActions.enabled`, an operator API key, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
 
 The agent stores overrides, run ordering, idempotency receipts, and audit records in owner-private `.mono-agent/cron-control-v1/`. An absent directory is normal first-run state and is created before jobs arm. A present but corrupt, insecure, or already-leased store is fail-closed: no cron jobs arm, lifecycle/discovery reports the cron channel as degraded, an error is logged, and `mono-agent doctor` reports the state for recovery. Removing this directory is not a routine enable/reset operation because it discards runtime overrides, ordering, idempotency, audit, and bounded run history.
 

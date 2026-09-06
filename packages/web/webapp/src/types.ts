@@ -751,30 +751,6 @@ export interface CronRunPage {
   readonly messages?: readonly WebMessage[];
 }
 
-export interface CronConfirmation {
-  readonly token: string;
-  readonly expiresAt: string;
-  readonly message: string;
-}
-
-export type CronMutationResult<T> =
-  | { readonly kind: "confirmation_required"; readonly confirmation: CronConfirmation }
-  | { readonly kind: "completed"; readonly value: T; readonly replayed: boolean };
-
-export interface ChannelConfigView {
-  readonly id: string;
-  readonly label: string;
-  readonly status: "active" | "disabled";
-  readonly fields: readonly {
-    readonly id: string;
-    readonly label: string;
-    readonly value: string;
-    readonly source: "env" | "json" | "default";
-    readonly redacted?: boolean;
-    readonly envKey?: string;
-  }[];
-}
-
 export interface UploadLimits {
   readonly maxFileBytes: number;
   readonly maxFilesPerTurn: number;
