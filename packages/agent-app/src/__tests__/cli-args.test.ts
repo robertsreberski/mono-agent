@@ -623,6 +623,13 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["status", "--theme", "plum"])).toThrow(/theme/u);
     expect(() => parseCliArgs(["web", "status", "--theme", "plum"])).toThrow(/web start/u);
     expect(() => parseCliArgs(["web", "start", "--theme", " "])).toThrow(/must not be empty/u);
+    expect(parseCliArgs(["web", "start", "--name", "Flockbox"])).toMatchObject({
+      command: "web",
+      positionals: ["start"],
+      name: "Flockbox",
+    });
+    expect(() => parseCliArgs(["web", "status", "--name", "Flockbox"])).toThrow(/web start/u);
+    expect(() => parseCliArgs(["status", "--name", "Flockbox"])).toThrow(/--name/u);
     expect(() => parseCliArgs(["web", "run", "--env-file", ".env"])).toThrow(/does not load/u);
     expect(() => parseCliArgs(["web", "--config", "agent.json"])).toThrow(/does not load/u);
   });

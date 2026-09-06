@@ -22,7 +22,7 @@ describe("applyConsolePresentation", () => {
     const dark = addThemeColorMeta("(prefers-color-scheme: dark)", "#000000");
     document.title = "before";
 
-    const restore = applyConsolePresentation({ hostName: "builder-01", theme: "terracotta" });
+    const restore = applyConsolePresentation({ hostName: "builder-01", displayName: "builder-01", theme: "terracotta" });
 
     expect(document.documentElement.dataset.consoleTheme).toBe("terracotta");
     expect(document.title).toBe("builder-01 · mono-agent");
@@ -34,5 +34,16 @@ describe("applyConsolePresentation", () => {
     expect(document.title).toBe("before");
     expect(light.content).toBe("#ffffff");
     expect(dark.content).toBe("#000000");
+  });
+
+  it("titles the tab with the operator-chosen name rather than the hostname", () => {
+    const restore = applyConsolePresentation({
+      hostName: "flockbox",
+      displayName: "Flockbox",
+      theme: "evergreen",
+    });
+
+    expect(document.title).toBe("Flockbox · mono-agent");
+    restore();
   });
 });

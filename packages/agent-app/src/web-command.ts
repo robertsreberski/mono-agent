@@ -90,6 +90,9 @@ const TAILSCALE_STATUS_RETRY_MS = 200;
 const WEB_PACKAGE_NAME = "@mono-agent/web";
 const WEB_THEMES = ["evergreen", "ocean", "plum", "terracotta"] as const satisfies readonly WebTheme[];
 const DEFAULT_WEB_THEME: WebTheme = "evergreen";
+// Mirrors WEB_CONSOLE_NAME_MAX_CHARACTERS in @mono-agent/web; declared locally so this
+// command keeps its type-only dependency on the lazily loaded web package.
+const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80;
 
 interface WebServerHandle {
   readonly url: string;
@@ -103,6 +106,7 @@ interface StartWebServerOptions {
   readonly host?: string;
   readonly port?: number;
   readonly theme?: WebTheme;
+  readonly name?: string;
   readonly registryDirs?: readonly string[];
   readonly stateDir?: string;
   readonly env?: Record<string, string | undefined>;
@@ -131,6 +135,7 @@ export interface RunWebCommandOptions {
   readonly host?: string;
   readonly port?: number;
   readonly theme?: string;
+  readonly name?: string;
   readonly loopback?: boolean;
   readonly follow?: boolean;
   readonly lines?: number;
@@ -194,6 +199,8 @@ interface WebServiceRecord {
   readonly port: number;
   /** Optional only so pre-theme v1 records remain readable during upgrade. */
   readonly theme?: WebTheme;
+  /** Absent means the console labels itself with the machine hostname. */
+  readonly name?: string;
   readonly updatedAt: string;
 }
 
@@ -266,15 +273,16 @@ export function renderWebHelp(): string {
     "mono-agent web — always-on multi-agent web console",
     "",
     "  mono-agent web",
-    "  mono-agent web start [--host <addr> | --loopback] [--port <n>] [--theme <name>]",
-    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>]",
+    "  mono-agent web start [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
+    "  mono-agent web restart [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
     "  mono-agent web stop | status",
     "  mono-agent web logs [--follow|-f] [--lines <n>]",
-    "  mono-agent web run [--host <addr> | --loopback] [--port <n>] [--theme <name>]",
+    "  mono-agent web run [--host <addr> | --loopback] [--port <n>] [--theme <name>] [--name <label>]",
     "  mono-agent web reset --all --yes",
     "",
     `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (LAN/Tailnet reachable; no app login).`,
     `Themes: ${WEB_THEMES.join(", ")} (default: ${DEFAULT_WEB_THEME}).`,
+    "--name sets the installed PWA label, browser tab title, and rail brand (default: this machine's hostname).",
     "--loopback narrows the bind to 127.0.0.1. macOS start/restart claim a free Tailscale Serve HTTPS port; Linux HTTPS routes are externally managed.",
     "",
   ].join("\n");
@@ -368,9 +376,13 @@ function validateWebFlags(action: string | undefined, options: RunWebCommandOpti
   if (options.theme !== undefined && !isWebTheme(options.theme)) {
     return `--theme must be one of: ${WEB_THEMES.join(", ")}.`;
   }
-  if ((options.host !== undefined || options.port !== undefined || options.theme !== undefined || options.loopback === true)
+  if (options.name !== undefined && invalidWebConsoleName(options.name) !== undefined) {
+    return invalidWebConsoleName(options.name);
+  }
+  if ((options.host !== undefined || options.port !== undefined || options.theme !== undefined
+    || options.name !== undefined || options.loopback === true)
     && action !== "start" && action !== "restart" && action !== "run") {
-    return "--host, --port, --theme, and --loopback are only supported for web start, restart, or run.";
+    return "--host, --port, --theme, --name, and --loopback are only supported for web start, restart, or run.";
   }
   if ((options.follow === true || options.lines !== undefined) && action !== "logs") {
     return "--follow and --lines are only supported for mono-agent web logs.";
@@ -390,6 +402,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
   const host = effectiveHost(options);
   const port = options.port ?? DEFAULT_WEB_PORT;
   const theme = selectedWebTheme(options.theme);
+  const consoleName = selectedWebConsoleName(options.name);
   const paths = webPaths(deps.homeDir);
   await (deps.prepareState ?? defaultPrepareWebState)({ stateDir: paths.stateDir, env: options.env });
   const registryDir = resolveGlobalTraceRegistryDir(options.env);
@@ -413,6 +426,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
       host,
       port,
       theme,
+      ...(consoleName === undefined ? {} : { name: consoleName }),
       registryDirs: [registryDir],
       stateDir: paths.stateDir,
       env: options.env,
@@ -529,6 +543,12 @@ async function startWebBackground(
       if (options.theme !== undefined) {
         stderr.write(ui.errorLine(
           `mono-agent web is already managed by launchd; use \`mono-agent web restart --theme ${options.theme}\` to change its theme.`,
+        ));
+        return 1;
+      }
+      if (options.name !== undefined) {
+        stderr.write(ui.errorLine(
+          `mono-agent web is already managed by launchd; use \`mono-agent web restart --name ${options.name}\` to change its name.`,
         ));
         return 1;
       }
@@ -708,6 +728,7 @@ async function startWebBackground(
     const host = effectiveHost(options, priorRecord?.host);
     const port = options.port ?? priorRecord?.port ?? DEFAULT_WEB_PORT;
     const theme = selectedWebTheme(options.theme, priorRecord?.theme);
+    const consoleName = selectedWebConsoleName(options.name, priorRecord?.name);
     if (existingPlist !== undefined) {
       try {
         pendingMaintenanceIntent = await maintainStoppedWebLogsBeforePublication(
@@ -747,6 +768,7 @@ async function startWebBackground(
       host,
       port,
       theme,
+      ...(consoleName === undefined ? {} : { name: consoleName }),
       updatedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     };
     const plist = buildWebPlistXml({
@@ -757,6 +779,7 @@ async function startWebBackground(
       host,
       port,
       theme,
+      ...(consoleName === undefined ? {} : { name: consoleName }),
       stdoutPath: paths.launchd.stdoutPath,
       stderrPath: paths.launchd.stderrPath,
       environment,
@@ -945,6 +968,7 @@ async function statusWeb(
   const host = record?.host ?? DEFAULT_WEB_HOST;
   const port = record?.port ?? DEFAULT_WEB_PORT;
   const theme = record?.theme ?? DEFAULT_WEB_THEME;
+  const consoleName = record?.name;
   let service: LaunchdServiceInfo = { loaded: false };
   let helper: LaunchdWebMaintenanceInfo = { loaded: false };
   if ((deps.platform ?? process.platform) === "darwin") {
@@ -1046,6 +1070,9 @@ async function statusWeb(
       : "stopped"],
     ["bind", recordRead.kind === "invalid" ? "invalid service record" : `${host}:${String(port)}`],
     ["theme", recordRead.kind === "invalid" ? "invalid service record" : theme],
+    ["name", recordRead.kind === "invalid"
+      ? "invalid service record"
+      : consoleName ?? "— (machine hostname)"],
     ["state", paths.stateDir],
     ["pid", service.pid === undefined ? "—" : String(service.pid)],
     ["log maintenance", maintenanceSummary],
@@ -1189,6 +1216,28 @@ function isWebTheme(value: unknown): value is WebTheme {
 function selectedWebTheme(value?: string, priorTheme?: WebTheme): WebTheme {
   if (value === undefined) return priorTheme ?? DEFAULT_WEB_THEME;
   return value as WebTheme;
+}
+
+/**
+ * Console label precedence: this invocation's flag, then the persisted record, then
+ * undefined so the worker falls back to the machine hostname.
+ */
+function selectedWebConsoleName(value?: string, priorName?: string): string | undefined {
+  if (value === undefined) return priorName;
+  return value.trim();
+}
+
+/** Reject labels the manifest, launchd argv, or launcher cannot carry faithfully. */
+function invalidWebConsoleName(value: string): string | undefined {
+  const name = value.trim();
+  if (name.length === 0) return "--name must not be empty.";
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(name)) {
+    return "--name must not contain control characters.";
+  }
+  if ([...name].length > WEB_CONSOLE_NAME_MAX_CHARACTERS) {
+    return `--name must be at most ${String(WEB_CONSOLE_NAME_MAX_CHARACTERS)} characters.`;
+  }
+  return undefined;
 }
 
 async function ensureWebDirectories(paths: WebPaths): Promise<void> {
@@ -2014,6 +2063,8 @@ async function readServiceRecord(path: string): Promise<WebServiceRecordRead> {
   if (!isRecord(value) || value.schema !== WEB_SERVICE_SCHEMA || typeof value.host !== "string"
     || !Number.isSafeInteger(value.port) || (value.port as number) < 1 || (value.port as number) > 65_535
     || (value.theme !== undefined && !isWebTheme(value.theme))
+    || (value.name !== undefined
+      && (typeof value.name !== "string" || invalidWebConsoleName(value.name) !== undefined))
     || typeof value.updatedAt !== "string") {
     return { kind: "invalid", detail: "the web service record has an invalid schema; repair or remove ~/.mono-agent/web/service.json" };
   }

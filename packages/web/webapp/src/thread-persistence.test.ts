@@ -12,7 +12,7 @@ import {
 } from "./thread-persistence";
 import type { ConsoleIdentity, MessagePart, PushBootstrap, WebMessage } from "./types";
 
-const consoleIdentity: ConsoleIdentity = { hostName: "kitchen", theme: "evergreen" };
+const consoleIdentity: ConsoleIdentity = { hostName: "kitchen", displayName: "kitchen", theme: "evergreen" };
 const push: PushBootstrap = {
   applicationServerKey: "B".repeat(87),
   keyFingerprint: "fingerprint",
@@ -361,7 +361,7 @@ describe("createThreadPersistence", () => {
 
   it("names the console that wrote what is stored", async () => {
     const store = createThreadPersistence();
-    await store.save({ entries: [], snapshot: snapshot({ hostName: "studio", theme: "ocean" }) });
+    await store.save({ entries: [], snapshot: snapshot({ hostName: "studio", displayName: "studio", theme: "ocean" }) });
 
     expect((await createThreadPersistence().hydrate())?.host).toBe("studio");
   });

@@ -71,6 +71,8 @@ export const WEB_API_VERSION = 1 as const;
 export const WEB_THEMES = ["evergreen", "ocean", "plum", "terracotta"] as const;
 export type WebTheme = (typeof WEB_THEMES)[number];
 export const DEFAULT_WEB_THEME: WebTheme = "evergreen";
+/** Upper bound on the operator-chosen console label. Matches the CLI's shared `--name` cap. */
+export const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80;
 
 export const WEB_MAX_FILES_PER_TURN = 10;
 export const WEB_MAX_TURN_ATTACHMENT_BYTES = 64 * 1024 * 1024;
@@ -655,7 +657,10 @@ export interface WebChannelConfigView {
 }
 
 export interface WebConsoleIdentity {
+  /** Machine hostname; the default display name and the LAN identity operators recognise. */
   readonly hostName: string;
+  /** Operator-chosen console label (`mono-agent web --name`), falling back to `hostName`. */
+  readonly displayName: string;
   readonly theme: WebTheme;
 }
 

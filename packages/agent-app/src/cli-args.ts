@@ -748,7 +748,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
     "runs", "backfill", "memory", "continuations", "jobs", "monitors", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
-  assertFlagCommand(name !== undefined, "--name", cmd, ["init"]);
+  assertFlagCommand(name !== undefined, "--name", cmd, ["init", "web"]);
   assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
   assertFlagCommand(fallbacks.length > 0, "--fallback", cmd, ["init"]);
   assertFlagCommand(effort !== undefined, "--effort", cmd, ["init"]);
@@ -780,8 +780,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 
   if (cmd === "web") {
     const action = positionals[0];
-    if ((host !== undefined || port !== undefined || theme !== undefined || loopback) && action !== "start" && action !== "restart" && action !== "run") {
-      throw new Error("--host, --port, --theme, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
+    if ((host !== undefined || port !== undefined || theme !== undefined || name !== undefined || loopback)
+      && action !== "start" && action !== "restart" && action !== "run") {
+      throw new Error("--host, --port, --theme, --name, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
     }
     if ((follow || lines !== undefined) && action !== "logs") {
       throw new Error("--follow and --lines are only supported for `mono-agent web logs`.");

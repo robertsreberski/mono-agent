@@ -39,12 +39,12 @@ export function AgentRail({
     setAgentPinned,
     setShowOfflineAgents,
   } = useConsoleStore();
-  const hostName = bootstrap?.console.hostName ?? "mono-agent";
+  const consoleName = bootstrap?.console.displayName ?? "mono-agent";
   return (
     <nav className={`agent-rail${expanded ? " is-expanded" : ""}`} aria-label="Agents">
-      <div className="rail-brand" title={hostName}>
+      <div className="rail-brand" title={consoleName}>
         <BrandMark />
-        <span className="rail-brand-copy">{hostName}</span>
+        <span className="rail-brand-copy">{consoleName}</span>
       </div>
       <div className="agent-list" role="list">
         {visibleAgents.map((agent) => {
@@ -147,13 +147,13 @@ export function MobileAgentPicker({ onSelect }: { readonly onSelect: () => void 
     setAgentPinned,
     setShowOfflineAgents,
   } = useConsoleStore();
-  const hostName = bootstrap?.console.hostName ?? "mono-agent";
+  const consoleName = bootstrap?.console.displayName ?? "mono-agent";
   return (
     <aside className="mobile-agent-picker" aria-label="Choose an agent">
       <header>
         <BrandMark />
         <div>
-          <span className="eyebrow">{hostName}</span>
+          <span className="eyebrow">{consoleName}</span>
           <h2>Agents</h2>
         </div>
       </header>
