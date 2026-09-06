@@ -154,6 +154,8 @@ export interface WebAgentSummary {
   readonly supportsAttachments: boolean;
   /** True only when this web host can grant an owner-local SELF-CONFIG capability. */
   readonly supportsConfiguration?: true;
+  /** Agent operator exposes bearer-protected Pi provider authentication v1. */
+  readonly supportsProviderAuth?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly defaultEffort?: string;
@@ -173,6 +175,17 @@ export interface WebAgentSummary {
   readonly supportsAskById?: boolean;
   readonly updatedAt: string;
 }
+
+export type {
+  ProviderAuthMethod,
+  ProviderAuthPrompt,
+  ProviderAuthProviderStatus,
+  ProviderAuthSessionInput,
+  ProviderAuthSessionSnapshot,
+  ProviderAuthSessionStartInput,
+  ProviderAuthStatusSnapshot,
+  ProviderAuthUsage,
+} from "@mono-agent/agent-contracts";
 
 export interface WebConfigurationProposal {
   readonly id: string;

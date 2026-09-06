@@ -82,6 +82,7 @@ import type {
   SessionTraceMetadata,
   TraceabilityStatus,
 } from "./app-controller-types.js";
+import { createProviderAuthObservationTracker } from "./provider-auth-observations.js";
 
 export type {
   ConfigApplyResult,
@@ -412,6 +413,8 @@ export class MonoAgentAppController implements MonoAgentApp {
   } | undefined;
   /** One bounded scan cache for artifact-derived native-notify destinations. */
   readonly seenNotifyDestinations = createSeenNotifyDestinationCache();
+  /** Process-local proof/failure cache shared by every responder and auth status. */
+  readonly providerAuthObservations = createProviderAuthObservationTracker();
 
   constructor(input: MonoAgentAppControllerInput) {
     this.cwd = input.cwd;

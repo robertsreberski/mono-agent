@@ -78,6 +78,37 @@ Cron read routes preserve the operator endpoint's compatibility posture: they ar
 
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
 
+## Provider authentication
+
+For a current protected agent, **Agent settings** includes a provider-authentication
+card for each provider used by the agent's effective primary, fallback, memory,
+and enabled static trigger routes. It reports `present`, `expired`, `missing`, or
+keyless `not applicable`, the safe credential source, expiry when available, and
+whether a real model request has verified the credential. A successful login
+refreshes the cards immediately but stays **not live-verified** until a provider
+request succeeds. Recent auth/unavailable failures are memory-only warnings.
+
+One **Authenticate** or **Re-authenticate** action starts a short-lived session on
+the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and
+code while the headless host polls. Anthropic shows an authorization URL and a
+field for the final localhost redirect URL or code because Pi 0.85.1 has no
+Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
+provider-owned prompts. There is no `--device-auth` CLI flag.
+
+Every browser proxy route requires the exact console origin, and the addressed
+agent exposes its route only when its normal operator bearer is configured. The
+web server uses that bearer over the loopback operator connection. These are
+defence-in-depth controls inside the trusted-network, single-user posture above;
+they are not per-human owner/admin login.
+
+The session, URLs, codes, progress, and prompt values live only in agent/webapp
+memory. Responses use `Cache-Control: private, no-store`; closing the dialog or
+switching agents cancels the active session. The web service never reads or
+writes `providers.piAuthPath` and stores no session or submitted value in
+SQLite, threads, browser storage, or run history. The host writes only the Pi
+auth store through its owner-only lock and no-clobber transaction. Codex CLI
+worker credentials in `~/.codex/auth.json` are outside this feature.
+
 ## How the service is structured
 
 | Layer | What it owns |

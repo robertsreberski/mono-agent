@@ -19,6 +19,10 @@ import {
   type ChannelAskSubmissionResult,
   type MonitorProjection,
   type ProcessJobProjection,
+  type ProviderAuthSessionInput,
+  type ProviderAuthSessionSnapshot,
+  type ProviderAuthSessionStartInput,
+  type ProviderAuthStatusSnapshot,
 } from "@mono-agent/agent-contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
@@ -524,6 +528,7 @@ type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+  readonly generation: string;
 }
 
 interface ActiveConfigurationSession {
@@ -1342,6 +1347,35 @@ export class WebService {
     // unconditionally. Generation 1's ladder then judged generation 2's turns.
     this.admitModelPage(sourceId, generation, page);
     return page;
+  }
+
+  async providerAuthStatus(sourceId: string): Promise<ProviderAuthStatusSnapshot> {
+    return await this.providerAuthCall(sourceId, async (connection) =>
+      await connection.client.providerAuthStatus(AbortSignal.timeout(INFO_TIMEOUT_MS)));
+  }
+
+  async startProviderAuth(sourceId: string, input: ProviderAuthSessionStartInput): Promise<ProviderAuthSessionSnapshot> {
+    return await this.providerAuthCall(sourceId, async (connection) =>
+      await connection.client.startProviderAuth(input, AbortSignal.timeout(INFO_TIMEOUT_MS)));
+  }
+
+  async providerAuthSession(sourceId: string, sessionId: string): Promise<ProviderAuthSessionSnapshot> {
+    return await this.providerAuthCall(sourceId, async (connection) =>
+      await connection.client.providerAuthSession(sessionId, AbortSignal.timeout(INFO_TIMEOUT_MS)));
+  }
+
+  async submitProviderAuth(
+    sourceId: string,
+    sessionId: string,
+    input: ProviderAuthSessionInput,
+  ): Promise<ProviderAuthSessionSnapshot> {
+    return await this.providerAuthCall(sourceId, async (connection) =>
+      await connection.client.submitProviderAuth(sessionId, input, AbortSignal.timeout(INFO_TIMEOUT_MS)));
+  }
+
+  async cancelProviderAuth(sourceId: string, sessionId: string): Promise<void> {
+    await this.providerAuthCall(sourceId, async (connection) =>
+      await connection.client.cancelProviderAuth(sessionId, AbortSignal.timeout(INFO_TIMEOUT_MS)));
   }
 
   async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
@@ -2564,7 +2598,7 @@ export class WebService {
       });
       try {
         const info = await client.info(AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]));
-        nextConnections.set(agent.source.sourceId, { client, info });
+        nextConnections.set(agent.source.sourceId, { client, info, generation });
         this.seedModelCatalogFromOptions(agent.source.sourceId, generation, info.modelOptions);
         await this.restorePersistedModelAdmission(
           client,
@@ -2594,6 +2628,7 @@ export class WebService {
           ...(info.providers === undefined ? {} : { providers: info.providers }),
           ...(info.cron === undefined ? {} : { cron: info.cron }),
           ...(info.supportsAskById ? { supportsAskById: true } : {}),
+          ...(info.supportsProviderAuth ? { supportsProviderAuth: true } : {}),
           updatedAt: agent.source.updatedAt,
         };
       } catch (error) {
@@ -2629,6 +2664,33 @@ export class WebService {
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);
     }
+  }
+
+  private requireProviderAuthConnection(sourceId: string): AgentConnection {
+    const agent = this.store.getAgent(sourceId);
+    if (agent === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
+    if (connection.info.supportsProviderAuth !== true) {
+      throw new WebConsoleError("provider_auth_unavailable", "This agent does not expose protected provider authentication.", 409);
+    }
+    return connection;
+  }
+
+  private async providerAuthCall<T>(
+    sourceId: string,
+    operation: (connection: AgentConnection) => Promise<T>,
+  ): Promise<T> {
+    const connection = this.requireProviderAuthConnection(sourceId);
+    const result = await operation(connection);
+    if (this.connections.get(sourceId)?.generation !== connection.generation) {
+      throw new WebConsoleError(
+        "agent_generation_changed",
+        "The agent restarted during provider authentication. Refresh status and retry.",
+        409,
+      );
+    }
+    return result;
   }
 
   private startTimers(): void {

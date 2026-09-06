@@ -219,6 +219,8 @@ interface RunArtifactCommitEvent {
   readonly phase: "started" | "finished";
   readonly runId: string;
   readonly conversationId: string;
+  /** Present only for the terminal artifact commit. */
+  readonly summary?: RunSummary;
 }
 
 type RunArtifactCommitHook = (event: RunArtifactCommitEvent) => void | Promise<void>;
@@ -363,12 +365,17 @@ function withArtifactCommitHook(
     return recorder;
   }
   let terminalPromise: Promise<RunSummary> | undefined;
-  const notify = (phase: "started" | "finished"): void => {
+  const notify = (phase: "started" | "finished", summary?: RunSummary): void => {
     try {
       // The cache invalidation used by the app is synchronous. Promise.resolve
       // also contains an async implementation without delaying
       // the JSONL/export pipeline or leaking an unhandled rejection.
-      void Promise.resolve(onCommitted({ phase, runId: args.runId, conversationId: args.conversationId }))
+      void Promise.resolve(onCommitted({
+        phase,
+        runId: args.runId,
+        conversationId: args.conversationId,
+        ...(summary === undefined ? {} : { summary }),
+      }))
         .catch(() => undefined);
     } catch {
       // Best-effort host bookkeeping must never alter the recorded run outcome.
@@ -376,7 +383,7 @@ function withArtifactCommitHook(
   };
   const commitTerminal = (operation: () => Promise<RunSummary>): Promise<RunSummary> => {
     terminalPromise ??= operation().then((summary) => {
-      notify("finished");
+      notify("finished", summary);
       return summary;
     });
     return terminalPromise;

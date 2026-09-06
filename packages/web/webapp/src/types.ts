@@ -222,6 +222,7 @@ export interface AgentSummary {
   readonly health?: string;
   readonly supportsAttachments: boolean;
   readonly supportsConfiguration?: true;
+  readonly supportsProviderAuth?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly defaultEffort?: string;
@@ -238,6 +239,63 @@ export interface AgentSummary {
   readonly cron?: { readonly read: boolean; readonly actions: boolean };
   readonly supportsAskById?: boolean;
   readonly updatedAt: string;
+}
+
+export interface ProviderAuthMethod {
+  readonly authType: "oauth" | "api_key";
+  readonly strategy: "device_code" | "paste_back" | "provider_prompt" | "api_key_prompt";
+  readonly label: string;
+  readonly recommended: boolean;
+}
+
+export interface ProviderAuthProviderStatus {
+  readonly providerId: string;
+  readonly label: string;
+  readonly usages: readonly { readonly kind: string; readonly model: string; readonly label: string }[];
+  readonly state: "present" | "expired" | "missing" | "not_applicable";
+  readonly credentialType?: "oauth" | "api_key";
+  readonly source?: "stored" | "environment" | "ambient" | "config";
+  readonly expiresAt?: string;
+  readonly verification: "not_verified" | "verified_by_live_request" | "not_applicable";
+  readonly verifiedAt?: string;
+  readonly methods: readonly ProviderAuthMethod[];
+  readonly unavailableReason?: string;
+  readonly lastFailure?: {
+    readonly kind: "provider_auth" | "provider_unavailable";
+    readonly message: string;
+    readonly model: string;
+    readonly observedAt: string;
+  };
+}
+
+export interface ProviderAuthStatusSnapshot {
+  readonly schema: "mono-agent.provider-auth.v1";
+  readonly generatedAt: string;
+  readonly providers: readonly ProviderAuthProviderStatus[];
+}
+
+export interface ProviderAuthSessionSnapshot {
+  readonly schema: "mono-agent.provider-auth-session.v1";
+  readonly id: string;
+  readonly providerId: string;
+  readonly authType: "oauth" | "api_key";
+  readonly strategy: ProviderAuthMethod["strategy"];
+  readonly state: "pending" | "awaiting_input" | "awaiting_user" | "succeeded" | "failed" | "cancelled";
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly expiresAt: string;
+  readonly authUrl?: { readonly url: string; readonly instructions: string };
+  readonly deviceCode?: { readonly verificationUri: string; readonly userCode: string; readonly expiresAt?: string };
+  readonly prompt?: {
+    readonly id: string;
+    readonly type: "text" | "secret" | "select" | "manual_code";
+    readonly message: string;
+    readonly placeholder?: string;
+    readonly allowEmpty?: boolean;
+    readonly options?: readonly { readonly id: string; readonly label: string; readonly description?: string }[];
+  };
+  readonly progress?: string;
+  readonly error?: { readonly code: string; readonly message: string };
 }
 
 export interface ConfigurationProposal {

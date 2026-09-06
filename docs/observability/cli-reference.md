@@ -208,6 +208,15 @@ Supported Pi login targets are `anthropic`, `github-copilot`, and `openai-codex`
 
 Pi login never runs an unpinned global Pi command. mono-agent launches an app-owned terminal wrapper around the bundled Pi provider OAuth implementation against a private staged `auth.json`, validates the requested credential and unchanged siblings, then promotes under an owner-only identity-bound lock. Anthropic races its localhost callback against an active terminal prompt: a pasted final redirect URL is passed intact to Pi, which requires its authorization code and validates OAuth state before exchange. OpenCode-Go uses a masked prompt on a TTY; `--api-key-stdin` accepts exactly one explicitly redirected, bounded line for a headless invocation and is rejected for OAuth providers. Ambient `OPENCODE_API_KEY` is never copied implicitly. A pre-existing lock is removed only when its secure record remains identity-stable and the recorded PID is proven absent with `ESRCH`; active, permission-denied, malformed, or racing locks are preserved. Automatic credential persistence refuses Windows and Pi auth paths inside Git worktrees.
 
+The web console can expose the same Pi-store authentication boundary in an
+agent's **Agent settings** dialog. GitHub Copilot and OpenAI Codex use Pi's native
+device-code flow, Anthropic uses its authorization URL plus pasted redirect/code
+fallback, and API-key providers use masked provider-owned prompts. There is no
+`--device-auth` flag. Browser submissions are not CLI stdin, and the console does
+not change the syntax or behavior of `auth login`; both paths share only the
+owner-only locked/no-clobber Pi credential transaction. See [Providers](/runtime/providers/#provider-authentication-in-agent-settings)
+and [Web console](/observability/web-console/#provider-authentication).
+
 Exit codes are `0` for successful login/promotion, `1` for login/validation/persistence failure, `2` for invalid usage or an unavailable auth method, and `130` when masked input is cancelled.
 
 ## `sandbox`

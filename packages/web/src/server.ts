@@ -15,7 +15,10 @@ import {
   closeServerBounded,
   hostForUrl,
   listen,
+  MAX_PROVIDER_AUTH_BODY_BYTES,
   normalizeHostForBind,
+  parseProviderAuthSessionInput,
+  parseProviderAuthSessionStartInput,
   type ChannelAskAnswer,
 } from "@mono-agent/agent-contracts";
 import compression from "compression";
@@ -225,6 +228,78 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.delete("/api/v1/agents/:id/run-defaults", (req, res, next) => {
     try {
       res.status(200).json({ agent: service.clearAgentRunDefaults(pathParam(req.params.id)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  const sendProviderAuth = (res: Response, status: number, body?: unknown) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    if (status === 204) res.status(status).end();
+    else res.status(status).json(body);
+  };
+
+  app.use("/api/v1/agents/:id/provider-auth", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
+
+  app.get("/api/v1/agents/:id/provider-auth", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(service.providerAuthStatus(pathParam(req.params.id)), activeOperations)
+        .then((snapshot) => sendProviderAuth(res, 200, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/agents/:id/provider-auth/sessions", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      assertProviderAuthBody(req.body);
+      const input = parseProviderAuthSessionStartInput(req.body);
+      void trackOperation(service.startProviderAuth(pathParam(req.params.id), input), activeOperations)
+        .then((snapshot) => sendProviderAuth(res, 201, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/provider-auth/sessions/:sessionId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(service.providerAuthSession(
+        pathParam(req.params.id),
+        pathParam(req.params.sessionId),
+      ), activeOperations).then((snapshot) => sendProviderAuth(res, 200, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/agents/:id/provider-auth/sessions/:sessionId/input", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      assertProviderAuthBody(req.body);
+      const input = parseProviderAuthSessionInput(req.body);
+      void trackOperation(service.submitProviderAuth(
+        pathParam(req.params.id),
+        pathParam(req.params.sessionId),
+        input,
+      ), activeOperations).then((snapshot) => sendProviderAuth(res, 200, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/agents/:id/provider-auth/sessions/:sessionId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(service.cancelProviderAuth(
+        pathParam(req.params.id),
+        pathParam(req.params.sessionId),
+      ), activeOperations).then(() => sendProviderAuth(res, 204)).catch(next);
     } catch (error) {
       next(error);
     }
@@ -1471,6 +1546,22 @@ function sameOriginRead(req: Request): void {
 function requireRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalidBody("JSON body must be an object.");
   return value as Record<string, unknown>;
+}
+
+function assertProviderAuthBody(value: unknown): void {
+  let bytes: number;
+  try {
+    bytes = Buffer.byteLength(JSON.stringify(value) ?? "null", "utf8");
+  } catch {
+    throw invalidBody("Provider authentication body must be JSON.");
+  }
+  if (bytes > MAX_PROVIDER_AUTH_BODY_BYTES) {
+    throw new WebConsoleError(
+      "provider_auth_too_large",
+      "Provider authentication body is too large.",
+      413,
+    );
+  }
 }
 
 /**

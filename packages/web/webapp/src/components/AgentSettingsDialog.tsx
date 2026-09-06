@@ -1,7 +1,14 @@
-import { type RefObject, useEffect, useMemo, useState } from "react";
+import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
-import type { ConfigurationSession } from "../types";
+import type {
+  AgentSummary,
+  ConfigurationSession,
+  ProviderAuthMethod,
+  ProviderAuthProviderStatus,
+  ProviderAuthSessionSnapshot,
+  ProviderAuthStatusSnapshot,
+} from "../types";
 import { buildSelectorModels, effectiveModelForAgent, effortLevelsForAgentModel, findCatalogModel, providerOfModel } from "./model-catalog";
 import { ModelSelector } from "./assistant-ui/ModelSelector";
 import { Icon } from "./Icon";
@@ -271,6 +278,7 @@ export function AgentSettingsDialog({
             Config default: <code>{settings.config.model ?? "provider"}</code> · <code>{settings.config.effort ?? "provider"}</code>
           </p>
           {agent.status === "offline" && <p className="agent-settings-warning">Reconnect this agent before saving. Revert remains available.</p>}
+          <ProviderAuthSection key={`${agent.sourceId}:${agent.generation ?? "unknown"}`} agent={agent} />
           {error && <p className="agent-settings-error" role="alert">{error}</p>}
           {agent.supportsConfiguration === true && (
             <section className="configuration-entry">
@@ -304,4 +312,212 @@ export function AgentSettingsDialog({
       </section>
     </div>
   );
+}
+
+function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
+  const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
+  const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderAuthProviderStatus | null>(null);
+  const [inputValue, setInputValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
+  const sessionRef = useRef<ProviderAuthSessionSnapshot | null>(null);
+  const sourceId = agent.sourceId;
+
+  const adoptSession = (next: ProviderAuthSessionSnapshot | null) => {
+    sessionRef.current = next;
+    setSession(next);
+  };
+
+  const refresh = async (signal?: AbortSignal) => {
+    setStatus(await api.providerAuthStatus(sourceId, signal));
+  };
+
+  useEffect(() => {
+    if (agent.supportsProviderAuth !== true || agent.status === "offline") return;
+    const controller = new AbortController();
+    void refresh(controller.signal).catch((caught) => {
+      if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
+    });
+    return () => controller.abort();
+  }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth]);
+
+  useEffect(() => () => {
+    const current = sessionRef.current;
+    if (current !== null && !terminal(current.state)) {
+      void api.cancelProviderAuth(sourceId, current.id, AbortSignal.timeout(2_000)).catch(() => undefined);
+    }
+    sessionRef.current = null;
+  }, [sourceId, agent.generation]);
+
+  useEffect(() => {
+    if (session === null || terminal(session.state)) {
+      if (session?.state === "succeeded") {
+        void refresh().catch((caught) => setAuthError(caught instanceof Error ? caught.message : String(caught)));
+      }
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void api.providerAuthSession(sourceId, session.id, controller.signal).then((next) => {
+        if (!controller.signal.aborted) adoptSession(next);
+      }).catch((caught) => {
+        if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
+      });
+    }, 1_000);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [sourceId, session?.id, session?.state, session?.updatedAt]);
+
+  if (agent.supportsProviderAuth !== true) {
+    return (
+      <section className="provider-auth-section">
+        <div><h3>Provider authentication</h3><p>This agent does not expose the protected provider-authentication capability.</p></div>
+      </section>
+    );
+  }
+
+  const start = async (provider: ProviderAuthProviderStatus, method: ProviderAuthMethod) => {
+    setBusy(true);
+    setAuthError(null);
+    setInputValue("");
+    try {
+      adoptSession(await api.beginProviderAuth(sourceId, provider.providerId, method));
+      setSelectedProvider(provider);
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openFlow = (provider: ProviderAuthProviderStatus) => {
+    setSelectedProvider(provider);
+    setAuthError(null);
+    const recommended = provider.methods.find((method) => method.recommended);
+    if (provider.methods.length === 1 || provider.providerId === "openai-codex" && recommended !== undefined) {
+      void start(provider, provider.methods.length === 1 ? provider.methods[0]! : recommended!);
+    }
+  };
+
+  const submit = async () => {
+    if (session?.prompt === undefined || inputValue.length === 0 && session.prompt.allowEmpty !== true) return;
+    const value = inputValue;
+    if (inputRef.current !== null) inputRef.current.value = "";
+    setInputValue("");
+    setBusy(true);
+    setAuthError(null);
+    try {
+      adoptSession(await api.submitProviderAuth(sourceId, session.id, { promptId: session.prompt.id, value }));
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (session === null) return;
+    setBusy(true);
+    try {
+      await api.cancelProviderAuth(sourceId, session.id);
+      adoptSession({ ...session, state: "cancelled", updatedAt: new Date().toISOString() });
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="provider-auth-section">
+      <div>
+        <h3>Provider authentication</h3>
+        <p>Pi credential status on the agent host. Detection is separate from verification by a live model request.</p>
+      </div>
+      {status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
+      <div className="provider-auth-list">
+        {status?.providers.map((provider) => {
+          const actionable = provider.methods.length > 0
+            && (provider.state === "missing" || provider.state === "expired" || provider.lastFailure?.kind === "provider_auth");
+          return (
+            <article className="provider-auth-card" key={provider.providerId}>
+              <div className="provider-auth-heading">
+                <div><b>{provider.label}</b><code>{provider.providerId}</code></div>
+                <span className={`provider-auth-state is-${provider.state}`}>{provider.state.replace("_", " ")}</span>
+              </div>
+              <p>{provider.state === "not_applicable" ? provider.unavailableReason ?? "No credential applies."
+                : `${provider.source === undefined ? "No credential detected" : `Credential detected from ${provider.source}`}; ${provider.verification === "verified_by_live_request" ? "verified by a live request" : "live verification pending"}.`}</p>
+              {provider.expiresAt !== undefined && <p>Expires {new Date(provider.expiresAt).toLocaleString()} · <code>{provider.expiresAt}</code></p>}
+              <p>Used by {provider.usages.map((usage) => `${usage.label} (${usage.model})`).join(", ")}.</p>
+              {provider.lastFailure !== undefined && <p className="agent-settings-warning">{provider.lastFailure.message} · {new Date(provider.lastFailure.observedAt).toLocaleString()}</p>}
+              {actionable && (
+                <button type="button" className="secondary-button" disabled={busy || session !== null && !terminal(session.state)} onClick={() => openFlow(provider)}>
+                  {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
+                </button>
+              )}
+            </article>
+          );
+        })}
+      </div>
+      {selectedProvider !== null && session === null && selectedProvider.methods.length > 1 && (
+        <div className="provider-auth-flow">
+          <h4>Choose how to authenticate {selectedProvider.label}</h4>
+          {selectedProvider.methods.map((method) => (
+            <button key={`${method.authType}:${method.strategy}`} type="button" className="secondary-button" disabled={busy} onClick={() => void start(selectedProvider, method)}>
+              {method.label}{method.recommended ? " · recommended" : ""}
+            </button>
+          ))}
+        </div>
+      )}
+      {session !== null && (
+        <div className="provider-auth-flow" aria-live="polite">
+          <div className="provider-auth-heading"><h4>{session.providerId}</h4><span>{session.state.replace("_", " ")}</span></div>
+          {session.authUrl !== undefined && <p>{session.authUrl.instructions} <a href={session.authUrl.url} target="_blank" rel="noopener noreferrer">Open authentication page</a></p>}
+          {session.deviceCode !== undefined && (
+            <p>
+              Open <a href={session.deviceCode.verificationUri} target="_blank" rel="noopener noreferrer">the device page</a> and enter <code className="provider-device-code">{session.deviceCode.userCode}</code>.
+              {session.deviceCode.expiresAt !== undefined && <> Code expires {new Date(session.deviceCode.expiresAt).toLocaleString()}.</>}
+            </p>
+          )}
+          {session.progress !== undefined && <p>{session.progress}</p>}
+          {session.prompt !== undefined && (
+            <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+              <label htmlFor={`provider-auth-${session.prompt.id}`}>{session.prompt.message}</label>
+              {session.prompt.type === "select" ? (
+                <select id={`provider-auth-${session.prompt.id}`} ref={(node) => { inputRef.current = node; }} value={inputValue} onChange={(event) => setInputValue(event.target.value)}>
+                  <option value="">Choose…</option>
+                  {session.prompt.options?.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                </select>
+              ) : session.prompt.type === "manual_code" ? (
+                <textarea id={`provider-auth-${session.prompt.id}`} ref={(node) => { inputRef.current = node; }} value={inputValue} onChange={(event) => setInputValue(event.target.value)} placeholder={session.prompt.placeholder} autoComplete="off" spellCheck={false} />
+              ) : (
+                <input id={`provider-auth-${session.prompt.id}`} ref={(node) => { inputRef.current = node; }} type={session.prompt.type === "secret" ? "password" : "text"} value={inputValue} onChange={(event) => setInputValue(event.target.value)} placeholder={session.prompt.placeholder} autoComplete="off" spellCheck={false} />
+              )}
+              <button type="submit" className="primary-button" disabled={busy || inputValue.length === 0 && session.prompt.allowEmpty !== true}>Submit once</button>
+            </form>
+          )}
+          {session.error !== undefined && <p className="agent-settings-error">{session.error.message}</p>}
+          {session.error?.code === "device_code_unavailable" && selectedProvider !== null && (() => {
+            const pasteBack = selectedProvider.methods.find((method) => method.strategy === "paste_back");
+            return pasteBack === undefined ? null : (
+              <button type="button" className="secondary-button" disabled={busy} onClick={() => void start(selectedProvider, pasteBack)}>
+                Retry with browser paste-back
+              </button>
+            );
+          })()}
+          {!terminal(session.state) && <button type="button" className="secondary-button" disabled={busy} onClick={() => void cancel()}>Cancel authentication</button>}
+          {terminal(session.state) && <button type="button" className="secondary-button" onClick={() => { adoptSession(null); setSelectedProvider(null); }}>Close authentication</button>}
+        </div>
+      )}
+      {authError !== null && <p className="agent-settings-error" role="alert">{authError}</p>}
+    </section>
+  );
+}
+
+function terminal(state: ProviderAuthSessionSnapshot["state"]): boolean {
+  return state === "succeeded" || state === "failed" || state === "cancelled";
 }

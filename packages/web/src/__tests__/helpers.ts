@@ -152,6 +152,10 @@ export function operatorFetch(options: {
   readonly supportsReplyAttachments?: boolean;
   readonly supportsMcpApps?: boolean;
   readonly supportsJobs?: boolean;
+  readonly supportsProviderAuth?: boolean;
+  readonly providerAuthStatus?: Record<string, unknown>;
+  readonly providerAuthSession?: Record<string, unknown>;
+  readonly onProviderAuthRequest?: (url: string, init?: RequestInit) => void;
   readonly jobs?: readonly ProcessJobProjection[];
   readonly onJobRequest?: (jobId: string, authorization: string | null) => void;
   readonly jobForRequest?: (jobId: string) => ProcessJobProjection | undefined;
@@ -220,8 +224,15 @@ export function operatorFetch(options: {
             ? {}
             : { cron: { read: true, actions: options.onCronMutation !== undefined } }),
           ...(options.supportsJobs === true ? { jobs: true } : {}),
+          ...(options.supportsProviderAuth === true ? { providerAuth: { version: 1 } } : {}),
         },
       });
+    }
+    if (url.includes("/v1/provider-auth")) {
+      options.onProviderAuthRequest?.(url, init);
+      if (url.endsWith("/v1/provider-auth")) return Response.json(options.providerAuthStatus ?? {});
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      return Response.json(options.providerAuthSession ?? {});
     }
     if (url.endsWith("/v1/cron")) {
       return options.cronOverview === undefined

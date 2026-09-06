@@ -19,7 +19,7 @@ Catalog responsibility: Defines shared structural request/response contracts plu
 ## Responsibility
 
 Define the structural request, response, stream, in-flight follow-up,
-channel-driver, process-job projection, and memory contracts that packages can implement independently. It also owns
+channel-driver, process-job projection, provider-auth projection, and memory contracts that packages can implement independently. It also owns
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
@@ -141,6 +141,7 @@ Primary modules:
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
 | Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
+| Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/session parsers plus the host-owned operator interface and stable operation errors. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
@@ -194,6 +195,7 @@ editing in place and never changes final-answer delivery.
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
 | Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
+| Exchange provider-auth state without exposing credentials | `ProviderAuthStatusSnapshot`, `ProviderAuthSessionSnapshot`, `parseProviderAuthStatusSnapshot`, `parseProviderAuthSessionSnapshot`, `ProviderAuthOperator` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
 
@@ -333,6 +335,14 @@ MAX_INFO_PROVIDER_ITEMS
 MAX_INFO_PROVIDER_LABEL_BYTES
 MAX_MONITOR_OUTSTANDING_LIFECYCLES
 MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES
+MAX_PROVIDER_AUTH_BODY_BYTES
+MAX_PROVIDER_AUTH_INPUT_BYTES
+MAX_PROVIDER_AUTH_ITEMS
+MAX_PROVIDER_AUTH_METHODS
+MAX_PROVIDER_AUTH_OPTIONS
+MAX_PROVIDER_AUTH_STRING_BYTES
+MAX_PROVIDER_AUTH_TEXT_INPUT_BYTES
+MAX_PROVIDER_AUTH_USAGES
 MCP_APPS_EXTENSION_ID
 MCP_APP_RESOURCE_MIME_TYPE
 MCP_APP_SUPPORTED_VERSIONS
@@ -365,6 +375,8 @@ NotifySuppression
 PROCESS_JOB_ERROR_CODES
 PROCESS_JOB_PUBLIC_ERROR_MESSAGES
 PROCESS_JOB_STATES
+PROVIDER_AUTH_SESSION_SCHEMA
+PROVIDER_AUTH_STATUS_SCHEMA
 ProcessJobErrorCode
 ProcessJobOperator
 ProcessJobProjection
@@ -379,6 +391,22 @@ ProcessJobWakeDeliveryInput
 ProcessJobWakeDeliveryResult
 ProcessJobWakeDisposition
 ProcessJobWakeState
+ProviderAuthErrorCode
+ProviderAuthMethod
+ProviderAuthOperationError
+ProviderAuthOperator
+ProviderAuthPrompt
+ProviderAuthProviderStatus
+ProviderAuthSessionInput
+ProviderAuthSessionSnapshot
+ProviderAuthSessionStartInput
+ProviderAuthSessionState
+ProviderAuthState
+ProviderAuthStatusSnapshot
+ProviderAuthStrategy
+ProviderAuthType
+ProviderAuthUsage
+ProviderAuthVerification
 ReadSettingsJsonResult
 RedactedSecretValue
 ResilientAgentMessageStream
@@ -428,6 +456,7 @@ isProcessJobErrorCode
 isProcessJobState
 isSubagentLaunchToolName
 isTerminalMonitorState
+isTerminalProviderAuthSessionState
 isWildcardHost
 layerJsonOntoEnv
 listen
@@ -445,6 +474,10 @@ parseMonitorProjection
 parseMonitorProjections
 parseProcessJobProjection
 parseProcessJobProjections
+parseProviderAuthSessionInput
+parseProviderAuthSessionSnapshot
+parseProviderAuthSessionStartInput
+parseProviderAuthStatusSnapshot
 processJobPublicError
 readAuthorizationBearer
 readBoolean

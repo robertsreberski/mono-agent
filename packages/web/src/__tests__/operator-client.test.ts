@@ -44,6 +44,31 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("parses provider auth capability and proxies secret input without accepting it back", async () => {
+    const requests: { url: string; body?: string }[] = [];
+    const baseSession = {
+      schema: "mono-agent.provider-auth-session.v1",
+      id: "session-1", providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
+      state: "succeeded", createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+    };
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      apiKey: "owner-key",
+      fetchImpl: (async (input, init) => {
+        const url = String(input);
+        requests.push({ url, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
+        if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: { providerAuth: { version: 1 } } });
+        return Response.json(baseSession);
+      }) as typeof fetch,
+    });
+    expect((await client.info()).supportsProviderAuth).toBe(true);
+    const secret = "PROVIDER_AUTH_SECRET_SENTINEL";
+    const result = await client.submitProviderAuth("session-1", { promptId: "prompt-1", value: secret });
+    expect(result.state).toBe("succeeded");
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(requests.at(-1)?.body).toContain(secret);
+  });
+
   it("parses the provider summary on the bounds the producer publishes against", async () => {
     // These bounds are one contract, not two guesses. Chosen locally they
     // drifted: a 256-byte provider id the catalog publishes was dropped here at

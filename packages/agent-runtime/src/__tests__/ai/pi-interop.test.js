@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const piMocks = vi.hoisted(() => ({
   getBuiltinModel: vi.fn(),
   getBuiltinModels: vi.fn(),
+  getBuiltinProviders: vi.fn(),
+  builtinProviders: vi.fn(),
+  builtinModels: vi.fn(),
   resolveOAuthApiKey: vi.fn(),
   getPiOAuthAuth: vi.fn(),
   getSupportedThinkingLevels: vi.fn(),
@@ -13,8 +16,11 @@ vi.mock("@earendil-works/pi-ai", () => ({
 }));
 
 vi.mock("@earendil-works/pi-ai/providers/all", () => ({
+  builtinModels: piMocks.builtinModels,
+  builtinProviders: piMocks.builtinProviders,
   getBuiltinModel: piMocks.getBuiltinModel,
   getBuiltinModels: piMocks.getBuiltinModels,
+  getBuiltinProviders: piMocks.getBuiltinProviders,
 }));
 
 vi.mock("../../ai/pi-oauth-compat.js", () => ({
@@ -26,8 +32,11 @@ vi.mock("../../ai/pi-oauth-compat.js", () => ({
 }));
 
 import {
+  checkPiProviderAuth,
+  describePiProviderAuth,
   getPiBuiltinModel,
   listPiBuiltinModels,
+  loginPiProviderAuth,
   loginPiOAuth,
   reasoningLevelsForPiModel,
   resolvePiOAuthApiKey,
@@ -52,6 +61,8 @@ beforeEach(() => {
   for (const mock of Object.values(piMocks)) mock.mockReset();
   piMocks.getBuiltinModels.mockReturnValue([rawModel]);
   piMocks.getBuiltinModel.mockReturnValue(rawModel);
+  piMocks.getBuiltinProviders.mockReturnValue(["provider-1"]);
+  piMocks.builtinProviders.mockReturnValue([]);
 });
 
 describe("Pi interoperability facade", () => {
@@ -189,5 +200,56 @@ describe("Pi interoperability facade", () => {
       onPrompt: vi.fn(async () => "answer"),
       onSelect: vi.fn(async () => "browser"),
     })).rejects.toThrow("login failed");
+  });
+
+  it("describes provider-owned auth methods without returning provider objects", () => {
+    piMocks.builtinProviders.mockReturnValueOnce([{
+      id: "opencode-go",
+      name: "OpenCode Go",
+      auth: {
+        apiKey: { name: "OpenCode API key", login: vi.fn() },
+      },
+    }]);
+
+    expect(describePiProviderAuth("opencode-go")).toEqual({
+      providerId: "opencode-go",
+      label: "OpenCode Go",
+      methods: [{ type: "api_key", label: "OpenCode API key", interactive: true }],
+    });
+    expect(describePiProviderAuth("missing")).toBeUndefined();
+  });
+
+  it("checks auth through Pi Models without refreshing or exposing credentials", async () => {
+    const checkAuth = vi.fn(async () => ({ source: "OPENCODE_API_KEY", type: "api_key" }));
+    piMocks.builtinModels.mockReturnValueOnce({ checkAuth });
+
+    await expect(checkPiProviderAuth(
+      "opencode-go",
+      { type: "api_key", key: "sentinel" },
+      { OPENCODE_API_KEY: "ambient" },
+    )).resolves.toEqual({ source: "environment", type: "api_key" });
+    expect(checkAuth).toHaveBeenCalledWith("opencode-go", undefined);
+  });
+
+  it("runs generic provider login against only an in-memory credential store", async () => {
+    let suppliedOptions;
+    piMocks.builtinModels.mockImplementationOnce((options) => {
+      suppliedOptions = options;
+      return {
+        login: vi.fn(async (_provider, _type, interaction) => {
+          interaction.notify({ type: "progress", message: "Waiting" });
+          expect(await interaction.prompt({ type: "secret", message: "Key" })).toBe("entered");
+          return { type: "api_key", key: "credential" };
+        }),
+      };
+    });
+    const notify = vi.fn();
+    const prompt = vi.fn(async () => "entered");
+
+    const result = await loginPiProviderAuth("opencode-go", "api_key", { prompt, notify });
+
+    expect(result).toEqual({ type: "api_key", key: "credential" });
+    expect(notify).toHaveBeenCalledWith({ type: "progress", message: "Waiting" });
+    expect(suppliedOptions.credentials).toBeDefined();
   });
 });

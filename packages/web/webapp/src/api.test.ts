@@ -218,6 +218,33 @@ describe("agent run defaults", () => {
   });
 });
 
+describe("provider authentication", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends exact origin on reads and writes while returning only secret-free snapshots", async () => {
+    const snapshot = {
+      schema: "mono-agent.provider-auth-session.v1",
+      id: "session-1", providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt", state: "succeeded",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(snapshot));
+    vi.stubGlobal("fetch", fetchMock);
+    const secret = "PROVIDER_AUTH_SECRET_SENTINEL";
+
+    const result = await api.submitProviderAuth("agent/one", "session/one", { promptId: "prompt-1", value: secret });
+
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/agents/agent%2Fone/provider-auth/sessions/session%2Fone/input",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+        body: JSON.stringify({ promptId: "prompt-1", value: secret }),
+      }),
+    );
+  });
+});
+
 describe("process-job API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -7,6 +7,8 @@ import {
   parseCronOperatorRunPage,
   parseCronOperatorRunSummary,
   parseProcessJobProjection,
+  parseProviderAuthSessionSnapshot,
+  parseProviderAuthStatusSnapshot,
   parseAgentStreamFrame,
   MAX_INFO_BODY_BYTES,
   MAX_INFO_PROVIDER_ID_BYTES,
@@ -25,6 +27,10 @@ import {
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
   type ProcessJobProjection,
+  type ProviderAuthSessionInput,
+  type ProviderAuthSessionSnapshot,
+  type ProviderAuthSessionStartInput,
+  type ProviderAuthStatusSnapshot,
 } from "@mono-agent/agent-contracts";
 
 import type {
@@ -57,6 +63,14 @@ const MAX_MCP_APP_RESULT_BYTES = 1024 * 1024;
 const PRESERVED_MCP_APP_OPERATOR_ERRORS = new Map<string, number>([
   ["app_audit_incomplete", 409],
   ["app_audit_failed", 507],
+]);
+const PRESERVED_PROVIDER_AUTH_ERRORS = new Map<string, number>([
+  ["provider_auth_invalid_request", 400],
+  ["provider_auth_not_found", 404],
+  ["provider_auth_conflict", 409],
+  ["provider_auth_too_large", 413],
+  ["provider_auth_upstream", 502],
+  ["provider_auth_unavailable", 503],
 ]);
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
@@ -115,6 +129,7 @@ export interface OperatorInfo {
   };
   readonly cron?: { readonly read: true; readonly actions: boolean };
   readonly supportsJobs?: boolean;
+  readonly supportsProviderAuth?: true;
 }
 
 export type OperatorLiveInputResult =
@@ -218,7 +233,68 @@ export class OperatorClient {
       ...(mcpApps === undefined ? {} : { mcpApps }),
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
+      ...(record(capabilities?.providerAuth)?.version === 1 ? { supportsProviderAuth: true } : {}),
     };
+  }
+
+  async providerAuthStatus(signal?: AbortSignal): Promise<ProviderAuthStatusSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth`, {
+      headers: this.headers(false),
+      ...(signal === undefined ? {} : { signal }),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    return parseProviderAuthStatusSnapshot(
+      JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_provider_auth_too_large")),
+    );
+  }
+
+  async startProviderAuth(
+    input: ProviderAuthSessionStartInput,
+    signal?: AbortSignal,
+  ): Promise<ProviderAuthSessionSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: this.headers(true),
+      ...(signal === undefined ? {} : { signal }),
+      body: JSON.stringify(input),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    return parseProviderAuthSessionSnapshot(
+      JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_provider_auth_too_large")),
+    );
+  }
+
+  async providerAuthSession(sessionId: string, signal?: AbortSignal): Promise<ProviderAuthSessionSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth/sessions/${encodeURIComponent(sessionId)}`, {
+      headers: this.headers(false),
+      ...(signal === undefined ? {} : { signal }),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    return parseProviderAuthSessionSnapshot(
+      JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_provider_auth_too_large")),
+    );
+  }
+
+  async submitProviderAuth(
+    sessionId: string,
+    input: ProviderAuthSessionInput,
+    signal?: AbortSignal,
+  ): Promise<ProviderAuthSessionSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth/sessions/${encodeURIComponent(sessionId)}/input`, {
+      method: "POST",
+      headers: this.headers(true),
+      ...(signal === undefined ? {} : { signal }),
+      body: JSON.stringify(input),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    return parseProviderAuthSessionSnapshot(
+      JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_provider_auth_too_large")),
+    );
+  }
+
+  async cancelProviderAuth(sessionId: string, signal?: AbortSignal): Promise<void> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+      headers: this.headers(false),
+      ...(signal === undefined ? {} : { signal }),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    await response.body?.cancel().catch(() => undefined);
   }
 
   async turn(input: OperatorTurnInput): Promise<OperatorTurnResult> {

@@ -78,6 +78,7 @@ import {
 } from "./process-jobs-protection.js";
 import { bindMonitorWakeContextToResponder } from "./monitors-context.js";
 import type { MonitorsServiceHandle } from "./monitors-service.js";
+import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
@@ -99,6 +100,7 @@ export interface ResponderControllerPort {
   readonly processJobsRegistry: ProcessJobsRootRegistrySnapshot | undefined;
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   readonly seenNotifyDestinations: SeenNotifyDestinationCache;
+  readonly providerAuthObservations?: ProviderAuthObservationTracker;
   sandboxEngineFor(coreConfig: MonoAgentConfig): SandboxEngine | undefined;
   memoryStore(coreConfig: MonoAgentConfig): Promise<ConfiguredMemory>;
   ensureSharedMemoryRetrieval(
@@ -411,10 +413,11 @@ export async function buildResponder(
     wrapHistoryStore: postedReplyHistory.wrapHistoryStore,
     // Follow the local JSONL source of truth, not outer exporter work:
     // exporter start/finish may still be pending after the summary commits.
-    onRunArtifactCommitted: ({ conversationId }) => {
+    onRunArtifactCommitted: ({ conversationId, summary }) => {
       if (isNotifyDestinationConversationId(conversationId)) {
         controller.seenNotifyDestinations.invalidate();
       }
+      if (summary !== undefined) controller.providerAuthObservations?.observe(summary);
     },
   });
   const replyResponder = replyArtifacts.wrapResponder(responder);
