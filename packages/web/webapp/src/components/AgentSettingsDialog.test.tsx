@@ -3,6 +3,7 @@ import { createRef } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
+import "../styles.css";
 
 const storeMock = vi.hoisted(() => ({
   selectedAgent: null as ReturnType<typeof agent> | null,
@@ -73,6 +74,15 @@ describe("AgentSettingsDialog", () => {
     });
   });
 
+  it("makes the normal settings body the dialog scroll boundary", () => {
+    const { container } = render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    const dialog = container.querySelector(".agent-settings-dialog");
+    const body = container.querySelector(".agent-settings-body");
+
+    expect(dialog?.children[1]).toBe(body);
+    expect(window.getComputedStyle(body!).overflowY).toBe("auto");
+  });
+
   it("reverts an active override with one click", async () => {
     storeMock.selectedAgent = agent("alpha", {
       label: "Alpha",
@@ -117,7 +127,7 @@ describe("AgentSettingsDialog", () => {
     await vi.waitFor(() => expect(apiMock.closeConfigurationSession).toHaveBeenCalledWith("configuration-one"));
   });
 
-  it("renders used-provider status and clears a masked key before submitting it", async () => {
+  it("renders compact provider status rows and clears a masked key before submitting it", async () => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
     const missingStatus = {
       schema: "mono-agent.provider-auth.v1",
@@ -147,6 +157,11 @@ describe("AgentSettingsDialog", () => {
     });
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    expect(screen.getByText("OpenCode Go")).toBeVisible();
+    expect(screen.queryByText("opencode-go")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Used by/u)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No credential detected/u)).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: "Authenticate" }));
     const key = await screen.findByLabelText("Enter the OpenCode API key");
     expect(key).toHaveAttribute("type", "password");
@@ -158,9 +173,41 @@ describe("AgentSettingsDialog", () => {
       "alpha", "session-1", { promptId: "prompt-1", value: "PROVIDER_AUTH_SECRET_SENTINEL" },
     ));
     expect(document.body.textContent).not.toContain("PROVIDER_AUTH_SECRET_SENTINEL");
-    expect(await screen.findByText("succeeded")).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Close authentication" })).toBeVisible();
     await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText("present")).toBeVisible();
+    expect(await screen.findByText("OK")).toBeVisible();
+  });
+
+  it("uses status-only rows and limits actions to actionable providers", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [
+        {
+          providerId: "openai", label: "OpenAI", usages: [{ kind: "primary", model: "openai:gpt-5", label: "Primary model" }],
+          state: "present", source: "environment", verification: "verified_by_live_request", methods: [],
+        },
+        {
+          providerId: "copilot", label: "GitHub Copilot", usages: [{ kind: "fallback", model: "github-copilot:gpt-5", label: "Fallback model" }],
+          state: "missing", verification: "not_verified",
+          methods: [{ authType: "oauth", strategy: "device_code", label: "GitHub device code", recommended: true }],
+        },
+        {
+          providerId: "local", label: "Local model", usages: [{ kind: "primary", model: "ollama:llama", label: "Primary model" }],
+          state: "not_applicable", verification: "not_applicable", methods: [],
+        },
+      ],
+    });
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+
+    expect(await screen.findByText("OK")).toBeVisible();
+    expect(screen.getByText("Needs action")).toBeVisible();
+    expect(screen.getByText("Not applicable")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Authenticate" })).toBeVisible();
+    expect(screen.queryByText("openai")).not.toBeInTheDocument();
+    expect(screen.queryByText("environment")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Primary model/u)).not.toBeInTheDocument();
   });
 
   it("starts OpenAI device code directly and offers paste-back only after it is unavailable", async () => {
@@ -227,16 +274,25 @@ describe("AgentSettingsDialog", () => {
     });
     const rendered = render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
-    expect(await screen.findByText("expired")).toBeVisible();
-    expect(await screen.findByText(/Provider rejected the configured credential/u)).toBeVisible();
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    expect(screen.queryByText("expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Provider rejected the configured credential/u)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Re-authenticate" }));
     const link = await screen.findByRole("link", { name: "Open authentication page" });
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByText(/copy the complete final URL/u)).toBeVisible();
+    expect(link.closest(".provider-auth-flow")).toHaveAttribute("aria-live", "polite");
     rendered.unmount();
     await vi.waitFor(() => expect(apiMock.cancelProviderAuth).toHaveBeenCalledWith(
       "alpha", "session-anthropic", expect.any(AbortSignal),
     ));
+  });
+
+  it("keeps an unsupported provider-auth capability terse", () => {
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+
+    expect(screen.getByText("Not available on this agent.")).toBeVisible();
+    expect(screen.queryByText(/does not expose the protected provider-authentication capability/u)).not.toBeInTheDocument();
   });
 });
