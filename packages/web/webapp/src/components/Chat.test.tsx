@@ -223,6 +223,7 @@ describe("Chat conversation viewport", () => {
     const firstViewport = container.querySelector<HTMLElement>(".thread-viewport");
     expect(firstViewport).not.toBeNull();
     await waitFor(() => expect(firstViewport!.scrollTop).toBe(maxScrollTop(firstViewport!)));
+    expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeDisabled();
 
     firstViewport!.scrollTop = 120;
     fireEvent.scroll(firstViewport!);
@@ -249,6 +250,7 @@ describe("Chat conversation viewport", () => {
     fireEvent.pointerDown(secondViewport!);
     secondViewport!.scrollTop = 0;
     fireEvent.scroll(secondViewport!);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeEnabled());
     const scrollTo = vi.spyOn(HTMLElement.prototype, "scrollTo");
 
     storeMock.current = chatStore(secondThread, chatDetail(secondThread, 5));
@@ -261,6 +263,24 @@ describe("Chat conversation viewport", () => {
     expect(container.querySelector<HTMLElement>(".thread-viewport")).toBe(secondViewport);
     expect(scrollTo).not.toHaveBeenCalled();
     scrollTo.mockRestore();
+  });
+});
+
+describe("Chat conversation actions", () => {
+  it("keeps archive in the actions menu and confirms its empty-conversation behavior", async () => {
+    const selected = thread("thread-a", "agent");
+    const store = chatStore(selected, chatDetail(selected, 0));
+    storeMock.current = store;
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    render(chatTree());
+    expect(screen.queryByRole("button", { name: "Archive conversation" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Archive conversation" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Empty conversations will be permanently removed"));
+    expect(store.archiveThread).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 });
 
@@ -302,10 +322,10 @@ describe("ModelControls", () => {
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
     const store = storeMock.current as { setModel: ReturnType<typeof vi.fn> };
 
-    // The trigger names the model a new turn would actually use, and says
-    // whether that is the agent default or a choice made here.
-    expect(trigger).toHaveTextContent("Default · GPT-5.5 Codex");
-    expect(trigger).toHaveTextContent("default");
+    // The compact composer trigger names only the resolved model and effort.
+    expect(trigger).toHaveTextContent("GPT-5.5 Codex");
+    expect(trigger).toHaveTextContent("High");
+    expect(trigger).not.toHaveTextContent("Default");
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
     const option = within(dialog).getByRole("option", { name: /^GPT-5\.5 Codex/u });
@@ -344,7 +364,7 @@ describe("ModelControls", () => {
 
     render(<ModelControls />);
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
-    expect(trigger).toHaveTextContent("Default · Web default");
+    expect(trigger).toHaveTextContent("Web default");
     expect(trigger).toHaveTextContent("High");
   });
 
@@ -410,7 +430,8 @@ describe("ModelControls", () => {
     const store = storeMock.current as { resetRunOverride: ReturnType<typeof vi.fn> };
 
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
-    expect(trigger).toHaveTextContent("custom");
+    expect(trigger).toHaveTextContent("GPT-5.5 Codex");
+    expect(trigger).not.toHaveTextContent("custom");
 
     // Reset lives in the picker, not the header: it only exists while there is
     // an override to clear, so it must not take permanent room in the bar.
@@ -424,7 +445,7 @@ describe("ModelControls", () => {
     render(<ModelControls />);
 
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
-    expect(trigger).toHaveTextContent("default");
+    expect(trigger).not.toHaveTextContent("default");
     fireEvent.click(trigger);
     expect(screen.queryByRole("button", { name: /Reset to agent default/u })).toBeNull();
   });

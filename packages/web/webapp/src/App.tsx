@@ -70,7 +70,6 @@ const DRAWER_SWIPE_EXCLUDED = [
   "[data-slot='composer-trigger-popover']",
   "[data-slot='model-selector-content']",
   ".context-display-popover",
-  ".message",
   ".image-row",
   ".markdown-table",
   ".markdown pre",
@@ -412,11 +411,13 @@ export function App() {
     if (!touch) return;
     const drawerOpen = agentDrawer || threadDrawer;
     const target = event.target instanceof Element ? event.target : null;
+    const selection = window.getSelection();
     if (
       !drawerOpen
       && (
         target?.closest(DRAWER_SWIPE_EXCLUDED)
         || hasHorizontalScrollAncestor(target, event.currentTarget)
+        || (selection !== null && !selection.isCollapsed)
       )
     ) return;
 

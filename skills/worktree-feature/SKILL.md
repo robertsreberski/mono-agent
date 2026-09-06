@@ -88,8 +88,11 @@ gh pr create --base main --head <branch> --title "<title>" --body "<body>"
 gh pr checks <n> --watch --interval 30
 ```
 
-Commits are authored as `robertsreberski@gmail.com` (enforced by the local
-`.githooks/pre-commit`; see AGENTS.local.md).
+Commit as the repository owner's configured Git identity. Check the effective
+identity with `git var GIT_AUTHOR_IDENT` and `git var GIT_COMMITTER_IDENT` in the
+checkout; use repository-local configuration when present. Do not override it
+with a hard-coded maintainer identity or infer authorship from the upstream
+remote URL. If the identity is missing or ambiguous, ask the user.
 
 **After merge (mandatory), not optional.** The instant the PR is merged, clean
 up both sides. Do not trust `gh pr merge`'s exit status or commit ancestry as the

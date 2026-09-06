@@ -745,13 +745,14 @@ describe("ConsoleStoreProvider integration", () => {
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
   });
 
-  it("fetches and canonicalizes an out-of-window thread before mutating it", async () => {
+  it("fetches, archives, and conditionally removes an empty out-of-window thread", async () => {
     const canonical = thread("canonical-thread", "alpha", { archivedAt: null });
     vi.mocked(api.thread).mockResolvedValue({ thread: canonical, messages: [] });
     vi.mocked(api.patchThread).mockResolvedValue({
       ...canonical,
       archivedAt: "2026-08-14T09:00:00.000Z",
     });
+    vi.mocked(api.deleteThread).mockResolvedValue(undefined);
     const store = await renderStore();
 
     await act(async () => store.current.archiveThread("redirected-legacy-id"));
@@ -762,6 +763,12 @@ describe("ConsoleStoreProvider integration", () => {
       { archived: true },
       expect.any(AbortSignal),
     );
+    expect(api.deleteThread).toHaveBeenCalledWith(
+      "canonical-thread",
+      expect.any(AbortSignal),
+      true,
+    );
+    expect(store.current.threads.find((item) => item.id === "canonical-thread")).toBeUndefined();
   });
 
   it("converges a selected cron feed on a live event without a manual refresh", async () => {
@@ -1257,7 +1264,7 @@ describe("ConsoleStoreProvider integration", () => {
   });
 
   describe("per-conversation write ordering", () => {
-    const alphaThread = thread("alpha-thread", "alpha");
+    const alphaThread = thread("alpha-thread", "alpha", { messageCount: 1 });
 
     const seedOneThread = () => {
       vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
@@ -4902,9 +4909,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(mispaints()).toEqual([]);
     });
 
-    it("never paints the old transcript when unarchiving or restoring a conversation", async () => {
-      // The same one-frame flash, on the two selection moves that were missed:
-      // unarchiving a conversation, and the selection a failed delete owes back.
+    it("keeps the current conversation selected when restoring another conversation", async () => {
       const archived = thread("archived-thread", "alpha", {
         archivedAt: "2026-07-17T09:30:00.000Z",
         updatedAt: "2026-07-17T09:30:00.000Z",
@@ -4923,10 +4928,7 @@ describe("ConsoleStoreProvider integration", () => {
       paints = [];
       await act(async () => { await store.current.unarchiveThread(archived.id); });
 
-      expect(store.current.selectedThreadId).toBe(archived.id);
-      // The read the selection provokes settles in its own commit, and a frame
-      // painted THERE is exactly what this is looking for -- so let it land,
-      // the way the sibling case does.
+      expect(store.current.selectedThreadId).toBe(alpha.id);
       await quiet();
       expect(mispaints()).toEqual([]);
     });

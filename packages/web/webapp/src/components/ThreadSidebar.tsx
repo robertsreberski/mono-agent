@@ -54,6 +54,7 @@ function ThreadListItem({
           className="thread-action"
           aria-label={`Restore ${thread.title}`}
           title="Restore conversation"
+          onClick={(event) => event.stopPropagation()}
         >
           <Icon name="restore" size={15} />
         </ThreadListItemPrimitive.Unarchive>

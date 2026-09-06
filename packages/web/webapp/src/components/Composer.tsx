@@ -3,7 +3,7 @@ import {
   unstable_useComposerInput,
   useAuiState,
 } from "@assistant-ui/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canUploadInConsole } from "../capabilities";
 import { noteComposerDraft, resetComposerDraft } from "../composer-draft";
 import { useConsoleStore } from "../console-store";
@@ -70,7 +70,7 @@ export const buildComposerCommands = ({
     : []),
 ];
 
-export function Composer() {
+export function Composer({ runSettings }: { readonly runSettings?: ReactNode } = {}) {
   const store = useConsoleStore();
   const { connection, selectedAgent, selectedThread } = store;
   const composer = unstable_useComposerInput();
@@ -136,11 +136,12 @@ export function Composer() {
     savedBrowseSelection.current = next;
   }, []);
 
-  const restoreSelection = useCallback((start: number, end: number) => {
+  const restoreSelection = useCallback((start: number, end: number, revealInput = false) => {
     window.requestAnimationFrame(() => {
       const input = inputRef.current;
       if (input === null) return;
-      input.focus({ preventScroll: true });
+      if (revealInput) input.focus();
+      else input.focus({ preventScroll: true });
       input.setSelectionRange(start, end);
       setSelection({ start, end });
       savedBrowseSelection.current = { start, end };
@@ -174,7 +175,11 @@ export function Composer() {
       skill.reference,
     );
     composer.setText(inserted.text);
-    restoreSelection(inserted.selectionStart, inserted.selectionEnd);
+    // Browse opens a modal above the composer. Once it closes, let the native
+    // focus scroll reveal the input as the software keyboard resizes the visual
+    // viewport. Autocomplete is already adjacent to a focused input and should
+    // keep its current scroll position.
+    restoreSelection(inserted.selectionStart, inserted.selectionEnd, source === "browse");
   }, [composer, restoreSelection, selection.end, selection.start, store.skillRegistry]);
 
   return (
@@ -244,6 +249,7 @@ export function Composer() {
               </span>
             </div>
             <div className="composer-actions">
+              {runSettings}
               <ComposerPrimitive.Send
                 className="composer-send"
                 aria-label={isRunning ? "Send live follow-up" : "Send message"}
