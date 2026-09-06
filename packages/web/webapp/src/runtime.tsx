@@ -126,6 +126,139 @@ const isAssistantMessageBoundaryPart = (part: Extract<MessagePart, { type: "tele
 const isLegacyMonitorToolPart = (part: MessagePart): boolean =>
   part.type === "tool-call" && part.toolCallId.startsWith("live-input:monitor:");
 
+const MONITOR_ID_MAX_BYTES = 256;
+const MONITOR_WAKE_BOUNDARY_TOOLS = new Set(["askuser", "monitor", "monitorstop"]);
+
+const toolNameLeaf = (toolName: string): string => {
+  const forwarded = toolName.trim().split("▸").at(-1) ?? "";
+  const mcpLeaf = forwarded.split("__").at(-1) ?? forwarded;
+  return (mcpLeaf.split(/[./:]/u).at(-1) ?? mcpLeaf).toLowerCase().replace(/[^a-z0-9]+/gu, "");
+};
+
+const isMonitorWakeBoundaryTool = (tool: ToolCall): boolean =>
+  MONITOR_WAKE_BOUNDARY_TOOLS.has(toolNameLeaf(tool.toolName));
+
+/**
+ * Return the one canonical Monitor identity represented by this message.
+ *
+ * The browser DTO is typed, but a cached payload can outlive the bundle that
+ * validated it. Fail closed on empty, oversized, legacy or mixed projections:
+ * description text and transcript position are never an identity substitute.
+ */
+const monitorIdForMessage = (message: WebMessage): string | undefined => {
+  let monitorId: string | undefined;
+  let found = false;
+  for (const part of message.parts) {
+    if (part.type !== "monitor-activity") continue;
+    if (part.monitors.length === 0) return undefined;
+    for (const entry of part.monitors as readonly unknown[]) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+      const projection = (entry as Record<string, unknown>).projection;
+      if (projection === null || typeof projection !== "object" || Array.isArray(projection)) return undefined;
+      const record = projection as Record<string, unknown>;
+      const candidate = record.monitorId;
+      if (record.schema !== "mono-agent.monitor-projection.v1"
+        || typeof candidate !== "string"
+        || candidate.trim().length === 0
+        || new TextEncoder().encode(candidate).byteLength > MONITOR_ID_MAX_BYTES) {
+        return undefined;
+      }
+      if (monitorId !== undefined && monitorId !== candidate) return undefined;
+      monitorId = candidate;
+      found = true;
+    }
+  }
+  return found ? monitorId : undefined;
+};
+
+/** Parts that must keep this assistant message as its own transcript boundary. */
+const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
+  message.attachments.length > 0 || message.parts.some((part) => {
+    switch (part.type) {
+      case "text":
+      case "reasoning":
+      case "monitor-activity":
+        return false;
+      case "tool-call":
+        return isMonitorWakeBoundaryTool(part);
+      case "subagent":
+        return part.calls.some(isMonitorWakeBoundaryTool);
+      case "telemetry":
+        return part.event === "cron_run";
+      case "process-job":
+      case "error":
+      case "attachment":
+      case "mcp_app":
+      case "failure":
+        return true;
+      default:
+        return true;
+    }
+  });
+
+/**
+ * Join adjacent, otherwise-silent wake turns for one Monitor for presentation.
+ *
+ * The durable transcript and delta cache keep their exact message/turn ids.
+ * Only the array handed to assistant-ui is shaped: the newest message is the
+ * carrier, so its status and turn metadata continue to describe live work. A
+ * visible reply may close the chain, but can never be a predecessor folded past
+ * by a later wake.
+ */
+export const coalesceMonitorWakeMessages = (
+  messages: readonly WebMessage[],
+): readonly WebMessage[] => {
+  const coalesced: WebMessage[] = [];
+  let chain: {
+    readonly monitorId: string;
+    readonly threadId: string;
+    carrier: WebMessage;
+    readonly partGroups: Array<readonly MessagePart[]>;
+  } | undefined;
+  const flush = (): void => {
+    if (chain === undefined) return;
+    coalesced.push(chain.partGroups.length === 1
+      ? chain.carrier
+      : { ...chain.carrier, parts: chain.partGroups.flat() });
+    chain = undefined;
+  };
+
+  for (const message of messages) {
+    const monitorId = monitorIdForMessage(message);
+    const hasBoundary = hasMonitorWakePresentationBoundary(message);
+    const currentCanCarry = message.role === "assistant"
+      && monitorId !== undefined
+      && (message.status === "running" || message.status === "complete")
+      && !hasBoundary;
+    const currentIsSilent = currentCanCarry
+      && message.status === "complete"
+      && message.parts.every((part) => part.type !== "text" || part.text.trim().length === 0);
+
+    if (chain !== undefined
+      && currentCanCarry
+      && chain.monitorId === monitorId
+      && chain.threadId === message.threadId) {
+      chain.carrier = message;
+      chain.partGroups.push(message.parts);
+      if (!currentIsSilent) flush();
+      continue;
+    }
+    flush();
+    if (currentIsSilent && monitorId !== undefined) {
+      chain = {
+        monitorId,
+        threadId: message.threadId,
+        carrier: message,
+        partGroups: [message.parts],
+      };
+    } else {
+      coalesced.push(message);
+    }
+  }
+  flush();
+  return coalesced;
+};
+
 type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
 
 /**
@@ -603,8 +736,12 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [isRunning, onNew],
   );
 
+  const messages = useMemo(
+    () => coalesceMonitorWakeMessages(store.detail?.messages ?? []),
+    [store.detail?.messages],
+  );
   const runtime = useExternalStoreRuntime<WebMessage>({
-    messages: store.detail?.messages ?? [],
+    messages,
     convertMessage: convertWebMessage,
     isLoading: store.detailLoading,
     isRunning,
