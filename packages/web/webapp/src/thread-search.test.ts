@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "./api";
 import { writeDataModeSetting } from "./data-mode";
 import {
   LEAN_SEARCH_DEBOUNCE_MS,
@@ -9,6 +11,7 @@ import {
   highlightSegments,
   highlightTitle,
   searchDebounceMs,
+  useThreadSearch,
 } from "./thread-search";
 
 describe("search highlight contract", () => {
@@ -90,5 +93,61 @@ describe("the search debounce", () => {
     writeDataModeSetting("lean");
     expect(searchDebounceMs()).toBe(LEAN_SEARCH_DEBOUNCE_MS);
     expect(LEAN_SEARCH_DEBOUNCE_MS).toBeGreaterThan(SEARCH_DEBOUNCE_MS);
+  });
+
+  it("takes the new wait while the operator is still typing", async () => {
+    // The wait is re-read inside the timer chain, so a switch made mid-search
+    // extends it -- without re-running the effect, whose cleanup aborts.
+    vi.useFakeTimers();
+    const search = vi.spyOn(api, "searchThreads").mockResolvedValue({ hits: [], truncated: false });
+    try {
+      renderHook(() => useThreadSearch("alpha", "needle"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS - 50); });
+      expect(search).not.toHaveBeenCalled();
+
+      await act(async () => { writeDataModeSetting("lean"); });
+      // The full-mode wait would have fired at its own 200 ms. It woke there,
+      // found the wait is the lean one now, and went back to sleep for the
+      // difference -- so nothing goes out until the lean wait is up.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          LEAN_SEARCH_DEBOUNCE_MS - (SEARCH_DEBOUNCE_MS - 50) - 1,
+        );
+      });
+      expect(search).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(search).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      search.mockRestore();
+    }
+  });
+
+  it("never abandons a search already on the wire because the link was reclassified", async () => {
+    // `auto` follows the browser's own reading of the connection, which can
+    // change on its own while a request is out. Re-running the effect for it
+    // would abort that request -- cancelling a search the operator is waiting
+    // on, to issue the identical one again.
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const search = vi.spyOn(api, "searchThreads").mockImplementation(async (_source, _query, signal) => {
+      if (signal !== undefined) signals.push(signal);
+      return new Promise(() => undefined);
+    });
+    try {
+      renderHook(() => useThreadSearch("alpha", "needle"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS + 1); });
+      expect(search).toHaveBeenCalledTimes(1);
+
+      await act(async () => { writeDataModeSetting("lean"); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(LEAN_SEARCH_DEBOUNCE_MS * 2); });
+
+      expect(signals.every((signal) => !signal.aborted)).toBe(true);
+      expect(search).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      search.mockRestore();
+    }
   });
 });

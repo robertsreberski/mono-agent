@@ -32,11 +32,19 @@ export function DataModeIndicator() {
   const spoken = usage.measured
     ? formatDataBytes(usage.bytes)
     : `an estimated ${formatDataBytes(usage.bytes)}`;
+  // The rate is the half of this control that answers "is the link expensive
+  // RIGHT NOW", and it was on screen and not in the accessible name -- so a
+  // screen reader was told the session total and nothing about the minute the
+  // operator is deciding in. Estimated in the same words as the total, because
+  // it is the same measurement.
+  const spokenRate = rate > 0
+    ? `, ${usage.measured ? "" : "about "}${formatDataBytes(rate)} in the last minute`
+    : "";
   return (
     <button
       type="button"
       className={`data-mode-indicator is-${mode}`}
-      aria-label={`Data ${label}, ${spoken} this session. Change data mode.`}
+      aria-label={`Data ${label}, ${spoken} this session${spokenRate}. Change data mode.`}
       title="Auto follows the connection; Lean loads pictures and apps only when you ask."
       onClick={() => { cycleDataModeSetting(); }}
     >

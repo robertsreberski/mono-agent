@@ -385,8 +385,20 @@ export interface ToolCall {
   readonly resultTruncated?: boolean;
   /** Character length of the untruncated `result` text, when it was truncated. */
   readonly resultBytes?: number;
+  /**
+   * Lowercase sha-256 hex of the SERIALIZED untruncated `result`, as the server
+   * names it -- carried by a preview AND by the whole body `api.toolCallPart`
+   * answers with.
+   *
+   * This is what makes a repaired body restorable across a later write of the
+   * same slot: equal names is the same content. Its absence is not evidence, so
+   * a preview that carries none keeps its preview. See `restoreRepairs`.
+   */
+  readonly resultDigest?: string;
   readonly argsTruncated?: boolean;
   readonly argsBytes?: number;
+  /** As {@link ToolCall.resultDigest}, for the call's arguments. */
+  readonly argsDigest?: string;
 }
 
 export type MessagePart =
@@ -408,8 +420,12 @@ export type MessagePart =
       /** See {@link ToolCall.resultTruncated}. */
       readonly resultTruncated?: boolean;
       readonly resultBytes?: number;
+      /** See {@link ToolCall.resultDigest}. */
+      readonly resultDigest?: string;
       readonly argsTruncated?: boolean;
       readonly argsBytes?: number;
+      /** See {@link ToolCall.resultDigest}. */
+      readonly argsDigest?: string;
       readonly status: ToolCallStatus;
       readonly calls: readonly ToolCall[];
     }

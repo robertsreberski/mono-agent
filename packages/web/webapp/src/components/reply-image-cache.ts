@@ -134,18 +134,54 @@ const evictRetained = (): void => {
 };
 
 /**
- * Applies the new bounds the moment the operator changes the mode.
+ * Applies the new bounds the moment the operator changes the mode -- all three
+ * of them, and in BOTH directions.
  *
- * The knobs are read at each decision, so without this a full → lean flip would
- * only take effect on the next release -- which on a settled conversation may be
- * never, leaving a phone holding a full-mode cache after its operator asked for
- * lean. Attached lazily, on the first picture there is anything to sweep, and
- * kept for the life of the document: it is one listener, for one boolean.
+ * The knobs are read at each decision, so without this a flip would only take
+ * effect on the next release, which on a settled conversation may be never.
+ * The count and byte ceilings are answered by `evictRetained`; the retention
+ * TIMER is not, because it was armed when the picture was released and is
+ * already counting down against the old mode's window. Full → Lean left a phone
+ * holding pictures for sixty seconds after its operator asked for twenty, and
+ * Lean → Full threw away pictures at twenty seconds after they asked for sixty.
+ * Each retained picture's timer is re-armed to the mode now in force before the
+ * ceilings are applied.
  */
-let dataModeWatch: (() => void) | undefined;
+/** The window every retained picture's timer was last armed against. */
+let armedRetentionMs = REPLY_IMAGE_RETENTION_MS;
+
+const rearmRetained = (): void => {
+  const retentionMs = replyImageRetentionMs();
+  // The subscription fires on a connection change and on any `storage` event,
+  // and neither has to have moved the resolved mode -- a cycle back to the same
+  // setting notifies too. Re-arming regardless restarted every retained
+  // picture's countdown from zero, so the window stopped meaning anything.
+  // Only an actual change to the window re-times anything.
+  if (retentionMs !== armedRetentionMs) {
+    armedRetentionMs = retentionMs;
+    for (const key of retained) {
+      const image = sharedImages.get(key);
+      if (image === undefined) continue;
+      if (image.timer !== undefined) window.clearTimeout(image.timer);
+      image.timer = window.setTimeout(() => revokeShared(key), retentionMs);
+    }
+  }
+  // The ceilings are read at every decision and cost nothing to re-apply.
+  evictRetained();
+};
+
+/**
+ * Attached lazily, on the first picture there is anything to sweep, and kept for
+ * the life of the document: it is one listener, for one boolean. The
+ * unsubscribe was stored and never called, so it was a closure held for nothing
+ * -- a flag says the same thing.
+ */
+let watchingDataMode = false;
 
 const watchDataMode = (): void => {
-  dataModeWatch ??= subscribeToDataMode(evictRetained);
+  if (watchingDataMode) return;
+  watchingDataMode = true;
+  subscribeToDataMode(rearmRetained);
 };
 
 /** Everything the store is holding for nobody, in bytes. Tests read it. */
@@ -207,7 +243,8 @@ export const releaseReplyImageBlob = (key: string): void => {
   if (image.refs > 0) return;
   retained.push(key);
   retainedBytes += image.size;
-  image.timer = window.setTimeout(() => revokeShared(key), replyImageRetentionMs());
+  armedRetentionMs = replyImageRetentionMs();
+  image.timer = window.setTimeout(() => revokeShared(key), armedRetentionMs);
   evictRetained();
 };
 

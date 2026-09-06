@@ -508,6 +508,17 @@ function useReplyImage(
     && hasReplyImageBlob(replyImageKey(integrityId, sizeBytes));
   const [state, setState] = useState<ReplyImageState>(PENDING_REPLY_IMAGE);
   const [wanted, setWanted] = useState(source === "eager" || held);
+  /**
+   * Whether the OPERATOR asked for these bytes, as opposed to the render seeing
+   * them already in the store.
+   *
+   * The seed above is read during render and the fetch runs in an effect, and
+   * between the two the retention timer can revoke the picture -- so a tap tile
+   * that was never tapped issued a fetch on a lean link, which is the one thing
+   * lean promises will not happen. The effect re-checks the store and, where the
+   * bytes have gone and nobody asked, withdraws the want rather than spending.
+   */
+  const askedRef = useRef(source === "eager");
   const [attempt, setAttempt] = useState(0);
   // Read when the effect runs rather than depended on: the capability minter is
   // a fresh closure every render and must not re-key the fetch.
@@ -531,6 +542,7 @@ function useReplyImage(
     setState(PENDING_REPLY_IMAGE);
     setWanted(source === "eager" || held);
     setAttempt(0);
+    askedRef.current = source === "eager";
     retryAfterRef.current = undefined;
     retriesRef.current = 0;
   }
@@ -574,6 +586,14 @@ function useReplyImage(
         releaseReplyImageBlob(key);
         setState(PENDING_REPLY_IMAGE);
       };
+    }
+    // The bytes the render saw are gone -- the retention timer fired between the
+    // render and this effect -- and nobody asked for them. On a tap link that
+    // makes this a fetch the operator did not request, so the offer goes back up
+    // instead, priced from the size the part declares.
+    if (source === "tap" && !askedRef.current) {
+      setWanted(false);
+      return undefined;
     }
     const current = access.current;
     const declared = current?.identity === identityRef.current ? current.currentUrl : undefined;
@@ -641,7 +661,10 @@ function useReplyImage(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [access, attempt, enabled, wanted, partId, sizeBytes, integrityId]);
 
-  const request = useCallback(() => { setWanted(true); }, []);
+  const request = useCallback(() => {
+    askedRef.current = true;
+    setWanted(true);
+  }, []);
   return { state, holderRef, wanted, request };
 }
 

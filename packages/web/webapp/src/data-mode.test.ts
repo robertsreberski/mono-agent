@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DATA_MODE_STORAGE_KEY,
   LEAN_SUGGESTION_STORAGE_KEY,
+  currentDataMode,
   cycleDataModeSetting,
   markLeanDataModeOffered,
   nextDataModeSetting,
   readDataModeSetting,
+  resetDataModeSession,
   resolveDataMode,
   shouldOfferLeanDataMode,
   useDataMode,
@@ -141,5 +143,123 @@ describe("the standalone-iOS suggestion", () => {
     withStandalone(true);
     writeDataModeSetting("full");
     expect(shouldOfferLeanDataMode()).toBe(false);
+  });
+});
+
+describe("a device that will not remember anything", () => {
+  const denyStorage = (): (() => void) => {
+    const setItem = localStorage.setItem.bind(localStorage);
+    Object.defineProperty(Storage.prototype, "setItem", {
+      configurable: true,
+      value: () => { throw new DOMException("QuotaExceededError"); },
+    });
+    return () => {
+      Object.defineProperty(Storage.prototype, "setItem", { configurable: true, value: setItem });
+    };
+  };
+
+  afterEach(() => {
+    resetDataModeSession();
+    localStorage.clear();
+  });
+
+  it("still lets the operator change the mode for this session", () => {
+    // Safari private browsing throws on the write, and the read then handed the
+    // old value straight back: the control moved and nothing else did, on
+    // exactly the kind of device this feature exists for.
+    const restore = denyStorage();
+    try {
+      writeDataModeSetting("lean");
+      expect(readDataModeSetting()).toBe("lean");
+      expect(currentDataMode()).toBe("lean");
+      writeDataModeSetting("full");
+      expect(readDataModeSetting()).toBe("full");
+    } finally {
+      restore();
+    }
+  });
+
+  it("still offers Lean only once", () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({ matches: query.includes("standalone"), media: query }),
+    });
+    const restore = denyStorage();
+    try {
+      expect(shouldOfferLeanDataMode()).toBe(true);
+      markLeanDataModeOffered();
+      expect(shouldOfferLeanDataMode()).toBe(false);
+    } finally {
+      restore();
+      Reflect.deleteProperty(window, "matchMedia");
+    }
+  });
+
+  it("keeps this session's answer over a stale value the device refused to replace", () => {
+    // The stored value is the one the failed write was TRYING to overwrite, so
+    // it is older than what the operator just said, not newer. It stops winning
+    // only when something genuinely newer arrives.
+    localStorage.setItem(DATA_MODE_STORAGE_KEY, "full");
+    const restore = denyStorage();
+    try {
+      writeDataModeSetting("lean");
+      expect(readDataModeSetting()).toBe("lean");
+    } finally {
+      restore();
+    }
+
+    // A write that lands clears the fallback, and the device is authoritative
+    // again.
+    writeDataModeSetting("auto");
+    expect(readDataModeSetting()).toBe("auto");
+  });
+
+  it("gives way to another tab that really wrote the setting", () => {
+    // A `storage` event is a different document saying something newer, which
+    // this session's fallback -- a write this device refused -- is not.
+    const view = renderHook(() => useDataModeSetting());
+    const restore = denyStorage();
+    try {
+      act(() => { writeDataModeSetting("lean"); });
+      expect(view.result.current).toBe("lean");
+    } finally {
+      restore();
+    }
+
+    // Some OTHER setting, written by that tab. It says nothing about the mode,
+    // and giving up the fallback for it hands the control back to the very
+    // value this device refused to overwrite.
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "mono-agent.web.selected-agent" }));
+    });
+    expect(view.result.current).toBe("lean");
+    expect(readDataModeSetting()).toBe("lean");
+
+    localStorage.setItem(DATA_MODE_STORAGE_KEY, "full");
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: DATA_MODE_STORAGE_KEY }));
+    });
+
+    expect(view.result.current).toBe("full");
+    expect(readDataModeSetting()).toBe("full");
+    view.unmount();
+  });
+
+  it("gives way to a storage clear, which names no key at all", () => {
+    // `localStorage.clear()` is reported with a null key by the spec, and it
+    // takes the mode with everything else.
+    const view = renderHook(() => useDataModeSetting());
+    const restore = denyStorage();
+    try {
+      act(() => { writeDataModeSetting("lean"); });
+      expect(view.result.current).toBe("lean");
+    } finally {
+      restore();
+    }
+
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: null })); });
+
+    expect(view.result.current).toBe("auto");
+    view.unmount();
   });
 });

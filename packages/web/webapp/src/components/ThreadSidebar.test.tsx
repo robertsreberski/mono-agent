@@ -246,10 +246,26 @@ describe("the sidebar's data-mode footer", () => {
     expect(readDataModeSetting()).toBe("lean");
     expect(screen.getByRole("button", { name: /^Data Lean/u })).toBeVisible();
 
-
     fireEvent.click(screen.getByRole("button", { name: /^Data Lean/u }));
     expect(readDataModeSetting()).toBe("full");
     fireEvent.click(screen.getByRole("button", { name: /^Data Full/u }));
     expect(readDataModeSetting()).toBe("auto");
+  });
+
+  it("says the per-minute rate out loud, not only on screen", () => {
+    // The rate is the half of this control that answers "is the link expensive
+    // right now", which is the question the mode exists for -- and it was
+    // painted and never spoken, so a screen reader got the session total and
+    // nothing about the minute the operator is deciding in.
+    vi.setSystemTime(new Date("2026-09-06T10:00:00.000Z"));
+    resetDataUsage();
+    vi.setSystemTime(new Date("2026-09-06T10:02:00.000Z"));
+    recordDataUsage(2 * 1024);
+    render(<ThreadSidebar />);
+
+    const control = screen.getByRole("button", { name: /this session/u });
+    expect(control).toHaveTextContent("2 KiB/min");
+    expect(control.getAttribute("aria-label"))
+      .toContain("about 2 KiB in the last minute");
   });
 });

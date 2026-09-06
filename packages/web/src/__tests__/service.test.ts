@@ -3327,6 +3327,85 @@ describe("WebService", () => {
     await second.stop();
   });
 
+  it("hands back the same attachment key for a five-minute bucket", async () => {
+    // A capability minted from `Date.now()` is a different URL on every read, so
+    // a message holding one attachment could never produce the same bytes twice
+    // -- the conversation's ETag changed once a second for the life of the
+    // running turn, and no console ever got a 304 on it. Quantising the expiry
+    // is what makes a read of an unchanged transcript answerable from a cache.
+    const integrityId = `sha256:${"d".repeat(64)}`;
+    // Deliberately NOT on a bucket boundary: the bucket has to come from the
+    // clock, not from a test that happened to start on a round number.
+    let clockMs = Date.parse("2026-08-14T12:01:30.000Z");
+    const service = await createService({
+      clock: () => new Date(clockMs),
+      fetchImpl: operatorFetch({
+        supportsReplyAttachments: true,
+        turns: () => `${JSON.stringify({
+          kind: "finish",
+          finalText: "Ready",
+          parts: [{
+            type: "attachment",
+            id: "bucket-file",
+            reference: { scheme: "mono-agent-artifact", id: "bucket-artifact" },
+            name: "chart.png",
+            mediaType: "image/png",
+            sizeBytes: 2,
+            integrityId,
+          }],
+        })}\n`,
+        onReplyArtifact() {
+          return new Response("ok", {
+            headers: { "content-length": "2", "x-mono-agent-integrity-id": integrityId },
+          });
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "chart it" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const contentUrl = (): string => {
+      const message = service.thread(thread.id).messages.at(-1)!;
+      return message.parts.find((part) => part.type === "attachment")!.contentUrl!;
+    };
+    const message = service.thread(thread.id).messages.at(-1)!;
+    const first = contentUrl();
+
+    clockMs += 90_000;
+    expect(contentUrl()).toBe(first);
+    clockMs += 90_000;
+    expect(contentUrl()).toBe(first);
+
+    // Over the boundary at 12:05, so the key moves on -- and both keys open the
+    // file, because the older one is still inside its own ten minutes.
+    clockMs += 120_000;
+    const second = contentUrl();
+    expect(second).not.toBe(first);
+    for (const url of [first, second]) {
+      const parsed = new URL(url, "http://console.local");
+      await expect(service.replyAttachment(
+        thread.id,
+        message.id,
+        "bucket-file",
+        parsed.searchParams.get("expires")!,
+        parsed.searchParams.get("token")!,
+      )).resolves.toMatchObject({ part: { id: "bucket-file" } });
+    }
+
+    // Bucketing shortens the key's life; it never lengthens it. The first key
+    // was minted for 12:10 and is refused a minute after that.
+    clockMs = Date.parse("2026-08-14T12:11:00.000Z");
+    const stale = new URL(first, "http://console.local");
+    await expect(service.replyAttachment(
+      thread.id,
+      message.id,
+      "bucket-file",
+      stale.searchParams.get("expires")!,
+      stale.searchParams.get("token")!,
+    )).rejects.toMatchObject({ code: "reply_access_expired", status: 410 });
+    await service.stop();
+  });
+
   it("preserves streamed text when the finish frame carries an empty finalText", async () => {
     const service = await createService({
       fetchImpl: operatorFetch({ turns: () => [
@@ -4315,6 +4394,53 @@ describe("transcript shaping", () => {
     await service.stop();
   });
 
+  it("names what a truncated payload was cut from, and names it the same way twice", async () => {
+    // A preview says how long the whole body is and what its first characters
+    // are, and the console used to restore a repaired body on those two facts
+    // alone -- so a rewritten result of exactly the same length with the same
+    // head put the OLD body back under the new preview. The digest is what
+    // makes "this is the body that preview came from" provable rather than
+    // plausible, and the console fails closed without it.
+    const bigArgs = { command: "printf %s ".concat("a".repeat(9_000)), cwd: "/tmp" };
+    const bigResult = "R".repeat(9_000);
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "cut", name: "Exec", arguments: bigArgs } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "cut", content: bigResult } }),
+          JSON.stringify({ kind: "finish", finalText: "done" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const sha = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+    const message = service.thread(thread.id).messages.at(-1)!;
+    const shaped = message.parts.find((part) => part.type === "tool-call")!;
+
+    expect(shaped).toMatchObject({
+      argsTruncated: true,
+      argsDigest: sha(JSON.stringify(bigArgs)),
+      resultTruncated: true,
+      resultDigest: sha(bigResult),
+    });
+    // The repair read answers with the SAME names, so the console can compare
+    // the body it is holding with the preview that arrives after it.
+    expect(service.toolCallPart(thread.id, message.id, "cut")).toMatchObject({
+      args: bigArgs,
+      result: bigResult,
+      argsDigest: sha(JSON.stringify(bigArgs)),
+      resultDigest: sha(bigResult),
+    });
+    // And the whole body is the whole body: it names its content, but it is not
+    // a preview of anything and never claims to be truncated.
+    expect(service.toolCallPart(thread.id, message.id, "cut")).not.toHaveProperty("resultTruncated");
+    expect(service.toolCallPart(thread.id, message.id, "cut")).not.toHaveProperty("resultBytes");
+    await service.stop();
+  });
+
   it("keeps telemetry data only for what the console renders, and moves no part", async () => {
     const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });
     const thread = service.createThread("agent-one");
@@ -4445,6 +4571,10 @@ describe("transcript shaping", () => {
       toolName: "Exec",
       args: bigArgs,
       result: bigResult,
+      // The whole body names itself the way its preview did, so the console can
+      // prove the two describe the same content. See the digest test below.
+      argsDigest: createHash("sha256").update(JSON.stringify(bigArgs), "utf8").digest("hex"),
+      resultDigest: createHash("sha256").update(bigResult, "utf8").digest("hex"),
       status: "complete",
     });
     await service.stop();
@@ -4731,6 +4861,13 @@ describe("every transcript-moving write names its message", () => {
 
     const named = new Set(messageEvents(events)
       .map((event) => (event.payload as { readonly messageId: string }).messageId));
+    // BOTH rows: the assistant row the promotion opened, and the operator's own
+    // message it reparented. A console told only about the second was left
+    // showing a steer that still read "queued".
+    const opened = service.thread(thread.id).messages
+      .filter((message) => message.role === "assistant").at(-1);
+    expect(opened?.id).toEqual(expect.any(String));
+    expect(named.has(opened!.id)).toBe(true);
     expect(named.has(receipt.message.id)).toBe(true);
     const promoted = service.thread(thread.id).messages
       .find((message) => message.id === receipt.message.id);

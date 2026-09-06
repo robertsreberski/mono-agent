@@ -524,6 +524,7 @@ describe("createThreadCache", () => {
       result: "HEAD",
       resultTruncated: true,
       resultBytes: 16,
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     };
     cache.upsertFull(detail([message("m1", { seq: 1, parts: [truncated] })]));
@@ -532,11 +533,13 @@ describe("createThreadCache", () => {
       toolCallId: "t1",
       toolName: "Read",
       result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     })).toBe(true);
 
     // The server rewrites the same slot -- an execution timing, a status flip --
-    // and sends the DEFAULT shape, which is the preview again.
+    // and sends the DEFAULT shape, which is the preview again. Same digest: the
+    // same body, so the one already loaded goes back under it.
     const outcome = cache.applyDelta("alpha-thread", delta({
       ops: [{
         op: "set",
@@ -565,6 +568,7 @@ describe("createThreadCache", () => {
       result: "HEAD",
       resultTruncated: true,
       resultBytes: 16,
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     };
     cache.upsertFull(detail([message("m1", { seq: 1, parts: [truncated] })]));
@@ -573,12 +577,17 @@ describe("createThreadCache", () => {
       toolCallId: "t1",
       toolName: "Read",
       result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     });
 
-    // A DIFFERENT body: the preview reports a length the held one does not have.
+    // A DIFFERENT body: the preview names content the held one is not.
     cache.applyDelta("alpha-thread", delta({
-      ops: [{ op: "set", index: 0, part: { ...truncated, result: "NEW ", resultBytes: 4_000 } }],
+      ops: [{
+        op: "set",
+        index: 0,
+        part: { ...truncated, result: "NEW ", resultBytes: 4_000, resultDigest: "digest-of-something-else" },
+      }],
     }));
 
     const part = cache.get("alpha-thread")?.messages[0]?.parts[0] as {
@@ -587,6 +596,267 @@ describe("createThreadCache", () => {
     };
     expect(part.result).toBe("NEW ");
     expect(part.resultTruncated).toBe(true);
+  });
+
+  it("drops a repair the server no longer names, rather than guessing from a length", () => {
+    // The length and the head agreed and the body was still a different one: a
+    // rewritten result of exactly the same size starting with the same
+    // characters used to restore the OLD body under the NEW preview. The digest
+    // is the only evidence that answers the question being asked, and its
+    // absence is not evidence at all -- so a preview that names nothing is
+    // served as the preview it is.
+    const cache = createThreadCache();
+    const truncated: MessagePart = {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "HEAD",
+      resultTruncated: true,
+      resultBytes: 17,
+      resultDigest: "digest-of-the-first-body",
+      status: "complete",
+    };
+    cache.upsertFull(detail([message("m1", { seq: 1, parts: [truncated] })]));
+    cache.repairToolCall("alpha-thread", "m1", "t1", {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-the-first-body",
+      status: "complete",
+    });
+
+    // Same length, same head, different content -- and the server says so.
+    cache.applyDelta("alpha-thread", delta({
+      ops: [{
+        op: "set",
+        index: 0,
+        part: { ...truncated, resultDigest: "digest-of-the-second-body" },
+      }],
+    }));
+    const rewritten = cache.get("alpha-thread")?.messages[0]?.parts[0] as {
+      readonly result?: unknown;
+      readonly resultTruncated?: boolean;
+    };
+    expect(rewritten.result).toBe("HEAD");
+    expect(rewritten.resultTruncated).toBe(true);
+
+    // And a preview carrying no digest at all is not evidence either.
+    cache.repairToolCall("alpha-thread", "m1", "t1", {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-the-second-body",
+      status: "complete",
+    });
+    const { resultDigest: _dropped, ...unnamed } = truncated as MessagePart & { resultDigest?: string };
+    cache.applyDelta("alpha-thread", delta({
+      baseSeq: 2,
+      seq: 3,
+      ops: [{ op: "set", index: 0, part: unnamed as MessagePart }],
+    }));
+    const unnamedPart = cache.get("alpha-thread")?.messages[0]?.parts[0] as {
+      readonly result?: unknown;
+      readonly resultTruncated?: boolean;
+    };
+    expect(unnamedPart.result).toBe("HEAD");
+    expect(unnamedPart.resultTruncated).toBe(true);
+  });
+
+  it("hands back the very objects it was holding when a write changes nothing", () => {
+    // The device store decides what to rewrite by comparing entries FIELD BY
+    // FIELD and by identity -- `pagedInIds`, `thread`, `messages`. Two of those
+    // were rebuilt unconditionally, so a conversation re-read once a second
+    // during a turn, and a run state restated by every event, each re-stripped
+    // and rewrote a byte-identical row on every flush.
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("m2")], "cursor-older"));
+    cache.prependOlder("alpha-thread", { messages: [message("m1")] });
+    const held = cache.get("alpha-thread")!;
+    expect(held.pagedInIds.has("m1")).toBe(true);
+
+    // A re-read that keeps every message it is holding keeps the SET too.
+    cache.upsertFull(detail([message("m1"), message("m2")]));
+    expect(cache.get("alpha-thread")?.pagedInIds).toBe(held.pagedInIds);
+
+    // A run state that says exactly what the summary already says is not news.
+    const before = cache.get("alpha-thread")!;
+    expect(cache.patchRunState("alpha-thread", { status: "idle" })).toBe(false);
+    expect(cache.get("alpha-thread")).toBe(before);
+    expect(cache.get("alpha-thread")?.thread).toBe(before.thread);
+
+    // A run state that says something else still lands.
+    expect(cache.patchRunState("alpha-thread", { status: "running", id: "turn-1" })).toBe(true);
+    expect(cache.get("alpha-thread")?.thread.runState).toEqual({ status: "running", id: "turn-1" });
+
+    // And a message that really went away still leaves the set behind it.
+    cache.upsertFull(detail([message("m2")]), { reset: true });
+    expect(cache.get("alpha-thread")?.pagedInIds.has("m1")).toBe(false);
+  });
+
+  it("marks what the device restored as unconfirmed until the server touches it", () => {
+    // `runState` is stored verbatim, so a tab killed mid-turn keeps `running`
+    // for a turn that finished while the browser was shut -- and no event is
+    // ever coming for it. Anything reading "is a turn running" off the held set
+    // would have latched true for the rest of the session.
+    const cache = createThreadCache();
+    const running = thread("alpha-thread", "alpha", {
+      runState: { status: "running", id: "turn-1" },
+    });
+    cache.restore({ thread: running, messages: [message("m1")] });
+
+    const restored = cache.get("alpha-thread")!;
+    expect(restored.fromDevice).toBe(true);
+    expect(restored.thread.runState.status).toBe("running");
+
+    // Suspicion is not the same question: a live entry the reconnect marked
+    // stale is still an entry the server has confirmed.
+    cache.markAllStale();
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+
+    // A 304 is the server saying this body -- summary and run state -- is what
+    // it has, which is exactly the confirmation that was missing.
+    expect(cache.confirmFresh("alpha-thread", cache.clock())).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+    expect(cache.get("alpha-thread")?.thread.runState.status).toBe("running");
+  });
+
+  it("confirms a restored conversation through any answer carrying a summary, and nothing else", () => {
+    // The summary is where `runState` lives, and `runState` is the one field a
+    // restored entry cannot be trusted about. A message, a page of older
+    // history or a delta says nothing whatever about whether the turn is still
+    // running, so none of them may stand in for the server saying so.
+    const cache = createThreadCache();
+    const restore = () => {
+      cache.evict("alpha-thread");
+      cache.restore({
+        thread: thread("alpha-thread", "alpha", { runState: { status: "running" } }),
+        messages: [message("m1", { seq: 1 })],
+      });
+      expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    };
+
+    restore();
+    cache.upsertFull(detail([message("m1")]));
+    expect(cache.get("alpha-thread")?.fromDevice).toBeFalsy();
+
+    restore();
+    // A `turn.changed` restating what is held still CONFIRMS it, even though it
+    // moves nothing: the news is that the server spoke about this conversation.
+    expect(cache.patchRunState("alpha-thread", { status: "running" })).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    restore();
+    expect(cache.patchThread("alpha-thread", thread("alpha-thread", "alpha", {
+      revision: 2,
+      runState: { status: "complete" },
+    }))).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    // A listing row confirms too -- and at an equal revision it confirms
+    // WITHOUT replacing what is held. See `confirmListed`.
+    restore();
+    expect(cache.confirmListed("alpha-thread", thread("alpha-thread", "alpha", {
+      runState: { status: "complete" },
+    }))).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+    expect(cache.get("alpha-thread")?.thread.runState.status).toBe("running");
+
+    // And the three that carry no summary leave it exactly as it was.
+    restore();
+    cache.applyDelta("alpha-thread", delta({ ops: [{ op: "append", index: 0, delta: "lo" }] }));
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    cache.upsertMessage("alpha-thread", message("m2", { seq: 1 }));
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    cache.prependOlder("alpha-thread", { messages: [message("m0", { seq: 1 })] });
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    cache.repairToolCall("alpha-thread", "m1", "t1", {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "whole",
+      status: "complete",
+    });
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+
+    // The conditional read the first open issues is what settles the selected
+    // conversation, whichever way the server answers it.
+    expect(cache.confirmFresh("alpha-thread", cache.clock())).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    // A markAllStale on a confirmed entry leaves it confirmed.
+    cache.markAllStale();
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    // And what `clear` empties is gone from the held set entirely, so anything
+    // derived from it -- "is a turn running" -- goes with it.
+    cache.clear();
+    expect(cache.snapshot()).toEqual([]);
+  });
+
+  it("confirms a held conversation from a listing row without taking the row's word over its own", () => {
+    // A listing row is a fresh object per response, and `patchRunState` moves
+    // `runState` without moving `revision` -- so a row at an EQUAL revision is
+    // neither news nor safe to adopt. Adopting it replaced the held summary's
+    // identity with a copy of itself, which the device store reads as "this
+    // transcript moved", and undid a `turn.changed` that raced the listing.
+    let commits = 0;
+    const cache = createThreadCache(8, () => 0, () => { commits += 1; });
+
+    // Not held: nothing is inserted, nothing is announced.
+    expect(cache.confirmListed("never-held", thread("never-held", "alpha"))).toBe(false);
+    expect(cache.get("never-held")).toBeUndefined();
+    expect(commits).toBe(0);
+
+    const running = thread("alpha-thread", "alpha", {
+      revision: 3,
+      runState: { status: "running", id: "turn-1" },
+    });
+    cache.restore({ thread: running, messages: [message("m1")] });
+    const restored = cache.get("alpha-thread")!;
+    expect(restored.fromDevice).toBe(true);
+
+    // Equal revision, saying the turn is over: confirmed, kept by reference --
+    // summary AND transcript -- and announced exactly once.
+    const equal = thread("alpha-thread", "alpha", { revision: 3, runState: { status: "complete" } });
+    expect(cache.confirmListed("alpha-thread", equal)).toBe(true);
+    const confirmedEntry = cache.get("alpha-thread")!;
+    expect(confirmedEntry.fromDevice).toBe(false);
+    expect(confirmedEntry.thread).toBe(restored.thread);
+    expect(confirmedEntry.messages).toBe(restored.messages);
+    expect(confirmedEntry.thread.runState.status).toBe("running");
+    expect(commits).toBe(1);
+
+    // Already confirmed, same revision again (a fresh object, as every
+    // response is): nothing changed, nothing announced, the very same entry.
+    expect(cache.confirmListed("alpha-thread", { ...equal })).toBe(false);
+    expect(cache.get("alpha-thread")).toBe(confirmedEntry);
+    expect(commits).toBe(1);
+
+    // Older: the same answer.
+    expect(cache.confirmListed("alpha-thread", thread("alpha-thread", "alpha", { revision: 2 })))
+      .toBe(false);
+    expect(cache.get("alpha-thread")).toBe(confirmedEntry);
+    expect(commits).toBe(1);
+
+    // Strictly newer: adopted, and announced.
+    const newer = thread("alpha-thread", "alpha", { revision: 4, runState: { status: "complete" } });
+    expect(cache.confirmListed("alpha-thread", newer)).toBe(true);
+    expect(cache.get("alpha-thread")?.thread).toBe(newer);
+    expect(cache.get("alpha-thread")?.messages).toBe(restored.messages);
+    expect(commits).toBe(2);
+
+    // An OLDER row still confirms a restored entry -- the server spoke about
+    // this conversation -- and still replaces nothing.
+    cache.evict("alpha-thread");
+    cache.restore({ thread: running, messages: [message("m1")] });
+    const before = commits;
+    expect(cache.confirmListed("alpha-thread", thread("alpha-thread", "alpha", { revision: 1 })))
+      .toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+    expect(cache.get("alpha-thread")?.thread).toBe(running);
+    expect(commits).toBe(before + 1);
   });
 
   it("patches the summary of a conversation it holds and inserts none it does not", () => {

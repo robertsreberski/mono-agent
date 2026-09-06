@@ -293,10 +293,22 @@ export interface WebToolCall {
   readonly resultTruncated?: boolean;
   /** Character length of the untruncated `result` text, when it was truncated. */
   readonly resultBytes?: number;
+  /**
+   * Lowercase sha-256 hex of the SERIALIZED untruncated `result` -- the string
+   * itself for a string payload, its JSON otherwise.
+   *
+   * Carried by a truncated preview AND by the whole body the tool-call route
+   * serves, so a console holding a repaired body can prove the preview that
+   * arrived after it describes the same content. It is an identity, not a
+   * signature: nothing here is secret and nothing is keyed.
+   */
+  readonly resultDigest?: string;
   /** As {@link resultTruncated}, for the call's arguments. */
   readonly argsTruncated?: boolean;
   /** Character length of the untruncated `args` text, when it was truncated. */
   readonly argsBytes?: number;
+  /** As {@link resultDigest}, for the call's arguments. */
+  readonly argsDigest?: string;
 }
 
 export type WebMessagePart =
@@ -327,8 +339,12 @@ export type WebMessagePart =
       /** See {@link WebToolCall.resultTruncated}; the delegation's report is truncated the same way. */
       readonly resultTruncated?: boolean;
       readonly resultBytes?: number;
+      /** See {@link WebToolCall.resultDigest}. */
+      readonly resultDigest?: string;
       readonly argsTruncated?: boolean;
       readonly argsBytes?: number;
+      /** See {@link WebToolCall.resultDigest}. */
+      readonly argsDigest?: string;
       readonly status: WebToolCallStatus;
       readonly calls: readonly WebToolCall[];
     }

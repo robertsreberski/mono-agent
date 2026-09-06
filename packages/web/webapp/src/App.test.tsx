@@ -1,8 +1,13 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
-import { readDataModeSetting, writeDataModeSetting } from "./data-mode";
+import { noteComposerDraft, resetComposerDraft } from "./composer-draft";
+import { readDataModeSetting, resetDataModeSession, writeDataModeSetting } from "./data-mode";
 import { recordDataUsage, resetDataUsage } from "./data-usage";
+import {
+  registerServiceWorkerUpdates,
+  resetServiceWorkerUpdates,
+} from "./service-worker-update";
 import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -15,6 +20,7 @@ const storeMock = vi.hoisted(() => ({
   visibleAgents: [],
   selectedAgent: null,
   selectedThread: null,
+  hasRunningThread: false,
   showArchived: false,
   showOfflineAgents: false,
   hiddenOfflineAgentCount: 0,
@@ -153,7 +159,13 @@ describe("App data mode", () => {
   afterEach(() => {
     Reflect.deleteProperty(window, "matchMedia");
     resetDataUsage();
+    // The module remembers a once-per-install offer in memory as well as in
+    // storage, for a device that refuses storage -- so a test that made one has
+    // to put that back too.
+    resetDataModeSession();
     localStorage.clear();
+    storeMock.loading = false;
+    storeMock.bootstrap = { console: { hostName: "console-host", theme: "ocean" as const } };
   });
 
   const standalone = (matches: boolean): void => {
@@ -206,5 +218,134 @@ describe("App data mode", () => {
     standalone(false);
     render(<App />);
     expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
+  });
+
+  it("waits for a shell that can actually show the offer", async () => {
+    // It is offered ONCE per install, and the two pre-shell states return
+    // before any toast is rendered -- so an offer made while the console was
+    // still discovering agents was marked as offered, never seen, and never
+    // made again.
+    standalone(true);
+    storeMock.loading = true;
+    storeMock.bootstrap = null as unknown as (typeof storeMock)["bootstrap"];
+    const first = render(<App />);
+    expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
+    // The visit ends there -- the operator put the phone down, the OS reclaimed
+    // the PWA. Nothing was shown, so nothing may have been spent.
+    first.unmount();
+
+    storeMock.loading = false;
+    storeMock.bootstrap = { console: { hostName: "console-host", theme: "ocean" as const } };
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Use Lean" })).toBeVisible();
+  });
+
+  it("takes the offer down once the operator has answered it", async () => {
+    // The offer is about Auto. Setting the mode anywhere -- the palette, the
+    // sidebar footer, another tab -- answers it, and a notice still on screen
+    // after that is telling the operator about a decision they have made.
+    standalone(true);
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Use Lean" })).toBeVisible();
+
+    await act(async () => { writeDataModeSetting("full"); });
+
+    expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
+  });
+});
+
+describe("App service worker update", () => {
+  const visibility = (state: DocumentVisibilityState): void => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+
+  afterEach(() => {
+    resetServiceWorkerUpdates();
+    resetComposerDraft();
+    Reflect.deleteProperty(document, "visibilityState");
+    storeMock.hasRunningThread = false;
+  });
+
+  /** Registers, then plays the worker's "a new build is staged" callback. */
+  const stageUpdate = (): ReturnType<typeof vi.fn> => {
+    const apply = vi.fn(async () => undefined);
+    let needRefresh = (): void => undefined;
+    registerServiceWorkerUpdates((options) => {
+      needRefresh = options.onNeedRefresh ?? needRefresh;
+      return apply;
+    });
+    needRefresh();
+    return apply;
+  };
+
+  it("does not take the page from under a turn this tab is watching", () => {
+    // ANY held conversation, not the listed ones: the sidebar shows one agent's
+    // one bucket, and a turn running on another agent -- or past the listed
+    // page -- is still one whose stream this reload would drop.
+    storeMock.hasRunningThread = true;
+    const apply = stageUpdate();
+    render(<App />);
+
+    visibility("visible");
+
+    expect(apply).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("new version");
+  });
+
+  it("does not throw away a message the operator has not sent yet", () => {
+    // assistant-ui's composer is in-memory: a reload destroys whatever is typed
+    // in it and whatever is staged beside it, and nothing anywhere puts them
+    // back.
+    noteComposerDraft(true);
+    const apply = stageUpdate();
+    render(<App />);
+
+    visibility("visible");
+    expect(apply).not.toHaveBeenCalled();
+
+    // Sent, or cleared: now there is nothing to lose.
+    noteComposerDraft(false);
+    visibility("hidden");
+    visibility("visible");
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes the staged build the moment an idle console comes back", () => {
+    const apply = stageUpdate();
+    render(<App />);
+
+    visibility("hidden");
+    expect(apply).not.toHaveBeenCalled();
+
+    visibility("visible");
+
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads on the operator's own word, whatever is running", () => {
+    storeMock.hasRunningThread = true;
+    noteComposerDraft(true);
+    const apply = stageUpdate();
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload now" }));
+
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the deferral armed after the notice is dismissed", () => {
+    storeMock.hasRunningThread = true;
+    const apply = stageUpdate();
+    const view = render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss update notice" }));
+    expect(screen.queryByRole("button", { name: "Reload now" })).toBeNull();
+
+    storeMock.hasRunningThread = false;
+    view.rerender(<App />);
+    visibility("visible");
+    expect(apply).toHaveBeenCalledTimes(1);
   });
 });
