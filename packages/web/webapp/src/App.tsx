@@ -27,7 +27,12 @@ import {
   useDataModeSetting,
   writeDataModeSetting,
 } from "./data-mode";
+import { hasUnsentComposerDraft } from "./composer-draft";
 import { formatDataBytes, useDataUsage } from "./data-usage";
+import {
+  applyServiceWorkerUpdate,
+  useServiceWorkerUpdateWaiting,
+} from "./service-worker-update";
 import { applyConsolePresentation } from "./theme";
 
 interface PaletteAction {
@@ -319,6 +324,7 @@ export function App() {
     clearActionError,
     clearError,
     hasServerSnapshot,
+    hasRunningThread,
     retry,
   } = useConsoleStore();
   const [agentDrawer, setAgentDrawer] = useState(false);
@@ -327,6 +333,7 @@ export function App() {
   const [agentSettings, setAgentSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [leanOffer, setLeanOffer] = useState(false);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
   const agentDrawerRef = useRef<HTMLDivElement>(null);
   const threadDrawerRef = useRef<HTMLDivElement>(null);
@@ -403,14 +410,64 @@ export function App() {
     return applyConsolePresentation(bootstrap.console);
   }, [bootstrap]);
 
+  /**
+   * Whether the ordinary shell is what is on screen.
+   *
+   * The two states below return before any toast is rendered, so an offer made
+   * while one of them is up is marked as offered and never seen -- and, being
+   * once per install, never made again. It waits for a console that can show it.
+   */
+  const shellReady = Boolean(bootstrap) || (!loading && !error);
+
   // A home-screen install whose browser cannot describe the network is the one
   // case Auto cannot answer, so the console says so -- once, and only once,
   // marked as offered before it is shown so a reload cannot nag.
   useEffect(() => {
-    if (!shouldOfferLeanDataMode()) return;
+    if (!shellReady || !shouldOfferLeanDataMode()) return;
     markLeanDataModeOffered();
     setLeanOffer(true);
-  }, []);
+  }, [shellReady]);
+
+  // The offer is about Auto. An operator who set the mode -- from the palette,
+  // from the sidebar, or by taking the offer -- has answered it, and a notice
+  // still on screen after that is stale.
+  const dataModeSetting = useDataModeSetting();
+  useEffect(() => {
+    if (dataModeSetting !== "auto") setLeanOffer(false);
+  }, [dataModeSetting]);
+
+  /**
+   * A staged build takes over on the next quiet moment, not on arrival.
+   *
+   * Read from a ref at the event rather than depended on: what matters is what
+   * is true WHEN the operator comes back, and re-arming the listener on every
+   * status change would be a listener per streamed frame. Kept current in an
+   * effect rather than during render, because a render is not allowed to write
+   * to a ref another render might read.
+   */
+  const busyRef = useRef(hasRunningThread);
+  useEffect(() => {
+    busyRef.current = hasRunningThread;
+  }, [hasRunningThread]);
+  const updateWaiting = useServiceWorkerUpdateWaiting();
+  useEffect(() => {
+    if (!updateWaiting) return;
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      // A reload takes the page apart. Two things it would destroy, and neither
+      // is recoverable: a turn this tab is WATCHING -- any held conversation,
+      // not just the listed ones, because the listing is one agent's one
+      // bucket -- and whatever the operator has typed or staged in the composer,
+      // which lives only in assistant-ui's in-memory runtime.
+      //
+      // Either one defers it. The notice stays on screen throughout, so an
+      // operator who would rather have the new build now still can.
+      if (busyRef.current || hasUnsentComposerDraft()) return;
+      applyServiceWorkerUpdate();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [updateWaiting]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -540,6 +597,30 @@ export function App() {
             type="button"
             aria-label="Dismiss data mode suggestion"
             onClick={() => setLeanOffer(false)}
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
+      {/*
+        * One offer row at a time: `.toast.is-offer` has its own place above an
+        * ordinary toast, and two of them would sit on top of each other. The
+        * data-mode offer is shown once per install and clears itself.
+        */}
+      {updateWaiting && !updateDismissed && !leanOffer && (
+        <div className="toast is-offer" role="status">
+          <span>A new version of the console is ready.</span>
+          <button
+            type="button"
+            className="toast-action"
+            onClick={applyServiceWorkerUpdate}
+          >
+            Reload now
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss update notice"
+            onClick={() => setUpdateDismissed(true)}
           >
             <Icon name="close" size={14} />
           </button>

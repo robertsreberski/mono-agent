@@ -49,10 +49,11 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
 });
 
 import { ApiError, api, type ReplyAccessRefreshHandler } from "../api";
-import { writeDataModeSetting } from "../data-mode";
+import { resetDataModeSession, writeDataModeSetting } from "../data-mode";
 import { dataUsage, resetDataUsage } from "../data-usage";
 import { ReplyAccessProvider } from "./reply-access";
 import type { McpAppPart as McpAppPartValue } from "../types";
+import * as replyImageCache from "./reply-image-cache";
 import { REPLY_IMAGE_REQUEST_TIMEOUT_MS, clearReplyImageBlobs } from "./reply-image-cache";
 import {
   McpAppPart,
@@ -277,6 +278,11 @@ afterEach(() => {
   // Shared image blobs outlive the components that fetched them, so one case's
   // picture must not silently satisfy the next case's fetch.
   clearReplyImageBlobs();
+  // `setup.ts` clears `localStorage` after every test, but the data mode also
+  // has an in-memory fallback for a device that refuses storage -- and that
+  // outlived the case that set it, so a case switching to Lean was switching
+  // every case after it in this file.
+  resetDataModeSession();
   Object.defineProperty(URL, "createObjectURL", { configurable: true, value: originalCreateObjectUrl });
   Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: originalRevokeObjectUrl });
 });
@@ -1897,6 +1903,31 @@ describe("MCP App sandbox", () => {
     expect(viewport.disconnects()).toBeGreaterThan(0);
   });
 
+  it("never takes back an app the operator is already looking at", async () => {
+    // The mirror of the picture rule. Lean governs whether an app OPENS on
+    // arrival; it says nothing about one that is already open, and tearing a
+    // running app's sandbox and bridge down under the operator would lose
+    // whatever state it holds while saving nothing -- the document has already
+    // been fetched.
+    const viewport = stubIntersectionObserver();
+    const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    await viewport.intersect();
+    const frame = await screen.findByTitle("Quarterly report interactive app");
+    expect(frame).toBeInTheDocument();
+
+    await act(async () => { writeDataModeSetting("lean"); });
+
+    expect(screen.getByTitle("Quarterly report interactive app")).toBe(frame);
+    expect(screen.queryByRole("status")).not.toHaveTextContent("Tap Show to load the app");
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves an off-screen app document unrequested until it is asked for", async () => {
     const viewport = stubIntersectionObserver();
     const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
@@ -2198,6 +2229,29 @@ describe("a lean link, second look", () => {
   afterEach(() => {
     localStorage.clear();
     clearReplyImageBlobs();
+  });
+
+  it("puts the offer back when the bytes go between the render and the fetch", async () => {
+    // The seed is read during render and the fetch runs in an effect, and the
+    // retention timer can revoke the picture between the two. A tile that was
+    // never tapped then issued a request -- on the one link where nothing may
+    // be fetched without being asked for.
+    writeDataModeSetting("lean");
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+
+    // Held at render time...
+    const key = replyImageCache.replyImageKey(imagePart.integrityId!, imagePart.sizeBytes);
+    replyImageCache.publishReplyImageBlob(key, new Blob(["abcd"]));
+    replyImageCache.releaseReplyImageBlob(key);
+    // ...and gone by the time the effect asks for it.
+    vi.spyOn(replyImageCache, "acquireReplyImageBlob").mockReturnValue(undefined);
+
+    render(attachment(imagePart));
+
+    expect(await screen.findByRole("button", { name: "Load cover.png, 4 B" })).toBeVisible();
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+    expect(fetchContent).not.toHaveBeenCalled();
   });
 
   it("just shows a picture it is already holding, rather than offering to load it again", async () => {

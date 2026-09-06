@@ -60,6 +60,23 @@ export interface ThreadCacheEntry {
    * opened again.
    */
   readonly stale: boolean;
+  /**
+   * This entry came off the DEVICE and no server answer has touched it yet.
+   *
+   * Deliberately separate from {@link ThreadCacheEntry.stale}, which
+   * `markAllStale` sets on genuinely live entries during a reconnect. What this
+   * marks is different and stronger: nothing here has ever been confirmed by
+   * anything, so a field like `runState` is only as true as it was when the tab
+   * was last closed -- and a tab killed mid-turn stored `running` for a turn
+   * that has long since finished, for which no event will ever arrive.
+   *
+   * Cleared by the first write that carries a thread SUMMARY -- `upsertFull`,
+   * `patchThread`, `patchRunState`, `confirmFresh`, `confirmListed` -- and by
+   * nothing else: the summary is where `runState` lives, and a message, a page
+   * of older history or a delta says nothing at all about whether the turn is
+   * still running.
+   */
+  readonly fromDevice?: boolean;
   readonly syncedAt: number;
   /**
    * Tool calls whose whole body this tab fetched with "Load full output".
@@ -182,9 +199,16 @@ const isNewerMessage = (incoming: WebMessage, held: WebMessage): boolean => {
  * Ordered by the revision and not by arrival, because two answers about one row
  * are not ordered against each other: the POST that renamed it, the event
  * carrying the same row, and a listing page all describe it, and the last one
- * to reach the tab is not the newest one the server made. An EQUAL revision is
- * the same server state, and the incoming one wins so an optimistic edit made
- * at the revision it patches still lands.
+ * to reach the tab is not the newest one the server made. At an EQUAL revision
+ * the incoming one wins, so an optimistic edit made at the revision it patches
+ * still lands.
+ *
+ * Which is NOT the same as "an equal revision is the same server state":
+ * `patchRunState` moves `runState` without moving `revision`, so a held
+ * summary at R can be fresher than a row at R the server made before the turn
+ * event. A caller that only wants to CONFIRM what is held -- the listing paths,
+ * through `confirmListed` -- does not use this, and takes an incoming row only
+ * when it is strictly newer.
  */
 export const newerProjection = (
   held: ThreadSummary,
@@ -197,51 +221,63 @@ interface TruncatablePayload {
   readonly result?: unknown;
   readonly resultTruncated?: boolean;
   readonly resultBytes?: number;
+  readonly resultDigest?: string;
   readonly argsTruncated?: boolean;
   readonly argsBytes?: number;
+  readonly argsDigest?: string;
 }
-
-const payloadText = (value: unknown): string | undefined => {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return undefined;
-  }
-};
 
 /**
  * Whether the held payload is provably the SAME body the incoming preview is
  * the head of.
  *
- * Two independent checks, both from the server's own numbers: the preview says
- * how long the whole body is, and it says what its first characters are. A held
- * body that matches on both is the body this preview was cut from, so putting
- * it back is restoring what the server sent -- not inventing content. Anything
- * else fails closed: the preview stands and the row offers to fetch the rest
- * again.
+ * The SERVER decides this, and says so: it names the untruncated payload with a
+ * sha-256 of its serialized text, on the whole body the repair read answers with
+ * and on every preview cut from it. Equal names is the same content.
+ *
+ * It replaced a length-and-prefix comparison, which asked a question those two
+ * facts cannot answer: a rewritten result of exactly the same size beginning
+ * with the same characters -- a directory listing whose last line changed, a
+ * retried command -- restored the OLD body under the NEW preview, and the
+ * operator read stale output with nothing to say it was stale.
+ *
+ * FAIL CLOSED. A name missing on either side is not weak evidence, it is none:
+ * the preview stands as the preview it is and the row offers to fetch the rest
+ * again, which costs one request and cannot be wrong.
  */
 const sameUntruncatedBody = (
   held: unknown,
-  preview: unknown,
-  bytes: number | undefined,
-): boolean => {
-  if (bytes === undefined || held === undefined) return false;
-  const text = payloadText(held);
-  if (text === undefined || text.length !== bytes) return false;
-  const head = typeof preview === "string" ? preview : undefined;
-  // An object preview is a RESHAPED args object, not a prefix of anything, so
-  // the length agreement above is all the evidence there is.
-  return head === undefined || text.startsWith(head);
-};
+  heldDigest: string | undefined,
+  previewDigest: string | undefined,
+): boolean => held !== undefined
+  && heldDigest !== undefined
+  && previewDigest !== undefined
+  && heldDigest === previewDigest;
+
+/**
+ * Whether two run states say the same thing.
+ *
+ * Compared field by field rather than by identity, because every projection of
+ * a conversation builds a new one -- and the field the console actually turns
+ * on, `status`, is the same string in almost all of them.
+ */
+const sameRunState = (held: RunState, next: RunState): boolean =>
+  held.status === next.status
+  && held.id === next.id
+  && held.startedAt === next.startedAt
+  && held.finishedAt === next.finishedAt
+  && held.model === next.model
+  && held.effort === next.effort
+  && held.error?.code === next.error?.code
+  && held.error?.message === next.error?.message;
 
 const restorePayloads = <T extends TruncatablePayload>(held: TruncatablePayload, incoming: T): T => {
   const restoreResult = incoming.resultTruncated === true
     && held.resultTruncated !== true
-    && sameUntruncatedBody(held.result, incoming.result, incoming.resultBytes);
+    && sameUntruncatedBody(held.result, held.resultDigest, incoming.resultDigest);
   const restoreArgs = incoming.argsTruncated === true
     && held.argsTruncated !== true
-    && sameUntruncatedBody(held.args, incoming.args, incoming.argsBytes);
+    && sameUntruncatedBody(held.args, held.argsDigest, incoming.argsDigest);
   if (!restoreResult && !restoreArgs) return incoming;
   const next = { ...incoming } as Record<string, unknown>;
   if (restoreResult) {
@@ -689,6 +725,31 @@ export interface ThreadCache {
   ) => boolean;
   /** The summary only. Never inserts: a conversation not held stays not held. */
   readonly patchThread: (threadId: string, thread: ThreadSummary) => boolean;
+  /**
+   * A LISTING row for a conversation this tab holds: the server speaking
+   * about it, and nothing more.
+   *
+   * What a listing is good for is the confirmation -- see
+   * {@link ThreadCacheEntry.fromDevice} -- and what it must not do is replace
+   * a held summary that is not older than it. Two reasons, both seen:
+   *
+   * - `patchRunState` advances `runState` without advancing `revision`, so a
+   *   held summary at revision R is NEWER than a listing row at R the server
+   *   made before the turn began. Replayed through `patchThread`, that row
+   *   won, and a `turn.changed` that raced the snapshot was undone.
+   * - A listing row is a fresh object per response. Adopting one at an equal
+   *   revision replaced the held summary's identity with a copy of itself,
+   *   which the device store reads as "this transcript moved" -- so every
+   *   bootstrap rewrote every held, listed transcript to say what was there.
+   *
+   * So: never inserts; adopts the row only when its revision is STRICTLY
+   * newer; otherwise keeps the held summary by reference. Either way the entry
+   * is confirmed. Returns -- and announces a commit -- only when something
+   * changed: the row was adopted, or the marker was cleared. A pure
+   * confirmation changes no field the device keeps, so the flush it arms
+   * writes nothing for this conversation.
+   */
+  readonly confirmListed: (threadId: string, thread: ThreadSummary) => boolean;
   readonly patchRunState: (threadId: string, runState: RunState) => boolean;
   readonly applyDelta: (threadId: string, delta: MessageDelta) => DeltaOutcome;
   /** Put one untruncated tool call back, and remember that it was fetched. */
@@ -730,6 +791,12 @@ export interface ThreadCache {
    * `keep` is what "Clear cached data" needs: the operator asked for what this
    * browser is holding to go, not for the transcript in front of them to be
    * replaced by a spinner and bought again.
+   *
+   * Like {@link ThreadCache.restore} and {@link ThreadCache.confirmFresh}, this
+   * does NOT call `onCommit`: that hook means "the device store has to hear
+   * about this", and none of the three changes anything the device stores.
+   * Anything the CALLER derives from the held set -- see the store's
+   * `hasRunningThread` -- has to be recomputed by the caller after all three.
    */
   readonly clear: (keep?: string) => void;
   /**
@@ -749,6 +816,10 @@ export interface ThreadCache {
    * something to draw immediately and nothing to answer with. The conditional
    * read the first open issues is what makes it current, at the cost of a
    * status line when nothing changed.
+   *
+   * Restored entries are marked {@link ThreadCacheEntry.fromDevice} until a
+   * server answer touches them. See {@link ThreadCache.clear} for why this does
+   * not call `onCommit`.
    */
   readonly restore: (entry: {
     readonly thread: ThreadSummary;
@@ -877,6 +948,25 @@ export const createThreadCache = (
     return true;
   };
 
+  /**
+   * The same entry, no longer merely what the device kept.
+   *
+   * Applied by exactly the writes that carry a thread SUMMARY -- `upsertFull`,
+   * `patchThread`, `patchRunState`, `confirmFresh` and `confirmListed` --
+   * because the summary is where `runState` lives, and `runState` is the field
+   * a restored entry cannot be trusted about. A message, a page of older
+   * history or a delta says nothing about whether the turn is still running,
+   * so none of them confirms.
+   */
+  const confirmed = <T extends ThreadCacheEntry>(entry: T): T =>
+    (entry.fromDevice === true ? { ...entry, fromDevice: false } : entry);
+
+  /** {@link patchEntry} for a write that carries a thread summary. See {@link confirmed}. */
+  const patchWithSummary = (
+    threadId: string,
+    patch: (entry: ThreadCacheEntry) => ThreadCacheEntry,
+  ): boolean => patchEntry(threadId, (entry) => confirmed(patch(entry)));
+
   /** A write the device store has to hear about. See {@link onCommit}. */
   const committed = (changed: boolean): boolean => {
     if (changed) onCommit();
@@ -939,8 +1029,13 @@ export const createThreadCache = (
       const keptOlder = messages.length > detail.messages.length;
       const cursor = keptOlder ? held.messagesNextCursor : detail.messagesNextCursor;
       // Only what SURVIVED stays remembered as paged-in, so the set cannot
-      // outgrow the transcript it describes.
+      // outgrow the transcript it describes -- and when everything survived, the
+      // very set it was holding. The device store compares this by identity to
+      // decide whether a row has to be rewritten, so a fresh Set of the same
+      // ids made a conversation re-read once a second during a turn re-strip
+      // and rewrite a byte-identical row on every flush.
       const surviving = new Set(messages.map((message) => message.id));
+      const pagedIn = [...held.pagedInIds].filter((id) => surviving.has(id));
       const entry = withCursor(
         {
           thread: newerProjection(held.thread, detail.thread),
@@ -948,7 +1043,7 @@ export const createThreadCache = (
           stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
-          pagedInIds: new Set([...held.pagedInIds].filter((id) => surviving.has(id))),
+          pagedInIds: pagedIn.length === held.pagedInIds.size ? held.pagedInIds : new Set(pagedIn),
           ...(options.etag === undefined
             ? (held.etag === undefined ? {} : { etag: held.etag })
             : { etag: options.etag }),
@@ -1001,7 +1096,7 @@ export const createThreadCache = (
         ? entry
         : next;
     })),
-    patchThread: (threadId, thread) => committed(patchEntry(threadId, (entry) => {
+    patchThread: (threadId, thread) => committed(patchWithSummary(threadId, (entry) => {
       // ORDERED BY THE SERVER'S REVISION, exactly as the listing is. A POST
       // answer that lost its race to the event carrying the same row would
       // otherwise roll the cached summary back while the sidebar kept the newer
@@ -1010,8 +1105,25 @@ export const createThreadCache = (
       const next = newerProjection(entry.thread, thread);
       return next === entry.thread ? entry : { ...entry, thread: next };
     })),
-    patchRunState: (threadId, runState) => committed(patchEntry(threadId, (entry) =>
-      ({ ...entry, thread: { ...entry.thread, runState } }))),
+    // STRICTLY newer, and not `newerProjection`: see the interface. At an equal
+    // or older revision the held summary comes back by reference, and the only
+    // thing that can change is the marker -- which `patchWithSummary` clears.
+    confirmListed: (threadId, thread) => committed(patchWithSummary(threadId, (entry) =>
+      (thread.revision > entry.thread.revision ? { ...entry, thread } : entry))),
+    // A run state restated by an event that changed nothing is not news: the
+    // summary comes back by reference and no commit is announced, so the flush
+    // this would otherwise schedule -- several a second during a turn -- does
+    // not happen.
+    //
+    // With ONE exception, and it is the point of `fromDevice`: the first
+    // restatement on an entry the device restored does announce a commit, even
+    // though it moves no run state. The news there is not what the run state is
+    // but that the SERVER said it -- which is exactly what a restored entry was
+    // missing.
+    patchRunState: (threadId, runState) => committed(patchWithSummary(threadId, (entry) =>
+      (sameRunState(entry.thread.runState, runState)
+        ? entry
+        : { ...entry, thread: { ...entry.thread, runState } }))),
     applyDelta: (threadId, delta) => {
       const entry = entries.get(threadId);
       if (entry === undefined) return "unheld";
@@ -1064,7 +1176,15 @@ export const createThreadCache = (
       // read either way.
       if (entries.get(threadId) === undefined) return false;
       if (overtaken(threadId, issuedAt)) return false;
-      return patchEntry(threadId, (entry) => (entry.stale
+      // A 304 is the server saying the whole body -- the summary and its
+      // `runState` included -- is exactly what is held, which is the strongest
+      // confirmation there is that a restored entry describes something real.
+      //
+      // Deliberately NOT `committed`: nothing it changes -- `stale`, `syncedAt`,
+      // `fromDevice` -- is stored, and a reconnect that answers eight
+      // conditional reads must not rewrite eight rows. Like `restore` and
+      // `clear`, the caller recomputes whatever it derives from the held set.
+      return patchWithSummary(threadId, (entry) => (entry.stale
         ? { ...entry, stale: false, syncedAt: now() }
         : entry));
     },
@@ -1090,6 +1210,10 @@ export const createThreadCache = (
           // NOT NEGOTIABLE. Everything that happened while this tab was closed
           // is exactly what is missing here.
           stale: true,
+          // And nothing has confirmed any of it. See `fromDevice`: a tab killed
+          // mid-turn stored `running`, and no event is coming for a turn that
+          // finished while the browser was shut.
+          fromDevice: true,
           syncedAt: now(),
           repairedToolCallIds: stored.repairedToolCallIds ?? new Set<string>(),
           pagedInIds: stored.pagedInIds ?? new Set<string>(),

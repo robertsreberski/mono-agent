@@ -85,21 +85,40 @@ const readStored = (key: string): string | null => {
   }
 };
 
-const writeStored = (key: string, value: string): void => {
+/** Whether the device actually kept it. Storage can refuse outright. */
+const writeStored = (key: string, value: string): boolean => {
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch {
-    // A device that refuses storage still honours the mode for this session.
+    return false;
   }
 };
 
+/**
+ * What this SESSION chose when the device would not remember it.
+ *
+ * A browser that refuses storage -- Safari private browsing, a locked-down
+ * profile -- threw on the write and the read then handed back the old value, so
+ * the control moved and nothing else did: the operator could not switch modes at
+ * all on exactly the kind of device this feature exists for.
+ *
+ * Set ONLY by a failed write, and it WINS while it is set: a stale value the
+ * device is refusing to overwrite is not a newer answer than the one the
+ * operator just gave. It is cleared the moment a write succeeds, and by a
+ * `storage` event, which is another tab genuinely saying something newer.
+ */
+let sessionSetting: DataModeSetting | undefined;
+let offeredInSession = false;
+
 export const readDataModeSetting = (): DataModeSetting => {
+  if (sessionSetting !== undefined) return sessionSetting;
   const stored = readStored(DATA_MODE_STORAGE_KEY);
   return stored !== null && SETTINGS.has(stored) ? stored as DataModeSetting : "auto";
 };
 
 export const writeDataModeSetting = (setting: DataModeSetting): void => {
-  writeStored(DATA_MODE_STORAGE_KEY, setting);
+  sessionSetting = writeStored(DATA_MODE_STORAGE_KEY, setting) ? undefined : setting;
   notify();
 };
 
@@ -143,14 +162,29 @@ export const currentDataMode = (): DataMode =>
  */
 let detachSources: (() => void) | undefined;
 
+/**
+ * Another tab of the same console wrote something.
+ *
+ * The session fallback is only given up for a write that is actually ABOUT the
+ * mode -- this key, or a `localStorage.clear()`, which the spec reports with a
+ * null key. Any other key is a different setting entirely (the selected agent,
+ * the sidebar width, the run preferences), and dropping the fallback for one of
+ * those handed the control straight back to the stale value this device had
+ * refused to overwrite. Every storage event still notifies: the resolved mode
+ * can move for reasons other than the setting.
+ */
+const onStorage = (event: StorageEvent): void => {
+  if (event.key === null || event.key === DATA_MODE_STORAGE_KEY) sessionSetting = undefined;
+  notify();
+};
+
 const attachSources = (): void => {
   const connection = networkInformation();
   connection?.addEventListener?.("change", notify);
-  // Another tab of the same console changing the setting is the same event.
-  window.addEventListener("storage", notify);
+  window.addEventListener("storage", onStorage);
   detachSources = () => {
     connection?.removeEventListener?.("change", notify);
-    window.removeEventListener("storage", notify);
+    window.removeEventListener("storage", onStorage);
   };
 };
 
@@ -203,8 +237,20 @@ export const shouldOfferLeanDataMode = (): boolean =>
   readDataModeSetting() === "auto"
   && networkInformation() === undefined
   && standaloneDisplay()
+  && !offeredInSession
   && readStored(LEAN_SUGGESTION_STORAGE_KEY) === null;
 
 export const markLeanDataModeOffered = (): void => {
+  // Remembered in memory as well, for the same reason as the setting: on a
+  // device that refuses storage the write is a no-op, and without this the
+  // offer would reappear on every render for the rest of the session.
+  offeredInSession = true;
   writeStored(LEAN_SUGGESTION_STORAGE_KEY, "offered");
+};
+
+/** Test hook: this module owns document-lifetime state by design. */
+export const resetDataModeSession = (): void => {
+  sessionSetting = undefined;
+  offeredInSession = false;
+  notify();
 };

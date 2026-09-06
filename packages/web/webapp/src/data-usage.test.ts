@@ -2,11 +2,14 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   METER_PUBLISH_MS,
+  RATE_REFRESH_MS,
+  RATE_WINDOW_MS,
   dataUsage,
   dataUsageRatePerMinute,
   formatDataBytes,
   observeTransferredResources,
   recordDataUsage,
+  recordEstimatedUsage,
   recordResponsePayload,
   recordTransferredBody,
   resetDataUsage,
@@ -221,5 +224,119 @@ describe("what the operator is shown", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("what the meter is willing to call a measurement", () => {
+  class CountingObserver {
+    static latest: CountingObserver | undefined;
+    readonly callback: (list: { getEntries: () => unknown[] }) => void;
+    constructor(callback: (list: { getEntries: () => unknown[] }) => void) {
+      this.callback = callback;
+      CountingObserver.latest = this;
+    }
+    observe(): void { /* nothing to replay */ }
+    disconnect(): void { /* nothing to release */ }
+  }
+
+  afterEach(() => {
+    resetDataUsage();
+    vi.useRealTimers();
+  });
+
+  it("stops calling the total measured once anything in it was estimated", () => {
+    // `measured` used to describe only whether an observer was installed, which
+    // says nothing about the components resource timing cannot see -- an
+    // upload's own body size, a declared attachment size. A total that mixes a
+    // reading with a floor is not a reading, and the console says so.
+    vi.stubGlobal("PerformanceObserver", CountingObserver);
+    const stop = observeTransferredResources();
+    try {
+      expect(dataUsage().measured).toBe(true);
+      recordDataUsage(4_096);
+      expect(dataUsage().measured).toBe(true);
+
+      recordEstimatedUsage(1_000);
+
+      expect(dataUsage().measured).toBe(false);
+      expect(dataUsage().bytes).toBe(5_096);
+      // And it stays said: one floor in the total is enough.
+      recordDataUsage(100);
+      expect(dataUsage().measured).toBe(false);
+    } finally {
+      stop();
+    }
+  });
+
+  it("lets an idle console's rate age out instead of freezing on its last minute", () => {
+    vi.useFakeTimers();
+    resetDataUsage();
+    let renders = 0;
+    const view = renderHook(() => {
+      renders += 1;
+      return useDataUsage();
+    });
+    // Past the window the rate describes, so the session has one to report.
+    act(() => { vi.advanceTimersByTime(RATE_WINDOW_MS + 1); });
+    act(() => { recordDataUsage(4_096); });
+    expect(dataUsageRatePerMinute()).toBe(4_096);
+
+    // Nothing else happens. Without a tick nothing recomputes, so the indicator
+    // went on showing that minute for the rest of the session.
+    const before = renders;
+    act(() => { vi.advanceTimersByTime(RATE_WINDOW_MS + RATE_REFRESH_MS); });
+
+    expect(dataUsageRatePerMinute()).toBe(0);
+    expect(renders).toBeGreaterThan(before);
+    view.unmount();
+  });
+
+  it("does not wake a hidden tab to redraw a number nobody can see", () => {
+    // A backgrounded PWA on a phone is where this console spends most of its
+    // life. The rate only has a reader in the foreground, so the refresh waits
+    // for one -- and publishes once on the way back, because the window may
+    // have emptied entirely while the tab was away.
+    vi.useFakeTimers();
+    resetDataUsage();
+    const hidden = (value: boolean): void => {
+      Object.defineProperty(document, "hidden", { configurable: true, value });
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: value ? "hidden" : "visible",
+      });
+    };
+    try {
+      hidden(true);
+      recordDataUsage(4_096);
+      expect(vi.getTimerCount()).toBe(1); // the publish throttle only
+
+      let renders = 0;
+      const view = renderHook(() => {
+        renders += 1;
+        return useDataUsage();
+      });
+      act(() => { vi.advanceTimersByTime(RATE_WINDOW_MS + RATE_REFRESH_MS * 3); });
+      const asleep = renders;
+
+      hidden(false);
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+
+      expect(renders).toBeGreaterThan(asleep);
+      expect(dataUsageRatePerMinute()).toBe(0);
+      view.unmount();
+    } finally {
+      Reflect.deleteProperty(document, "hidden");
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+  });
+
+  it("stops ticking once there is nothing left to age out", () => {
+    vi.useFakeTimers();
+    resetDataUsage();
+    recordDataUsage(1_024);
+    act(() => { vi.advanceTimersByTime(RATE_WINDOW_MS + RATE_REFRESH_MS * 2); });
+    // The ring is empty, so the refresh disarmed itself rather than running for
+    // the life of the document.
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

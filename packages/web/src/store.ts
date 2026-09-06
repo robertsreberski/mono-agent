@@ -3096,10 +3096,6 @@ export class WebStore {
     };
   }
 
-  applyStreamFrame(turnId: string, frame: AgentStreamWireFrame): StoredMessageWrite {
-    return this.applyStreamFrames(turnId, [frame]);
-  }
-
   applyStreamFrames(turnId: string, frames: readonly AgentStreamWireFrame[]): StoredMessageWrite {
     const turn = this.requireTurn(turnId);
     // Nothing is written for a turn that already settled, so there is no

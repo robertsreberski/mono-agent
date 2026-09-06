@@ -9,7 +9,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
+      // NOT `autoUpdate`: that reloads the page the moment a deploy lands, which
+      // on the installed console means losing the transcript on screen -- and a
+      // streaming turn with it. The staged build is applied by
+      // `service-worker-update.ts` at a moment that costs nothing.
+      registerType: "prompt",
       includeAssets: ["icon.svg", "apple-touch-icon.png", "favicon.ico", "notification-sw.js"],
       // The server customizes this public template per host. Keeping manifest
       // generation off also prevents Workbox from precaching a generic copy.

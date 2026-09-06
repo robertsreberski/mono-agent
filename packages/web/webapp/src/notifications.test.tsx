@@ -377,36 +377,13 @@ describe("response notifications", () => {
     expect(showNotification).toHaveBeenCalledTimes(1);
   });
 
-  it("does not notify for a turn that finished while this browser was closed", async () => {
-    // A cold start now draws the listing this browser kept on the device, and
-    // that listing is not a baseline: read as one, every turn that finished
-    // while the tab was closed would be announced the moment the server's own
-    // snapshot replaced it.
-    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
-    storeMock.current = { ...createStore(running), loading: true, hasServerSnapshot: false };
-    const notificationTree = () => (
-      <NotificationsProvider>
-        <NotificationBell />
-      </NotificationsProvider>
-    );
-    const view = render(notificationTree());
-    await waitFor(() => expect(serviceWorker.addEventListener).toHaveBeenCalled());
-
-    // The first thing the SERVER answered with, and the turn it carries ran
-    // while this console was not there to watch it.
-    storeMock.current = createStore(complete);
-    view.rerender(notificationTree());
-    await waitFor(() => expect(screen.getByRole("button")).toBeInTheDocument());
-
-    expect(api.thread).not.toHaveBeenCalled();
-    expect(showNotification).not.toHaveBeenCalled();
-  });
-
   it("does not notify when the snapshot behind the device listing failed", async () => {
     // The sequence the `loading` guard missed: open offline, the bootstrap
     // fails (which clears `loading` and leaves the DEVICE listing on screen),
     // the network comes back, a refresh succeeds. Provenance is the question,
-    // not whether a request is outstanding.
+    // not whether a request is outstanding -- which is why this one case covers
+    // the cold start too: `hasServerSnapshot` is what both turn on, and a
+    // second case differing only in `loading` asserted nothing this does not.
     localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
     storeMock.current = { ...createStore(running), loading: false, hasServerSnapshot: false };
     const notificationTree = () => (

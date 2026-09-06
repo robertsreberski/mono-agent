@@ -68,13 +68,19 @@ describe("uploadContent", () => {
     expect(xhr.headers.get("accept")).toBe("application/json");
     expect(xhr.body).toBe(file);
 
+    // TEXT, because an upload's reply is one of the two bodies the meter has to
+    // be able to count for itself where there is no resource timing.
+    expect(xhr.responseType).toBe("text");
     const uploaded = { ...reservation, uploaded: true };
+    const body = JSON.stringify({ attachment: uploaded });
     xhr.status = 200;
-    xhr.response = { attachment: uploaded };
+    xhr.response = body;
+    resetDataUsage();
     xhr.onload?.();
 
     await expect(result).resolves.toEqual(uploaded);
     expect(onProgress).toHaveBeenLastCalledWith(100);
+    expect(dataUsage().bytes).toBe(new TextEncoder().encode(body).byteLength);
   });
 
   it("aborts the XHR when its attachment context is disposed", async () => {

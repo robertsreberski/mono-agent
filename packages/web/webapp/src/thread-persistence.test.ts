@@ -4,6 +4,7 @@ import { agent, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
 import {
   createThreadPersistence,
+  PERSISTED_THREAD_LIMIT,
   PERSISTENCE_DB_NAME,
   PERSISTENCE_DB_VERSION,
   stripCapabilityUrls,
@@ -57,6 +58,76 @@ const deleteDatabase = (): Promise<void> => new Promise((resolve) => {
 describe("createThreadPersistence", () => {
   beforeEach(async () => {
     await deleteDatabase();
+  });
+
+  it("takes over a database a previous build wrote at version 1", async () => {
+    // The upgrade is the one path no other case exercises: every other test
+    // starts from an empty database and creates version 2 outright. A phone
+    // that had this console installed before this build has real rows in a real
+    // version-1 store, written with no `writer` and with no index to put them
+    // in, and a failure here does not degrade -- `disable()` takes the whole
+    // device store down for the session.
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(PERSISTENCE_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        db.createObjectStore("threads", { keyPath: "id" });
+        db.createObjectStore("buckets", { keyPath: "key" });
+        db.createObjectStore("meta");
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction(["threads", "buckets", "meta"], "readwrite");
+        // Exactly the shape version 1 wrote: no `writer` anywhere.
+        transaction.objectStore("threads").put({
+          id: "legacy-thread",
+          thread: thread("legacy-thread", "alpha"),
+          messages: [message("legacy-message")],
+          repairedToolCallIds: [],
+          pagedInIds: [],
+          savedAt: 1_000,
+        });
+        transaction.objectStore("buckets").put({
+          key: "alpha\u0000active",
+          threads: [thread("legacy-thread", "alpha")],
+          nextCursor: null,
+          savedAt: 1_000,
+        });
+        const meta = transaction.objectStore("meta");
+        meta.put({ ...snapshot(), savedAt: 1_000 }, "agents");
+        meta.put("kitchen", "host");
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error ?? new Error("seed failed"));
+        transaction.onabort = () => reject(transaction.error ?? new Error("seed aborted"));
+      };
+      request.onerror = () => reject(request.error ?? new Error("open failed"));
+    });
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    // Stamped like the rows already there, so the age sweep has nothing to say
+    // about this and the upgrade is the only thing under test.
+    const store = createThreadPersistence({ now: () => 1_000 });
+    const restored = await store.hydrate();
+
+    // Everything the old build wrote is still there and still usable.
+    expect(restored?.host).toBe("kitchen");
+    expect(restored?.snapshot?.console.hostName).toBe("kitchen");
+    expect(restored?.threads.map((row) => row.id)).toEqual(["legacy-thread"]);
+    expect(restored?.threads[0]?.messages.map((row) => row.id)).toEqual(["legacy-message"]);
+    expect(restored?.buckets.map((row) => row.key)).toEqual(["alpha\u0000active"]);
+    expect(restored?.threads[0]?.writer).toBeUndefined();
+
+    // And the index the upgrade added really works: this instance writes its
+    // own conversation, sweeps it when it stops holding it, and leaves the
+    // writer-less row -- which belongs to nobody -- exactly where it is.
+    await store.save({ entries: [entry("alpha-thread"), entry("beta-thread")] });
+    await store.save({ entries: [entry("alpha-thread")] });
+
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id).sort())
+      .toEqual(["alpha-thread", "legacy-thread"]);
+    // Nothing about any of that disabled the device store.
+    expect(debug).not.toHaveBeenCalled();
+    debug.mockRestore();
   });
 
   it("hands back the conversations it was given, with their cursors and validators", async () => {
@@ -120,6 +191,38 @@ describe("createThreadPersistence", () => {
       .toEqual(["alpha-thread", "beta-thread"]);
   });
 
+  it("never removes a row another tab is live in", async () => {
+    // A hydration reads the WHOLE store, and the sweep used to be scoped to
+    // what it had read: a tab opened second deleted the conversation the first
+    // one was live in, that tab put it back on its next flush, and the two did
+    // that to each other for as long as both stayed open.
+    //
+    // The row says who wrote it now, and a flush removes only rows carrying
+    // this instance's own name.
+    const tabB = createThreadPersistence();
+    await tabB.save({ entries: [entry("beta-thread")] });
+
+    const tabA = createThreadPersistence();
+    await tabA.hydrate();
+    await tabA.save({ entries: [entry("alpha-thread")] });
+    await tabA.save({ entries: [entry("alpha-thread")] });
+
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id).sort())
+      .toEqual(["alpha-thread", "beta-thread"]);
+  });
+
+  it("still takes its own conversation off the device when it stops holding it", async () => {
+    // The other half of the same rule: a row this instance WROTE is its own to
+    // remove, so an eviction still reaches the device.
+    const store = createThreadPersistence();
+    await store.save({ entries: [entry("alpha-thread"), entry("beta-thread")] });
+
+    await store.save({ entries: [entry("alpha-thread")] });
+
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id))
+      .toEqual(["alpha-thread"]);
+  });
+
   it("puts back a held conversation whose row went away under it", async () => {
     const store = createThreadPersistence({ now: () => 1_000 });
     const alpha = entry("alpha-thread");
@@ -135,40 +238,79 @@ describe("createThreadPersistence", () => {
       .toEqual(["alpha-thread"]);
   });
 
-  it("sweeps what it read but no longer holds", async () => {
-    // The device can hold more than one tab's eight -- two tabs make sixteen --
-    // and a restore keeps only what the cache has room for. Rows read but not
-    // restored were owned by NO instance, so nothing could ever remove them and
-    // the store grew without a ceiling (with `hydrate`'s own `getAll` growing
-    // with it, on the cold-start path).
-    const writer = createThreadPersistence();
-    const stored = Array.from({ length: 10 }, (_, index) => entry(`thread-${String(index)}`));
-    await writer.save({ entries: stored });
+  it("leaves a row it did not write, and keeps the store under a ceiling anyway", async () => {
+    // The device can hold more than one tab's eight, and a flush cannot tell
+    // this tab's own eviction from another tab's live conversation -- so rows
+    // this instance did not write are not its to remove, and the ceiling is
+    // what keeps that from growing without a bound. Oldest first, because the
+    // most recently written row is the one a live tab most likely still holds.
+    const older = createThreadPersistence({ now: () => 1_000 });
+    await older.save({
+      entries: Array.from({ length: 20 }, (_, index) => entry(`old-${String(index)}`)),
+    });
+    const newer = createThreadPersistence({ now: () => 2_000 });
+    await newer.save({
+      entries: Array.from({ length: 8 }, (_, index) => entry(`new-${String(index)}`)),
+    });
 
-    const reader = createThreadPersistence();
-    expect((await reader.hydrate())?.threads).toHaveLength(10);
-    // What the cache had room for.
-    const kept = stored.slice(0, 8);
-    reader.markPersisted(kept);
-    await reader.save({ entries: kept });
+    const restored = await createThreadPersistence().hydrate();
 
-    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id).sort())
-      .toEqual(kept.map((item) => item.thread.id).sort());
+    expect(restored?.threads).toHaveLength(PERSISTED_THREAD_LIMIT);
+    // Everything the newer flush wrote survived; the ceiling came out of the
+    // older ones.
+    expect(restored?.threads.filter((row) => row.id.startsWith("new-"))).toHaveLength(8);
+    // And it really left the device, rather than merely being withheld.
+    expect((await createThreadPersistence().hydrate())?.threads).toHaveLength(PERSISTED_THREAD_LIMIT);
   });
 
-  it("sweeps what it read even when it restored none of it", async () => {
-    // A hydration that answered after the deadline, or after the server had
-    // spoken, is dropped by the store without restoring anything -- and the
-    // rows it read still have to have an owner.
+  it("takes a deleted conversation off the device whoever wrote its row", async () => {
+    // The one removal that is not an inference. A sweep asks "does this tab
+    // still hold it", which cannot distinguish an eviction from another tab's
+    // live conversation; a tombstone is the operator saying the conversation
+    // should stop existing, so its row goes even though this instance never
+    // wrote it.
     const writer = createThreadPersistence();
     await writer.save({ entries: [entry("alpha-thread"), entry("beta-thread")] });
 
-    const late = createThreadPersistence();
-    await late.hydrate();
-    await late.save({ entries: [entry("gamma-thread")] });
+    const reader = createThreadPersistence();
+    await reader.hydrate();
+    await reader.forget(["beta-thread"]);
 
     expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id))
-      .toEqual(["gamma-thread"]);
+      .toEqual(["alpha-thread"]);
+  });
+
+  it("forgets nothing when it is asked about nothing", async () => {
+    const writer = createThreadPersistence();
+    await writer.save({ entries: [entry("alpha-thread")] });
+
+    await writer.forget([]);
+    await writer.forget(["never-stored"]);
+
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id))
+      .toEqual(["alpha-thread"]);
+  });
+
+  it("stops keeping a listing for an agent this console no longer has", async () => {
+    // Nothing but "Clear cached data" ever removed a bucket row, so an agent
+    // taken out of the fleet left its listing on every phone that had opened
+    // it, for ever.
+    const store = createThreadPersistence();
+    await store.save({
+      entries: [],
+      snapshot: snapshot(),
+      bucket: { key: "alpha\u0000active", threads: [], nextCursor: null },
+    });
+    await store.save({
+      entries: [],
+      bucket: { key: "retired\u0000active", threads: [], nextCursor: null },
+    });
+
+    const restored = await createThreadPersistence().hydrate();
+
+    expect(restored?.buckets.map((bucket) => bucket.key)).toEqual(["alpha\u0000active"]);
+    expect((await createThreadPersistence().hydrate())?.buckets.map((bucket) => bucket.key))
+      .toEqual(["alpha\u0000active"]);
   });
 
   it("clears the whole device when the operator asks, whichever tab asked", async () => {
@@ -406,9 +548,14 @@ describe("createThreadPersistence", () => {
     const after = await createThreadPersistence().hydrate();
     expect(after?.threads.map((row) => row.savedAt)).toEqual([1_000, 1_000]);
 
-    // And what it restored is ITS to sweep: dropping one takes its row with it,
-    // which is how a tombstone and an eviction reach the device at all.
+    // What it restored is NOT its to sweep: the row still carries the writer
+    // that put it there, and a flush cannot tell this tab's own eviction from
+    // another tab's live conversation. Dropping one leaves its row where it is,
+    // for that writer or for the ceiling; removing it takes {@link forget}.
     await reader.save({ entries: [entries[0]!] });
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id).sort())
+      .toEqual(["alpha-thread", "beta-thread"]);
+    await reader.forget(["beta-thread"]);
     expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id))
       .toEqual(["alpha-thread"]);
   });

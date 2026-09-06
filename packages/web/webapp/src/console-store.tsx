@@ -105,6 +105,15 @@ interface ConsoleStoreValue {
   readonly cronError: string | null;
   readonly hasMoreThreads: boolean;
   readonly hasOlderMessages: boolean;
+  /**
+   * Whether any conversation this tab is HOLDING has a turn running.
+   *
+   * The cache's whole set, not the visible listing: the listing is one agent's
+   * one bucket, and a turn running on another agent -- or on a conversation
+   * past the listed page -- is still one the operator is watching and still one
+   * whose stream a reload would drop.
+   */
+  readonly hasRunningThread: boolean;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
@@ -204,9 +213,17 @@ const unlistedThreadKey = (sourceId: string, archived: boolean, threadId: string
  * bootstrap and a `{thread}` payload all describe the same rows -- so taking
  * the last arrival unconditionally let a delayed revision 2 overwrite a
  * revision 3 the tab had already applied, rolling back a title, an archive
- * state or a run override the server had accepted. An EQUAL revision is the
- * same server state, and the incoming one wins so an optimistic edit made at
- * the revision it is patching still lands.
+ * state or a run override the server had accepted. At an EQUAL revision the
+ * incoming one wins, so an optimistic edit made at the revision it patches
+ * still lands.
+ *
+ * Which is NOT "an equal revision is the same server state": `patchRunState`
+ * moves a listing row's `runState` without moving its `revision`, so a snapshot
+ * the server made before the turn event can overwrite it here for one window,
+ * until the `{thread}` payload emitted with that event lands. The reload gate
+ * does not read this projection -- it reads the cache, whose listing paths
+ * confirm through `confirmListed` and take a row only when it is strictly
+ * newer (see `newerProjection`'s doc in thread-cache.ts).
  */
 const mergeThreads = (
   current: readonly ThreadSummary[],
@@ -1532,9 +1549,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     THREAD_CACHE_ENTRIES,
     undefined,
     // Off the render path by construction: the cache is written from event
-    // handlers and from responses, and this only arms a timer.
-    () => schedulePersistRef.current(),
+    // handlers and from responses, and this only arms a timer and reads a flag
+    // off the held set.
+    () => {
+      schedulePersistRef.current();
+      noteHeldRunStateRef.current();
+    },
   ));
+  const noteHeldRunStateRef = useRef<() => void>(() => undefined);
   /**
    * The message repairs on the wire, by (conversation, message).
    *
@@ -1757,6 +1779,37 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       });
     }, PERSIST_DEBOUNCE_MS);
   }, []);
+  const [hasRunningThread, setHasRunningThread] = useState(false);
+  const hasRunningThreadRef = useRef(false);
+  /**
+   * Recomputed on every cache mutation, and published only when it MOVED.
+   *
+   * A running turn commits several times a second, so a `setState` per commit
+   * would re-render every consumer of the store for a boolean that changes
+   * twice a turn -- hence the transition guard, which is also what makes it
+   * safe for the cache's commit hook to reach a `setState`. That hook is only
+   * ever reached from an event handler or a response; the cache is never
+   * written during render, and this must stay true.
+   *
+   * An entry the DEVICE restored says nothing about whether a turn is running.
+   * `runState` is persisted verbatim, so a tab killed mid-turn stores
+   * `running` for a turn that finished while the browser was shut -- and no
+   * event is ever coming for it, so the flag would have latched true for the
+   * whole session and the staged build would never have been applied. Such an
+   * entry counts only once a server answer has touched it. Deliberately not
+   * keyed on `stale`, which `markAllStale` sets on genuinely live entries.
+   */
+  const noteHeldRunState = useCallback(() => {
+    const running = threadCacheRef.current.snapshot()
+      .some((entry) => entry.fromDevice !== true && entry.thread.runState.status === "running");
+    if (running === hasRunningThreadRef.current) return;
+    hasRunningThreadRef.current = running;
+    setHasRunningThread(running);
+  }, []);
+  // Assigned during render, like `schedulePersistRef`: the cache's commit hook
+  // is created once, and an effect would leave it a commit behind.
+  noteHeldRunStateRef.current = noteHeldRunState;
+
   /** Disarm the pending flush. What it would have written is no longer wanted. */
   const cancelPersist = useCallback(() => {
     if (persistTimerRef.current === null) return;
@@ -1856,6 +1909,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // write for them: without this every cold start rewrote all eight
       // transcripts a second after restoring them.
       persistence?.markPersisted(cache.snapshot());
+      // The flag is computed over what was just restored. Removing this call
+      // cannot be caught by a test, and that is a fact about the control flow
+      // rather than a gap: the early return above means nothing has confirmed
+      // anything when this runs, so every entry the loop wrote is `fromDevice`
+      // and the answer is false either way. It stays because it is what makes
+      // "false" a statement about the restored set rather than the absence of
+      // one -- and because the early return is the only thing holding that
+      // invariant up. What the sabotage DOES catch is the invariant itself:
+      // drop `fromDevice` and the console reports a turn that ended while the
+      // browser was shut.
+      noteHeldRunStateRef.current();
       const agentId = selectedAgentRef.current;
       const bucket = agentId === null
         ? undefined
@@ -1922,6 +1986,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // conversations, and letting it fire would write them straight back.
     cancelPersist();
     threadCacheRef.current.clear();
+    noteHeldRunStateRef.current();
     selectedThreadRef.current = null;
     setDetail(null);
     // A read for the other console's copy may already be on the wire, and it
@@ -1968,6 +2033,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setThreadCursorByBucket((current) => ({ ...current, [seeded]: next.threadsNextCursor }));
     }
     setBootstrap(next);
+    // The listing is a SERVER SUMMARY for every conversation in it, so it
+    // CONFIRMS the ones this tab is already holding -- and that is all it is
+    // asked to do. `confirmListed` inserts nothing for an id the cache does not
+    // have, adopts a row only when its revision is strictly newer than the
+    // held summary's, and otherwise keeps the held summary by reference.
+    //
+    // The confirmation is what a restored entry is missing: a background
+    // conversation restored from the device stayed unconfirmed for the whole
+    // of a turn that had started before the tab was reopened, because
+    // `message.delta` never reaches a conversation this tab is not subscribed
+    // to and `turn.changed` fires only at the start and the finish. So
+    // `hasRunningThread` read false while the sidebar drew the row as running,
+    // and a staged build could reload over it -- the failure the guard exists
+    // to prevent.
+    //
+    // NOT `patchThread`, which adopts at an equal revision. A `turn.changed`
+    // that landed while this snapshot was on the wire moved the held `runState`
+    // without moving its revision, and the snapshot's row undid it; and a
+    // listing row is a fresh object per response, so adopting it at an equal
+    // revision handed the device store a "moved" transcript to rewrite for
+    // every held, listed conversation, on every bootstrap. A commit is
+    // announced only when a marker flipped or a row was adopted, so the flag
+    // is recomputed by the ordinary hook -- and the flush the listing itself
+    // arms below finds every unmoved row exactly as it wrote it.
+    for (const row of next.threads) threadCacheRef.current.confirmListed(row.id, row);
     hasBootstrapRef.current = true;
     // The listing on screen is the SERVER's from here on, whatever the device
     // seeded before it.
@@ -2121,6 +2211,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     );
     const key = threadBucketKey(sourceId, archived);
     const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+    // A page is a server summary for every row in it, exactly as a bootstrap's
+    // listing is -- and a bootstrap carries ONE bucket, so a conversation held
+    // for any other agent is confirmed by nothing until that agent's bucket is
+    // read. Without this a running conversation restored for the agent the
+    // operator was not looking at stayed `fromDevice` for its whole turn, and
+    // switching to that agent did not fix it. The same write as
+    // `applyBootstrap`, under the same rules: never inserts, adopts only a
+    // strictly newer row, confirms either way.
+    for (const row of admitted) threadCacheRef.current.confirmListed(row.id, row);
     // The authoritative fill DELIVERS this bucket, exactly as a bootstrap does,
     // so the sidebar effect must not buy it again -- an agent switch back and
     // forth, or an archive toggle, otherwise re-read the same page every time.
@@ -2194,6 +2293,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     selectedThreadRef.current = null;
     setSelectedThreadId(null);
     threadCacheRef.current.evict(threadId);
+    // The server has answered "not found" about this exact conversation, which
+    // is a fact and not an inference from what this tab still holds -- so the
+    // device is told outright rather than left to a flush that only sweeps rows
+    // this instance wrote.
+    void persistenceRef.current?.forget([threadId]).catch(() => undefined);
     setDetail(null);
     const sourceId = selectedAgentRef.current;
     if (sourceId !== null && readPersistedThreadIds()[sourceId] === threadId) {
@@ -2242,6 +2346,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const confirmConversation = useCallback((threadId: string, issuedAt: number) => {
     const cache = threadCacheRef.current;
     cache.confirmFresh(threadId, issuedAt);
+    // `confirmFresh` deliberately does not announce a commit -- a reconnect
+    // answering eight conditional reads must not rewrite eight rows -- so what
+    // the store derives from the held set is recomputed here. A 304 is what
+    // turns a restored entry into a confirmed one.
+    noteHeldRunStateRef.current();
     if (cache.get(threadId)?.stale === true && selectedThreadRef.current === threadId) {
       scheduleRefreshRef.current({ detail: true });
     }
@@ -2943,10 +3052,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // the deltas exist is that they are cheaper than re-reading -- and it is
       // the one transfer resource timing cannot report, so it is counted here.
       //
-      // A FLOOR: `data` is all a page can see of a frame. The `event:` and `id:`
-      // lines, the field names, the newlines that terminate them and the
-      // connection's own headers are all real bytes this cannot count.
-      if (typeof frame === "string") recordDataUsage(new TextEncoder().encode(frame).byteLength);
+      // EXACT for the frame, and only for the frame. Reassembled byte for byte
+      // as the service formats it (`formatSse`): the `id:` and `event:` lines,
+      // the field names and the newlines that terminate them are all bytes on
+      // the wire, and counting `data` alone under-reported every frame by around
+      // forty of them. What this cannot see is everything that is not a frame --
+      // the connection's own response headers, and the `: heartbeat` comments,
+      // which no browser API exposes to a page. So the stream's total is a
+      // per-frame exact count plus a fixed, uncounted overhead, not an estimate
+      // of each frame.
+      if (typeof frame === "string") {
+        const message = event as MessageEvent<string>;
+        recordDataUsage(new TextEncoder().encode(
+          `id: ${message.lastEventId}\nevent: ${message.type}\ndata: ${frame}\n\n`,
+        ).byteLength);
+      }
       let webEvent: WebEvent | undefined;
       try {
         const parsed = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
@@ -3140,6 +3260,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // selection also makes a detail read still in flight for it inert:
             // `loadThread` only applies what the selection still points at.
             threadCacheRef.current.evict(threadId);
+            void persistenceRef.current?.forget([threadId]).catch(() => undefined);
             if (threadId === selectedThreadRef.current) {
               selectedThreadRef.current = null;
               setSelectedThreadId(null);
@@ -3664,6 +3785,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // and the second cancel drops even that.
     cancelPersist();
     threadCacheRef.current.clear(selectedThreadRef.current ?? undefined);
+    noteHeldRunStateRef.current();
     await persistenceRef.current?.clearAll();
     cancelPersist();
   }, [cancelPersist]);
@@ -4149,6 +4271,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       : current);
     threadCacheRef.current.evict(thread.id);
     threadCacheRef.current.evict(requestedId);
+    // The device is told OUTRIGHT, not left to infer it from a flush: a sweep
+    // only removes rows this tab wrote, and a conversation the operator deleted
+    // has to go whoever wrote its row.
+    void persistenceRef.current?.forget([thread.id, requestedId]).catch(() => undefined);
     if (selectedThreadRef.current === thread.id || selectedThreadRef.current === requestedId) {
       const replacement = visibleThreads.find((item) => item.id !== thread.id);
       selectedThreadRef.current = replacement?.id ?? null;
@@ -4851,6 +4977,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       cronLoading,
       cronError,
       hasMoreThreads,
+      hasRunningThread,
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
@@ -4911,6 +5038,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       error,
       hiddenOfflineAgentCount,
       hasMoreThreads,
+      hasRunningThread,
       hasOlderMessages,
       hasServerSnapshot,
       loadBootstrap,

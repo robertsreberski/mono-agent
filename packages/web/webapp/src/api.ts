@@ -29,7 +29,7 @@ import type {
   WebMessage,
 } from "./types";
 
-import { recordDataUsage, recordResponsePayload } from "./data-usage";
+import { recordEstimatedUsage, recordResponsePayload, recordTransferredBody } from "./data-usage";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -304,7 +304,10 @@ const cronMutation = async <T>(path: string, body: Readonly<Record<string, unkno
     body: JSON.stringify(body),
   });
   if (!response.ok && response.status !== 428) throw await readError(response);
-  return await response.json() as CronMutationResult<T>;
+  // Through the accounting helper like every other JSON body. `response.json()`
+  // decoded these outside the meter, so a console that ran a cron mutation on a
+  // browser with no resource timing under-reported it by the whole response.
+  return await readJson<CronMutationResult<T>>(response);
 };
 
 /**
@@ -942,7 +945,10 @@ export const uploadContent = (
     }
     signal?.addEventListener("abort", onAbort, { once: true });
     xhr.open("PUT", `/api/v1/uploads/${encodeURIComponent(upload.id)}/content`);
-    xhr.responseType = "json";
+    // TEXT, not `json`: the response body is the one part of an upload a
+    // resource entry does report, but only where there is one -- and the meter
+    // must be able to count it for itself where there is not. Parsed below.
+    xhr.responseType = "text";
     // The reservation already stores the declared MIME. The content endpoint
     // deliberately accepts only an opaque byte stream.
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
@@ -954,7 +960,9 @@ export const uploadContent = (
     };
     // Bytes LEAVING the device are bytes the operator is billed for too, and an
     // XHR body is the one transfer no resource entry and no `request()` sees.
-    xhr.upload.onload = () => recordDataUsage(file.size);
+    // An ESTIMATE: `file.size` is the payload and not the multipart envelope,
+    // the headers, or the framing, so it is a floor and the total says so.
+    xhr.upload.onload = () => recordEstimatedUsage(file.size);
     xhr.onerror = () => {
       cleanup();
       reject(new Error("The upload connection was interrupted."));
@@ -965,9 +973,15 @@ export const uploadContent = (
     };
     xhr.onload = () => {
       cleanup();
-      const payload = xhr.response as
-        | { attachment?: WebAttachment; error?: string | { message?: string } }
-        | null;
+      const body = typeof xhr.response === "string" ? xhr.response : "";
+      recordTransferredBody(new TextEncoder().encode(body).byteLength);
+      type UploadReply = { attachment?: WebAttachment; error?: string | { message?: string } };
+      let payload: UploadReply | null = null;
+      try {
+        payload = body === "" ? null : JSON.parse(body) as UploadReply;
+      } catch {
+        // A body that is not JSON still has a status line worth reporting.
+      }
       if (xhr.status < 200 || xhr.status >= 300 || !payload?.attachment) {
         const message =
           typeof payload?.error === "string"

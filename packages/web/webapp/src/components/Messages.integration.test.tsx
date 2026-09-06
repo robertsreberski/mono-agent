@@ -7,6 +7,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
+import { writeDataModeSetting } from "../data-mode";
 import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { monitor, processJob } from "../test/fixtures";
@@ -1148,6 +1149,48 @@ describe("message actions", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("takes the mode in force when each round is scheduled, not when the job started", async () => {
+    // A job runs for minutes. The bounds were read once when the loop opened,
+    // so a switch made while the job was running did nothing for the rest of
+    // it -- the console went on polling at full-mode intervals on a link its
+    // operator had just told it was expensive. They are read when each round is
+    // scheduled now, and the backoff already reached is clamped into the bounds
+    // now in force rather than restarted.
+    vi.useFakeTimers();
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob").mockResolvedValue(running);
+    render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: running }],
+    }} />);
+
+    // Switched while the loop's opening read is still in flight, so the round
+    // it schedules is the first one the new mode can govern.
+    writeDataModeSetting("lean");
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    // A full-mode round would have landed here.
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
   });
 
   const runningJob = () => {
