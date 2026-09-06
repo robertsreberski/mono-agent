@@ -328,7 +328,11 @@ export function Chat({
       <AskReconciliationProvider>
         <ThreadPrimitive.Root className="thread-root">
           <SelectionToolbar />
-          <ThreadPrimitive.Viewport className="thread-viewport" autoScroll>
+          <ThreadPrimitive.Viewport
+            key={selectedThread?.id ?? "no-thread"}
+            className="thread-viewport"
+            autoScroll
+          >
             <div className="message-column">
               <EmptyConversation />
               {hasOlderMessages && (
