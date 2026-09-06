@@ -42,12 +42,13 @@ Availability matches process jobs with one narrowing: a turn gets `Monitor` and
 
 Cron, webhook, `web:new`, TUI-direct, and A2A turns never see the tools. A web
 Monitor belongs to the exact existing thread that started it. Its batches arrive
-as ordinary assistant wake turns. The Web console groups their host-owned
-receipts into one compact Monitor activity row per assistant run; it does not
-render them as user messages or repeated `Steered` tool calls. The row exposes
-only the redacted description, lifecycle state, and aggregate line counters —
-never delivery keys, command output, argv, environment values, or process
-identifiers. There is no browser-side stop control. The model can use
+as ordinary assistant wake turns. The Web console presents adjacent
+activity-only wake turns for the same watch as one continuous Activity block; a
+visible reply or unrelated message ends that block. It does not render wakes as
+user messages or repeated `Steered` tool calls. Each row exposes only the
+redacted description, lifecycle state, and aggregate line counters — never
+delivery keys, command output, argv, environment values, or process identifiers.
+There is no browser-side stop control. The model can use
 `MonitorStop` in a turn, and the owner can use
 `mono-agent monitors cancel <monitor-id>` from the CLI.
 

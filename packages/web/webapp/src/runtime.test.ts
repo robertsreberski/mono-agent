@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { canSendInConsole, canUploadInConsole, convertWebMessage } from "./runtime";
+import {
+  canSendInConsole,
+  canUploadInConsole,
+  coalesceMonitorWakeMessages,
+  convertWebMessage,
+} from "./runtime";
 import { agent, attachment, monitor, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
 
@@ -13,6 +18,241 @@ const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
   updatedAt: "2026-07-17T10:00:00.000Z",
   status: "complete",
   ...overrides,
+});
+
+const monitorWake = (
+  id: string,
+  projection = monitor(),
+  overrides: Partial<WebMessage> = {},
+): WebMessage => message({
+  id,
+  threadId: "thread-1",
+  turnId: `turn-${id}`,
+  role: "assistant",
+  parts: [{
+    type: "monitor-activity",
+    monitors: [{ projection, deliveryKeys: [`monitor:${projection.monitorId}:${String(projection.counters.seq)}`] }],
+  }],
+  attachments: [],
+  createdAt: `2026-07-17T10:00:0${id}.000Z`,
+  updatedAt: `2026-07-17T10:00:1${id}.000Z`,
+  finishedAt: `2026-07-17T10:00:1${id}.000Z`,
+  status: "complete",
+  ...overrides,
+});
+
+describe("coalesceMonitorWakeMessages", () => {
+  it("uses the newest same-Monitor wake as one chronological presentation carrier", () => {
+    const firstProjection = monitor({
+      description: "First batch",
+      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
+    });
+    const secondProjection = monitor({
+      description: "Second batch",
+      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
+    });
+    const terminalProjection = monitor({
+      description: "Terminal batch",
+      state: "exited",
+      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:13.000Z" },
+      counters: { ...monitor().counters, seq: 3, batchesDelivered: 3 },
+      exitCode: 0,
+    });
+    const first = monitorWake("1", firstProjection, {
+      parts: [
+        { type: "reasoning", text: "Check the underlying source." },
+        { type: "tool-call", toolCallId: "read-1", toolName: "Read", status: "complete" },
+        {
+          type: "monitor-activity",
+          monitors: [{ projection: firstProjection, deliveryKeys: ["monitor:first"] }],
+        },
+      ],
+    });
+    const second = monitorWake("2", secondProjection);
+    const terminal = monitorWake("3", terminalProjection, {
+      turnId: "turn-terminal",
+      updatedAt: "2026-07-17T10:00:30.000Z",
+      finishedAt: "2026-07-17T10:00:30.000Z",
+      parts: [
+        {
+          type: "monitor-activity",
+          monitors: [{ projection: terminalProjection, deliveryKeys: ["monitor:terminal"] }],
+        },
+        { type: "text", text: "The watch finished normally." },
+      ],
+    });
+
+    const shaped = coalesceMonitorWakeMessages([first, second, terminal]);
+
+    expect(shaped).toHaveLength(1);
+    expect(shaped[0]).toMatchObject({
+      id: "3",
+      turnId: "turn-terminal",
+      status: "complete",
+      updatedAt: "2026-07-17T10:00:30.000Z",
+      finishedAt: "2026-07-17T10:00:30.000Z",
+    });
+    expect(shaped[0]?.parts.map((part) => part.type)).toEqual([
+      "reasoning",
+      "tool-call",
+      "monitor-activity",
+      "monitor-activity",
+      "monitor-activity",
+      "text",
+    ]);
+    expect(shaped[0]?.parts.flatMap((part) =>
+      part.type === "monitor-activity" ? part.monitors.map((entry) => entry.projection.description) : [],
+    )).toEqual(["First batch", "Second batch", "Terminal batch"]);
+    expect(first.parts).toHaveLength(3);
+    expect(second.parts).toHaveLength(1);
+  });
+
+  it("recomputes a streaming carrier from raw messages without duplicating its terminal update", () => {
+    const first = monitorWake("1", monitor({
+      description: "First batch",
+      counters: { ...monitor().counters, seq: 1, batchesDelivered: 1 },
+    }));
+    const runningProjection = monitor({
+      description: "Streaming batch",
+      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
+    });
+    const running = monitorWake("2", runningProjection, {
+      status: "running",
+      finishedAt: undefined,
+    });
+
+    const streaming = coalesceMonitorWakeMessages([first, running]);
+    expect(streaming).toHaveLength(1);
+    expect(streaming[0]).toMatchObject({ id: "2", status: "running", turnId: "turn-2" });
+    expect(streaming[0]?.parts).toHaveLength(2);
+
+    const terminalProjection = monitor({
+      description: "Terminal batch",
+      state: "exited",
+      timestamps: { ...monitor().timestamps, completedAt: "2026-07-17T10:00:20.000Z" },
+      counters: { ...monitor().counters, seq: 2, batchesDelivered: 2 },
+      exitCode: 0,
+    });
+    const settled = monitorWake("2", terminalProjection);
+    const completed = coalesceMonitorWakeMessages([first, settled]);
+
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ id: "2", status: "complete", turnId: "turn-2" });
+    expect(completed[0]?.parts.flatMap((part) =>
+      part.type === "monitor-activity" && part.monitors[0]?.projection.state === "exited" ? [part] : [],
+    )).toHaveLength(1);
+  });
+
+  it("does not fold a later wake past a visible same-Monitor reply", () => {
+    const first = monitorWake("1");
+    const visible = monitorWake("2", monitor({ description: "Important batch" }), {
+      parts: [
+        {
+          type: "monitor-activity",
+          monitors: [{ projection: monitor({ description: "Important batch" }), deliveryKeys: ["monitor:important"] }],
+        },
+        { type: "text", text: "The queue needs attention." },
+      ],
+    });
+    const later = monitorWake("3", monitor({ description: "Later batch" }));
+
+    const shaped = coalesceMonitorWakeMessages([first, visible, later]);
+
+    expect(shaped).toHaveLength(2);
+    expect(shaped.map((entry) => entry.id)).toEqual(["2", "3"]);
+    expect(shaped[0]?.parts.at(-1)).toEqual({ type: "text", text: "The queue needs attention." });
+  });
+
+  it.each([
+    ["different Monitor", monitorWake("2", monitor({ monitorId: "different-monitor" }))],
+    ["mixed Monitor ids", monitorWake("2", monitor(), {
+      parts: [{
+        type: "monitor-activity" as const,
+        monitors: [
+          { projection: monitor(), deliveryKeys: ["monitor:first"] },
+          { projection: monitor({ monitorId: "different-monitor" }), deliveryKeys: ["monitor:second"] },
+        ],
+      }],
+    })],
+    ["identity-less legacy activity", monitorWake("2", monitor(), {
+      parts: [{ type: "monitor-activity" as const, monitors: [] }],
+    })],
+    ["malformed Monitor id", monitorWake("2", monitor(), {
+      parts: [{
+        type: "monitor-activity" as const,
+        monitors: [{
+          projection: { ...monitor(), monitorId: "   " },
+          deliveryKeys: ["monitor:malformed"],
+        }],
+      }],
+    })],
+    ["process job", monitorWake("2", monitor(), {
+      parts: [
+        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
+        { type: "process-job" as const, job: processJob() },
+      ],
+    })],
+    ["message attachment", monitorWake("2", monitor(), {
+      attachments: [attachment("upload")],
+    })],
+    ["error", monitorWake("2", monitor(), {
+      parts: [
+        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
+        { type: "error" as const, code: "provider_failed", message: "Provider failed." },
+      ],
+    })],
+    ["reply attachment", monitorWake("2", monitor(), {
+      parts: [
+        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
+        {
+          type: "attachment" as const,
+          id: "reply",
+          artifactId: "artifact",
+          name: "report.txt",
+          mediaType: "text/plain",
+          sizeBytes: 12,
+          integrityId: `sha256:${"a".repeat(64)}`,
+        },
+      ],
+    })],
+    ["Monitor start receipt", monitorWake("2", monitor(), {
+      parts: [
+        { type: "tool-call" as const, toolCallId: "monitor-start", toolName: "Monitor", status: "complete" as const },
+        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
+      ],
+    })],
+    ["nested AskUser", monitorWake("2", monitor(), {
+      parts: [
+        {
+          type: "subagent" as const,
+          toolCallId: "agent-one",
+          name: "worker",
+          status: "complete" as const,
+          calls: [{ toolCallId: "ask-one", toolName: "mcp__interaction__AskUser", status: "complete" as const }],
+        },
+        { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
+      ],
+    })],
+  ])("keeps %s as a presentation boundary", (_name, boundary) => {
+    expect(coalesceMonitorWakeMessages([monitorWake("1"), boundary])).toHaveLength(2);
+  });
+
+  it.each(["user", "system", "assistant"] as const)(
+    "does not join across an intervening %s message",
+    (role) => {
+      const separator = message({
+        id: "separator",
+        role,
+        parts: role === "assistant" ? [{ type: "text", text: "Ordinary reply." }] : [],
+      });
+      const shaped = coalesceMonitorWakeMessages([
+        monitorWake("1"),
+        separator,
+        monitorWake("2"),
+      ]);
+      expect(shaped.map((entry) => entry.id)).toEqual(["1", "separator", "2"]);
+    },
+  );
 });
 
 describe("convertWebMessage", () => {
