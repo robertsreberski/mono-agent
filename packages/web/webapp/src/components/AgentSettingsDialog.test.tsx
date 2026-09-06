@@ -13,10 +13,6 @@ const storeMock = vi.hoisted(() => ({
   clearAgentRunDefaults: vi.fn(),
 }));
 const apiMock = vi.hoisted(() => ({
-  createConfigurationSession: vi.fn(),
-  continueConfigurationSession: vi.fn(),
-  settleConfigurationSession: vi.fn(),
-  closeConfigurationSession: vi.fn(),
   providerAuthStatus: vi.fn(),
   beginProviderAuth: vi.fn(),
   providerAuthSession: vi.fn(),
@@ -52,7 +48,6 @@ beforeEach(() => {
   });
   storeMock.setAgentRunDefaults.mockResolvedValue(undefined);
   storeMock.clearAgentRunDefaults.mockResolvedValue(undefined);
-  apiMock.closeConfigurationSession.mockResolvedValue(undefined);
   apiMock.cancelProviderAuth.mockResolvedValue(undefined);
 });
 
@@ -102,29 +97,6 @@ describe("AgentSettingsDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Revert to config" }));
 
     await vi.waitFor(() => expect(storeMock.clearAgentRunDefaults).toHaveBeenCalledOnce());
-  });
-
-  it("opens a dedicated host-marked configuration session", async () => {
-    storeMock.selectedAgent = agent("alpha", {
-      label: "Alpha",
-      supportsConfiguration: true,
-    });
-    apiMock.createConfigurationSession.mockResolvedValue({
-      id: "configuration-one",
-      sourceId: "alpha",
-      roleLocation: "/agent/IDENTITY.md -> ## Role",
-      status: "active",
-      messages: [{ role: "assistant", text: "Which capability should we configure?" }],
-    });
-    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Configure agent" }));
-
-    expect(await screen.findByText("Which capability should we configure?")).toBeVisible();
-    expect(apiMock.createConfigurationSession).toHaveBeenCalledWith("alpha");
-    expect(screen.getByText(/Changes require an explicit proposal and approval/u)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "End SELF-CONFIG" }));
-    await vi.waitFor(() => expect(apiMock.closeConfigurationSession).toHaveBeenCalledWith("configuration-one"));
   });
 
   it("renders compact provider status rows and clears a masked key before submitting it", async () => {
