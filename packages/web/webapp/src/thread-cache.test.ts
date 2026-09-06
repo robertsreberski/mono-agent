@@ -54,6 +54,14 @@ const delta = (overrides: Partial<MessageDelta> = {}): MessageDelta => ({
   ...overrides,
 });
 
+const attribution = {
+  requested: { model: "provider:primary", effort: "high" },
+  attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+  disposition: "fallback" as const,
+  transitions: [{ from: "provider:primary", to: "provider:fallback", reason: "overloaded" }],
+  retries: [],
+};
+
 const detail = (messages: readonly WebMessage[], cursor?: string): ThreadDetail => ({
   thread: thread("alpha-thread", "alpha"),
   messages,
@@ -101,6 +109,14 @@ describe("applyMessageDelta", () => {
     expect(next.status).toBe("complete");
     // Nothing touched the parts, so the array they live in is the same one.
     expect(next.parts).toBe(held.parts);
+  });
+
+  it("applies attribution as a full replacement snapshot", () => {
+    const held = message("m1", { status: "running", seq: 4 });
+    const next = applyMessageDelta(held, delta({ baseSeq: 4, seq: 5, attribution }));
+
+    expect(next.attribution).toEqual(attribution);
+    expect(held.attribution).toBeUndefined();
   });
 
   it("refuses a delta whose base is not the version this copy holds", () => {
@@ -377,6 +393,17 @@ describe("readMessageDelta", () => {
   it("reads a well-formed frame", () => {
     expect(readMessageDelta({ ...wire, ops: [{ op: "append", index: 0, delta: "x" }] }))
       .toEqual({ ...wire, ops: [{ op: "append", index: 0, delta: "x" }] });
+  });
+
+  it("reads canonical attribution and refuses malformed routing snapshots", () => {
+    expect(readMessageDelta({ ...wire, attribution })).toMatchObject({ attribution });
+    expect(readMessageDelta({ ...wire, attribution: { ...attribution, disposition: "maybe" } })).toBeUndefined();
+    expect(readMessageDelta({ ...wire, attribution: { ...attribution, transitions: [{ from: "primary" }] } })).toBeUndefined();
+    expect(readMessageDelta({ ...wire, attribution: { ...attribution, retries: [{ retryIndex: -1 }] } })).toBeUndefined();
+    expect(readMessageDelta({
+      ...wire,
+      attribution: { ...attribution, transitions: Array.from({ length: 33 }, () => ({ from: "a", to: "b" })) },
+    })).toBeUndefined();
   });
 
   it("refuses a frame missing anything the replay depends on", () => {

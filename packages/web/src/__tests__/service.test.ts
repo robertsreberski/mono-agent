@@ -1709,6 +1709,7 @@ describe("WebService", () => {
     });
     const thread = service.createThread("agent-one");
     await service.startTurn(thread.id, { text: "Initial task" });
+    const requestedBeforeSteer = service.store.getThread(thread.id)?.runState.attribution?.requested;
     await waitFor(() => stream !== undefined);
     const terminal = fakeProcessJob({
       conversationId: `web:${thread.id}`,
@@ -1745,6 +1746,7 @@ describe("WebService", () => {
     stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Initial done" })}\n`));
     stream?.close();
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.store.getThread(thread.id)?.runState.attribution?.requested).toEqual(requestedBeforeSteer);
     await service.stop();
   });
 
@@ -1812,14 +1814,19 @@ describe("WebService", () => {
       fetchImpl: operatorFetch({
         onTurn(body) { turnBodies.push(body); },
         turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "provider/fallback", effort: "high", effectiveEffort: "high" } } }),
+          JSON.stringify({ kind: "event", event: { type: "provider_status", kind: "failover_started", from: "provider/fallback", to: "provider/default", attemptIndex: 1, reason: "overloaded" } }),
+          JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "provider/default", effort: "medium", effectiveEffort: "low" } } }),
           JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "result.txt" } } }),
           JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t1", name: "Read", result: "ok" } }),
-          JSON.stringify({ kind: "finish", finalText: "Worker result processed" }),
+          JSON.stringify({ kind: "finish", finalText: "Worker result processed", metadata: { runtime: { model: "provider/default", effort: "medium", effectiveEffort: "low" } } }),
           "",
         ].join("\n"),
       }),
     });
-    const thread = service.createThread("agent-one");
+    const thread = service.createThread("agent-one", { model: "provider/fallback", effort: "high" });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
     const terminal = fakeProcessJob({
       conversationId: `web:${thread.id}`,
       state: "succeeded",
@@ -1844,6 +1851,10 @@ describe("WebService", () => {
     expect(turnBodies).toEqual([expect.objectContaining({
       text: "Inspect the completed worker result",
       processJobWakeDeliveryKey: terminal.wake.deliveryKey,
+      metadata: {
+        web: expect.objectContaining({ model: "provider/fallback", effort: "high" }),
+        tui: { model: "provider/fallback", effort: "high" },
+      },
     })]);
     const messages = service.thread(thread.id).messages;
     expect(messages.some((message) => message.role === "user")).toBe(false);
@@ -1853,6 +1864,17 @@ describe("WebService", () => {
         expect.objectContaining({ type: "text", text: "Worker result processed" }),
       ]) }),
     ]));
+    expect(messages.at(-1)?.attribution).toMatchObject({
+      requested: { model: "provider/fallback", effort: "high" },
+      attempted: { model: "provider/default", effort: "medium", effectiveEffort: "low" },
+      executed: { model: "provider/default", effort: "medium", effectiveEffort: "low" },
+      disposition: "fallback",
+      transitions: [{ from: "provider/fallback", to: "provider/default", reason: "overloaded" }],
+    });
+    expect(events.filter((event) => event.type === "turn.changed").length).toBeGreaterThanOrEqual(3);
+    expect(events.some((event) => event.type === "message.delta"
+      && (event.payload as WebMessageDelta).attribution?.disposition === "fallback")).toBe(true);
+    unsubscribe();
     await service.stop();
   });
 
@@ -1864,7 +1886,7 @@ describe("WebService", () => {
         turns: () => `${JSON.stringify({ kind: "finish", finalText: "The watched process is ready." })}\n`,
       }),
     });
-    const thread = service.createThread("agent-one");
+    const thread = service.createThread("agent-one", { model: "provider/fallback", effort: "high" });
     const monitor = fakeMonitor({ conversationId: `web:${thread.id}`, seq: 6 });
     const input = {
       sourceId: "agent-one",
@@ -1888,6 +1910,10 @@ describe("WebService", () => {
       conversationId: `web:${thread.id}`,
       text: input.wakePrompt,
       processJobWakeDeliveryKey: input.deliveryKey,
+      metadata: {
+        web: expect.objectContaining({ model: "provider/fallback", effort: "high" }),
+        tui: { model: "provider/fallback", effort: "high" },
+      },
     })]);
     expect(service.thread(thread.id).messages.some((message) => message.role === "user")).toBe(false);
     expect(service.thread(thread.id).messages).toEqual([
@@ -2216,6 +2242,7 @@ describe("WebService", () => {
     });
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
     expect(turnBodies).toHaveLength(1);
+    service.patchThread(thread.id, { model: "provider/fallback", effort: "high" });
 
     firstStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Job handled" })}\n`));
     firstStream?.close();
@@ -2225,6 +2252,15 @@ describe("WebService", () => {
       job.wake.deliveryKey,
       `monitor:${monitor.monitorId}:1`,
     ]);
+    expect(turnBodies[1]).toMatchObject({
+      metadata: {
+        web: expect.objectContaining({ model: "provider/fallback", effort: "high" }),
+        tui: { model: "provider/fallback", effort: "high" },
+      },
+    });
+    expect(service.store.getThread(thread.id)?.runState.attribution).toMatchObject({
+      requested: { model: "provider/fallback", effort: "high" },
+    });
     await service.stop();
   });
 

@@ -472,6 +472,35 @@ describe("pi-native AgentHarness bridge", () => {
 
     expect(result.error).toBeNull();
     expect(observedReasoning).toBe("max");
+    expect(result.effectiveEffort).toBe("max");
+  });
+
+  it.each([
+    ["non-reasoning", false, "high", false, "off"],
+    ["max-clamped", true, "max", false, "xhigh"],
+    ["max-capable", true, "max", true, "max"],
+    ["ultra-compatibility", true, "ultra", false, "low"],
+  ])("reports the live Pi thinking level for %s", async (_name, reasoning, effort, nativeMax, expected) => {
+    const model = setup({ reasoning });
+    if (nativeMax) model.thinkingLevelMap = { xhigh: "xhigh", max: "max" };
+    faux.setResponses([fauxAssistantMessage([fauxText("done")])]);
+    const onEvent = vi.fn();
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "report effort" }],
+      effort,
+      onEvent,
+    }));
+    const events = onEvent.mock.calls.map(([event]) => event);
+    const configIndex = events.findIndex((event) => event?.type === "provider_execution_config");
+
+    expect(result.effectiveEffort).toBe(expected);
+    expect(events[configIndex]).toMatchObject({
+      model: "faux:faux-model",
+      effort,
+      effectiveEffort: expected,
+    });
+    expect(events[configIndex + 1]).toMatchObject({ type: "provider_request_started", model: "faux:faux-model" });
   });
 
   it("returns the unified result shape and streams normalized events on a simple turn", async () => {
@@ -491,6 +520,8 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.text).toBe("hello world");
     expect(result.sdk).toBe("pi");
     expect(result.model).toBe("faux:faux-model");
+    expect(result.effort).toBe("medium");
+    expect(result.effectiveEffort).toBe("medium");
     expect(result.cancelled).toBe(false);
     expect(result.providerSessionId).toBeTruthy();
     expect(Array.isArray(result.events)).toBe(true);
@@ -500,7 +531,14 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.diagnostics.pi_transport_requested).toBe("auto");
 
     const events = onEvent.mock.calls.map(([event]) => event);
-    expect(events[0]).toMatchObject({ type: "provider_request_started", sdk: "pi", runtime: "pi" });
+    expect(events[0]).toMatchObject({
+      type: "provider_execution_config",
+      sdk: "pi",
+      model: "faux:faux-model",
+      effort: "medium",
+      effectiveEffort: "medium",
+    });
+    expect(events[1]).toMatchObject({ type: "provider_request_started", sdk: "pi", runtime: "pi" });
     expect(events.some((event) => event?.type === "provider_request_completed")).toBe(true);
     const contextUsage = events.find((event) => event?.type === "context_usage");
     expect(contextUsage).toMatchObject({

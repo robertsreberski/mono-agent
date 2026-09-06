@@ -42,6 +42,8 @@
  *   nested native agent. Informational only; `id` remains the attachment key.
  * @property {number} [costUsd] Priced delegation cost, when the runtime can
  *   attribute it to this subagent.
+ * @property {*} [attribution] Bounded provider-route attribution for the
+ *   completed child run. Consumers must treat it as operator telemetry.
  */
 
 /**
@@ -312,6 +314,7 @@
  * @property {number} [numTurns]
  * @property {string} [model]
  * @property {string} [effort]
+ * @property {string} [effectiveEffort] Provider-effective reasoning/thinking level when reported.
  * @property {RuntimeSdkId} [sdk]
  * @property {boolean} [cancelled]
  * @property {string|null} [error]

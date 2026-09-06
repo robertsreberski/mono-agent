@@ -426,6 +426,7 @@ export const applyMessageDelta = (
     // Only the write that finishes the turn carries one, so a delta without it
     // is SILENT about the stamp rather than clearing a stamp already held.
     ...(delta.finishedAt === undefined ? {} : { finishedAt: delta.finishedAt }),
+    ...(delta.attribution === undefined ? {} : { attribution: delta.attribution }),
     seq: delta.seq,
   };
 };
@@ -440,6 +441,45 @@ export const applyMessageDelta = (
  * part kind costs one message read here rather than a slot the transcript
  * cannot draw.
  */
+const isOptionalRouteValue = (value: unknown): boolean => value === undefined || typeof value === "string";
+const isOptionalRouteIndex = (value: unknown): boolean => value === undefined
+  || (Number.isSafeInteger(value) && Number(value) >= 0);
+
+export const isRunAttribution = (value: unknown): boolean => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.requested === null || typeof record.requested !== "object" || Array.isArray(record.requested)) return false;
+  const requested = record.requested as Record<string, unknown>;
+  if (!isOptionalRouteValue(requested.model) || !isOptionalRouteValue(requested.effort)) return false;
+  if (record.disposition !== "requested" && record.disposition !== "fallback" && record.disposition !== "unknown") return false;
+  if (!Array.isArray(record.transitions) || !Array.isArray(record.retries)) return false;
+  if (record.truncated !== undefined && record.truncated !== true) return false;
+  const execution = (candidate: unknown): boolean => {
+    if (candidate === undefined) return true;
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const item = candidate as Record<string, unknown>;
+    return isOptionalRouteValue(item.model)
+      && isOptionalRouteValue(item.effort)
+      && isOptionalRouteValue(item.effectiveEffort);
+  };
+  if (!execution(record.attempted) || !execution(record.executed)) return false;
+  if (record.transitions.length > 32 || record.retries.length > 32) return false;
+  return record.transitions.every((candidate) => {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const item = candidate as Record<string, unknown>;
+    return typeof item.from === "string" && typeof item.to === "string"
+      && isOptionalRouteIndex(item.attemptIndex)
+      && isOptionalRouteValue(item.reason);
+  }) && record.retries.every((candidate) => {
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const item = candidate as Record<string, unknown>;
+    return isOptionalRouteValue(item.model)
+      && isOptionalRouteIndex(item.retryIndex)
+      && isOptionalRouteIndex(item.attempts)
+      && isOptionalRouteValue(item.reason);
+  });
+};
+
 const isMessagePart = (value: unknown): value is MessagePart => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
@@ -453,7 +493,8 @@ const isMessagePart = (value: unknown): value is MessagePart => {
     case "tool-call":
       return text("toolCallId") && text("toolName") && status();
     case "subagent":
-      return text("toolCallId") && text("name") && status() && Array.isArray(part.calls);
+      return text("toolCallId") && text("name") && status() && Array.isArray(part.calls)
+        && (part.attribution === undefined || isRunAttribution(part.attribution));
     case "process-job":
       return typeof part.job === "object" && part.job !== null;
     case "monitor-activity":
@@ -514,6 +555,7 @@ export const readMessageDelta = (payload: unknown): MessageDelta | undefined => 
     || !MESSAGE_STATUSES.has(candidate.status as string)
     || typeof candidate.updatedAt !== "string"
     || (candidate.finishedAt !== undefined && typeof candidate.finishedAt !== "string")
+    || (candidate.attribution !== undefined && !isRunAttribution(candidate.attribution))
     || ops === undefined) return undefined;
   return { ...(candidate as MessageDelta), ops };
 };
