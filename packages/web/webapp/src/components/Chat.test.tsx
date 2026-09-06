@@ -326,6 +326,8 @@ describe("ModelControls", () => {
     expect(trigger).toHaveTextContent("GPT-5.5 Codex");
     expect(trigger).toHaveTextContent("High");
     expect(trigger).not.toHaveTextContent("Default");
+    expect((storeMock.current as { ensureProviderCatalog: ReturnType<typeof vi.fn> }).ensureProviderCatalog)
+      .not.toHaveBeenCalled();
     fireEvent.click(trigger);
     const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
     const option = within(dialog).getByRole("option", { name: /^GPT-5\.5 Codex/u });
@@ -368,11 +370,12 @@ describe("ModelControls", () => {
     expect(trigger).toHaveTextContent("High");
   });
 
-  it("keeps a catalog-only override and its shared effort controls visible while its lazy row loads", async () => {
+  it("resolves a catalog-only override after first render without opening the picker", async () => {
     const selectedModel = "anthropic:claude-fable-5";
     storeMock.current = {
       ...storeMock.current,
       model: selectedModel,
+      effectiveModel: selectedModel,
       effort: "high",
       hasRunOverride: true,
       selectedAgent: agent("agent", {
@@ -390,17 +393,10 @@ describe("ModelControls", () => {
     expect(trigger).toHaveTextContent(selectedModel);
     expect(trigger).toHaveTextContent("High");
     expect(trigger).not.toHaveTextContent("Default · GPT-5.5 Codex");
-
-    fireEvent.click(trigger);
-    const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
-    const effortGroup = within(dialog).getByRole("radiogroup", { name: "Reasoning effort" });
-    expect(within(effortGroup).getByRole("radio", { name: "Default · High" })).toBeVisible();
-    expect(within(effortGroup).getByRole("radio", { name: "Medium" })).toBeVisible();
-    expect(within(effortGroup).getByRole("radio", { name: "Ultra" })).toBeVisible();
-    fireEvent.click(within(effortGroup).getByRole("radio", { name: "Medium" }));
-    expect((storeMock.current as { setEffort: ReturnType<typeof vi.fn> }).setEffort)
-      .toHaveBeenCalledWith("medium");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    const ensureProviderCatalog = (storeMock.current as {
+      ensureProviderCatalog: ReturnType<typeof vi.fn>;
+    }).ensureProviderCatalog;
+    await waitFor(() => expect(ensureProviderCatalog).toHaveBeenCalledExactlyOnceWith("anthropic"));
 
     storeMock.current = {
       ...storeMock.current,
@@ -422,6 +418,48 @@ describe("ModelControls", () => {
     expect(trigger).toHaveTextContent("Claude Fable 5");
     expect(trigger).toHaveTextContent("High");
     expect(trigger).not.toHaveTextContent("Default · GPT-5.5 Codex");
+    rerender(<ModelControls />);
+    expect(ensureProviderCatalog).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    const effortGroup = within(dialog).getByRole("radiogroup", { name: "Reasoning effort" });
+    expect(within(effortGroup).getByRole("radio", { name: "Default · High" })).toBeVisible();
+    expect(within(effortGroup).getByRole("radio", { name: "Low" })).toBeVisible();
+    expect(within(effortGroup).queryByRole("radio", { name: "Ultra" })).toBeNull();
+    fireEvent.click(within(effortGroup).getByRole("radio", { name: "Low" }));
+    expect((storeMock.current as { setEffort: ReturnType<typeof vi.fn> }).setEffort)
+      .toHaveBeenCalledWith("low");
+  });
+
+  it("requests fresh current-model metadata after an agent generation change", async () => {
+    const currentModel = "anthropic:claude-fable-5";
+    const ensureProviderCatalog = vi.fn();
+    const currentAgent = (generation: string) => agent("agent", {
+      generation,
+      models: [MODEL],
+      defaultModel: MODEL,
+      providers: [{ id: "anthropic", label: "Anthropic" }],
+      modelOptions: { [MODEL]: { label: "GPT-5.5 Codex" } },
+    });
+    storeMock.current = {
+      ...storeMock.current,
+      model: currentModel,
+      effectiveModel: currentModel,
+      ensureProviderCatalog,
+      selectedAgent: currentAgent("generation-one"),
+    };
+    const view = render(<ModelControls />);
+    await waitFor(() => expect(ensureProviderCatalog).toHaveBeenCalledExactlyOnceWith("anthropic"));
+
+    storeMock.current = {
+      ...storeMock.current,
+      selectedAgent: currentAgent("generation-two"),
+    };
+    view.rerender(<ModelControls />);
+
+    await waitFor(() => expect(ensureProviderCatalog).toHaveBeenCalledTimes(2));
+    expect(ensureProviderCatalog).toHaveBeenLastCalledWith("anthropic");
   });
 
   it("marks a conversation override and offers to clear it", async () => {

@@ -40,6 +40,16 @@ vi.mock("./assistant-ui/ModelSelector", () => ({
 
 import { AgentSettingsDialog } from "./AgentSettingsDialog";
 
+const expectDialogTypography = (element: Element, size: "10px" | "12px") => {
+  const style = window.getComputedStyle(element);
+  // jsdom exposes the authored inheritance keyword; a browser resolves it to
+  // the root's existing sans-serif stack.
+  expect(style.fontFamily).toBe("inherit");
+  expect(window.getComputedStyle(document.documentElement).fontFamily).toContain("sans-serif");
+  expect(style.fontSize).toBe(size);
+  expect(style.lineHeight).toBe("1.5");
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   storeMock.selectedAgent = agent("alpha", {
@@ -66,7 +76,9 @@ describe("AgentSettingsDialog", () => {
     expect(screen.getAllByText("config")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "Choose other model" }));
     fireEvent.click(screen.getByRole("button", { name: "Choose high effort" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save for new conversations" }));
+    const save = screen.getByRole("button", { name: "Save for new conversations" });
+    expectDialogTypography(save, "12px");
+    fireEvent.click(save);
 
     await vi.waitFor(() => {
       expect(storeMock.setAgentRunDefaults).toHaveBeenCalledWith("provider/other", "high");
@@ -158,11 +170,17 @@ describe("AgentSettingsDialog", () => {
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
     expect(await screen.findByText("Needs action")).toBeVisible();
-    expect(screen.getByText("OpenCode Go")).toBeVisible();
+    const providerName = screen.getByText("OpenCode Go");
+    const providerState = screen.getByText("Needs action");
+    expect(providerName).toBeVisible();
+    expectDialogTypography(providerName, "12px");
+    expectDialogTypography(providerState, "10px");
     expect(screen.queryByText("opencode-go")).not.toBeInTheDocument();
     expect(screen.queryByText(/Used by/u)).not.toBeInTheDocument();
     expect(screen.queryByText(/No credential detected/u)).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: "Authenticate" }));
+    const authenticate = await screen.findByRole("button", { name: "Authenticate" });
+    expectDialogTypography(authenticate, "12px");
+    fireEvent.click(authenticate);
     const key = await screen.findByLabelText("Enter the OpenCode API key");
     expect(key).toHaveAttribute("type", "password");
     expect(key).toHaveAttribute("autocomplete", "off");
@@ -175,7 +193,9 @@ describe("AgentSettingsDialog", () => {
     expect(document.body.textContent).not.toContain("PROVIDER_AUTH_SECRET_SENTINEL");
     expect(await screen.findByRole("button", { name: "Close authentication" })).toBeVisible();
     await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText("OK")).toBeVisible();
+    const ok = await screen.findByText("OK");
+    expect(ok).toBeVisible();
+    expectDialogTypography(ok, "10px");
   });
 
   it("uses status-only rows and limits actions to actionable providers", async () => {

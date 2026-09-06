@@ -2,6 +2,7 @@ import { ThreadPrimitive } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
+import { composerDraftKey } from "../composer-draft";
 import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import { ModelSelector } from "./assistant-ui/ModelSelector";
@@ -485,7 +486,10 @@ export function Chat({
                   Cron channels are read-only. Open the originating session to continue the conversation.
                 </div>
               ) : (
-                <Composer runSettings={<ModelControls />} />
+                <Composer
+                  key={composerDraftKey(selectedAgent?.sourceId ?? null, selectedThreadId) ?? "no-agent"}
+                  runSettings={<ModelControls />}
+                />
               )}
             </ThreadPrimitive.ViewportFooter>
           </ThreadPrimitive.Viewport>

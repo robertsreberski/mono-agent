@@ -21,7 +21,7 @@ vi.mock("./api", () => ({
 }));
 
 import { api, uploadContent } from "./api";
-import { hasUnsentComposerDraft, resetComposerDraft } from "./composer-draft";
+import { composerDraftKey, hasUnsentComposerDraft, resetComposerDraft } from "./composer-draft";
 import { Composer } from "./components/Composer";
 import { WebRuntimeProvider } from "./runtime";
 
@@ -103,24 +103,30 @@ const renderRuntime = async () => {
 const renderComposerRuntime = async () => {
   let runtime: AssistantRuntime | undefined;
   const onReady = (value: AssistantRuntime) => { runtime = value; };
-  render(
+  const tree = () => (
     <WebRuntimeProvider>
       <RuntimeCapture onReady={onReady} />
-      <Composer />
-    </WebRuntimeProvider>,
+      <Composer key={composerDraftKey(
+        storeMock.current?.selectedAgentId as string | null,
+        storeMock.current?.selectedThreadId as string | null,
+      ) ?? "no-agent"} />
+    </WebRuntimeProvider>
   );
+  const view = render(tree());
   await waitFor(() => expect(runtime).toBeDefined());
   return {
     get runtime() {
       if (!runtime) throw new Error("Runtime is not ready.");
       return runtime;
     },
+    rerender: () => view.rerender(tree()),
   };
 };
 
 describe("WebRuntimeProvider assistant-ui submission integration", () => {
   beforeEach(() => {
     storeMock.current = null;
+    resetComposerDraft();
     vi.clearAllMocks();
     vi.mocked(api.createUpload).mockImplementation(async (file) =>
       attachment("upload-1", {
@@ -721,6 +727,86 @@ describe("what the composer is holding, for anything that would destroy it", () 
     await waitFor(() => expect(hasUnsentComposerDraft()).toBe(false));
   });
 
+  it("restores independent text drafts across rapid conversation switches", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const otherThread = thread("other", "agent");
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+    });
+    const view = await renderComposerRuntime();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Message" }), {
+      target: { value: "draft for A" },
+    });
+    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(true));
+
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+      selectedThread: otherThread,
+      selectedThreadId: otherThread.id,
+    });
+    view.rerender();
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue(""));
+    fireEvent.change(screen.getByRole("combobox", { name: "Message" }), {
+      target: { value: "draft for B" },
+    });
+
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+    });
+    view.rerender();
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("draft for A"));
+
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+      selectedThread: otherThread,
+      selectedThreadId: otherThread.id,
+    });
+    view.rerender();
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("draft for B"));
+  });
+
+  it("restores switched text but disposes the old context's attachment", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const otherThread = thread("other", "agent");
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+    });
+    const view = await renderComposerRuntime();
+    fireEvent.change(screen.getByRole("combobox", { name: "Message" }), {
+      target: { value: "text survives" },
+    });
+    await act(async () => {
+      await view.runtime.thread.composer.addAttachment(
+        new File(["discard"], "discard.md", { type: "text/markdown" }),
+      );
+    });
+    expect(view.runtime.thread.composer.getState().attachments).toHaveLength(1);
+
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+      selectedThread: otherThread,
+      selectedThreadId: otherThread.id,
+    });
+    view.rerender();
+    await waitFor(() => expect(api.deleteUpload).toHaveBeenCalledWith("upload-1"));
+    await waitFor(() => expect(view.runtime.thread.composer.getState().attachments).toHaveLength(0));
+
+    storeMock.current = createStore(sendTurn, {
+      threads: [idleThread, otherThread],
+      visibleThreads: [idleThread, otherThread],
+    });
+    view.rerender();
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" })).toHaveValue("text survives"));
+    expect(view.runtime.thread.composer.getState().attachments).toHaveLength(0);
+  });
+
   it("keeps saying so when the composer is taken off screen with a draft in it", async () => {
     // `Chat` swaps the composer for the archived and cron read-only footers,
     // and the assistant-ui runtime that holds the text outlives it. Reporting
@@ -749,9 +835,10 @@ describe("what the composer is holding, for anything that would destroy it", () 
     expect(screen.queryByRole("combobox", { name: "Message" })).toBeNull();
     expect(hasUnsentComposerDraft()).toBe(true);
 
-    // Emptied for real, and the composer comes back to say so.
-    act(() => { runtime!.thread.composer.setText(""); });
+    // The same context comes back with the text the bridge retained.
     view.rerender(tree(true));
-    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(false));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Message" }))
+      .toHaveValue("half a thought"));
+    expect(hasUnsentComposerDraft()).toBe(true);
   });
 });

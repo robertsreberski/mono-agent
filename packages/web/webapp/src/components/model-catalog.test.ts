@@ -13,6 +13,7 @@ import {
   effortName,
   GLOBAL_EFFORT_LEVELS,
   groupSelectorModels,
+  initialCatalogProviders,
   providerOfModel,
   selectorProvides,
 } from "./model-catalog";
@@ -75,6 +76,36 @@ describe("providerOfModel", () => {
   it("reads the provider from a slash reference and leaves bare ids alone", () => {
     expect(providerOfModel("provider/catalog-widened")).toBe("provider");
     expect(providerOfModel("onlycatalog")).toBe("onlycatalog");
+  });
+});
+
+describe("initialCatalogProviders", () => {
+  it("requests only the provider named by a canonical current model", () => {
+    expect(initialCatalogProviders(source, "anthropic:claude-fable-5", shortlist))
+      .toEqual(["anthropic"]);
+    expect(initialCatalogProviders(source, "provider/catalog-widened", shortlist))
+      .toEqual(["provider"]);
+  });
+
+  it("deduplicates known providers when a bare model cannot name one", () => {
+    const unlabeled = agent("agent", {
+      models: ["anthropic:sonnet", "anthropic:opus", "local/model", "bare"],
+      defaultModel: "bare",
+      providers: [
+        { id: "anthropic", label: "Anthropic" },
+        { id: "extra", label: "Extra" },
+      ],
+      modelOptions: { bare: { reasoning: true } },
+    });
+
+    expect(initialCatalogProviders(unlabeled, "bare", unlabeled.models ?? []))
+      .toEqual(["anthropic", "local", "extra"]);
+  });
+
+  it("does not fetch when there is no current model or /v1/info already labels it", () => {
+    expect(initialCatalogProviders(source, "", shortlist)).toEqual([]);
+    expect(initialCatalogProviders(source, sonnet, shortlist)).toEqual([]);
+    expect(initialCatalogProviders(null, sonnet, shortlist)).toEqual([]);
   });
 });
 
