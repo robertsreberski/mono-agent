@@ -102,8 +102,9 @@ or `--loopback` to bind only `127.0.0.1`. The curated `--theme` values are
 `evergreen` (default), `ocean`, `plum`, and `terracotta`. `--name <label>` sets
 the console label used for the installed PWA name/short name, browser title, and
 rail brand, defaulting to the machine hostname. Managed starts persist both
-selections, restarts retain them unless explicitly replaced, and `web status`
-reports the effective values.
+selections, restarts retain them unless explicitly replaced, `--name -` clears
+the stored label back to the hostname default, and `web status` reports the
+effective values.
 
 Install this package directly only when embedding the server in another host:
 

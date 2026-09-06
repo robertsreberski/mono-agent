@@ -100,9 +100,11 @@ describe("Linux agent command composition", () => {
 describe("Linux web command composition", () => {
   it("keeps bare status read-only", async () => {
     mocks.health.mockResolvedValue(true);
-    expect(await runSystemdWebCommand({ positionals: [], env: {} }, output())).toBe(0);
+    const deps = output();
+    expect(await runSystemdWebCommand({ positionals: [], env: {} }, deps)).toBe(0);
     expect(mocks.start).not.toHaveBeenCalled();
     expect(mocks.lock).not.toHaveBeenCalled();
+    expect(deps.stdout.write).toHaveBeenCalledWith(expect.stringContaining("Name: — (machine hostname)"));
   });
 
   it("preserves installed endpoint, theme, and allowed hosts on restart", async () => {
@@ -130,6 +132,16 @@ describe("Linux web command composition", () => {
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
     expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--name", "Flockbox"]));
+  });
+
+  it("clears the installed console name when restart receives the reset sentinel", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum", "--name", "Flockbox"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand(
+      { positionals: ["restart"], env: {}, name: "-" },
+      output(),
+    )).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).not.toContain("--name");
   });
 
   it("leaves the console name out of the unit argv when none was chosen", async () => {

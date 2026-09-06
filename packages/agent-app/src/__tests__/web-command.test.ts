@@ -397,6 +397,8 @@ describe("runWebCommand", () => {
     for (const [name, expected] of [
       ["   ", "must not be empty"],
       ["bad\u0007name", "control characters"],
+      ["bad\u2028name", "line separators"],
+      ["bad\u202ename", "bidirectional overrides"],
       ["x".repeat(81), "at most 80 characters"],
     ] as const) {
       const startServer = vi.fn();
@@ -1485,7 +1487,7 @@ describe("runWebCommand", () => {
     expect(await readFile(paths.launchd.plistPath, "utf8")).toContain("<string>plum</string>");
   });
 
-  it("preserves the recorded console name when restart does not override it", async () => {
+  it("preserves the recorded console name by default and clears it with --name -", async () => {
     const home = await testHome();
     const paths = webPaths(home);
     await prepareState({ stateDir: paths.stateDir });
@@ -1519,29 +1521,40 @@ describe("runWebCommand", () => {
     };
 
     let errors = "";
+    const dependencies = {
+      platform: "darwin" as const,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl,
+      tailscale: unavailableTailscaleRunner(),
+      ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+      healthcheck: async () => true,
+      isAlive: (pid: number) => pid === 777 && workerLoaded,
+      stdout: { write: () => undefined },
+      stderr: { write: (text: string) => { errors += text; } },
+    };
     const result = await runWebCommand(
       { positionals: ["restart"], env: {} },
-      {
-        platform: "darwin",
-        homeDir: home,
-        getuid: () => 501,
-        prepareState,
-        acquireLifecycleLock: async () => async () => undefined,
-        launchctl,
-        tailscale: unavailableTailscaleRunner(),
-        ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
-        healthcheck: async () => true,
-        isAlive: (pid) => pid === 777 && workerLoaded,
-        stdout: { write: () => undefined },
-        stderr: { write: (text) => { errors += text; } },
-      },
+      dependencies,
     );
     expect(result, errors).toBe(0);
 
     expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ name: "Flockbox" });
-    const plist = await readFile(paths.launchd.plistPath, "utf8");
+    let plist = await readFile(paths.launchd.plistPath, "utf8");
     expect(plist).toContain("<string>--name</string>");
     expect(plist).toContain("<string>Flockbox</string>");
+
+    const cleared = await runWebCommand(
+      { positionals: ["restart"], env: {}, name: "-" },
+      dependencies,
+    );
+    expect(cleared, errors).toBe(0);
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).not.toHaveProperty("name");
+    plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).not.toContain("<string>--name</string>");
+    expect(plist).not.toContain("<string>Flockbox</string>");
   });
 
   it("retains an exact owned Tailscale hostname when LocalAPI status is transiently unavailable", async () => {

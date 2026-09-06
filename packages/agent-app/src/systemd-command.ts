@@ -174,7 +174,11 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     const port = options.port ?? Number(previousOption("--port") ?? 5050);
     const theme = options.theme ?? previousOption("--theme") ?? "evergreen";
     // No default: an absent name means the worker falls back to the machine hostname.
-    const consoleName = options.name ?? previousOption("--name");
+    let consoleName = previousOption("--name");
+    if (options.name !== undefined) {
+      const requestedName = options.name.trim();
+      consoleName = requestedName === "-" ? undefined : requestedName;
+    }
     const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" || host === "[::]" ? "[::1]" : host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
     const url = `http://${probeHost}:${port}/`;
     const { webHealthcheck } = await import("./web-command.js");
@@ -183,7 +187,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
       const service = await inspectSystemd(identity, deps);
       const healthy = service.activeState === "active" && service.pid > 0 && await ready();
       report(identity, service, healthy, deps);
-      stdout.write(`Web: ${url}\nTheme: ${theme}\nName: ${consoleName ?? "- (machine hostname)"}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
+      stdout.write(`Web: ${url}\nTheme: ${theme}\nName: ${consoleName ?? "— (machine hostname)"}\nHTTPS routes: externally managed; inspect tailscale serve status.\n`);
       return options.positionals.length === 0 ? 0 : healthy ? 0 : 1;
     }
     if (action !== "start" && action !== "restart") throw new Error(`Unsupported systemd web action: ${action}`);
