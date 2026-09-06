@@ -88,14 +88,6 @@ const jsonObject = (value: unknown): JsonObject => {
   return value === undefined ? {} : { value: normalized };
 };
 
-const jsonText = (value: unknown): string => {
-  try {
-    return JSON.stringify(value ?? {}, null, 2);
-  } catch {
-    return "{}";
-  }
-};
-
 const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
   if (part.event === "context_compaction") return true;
   let current = part.data;
@@ -168,7 +160,9 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
         toolCallId: part.toolCallId,
         toolName: part.toolName,
         args: jsonObject(part.args),
-        argsText: jsonText(part.args),
+        // No `argsText`: assistant-ui derives it from `args` when it is absent
+        // (`fromThreadMessageLike`), so supplying one only made the console hold
+        // a second, pretty-printed copy of every tool call's arguments.
         result: part.result,
         isError: part.status === "failed",
         // assistant-ui's tool-call part types no slot for our own per-call metadata,
@@ -211,9 +205,13 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
 };
 
 const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
-  const contentUrl =
-    attachment.contentUrl ??
-    `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content`;
+  // The upload route is the picture's one durable, immutable address, so it is
+  // also the browser's cache key for it. A picture is rendered from that address
+  // and nothing else: whatever the payload offers instead may carry a token that
+  // is re-minted per response, which turns every projection of the message into
+  // a fresh download of bytes the browser already has.
+  const storedUrl = `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content`;
+  const contentUrl = attachment.kind === "image" ? storedUrl : attachment.contentUrl ?? storedUrl;
   return {
     id: attachment.id,
     type: attachment.kind,

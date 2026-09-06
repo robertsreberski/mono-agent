@@ -103,6 +103,29 @@ describe("convertWebMessage", () => {
     ]);
   });
 
+  it("keeps a sent image on the one cacheable URL its bytes are stored at", () => {
+    const converted = convertWebMessage(
+      message({
+        attachments: [
+          attachment("image", {
+            name: "chart.png",
+            contentType: "image/png",
+            kind: "image",
+            // Anything else the payload offers for a picture — a capability with
+            // a per-request token, another origin — would re-download the same
+            // bytes on every projection and is not ours to render.
+            contentUrl: "https://cdn.example/chart.png?expires=1234567890&token=rotates",
+            uploaded: true,
+          }),
+        ],
+      }),
+    );
+
+    expect(converted.attachments?.[0]?.content).toEqual([
+      { type: "image", image: "/api/v1/uploads/image/content", filename: "chart.png" },
+    ]);
+  });
+
   it("preserves visible parts while keeping persisted telemetry out of assistant-ui content", () => {
     const converted = convertWebMessage(
       message({
