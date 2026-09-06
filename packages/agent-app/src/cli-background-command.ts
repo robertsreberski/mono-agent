@@ -358,6 +358,10 @@ export async function runBackgroundCommand(
   command: (typeof BACKGROUND_COMMANDS)[number],
   env: Record<string, string | undefined> = process.env,
 ): Promise<number> {
+  if (process.platform === "linux") {
+    const { runSystemdAgentCommand } = await import("./systemd-command.js");
+    return await runSystemdAgentCommand(args, command, env);
+  }
   const guard = requireDarwin(command);
   if (guard !== undefined) {
     return guard;

@@ -185,6 +185,7 @@ export interface RunWebCommandDeps {
     dependencies: ManagedWebLogMonitorDependencies,
   ) => { stop(): void };
   readonly homeDir?: string;
+  readonly systemd?: import("./systemd.js").SystemdDeps;
 }
 
 interface WebServiceRecord {
@@ -274,7 +275,7 @@ export function renderWebHelp(): string {
     "",
     `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (LAN/Tailnet reachable; no app login).`,
     `Themes: ${WEB_THEMES.join(", ")} (default: ${DEFAULT_WEB_THEME}).`,
-    "--loopback narrows the bind to 127.0.0.1. start/restart claim a free Tailscale Serve HTTPS port without replacing existing handlers.",
+    "--loopback narrows the bind to 127.0.0.1. macOS start/restart claim a free Tailscale Serve HTTPS port; Linux HTTPS routes are externally managed.",
     "",
   ].join("\n");
 }
@@ -297,6 +298,38 @@ export async function runWebCommand(
     stderr.write(ui.errorLine(validation));
     stdout.write(renderWebHelp());
     return 2;
+  }
+
+  if ((deps.platform ?? process.platform) === "linux" && action !== "run" && action !== "reset") {
+    if (action === undefined) stdout.write(renderWebHelp());
+    const { runSystemdWebCommand } = await import("./systemd-command.js");
+    const { isSystemdUserManagerUnavailable } = await import("./systemd.js");
+    try {
+      return await runSystemdWebCommand(options, {
+        ...deps.systemd,
+        ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }),
+        stdout, stderr,
+      });
+    } catch (error) {
+      if (!isSystemdUserManagerUnavailable(error) || (action !== undefined && action !== "status")) throw error;
+      if (action === undefined) {
+        await statusWeb(options, deps, false);
+        return 0;
+      }
+      return await statusWeb(options, deps, true);
+    }
+  }
+
+  if ((deps.platform ?? process.platform) === "linux" && action === "reset") {
+    const { withSystemdLock, SYSTEMD_WEB_IDENTITY } = await import("./systemd.js");
+    try {
+      return await withSystemdLock(SYSTEMD_WEB_IDENTITY, {
+        ...deps.systemd, ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }),
+      }, () => resetWeb(options, deps));
+    } catch (error) {
+      stderr.write(ui.errorLine(`Linux web reset failed: ${errorMessage(error)}`));
+      return 1;
+    }
   }
 
   if (action === undefined) {
@@ -1068,6 +1101,16 @@ async function resetWeb(options: RunWebCommandOptions, deps: RunWebCommandDeps):
   const stderr = deps.stderr ?? process.stderr;
   const stdout = deps.stdout ?? process.stdout;
   const paths = webPaths(deps.homeDir);
+  if ((deps.platform ?? process.platform) === "linux") {
+    const { inspectSystemd, readSystemdDefinition, SYSTEMD_WEB_IDENTITY } = await import("./systemd.js");
+    const systemdDeps = { ...deps.systemd, ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }) };
+    const service = await inspectSystemd(SYSTEMD_WEB_IDENTITY, systemdDeps).catch(() => undefined);
+    const definition = await readSystemdDefinition(SYSTEMD_WEB_IDENTITY, systemdDeps);
+    if (definition !== undefined || (service?.pid ?? 0) > 0 || service?.activeState === "activating") {
+      stderr.write(ui.errorLine("Run mono-agent web stop before resetting the systemd console."));
+      return 1;
+    }
+  }
   if ((deps.platform ?? process.platform) === "darwin") {
     const launchctl = deps.launchctl ?? makeLaunchctlRunner();
     const uid = (deps.getuid ?? requiredUid)();

@@ -668,7 +668,7 @@ describe("parseCliArgs", () => {
     expect(headingIndexes.every((index) => index >= 0)).toBe(true);
     expect([...headingIndexes]).toEqual([...headingIndexes].sort((a, b) => a - b));
     const runHeading = lines.find((line) => line.startsWith("Run")) ?? "";
-    expect(runHeading).toContain("(background lifecycle is macOS/launchd; elsewhere use start --foreground)");
+    expect(runHeading).toContain("(macOS launchd or Linux systemd user services; elsewhere use start --foreground)");
 
     // Short, one-line-per-command signatures — not the full flag detail.
     expect(help).toContain("runs [report|audit]");

@@ -41,11 +41,11 @@ The read/status commands accept `--json` for scripting: `validate`, `config`, `p
 | `config` | Print the resolved config field-by-field with each value's source (`env` / `json` / `default`), including every channel section, plus secret-placement warnings. | `--config <path>`, `--env-file <path>`, `--json` |
 | `memory` | Preview, strictly audit, safely maintain, and move the configured memory store and its durable completed-turn intake. | `stats`, `today`, `show`, `search`, `top`, `audit`, `inspect`, `retry`, `resolve`, `rebuild`, `rollback`, `adopt-replay`, `forget`, `export`, `import`; `--strict`, `--limit`, `--bundle`, `--json` |
 | `jobs` | Discover one running local agent and inspect or cancel its owner-private background Exec/Bash jobs. | `list`, `get <job-id>`, `cancel <job-id>`; `--agent <label\|sourceId>`, `--json` |
-| `start` | Start the agent as a background launchd service (or foreground worker). Background start also installs the fixed-policy one-shot recovery and log-maintenance LaunchAgent. | `--config <path>`, `--env-file <path>`, `--foreground` |
-| `restart` | Restart the background instance for this config (starts it if stopped), maintaining logs only while the old writer is proven down. `--clear-sessions` also purges provider transcripts plus canonical message and tool history. | `--config <path>`, `--env-file <path>`, `--clear-sessions` |
-| `stop` | Stop the background instance, unloading log maintenance first, and remove both LaunchAgent definitions. | `--config <path>`, `--env-file <path>` |
-| `status` | Show this config's instance plus any other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
-| `logs` | Print (and optionally follow) the background instance's log files. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
+| `start` | Start the agent as a macOS launchd or Linux systemd user service, or as a foreground worker. Managed macOS start also installs fixed-policy recovery and log maintenance. | `--config <path>`, `--env-file <path>`, `--foreground` |
+| `restart` | Restart the service for this config (starts it if stopped). macOS also maintains logs while the old writer is proven down and supports `--clear-sessions`; Linux rejects that flag without changing state. | `--config <path>`, `--env-file <path>`, `--clear-sessions` |
+| `stop` | Stop the background instance and remove its owned launchd definitions or systemd user unit. | `--config <path>`, `--env-file <path>` |
+| `status` | Show this config's service and readiness; macOS also lists other running instances. | `--config <path>`, `--env-file <path>`, `--json` |
+| `logs` | Print and optionally follow the macOS log files or Linux user journal. | `--config <path>`, `--env-file <path>`, `--follow` / `-f`, `--lines <n>` |
 | `web` | Operate the always-on browser conversation console for every discovered running agent. Bare `web` is read-only status/help; managed macOS start also installs its paired fixed-policy log-maintenance helper. | `start`, `restart`, `stop`, `status`, `logs`, `run`, `reset`; `--host <addr>`, `--loopback`, `--port <n>` |
 | `sessions` (removed) | The Session Recorder launcher was removed; it now errors with a pointer and exits `2`. Use `mono-agent tui` (recorded-run replay) or `mono-agent web` (live console). | — |
 | `tui` | Open remote discovery/chat, attach to a managed macOS background agent for a dedicated SELF-CONFIG session, or use ordinary in-process local chat. | `--agent`, `--conversation`, `--configure`, `--local` |
@@ -73,7 +73,7 @@ mono-agent validate --env-file ./secrets/.env.prod
 MONO_AGENT_TELEGRAM_BOT_TOKEN=123456:ABC mono-agent start
 ```
 
-Background commands (`start`, `restart`, `stop`, `status`, `logs`) require macOS (launchd). On other platforms use `mono-agent start --foreground`. See [Sessions & concurrency](/runtime/sessions-concurrency/) for how the background worker keeps conversations alive.
+Background commands (`start`, `restart`, `stop`, `status`, `logs`) use launchd on macOS and systemd user services on Linux. Linux needs a running user manager; hosts without either backend can use `mono-agent start --foreground`. See [Linux background services](./linux-services.md) for the Linux lifecycle and [Sessions & concurrency](/runtime/sessions-concurrency/) for how the worker keeps conversations alive.
 
 Each managed macOS instance has active stdout/stderr files plus three retained
 generations under `~/.mono-agent/logs/`. Every file is capped at 5 MiB by a
@@ -143,7 +143,7 @@ After committed-file validation on macOS, guided init materializes the exact alr
 
 Start and restart print progress for durable-runtime verification, worker replacement, and readiness. A matching v5 managed runtime uses an owner-private inode/stat proof; any mismatch falls back to the full content verifier and repair path. The command reports whether it used warm reuse, full verification, installation, or repair and how long that phase took. Launchctl control operations retain their own bounded wait, followed by up to 60 seconds for worker readiness. The worker publishes durable `metadata.lifecycle.startupCompleted: true` only after channels, memory rituals, and final memory-health work complete, alongside content-free total and per-phase startup timings. Later trace refreshes retain that proof while `metadata.reason` remains the latest diagnostic publication reason. A ready result additionally requires the trace PID to be alive and launchd-owned, the committed config/`.env`/Identity/Soul/MCP authority and operational-environment fingerprints to match, configured channels and current memory health not to have failed, and the TUI endpoint to be reachable when configuration is requested. Start, restart, and configuration attach reconstruct registry/config values from the same durable dotenv-plus-operational environment as the worker, so shell-only overrides cannot select a different instance. Workers without the durable marker must restart once before configuration can attach.
 
-Only then does init open `mono-agent tui --configure` against that instance. A readiness timeout or trace/TUI-probe error preserves the committed files and skips SELF-CONFIG, then tries to unload both worker and scheduled maintenance and remove both definitions through the ownership-proven stop path. If stopped state cannot be proven, the command explicitly warns that a process may still be running. Either outcome prints exact `start`, `status`, and `logs --follow` commands plus log paths. Off macOS, init makes no process/readiness claim and no self-configuration attempt: edit config/identity manually, validate, run `start --foreground` in one terminal, then ordinary `tui` in another. Conversational configuration requires the managed macOS lifecycle.
+Only then does init open `mono-agent tui --configure` against that instance. A readiness timeout or trace/TUI-probe error preserves the committed files and skips SELF-CONFIG, then tries to unload both worker and scheduled maintenance and remove both definitions through the ownership-proven stop path. If stopped state cannot be proven, the command explicitly warns that a process may still be running. Either outcome prints exact `start`, `status`, and `logs --follow` commands plus log paths. Off macOS, init makes no process/readiness claim and no self-configuration attempt: edit config/identity manually and validate, then use background `start` plus ordinary `tui` on Linux or `start --foreground` plus ordinary `tui` on platforms without a background backend. Conversational configuration requires the managed macOS lifecycle.
 
 With `--yes` or any flag, or without a TTY, `init` is scaffold-only: explicitly requested `--auth` may run, but the command never executes the all-route readiness proof, starts a process, or labels the result ready. `mono-agent setup` is an alias of `init`.
 
@@ -429,7 +429,7 @@ automatic migration; never use it merely to make a RED audit green. See the
 
 ## `start`
 
-Starts the agent. Without `--foreground`, it registers a background macOS service (launchd) for the config, prints the instance info, and returns; re-running restarts the running instance. Both modes refuse to start unless a valid `mono-agent.config.json` is present in the folder.
+Starts the agent. Without `--foreground`, it registers a launchd service on macOS or a systemd user service on Linux, prints the instance info, and returns. A healthy Linux service is preserved by another `start`; use `restart` to apply changed inputs. Both foreground and background modes refuse to start unless a valid `mono-agent.config.json` is present in the folder.
 
 Managed start also installs a no-`KeepAlive` recovery helper with `RunAtLoad`
 for login recovery and a recurring hourly `StartCalendarInterval`. Its minute is
@@ -485,7 +485,7 @@ the on-disk plist, is authoritative.
 The start preflight requires the config **file** to exist (a folder with only env vars is not a configured agent → exit `2`) and runs structural validation with network probes skipped (so probes only yield `waiting`, never `error`); any `error` section refuses the start with exit `1`. `waiting` never blocks.
 
 ```bash
-# background launchd service (macOS)
+# background service (macOS launchd or Linux systemd user service)
 mono-agent start
 
 # blocking foreground worker (any platform; ends on SIGINT/SIGTERM)
@@ -504,20 +504,20 @@ A channel shown as `disabled` is opted out via its `enabled` flag rather than mi
 
 ## `restart`
 
-Restarts the background instance for this config, starting it if stopped. Like `start`, it gates on a present, valid config before touching launchd.
+Restarts the background instance for this config, starting it if stopped. Like `start`, it gates on a present, valid config before touching launchd or systemd.
 
 | Flag | Effect |
 | --- | --- |
 | `--config <path>` | Target a non-default config. |
 | `--env-file <path>` | Load the same non-default dotenv file used by the managed worker and preserve it in recovery commands. |
-| `--clear-sessions` | Stop, then purge persisted Pi sessions, canonical message and tool history, and ACP session authorizations, then start fresh. |
+| `--clear-sessions` | On macOS, stop, purge persisted Pi sessions, canonical message and tool history, and ACP session authorizations, then start fresh. Linux rejects this flag before changing service or conversation state. |
 | `--force` | Deprecated alias of `--clear-sessions` (same effect); every invocation prints a deprecation hint. |
 
 `--clear-sessions` clears all conversation-continuity stores: resumable provider transcripts under `providers.piNative.piSessionsRoot`, top-level canonical message-history records under `history/` beside `artifacts.dir`, the canonical managed-tool sidecar under `history/tool-history/` with its owner database under `history/.locks/`, and durable ACP session authorizations under `acp-sessions/` beside `artifacts.dir`. The next turn therefore neither resumes, replays, nor searches pre-reset conversation state, and previously issued ACP session ids are rejected. Durable memory under `memory.path`, recorded run artifacts under `artifacts.dir`, and every root in the monotonic process-job registry are untouched. Preflight holds the registry mutation lock while it performs bounded recovery, freezes and re-attests the registry, checks the strict registry and sibling recovery control paths plus the lexical and canonical aliases of every retained root, and refuses equality or containment with any purge path before the first deletion. This remains true after process jobs are disabled, removed, or moved from A to B. Nonterminal process jobs are interrupted by restart independently of this flag. Each missing store is a no-op. Output reports message-history files/bytes and tool-history files/bytes plus call/record/tombstone counts separately; if a corrupt sidecar cannot be counted, it says those record counts are unavailable instead of reporting zero.
 
 ```bash
 mono-agent restart
-mono-agent restart --clear-sessions   # clears provider, message/tool, and ACP continuity
+mono-agent restart --clear-sessions   # macOS: clear provider, message/tool, and ACP continuity
 ```
 
 `piSessionsRoot` is set via `providers.piNative.piSessionsRoot` (env `MONO_AGENT_PI_SESSIONS_ROOT`), e.g. `.mono-agent/sessions`; leaving it unset keeps sessions in memory.
@@ -531,10 +531,10 @@ mono-agent restart --clear-sessions   # clears provider, message/tool, and ACP c
 These three commands stay ungated, so a broken or misconfigured instance can still be inspected and torn down.
 
 ```bash
-mono-agent stop                  # stop and remove the LaunchAgent
-mono-agent status                # this config's instance + other running instances
+mono-agent stop                  # stop and remove the owned service definition
+mono-agent status                # service/readiness; macOS also lists other instances
 mono-agent status --json         # the same record as machine-readable JSON
-mono-agent logs --follow         # stream the log files
+mono-agent logs --follow         # stream macOS log files or the Linux user journal
 mono-agent logs --lines 500      # print the last 500 lines and exit
 ```
 
@@ -544,13 +544,13 @@ mono-agent logs --lines 500      # print the last 500 lines and exit
 | `stop` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
 | `status` | `--config <path>` | Target a non-default config. |
 | `status` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
-| `status` | `--json` | Emit `{ ok, instance, others }`. `instance` is `null` when no trace exists for this config, otherwise the record the human view assembles (`pid`, `health`, `configPath`, `logs`, and the persisted `observability`/`sandbox`/`session`/`channels`/`memoryHealth`/`runsHealth` metadata). A running trace is accepted only when its PID is alive and equals the PID launchd currently owns. Otherwise `ok` is false, exit is `1`, `pid` is `null`, health is `stopped`, cached `running` channels become `{kind:"stopped",reason:"instance is not running"}`, and stale transport/endpoint facts are omitted. |
+| `status` | `--json` | Emit the stable `{ ok, instance, others }` envelope. On macOS, `instance` is `null` when no trace exists; otherwise it is the human view's record (`pid`, `health`, `configPath`, `logs`, and persisted observability/runtime metadata). A trace counts as running only when its PID is alive and launchd-owned; inactive cached records lose stale process/endpoint facts. On Linux, an absent unit and definition produce `instance: null`; otherwise the instance includes `pid`, `health`, `status`, `configPath`, and `startedAt`. Linux also adds top-level `backend`, `unit`, `runtime`, raw systemd state, and `ready`, while `others` is empty. `ok` mirrors the exit code on both platforms. |
 | `logs` | `--config <path>` | Target a non-default config. |
 | `logs` | `--env-file <path>` | Resolve the target with the managed worker's non-default dotenv file. |
 | `logs` | `--follow` / `-f` | Keep streaming new output (`tail -F`). |
 | `logs` | `--lines <n>` | Number of trailing lines to print (1–100000, default 200). |
 
-For `logs`, `-f` means **follow**; for `start`, use `--foreground` — `-f` is logs-only and errors on `start`. A `--lines` value outside `1`–`100000` (or non-integer) errors.
+For `logs`, `-f` means **follow**; for `start`, use `--foreground` — `-f` is logs-only and errors on `start`. Linux reads journald, while macOS tails the active files. A `--lines` value outside `1`–`100000` (or non-integer) errors.
 
 `status` prints the same compact **runs health** block for the detached instance after the instance, observability, and channel details. Missing or empty artifact directories show `No runs recorded yet.` and do not change the command's existing exit-code semantics.
 
@@ -612,7 +612,7 @@ mono-agent tui --local                  # ordinary current-folder chat, no daemo
 
 The remote live-chat connection uses the agent's [`tui` channel](/channels/tui/) (on by default); an agent with the channel disabled still gets replay and config views. Managed configuration is OS-owner scoped: the folder and single-link config must be current-user-owned and not group/world writable; config, Identity, and `.mono-agent` transaction paths cannot traverse symlink parents. The opening message maps all framework capability areas once, warns never to enter secrets, and begins a user-led workflow conversation. `ProposeAgentConfiguration` exists only for that separately identified conversation. It can propose an RFC 6902 config patch and optional `## Role` body in the identity file resolved from `context.identityPath`, but cannot write. The background turn replaces ordinary action tools and configured MCP servers with a request-scoped read-only/proposal policy. A separate local approve/reject card gates all writes.
 
-Approval, rejection, `done`, `no changes`, and proposal-free turns all rotate the proposal capability and continue the same SELF-CONFIG conversation; every non-command message stays configuration-marked. Approval commits the files, restarts the managed agent, waits for a new ready trace source, swaps the endpoint, and feeds a fixed outcome summary into the next turn. A recovered rollback does the same without claiming the rejected change is active. Fast follow-up text remains in the editor while a turn or host transaction settles and is never sent to ordinary chat or a stale endpoint. If recovery cannot prove an endpoint, the `[SELF-CONFIG]` marker remains, the endpoint disconnects, and manual recovery guidance stays visible. Only `/quit`, `/exit`, or double `ctrl+c` exits self-configuration; the background agent remains running. Conversational configuration is unavailable off macOS; manually edit and validate, run `start --foreground`, and connect with ordinary `tui` instead.
+Approval, rejection, `done`, `no changes`, and proposal-free turns all rotate the proposal capability and continue the same SELF-CONFIG conversation; every non-command message stays configuration-marked. Approval commits the files, restarts the managed agent, waits for a new ready trace source, swaps the endpoint, and feeds a fixed outcome summary into the next turn. A recovered rollback does the same without claiming the rejected change is active. Fast follow-up text remains in the editor while a turn or host transaction settles and is never sent to ordinary chat or a stale endpoint. If recovery cannot prove an endpoint, the `[SELF-CONFIG]` marker remains, the endpoint disconnects, and manual recovery guidance stays visible. Only `/quit`, `/exit`, or double `ctrl+c` exits self-configuration; the background agent remains running. Conversational configuration is unavailable off macOS; manually edit and validate, then use background `start` plus ordinary `tui` on Linux or foreground start plus ordinary `tui` on platforms without a background backend.
 
 ## `web`
 
@@ -627,15 +627,15 @@ mono-agent web run --loopback
 mono-agent web stop
 ```
 
-`start`, `restart`, `stop`, `status`, and `logs` manage the dedicated launchd service on macOS. `run` is the blocking foreground path on every supported platform. The default is `0.0.0.0:5050`; use `--loopback` to bind `127.0.0.1`. `--loopback` conflicts with `--host`. `--theme` accepts `evergreen` (default), `ocean`, `plum`, or `terracotta` on `start`, `restart`, and `run`.
+`start`, `restart`, `stop`, `status`, and `logs` manage the dedicated launchd service on macOS or systemd user service on Linux. When Linux has no usable user manager, the read-only bare/status view falls back to foreground-state reporting; mutations still fail and `run` remains available. `run` is the blocking foreground path on every supported platform. The default is `0.0.0.0:5050`; use `--loopback` to bind `127.0.0.1`. `--loopback` conflicts with `--host`. `--theme` accepts `evergreen` (default), `ocean`, `plum`, or `terracotta` on `start`, `restart`, and `run`.
 
 | Command / flag | Effect |
 | --- | --- |
-| `start [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Install/start the paired managed macOS worker and maintenance helper. Defaults to `0.0.0.0:5050` and `evergreen`; a stopped service retains its recorded theme unless replaced. |
-| `restart [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Restart with the stored bind/theme or replace either supplied value, republishing both plists from one fresh composite main-plist identity. |
-| `stop` | Unload the helper before the worker, remove both definitions after PID-death proof, and remove only the Tailscale Serve route it owns. |
-| `status` | Print process health, effective bind and theme, local/LAN/Tailscale URLs, Serve state, and durable log-maintenance state. A safe pass merely awaiting its schedule is `due`, not a failure; missing/stale helpers, unsafe inventory, refused artifacts, failed passes, and abandoned recovery remain nonzero. Proven recovery names `restart`; unproven stopping or stale-plist authority names `stop` then `start`. |
-| `logs [--follow\|-f] [--lines <n>]` | Print or follow only `web.err.log` and `web.out.log`; follow uses `tail -F` so it reopens a rotated active name. Retained `.1`–`.3` files have no CLI selector. |
+| `start [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Install/start the paired managed macOS worker and maintenance helper or the Linux systemd user unit. Defaults to `0.0.0.0:5050` and `evergreen`; a stopped service retains its recorded theme unless replaced. |
+| `restart [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Restart with the stored bind/theme or replace supplied values. macOS republishes both plists from one fresh composite main-plist identity; Linux republishes its unit and accepts host-only changes on the owned active port. |
+| `stop` | Stop the owned service. macOS unloads the helper before the worker, removes both definitions after PID-death proof, and removes only the Tailscale Serve route it owns; Linux disables and removes its unit while preserving external HTTPS routes. |
+| `status` | Print process health and effective bind/theme. macOS also reports local/LAN/Tailscale URLs, Serve state, and durable log maintenance. Linux reports systemd state and externally managed HTTPS; without a user manager it falls back to the foreground-state view. |
+| `logs [--follow\|-f] [--lines <n>]` | Print/follow `web.err.log` and `web.out.log` on macOS or the unit's user journal on Linux. macOS follow uses `tail -F`; retained `.1`–`.3` files have no CLI selector. |
 | `run [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Run the service in the foreground; cross-platform. The theme defaults to `evergreen`. |
 | `reset --all --yes` | With both worker and helper stopped and both plist files absent, take the web lifecycle lock and erase the whole web-console store and uploads. Both confirmations are mandatory. |
 

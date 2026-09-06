@@ -13,6 +13,11 @@ The web service does not run the terminal UI. Both consoles discover and connect
 
 ## Start it once
 
+On Linux, use the [systemd user-service backend](./linux-services.md) for
+`web start`, `stop`, `restart`, `status`, and `logs`. Its runtime is unmanaged
+and HTTPS routes are configured separately. The managed launchd/Tailscale
+lifecycle described below applies to macOS.
+
 On macOS, install and start the managed service:
 
 ```bash
