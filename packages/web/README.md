@@ -136,11 +136,12 @@ managed agent protects its loopback operator endpoint, discovery reads only
 
 On desktop, the agent rail has fixed compact and expanded layouts selected by
 an explicit expand/collapse control. That choice is remembered by the browser.
-On narrow touch screens, a deliberate right swipe beginning within 32 pixels of
-the left edge opens the conversation drawer. A left swipe across either open
-navigation drawer closes it; short drags and vertically dominant scrolling do
-not trigger navigation. The two header navigation controls remain available as
-44-pixel touch targets.
+On narrow touch screens, a deliberate right swipe across the unoccupied chat
+surface opens the conversation drawer. A left swipe across either open
+navigation drawer closes it. Message content, controls, inputs, and any native
+horizontal scroller keep their normal touch behavior; short drags and vertically
+dominant scrolling do not trigger navigation. The two header navigation controls
+remain available as 44-pixel touch targets.
 Offline agents that remain in the current discovery result are hidden behind a
 subtle count by default; pinned agents and the currently selected agent remain
 visible even while offline. An agent omitted by a successful discovery refresh
