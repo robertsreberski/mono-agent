@@ -623,6 +623,50 @@ describe("runWebCommand", () => {
     expect(resetState).not.toHaveBeenCalled();
   });
 
+  it("falls back to foreground status when the Linux systemd user manager is unavailable", async () => {
+    const home = await testHome();
+    let output = "";
+    let errors = "";
+
+    const code = await runWebCommand(
+      { positionals: [], env: {} },
+      {
+        platform: "linux",
+        homeDir: home,
+        systemd: { run: async () => ({ code: 1, stdout: "", stderr: "Failed to connect to bus" }) },
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    );
+
+    expect(code).toBe(0);
+    expect(output).toContain("Web console status");
+    expect(output).toContain("mono-agent web start");
+    expect(errors).not.toContain("Linux web lifecycle");
+  });
+
+  it("keeps explicit Linux web status read-only when the systemd user manager is unavailable", async () => {
+    const home = await testHome();
+    let output = "";
+    let errors = "";
+
+    const code = await runWebCommand(
+      { positionals: ["status"], env: {} },
+      {
+        platform: "linux",
+        homeDir: home,
+        systemd: { run: async () => ({ code: 1, stdout: "", stderr: "Failed to connect to bus" }) },
+        stdout: { write: (text) => { output += text; } },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(output).toContain("Web console status");
+    expect(output).toContain("mono-agent web start");
+    expect(errors).not.toContain("Linux web lifecycle");
+  });
+
   it("allows foreground-only Linux reset when the systemd user manager is unavailable", async () => {
     const home = await testHome();
     const resetState = vi.fn(async () => undefined);

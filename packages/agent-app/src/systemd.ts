@@ -11,6 +11,7 @@ export interface SystemdResult { readonly code: number; readonly stdout: string;
 export interface SystemdDeps {
   readonly run?: (command: string, args: readonly string[]) => Promise<SystemdResult>;
   readonly journal?: (args: readonly string[]) => Promise<number>;
+  readonly isAlive?: (pid: number) => boolean;
   readonly homeDir?: string;
   readonly configDir?: string;
   readonly now?: () => number;
@@ -38,6 +39,14 @@ export interface SystemdService {
 
 const MARKER = "# mono-agent systemd user service v1 ";
 export const SYSTEMD_WEB_IDENTITY = "web";
+
+export class SystemdUserManagerUnavailableError extends Error {
+  override readonly name = "SystemdUserManagerUnavailableError";
+}
+
+export function isSystemdUserManagerUnavailable(error: unknown): boolean {
+  return error instanceof SystemdUserManagerUnavailableError;
+}
 
 export function systemdUnitName(identity: string): string {
   return identity === SYSTEMD_WEB_IDENTITY ? "mono-agent-web.service"
@@ -102,7 +111,12 @@ export async function inspectSystemd(identity: string, deps: SystemdDeps = {}): 
     return [line.slice(0, index), line.slice(index + 1)];
   }));
   if (result.code !== 0 && properties.LoadState !== "not-found") {
-    throw new Error(`Cannot inspect systemd user service: ${result.stderr.trim() || "systemctl failed"}`);
+    const detail = result.stderr.trim() || "systemctl failed";
+    const message = `Cannot inspect systemd user service: ${detail}`;
+    if (/Failed to connect to bus|System has not been booted with systemd|No medium found|(?:spawn|systemctl).*ENOENT/iu.test(detail)) {
+      throw new SystemdUserManagerUnavailableError(message);
+    }
+    throw new Error(message);
   }
   if (!properties.LoadState || !properties.ActiveState) throw new Error("systemctl returned an incomplete service record.");
   const pid = Number(properties.MainPID ?? "0");
@@ -127,18 +141,51 @@ async function ownedFile(path: string): Promise<string | undefined> {
   }
 }
 
-export async function readSystemdDefinition(identity: string, deps: SystemdDeps = {}): Promise<SystemdDefinition | undefined> {
+interface OwnedSystemdUnit {
+  readonly definition: SystemdDefinition;
+  readonly contents: string;
+}
+
+function parseSystemdDefinition(value: unknown): SystemdDefinition | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.identity !== "string" || typeof record.cwd !== "string"
+    || !Array.isArray(record.argv) || record.argv.length === 0 || !record.argv.every((arg) => typeof arg === "string")
+    || record.environment === null || typeof record.environment !== "object" || Array.isArray(record.environment)
+    || !Object.values(record.environment).every((entry) => typeof entry === "string")) return undefined;
+  return {
+    identity: record.identity,
+    cwd: record.cwd,
+    argv: record.argv as readonly string[],
+    environment: record.environment as Readonly<Record<string, string>>,
+  };
+}
+
+async function readOwnedSystemdUnit(identity: string, deps: SystemdDeps): Promise<OwnedSystemdUnit | undefined> {
   const contents = await ownedFile(systemdUnitPath(identity, deps));
   if (contents === undefined) return undefined;
   try {
     const first = contents.split("\n", 1)[0]!;
     if (!first.startsWith(MARKER)) throw new Error("missing ownership marker");
-    const definition = JSON.parse(Buffer.from(first.slice(MARKER.length), "base64").toString("utf8")) as SystemdDefinition;
-    if (definition.identity !== identity || renderSystemdUnit(definition) !== contents) throw new Error("modified unit");
-    return definition;
+    const definition = parseSystemdDefinition(JSON.parse(Buffer.from(first.slice(MARKER.length), "base64").toString("utf8")));
+    if (definition?.identity !== identity) throw new Error("invalid unit identity");
+    return { definition, contents };
   } catch {
     throw new Error(`Refusing to replace or remove an unrecognized service file: ${systemdUnitPath(identity, deps)}.`);
   }
+}
+
+export async function readSystemdDefinition(identity: string, deps: SystemdDeps = {}): Promise<SystemdDefinition | undefined> {
+  return (await readOwnedSystemdUnit(identity, deps))?.definition;
+}
+
+function sameSystemdDefinition(left: SystemdDefinition, right: SystemdDefinition): boolean {
+  if (left.identity !== right.identity || left.cwd !== right.cwd || left.argv.length !== right.argv.length
+    || left.argv.some((value, index) => value !== right.argv[index])) return false;
+  const leftEnvironment = Object.entries(left.environment).sort(([a], [b]) => a.localeCompare(b));
+  const rightEnvironment = Object.entries(right.environment).sort(([a], [b]) => a.localeCompare(b));
+  return leftEnvironment.length === rightEnvironment.length
+    && leftEnvironment.every(([name, value], index) => name === rightEnvironment[index]?.[0] && value === rightEnvironment[index]?.[1]);
 }
 
 async function ensureDirectory(path: string): Promise<void> {
@@ -201,18 +248,21 @@ export async function startSystemd(
   deps: SystemdDeps = {},
 ): Promise<void> {
   const identity = definition.identity;
-  const previous = await readSystemdDefinition(identity, deps);
+  const previousUnit = await readOwnedSystemdUnit(identity, deps);
+  const previous = previousUnit?.definition;
   const priorService = await inspectSystemd(identity, deps);
   await assertFragment(identity, priorService, deps);
   if (!previous && priorService.loadState !== "not-found") throw new Error("Service exists without an owned unit; refusing to replace it.");
   const contents = renderSystemdUnit(definition);
   if (!restart && priorService.activeState === "active") {
-    if (!previous || renderSystemdUnit(previous) !== contents) throw new Error("Service configuration changed; use restart to apply it.");
+    if (!previous || !sameSystemdDefinition(previous, definition)) throw new Error("Service configuration changed; use restart to apply it.");
     if (!await ready(priorService)) throw new Error("Service is running but has not reported ready; inspect status and logs.");
     return;
   }
+  let published = false;
   try {
     await publish(systemdUnitPath(identity, deps), contents);
+    published = true;
     await checked(["daemon-reload"], deps);
     await checked(["enable", systemdUnitName(identity)], deps);
     await checked([restart ? "restart" : "start", systemdUnitName(identity)], deps);
@@ -225,6 +275,7 @@ export async function startSystemd(
       await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(200);
     }
   } catch (error) {
+    if (!published) throw error;
     try {
       const failedService = await inspectSystemd(identity, deps);
       if (failedService.pid > 0 || !["inactive", "failed"].includes(failedService.activeState)) {
@@ -232,7 +283,7 @@ export async function startSystemd(
       }
       const stopped = await inspectSystemd(identity, deps);
       if (stopped.pid !== 0 || !["inactive", "failed"].includes(stopped.activeState)) throw new Error("Replacement worker is still running.");
-      if (previous) await publish(systemdUnitPath(identity, deps), renderSystemdUnit(previous));
+      if (previousUnit) await publish(systemdUnitPath(identity, deps), previousUnit.contents);
       else {
         await checked(["disable", systemdUnitName(identity)], deps);
         await unlink(systemdUnitPath(identity, deps));

@@ -373,8 +373,8 @@ export const HELP_ALIASES = new Map<string, string>([
 ]);
 
 const HELP_NOTES = `Background mode runs the agent under launchd or Linux systemd user services,
-keeping it alive across logins (Linux requires loginctl enable-linger for this user)
-(auto-restarting only on crash) until you run stop. Secrets are read from the
+auto-restarting only after a crash until you run stop. Linux requires
+loginctl enable-linger for this user to keep the service alive across logins. Secrets are read from the
 .env file in the working directory, the same as foreground mode. The background
 commands require macOS or Linux with a running systemd user manager; elsewhere use start --foreground.
 Linux runtime provenance remains dev (unmanaged); managed configuration chat is macOS-only.

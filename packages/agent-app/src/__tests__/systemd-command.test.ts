@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../systemd.js", () => ({
   SYSTEMD_WEB_IDENTITY: "web", systemdUnitName: (id: string) => `${id}.service`,
+  isSystemdUserManagerUnavailable: () => false,
   inspectSystemd: mocks.inspect, readSystemdDefinition: mocks.read, startSystemd: mocks.start,
   stopSystemd: mocks.stop, systemdLogs: vi.fn(async () => 0), withSystemdLock: mocks.lock,
 }));
@@ -53,9 +54,17 @@ describe("Linux agent command composition", () => {
 
   it("refuses an existing worker owned by another supervisor", async () => {
     mocks.traces.mockResolvedValue({ sources: [{ configPath: "/agent/config.json", pid: 99, health: "running" }] });
-    expect(await runSystemdAgentCommand(args("start"), "start", {}, output())).toBe(1);
+    expect(await runSystemdAgentCommand(args("start"), "start", {}, { ...output(), isAlive: () => true })).toBe(1);
     expect(mocks.start).not.toHaveBeenCalled();
     expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale running trace after its recorded process exits", async () => {
+    mocks.traces
+      .mockResolvedValueOnce({ sources: [{ configPath: "/agent/config.json", pid: 99, health: "running" }] })
+      .mockResolvedValue({ sources: [{ configPath: "/agent/config.json", pid: 42, health: "running", metadata: { lifecycle: { startupCompleted: true } } }] });
+    expect(await runSystemdAgentCommand(args("start"), "start", {}, { ...output(), isAlive: () => false })).toBe(0);
+    expect(mocks.start).toHaveBeenCalledOnce();
   });
 
   it("does not accept trace liveness without completed startup", async () => {
@@ -69,7 +78,15 @@ describe("Linux agent command composition", () => {
     const deps = output();
     expect(await runSystemdAgentCommand({ ...args("status"), json: true }, "status", {}, deps)).toBe(1);
     const status = JSON.parse(deps.stdout.write.mock.calls[0]![0] as string);
-    expect(status).toMatchObject({ pid: 42, activeState: "active", ready: false });
+    expect(status).toMatchObject({
+      ok: false,
+      instance: { pid: 42, health: "stopped", configPath: "/agent/config.json" },
+      others: [],
+      backend: "systemd-user",
+      pid: 42,
+      activeState: "active",
+      ready: false,
+    });
   });
 
   it("allows stop without parsing a broken config or dotenv", async () => {
@@ -110,5 +127,13 @@ describe("Linux web command composition", () => {
     mocks.health.mockResolvedValue(true);
     expect(await runSystemdWebCommand({ positionals: ["start"], env: {}, loopback: true }, output())).toBe(1);
     expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  it("allows an owned active console to restart on a new host at the same port", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "0.0.0.0", "--port", "5050", "--theme", "plum"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {}, loopback: true }, output())).toBe(0);
+    expect(mocks.start).toHaveBeenCalledOnce();
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--host", "127.0.0.1", "--port", "5050"]));
   });
 });
