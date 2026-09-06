@@ -4347,6 +4347,55 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("attributes a blank selection to the first advertised route when the agent omits its default", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const fallbackFetch = operatorFetch({
+      onTurn(body) { turnBodies.push(body); },
+      turns: () => [
+        JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "local:ungraded" } } }),
+        JSON.stringify({ kind: "event", event: { type: "provider_status", kind: "failover_started", from: "local:ungraded", to: "local:graded", attemptIndex: 1, reason: "overloaded" } }),
+        JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "local:graded" } } }),
+        JSON.stringify({ kind: "event", event: { type: "provider_status", kind: "failover_completed", attemptIndex: 1, model: "local:graded" } }),
+        JSON.stringify({ kind: "finish", finalText: "Recovered", metadata: { runtime: { model: "local:graded" } } }),
+        "",
+      ].join("\n"),
+    });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        models: ["local:ungraded", "local:graded"],
+        modelOptions: {
+          "local:ungraded": { reasoning: false },
+          "local:graded": { reasoning: true, effortLevels: ["low"] },
+        },
+        capabilities: { attachments: true },
+      });
+      return fallbackFetch(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "fallback" });
+    await waitFor(() => service.store.listActiveTurnIds().length === 0);
+
+    expect(turnBodies).toHaveLength(1);
+    const metadata = turnBodies[0]?.metadata as {
+      readonly web?: Readonly<Record<string, unknown>>;
+      readonly tui?: Readonly<Record<string, unknown>>;
+    };
+    expect(metadata.web).not.toHaveProperty("model");
+    expect(metadata.tui).not.toHaveProperty("model");
+    expect(service.thread(thread.id).messages.at(-1)?.attribution).toMatchObject({
+      requested: { model: "local:ungraded" },
+      attempted: { model: "local:graded" },
+      executed: { model: "local:graded" },
+      disposition: "fallback",
+      transitions: [{ from: "local:ungraded", to: "local:graded", reason: "overloaded" }],
+    });
+    await service.stop();
+  });
+
   it("leaves a lost conditional patch entirely without effect", async () => {
     // The loser must write nothing and announce nothing: an event for a write
     // that did not happen makes every other tab refetch a thread that has not

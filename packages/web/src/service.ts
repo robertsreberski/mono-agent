@@ -3327,7 +3327,7 @@ export class WebService {
     const model = explicitModel ?? thread.runModel ?? undefined;
     const effort = explicitEffort ?? thread.runEffort ?? undefined;
     this.validateModelAndEffort(thread.sourceId, agent, model, effort);
-    const requestedModel = model ?? agent.defaultModel ?? undefined;
+    const requestedModel = effectiveModelForAgent(agent, model);
     const requestedEffort = effort ?? agent.defaultEffort ?? undefined;
     return {
       thread,
