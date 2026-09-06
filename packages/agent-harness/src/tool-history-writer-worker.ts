@@ -131,7 +131,6 @@ try {
   secureDirectoryPath(root);
   ensureSecureDirectory(locksDirectory);
   ensureSecureDirectory(toolDirectory);
-  assertToolDirectoryEntries();
   ensureSecureFile(ownerPath);
   ensureSecureFile(databasePath);
 } catch (error) {
@@ -147,6 +146,7 @@ let owner: { release(): void } | undefined;
 let database: DatabaseSync | undefined;
 try {
   owner = await acquireOwner(ownerPath, ownerAcquireCeilingMs);
+  assertToolDirectoryEntries();
   database = openContentDatabase(databasePath, retention, artifactRoot);
   closeDangling(database, undefined, "interrupted", "process_death", "recovered_after_writer_restart", true);
   applyRetention(database, retention);

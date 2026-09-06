@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,6 +23,7 @@ import {
   TOOL_HISTORY_USER_VERSION,
   toolHistoryRecordId,
   type ToolHistoryRunBinding,
+  type ToolHistoryWriterOptions,
 } from "../tool-history-store.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
@@ -31,6 +32,34 @@ const children = new Set<ChildProcess>();
 const childBuffers = new WeakMap<ChildProcess, { stdout: Buffer[]; stderr: Buffer[] }>();
 let sourceFixtureRoot = "";
 let sourceFixtureModuleUrl = "";
+
+const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;
+
+type ToolHistoryPersistence = Awaited<ReturnType<ToolHistoryWriter["persist"]>>;
+type PersistedToolHistoryReceipt = ToolHistoryPersistence & {
+  readonly persistence: "persisted";
+  readonly recordId: string;
+  readonly sequence: number;
+};
+
+// Storage-semantic tests require complete success receipts; dedicated timing
+// tests below construct writers directly with the production or shorter ceiling.
+async function openStorageTestWriter(options: ToolHistoryWriterOptions): Promise<ToolHistoryWriter> {
+  return await ToolHistoryWriter.open({
+    ...options,
+    persistenceCeilingMs: STORAGE_TEST_PERSISTENCE_CEILING_MS,
+  });
+}
+
+function expectPersistedReceipt(
+  receipt: ToolHistoryPersistence,
+): asserts receipt is PersistedToolHistoryReceipt {
+  expect(receipt, JSON.stringify(receipt)).toMatchObject({
+    persistence: "persisted",
+    recordId: expect.any(String),
+    sequence: expect.any(Number),
+  });
+}
 
 beforeAll(async () => {
   sourceFixtureRoot = await mkdtemp(join(tmpdir(), "tool-history-source-fixture-"));
@@ -93,7 +122,7 @@ afterEach(async () => {
 describe("ToolHistoryWriter and ToolHistoryReader", () => {
   it("persists redacted bounded pairs with stable ids, deterministic per-run sequence, all terminal states, and opaque artifacts", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("run-all-states");
     const artifact = join(artifactRootForHistory(root), run.runId, "artifact.txt");
     await mkdir(join(artifactRootForHistory(root), run.runId), { recursive: true });
@@ -101,12 +130,12 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const states = [
       "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
     ] as const;
-    const invocations = [];
-    const results = [];
+    const invocations: PersistedToolHistoryReceipt[] = [];
+    const results: PersistedToolHistoryReceipt[] = [];
     try {
       for (const [index, state] of states.entries()) {
         const toolCallId = `call-${String(index)}`;
-        invocations.push(await writer.persist(run, {
+        const invocation = await writer.persist(run, {
           phase: "invocation",
           toolCallId,
           toolName: index % 2 === 0 ? "Bash" : "Read",
@@ -115,8 +144,10 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
             authorization: "Bearer private-token",
             query: `needle-${String(index)}`,
           },
-        }));
-        results.push(await writer.persist(run, {
+        });
+        expectPersistedReceipt(invocation);
+        invocations.push(invocation);
+        const result = await writer.persist(run, {
           phase: "result",
           toolCallId,
           state,
@@ -126,7 +157,9 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
           }),
           content: index === states.length - 1 ? '"\\'.repeat(15_000) : { answer: `result-${String(index)}` },
           ...(index <= 1 ? { artifacts: [{ path: artifact }] } : {}),
-        }));
+        });
+        expectPersistedReceipt(result);
+        results.push(result);
       }
 
       expect(invocations.map((record) => record.sequence)).toEqual([1, 3, 5, 7, 9, 11, 13, 15]);
@@ -147,6 +180,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
           query: "needle-0",
         },
       });
+      expectPersistedReceipt(duplicate);
       expect(duplicate).toMatchObject({
         persistence: "persisted",
         recordId: invocations[0]?.recordId,
@@ -159,6 +193,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
         content: { answer: "result-0" },
         artifacts: [{ path: artifact }],
       });
+      expectPersistedReceipt(duplicateResult);
       expect(duplicateResult).toMatchObject({
         persistence: "persisted",
         recordId: results[0]?.recordId,
@@ -198,7 +233,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       logicalConversationId: "slack:C1",
       currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
-      recordId: invocations[0]!.recordId!,
+      recordId: invocations[0]!.recordId,
     });
     expect(JSON.stringify(invocation)).not.toContain("sk-secret-never-persist");
     expect(JSON.stringify(invocation)).not.toContain("private-token");
@@ -220,7 +255,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       logicalConversationId: "slack:C1",
       currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
-      recordId: results[0]!.recordId!,
+      recordId: results[0]!.recordId,
     }).record?.artifactReferences).toEqual([
       { id: expect.stringMatching(/^stha1_/u), available: false },
     ]);
@@ -228,7 +263,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       logicalConversationId: "slack:C1",
       currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "run-current",
-      recordId: results[1]!.recordId!,
+      recordId: results[1]!.recordId,
     }).record?.artifactReferences).toEqual([
       { id: expect.stringMatching(/^stha1_/u), available: false },
     ]);
@@ -259,13 +294,11 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const artifact = join(artifactRoot, run.runId, "result.txt");
     await mkdir(join(artifactRoot, run.runId), { recursive: true });
     await writeFile(artifact, "artifact body");
-    const writer = await ToolHistoryWriter.open({
+    const writer = await openStorageTestWriter({
       root,
       artifactRoot,
-      // This test exercises artifact invalidation, not the 250 ms streaming ceiling.
-      persistenceCeilingMs: 5_000,
     });
-    let resultRecordId: string | undefined;
+    let resultRecordId = "";
     try {
       await writer.persist(run, {
         phase: "invocation",
@@ -280,6 +313,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
         content: { ok: true },
         artifacts: [{ path: artifact }],
       });
+      expectPersistedReceipt(result);
       expect(result).toMatchObject({
         persistence: "persisted",
         artifactReferences: [{ id: expect.stringMatching(/^stha1_/u), available: true }],
@@ -311,7 +345,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       logicalConversationId: run.logicalConversationId,
       currentConversationId: run.conversationId,
       currentRunId: "current-run",
-      recordId: resultRecordId!,
+      recordId: resultRecordId,
     }).record?.artifactReferences).toEqual([
       { id: expect.stringMatching(/^stha1_/u), available: false },
     ]);
@@ -336,7 +370,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("replaces a result-first synthetic invocation in place when the real invocation arrives", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("result-first-run");
     const result = await writer.persist(run, {
       phase: "result",
@@ -344,6 +378,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       state: "success",
       content: { answer: "terminal result survives" },
     });
+    expectPersistedReceipt(result);
     const expectedInvocationId = toolHistoryRecordId(
       run.conversationId,
       run.runId,
@@ -356,12 +391,14 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       toolName: "Read",
       arguments: { path: "/Users/example/work/repo/input.ts", query: "real-arguments" },
     });
+    expectPersistedReceipt(invocation);
     const duplicate = await writer.persist(run, {
       phase: "invocation",
       toolCallId: "result-first-call",
       toolName: "Read",
       arguments: { path: "/Users/example/work/repo/input.ts", query: "real-arguments" },
     });
+    expectPersistedReceipt(duplicate);
     expect(invocation).toMatchObject({
       persistence: "persisted",
       recordId: expectedInvocationId,
@@ -395,7 +432,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       logicalConversationId: run.logicalConversationId,
       currentConversationId: "slack:C1#2026-08-15",
       currentRunId: "current-run",
-      recordId: result.recordId!,
+      recordId: result.recordId,
     });
     expect(storedInvocation.record).toMatchObject({
       sequence: 1,
@@ -413,7 +450,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("reapplies byte retention after a result-first synthetic invocation grows in place", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({
+    const writer = await openStorageTestWriter({
       root,
       retention: { maxBytes: 700 },
     });
@@ -424,6 +461,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       state: "success",
       content: "r".repeat(200),
     });
+    expectPersistedReceipt(result);
     await expect(writer.stats()).resolves.toMatchObject({ calls: 1 });
 
     const invocation = await writer.persist(run, {
@@ -432,6 +470,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       toolName: "Read",
       arguments: { payload: "i".repeat(1_000) },
     });
+    expectPersistedReceipt(invocation);
     expect(invocation).toMatchObject({ persistence: "persisted", sequence: 1 });
     await expect(writer.stats()).resolves.toMatchObject({
       calls: 0,
@@ -447,9 +486,9 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       currentRunId: "current-run",
     } as const;
     const reader = new ToolHistoryReader(root);
-    expect(reader.get({ ...scope, recordId: invocation.recordId! }))
+    expect(reader.get({ ...scope, recordId: invocation.recordId }))
       .toMatchObject({ tombstone: { reason: "bytes" }, untrusted: true });
-    expect(reader.get({ ...scope, recordId: result.recordId! }))
+    expect(reader.get({ ...scope, recordId: result.recordId }))
       .toMatchObject({ tombstone: { reason: "bytes" }, untrusted: true });
   });
 
@@ -465,6 +504,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       toolName: "Bash",
       arguments: { command: oversized, apiKey: secret },
     });
+    expectPersistedReceipt(persisted);
     const elapsed = performance.now() - started;
     await writer.finishRun(binding("large-payload"), "succeeded");
     await writer.close();
@@ -477,7 +517,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       logicalConversationId: "slack:C1",
       currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
-      recordId: persisted.recordId!,
+      recordId: persisted.recordId,
       chunkBytes: 8 * 1024,
     }));
     expect(visible).toContain("oversized value omitted before redaction");
@@ -490,7 +530,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
   it("sanitizes and bounds writer incident detail before raw SQLite persistence", async () => {
     const root = await tempRoot();
     const privatePath = "/Users/example/.ssh/id_rsa";
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const failed = await writer.persist(binding("writer-detail-path"), {
       phase: "invocation",
       toolCallId: "uncloneable-detail",
@@ -517,7 +557,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     }
     expect((await readFile(databasePath)).includes(Buffer.from(privatePath)), "seeded legacy detail").toBe(true);
 
-    const reopenedWriter = await ToolHistoryWriter.open({ root });
+    const reopenedWriter = await openStorageTestWriter({ root });
     await reopenedWriter.close();
     const rawBytes = await readFile(databasePath);
     expect(rawBytes.includes(Buffer.from(privatePath)), "raw private writer detail").toBe(false);
@@ -559,7 +599,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     await writeFile(outside, "outside");
     if (process.platform !== "win32") await symlink(outside, symlinked);
 
-    const writer = await ToolHistoryWriter.open({ root, artifactRoot });
+    const writer = await openStorageTestWriter({ root, artifactRoot });
     await writer.persist(run, {
       phase: "invocation",
       toolCallId: "artifact-call",
@@ -577,6 +617,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
         ...(process.platform === "win32" ? [] : [{ path: symlinked }]),
       ],
     });
+    expectPersistedReceipt(persisted);
     await writer.close();
 
     expect(persisted.artifactReferences).toEqual([
@@ -603,7 +644,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("keeps ordinary managed-tool payloads inspectable while neutralizing every host path span", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("useful-path-history");
     const sourcePath = "/Users/example/work/repo/src/index.ts";
     const outputPath = "/Users/example/work/repo/src/generated/output.ts";
@@ -627,13 +668,15 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
           toolName: call.name,
           arguments: call.arguments,
         });
+        expectPersistedReceipt(invocation);
         const result = await writer.persist(run, {
           phase: "result",
           toolCallId: call.id,
           state: "success",
           content: call.content,
         });
-        recordIds.push(invocation.recordId!, result.recordId!);
+        expectPersistedReceipt(result);
+        recordIds.push(invocation.recordId, result.recordId);
       }
     } finally {
       await writer.close();
@@ -717,23 +760,22 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       },
       safeContext,
     };
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const invocation = await writer.persist(run, {
       phase: "invocation",
       toolCallId: "compound-credential-call",
       toolName: "Inspect",
       arguments: payload,
     });
+    expectPersistedReceipt(invocation);
     const result = await writer.persist(run, {
       phase: "result",
       toolCallId: "compound-credential-call",
       state: "success",
       content: payload,
     });
+    expectPersistedReceipt(result);
     await writer.close();
-    if (invocation.recordId === undefined || result.recordId === undefined) {
-      throw new Error("Compound credential history was not persisted.");
-    }
 
     const databasePath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const databaseBytes = await readFile(databasePath);
@@ -899,26 +941,25 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       __oversized_key_1__: preprocessingOmission,
     };
 
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const invocation = await writer.persist(run, {
       phase: "invocation",
       toolCallId: "serialized-json-redaction-call",
       toolName: "Inspect",
       arguments: invocationPayload,
     });
+    expectPersistedReceipt(invocation);
     const result = await writer.persist(run, {
       phase: "result",
       toolCallId: "serialized-json-redaction-call",
       state: "success",
       content: resultPayload,
     });
+    expectPersistedReceipt(result);
     await writer.finishRun(run, "succeeded");
     await writer.close();
     expect(invocation).toMatchObject({ persistence: "persisted", truncated: true });
     expect(result).toMatchObject({ persistence: "persisted", truncated: true });
-    if (invocation.recordId === undefined || result.recordId === undefined) {
-      throw new Error("Serialized JSON redaction records were not persisted.");
-    }
 
     const expectedInvocationJson = JSON.stringify(expectedInvocation);
     const expectedResultJson = JSON.stringify(expectedResult);
@@ -1043,13 +1084,14 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       ["constructor", "constructor-value"],
       ["prototype", "prototype-value"],
     ]);
-    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 5_000 });
+    const writer = await openStorageTestWriter({ root });
     const invocation = await writer.persist(run, {
       phase: "invocation",
       toolCallId: "path-keyed-call",
       toolName: "Inspect",
       arguments: { nested },
     });
+    expectPersistedReceipt(invocation);
     await writer.persist(run, {
       phase: "result",
       toolCallId: "path-keyed-call",
@@ -1075,7 +1117,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
         logicalConversationId: "slack:C1",
         currentConversationId: "slack:C1#2026-08-14",
         currentRunId: "current",
-        recordId: invocation.recordId!,
+        recordId: invocation.recordId,
         chunkOffset,
         chunkBytes: 48,
       });
@@ -1133,7 +1175,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("persists and re-sanitizes delimiter-adjacent paths without collapsing adjacent records", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("delimiter-path-history");
     const cases = [
       { raw: "[/Users/example/.ssh/id_rsa]", expected: "[[private-path]]", paths: ["/Users/example/.ssh/id_rsa"] },
@@ -1196,17 +1238,19 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       toolName: "Read",
       arguments: { cases: cases.map(({ raw }) => raw) },
     });
+    expectPersistedReceipt(invocation);
     const result = await writer.persist(run, {
       phase: "result",
       toolCallId: "delimiter-call",
       state: "success",
       content: { cases: cases.map(({ raw }) => raw) },
     });
+    expectPersistedReceipt(result);
     await writer.close();
 
     const reader = new ToolHistoryReader(root);
     const search = reader.search({ logicalConversationId: "slack:C1", currentConversationId: "slack:C1#2026-08-14", currentRunId: "current" });
-    const fetched = [invocation.recordId!, result.recordId!].map((recordId) => reader.get({
+    const fetched = [invocation.recordId, result.recordId].map((recordId) => reader.get({
       logicalConversationId: "slack:C1",
       currentConversationId: "slack:C1#2026-08-14",
       currentRunId: "current",
@@ -1231,7 +1275,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("neutralizes private artifact paths in search, get chunks, and the cold projection while excluding the current run", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const leakedPath = "/Users/example/.mono-agent/artifacts/tool-output/old-run/bash.txt";
     for (const [runId, label] of [["old-run", "retained"], ["current-run", "current-only"]] as const) {
       const run = binding(runId);
@@ -1273,7 +1317,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("excludes only the exact physical current run when daily buckets reuse a run id", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const reusedRunId = "reused-run-id";
     const oldRun = binding(reusedRunId, "slack:C1#2026-08-13");
     const currentRun = binding(reusedRunId, "slack:C1#2026-08-14");
@@ -1283,6 +1327,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       toolName: "Read",
       arguments: { marker: "older-completed-call" },
     });
+    expectPersistedReceipt(oldInvocation);
     await writer.persist(oldRun, {
       phase: "result",
       toolCallId: "old-bucket-call",
@@ -1295,6 +1340,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       toolName: "Read",
       arguments: { marker: "current-call-must-stay-hidden" },
     });
+    expectPersistedReceipt(currentInvocation);
     await writer.persist(currentRun, {
       phase: "result",
       toolCallId: "current-bucket-call",
@@ -1314,11 +1360,11 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       runId: reusedRunId,
       toolCallId: "old-bucket-call",
     }]);
-    expect(reader.get({ ...scope, recordId: oldInvocation.recordId! }).record).toMatchObject({
+    expect(reader.get({ ...scope, recordId: oldInvocation.recordId }).record).toMatchObject({
       conversationId: oldRun.conversationId,
       payload: { marker: "older-completed-call" },
     });
-    expect(reader.get({ ...scope, recordId: currentInvocation.recordId! })).toEqual({ untrusted: true });
+    expect(reader.get({ ...scope, recordId: currentInvocation.recordId })).toEqual({ untrusted: true });
     const projected = reader.latestProjection(
       scope.logicalConversationId,
       scope.currentConversationId,
@@ -1329,7 +1375,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("uses one read-only SQLite open for a full cold projection", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     for (let index = 0; index < 12; index += 1) {
       const run = binding(`projection-${String(index)}`);
       await writer.persist(run, {
@@ -1352,7 +1398,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("reassembles complete bounded invocation and result JSON for the cold projection", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("projection-complete-json");
     await writer.persist(run, {
       phase: "invocation",
@@ -1381,7 +1427,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("does not automatically re-inject the result of an explicit SessionHistory read", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("projection-session-history");
     await writer.persist(run, {
       phase: "invocation",
@@ -1410,7 +1456,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("retains the newest fitting projection suffix in chronological order within the UTF-8 byte ceiling", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const payload = "&😀\"".repeat(1_500);
     for (let index = 0; index < 32; index += 1) {
       const suffix = String(index).padStart(2, "0");
@@ -1452,7 +1498,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("resets the logical rollover session across search, get, and cold projection without harming isolation", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     try {
       await writer.persist(binding("run-old", "slack:C1#2026-08-13"), {
         phase: "result",
@@ -1518,7 +1564,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     const targetRuns = 400;
     const callsPerRun = 10;
     const foreignTombstones = 1_000;
-    const initialized = await ToolHistoryWriter.open({ root });
+    const initialized = await openStorageTestWriter({ root });
     await initialized.close();
     const existing = new DatabaseSync(join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE));
     try {
@@ -1574,7 +1620,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("rejects an initial result whose tool name conflicts with the stable invocation", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("stable-tool-name");
     await writer.persist(run, {
       phase: "invocation", toolCallId: "same-call", toolName: "Read", arguments: { path: "README.md" },
@@ -1598,7 +1644,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("durably deduplicates a changed run binding until the canonical binding succeeds", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const canonical = binding("stable-binding");
     const changed = { ...canonical, logicalConversationId: "slack:C2" };
     try {
@@ -1629,7 +1675,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("clears only reset identities from unresolved conflict and write incidents", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const resetRun = binding("reset-incidents");
     const liveRun: ToolHistoryRunBinding = {
       conversationId: "slack:C2#2026-08-14",
@@ -1680,7 +1726,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("clears a pruned call conflict without hiding an unrelated live conflict", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({
+    const writer = await openStorageTestWriter({
       root,
       retention: {
         maxCompletedCalls: 1,
@@ -1733,11 +1779,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("keeps phase-scoped write incidents visible until each missing phase is recovered", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({
-      root,
-      // Preserve the write-failure assertions under loaded workspace CI.
-      persistenceCeilingMs: 5_000,
-    });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("lost-phases");
     try {
       await expect(writer.persist(run, {
@@ -1772,12 +1814,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("resolves only the result incident durably closed by finalization and upgrades that synthetic result in place", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({
-      root,
-      // Preserve recovery assertions under loaded workspace CI; the production
-      // fail-soft persistence ceiling has its own explicit contract test.
-      persistenceCeilingMs: 5_000,
-    });
+    const writer = await openStorageTestWriter({ root });
     const recoveredRun = binding("finalized-result-recovery");
     const unrelatedRun = binding("unrelated-result-recovery");
     const invalidResult = (toolCallId: string) => ({
@@ -1833,6 +1870,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       }]);
 
       const upgraded = await writer.persist(recoveredRun, recoveredEvent);
+      expectPersistedReceipt(upgraded);
       expect(upgraded).toMatchObject({ persistence: "persisted", sequence: 2 });
       await expect(writer.persist(recoveredRun, recoveredEvent)).resolves.toMatchObject({
         persistence: "persisted",
@@ -1895,7 +1933,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("excludes isolated/proactive runs by default and includes them only when explicitly requested", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     try {
       for (const [runId, isolated] of [["normal", false], ["proactive", true]] as const) {
         await writer.persist(binding(runId, "slack:C1#2026-08-14", isolated), {
@@ -1917,7 +1955,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("enforces count, retained-byte, and tombstone bounds without claiming physical SQLite bytes are payload quota", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({
+    const writer = await openStorageTestWriter({
       root,
       retention: { maxCompletedCalls: 1, maxBytes: 700, maxTombstones: 4 },
     });
@@ -1928,7 +1966,8 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
         const invocation = await writer.persist(run, {
           phase: "invocation", toolCallId: `call-${String(index)}`, toolName: "Read", arguments: { text: "a".repeat(150) },
         });
-        if (index === 0 && invocation.recordId !== undefined) firstId.push(invocation.recordId);
+        expectPersistedReceipt(invocation);
+        if (index === 0) firstId.push(invocation.recordId);
         await writer.persist(run, {
           phase: "result", toolCallId: `call-${String(index)}`, state: "success", content: "b".repeat(150),
         });
@@ -1955,7 +1994,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
       toolCallId: "call-0",
     })).toMatchObject({ tombstone: { reason: expect.stringMatching(/count|bytes/u) }, untrusted: true });
 
-    const replayWriter = await ToolHistoryWriter.open({
+    const replayWriter = await openStorageTestWriter({
       root,
       retention: { maxCompletedCalls: 1, maxBytes: 700, maxTombstones: 4 },
     });
@@ -1967,7 +2006,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
     })).toEqual({ persistence: "failed", errorCode: "history_record_tombstoned" });
     await replayWriter.close();
 
-    const cleanupWriter = await ToolHistoryWriter.open({
+    const cleanupWriter = await openStorageTestWriter({
       root,
       retention: { maxCompletedCalls: 1, maxBytes: 700, maxTombstones: 0 },
     });
@@ -2052,7 +2091,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("serializes parallel starts deterministically and paginates across runs whose per-run sequences overlap", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 5_000 });
+    const writer = await openStorageTestWriter({ root });
     try {
       for (const runId of ["run-a", "run-b", "run-c"]) {
         const run = binding(runId);
@@ -2060,11 +2099,13 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
           writer.persist(run, { phase: "invocation", toolCallId: `${runId}-one`, toolName: "Read", arguments: { order: 1 } }),
           writer.persist(run, { phase: "invocation", toolCallId: `${runId}-two`, toolName: "Read", arguments: { order: 2 } }),
         ]);
+        for (const receipt of starts) expectPersistedReceipt(receipt);
         expect(starts.map((entry) => entry.sequence)).toEqual([1, 2]);
         const ends = await Promise.all([
           writer.persist(run, { phase: "result", toolCallId: `${runId}-two`, state: "success", content: 2 }),
           writer.persist(run, { phase: "result", toolCallId: `${runId}-one`, state: "success", content: 1 }),
         ]);
+        for (const receipt of ends) expectPersistedReceipt(receipt);
         expect(ends.map((entry) => entry.sequence)).toEqual([3, 4]);
       }
     } finally {
@@ -2091,7 +2132,7 @@ describe("ToolHistoryWriter and ToolHistoryReader", () => {
 
   it("paginates exact run/sequence/call collisions across physical rollover buckets", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     for (const conversationId of ["slack:C1#2026-08-13", "slack:C1#2026-08-14"]) {
       const run = binding("same-run", conversationId);
       await writer.persist(run, {
@@ -2147,7 +2188,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     const root = await tempRoot();
     const run = binding("v1-synthetic-result");
     const resultId = toolHistoryRecordId(run.conversationId, run.runId, "v1-call", "result");
-    const initialized = await ToolHistoryWriter.open({ root });
+    const initialized = await openStorageTestWriter({ root });
     await initialized.persist(run, {
       phase: "invocation", toolCallId: "v1-call", toolName: "Read", arguments: {},
     });
@@ -2166,7 +2207,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
       legacy.close();
     }
 
-    const migrated = await ToolHistoryWriter.open({ root });
+    const migrated = await openStorageTestWriter({ root });
     try {
       await expect(migrated.stats()).resolves.toMatchObject({
         records: 2,
@@ -2219,13 +2260,14 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
   it("scopes legacy bare-record incidents for reset and drops unattributable permanent markers", async () => {
     const root = await tempRoot();
     const run = binding("legacy-incident-scope");
-    const initialized = await ToolHistoryWriter.open({ root });
+    const initialized = await openStorageTestWriter({ root });
     const invocation = await initialized.persist(run, {
       phase: "invocation",
       toolCallId: "legacy-call",
       toolName: "Read",
       arguments: {},
     });
+    expectPersistedReceipt(invocation);
     await initialized.close();
     expect(invocation.recordId).toEqual(expect.any(String));
 
@@ -2235,14 +2277,14 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
       INSERT INTO writer_stats (key,value,last_detail,updated_at_ms) VALUES (?,1,'legacy incident',?)
     `);
     try {
-      insert.run(`write_failures:${invocation.recordId!}`, Date.now());
-      insert.run(`idempotency_conflicts:${invocation.recordId!}`, Date.now());
+      insert.run(`write_failures:${invocation.recordId}`, Date.now());
+      insert.run(`idempotency_conflicts:${invocation.recordId}`, Date.now());
       insert.run("write_failures:sth1_unattributable", Date.now());
     } finally {
       legacy.close();
     }
 
-    const migrated = await ToolHistoryWriter.open({ root });
+    const migrated = await openStorageTestWriter({ root });
     try {
       await expect(migrated.stats()).resolves.toMatchObject({
         writeFailures: 1,
@@ -2273,7 +2315,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
 
   it("describes a read-only older schema as upgrade-pending instead of a downgrade", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     await writer.close();
     const path = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const database = new DatabaseSync(path);
@@ -2378,7 +2420,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
   it("applies retention to calls finalized by finishRun and graceful close", async () => {
     const retention = { maxCompletedCalls: 0, maxBytes: 1024 * 1024, maxTombstones: 10 } as const;
     const finishRoot = await tempRoot();
-    const finishWriter = await ToolHistoryWriter.open({ root: finishRoot, retention });
+    const finishWriter = await openStorageTestWriter({ root: finishRoot, retention });
     const finishRun = binding("finish-retention");
     await finishWriter.persist(finishRun, {
       phase: "invocation", toolCallId: "finish-retained-call", toolName: "Read", arguments: {},
@@ -2388,13 +2430,13 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     await finishWriter.close();
 
     const closeRoot = await tempRoot();
-    const closeWriter = await ToolHistoryWriter.open({ root: closeRoot, retention });
+    const closeWriter = await openStorageTestWriter({ root: closeRoot, retention });
     await closeWriter.persist(binding("close-retention"), {
       phase: "invocation", toolCallId: "close-retained-call", toolName: "Read", arguments: {},
     });
     await closeWriter.close();
     expect(new ToolHistoryReader(closeRoot).stats()).toMatchObject({ calls: 0, records: 0, tombstones: 2 });
-    const reopened = await ToolHistoryWriter.open({ root: closeRoot, retention });
+    const reopened = await openStorageTestWriter({ root: closeRoot, retention });
     await expect(reopened.stats()).resolves.toMatchObject({ calls: 0, records: 0, tombstones: 2 });
     await reopened.close();
   });
@@ -2402,7 +2444,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
   it("records close-retention maintenance failure while still closing and releasing ownership for reopen", async () => {
     const root = await tempRoot();
     const retention = { maxCompletedCalls: 0, maxBytes: 1024 * 1024, maxTombstones: 10 } as const;
-    const writer = await ToolHistoryWriter.open({ root, retention });
+    const writer = await openStorageTestWriter({ root, retention });
     await writer.persist(binding("close-retention-failure"), {
       phase: "invocation",
       toolCallId: "close-retention-failure-call",
@@ -2450,7 +2492,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     } finally {
       cleanupTrigger.close();
     }
-    const reopened = await ToolHistoryWriter.open({ root, retention, ownerAcquireCeilingMs: 500 });
+    const reopened = await openStorageTestWriter({ root, retention, ownerAcquireCeilingMs: 500 });
     await expect(reopened.stats()).resolves.toMatchObject({
       calls: 0,
       records: 0,
@@ -2542,14 +2584,55 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     expect(result.stdout).toContain("ACQUIRED");
   }, 10_000);
 
+  it.skipIf(process.platform === "win32")("classifies live ownership before validating transient directory content and still rejects invalid content after release", async () => {
+    const root = await tempRoot();
+    const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const journalPath = `${contentPath}-journal`;
+    const journalSource = join(root, "..", "invalid-journal-source");
+    await writeFile(journalSource, "invalid prepared journal", { mode: 0o600 });
+
+    const owner = await ToolHistoryWriter.open({ root });
+    await link(journalSource, journalPath);
+    expect((await lstat(journalPath)).nlink).toBe(2);
+    try {
+      const contended = await ToolHistoryWriter.open({ root, ownerAcquireCeilingMs: 75 }).then(
+        (unexpectedWriter) => ({ unexpectedWriter }),
+        (error: unknown) => ({ error }),
+      );
+      if ("unexpectedWriter" in contended) await contended.unexpectedWriter.close();
+      expect(contended).toMatchObject({ error: { code: "history_writer_in_use" } });
+      expect(contended).not.toHaveProperty("unexpectedWriter");
+    } finally {
+      await rm(journalPath, { force: true });
+      await owner.close();
+    }
+
+    await link(journalSource, journalPath);
+    try {
+      const invalid = await ToolHistoryWriter.open({ root, ownerAcquireCeilingMs: 500 }).then(
+        (unexpectedWriter) => ({ unexpectedWriter }),
+        (error: unknown) => ({ error }),
+      );
+      if ("unexpectedWriter" in invalid) await invalid.unexpectedWriter.close();
+      expect(invalid).toMatchObject({
+        error: {
+          code: "history_writer_start_failed",
+          message: expect.stringMatching(/exactly one hard link/iu),
+        },
+      });
+      expect(invalid).not.toHaveProperty("unexpectedWriter");
+    } finally {
+      await rm(journalPath, { force: true });
+      await rm(journalSource, { force: true });
+    }
+
+    const recovered = await ToolHistoryWriter.open({ root, ownerAcquireCeilingMs: 500 });
+    await recovered.close();
+  });
+
   it.skipIf(process.platform === "win32")("keeps a live DELETE journal owner-only for doctor and concurrent acquisition", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({
-      root,
-      // This test deliberately holds SQLite's journal lock while it checks
-      // ownership; it is not a test of the production host wait ceiling.
-      persistenceCeilingMs: 5_000,
-    });
+    const writer = await openStorageTestWriter({ root });
     const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const journalPath = `${contentPath}-journal`;
     const blocker = new DatabaseSync(contentPath);
@@ -2647,13 +2730,7 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
       await writer.close();
     }
 
-    const recoveryWriter = await ToolHistoryWriter.open({
-      root,
-      // The default writer above deliberately proves the production 250 ms
-      // fail-soft ceiling. These recovery assertions are about the committed
-      // record, not host scheduling latency after reopening the worker.
-      persistenceCeilingMs: 5_000,
-    });
+    const recoveryWriter = await openStorageTestWriter({ root });
     try {
       await expect(recoveryWriter.persist(binding("unrelated-write"), {
         phase: "invocation", toolCallId: "unrelated-call", toolName: "Read", arguments: {},
