@@ -1011,6 +1011,16 @@ describe("WebFetch", () => {
       "-42",
       "```",
       "",
+      "> ```c",
+      "> #include <quoted.h>",
+      "> const quoted = \"*_`~\";",
+      "> ```",
+      "",
+      "- ```c",
+      "  #include <listed.h>",
+      "  const listed = \"*_`~\";",
+      "  ```",
+      "",
     ].join("\n");
     const retrieve = (format) => performWebFetch({
       url: "https://example.com/readme",
@@ -1039,6 +1049,12 @@ describe("WebFetch", () => {
       "#include <stdio.h>",
       "const marker = \"*_`~\";",
       "-42",
+      "",
+      "#include <quoted.h>",
+      "const quoted = \"*_`~\";",
+      "",
+      "#include <listed.h>",
+      "const listed = \"*_`~\";",
     ].join("\n"));
     expect(text.outcome).toMatchObject({ contentKind: "markdown", extractionStage: "markdown" });
   });

@@ -298,19 +298,20 @@ function protectFencedCode(value) {
   let code = [];
   for (const line of lines) {
     if (fence !== undefined) {
-      const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
-      if (closing !== undefined && closing[0] === fence[0] && closing.length >= fence.length) {
+      const content = stripFenceContainer(line, fence);
+      const closing = content.match(/^(`{3,}|~{3,})[ \t]*$/u)?.[1];
+      if (closing !== undefined && closing[0] === fence.marker[0] && closing.length >= fence.marker.length) {
         const token = uniqueCodeToken(value, codeBlocks.length);
         codeBlocks.push({ token, body: code.join("\n") });
         output.push(token);
         fence = undefined;
         code = [];
       } else {
-        code.push(line);
+        code.push(content);
       }
       continue;
     }
-    const opening = line.match(/^ {0,3}(`{3,}|~{3,})[^\n]*$/u)?.[1];
+    const opening = readFenceOpening(line);
     if (opening !== undefined) {
       fence = opening;
       continue;
@@ -323,6 +324,40 @@ function protectFencedCode(value) {
     output.push(token);
   }
   return { text: output.join("\n"), codeBlocks };
+}
+
+function readFenceOpening(line) {
+  let candidate = line;
+  let quoteDepth = 0;
+  for (;;) {
+    const quote = candidate.match(/^ {0,3}>[ \t]?/u)?.[0];
+    if (quote === undefined) break;
+    quoteDepth += 1;
+    candidate = candidate.slice(quote.length);
+  }
+  const list = candidate.match(/^ {0,3}(?:[*+-]|\d{1,9}[.)])[ \t]+/u)?.[0];
+  const listIndent = list?.length ?? 0;
+  if (list !== undefined) candidate = candidate.slice(list.length);
+  const indentation = candidate.match(/^ {0,3}/u)?.[0].length ?? 0;
+  candidate = candidate.slice(indentation);
+  const match = candidate.match(/^(`{3,}|~{3,})([^\n]*)$/u);
+  if (match === null || (match[1][0] === "`" && match[2].includes("`"))) return undefined;
+  return { marker: match[1], quoteDepth, contentIndent: listIndent + indentation };
+}
+
+function stripFenceContainer(line, fence) {
+  let candidate = line;
+  for (let depth = 0; depth < fence.quoteDepth; depth += 1) {
+    const quote = candidate.match(/^ {0,3}>[ \t]?/u)?.[0];
+    if (quote === undefined) return line;
+    candidate = candidate.slice(quote.length);
+  }
+  let remainingIndent = fence.contentIndent;
+  while (remainingIndent > 0 && candidate.startsWith(" ")) {
+    candidate = candidate.slice(1);
+    remainingIndent -= 1;
+  }
+  return candidate;
 }
 
 function uniqueCodeToken(source, index) {
