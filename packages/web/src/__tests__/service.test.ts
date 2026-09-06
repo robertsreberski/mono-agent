@@ -349,6 +349,103 @@ describe("web SELF-CONFIG sessions", () => {
       await bare.stop();
     }
   });
+
+  it("does not announce an agent change on every heartbeat of a provider-auth agent", async () => {
+    // Every agent behind the tui operator advertises `capabilities.providerAuth`,
+    // so on the deployed fleet this is the common case, not an edge one.
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: operatorFetch({ supportsProviderAuth: true }),
+    });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      await poll("2026-07-17T09:00:05.000Z");
+      await poll("2026-07-17T09:00:10.000Z");
+      // One announcement for the agent appearing, and nothing for the two
+      // heartbeats after it.
+      expect(events).toEqual([undefined]);
+      // The capability still reaches the browser -- projected off the live
+      // connection, exactly like `supportsConfiguration`.
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("announces provider authentication that an agent starts advertising", async () => {
+    let advertised = false;
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const withAuth = operatorFetch({ supportsProviderAuth: true });
+    const without = operatorFetch();
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: ((input: string | URL | Request, init?: RequestInit) =>
+        (advertised ? withAuth : without)(input, init)) as typeof fetch,
+    });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      expect(events).toHaveLength(1);
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBeUndefined();
+
+      // The operator starts advertising it. Nothing else about the fleet moves.
+      advertised = true;
+      await poll("2026-07-17T09:00:05.000Z");
+      expect(events).toHaveLength(2);
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+
+      // Still advertised, so still nothing to say.
+      await poll("2026-07-17T09:00:10.000Z");
+      expect(events).toHaveLength(2);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("withholds provider authentication when there is no live connection to use it through", async () => {
+    // The route this flag gates (`requireProviderAuthConnection`) needs a live
+    // connection, so the projection must not advertise it without one --
+    // otherwise the browser offers a button that can only 409.
+    let reachable = true;
+    const upstream = operatorFetch({ supportsProviderAuth: true });
+    const service = await createService({
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (!reachable && url.endsWith("/v1/info")) throw new Error("operator probe failed");
+        return upstream(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+      reachable = false;
+      await service.refreshAgents();
+      const agent = (await service.bootstrap()).agents[0];
+      expect(agent).toMatchObject({ sourceId: "agent-one", status: "offline" });
+      expect(agent?.supportsProviderAuth).toBeUndefined();
+    } finally {
+      await service.stop();
+    }
+  });
 });
 
 describe("WebService", () => {
