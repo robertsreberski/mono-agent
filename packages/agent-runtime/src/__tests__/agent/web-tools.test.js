@@ -1009,7 +1009,7 @@ describe("WebFetch", () => {
       "#include <stdio.h>",
       "const marker = \"*_`~\";",
       "-42",
-      "```",
+      "   ```",
       "",
       "> ```c",
       "> #include <quoted.h>",

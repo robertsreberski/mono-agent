@@ -299,7 +299,7 @@ function protectFencedCode(value) {
   for (const line of lines) {
     if (fence !== undefined) {
       const content = stripFenceContainer(line, fence);
-      const closing = content.match(/^(`{3,}|~{3,})[ \t]*$/u)?.[1];
+      const closing = content.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
       if (closing !== undefined && closing[0] === fence.marker[0] && closing.length >= fence.marker.length) {
         const token = uniqueCodeToken(value, codeBlocks.length);
         codeBlocks.push({ token, body: code.join("\n") });
