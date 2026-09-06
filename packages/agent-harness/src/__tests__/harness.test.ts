@@ -1,8 +1,8 @@
-import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import type {
@@ -12,7 +12,8 @@ import type {
   MemoryStore,
 } from "@mono-agent/agent-contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
-import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
+import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
+import type { RunExporter, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 
 import {
@@ -2956,13 +2957,12 @@ describe("AgentHarness", () => {
 });
 
 describe('recorded provider projection', () => {
-  it.each(['success', 'failure-result', 'throw', 'cancel'] as const)('records dispatched system instructions on %s', async (outcome) => {
+  it.each(['success', 'failure-result', 'cancel'] as const)('records dispatched system instructions on %s', async (outcome) => {
     const dir = await tempDir();
     const identityPath = join(dir, 'IDENTITY.md');
     await writeFile(identityPath, 'Recording identity.');
     const recorder = new FakeRecorder('recorded', 'web:recorded');
     const fake = createFakeRuntime(async () => {
-      if (outcome === 'throw') throw new Error('fixture failure');
       if (outcome === 'failure-result') return { error: 'fixture failure', failureKind: 'provider_unavailable' };
       if (outcome === 'cancel') return { cancelled: true };
       return { text: 'answer' };
@@ -2974,5 +2974,78 @@ describe('recorded provider projection', () => {
     expect(recorder.systemPrompt).not.toContain('current-question-marker');
     expect(recorder.systemPrompt).not.toContain('Conversation id:');
     expect(recorder.summaryStatus).toBe(outcome === 'success' ? 'succeeded' : outcome === 'cancel' ? 'cancelled' : 'failed');
+  });
+});
+
+// Thrown failures need the real composite lifecycle: a FakeRecorder cannot
+// distinguish exporter.finish from exporter.fail or retain a rejected preflight.
+describe("composite failure recording", () => {
+  it.each(["success", "runtime-throw", "prepare-rejection"] as const)("records %s through its original terminal lifecycle", async (outcome) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "Stable recording identity.");
+    const originalError = new TypeError(`fixture ${outcome}`);
+    const primary = createJsonlRunRecorder({
+      runId: "composite-recording", conversationId: "web:recorded", artifactDir: dir,
+      systemPrompt: "stale constructor prompt",
+    });
+    const primaryFail = vi.spyOn(primary, "fail");
+    const primaryFinish = vi.spyOn(primary, "finish");
+    const prepare = vi.fn(primary.prepareFinish!.bind(primary));
+    primary.prepareFinish = prepare;
+    if (outcome === "prepare-rejection") prepare.mockRejectedValue(originalError);
+    const exporter = {
+      finish: vi.fn<NonNullable<RunExporter["finish"]>>(),
+      fail: vi.fn<NonNullable<RunExporter["fail"]>>(),
+      flush: vi.fn(),
+    };
+    const exportContext = { runId: "composite-recording", conversationId: "web:recorded", includeSensitiveData: false };
+    const recorder = createCompositeRunRecorder({ recorder: primary, exporter, context: exportContext, timeoutMs: 1000 });
+    const fake = createFakeRuntime(async () => {
+      if (outcome === "runtime-throw") throw originalError;
+      return { text: "answer" };
+    });
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 64 });
+    const response = await createAgentHarness({
+      identityPath, runtime: fake.runtime, model, historyStore,
+      createRunId: () => "composite-recording", recorderFactory: () => recorder,
+    }).run({
+      conversationId: "web:recorded", userMessage: "current-question-marker",
+      metadata: { source: "web" }, abortSignal: new AbortController().signal,
+    });
+    expect(fake.calls).toHaveLength(1);
+    const dispatched = fake.calls[0]!.prompt;
+    expect(dispatched).toContain("Stable recording identity.");
+    expect(dispatched).not.toContain("current-question-marker");
+    expect(dispatched).not.toContain("Conversation id:");
+    expect(response.metadata.summary?.status).toBe(outcome === "success" ? "succeeded" : "failed");
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+    const persisted = JSON.parse(await readFile(response.metadata.summary!.artifactPaths[1]!, "utf8")) as RunSummary;
+    expect(persisted.systemPrompt).toBe(dispatched);
+    expect(primaryFinish).not.toHaveBeenCalled();
+    expect(exporter.flush).toHaveBeenCalledTimes(1);
+    if (outcome === "success") {
+      expect(response.failure).toBeUndefined();
+      expect(primaryFail).not.toHaveBeenCalled();
+      expect(exporter.fail).not.toHaveBeenCalled();
+      expect(exporter.finish).toHaveBeenCalledExactlyOnceWith(persisted, exportContext);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    } else {
+      expect(response.failure).toMatchObject({ kind: "TypeError", message: originalError.message });
+      expect(primaryFail).toHaveBeenCalledTimes(1);
+      expect(primaryFail.mock.calls[0]?.[0]).toBe(originalError);
+      expect(primaryFail.mock.calls[0]?.[1]).toEqual({ systemPrompt: dispatched });
+      expect(exporter.finish).not.toHaveBeenCalled();
+      expect(exporter.fail).toHaveBeenCalledExactlyOnceWith(persisted, originalError, exportContext);
+      expect(exporter.fail.mock.calls[0]?.[1]).toBe(originalError);
+      expect(persisted).toMatchObject({ status: "failed", failureKind: "TypeError", diagnostics: { error: { message: originalError.message } } });
+      expect(prepare).toHaveBeenCalledTimes(outcome === "prepare-rejection" ? 1 : 0);
+      expect(await historyStore.load("web:recorded")).toEqual([]);
+      // Failure bypasses the composite's memoized rejected preparePromise and
+      // remains terminal/idempotent; another fail cannot export a second frame.
+      expect(await recorder.fail(new Error("later"))).toEqual(persisted);
+      expect(exporter.fail).toHaveBeenCalledTimes(1);
+      expect(primaryFail).toHaveBeenCalledTimes(1);
+    }
   });
 });

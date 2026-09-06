@@ -397,8 +397,10 @@ function withArtifactCommitHook(
       await wrapped.prepareFinish?.(result);
       return await wrapped.commitFinish!(result);
     },
-    async fail(error: unknown): Promise<RunSummary> {
-      return await commitTerminal(async () => await recorder.fail(error));
+    async fail(error: unknown, context?: { readonly systemPrompt?: string }): Promise<RunSummary> {
+      return await commitTerminal(async () => context === undefined
+        ? await recorder.fail(error)
+        : await recorder.fail(error, context));
     },
   };
   if (recorder.start !== undefined) {

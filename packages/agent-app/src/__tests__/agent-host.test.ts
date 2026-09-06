@@ -349,6 +349,44 @@ describe("agent host composition helpers", () => {
     ]));
   });
 
+  it("preserves failure instructions and the original exporter error through the artifact commit hook", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "Stable failure recording identity.");
+    const originalError = new TypeError("fixture runtime failure");
+    const fake = createFakeRuntime(async () => { throw originalError; });
+    const exporter = {
+      finish: vi.fn<NonNullable<RunExporter["finish"]>>(),
+      fail: vi.fn<NonNullable<RunExporter["fail"]>>(),
+    };
+    const onRunArtifactCommitted = vi.fn();
+    const responder = await createConfiguredAgentResponderForApp({
+      config: monoConfig({
+        dir, identityPath, artifactDir,
+        observability: { exporters: [{ type: "phoenix" }] },
+      }),
+      runtime: fake.runtime,
+      createRunId: () => "run-failure-context",
+      exporterFactory: () => exporter,
+    }, { onRunArtifactCommitted });
+
+    await expect(responder.respond(
+      { conversationId: "telegram:42", text: "current-question-marker", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    )).rejects.toThrow(originalError.message);
+    expect(fake.calls).toHaveLength(1);
+    const summary = JSON.parse(await readFile(join(artifactDir, "run-failure-context.summary.json"), "utf8")) as RunSummary;
+    expect(summary).toMatchObject({ status: "failed", failureKind: "TypeError", systemPrompt: fake.calls[0]!.prompt });
+    expect(summary.systemPrompt).toContain("Stable failure recording identity.");
+    expect(summary.systemPrompt).not.toContain("current-question-marker");
+    expect(exporter.finish).not.toHaveBeenCalled();
+    expect(exporter.fail).toHaveBeenCalledTimes(1);
+    expect(exporter.fail.mock.calls[0]?.[0]).toEqual(summary);
+    expect(exporter.fail.mock.calls[0]?.[1]).toBe(originalError);
+    expect(onRunArtifactCommitted.mock.calls.map(([event]) => event.phase)).toEqual(["started", "finished"]);
+  });
+
   it("invalidates artifact-derived destinations at local commits without awaiting a slow exporter", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
