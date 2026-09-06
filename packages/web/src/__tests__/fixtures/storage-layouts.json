@@ -1,0 +1,144 @@
+[
+  {
+    "version": 1,
+    "source": "6b773312e2656c5654599a7e22fd85c6dc5e1000",
+    "tables": {
+      "agents": "CREATE TABLE IF NOT EXISTS agents ( source_id TEXT PRIMARY KEY, label TEXT NOT NULL, status TEXT NOT NULL, health TEXT, supports_attachments INTEGER NOT NULL DEFAULT 0, models_json TEXT, default_model TEXT, default_effort TEXT, efforts_json TEXT, model_options_json TEXT, updated_at TEXT NOT NULL );",
+      "threads": "CREATE TABLE IF NOT EXISTS threads ( id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES agents(source_id), conversation_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, title_manual INTEGER NOT NULL DEFAULT 0, archived_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1 );",
+      "turns": "CREATE TABLE IF NOT EXISTS turns ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, status TEXT NOT NULL, text TEXT NOT NULL, model TEXT, effort TEXT, assistant_message_id TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, error_code TEXT, error_message TEXT );",
+      "messages": "CREATE TABLE IF NOT EXISTS messages ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE, role TEXT NOT NULL, parts_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, status TEXT NOT NULL );",
+      "attachments": "CREATE TABLE IF NOT EXISTS attachments ( id TEXT PRIMARY KEY, thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE, message_id TEXT REFERENCES messages(id) ON DELETE CASCADE, name TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, uploaded INTEGER NOT NULL DEFAULT 0, storage_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL );",
+      "revisions": "CREATE TABLE IF NOT EXISTS revisions ( id INTEGER PRIMARY KEY AUTOINCREMENT, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, revision INTEGER NOT NULL, event TEXT NOT NULL, created_at TEXT NOT NULL );",
+      "settings": "CREATE TABLE IF NOT EXISTS settings ( key TEXT PRIMARY KEY, value TEXT NOT NULL );"
+    }
+  },
+  {
+    "version": 2,
+    "source": "8450daa4fc56c7cadacf2fa0842ecbaae7fd3069",
+    "tables": {
+      "threads": "CREATE TABLE IF NOT EXISTS threads ( id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES agents(source_id), conversation_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, title_manual INTEGER NOT NULL DEFAULT 0, trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook')), archived_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1 );",
+      "notification_deliveries": "CREATE TABLE IF NOT EXISTS notification_deliveries ( source_id TEXT NOT NULL REFERENCES agents(source_id), delivery_key TEXT NOT NULL, thread_id TEXT NOT NULL UNIQUE, trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('cron', 'webhook')), payload_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (source_id, delivery_key) );"
+    }
+  },
+  {
+    "version": 3,
+    "source": "b87f154b42b8a975c1d7966f851b7f29e2cd6962",
+    "tables": {
+      "live_inputs": "CREATE TABLE IF NOT EXISTS live_inputs ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE, active_turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL, text TEXT NOT NULL, model TEXT, effort TEXT, status TEXT NOT NULL CHECK (status IN ('offered', 'queued')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL );"
+    }
+  },
+  {
+    "version": 4,
+    "source": "ec91b80bce0cf9dd0e85bff6446add59fdc5d2d6",
+    "tables": {
+      "push_subscriptions": "CREATE TABLE IF NOT EXISTS push_subscriptions ( id TEXT PRIMARY KEY, endpoint TEXT NOT NULL, endpoint_sha256 TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL, expiration_time INTEGER, site_origin TEXT NOT NULL, key_fingerprint TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('active', 'disabled', 'expired')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, disabled_at TEXT, last_success_at TEXT, last_error_at TEXT, last_error_code TEXT );",
+      "push_events": "CREATE TABLE IF NOT EXISTS push_events ( id TEXT PRIMARY KEY, logical_key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK (kind IN ( 'response.ready', 'input.required', 'run.failed', 'run.cancelled', 'run.interrupted', 'test' )), thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL, source_id TEXT, title TEXT NOT NULL, body TEXT NOT NULL, tag TEXT NOT NULL, topic TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL );",
+      "push_deliveries": "CREATE TABLE IF NOT EXISTS push_deliveries ( event_id TEXT NOT NULL REFERENCES push_events(id) ON DELETE CASCADE, subscription_id TEXT NOT NULL REFERENCES push_subscriptions(id) ON DELETE CASCADE, status TEXT NOT NULL CHECK (status IN ( 'pending', 'sending', 'accepted', 'suppressed', 'stale', 'failed', 'config_error', 'dropped' )), attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT NOT NULL, last_status_code INTEGER, last_error_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, finished_at TEXT, PRIMARY KEY (event_id, subscription_id) );"
+    }
+  },
+  {
+    "version": 5,
+    "source": "8a96d3e6d725b2a424781ac10c4b36cb1146a54a",
+    "note": "Intermediate v5 layout: PR #636 bootstrap minus its guarded v6 jobs_truncated column.",
+    "tables": {
+      "agents": "CREATE TABLE IF NOT EXISTS agents ( source_id TEXT PRIMARY KEY, label TEXT NOT NULL, status TEXT NOT NULL, health TEXT, supports_attachments INTEGER NOT NULL DEFAULT 0, models_json TEXT, default_model TEXT, default_effort TEXT, efforts_json TEXT, model_options_json TEXT, cron_read INTEGER NOT NULL DEFAULT 0, cron_actions INTEGER NOT NULL DEFAULT 0, ask_by_id INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL );",
+      "notification_deliveries": "CREATE TABLE IF NOT EXISTS notification_deliveries ( source_id TEXT NOT NULL REFERENCES agents(source_id), delivery_key TEXT NOT NULL, thread_id TEXT, message_id TEXT, trigger_kind TEXT NOT NULL CHECK (trigger_kind IN ('cron', 'webhook')), job_id TEXT, run_id TEXT, payload_sha256 TEXT NOT NULL, created_at TEXT NOT NULL, completed_at TEXT, CHECK ((job_id IS NULL AND run_id IS NULL) OR (trigger_kind = 'cron' AND job_id IS NOT NULL AND run_id IS NOT NULL)), PRIMARY KEY (source_id, delivery_key) );",
+      "cron_channels": "CREATE TABLE IF NOT EXISTS cron_channels ( source_id TEXT NOT NULL REFERENCES agents(source_id), job_id TEXT NOT NULL, thread_id TEXT NOT NULL UNIQUE REFERENCES threads(id) ON DELETE CASCADE, configured INTEGER NOT NULL CHECK (configured IN (0, 1)), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (source_id, job_id) );",
+      "cron_channel_deletions": "CREATE TABLE IF NOT EXISTS cron_channel_deletions ( source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE, job_id TEXT NOT NULL, deleted_at TEXT NOT NULL, PRIMARY KEY (source_id, job_id) );",
+      "cron_overviews": "CREATE TABLE IF NOT EXISTS cron_overviews ( source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE, generated_at TEXT NOT NULL, actions_enabled INTEGER NOT NULL CHECK (actions_enabled IN (0, 1)), degraded_reason TEXT, updated_at TEXT NOT NULL );",
+      "cron_job_snapshots": "CREATE TABLE IF NOT EXISTS cron_job_snapshots ( source_id TEXT NOT NULL, job_id TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (source_id, job_id), FOREIGN KEY (source_id, job_id) REFERENCES cron_channels(source_id, job_id) ON DELETE CASCADE );",
+      "cron_run_messages": "CREATE TABLE IF NOT EXISTS cron_run_messages ( source_id TEXT NOT NULL, job_id TEXT NOT NULL, run_id TEXT NOT NULL, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, turn_id TEXT NOT NULL UNIQUE REFERENCES turns(id) ON DELETE CASCADE, message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE, ordered_at TEXT NOT NULL, sequence INTEGER NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (source_id, job_id, run_id), FOREIGN KEY (source_id, job_id) REFERENCES cron_channels(source_id, job_id) ON DELETE CASCADE );",
+      "thread_redirects": "CREATE TABLE IF NOT EXISTS thread_redirects ( old_thread_id TEXT PRIMARY KEY, new_thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, created_at TEXT NOT NULL, CHECK (old_thread_id <> new_thread_id) );"
+    }
+  },
+  {
+    "version": 6,
+    "source": "8a96d3e6d725b2a424781ac10c4b36cb1146a54a",
+    "tables": {
+      "cron_overviews": "CREATE TABLE IF NOT EXISTS cron_overviews ( source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE, generated_at TEXT NOT NULL, actions_enabled INTEGER NOT NULL CHECK (actions_enabled IN (0, 1)), degraded_reason TEXT, jobs_truncated INTEGER NOT NULL DEFAULT 0 CHECK (jobs_truncated IN (0, 1)), updated_at TEXT NOT NULL );"
+    }
+  },
+  {
+    "version": 7,
+    "source": "975b76bbb475c5eb0bf02367ad1b4d34141d9a10",
+    "tables": {
+      "process_job_cards": "CREATE TABLE IF NOT EXISTS process_job_cards ( source_id TEXT NOT NULL REFERENCES agents(source_id), job_id TEXT NOT NULL, delivery_key TEXT NOT NULL, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE, projection_sha256 TEXT NOT NULL, response_text TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (source_id, job_id), UNIQUE (source_id, delivery_key) );"
+    }
+  },
+  {
+    "version": 8,
+    "source": "eaffcc3be00eea6d3c492f0454aae8f4f5ff69c5",
+    "tables": {
+      "process_job_wake_deliveries": "CREATE TABLE IF NOT EXISTS process_job_wake_deliveries ( source_id TEXT NOT NULL REFERENCES agents(source_id), job_id TEXT NOT NULL, delivery_key TEXT NOT NULL, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')), disposition TEXT CHECK (disposition IN ('steered', 'follow_up')), turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL, created_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (source_id, job_id), UNIQUE (source_id, delivery_key) );"
+    }
+  },
+  {
+    "version": 9,
+    "source": "dc8a6a5e47701689225a6d1c8b58ec9bf75cb721",
+    "tables": {}
+  },
+  {
+    "version": 10,
+    "source": "af512eaedc40afa621b8dda8f351a7180f09ba57",
+    "tables": {
+      "attachments": "CREATE TABLE IF NOT EXISTS attachments ( id TEXT PRIMARY KEY, thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE, message_id TEXT REFERENCES messages(id) ON DELETE CASCADE, name TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, uploaded INTEGER NOT NULL DEFAULT 0, origin TEXT NOT NULL DEFAULT 'upload' CHECK (origin IN ('upload', 'reply')), storage_name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, updated_at TEXT NOT NULL );"
+    }
+  },
+  {
+    "version": 11,
+    "source": "b21629073aa315ed95322cd7d6a0060f33ab3987",
+    "tables": {
+      "threads": "CREATE TABLE IF NOT EXISTS threads ( id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES agents(source_id), conversation_id TEXT NOT NULL UNIQUE, title TEXT NOT NULL, title_manual INTEGER NOT NULL DEFAULT 0, trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook')), archived_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, run_model TEXT, run_effort TEXT, revision INTEGER NOT NULL DEFAULT 1 );"
+    }
+  },
+  {
+    "version": 12,
+    "source": "498f46325f5b2abed71e900ff7b9dd0d390a95f5",
+    "tables": {
+      "agents": "CREATE TABLE IF NOT EXISTS agents ( source_id TEXT PRIMARY KEY, label TEXT NOT NULL, status TEXT NOT NULL, health TEXT, supports_attachments INTEGER NOT NULL DEFAULT 0, models_json TEXT, default_model TEXT, default_effort TEXT, efforts_json TEXT, model_options_json TEXT, providers_json TEXT, cron_read INTEGER NOT NULL DEFAULT 0, cron_actions INTEGER NOT NULL DEFAULT 0, ask_by_id INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL );"
+    }
+  },
+  {
+    "version": 13,
+    "source": "413754c3cc9149a0487e255cdb8d4cee4573a303",
+    "note": "Intermediate v13 layout: legacy cascading Monitor receipt DDL pinned by store.test.ts; PR #704 contains its v14 repair.",
+    "tables": {
+      "monitor_wake_deliveries": "CREATE TABLE IF NOT EXISTS monitor_wake_deliveries ( source_id TEXT NOT NULL REFERENCES agents(source_id), monitor_id TEXT NOT NULL, delivery_key TEXT NOT NULL, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, payload_sha256 TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')), disposition TEXT CHECK (disposition IN ('steered', 'follow_up')), turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL, created_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (source_id, delivery_key) );"
+    }
+  },
+  {
+    "version": 14,
+    "source": "413754c3cc9149a0487e255cdb8d4cee4573a303",
+    "tables": {
+      "monitor_wake_deliveries": "CREATE TABLE IF NOT EXISTS monitor_wake_deliveries ( source_id TEXT NOT NULL REFERENCES agents(source_id), monitor_id TEXT NOT NULL, delivery_key TEXT NOT NULL, thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL, payload_sha256 TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')), disposition TEXT CHECK (disposition IN ('steered', 'follow_up')), turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL, created_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (source_id, delivery_key) );"
+    }
+  },
+  {
+    "version": 15,
+    "source": "4373e7ae195c3a666fa037b5c219e414d0bc4608",
+    "tables": {
+      "monitor_wake_deliveries": "CREATE TABLE IF NOT EXISTS monitor_wake_deliveries ( source_id TEXT NOT NULL REFERENCES agents(source_id), monitor_id TEXT NOT NULL, delivery_key TEXT NOT NULL, thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL, payload_sha256 TEXT NOT NULL, projection_json TEXT, state TEXT NOT NULL CHECK (state IN ('accepted', 'completed')), disposition TEXT CHECK (disposition IN ('steered', 'follow_up')), turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL, created_at TEXT NOT NULL, completed_at TEXT, PRIMARY KEY (source_id, delivery_key) );"
+    }
+  },
+  {
+    "version": 16,
+    "source": "9de661b0f906316bf520d557992e18dc38c4ec87",
+    "tables": {
+      "agents": "CREATE TABLE IF NOT EXISTS agents ( source_id TEXT PRIMARY KEY, label TEXT NOT NULL, status TEXT NOT NULL, discovered INTEGER NOT NULL DEFAULT 1 CHECK (discovered IN (0, 1)), health TEXT, supports_attachments INTEGER NOT NULL DEFAULT 0, models_json TEXT, default_model TEXT, default_effort TEXT, efforts_json TEXT, model_options_json TEXT, providers_json TEXT, cron_read INTEGER NOT NULL DEFAULT 0, cron_actions INTEGER NOT NULL DEFAULT 0, ask_by_id INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL );"
+    }
+  },
+  {
+    "version": 17,
+    "source": "8232e27cd5a8f87e9cbe9b189924ea08df8e9a98",
+    "tables": {
+      "agent_run_overrides": "CREATE TABLE IF NOT EXISTS agent_run_overrides ( source_id TEXT PRIMARY KEY REFERENCES agents(source_id) ON DELETE CASCADE, model TEXT, effort TEXT, updated_at TEXT NOT NULL, CHECK (model IS NOT NULL OR effort IS NOT NULL) );"
+    }
+  },
+  {
+    "version": 18,
+    "source": "b17793dc67c04cc91fa04a3948061443bb9efce2",
+    "tables": {
+      "messages": "CREATE TABLE IF NOT EXISTS messages ( id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE, turn_id TEXT REFERENCES turns(id) ON DELETE CASCADE, role TEXT NOT NULL, parts_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, status TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0 );"
+    }
+  }
+]
