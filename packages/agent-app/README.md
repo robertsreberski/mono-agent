@@ -129,6 +129,10 @@ same CLI.
 
 ### Guided initialization and readiness
 
+Linux lifecycle commands use systemd user services with journald logs and
+`dev (unmanaged)` runtime provenance. See [Linux background services](../../docs/observability/linux-services.md)
+for linger, external HTTPS, migration, and the initial operator-command scope.
+
 On an interactive terminal, bare `mono-agent init` (no flags) runs a colourful,
 step-by-step wizard — powered by `@clack/prompts` — that asks for the public
 agent name plus exact Role text for `IDENTITY.md` → `## Role` and composes the capability selection before writing anything. An existing `IDENTITY.md` is preserved and the review says the entered Role will not be written. Escape

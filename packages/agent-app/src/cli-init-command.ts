@@ -2156,7 +2156,7 @@ function printSecretsChecklist(
 }
 
 function printNextSteps(configPath: string): void {
-  const startCommand = process.platform === "darwin" ? "mono-agent start" : "mono-agent start --foreground";
+  const startCommand = process.platform === "darwin" || process.platform === "linux" ? "mono-agent start" : "mono-agent start --foreground";
   const tuiCommand = process.platform === "darwin"
     ? `mono-agent tui --configure ${ui.style.dim("(after the agent reports ready)")}`
     : `mono-agent tui ${ui.style.dim("(ordinary chat after foreground startup; edit config files manually)")}`;

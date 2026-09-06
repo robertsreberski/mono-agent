@@ -103,7 +103,7 @@ describe("runWebCommand", () => {
     const code = await runWebCommand(
       { positionals: [], env: {} },
       {
-        platform: "linux",
+        platform: "freebsd",
         homeDir: home,
         discoverNetworkAddresses: () => [
           "203.0.113.9",
