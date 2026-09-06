@@ -135,6 +135,42 @@ describe("createThreadPersistence", () => {
       .toEqual(["alpha-thread"]);
   });
 
+  it("sweeps what it read but no longer holds", async () => {
+    // The device can hold more than one tab's eight -- two tabs make sixteen --
+    // and a restore keeps only what the cache has room for. Rows read but not
+    // restored were owned by NO instance, so nothing could ever remove them and
+    // the store grew without a ceiling (with `hydrate`'s own `getAll` growing
+    // with it, on the cold-start path).
+    const writer = createThreadPersistence();
+    const stored = Array.from({ length: 10 }, (_, index) => entry(`thread-${String(index)}`));
+    await writer.save({ entries: stored });
+
+    const reader = createThreadPersistence();
+    expect((await reader.hydrate())?.threads).toHaveLength(10);
+    // What the cache had room for.
+    const kept = stored.slice(0, 8);
+    reader.markPersisted(kept);
+    await reader.save({ entries: kept });
+
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id).sort())
+      .toEqual(kept.map((item) => item.thread.id).sort());
+  });
+
+  it("sweeps what it read even when it restored none of it", async () => {
+    // A hydration that answered after the deadline, or after the server had
+    // spoken, is dropped by the store without restoring anything -- and the
+    // rows it read still have to have an owner.
+    const writer = createThreadPersistence();
+    await writer.save({ entries: [entry("alpha-thread"), entry("beta-thread")] });
+
+    const late = createThreadPersistence();
+    await late.hydrate();
+    await late.save({ entries: [entry("gamma-thread")] });
+
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id))
+      .toEqual(["gamma-thread"]);
+  });
+
   it("clears the whole device when the operator asks, whichever tab asked", async () => {
     // Deliberately NOT instance-scoped: "Clear cached data" means this browser
     // is not keeping conversations, not "this tab is not".

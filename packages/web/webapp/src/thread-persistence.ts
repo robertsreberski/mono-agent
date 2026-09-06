@@ -86,9 +86,13 @@ export interface HydratedConsole {
 /** One flush: what the tab holds right now, and nothing incremental. */
 export interface PersistableState {
   /**
-   * Every conversation the cache is keeping -- at most its LRU's eight. Rows
-   * for anything absent are deleted, which is how an eviction, a removal and a
-   * tombstone all reach the device without any of them having to say so.
+   * Every conversation the cache is keeping -- at most its LRU's eight.
+   *
+   * A row absent from this list is deleted only when THIS instance wrote it or
+   * read it back from the device; anything else on the store belongs to another
+   * tab and is left to that tab. This is how an eviction, a removal and a
+   * tombstone all reach the device without any of them having to say so, and
+   * why two consoles open at once do not delete each other's conversations.
    */
   readonly entries: readonly ThreadCacheEntry[];
   readonly snapshot?: PersistedSnapshot;
@@ -477,6 +481,17 @@ export const createThreadPersistence = (
           asPromise<unknown>(meta.get(HOST_KEY)),
         ] as const;
         const [threadRows, bucketRows, snapshotRow, hostRow] = await Promise.all(pending);
+        // OWNED from here, whatever becomes of them. The device can hold more
+        // than one tab's eight, a restore keeps only what the cache has room
+        // for, and a hydration that answered too late is dropped without
+        // restoring anything -- and a row no instance owns is a row nothing can
+        // ever sweep. Claimed before any of those paths can drop it, so the
+        // first flush removes what this tab read and does not hold. A row
+        // another live tab is holding comes back through the absent-key path in
+        // `save`, which is the convergence this store already relies on.
+        for (const row of threadRows) {
+          if (isRecord(row) && typeof row.id === "string") mine.add(row.id);
+        }
         return {
           host: typeof hostRow === "string" ? hostRow : null,
           snapshot: readSnapshotRow(snapshotRow) ?? null,

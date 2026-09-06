@@ -770,6 +770,36 @@ describe("createThreadCache", () => {
     expect(entry?.messagesNextCursor).toBe("cursor-older");
   });
 
+  it("keeps the version it holds when an ordinary answer is behind it", () => {
+    // What a live-input receipt is: an ordinary projection of a row this tab
+    // may already hold a newer version of, because a repair can land while the
+    // receipt is on the wire. It used to be written with `replace`, which
+    // forced it over that repair and walked the transcript backwards.
+    const cache = createThreadCache();
+    cache.upsertFull(detail([
+      message("m1", { seq: 5, parts: [{ type: "text", text: "repaired" }] }),
+    ]));
+
+    const changed = cache.upsertMessage(
+      "alpha-thread",
+      message("m1", { seq: 4, parts: [{ type: "text", text: "receipt" }] }),
+    );
+
+    expect(changed).toBe(false);
+    expect(cache.get("alpha-thread")?.messages[0]?.parts)
+      .toEqual([{ type: "text", text: "repaired" }]);
+
+    // `replace` is still what an answer that is authoritative WITHOUT being
+    // newer needs -- the cron activity read.
+    expect(cache.upsertMessage(
+      "alpha-thread",
+      message("m1", { seq: 4, parts: [{ type: "text", text: "activity" }] }),
+      { replace: true },
+    )).toBe(true);
+    expect(cache.get("alpha-thread")?.messages[0]?.parts)
+      .toEqual([{ type: "text", text: "activity" }]);
+  });
+
   it("forgets a conversation on request", () => {
     const cache = createThreadCache();
     cache.upsertFull(detail([]));
