@@ -1,3 +1,4 @@
+import { sanitizeCronTranscript } from "./cron-visibility";
 import type { ThreadCacheEntry } from "./thread-cache";
 import type {
   AgentSummary,
@@ -268,16 +269,17 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
   if (!isRecord(value)) return undefined;
   if (typeof value.id !== "string" || !isSummary(value.thread)) return undefined;
   if (!Array.isArray(value.messages) || !value.messages.every(isStoredMessage)) return undefined;
+  const sanitized = sanitizeCronTranscript(value.thread, value.messages as readonly WebMessage[]);
   return {
     id: value.id,
-    thread: value.thread,
-    messages: value.messages as readonly WebMessage[],
+    thread: sanitized.thread,
+    messages: sanitized.messages,
     ...(typeof value.messagesNextCursor === "string"
       ? { messagesNextCursor: value.messagesNextCursor }
       : {}),
-    ...(typeof value.etag === "string" ? { etag: value.etag } : {}),
+    ...(typeof value.etag === "string" && !sanitized.changed ? { etag: value.etag } : {}),
     repairedToolCallIds: stringsOf(value.repairedToolCallIds),
-    pagedInIds: stringsOf(value.pagedInIds),
+    pagedInIds: stringsOf(value.pagedInIds).filter((id) => sanitized.messages.some((message) => message.id === id)),
     savedAt: typeof value.savedAt === "number" ? value.savedAt : 0,
     ...(typeof value.writer === "string" ? { writer: value.writer } : {}),
   };
@@ -605,10 +607,16 @@ export const createThreadPersistence = (
         ] as const;
         const [threadRows, bucketRows, snapshotRow, hostRow] = await Promise.all(pending);
         const snapshot = readSnapshotRow(snapshotRow) ?? null;
-        const threads = threadRows.flatMap((row) => {
-          const entry = readThreadRow(row);
-          return entry === undefined ? [] : [entry];
-        });
+        const threads: PersistedThread[] = [];
+        const summaries = new Map<string, ThreadSummary>();
+        for (const raw of threadRows) {
+          const entry = readThreadRow(raw);
+          if (entry === undefined) continue;
+          threads.push(entry);
+          if (isRecord(raw) && Array.isArray(raw.messages) && raw.messages.length !== entry.messages.length) {
+            summaries.set(entry.id, entry.thread);
+          }
+        }
         const buckets = bucketRows.flatMap((row) => {
           const bucket = readBucketRow(row);
           return bucket === undefined ? [] : [bucket];
@@ -625,7 +633,13 @@ export const createThreadPersistence = (
         return {
           host: typeof hostRow === "string" ? hostRow : null,
           snapshot,
-          buckets: buckets.filter((bucket) => !doomed.buckets.has(bucket.key)),
+          buckets: buckets.filter((bucket) => !doomed.buckets.has(bucket.key)).map((bucket) => ({
+            ...bucket,
+            threads: bucket.threads.map((thread) => {
+              const sanitized = summaries.get(thread.id);
+              return sanitized?.revision === thread.revision ? sanitized : thread;
+            }),
+          })),
           threads: threads.filter((entry) => !doomed.threads.has(entry.id)),
         };
       } catch (readError) {

@@ -1545,6 +1545,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * pre-commit snapshot is exactly the defect the previous round had to guard
    * against with a decision made outside the state updater.
    */
+  const clearCronCursor = useCallback((thread: ThreadSummary) => {
+    const jobId = thread.trigger?.kind === "cron" ? thread.trigger.jobId : undefined;
+    if (jobId === undefined) return;
+    setCronRunCursorByChannel((current) => {
+      const key = cronChannelKey(thread.sourceId, jobId);
+      if (!Object.prototype.hasOwnProperty.call(current, key)) return current;
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+  }, []);
   const threadCacheRef = useRef<ThreadCache>(createThreadCache(
     THREAD_CACHE_ENTRIES,
     undefined,
@@ -1555,6 +1566,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       schedulePersistRef.current();
       noteHeldRunStateRef.current();
     },
+    clearCronCursor,
   ));
   const noteHeldRunStateRef = useRef<() => void>(() => undefined);
   /**
@@ -2004,10 +2016,33 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     void persistenceRef.current?.clearAll();
   }, [cancelPersist]);
 
+  const evictCronTranscript = useCallback((thread: ThreadSummary) => {
+    const cache = threadCacheRef.current;
+    cache.evict(thread.id);
+    // Keep the authoritative summary, but none of the evicted transcript or
+    // validators. A running cron channel still blocks a staged build while its
+    // replacement transcript is pending, including when it is not selected.
+    cache.upsertFull({ thread, messages: [] });
+    cache.markStale(thread.id);
+    clearCronCursor(thread);
+    if (selectedThreadRef.current === thread.id) {
+      setDetail(null);
+      scheduleRefreshRef.current({ detail: true });
+    }
+  }, [clearCronCursor]);
+
+  const reconcileCronRevision = useCallback((thread: ThreadSummary) => {
+    const held = threadCacheRef.current.get(thread.id);
+    if (thread.trigger?.kind === "cron" && held !== undefined && thread.revision > held.thread.revision) {
+      evictCronTranscript(thread);
+    }
+  }, [evictCronTranscript]);
+
   const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
     // BEFORE anything is read off the current selection: what a different
     // console left behind is not a selection to keep.
     discardOtherHostData(rawNext.console.hostName);
+    for (const thread of rawNext.threads) reconcileCronRevision(thread);
     const previouslySelected = selectedThreadRef.current;
     // A bootstrap is a wholesale replacement, so a deleted conversation it
     // still lists is re-added, selected, and routed to. It is also the single
@@ -2123,7 +2158,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         persistThreadId(selection.agentId, selected.archivedAt ? null : selected.id);
       }
     }
-  }, [applyConnection, discardOtherHostData]);
+  }, [applyConnection, discardOtherHostData, reconcileCronRevision]);
 
   /**
    * The bucket a bootstrap should carry: the one this tab is showing.
@@ -2219,7 +2254,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // switching to that agent did not fix it. The same write as
     // `applyBootstrap`, under the same rules: never inserts, adopts only a
     // strictly newer row, confirms either way.
-    for (const row of admitted) threadCacheRef.current.confirmListed(row.id, row);
+    for (const row of admitted) {
+      reconcileCronRevision(row);
+      threadCacheRef.current.confirmListed(row.id, row);
+    }
     // The authoritative fill DELIVERS this bucket, exactly as a bootstrap does,
     // so the sidebar effect must not buy it again -- an agent switch back and
     // forth, or an archive toggle, otherwise re-read the same page every time.
@@ -2240,7 +2278,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ? current
       : { ...current, [key]: page.nextCursor ?? null });
     return admitted;
-  }, []);
+  }, [reconcileCronRevision]);
 
   const hasBootstrap = bootstrap !== null;
   useEffect(() => {
@@ -2817,11 +2855,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         for (;;) {
           pending.dirty = false;
           pending.wantedSeq = Number.NEGATIVE_INFINITY;
+          const issuedAt = threadCacheRef.current.clock();
           const message = await boundedRequest(
             (signal) => api.message(threadId, messageId, signal),
             THREAD_READ_TIMEOUT_MS,
           );
           const cache = threadCacheRef.current;
+          if (!cache.accepts(threadId, issuedAt)) return;
           if (cache.get(threadId) === undefined) {
             // The conversation was evicted or removed while this was out, so
             // there is nowhere for the answer to land -- `upsertMessage` would
@@ -2957,13 +2997,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // A LOCAL decision -- an optimistic edit, a rollback, the repair a refused
     // delete owes -- is being made now and quotes the current epoch.
     if (!admitThread(removedThreadsRef.current, nextThread, issuedAt)) return;
+    reconcileCronRevision(nextThread);
     setBootstrap((current) =>
       current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
     );
     if (threadCacheRef.current.patchThread(nextThread.id, nextThread)) {
       publishDetail(nextThread.id);
     }
-  }, [publishDetail]);
+  }, [publishDetail, reconcileCronRevision]);
 
   /**
    * Follow the selection with the stream's subscription.
@@ -3599,6 +3640,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const loadOlderMessages = useCallback(async () => {
     const current = detail;
     if (current === null) return;
+    const issuedAt = threadCacheRef.current.clock();
     if (current.messagesNextCursor !== undefined) {
       const page = await api.messages(
         current.thread.id,
@@ -3606,6 +3648,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         undefined,
         currentDataMode() === "lean" ? LEAN_MESSAGE_PAGE_LIMIT : MESSAGE_PAGE_LIMIT,
       );
+      if (!threadCacheRef.current.accepts(current.thread.id, issuedAt)) return;
       // Into the CACHE, which is what makes a walked-back transcript survive
       // the next refresh: a window read keeps everything older than its own
       // window rather than dropping the pages the operator scrolled to.
@@ -3626,6 +3669,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const cursor = cronRunCursorByChannel[selectedCronChannelKey];
     if (typeof cursor !== "string") return;
     const page = await api.cronRuns(selectedAgentId, selectedCronJobId, cursor);
+    if (!threadCacheRef.current.accepts(current.thread.id, issuedAt)) return;
     setCronRunCursorByChannel((latest) => ({
       ...latest,
       [selectedCronChannelKey]: page.nextCursor ?? null,
@@ -3671,7 +3715,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const overview = await api.cronOverview(sourceId);
       setCronOverview(overview);
       if (jobId !== undefined) {
+        const threadId = overview.jobs.find((job) => job.jobId === jobId)?.threadId;
+        const issuedAt = threadCacheRef.current.clock();
         const page = await api.cronRuns(sourceId, jobId);
+        if (threadId !== undefined && !threadCacheRef.current.accepts(threadId, issuedAt)) return;
         const channelKey = cronChannelKey(sourceId, jobId);
         setCronRunCursorByChannel((current) => Object.prototype.hasOwnProperty.call(current, channelKey)
           ? current
@@ -3692,7 +3739,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setCronLoading(true);
     setCronError(null);
     try {
+      const issuedAt = threadCacheRef.current.clock();
       const message = await api.cronRun(sourceId, jobId, runId);
+      if (!threadCacheRef.current.accepts(threadId, issuedAt)) return;
       // REPLACED, not merged: the operator asked for this run's activity and
       // the answer is the same row at the same version with the detail filled
       // in, which a version comparison would read as nothing new.
@@ -3700,11 +3749,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         publishDetail(threadId);
       }
     } catch (loadError) {
+      if (loadError instanceof ApiError && loadError.status === 404 && loadError.code === "cron_run_not_visible") {
+        const thread = threadCacheRef.current.get(threadId)?.thread ?? threadsRef.current.find((item) => item.id === threadId);
+        if (thread !== undefined) evictCronTranscript(thread);
+        return;
+      }
       setCronError(errorMessage(loadError));
     } finally {
       setCronLoading(false);
     }
-  }, [publishDetail, selectedAgentId, selectedCronJobId, selectedCronThreadId]);
+  }, [evictCronTranscript, publishDetail, selectedAgentId, selectedCronJobId, selectedCronThreadId]);
 
   const refreshReplyAttachmentAccess = useCallback(
     async (partId: string): Promise<ReplyAttachmentMessagePart> => {

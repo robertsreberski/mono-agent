@@ -999,13 +999,10 @@ describe("WebStore first-class cron channels", () => {
     }]);
 
     const messages = store.getThreadDetail(threadId)!.messages;
-    expect(messages).toHaveLength(1);
-    expect(messages[0]!.parts.filter((part) => part.type === "text")).toEqual([
-      { type: "text", text: "Completed silently (no message was reported)." },
-    ]);
-    expect(messages[0]!.parts.filter(
-      (part) => part.type === "telemetry" && part.event === "cron_run",
-    )).toHaveLength(1);
+    expect(messages).toEqual([]);
+    const raw = new DatabaseSync(join(base, "state", "state.sqlite"));
+    expect(raw.prepare("SELECT cron_suppressed, status FROM messages").get()).toMatchObject({ cron_suppressed: 1, status: "complete" });
+    raw.close();
     store.close();
   });
 
@@ -1140,15 +1137,8 @@ describe("WebStore first-class cron channels", () => {
       text: "  NOTHING_TO_REPORT  ",
     })]);
 
-    const message = store.getThreadDetail(threadId)!.messages[0]!;
-    expect(message.parts.filter((part) => part.type === "text")).toEqual([
-      { type: "text", text: "Completed silently (no message was reported)." },
-    ]);
-    expect(message.parts).toContainEqual(expect.objectContaining({
-      type: "telemetry",
-      event: "cron_run",
-      data: expect.objectContaining({ silent: true }),
-    }));
+    expect(store.getThreadDetail(threadId)!.messages).toEqual([]);
+    expect(store.storedCronRuns("agent-one", "daily:brief").runs).toHaveLength(1);
     store.close();
   });
 
@@ -1174,5 +1164,129 @@ describe("WebStore first-class cron channels", () => {
     expect(second.messages.map((message) => message.id)).not.toContain(landed.userMessageId);
     expect(second.messages.map((message) => message.id)).not.toContain(landed.assistantMessageId);
     store.close();
+  });
+});
+
+describe("silent cron projections", () => {
+  async function fixture() {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const store = await WebStore.open({ stateDir: join(root, "state") });
+    store.replaceAgents([agent()]);
+    const thread = syncCronJob(store).jobs[0]!.threadId;
+    return { store, thread };
+  }
+
+  it.each([
+    [undefined, "succeeded", true], [" \n", "succeeded", true],
+    [" nothing_to_report ", "succeeded", true], ["Checked everything\nNOTHING_TO_REPORT", "succeeded", true],
+    ["NOTHING_TO_REPORT\nReal answer", "succeeded", false], ["Mention NOTHING_TO_REPORT here", "succeeded", false],
+    ["NOTHING_TO_REPORT", "failed", false], ["NOTHING_TO_REPORT", "cancelled", false],
+  ] as const)("classifies %j with status %s", async (text, status, silent) => {
+    const { store, thread } = await fixture();
+    try {
+      const before = store.getThread(thread)!;
+      const run = cronRun({ runId: "matrix", sequence: 1, status, ...(text === undefined ? {} : { text }) });
+      const result = store.reconcileCronRunsResult("agent-one", "daily:brief", [run]);
+      expect(result.messages).toHaveLength(silent ? 0 : 1);
+      expect(result.writtenMessageIds).toHaveLength(silent ? 0 : 1);
+      expect(result.changed).toBe(!silent);
+      expect(store.getThread(thread)!.revision).toBe(before.revision + (silent ? 0 : 1));
+      const repeated = store.reconcileCronRunsResult("agent-one", "daily:brief", [run]);
+      expect(repeated.changed).toBe(false);
+      expect(repeated.writtenMessageIds).toEqual([]);
+    } finally { store.close(); }
+  });
+
+  it("hides a running row from every public read and preserves history and stable revisions", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({ runId: "transition", sequence: 1, status: "running" });
+      const message = store.reconcileCronRuns("agent-one", "daily:brief", [run])[0]!;
+      const silent = { ...run, status: "succeeded" as const, text: "NOTHING_TO_REPORT" };
+      const before = store.getThread(thread)!;
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [silent])).toMatchObject({ changed: true, messages: [], writtenMessageIds: [] });
+      expect(store.getThread(thread)).toMatchObject({ messageCount: 0, revision: before.revision + 1 });
+      expect(store.getThread(thread)!.lastMessagePreview).toBeUndefined();
+      expect(store.getMessage(message.id)).toBeUndefined();
+      expect(store.listMessagesPage(thread, { limit: 1 })).toEqual({ messages: [] });
+      expect(store.searchThreads({ sourceId: "agent-one", query: "silently" }).hits).toEqual([]);
+      expect(store.storedCronRuns("agent-one", "daily:brief")).toMatchObject({ runs: [expect.objectContaining({ runId: run.runId })], messages: [] });
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [{ ...silent, eventCount: 2 }]).changed).toBe(false);
+      expect(store.getThread(thread)!.revision).toBe(before.revision + 1);
+    } finally { store.close(); }
+  });
+
+  it.each([
+    [true, "Delivered answer"], [false, "Delivered answer"],
+    [true, "Completed silently (no message was reported)."], [false, "Completed silently (no message was reported)."],
+  ] as const)("completed notification wins with delivery-first=%s and text=%s", async (deliveryFirst, deliveryText) => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({ runId: "notification", sequence: 1, text: "NOTHING_TO_REPORT" });
+      const reservation = store.reserveNotification({ sourceId: "agent-one", triggerKind: "cron", jobId: "daily:brief", runId: run.runId, deliveryKey: "notification-key", text: deliveryText });
+      if (deliveryFirst) store.completeNotification(reservation);
+      const result = store.reconcileCronRunsResult("agent-one", "daily:brief", [run]);
+      expect(result.messages).toHaveLength(deliveryFirst ? 1 : 0);
+      if (!deliveryFirst) store.completeNotification(reservation);
+      const visible = store.getThreadDetail(thread)!.messages;
+      expect(visible).toHaveLength(1);
+      expect(visible[0]!.parts.filter((part) => part.type === "text")).toEqual([{ type: "text", text: deliveryText }]);
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [run]).messages).toHaveLength(1);
+      const revision = store.getThread(thread)!.revision;
+      expect(store.completeNotification(reservation).duplicate).toBe(true);
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [run]).changed).toBe(false);
+      expect(store.getThread(thread)!.revision).toBe(revision);
+    } finally { store.close(); }
+  });
+
+  it("keeps ambiguous prefixes visible and remembers authoritative suppression across truncated summaries", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({ runId: "truncated", sequence: 1, text: "NOTHING_TO_REPORT", fieldsTruncated: ["text"] });
+      expect(store.reconcileCronRuns("agent-one", "daily:brief", [run])).toHaveLength(1);
+      const detail = { ...run, fieldsTruncated: [], projection: "detail" as const, events: [], eventsIncluded: 0 };
+      expect(store.reconcileCronRuns("agent-one", "daily:brief", [detail])).toEqual([]);
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [{ ...run, text: "Checked a long list" }]).changed).toBe(false);
+      expect(store.getThreadDetail(thread)!.messages).toEqual([]);
+    } finally { store.close(); }
+  });
+
+  it("preserves rich replies when a contradictory silent summary and detail arrive", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const run = cronRun({ runId: "rich", sequence: 1, status: "running" });
+      const message = store.reconcileCronRuns("agent-one", "daily:brief", [run])[0]!;
+      const rich = { type: "mcp_app", id: "11111111-1111-4111-8111-111111111111",
+        invocationId: "11111111-1111-4111-8111-111111111111", connectionId: "connection", serverName: "widgets",
+        toolName: "chart", resourceUri: "ui://widgets/chart", mediaType: "text/html;profile=mcp-app", protocolVersion: "2026-01-26" };
+      const db = new DatabaseSync(store.paths.database);
+      db.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(JSON.stringify([...message.parts, rich]), message.id);
+      db.close();
+      const silent = { ...run, status: "succeeded" as const, text: "NOTHING_TO_REPORT" };
+      expect(store.reconcileCronRuns("agent-one", "daily:brief", [silent])).toHaveLength(1);
+      expect(store.reconcileCronRuns("agent-one", "daily:brief", [{ ...silent, projection: "detail", events: [], eventsIncluded: 0 }])).toHaveLength(1);
+      expect(store.getThreadDetail(thread)!.messages[0]!.parts).toContainEqual(rich);
+    } finally { store.close(); }
+  });
+
+  it("filters before page limits and retains 500 visible runs independently of silent runs", async () => {
+    const { store, thread } = await fixture();
+    try {
+      const runs = Array.from({ length: 1100 }, (_, sequence) => cronRun({ runId: `retained-${sequence}`, sequence,
+        text: sequence < 500 ? `Visible ${sequence}` : "NOTHING_TO_REPORT" }));
+      const result = store.reconcileCronRunsResult("agent-one", "daily:brief", runs);
+      expect(result.messages).toHaveLength(500);
+      expect(result.writtenMessageIds).toHaveLength(500);
+      expect(store.getThread(thread)).toMatchObject({ messageCount: 500, lastMessagePreview: "Visible 499" });
+      let before: string | undefined; const ids: string[] = [];
+      do {
+        const page = store.listMessagesPage(thread, { limit: 37, ...(before === undefined ? {} : { before }) });
+        ids.push(...page.messages.map((message) => message.id)); before = page.nextCursor;
+      } while (before !== undefined);
+      expect(new Set(ids).size).toBe(500);
+      const database = new DatabaseSync(store.paths.database, { readOnly: true });
+      try { expect(database.prepare("SELECT cron_suppressed, COUNT(*) AS count FROM messages GROUP BY cron_suppressed ORDER BY cron_suppressed").all()).toEqual([{ cron_suppressed: 0, count: 500 }, { cron_suppressed: 1, count: 500 }]); }
+      finally { database.close(); }
+    } finally { store.close(); }
   });
 });

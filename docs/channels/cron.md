@@ -36,6 +36,13 @@ same durable outcomes without changing the stored answer text.
 
 **Staying silent.** To send nothing for this tick, have the agent produce an **empty final answer** or reply with the reserved sentinel `NOTHING_TO_REPORT` (matched trimmed and case-insensitively, either as the whole answer or as its final line — never as a substring). In either case no notification is sent. Replying with the sentinel alone is the contract; a model that narrates first and ends with the marker is still treated as silent, and the run logs a warning so the off-contract answer stays visible. Suppression wins over attribution: a silent tick stays silent even when the run failed over.
 
+The web console omits successful silent runs from its conversation feed, message
+counts, previews and search. Their compact run history remains retained separately;
+failed runs, real output and completed notification content stay visible. Existing
+synthetic-only silent rows are hidden during upgrade and offline cache hydration.
+Older truncated answers whose missing tail cannot be classified stay visible until
+a current agent supplies authoritative evidence.
+
 Notifying **multiple** or **other** conversations from one trigger is not a built-in: compose it from several cron jobs, each with its own `notifyConversationId`, or from a skill.
 
 ## Expression format

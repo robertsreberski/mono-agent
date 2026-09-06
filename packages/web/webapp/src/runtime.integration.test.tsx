@@ -3,8 +3,8 @@ import { useAssistantRuntime } from "@assistant-ui/react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { StartTurnInput } from "./types";
-import { agent, attachment, thread, uploadLimits } from "./test/fixtures";
+import type { StartTurnInput, WebMessage } from "./types";
+import { agent, attachment, monitor, thread, uploadLimits } from "./test/fixtures";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
@@ -134,6 +134,25 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       ...upload,
       uploaded: true,
     }));
+  });
+
+  it("hides legacy silent cron rows while coalescing Monitor activity and keeping rich cron content", async () => {
+    const wake = (id: string): WebMessage => ({
+      id, threadId: idleThread.id, turnId: `turn-${id}`, role: "assistant", status: "complete",
+      createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", attachments: [],
+      parts: [{ type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: [] }] }],
+    });
+    const silent: WebMessage = { ...wake("silent"), parts: [
+      { type: "text", text: "Completed silently (no message was reported)." },
+      { type: "telemetry", event: "cron_run", data: { runId: "run", status: "succeeded", silent: true } },
+    ] };
+    const rich: WebMessage = { ...silent, id: "rich", parts: [...silent.parts, { type: "text", text: "Delivered content" }] };
+    storeMock.current = createStore(vi.fn(), {
+      detail: { thread: idleThread, messages: [wake("first"), wake("second"), silent, rich] },
+    });
+    const view = await renderRuntime();
+    expect(view.runtime.thread.getState().messages.map((message) => message.id)).toEqual(["second", "rich"]);
+    expect(view.runtime.thread.getState().messages[1]?.content).toContainEqual({ type: "text", text: "Delivered content" });
   });
 
   it("restores a rejected turn as a retryable composer draft without an unhandled rejection", async () => {

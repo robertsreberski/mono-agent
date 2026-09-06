@@ -53,3 +53,27 @@ export function seedLegacyStorage(database: DatabaseSync, version: number, seque
   if (version === 18 || sequenced17) database.exec("UPDATE messages SET seq = 7");
   database.exec(`PRAGMA user_version = ${version}`);
 }
+
+/** A real v18 cron projection, including the synthetic message the old store wrote. */
+export function seedLegacySilentCron(database: DatabaseSync, id = "legacy-silent", options: {
+  readonly text?: unknown; readonly status?: string; readonly fieldsTruncated?: readonly string[];
+  readonly messageText?: string; readonly delivered?: boolean;
+} = {}): void {
+  const at = "2026-08-01T00:00:00.000Z";
+  database.prepare(`INSERT OR IGNORE INTO cron_channels (source_id, job_id, thread_id, configured, created_at, updated_at)
+    VALUES ('fixture-agent', 'legacy-job', 'fixture-thread', 0, ?, ?)`).run(at, at);
+  database.prepare(`INSERT INTO turns (id, thread_id, status, text, assistant_message_id, started_at, finished_at)
+    VALUES (?, 'fixture-thread', 'complete', '', ?, ?, ?)`).run(`${id}-turn`, id, at, at);
+  database.prepare(`INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status, seq)
+    VALUES (?, 'fixture-thread', ?, 'assistant', ?, ?, ?, 'complete', 9)`).run(id, `${id}-turn`, JSON.stringify([
+      { type: "text", text: options.messageText ?? "Completed silently (no message was reported)." },
+      { type: "telemetry", event: "cron_run", data: { runId: id, status: options.status ?? "succeeded", silent: true } },
+    ]), at, at);
+  database.prepare(`INSERT INTO cron_run_messages (source_id, job_id, run_id, thread_id, turn_id, message_id, ordered_at, sequence, payload_json, updated_at)
+    VALUES ('fixture-agent', 'legacy-job', ?, 'fixture-thread', ?, ?, ?, 1, ?, ?)`).run(id, `${id}-turn`, id, at,
+      JSON.stringify({ projection: "summary", runId: id, jobId: "legacy-job", scheduledAt: at, orderedAt: at, sequence: 1,
+        trigger: "scheduled", status: options.status ?? "succeeded", text: options.text ?? "NOTHING_TO_REPORT", eventCount: 0,
+        ...(options.fieldsTruncated === undefined ? {} : { fieldsTruncated: options.fieldsTruncated }) }), at);
+  if (options.delivered) database.prepare(`INSERT INTO notification_deliveries (source_id, delivery_key, thread_id, message_id, trigger_kind, job_id, run_id, payload_sha256, created_at, completed_at)
+    VALUES ('fixture-agent', ?, 'fixture-thread', ?, 'cron', 'legacy-job', ?, ?, ?, ?)`).run(id, id, id, "c".repeat(64), at, at);
+}

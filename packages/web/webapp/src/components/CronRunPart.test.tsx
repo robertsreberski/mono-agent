@@ -60,3 +60,11 @@ describe("CronRunPart", () => {
     expect(screen.getByRole("button", { name: "Refresh activity" })).toBeEnabled();
   });
 });
+
+it("hides legacy silent synthetic cards but preserves a card with real content", () => {
+  const data = { runId: "silent", status: "succeeded", silent: true };
+  const { rerender } = render(<CronRunPart type="data" name="cron-run" status={{ type: "complete" }} data={data} />);
+  expect(screen.queryByRole("group")).not.toBeInTheDocument();
+  rerender(<CronRunPart type="data" name="cron-run" status={{ type: "complete" }} data={{ ...data, hasVisibleContent: true }} />);
+  expect(screen.getByRole("group")).toBeVisible();
+});

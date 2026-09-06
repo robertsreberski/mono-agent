@@ -67,6 +67,8 @@ describe("createThreadPersistence", () => {
     // version-1 store, written with no `writer` and with no index to put them
     // in, and a failure here does not degrade -- `disable()` takes the whole
     // device store down for the session.
+    const legacyThread = { ...thread("legacy-thread", "alpha"),
+      trigger: { kind: "cron" as const, jobId: "digest" }, messageCount: 2 };
     await new Promise<void>((resolve, reject) => {
       const request = indexedDB.open(PERSISTENCE_DB_NAME, 1);
       request.onupgradeneeded = () => {
@@ -81,15 +83,19 @@ describe("createThreadPersistence", () => {
         // Exactly the shape version 1 wrote: no `writer` anywhere.
         transaction.objectStore("threads").put({
           id: "legacy-thread",
-          thread: thread("legacy-thread", "alpha"),
-          messages: [message("legacy-message")],
+          thread: legacyThread,
+          messages: [message("legacy-message"), message("silent", [
+            { type: "text", text: "Completed silently (no message was reported)." },
+            { type: "telemetry", event: "cron_run", data: { status: "succeeded", silent: true } },
+          ])],
+          etag: "legacy-validator",
           repairedToolCallIds: [],
           pagedInIds: [],
           savedAt: 1_000,
         });
         transaction.objectStore("buckets").put({
           key: "alpha\u0000active",
-          threads: [thread("legacy-thread", "alpha")],
+          threads: [legacyThread],
           nextCursor: null,
           savedAt: 1_000,
         });
@@ -116,6 +122,9 @@ describe("createThreadPersistence", () => {
     expect(restored?.threads[0]?.messages.map((row) => row.id)).toEqual(["legacy-message"]);
     expect(restored?.buckets.map((row) => row.key)).toEqual(["alpha\u0000active"]);
     expect(restored?.threads[0]?.writer).toBeUndefined();
+    expect(restored?.threads[0]?.etag).toBeUndefined();
+    expect(restored?.threads[0]?.thread.messageCount).toBe(1);
+    expect(restored?.buckets[0]?.threads[0]?.messageCount).toBe(1);
 
     // And the index the upgrade added really works: this instance writes its
     // own conversation, sweeps it when it stops holding it, and leaves the
@@ -439,6 +448,38 @@ describe("createThreadPersistence", () => {
 
     const restored = await createThreadPersistence().hydrate();
     expect(restored?.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+  });
+
+  it("sanitizes old IndexedDB cron rows, bucket counts and validators on cold hydration", async () => {
+    const persistence = createThreadPersistence({ now: () => 1_000 });
+    const cron = { ...thread("cron", "alpha"), trigger: { kind: "cron" as const, jobId: "digest" }, messageCount: 2, lastMessagePreview: "Completed silently (no message was reported)." };
+    await persistence.save({ entries: [entry("cron")], bucket: { key: "alpha\0active", threads: [cron], nextCursor: null } });
+    await new Promise<void>((resolve) => {
+      const request = indexedDB.open(PERSISTENCE_DB_NAME);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("threads", "readwrite");
+        tx.objectStore("threads").put({ id: "cron", thread: cron, etag: "old-validator", savedAt: 1_000, writer: "previous-tab",
+          messages: [message("real"), message("silent", [
+            { type: "text", text: "Completed silently (no message was reported)." },
+            { type: "telemetry", event: "cron_run", data: { status: "succeeded", silent: true } },
+          ])], pagedInIds: ["silent"], repairedToolCallIds: [] });
+        tx.oncomplete = () => { db.close(); resolve(); };
+      };
+    });
+    const hydrated = await persistence.hydrate();
+    expect(hydrated?.threads[0]?.messages.map((message) => message.id)).toEqual(["real"]);
+    expect(hydrated?.threads[0]?.etag).toBeUndefined();
+    expect(hydrated?.threads[0]?.pagedInIds).toEqual([]);
+    expect(hydrated?.buckets[0]?.threads[0]).toMatchObject({ messageCount: 1, lastMessagePreview: "real" });
+    expect(hydrated?.threads[0]?.writer).toBe("previous-tab");
+    // Sanitizing a row does not claim another tab's ownership or exempt it
+    // from the ordinary v2 persistence rules.
+    await persistence.save({ entries: [] });
+    const reopened = await createThreadPersistence().hydrate();
+    expect(reopened?.threads[0]?.messages.map((message) => message.id)).toEqual(["real"]);
+    expect(reopened?.threads[0]?.writer).toBe("previous-tab");
+    persistence.close();
   });
 
   it("skips a summary the sidebar could not draw", async () => {
