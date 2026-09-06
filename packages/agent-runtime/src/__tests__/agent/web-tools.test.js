@@ -1202,6 +1202,41 @@ describe("WebFetch", () => {
     });
     expect(disabledRenderer).not.toHaveBeenCalled();
   });
+
+  it("preserves terminal browser access failures during automatic rendering", async () => {
+    const sparseSpa = `
+      <html><body><div id="root">Loading</div>
+      <script src="/one.js"></script><script src="/two.js"></script>
+      <script>window.__NEXT_DATA__={}</script></body></html>
+    `;
+    const cases = [
+      {
+        code: "access_challenge",
+        renderer: async () => "# Just a moment...\n\nPerforming security verification\n\nEnable JavaScript and cookies to continue",
+      },
+      {
+        code: "authentication_required",
+        renderer: async () => "Authentication required. Sign in to continue.",
+      },
+      {
+        code: "network_denied",
+        renderer: async () => { throw Object.assign(new Error("network blocked"), { code: "network_denied" }); },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = await performWebFetch({ url: "https://example.com/app", render: "auto" }, {
+        fetchImpl: async () => new Response(sparseSpa, { headers: { "content-type": "text/html" } }),
+        fetchConfig: { render: "auto" },
+        browserRenderer: testCase.renderer,
+        ctx: runtimeContext(),
+      });
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: testCase.code, backend: "agent-browser" },
+      });
+    }
+  });
 });
 
 describe("run-scoped web controller and browser isolation", () => {

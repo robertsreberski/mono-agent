@@ -398,9 +398,10 @@ async function performFetch(
       backend = "agent-browser";
     } catch (error) {
       if (signal?.aborted) return failure("Error: WebFetch rendering was aborted.", "aborted", startedAt);
-      if (requestedRender === "always" || error?.code === "coordination_unavailable") {
-        const code = ["access_challenge", "authentication_required", "network_denied"].includes(error?.code)
-          ? error.code : "browser_render_failed";
+      const terminalCode = ["access_challenge", "authentication_required", "network_denied"].includes(error?.code)
+        ? error.code : null;
+      if (terminalCode || requestedRender === "always" || error?.code === "coordination_unavailable") {
+        const code = terminalCode ?? "browser_render_failed";
         return failure(`Error rendering URL: ${error?.message || String(error)}`, code, startedAt, {
           attempts,
           statusCode: response.status,
