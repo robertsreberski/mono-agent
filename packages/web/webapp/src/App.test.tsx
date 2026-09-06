@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
 import { readDataModeSetting, writeDataModeSetting } from "./data-mode";
 import { recordDataUsage, resetDataUsage } from "./data-usage";
+import {
+  registerServiceWorkerUpdates,
+  resetServiceWorkerUpdates,
+} from "./service-worker-update";
 import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -13,8 +17,9 @@ const storeMock = vi.hoisted(() => ({
   clearActionError: vi.fn(),
   agents: [],
   visibleAgents: [],
+  threads: [] as readonly { readonly runState: { readonly status: string } }[],
   selectedAgent: null,
-  selectedThread: null,
+  selectedThread: null as { readonly runState: { readonly status: string } } | null,
   showArchived: false,
   showOfflineAgents: false,
   hiddenOfflineAgentCount: 0,
@@ -206,5 +211,83 @@ describe("App data mode", () => {
     standalone(false);
     render(<App />);
     expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
+  });
+});
+
+describe("App service worker update", () => {
+  const visibility = (state: DocumentVisibilityState): void => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    document.dispatchEvent(new Event("visibilitychange"));
+  };
+
+  afterEach(() => {
+    resetServiceWorkerUpdates();
+    Reflect.deleteProperty(document, "visibilityState");
+    storeMock.threads = [];
+    storeMock.selectedThread = null;
+  });
+
+  /** Registers, then plays the worker's "a new build is staged" callback. */
+  const stageUpdate = (): ReturnType<typeof vi.fn> => {
+    const apply = vi.fn(async () => undefined);
+    let needRefresh = (): void => undefined;
+    registerServiceWorkerUpdates((options) => {
+      needRefresh = options.onNeedRefresh ?? needRefresh;
+      return apply;
+    });
+    needRefresh();
+    return apply;
+  };
+
+  const runningThread = {
+    id: "thread-running",
+    runState: { status: "running" },
+  } as unknown as (typeof storeMock)["selectedThread"];
+
+  it("does not take the page from under a running turn", () => {
+    storeMock.threads = [runningThread] as unknown as (typeof storeMock)["threads"];
+    const apply = stageUpdate();
+    render(<App />);
+
+    visibility("visible");
+
+    expect(apply).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("new version");
+  });
+
+  it("takes the staged build the moment an idle console comes back", () => {
+    const apply = stageUpdate();
+    render(<App />);
+
+    visibility("hidden");
+    expect(apply).not.toHaveBeenCalled();
+
+    visibility("visible");
+
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads on the operator's own word, whatever is running", () => {
+    storeMock.selectedThread = runningThread;
+    const apply = stageUpdate();
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload now" }));
+
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the deferral armed after the notice is dismissed", () => {
+    storeMock.threads = [runningThread] as unknown as (typeof storeMock)["threads"];
+    const apply = stageUpdate();
+    const view = render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss update notice" }));
+    expect(screen.queryByRole("button", { name: "Reload now" })).toBeNull();
+
+    storeMock.threads = [];
+    view.rerender(<App />);
+    visibility("visible");
+    expect(apply).toHaveBeenCalledTimes(1);
   });
 });

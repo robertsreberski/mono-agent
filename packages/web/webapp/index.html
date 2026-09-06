@@ -6,6 +6,22 @@
     <meta name="theme-color" media="(prefers-color-scheme: light)" content="#eeefeb" />
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1110" />
     <meta name="description" content="Always-on local console for your mono-agent fleet." />
+    <!--
+      Home-screen install: no browser chrome, and the name under the icon is the
+      console's, not the document title's.
+
+      The status bar stays `default` rather than `black-translucent` on purpose.
+      `black-translucent` draws WHITE status-bar glyphs whatever is behind them,
+      and this console's light theme paints `#eeefeb` up there -- an invisible
+      clock and battery. `default` lets iOS take the status bar's appearance from
+      the `theme-color` pair above, so it is legible in both themes. The layout
+      is already ready for the other choice: `viewport-fit=cover` is set and every
+      top edge pads by `env(safe-area-inset-top)`.
+    -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="mono-agent" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />

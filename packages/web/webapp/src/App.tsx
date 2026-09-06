@@ -28,6 +28,10 @@ import {
   writeDataModeSetting,
 } from "./data-mode";
 import { formatDataBytes, useDataUsage } from "./data-usage";
+import {
+  applyServiceWorkerUpdate,
+  useServiceWorkerUpdateWaiting,
+} from "./service-worker-update";
 import { applyConsolePresentation } from "./theme";
 
 interface PaletteAction {
@@ -320,6 +324,8 @@ export function App() {
     clearError,
     hasServerSnapshot,
     retry,
+    threads,
+    selectedThread,
   } = useConsoleStore();
   const [agentDrawer, setAgentDrawer] = useState(false);
   const [threadDrawer, setThreadDrawer] = useState(false);
@@ -327,6 +333,7 @@ export function App() {
   const [agentSettings, setAgentSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [leanOffer, setLeanOffer] = useState(false);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
   const agentDrawerRef = useRef<HTMLDivElement>(null);
   const threadDrawerRef = useRef<HTMLDivElement>(null);
@@ -411,6 +418,31 @@ export function App() {
     markLeanDataModeOffered();
     setLeanOffer(true);
   }, []);
+
+  /**
+   * A staged build takes over on the next quiet moment, not on arrival.
+   *
+   * Read from a ref at the event rather than depended on: what matters is
+   * whether anything is running WHEN the operator comes back, and re-arming the
+   * listener on every status change would be a listener per streamed frame.
+   */
+  const busy = selectedThread?.runState.status === "running"
+    || threads.some((thread) => thread.runState.status === "running");
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const updateWaiting = useServiceWorkerUpdateWaiting();
+  useEffect(() => {
+    if (!updateWaiting) return;
+    const onVisibility = () => {
+      // A reload discards the transcript on screen and the composer's draft, so
+      // it happens where neither costs anything: the operator has just come
+      // back to a console with nothing in flight.
+      if (document.visibilityState !== "visible" || busyRef.current) return;
+      applyServiceWorkerUpdate();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [updateWaiting]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -540,6 +572,30 @@ export function App() {
             type="button"
             aria-label="Dismiss data mode suggestion"
             onClick={() => setLeanOffer(false)}
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+      )}
+      {/*
+        * One offer row at a time: `.toast.is-offer` has its own place above an
+        * ordinary toast, and two of them would sit on top of each other. The
+        * data-mode offer is shown once per install and clears itself.
+        */}
+      {updateWaiting && !updateDismissed && !leanOffer && (
+        <div className="toast is-offer" role="status">
+          <span>A new version of the console is ready.</span>
+          <button
+            type="button"
+            className="toast-action"
+            onClick={applyServiceWorkerUpdate}
+          >
+            Reload now
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss update notice"
+            onClick={() => setUpdateDismissed(true)}
           >
             <Icon name="close" size={14} />
           </button>
