@@ -118,11 +118,12 @@ export interface PersistableState {
   /**
    * Every conversation the cache is keeping -- at most its LRU's eight.
    *
-   * A row absent from this list is deleted only when THIS instance wrote it or
-   * read it back from the device; anything else on the store belongs to another
-   * tab and is left to that tab. This is how an eviction, a removal and a
-   * tombstone all reach the device without any of them having to say so, and
-   * why two consoles open at once do not delete each other's conversations.
+   * A row absent from this list is deleted only when THIS instance WROTE it;
+   * anything else on the store belongs to whoever put it there and is left to
+   * them, which is why two consoles open at once do not delete each other's
+   * conversations. That is how an eviction of a row this tab wrote reaches the
+   * device; a conversation the operator DELETED is not an inference at all and
+   * goes through {@link ThreadPersistence.forget} instead.
    */
   readonly entries: readonly ThreadCacheEntry[];
   readonly snapshot?: PersistedSnapshot;
@@ -653,7 +654,6 @@ export const createThreadPersistence = (
         const threads = transaction.objectStore(THREAD_STORE);
         const heldIds = new Set(state.entries.map((entry) => entry.thread.id));
         const next = new Map<string, ThreadCacheEntry>();
-        const wrote: string[] = [];
         // Both issued inside the same transaction as the writes, and answered by
         // their own callbacks rather than an `await`: nothing else may run in
         // between or the transaction commits without them. The whole flush is
@@ -700,7 +700,6 @@ export const createThreadPersistence = (
               continue;
             }
             next.set(id, entry);
-            wrote.push(id);
             threads.put(row);
           }
         };
@@ -721,10 +720,9 @@ export const createThreadPersistence = (
           meta.put(state.snapshot.console.hostName, HOST_KEY);
         }
         await settled(transaction);
-        // Only after it committed. Ownership itself is on the rows; this is the
-        // per-instance record of what has been written, which is what keeps a
-        // flush during a streaming turn to the one transcript that moved.
-        void wrote;
+        // Only after it committed. Ownership lives on the rows themselves; this
+        // is the per-instance record of what has been written, which is what
+        // keeps a flush during a streaming turn to the one transcript that moved.
         written.clear();
         for (const [id, entry] of next) written.set(id, entry);
       } catch (writeError) {
