@@ -70,6 +70,8 @@ import {
   type WebMessagePage,
   type WebModelPage,
   type WebPushSubscriptionStatus,
+  type WebConfigurationProposal,
+  type WebConfigurationSession,
 } from "./contracts.js";
 import {
   discoverOperatorAgents,
@@ -379,6 +381,35 @@ export interface WebServiceLogger {
   error?(message: string, metadata?: Readonly<Record<string, unknown>>): void;
 }
 
+export interface WebConfigurationController {
+  readonly sessionId: string;
+  readonly conversationId: string;
+  readonly roleLocation: string;
+  readonly initialPrompt?: string;
+  readonly prompt: string;
+  readonly operatorPrompt: string;
+  takeProposal(): Promise<WebConfigurationProposal | undefined>;
+  approve(id: string): Promise<{
+    readonly message: string;
+    readonly kind?: "applied" | "rejected" | "rolled_back" | "error";
+    readonly connection?: { readonly baseUrl: string; readonly apiKey?: string };
+  }>;
+  reject(id: string): Promise<{
+    readonly message: string;
+    readonly kind?: "applied" | "rejected" | "rolled_back" | "error";
+    readonly connection?: { readonly baseUrl: string; readonly apiKey?: string };
+  }>;
+  abandon(): Promise<void>;
+}
+
+export interface WebConfigurationHost {
+  supports(agent: DiscoveredOperatorAgent): boolean;
+  create(agent: DiscoveredOperatorAgent): Promise<{
+    readonly configuration: WebConfigurationController;
+    dispose(): Promise<void>;
+  }>;
+}
+
 export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOperatorAgentsOptions {
   readonly fetchImpl?: typeof fetch;
   readonly logger?: WebServiceLogger;
@@ -395,6 +426,7 @@ export interface CreateWebServiceOptions extends WebStatePathOptions, DiscoverOp
   readonly pushDnsResolver?: WebPushDnsResolver;
   readonly pushDispatchIntervalMs?: number;
   readonly pushRandom?: () => number;
+  readonly configurationHost?: WebConfigurationHost;
 }
 
 interface ActiveTurn {
@@ -415,6 +447,18 @@ type HostWakeReceipt = NonNullable<DeliverWebNotificationResult["delivery"]>;
 interface AgentConnection {
   readonly client: OperatorClient;
   readonly info: OperatorInfo;
+}
+
+interface ActiveConfigurationSession {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly configuration: WebConfigurationController;
+  readonly dispose: () => Promise<void>;
+  client: OperatorClient;
+  status: "active" | "proposal" | "applying";
+  messages: Array<{ readonly role: "operator" | "assistant" | "host"; readonly text: string }>;
+  proposal: WebConfigurationProposal | undefined;
+  busy: boolean;
 }
 
 interface AskWatch {
@@ -529,6 +573,9 @@ export class WebService {
   private readonly replyAccessKey: Buffer;
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
+  private discoveredAgents = new Map<string, DiscoveredOperatorAgent>();
+  private readonly configurationSessions = new Map<string, ActiveConfigurationSession>();
+  private readonly configuringSources = new Set<string>();
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
    *  and appended to by every proxied `/v1/models` page. Admission is `has`,
    *  metadata is `get`. Map preserves insertion order, so evicting the oldest
@@ -622,7 +669,7 @@ export class WebService {
       && this.store.getAgent(currentThread.sourceId) !== undefined
       ? currentThreadId
       : undefined;
-    const agents = this.store.listAgents();
+    const agents = this.store.listAgents().map((agent) => this.decorateConfigurationCapability(agent));
     const threadsSourceId = this.bootstrapSourceId(scope.sourceId, currentThread, agents);
     const archived = scope.archived ?? false;
     const page = threadsSourceId === null
@@ -676,6 +723,17 @@ export class WebService {
       ?? agents.find((agent) => agent.status !== "offline")?.sourceId
       ?? agents[0]?.sourceId
       ?? null;
+  }
+
+  private decorateConfigurationCapability(agent: WebAgentSummary): WebAgentSummary {
+    const host = this.options.configurationHost;
+    const target = this.discoveredAgents.get(agent.sourceId);
+    return host !== undefined
+      && target !== undefined
+      && this.connections.has(agent.sourceId)
+      && host.supports(target)
+      ? { ...agent, supportsConfiguration: true }
+      : agent;
   }
 
   createThread(sourceId: string, input: Omit<CreateWebThreadInput, "sourceId"> = {}): WebThread {
@@ -1068,7 +1126,7 @@ export class WebService {
     // this call's own response.
     const payload: WebAgentsChangedPayload = { sourceId: agent.sourceId, pinned: agent.pinned === true };
     this.emit("agents.changed", undefined, payload);
-    return agent;
+    return this.decorateConfigurationCapability(agent);
   }
 
   setAgentRunDefaults(sourceId: string, input: PutWebAgentRunSettingsInput): WebAgentSummary {
@@ -1086,13 +1144,13 @@ export class WebService {
     );
     const updated = this.store.setAgentRunOverride(sourceId, input);
     this.emit("agents.changed");
-    return updated;
+    return this.decorateConfigurationCapability(updated);
   }
 
   clearAgentRunDefaults(sourceId: string): WebAgentSummary {
     const agent = this.store.clearAgentRunOverride(sourceId);
     this.emit("agents.changed");
-    return agent;
+    return this.decorateConfigurationCapability(agent);
   }
 
   agentSkills(sourceId: string): WebSkillRegistry {
@@ -1397,6 +1455,178 @@ export class WebService {
     return { thread: started.thread, turn: started.thread.runState };
   }
 
+  async createConfigurationSession(sourceId: string): Promise<WebConfigurationSession> {
+    if (this.stopped) throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
+    const host = this.options.configurationHost;
+    const target = this.discoveredAgents.get(sourceId);
+    const connection = this.connections.get(sourceId);
+    if (host === undefined || target === undefined || connection === undefined || !host.supports(target)) {
+      throw new WebConsoleError(
+        "configuration_unavailable",
+        "This agent is not available for managed SELF-CONFIG from this web host.",
+        409,
+      );
+    }
+    if (this.configuringSources.has(sourceId)
+      || [...this.configurationSessions.values()].some((session) => session.sourceId === sourceId)) {
+      throw new WebConsoleError("configuration_active", "This agent already has an active web SELF-CONFIG session.", 409);
+    }
+    this.configuringSources.add(sourceId);
+    let managed: Awaited<ReturnType<WebConfigurationHost["create"]>>;
+    try {
+      managed = await host.create(target);
+    } finally {
+      this.configuringSources.delete(sourceId);
+    }
+    if (this.stopped) {
+      await managed.configuration.abandon().catch(() => undefined);
+      await managed.dispose().catch(() => undefined);
+      throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
+    }
+    const session: ActiveConfigurationSession = {
+      id: randomUUID(),
+      sourceId,
+      configuration: managed.configuration,
+      dispose: managed.dispose,
+      client: connection.client,
+      status: "active",
+      messages: [],
+      proposal: undefined,
+      busy: false,
+    };
+    this.configurationSessions.set(session.id, session);
+    try {
+      return await this.runConfigurationTurn(
+        session,
+        managed.configuration.initialPrompt ?? managed.configuration.prompt,
+        "invitation",
+        false,
+      );
+    } catch (error) {
+      this.configurationSessions.delete(session.id);
+      await managed.configuration.abandon().catch(() => undefined);
+      await managed.dispose().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async continueConfigurationSession(id: string, text: string): Promise<WebConfigurationSession> {
+    const session = this.requireConfigurationSession(id);
+    if (session.status !== "active") {
+      throw new WebConsoleError(
+        "configuration_proposal_pending",
+        "Approve or reject the pending proposal before continuing.",
+        409,
+      );
+    }
+    if (text.trim().length === 0 || text.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+      throw new WebConsoleError(
+        "invalid_configuration_message",
+        "Enter a configuration message within the web turn limit.",
+        400,
+      );
+    }
+    return await this.runConfigurationTurn(session, text, "operator", true);
+  }
+
+  async settleConfigurationSession(
+    id: string,
+    proposalId: string,
+    decision: "approve" | "reject",
+  ): Promise<WebConfigurationSession> {
+    const session = this.requireConfigurationSession(id);
+    if (session.busy || session.status !== "proposal" || session.proposal?.id !== proposalId) {
+      throw new WebConsoleError(
+        "configuration_proposal_stale",
+        "This configuration proposal is no longer pending.",
+        409,
+      );
+    }
+    session.busy = true;
+    session.status = "applying";
+    try {
+      const result = decision === "approve"
+        ? await session.configuration.approve(proposalId)
+        : await session.configuration.reject(proposalId);
+      if (result.connection !== undefined) {
+        session.client = new OperatorClient({
+          baseUrl: result.connection.baseUrl,
+          ...(result.connection.apiKey === undefined ? {} : { apiKey: result.connection.apiKey }),
+          ...(this.options.fetchImpl === undefined ? {} : { fetchImpl: this.options.fetchImpl }),
+        });
+      }
+      session.messages.push({ role: "host", text: result.message });
+      session.proposal = undefined;
+      session.status = "active";
+      void this.refreshAgents();
+      return configurationSnapshot(session);
+    } finally {
+      session.busy = false;
+      if (session.status === "applying") session.status = "proposal";
+    }
+  }
+
+  async closeConfigurationSession(id: string): Promise<void> {
+    const session = this.requireConfigurationSession(id);
+    if (session.busy) {
+      throw new WebConsoleError("configuration_busy", "Wait for the active configuration operation to finish.", 409);
+    }
+    this.configurationSessions.delete(id);
+    await session.configuration.abandon().catch(() => undefined);
+    await session.dispose();
+  }
+
+  private requireConfigurationSession(id: string): ActiveConfigurationSession {
+    const session = this.configurationSessions.get(id);
+    if (session === undefined) {
+      throw new WebConsoleError(
+        "configuration_session_not_found",
+        "SELF-CONFIG session not found or expired.",
+        404,
+      );
+    }
+    return session;
+  }
+
+  private async runConfigurationTurn(
+    session: ActiveConfigurationSession,
+    text: string,
+    phase: "invitation" | "operator",
+    recordOperator: boolean,
+  ): Promise<WebConfigurationSession> {
+    if (session.busy) {
+      throw new WebConsoleError("configuration_busy", "A SELF-CONFIG operation is already active.", 409);
+    }
+    session.busy = true;
+    if (recordOperator) session.messages.push({ role: "operator", text });
+    try {
+      const response = await session.client.turn({
+        conversationId: session.configuration.conversationId,
+        text: phase === "operator"
+          ? `${session.configuration.operatorPrompt}\n\nOperator message:\n${text}`
+          : text,
+        attachments: [],
+        signal: AbortSignal.timeout(5 * 60_000),
+        metadata: {
+          source: "web",
+          configuration: {
+            configuration: true,
+            configurationSessionId: session.configuration.sessionId,
+            configurationPhase: phase,
+          },
+        },
+        onFrame: () => undefined,
+      });
+      session.messages.push({ role: "assistant", text: response.finalText ?? "" });
+      const proposal = await session.configuration.takeProposal();
+      session.proposal = proposal;
+      session.status = proposal === undefined ? "active" : "proposal";
+      return configurationSnapshot(session);
+    } finally {
+      session.busy = false;
+    }
+  }
+
   submitLiveInput(threadId: string, text: string): WebLiveInputReceipt {
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
@@ -1585,6 +1815,8 @@ export class WebService {
     const activeLiveInputs = [...this.activeLiveInputs.entries()];
     const activeNotifications = [...this.activeNotifications.values()];
     const activeHostWakes = [...this.activeHostWakes.values()];
+    const configurationSessions = [...this.configurationSessions.values()];
+    this.configurationSessions.clear();
     const trackedIds = new Set(active.map((turn) => turn.turnId));
     for (const turnId of this.store.listActiveTurnIds()) {
       if (!trackedIds.has(turnId)) this.store.interruptTurn(turnId);
@@ -1601,6 +1833,10 @@ export class WebService {
     await Promise.allSettled(activeLiveInputs.map(([, input]) => input.completion));
     await Promise.allSettled(activeHostWakes);
     await Promise.allSettled(activeNotifications);
+    await Promise.allSettled(configurationSessions.map(async (session) => {
+      await session.configuration.abandon().catch(() => undefined);
+      await session.dispose().catch(() => undefined);
+    }));
     await Promise.allSettled(askWatches.map((watch) => watch.promise));
     await this.pushDispatcher.stopAndDrain(5_000);
     if (pendingRefresh !== undefined) await pendingRefresh.catch(() => undefined);
@@ -2223,6 +2459,7 @@ export class WebService {
       this.options.logger?.warn?.("Web agent discovery failed.", { error: errorMessage(error) });
       const changed = this.store.markDiscoveredAgentsOffline();
       this.connections = new Map();
+      this.discoveredAgents = new Map();
       if (changed) this.emit("agents.changed");
       return;
     }
@@ -2266,6 +2503,9 @@ export class WebService {
           pinned: false,
           health: agent.source.health,
           supportsAttachments: info.supportsAttachments,
+          ...(this.options.configurationHost?.supports(agent) === true
+            ? { supportsConfiguration: true as const }
+            : {}),
           ...(info.models === undefined ? {} : { models: info.models }),
           ...(info.model === undefined ? {} : { defaultModel: info.model }),
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),
@@ -2286,6 +2526,7 @@ export class WebService {
       }
     }));
     this.connections = nextConnections;
+    this.discoveredAgents = new Map(discovered.map((agent) => [agent.source.sourceId, agent]));
     const agentsChanged = this.store.replaceAgents(summaries);
     const cronChangedSources = new Set<string>();
     await Promise.all([...nextConnections.entries()].map(async ([sourceId, connection]) => {
@@ -3377,6 +3618,17 @@ function offlineSummary(agent: DiscoveredOperatorAgent, generation: string): Web
     supportsAttachments: false,
     runSettings: configRunSettings(),
     updatedAt: agent.source.updatedAt,
+  };
+}
+
+function configurationSnapshot(session: ActiveConfigurationSession): WebConfigurationSession {
+  return {
+    id: session.id,
+    sourceId: session.sourceId,
+    roleLocation: session.configuration.roleLocation,
+    status: session.status,
+    messages: session.messages.map((message) => ({ ...message })),
+    ...(session.proposal === undefined ? {} : { proposal: session.proposal }),
   };
 }
 

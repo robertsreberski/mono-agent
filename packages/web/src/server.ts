@@ -238,6 +238,64 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.post("/api/v1/agents/:id/configuration-sessions", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(
+        service.createConfigurationSession(pathParam(req.params.id)),
+        activeOperations,
+      ).then((session) => res.status(201).json({ session })).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/configuration-sessions/:id/turns", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const body = requireRecord(req.body);
+      const text = requireString(body.text, "text", WEB_MAX_TURN_TEXT_CHARACTERS);
+      void trackOperation(
+        service.continueConfigurationSession(pathParam(req.params.id), text),
+        activeOperations,
+      ).then((session) => res.status(200).json({ session })).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/configuration-sessions/:id/proposals/:proposalId/:decision", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const decision = pathParam(req.params.decision);
+      if (decision !== "approve" && decision !== "reject") {
+        throw new WebConsoleError("invalid_configuration_decision", "Decision must be approve or reject.", 400);
+      }
+      void trackOperation(
+        service.settleConfigurationSession(
+          pathParam(req.params.id),
+          pathParam(req.params.proposalId),
+          decision,
+        ),
+        activeOperations,
+      ).then((session) => res.status(200).json({ session })).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/configuration-sessions/:id", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(
+        service.closeConfigurationSession(pathParam(req.params.id)),
+        activeOperations,
+      ).then(() => res.status(204).end()).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/agents/:id/cron", (req, res, next) => {
     void trackOperation(service.cronOverview(pathParam(req.params.id)), activeOperations)
       .then((overview) => res.status(200).json(overview))
