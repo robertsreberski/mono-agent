@@ -1848,6 +1848,9 @@ describe("WebService", () => {
       duplicate: true,
       delivery: { delivered: true, disposition: "follow_up" },
     });
+    await waitFor(() => service.thread(thread.id).messages.some(
+      (message) => message.attribution?.disposition === "fallback",
+    ));
     expect(turnBodies).toEqual([expect.objectContaining({
       text: "Inspect the completed worker result",
       processJobWakeDeliveryKey: terminal.wake.deliveryKey,
@@ -1864,7 +1867,7 @@ describe("WebService", () => {
         expect.objectContaining({ type: "text", text: "Worker result processed" }),
       ]) }),
     ]));
-    expect(messages.at(-1)?.attribution).toMatchObject({
+    expect(messages.find((message) => message.attribution?.disposition === "fallback")?.attribution).toMatchObject({
       requested: { model: "provider/fallback", effort: "high" },
       attempted: { model: "provider/default", effort: "medium", effectiveEffort: "low" },
       executed: { model: "provider/default", effort: "medium", effectiveEffort: "low" },

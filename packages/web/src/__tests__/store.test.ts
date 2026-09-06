@@ -2344,7 +2344,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v20 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v21 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2768,7 +2768,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 21");
+    future.exec("PRAGMA user_version = 22");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

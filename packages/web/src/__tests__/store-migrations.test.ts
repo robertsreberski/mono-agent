@@ -176,12 +176,12 @@ describe("web storage migration history", () => {
     store.close();
   });
 
-  it.each([21, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
+  it.each([22, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
     const stateDir = await seeded(0);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(`PRAGMA user_version = ${version}`);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 21 ? "unsupported_storage_schema" : "storage_corrupt" });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 22 ? "unsupported_storage_schema" : "storage_corrupt" });
     const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
     try {
       expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
