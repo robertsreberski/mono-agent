@@ -1092,6 +1092,16 @@ const dataPartName = (part: Record<string, unknown>): string | undefined => {
     : undefined;
 };
 
+/** A running job row already carries its own pulsing progress affordance. */
+const lastPartConveysProgress = (content: readonly unknown[]): boolean => {
+  const last = content.at(-1);
+  if (last === null || typeof last !== "object" || Array.isArray(last)) return false;
+  const part = last as Record<string, unknown>;
+  if (dataPartName(part) !== "process-job") return false;
+  const job = asRecord(asRecord(part.data).job);
+  return job.state === "queued" || job.state === "starting" || job.state === "running";
+};
+
 /** The parts an Activity band is made of: the same set `ACTIVITY_GROUP_BY` coalesces. */
 const isActivityContentPart = (raw: unknown): boolean => {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
@@ -1152,7 +1162,10 @@ function AssistantParts() {
   // band, which then owns it.
   const openBandIndex = lastActivityIndex(content);
   return (
-    <MessagePrimitive.GroupedParts groupBy={ACTIVITY_GROUP_BY} indicator="no-text">
+    <MessagePrimitive.GroupedParts
+      groupBy={ACTIVITY_GROUP_BY}
+      indicator={lastPartConveysProgress(content) ? "never" : "no-text"}
+    >
       {({ part, children }) => {
         switch (part.type) {
           case "group-activity": {

@@ -1037,6 +1037,74 @@ describe("message actions", () => {
     expect(settled.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
   });
 
+  it("uses a running process-job row as the turn's only progress affordance", () => {
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const { container } = render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: running }],
+    }} />);
+
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass(
+      "activity-row",
+      "is-job",
+      "is-running",
+    );
+    expect(container.querySelectorAll(".activity-dot")).toHaveLength(1);
+    expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
+  });
+
+  it("keeps the streaming indicator for ordinary and non-job activity endings", () => {
+    const ordinary = render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [],
+    }} />);
+    expect(ordinary.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
+    ordinary.unmount();
+
+    const tool = render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{
+        type: "tool-call",
+        toolCallId: "tool-1",
+        toolName: "inspect_workspace",
+        args: {},
+        result: { ok: true },
+        status: "complete",
+      }],
+    }} />);
+    expect(tool.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
+    tool.unmount();
+
+    const monitorActivity = render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{
+        type: "monitor-activity",
+        monitors: [{ projection: monitor(), deliveryKeys: ["monitor:one"] }],
+      }],
+    }} />);
+    expect(monitorActivity.container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
+  });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)(
+    "keeps the turn indicator after a terminal %s process job",
+    (state) => {
+      const { container } = render(<MessageHarness message={{
+        ...assistantMessage("running"),
+        parts: [{ type: "process-job", job: processJob({ state }) }],
+      }} />);
+
+      expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
+    },
+  );
+
   it("keeps the copy action mounted before hover so revealing it cannot shift layout", () => {
     render(<MessageHarness message={userMessage} />);
 
