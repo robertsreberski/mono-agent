@@ -212,6 +212,13 @@ one.
 
 The left rail lists auto-discovered trace sources and their current health. On desktop, its explicit toggle switches between a fixed compact rail and a fixed expanded rail with full agent names. The chosen state is a browser-local presentation preference, so different browser profiles can keep different layouts without a drag-resize target.
 
+On narrow touch screens, swipe right from within 32 pixels of the left edge to
+open the conversation drawer. Swipe left across either open navigation drawer
+to close it. The gesture requires at least 64 pixels of clearly horizontal
+travel, so short drags and ordinary vertical scrolling do not change
+navigation. The header's agent and conversation buttons remain available as
+44-pixel touch targets.
+
 Use the star beside an agent to add or remove it from favorites. The same pin control is available in the mobile agent picker. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first and remain visible while offline.
 
 Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. Unpinned agents that remain discovered but are temporarily offline are hidden by default behind a subtle **Show N offline** control shared by the desktop rail, mobile picker, and command palette. Pinned agents and the currently selected agent remain visible while that source is still discovered. When a successful discovery refresh omits a source, the console removes it from every picker and from the offline count regardless of its prior pin or selection. Its rows, conversations, and pin remain retained in SQLite and return if the same source id is discovered again. A discovery error only marks current sources offline; it is not treated as an authoritative removal. The offline filter resets to hidden on a full page load, and sending stays disabled until the exact source is reachable again.

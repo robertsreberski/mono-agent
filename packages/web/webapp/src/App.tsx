@@ -1,6 +1,7 @@
 import {
   type CSSProperties,
   type RefObject,
+  type TouchEvent as ReactTouchEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -30,6 +31,11 @@ import {
 import { hasUnsentComposerDraft } from "./composer-draft";
 import { formatDataBytes, useDataUsage } from "./data-usage";
 import {
+  isMobileDrawerSwipe,
+  startsAtMobileDrawerEdge,
+  type DrawerGesturePoint,
+} from "./mobile-drawer-gesture";
+import {
   applyServiceWorkerUpdate,
   useServiceWorkerUpdateWaiting,
 } from "./service-worker-update";
@@ -52,6 +58,27 @@ const FOCUSABLE = [
   "textarea:not([disabled])",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
+
+const EDGE_SWIPE_EXCLUDED = [
+  "button",
+  "a",
+  "input",
+  "select",
+  "textarea",
+  "[contenteditable='true']",
+  "[role='dialog']",
+  "[data-slot='composer-trigger-popover']",
+  "[data-slot='model-selector-content']",
+  ".context-display-popover",
+  ".image-row",
+  ".markdown-table",
+  ".markdown pre",
+].join(",");
+const MOBILE_DRAWER_MEDIA = "(max-width: 900px)";
+
+interface DrawerGestureStart extends DrawerGesturePoint {
+  readonly intent: "close" | "open-threads";
+}
 
 function useModalFocus(
   open: boolean,
@@ -338,6 +365,7 @@ export function App() {
   const agentDrawerRef = useRef<HTMLDivElement>(null);
   const threadDrawerRef = useRef<HTMLDivElement>(null);
   const agentSettingsRef = useRef<HTMLElement>(null);
+  const drawerGestureRef = useRef<DrawerGestureStart | null>(null);
   const appStyle = {
     "--agent-rail-width": `${agentRailWidth(agentRailExpanded)}px`,
   } as CSSProperties;
@@ -371,9 +399,63 @@ export function App() {
     setThreadDrawer(true);
   }, []);
 
+  const startDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    drawerGestureRef.current = null;
+    if (
+      event.touches.length !== 1
+      || typeof window.matchMedia !== "function"
+      || !window.matchMedia(MOBILE_DRAWER_MEDIA).matches
+    ) return;
+
+    const touch = event.touches[0];
+    if (!touch) return;
+    const drawerOpen = agentDrawer || threadDrawer;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!drawerOpen && (
+      !startsAtMobileDrawerEdge({ x: touch.clientX, y: touch.clientY })
+      || target?.closest(EDGE_SWIPE_EXCLUDED)
+    )) return;
+
+    drawerGestureRef.current = {
+      x: touch.clientX,
+      y: touch.clientY,
+      intent: drawerOpen ? "close" : "open-threads",
+    };
+  }, [agentDrawer, threadDrawer]);
+
+  const finishDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    const start = drawerGestureRef.current;
+    drawerGestureRef.current = null;
+    if (!start || event.touches.length > 0) return;
+
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const end = { x: touch.clientX, y: touch.clientY };
+    const direction = start.intent === "open-threads" ? "right" : "left";
+    if (!isMobileDrawerSwipe(start, end, direction)) return;
+
+    event.preventDefault();
+    if (start.intent === "open-threads") openThreads();
+    else closeDrawers();
+  }, [closeDrawers, openThreads]);
+
+  const cancelDrawerGesture = useCallback(() => {
+    drawerGestureRef.current = null;
+  }, []);
+
   useModalFocus(agentDrawer, agentDrawerRef, closeDrawers);
   useModalFocus(threadDrawer, threadDrawerRef, closeDrawers);
   useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mobileDrawerViewport = window.matchMedia(MOBILE_DRAWER_MEDIA);
+    const onChange = (event: MediaQueryListEvent) => {
+      if (!event.matches) closeDrawers();
+    };
+    mobileDrawerViewport.addEventListener("change", onChange);
+    return () => mobileDrawerViewport.removeEventListener("change", onChange);
+  }, [closeDrawers]);
 
   useEffect(() => {
     const onCommand = () => togglePalette();
@@ -522,7 +604,13 @@ export function App() {
   if (error && !bootstrap) return <FatalError />;
 
   return (
-    <div className="app-shell" style={appStyle}>
+    <div
+      className="app-shell"
+      style={appStyle}
+      onTouchStart={startDrawerGesture}
+      onTouchEnd={finishDrawerGesture}
+      onTouchCancel={cancelDrawerGesture}
+    >
       <div className="desktop-agent-rail">
         <AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} />
       </div>
