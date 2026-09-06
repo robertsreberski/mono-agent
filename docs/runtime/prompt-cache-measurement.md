@@ -9,15 +9,17 @@ Use `node scripts/measure-prompt-cache.mjs --dry-run --scenario=multi-turn` to r
 
 Reports contain request fingerprints, observed input/cache/output counters and cost source, history mode, compaction and reseed events, plus separate exact context snapshots and cumulative billing totals. The aggregate hit ratio is token-weighted as `cacheRead / (input + cacheRead + cacheWrite)`; percentages are never averaged.
 
-Live measurement is deliberately explicit. It requires `--live`, an exact `--model provider:model`, a supported `--transport`, a positive `--spend-ceiling-usd`, `--authorize-spend=YES`, and exactly one available credential source: `--credential-env NAME` or `--pi-auth PATH`. A Pi auth file must contain an entry for the selected provider. Validation reports only whether the chosen source is available; it never prints its value. For example, after separate spend authorization:
+Live provider dispatch is disabled at this revision. A post-response spend check cannot enforce a hard ceiling because one request—or a concurrent batch—may already exceed it. The command refuses before agent state or provider dispatch until an explicit provider-pricing and request-token bound can conservatively reserve each request before it starts. Post-response accounting remains in the shared scenario runner as secondary evidence, not as a claimed ceiling.
+
+The disabled live preflight still validates the intended contract: `--live`, an exact `--model provider:model`, a supported `--transport`, a positive `--spend-ceiling-usd`, `--authorize-spend=YES`, and exactly one credential source. `--credential-env NAME` accepts only the active API-key environment variable Pi maps to the selected provider and binds that value to the private runtime credential resolver; it never copies the value into config, state, diagnostics, or reports. `--pi-auth PATH` requires an entry for the selected provider. Neither path prints credential values. This command validates those inputs and then exits with the live-dispatch-disabled error without contacting a provider:
 
 ```sh
 node scripts/measure-prompt-cache.mjs --live \
   --model "$CACHE_SMOKE_MODEL" --transport sse \
   --spend-ceiling-usd "$CACHE_SMOKE_CEILING" --authorize-spend=YES \
-  --credential-env "$CACHE_SMOKE_CREDENTIAL_ENV" \
+  --credential-env OPENAI_API_KEY \
   --scenario multi-turn --turns 4 --repeats 3 \
   --fixture-tokens 8192 --output .mono-agent/cache-benchmark/live.json
 ```
 
-The implementation test suite exercises only `--dry-run`; it never authorizes or sends an authenticated provider request.
+The implementation test suite exercises dry-run assembly plus positive and negative live preflight refusal. It never sends an authenticated provider request.

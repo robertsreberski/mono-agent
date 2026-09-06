@@ -54,10 +54,24 @@ async function validateLiveAuthorization(args) {
   const credentialEnv = args["credential-env"];
   const piAuth = args["pi-auth"];
   if ((credentialEnv === undefined) === (piAuth === undefined)) throw new Error("Live mode requires exactly one of --credential-env or --pi-auth.");
+  let runtimeOptions = {};
   if (credentialEnv !== undefined) {
     if (typeof credentialEnv !== "string" || !/^[A-Z][A-Z0-9_]{1,127}$/u.test(credentialEnv) || !process.env[credentialEnv]) {
       throw new Error("The explicitly named credential environment variable is unavailable.");
     }
+    const credentialValue = process.env[credentialEnv];
+    const compatPath = join(piAiPackageRoot(), "dist", "compat.js");
+    const { findEnvKeys, getEnvApiKey } = await import(pathToFileURL(compatPath).href);
+    const mappedNames = findEnvKeys(model.provider, process.env) ?? [];
+    if (!mappedNames.includes(credentialEnv) || getEnvApiKey(model.provider, process.env) !== credentialValue) {
+      throw new Error("The explicitly named credential environment variable is not Pi's active API-key source for the selected provider.");
+    }
+    // Keep the selected value authoritative even if the provider process has
+    // unrelated ambient credentials. It remains only in this closure and is
+    // never copied into config, state, diagnostics, or reports.
+    runtimeOptions = {
+      resolvePiApiKey: async (provider) => provider === model.provider ? credentialValue : undefined,
+    };
   }
   let piAuthPath;
   if (piAuth !== undefined) {
@@ -76,7 +90,13 @@ async function validateLiveAuthorization(args) {
       throw new Error("The explicitly named Pi auth file has no credential for the selected provider.");
     }
   }
-  return { model, transport, ceiling, piAuthPath };
+  return { model, transport, ceiling, piAuthPath, runtimeOptions };
+}
+
+function refuseUnboundedLiveDispatch() {
+  throw new Error(
+    "Live provider dispatch is disabled: --spend-ceiling-usd cannot be enforced before dispatch without explicit provider pricing and request-token bounds.",
+  );
 }
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -210,7 +230,9 @@ async function runScenario({ args, root, model, transport, runtimeOptions, piAut
           const collected = collectRun(events, response, { repeat: repeat + 1, turn: turn + 1, conversation: conversation + 1 });
           runs.push(collected);
           spent += Number(collected.runTotals.costUsd) || 0;
-          if (ceiling !== undefined && spent > ceiling) throw new Error("The authorized spend ceiling was exceeded; measurement stopped.");
+          if (ceiling !== undefined && spent > ceiling) {
+            throw new Error("Observed spend exceeded the secondary post-response stop threshold; measurement stopped. This threshold is not a hard ceiling.");
+          }
         };
         if (scenario === "concurrent") await Promise.all(Array.from({ length: conversations }, (_, conversation) => execute(conversation)));
         else await execute(0);
@@ -232,6 +254,8 @@ const output = outputPath(args.output);
 const fixtureTokens = boundedInteger(args["fixture-tokens"], 8_192, "fixture-tokens", 1_024, 32_768);
 const requestedTransport = String(args.transport ?? "sse");
 if (!TRANSPORTS.has(requestedTransport)) throw new Error("--transport must be auto, sse, websocket, or websocket-cached.");
+const live = args.live === true ? await validateLiveAuthorization(args) : undefined;
+if (live !== undefined) refuseUnboundedLiveDispatch();
 const tempParent = join(WORKTREE, ".mono-agent", "cache-benchmark");
 await mkdir(tempParent, { recursive: true });
 const root = await mkdtemp(join(tempParent, "state-"));
@@ -240,9 +264,8 @@ try {
   const fixturePath = join(root, "fixture.txt");
   await writeFile(join(root, "IDENTITY.md"), "You are a bounded prompt-cache measurement agent.", { mode: 0o600 });
   await writeFile(fixturePath, fixture, { mode: 0o600 });
-  const live = args.live === true ? await validateLiveAuthorization(args) : undefined;
   const fake = live === undefined ? await fakeProvider(fixturePath) : undefined;
-  const measured = await runScenario({ args, root, model: live?.model ?? fake.model, transport: live?.transport ?? requestedTransport, runtimeOptions: fake?.runtimeOptions ?? {}, piAuthPath: live?.piAuthPath, ceiling: live?.ceiling });
+  const measured = await runScenario({ args, root, model: live?.model ?? fake.model, transport: live?.transport ?? requestedTransport, runtimeOptions: live?.runtimeOptions ?? fake?.runtimeOptions ?? {}, piAuthPath: live?.piAuthPath, ceiling: live?.ceiling });
   const piPackage = JSON.parse(await readFile(join(piAiPackageRoot(), "package.json"), "utf8"));
   const report = { schema: 2, mode: live === undefined ? "dry-run" : "live", scenario, model: (live?.model ?? fake.model).reference, effort: typeof args.effort === "string" ? args.effort : "none", transport: live?.transport ?? requestedTransport, piVersion: piPackage.version, sampling: { turns: boundedInteger(args.turns, scenario === "stateless" ? 34 : 4, "turns", 1, 40), repeats: boundedInteger(args.repeats, 1, "repeats", 1, 10), conversations: boundedInteger(args.conversations, scenario === "concurrent" ? 2 : 1, "conversations", 1, 8) }, fixture: { tokensRequested: fixtureTokens, bytes: Buffer.byteLength(fixture), sha256: hash(fixture) }, generatedAt: new Date().toISOString(), ...measured };
   await mkdir(dirname(output), { recursive: true });

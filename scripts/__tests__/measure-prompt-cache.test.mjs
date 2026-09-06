@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -62,5 +62,35 @@ describe("prompt cache measurement", () => {
     expect(child.status).toBe(1);
     expect(child.stderr).toContain("no credential for the selected provider");
     expect(child.stdout).toBe("");
+  });
+
+  it("rejects a populated environment variable that Pi does not map to the selected provider", () => {
+    const child = spawnSync(process.execPath, [script, "--live", "--scenario", "multi-turn", "--model", "openai:gpt-test", "--transport", "sse", "--spend-ceiling-usd", "1", "--authorize-spend=YES", "--credential-env", "CACHE_SMOKE_SECRET"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, CACHE_SMOKE_SECRET: "mismatched-benchmark-secret" },
+    });
+    expect(child.status).toBe(1);
+    expect(child.stderr).toContain("is not Pi's active API-key source for the selected provider");
+    expect(child.stderr).not.toContain("mismatched-benchmark-secret");
+    expect(child.stdout).toBe("");
+  });
+
+  it("accepts Pi's selected environment source, then refuses before any live dispatch or state creation", () => {
+    const output = join(outputs, "live-must-not-exist.json");
+    const before = stateDirs();
+    const child = spawnSync(process.execPath, [script, "--live", "--scenario", "multi-turn", "--model", "openai:gpt-test", "--transport", "sse", "--spend-ceiling-usd", "1", "--authorize-spend=YES", "--credential-env", "OPENAI_API_KEY", "--output", output], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 10_000,
+      env: { ...process.env, OPENAI_API_KEY: "positive-benchmark-secret" },
+    });
+    expect(child.status).toBe(1);
+    expect(child.stderr).toContain("cannot be enforced before dispatch");
+    expect(child.stderr).not.toContain("positive-benchmark-secret");
+    expect(child.stdout).toBe("");
+    expect(existsSync(output)).toBe(false);
+    expect(stateDirs()).toEqual(before);
   });
 });
