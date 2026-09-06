@@ -137,9 +137,9 @@ export class ToolPanel implements Component {
 
 /**
  * Durable-history bookkeeping is host business, not conversation content. A
- * successful write, its record id and sequence, and the untrusted-evidence
+ * successful or deferred write, its record id and sequence, and the untrusted-evidence
  * marker (which exists for the model, not the operator) say nothing worth a
- * line in the panel; a lost record does, because the tool's output is gone.
+ * line in the panel; a definitive lost record does, because the tool's output is gone.
  * Wording matches the web console's `toolHistoryFailure`.
  */
 function historySummary(history: SessionToolHistoryEventMetadata | undefined): string | undefined {

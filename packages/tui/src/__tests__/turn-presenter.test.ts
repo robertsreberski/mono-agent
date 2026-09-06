@@ -119,7 +119,7 @@ describe("TurnPresenter", () => {
     expect(text).not.toContain("full data in run artifacts");
   });
 
-  it("keeps successful persistence bookkeeping off the tool panel while still using the canonical state", async () => {
+  it("keeps successful and deferred persistence bookkeeping off the tool panel while still using the canonical state", async () => {
     const { presenter, rendered } = setup();
     await presenter.event({
       type: "tool_call_started",
@@ -140,9 +140,7 @@ describe("TurnPresenter", () => {
       content: "bounded output",
       history: {
         ...({ privatePayload: "persisted-history-secret" } as object),
-        recordId: "sth1_result",
-        sequence: 2,
-        persistence: "persisted",
+        persistence: "deferred",
         terminalState: "timeout",
         truncated: true,
         artifactReferences: [{ id: "stha1_output", available: false }],
@@ -155,6 +153,7 @@ describe("TurnPresenter", () => {
     expect(text).not.toContain("sth1_result");
     expect(text).not.toContain("untrusted historical data");
     expect(text).not.toContain("persisted-history-secret");
+    expect(text).not.toContain("Tool history for this call was not saved");
   });
 
   it("reports a lost history record without leaking unrelated fields", async () => {

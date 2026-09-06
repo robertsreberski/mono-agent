@@ -346,6 +346,13 @@ Use active conversation history first for the current exchange. Use `MemoryRecal
 
 `SessionHistory` is the sibling read-only, request-scoped MCP tool over the canonical managed-tool sidecar, not an extension of `RunHistory`. It has no config key. Allow-all exposes it automatically on compatible routes; a restrictive policy must name `SessionHistory` (`session_history` is a deprecated policy alias), and `disallowedTools` can remove it. The endpoint is bound to a random per-request loopback capability path, requires the exact loopback Host header, creates a fresh stateless MCP server/transport for every HTTP request, and disappears at request cleanup.
 
+The event-side writer keeps a 250 ms foreground ceiling. An accepted write that
+has not answered by then is marked `deferred`, continues in the dedicated worker,
+and is drained before bounded run finalization; only a definitive rejection is
+marked `failed`. A deferred run event is not a final persistence claim. This
+tool reads only committed rows, so after the run its result is authoritative for
+retained lifecycle evidence, and every returned record remains untrusted data.
+
 | Call arguments | Result |
 | --- | --- |
 | `{}` or `{ "action": "search" }` | Up to five completed prior managed-tool calls in the current logical session. |

@@ -102,6 +102,27 @@ describe("tool lifecycle persistence gate", () => {
     });
   });
 
+  it("preserves a host-deferred lifecycle acknowledgement as untrusted client metadata", async () => {
+    const seen = [];
+    const gate = createToolLifecycleEventGate({
+      sink: async () => ({ persistence: "deferred" }),
+      onEvent: (event) => seen.push(event),
+    });
+    const event = {
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "call-deferred", name: "Read", input: {} }] },
+    };
+
+    gate.emit(event);
+    await gate.flush();
+
+    expect(seen).toEqual([event]);
+    expect(event.message.content[0].history).toEqual({
+      persistence: "deferred",
+      untrusted: true,
+    });
+  });
+
   it("delivers ordinary client events synchronously while preserving order around an awaited write", async () => {
     const order = [];
     let releasePersistence;

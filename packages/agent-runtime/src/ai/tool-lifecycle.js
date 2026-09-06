@@ -219,7 +219,9 @@ export function historyMetadata(persisted, terminalStateValue) {
   const metadata = {
     ...(typeof persisted?.recordId === "string" ? { recordId: persisted.recordId } : {}),
     ...(Number.isFinite(Number(persisted?.sequence)) ? { sequence: Number(persisted.sequence) } : {}),
-    persistence: persisted?.persistence === "persisted" ? "persisted" : "failed",
+    persistence: persisted?.persistence === "persisted" || persisted?.persistence === "deferred"
+      ? persisted.persistence
+      : "failed",
     ...(terminalStateValue === undefined ? {} : { terminalState: terminalStateValue }),
     ...(typeof persisted?.truncated === "boolean" ? { truncated: persisted.truncated } : {}),
     ...(Number.isFinite(Number(persisted?.originalBytes)) ? { originalBytes: Number(persisted.originalBytes) } : {}),
