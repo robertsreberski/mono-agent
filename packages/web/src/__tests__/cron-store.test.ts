@@ -708,6 +708,10 @@ describe("WebStore first-class cron channels", () => {
     expect(migrated.completeNotification(subsequent)).toMatchObject({ thread: { id: canonical.id } });
     migrated.close();
 
+    // Retry the eligible named adoption step against its already-adopted shape.
+    const retry = new DatabaseSync(databasePath);
+    retry.exec("PRAGMA user_version = 4");
+    retry.close();
     const reopened = await WebStore.open({ stateDir });
     expect(reopened.getThread(oldThreadIds[1]!)?.id).toBe(canonical.id);
     const reopenedState = new DatabaseSync(databasePath, { readOnly: true });

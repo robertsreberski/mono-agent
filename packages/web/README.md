@@ -341,6 +341,18 @@ cross-resource requests fail. See
 
 ## Architecture
 
+### Storage migrations
+
+`src/store-migrations.ts` owns the ordered, named migration registry; its last
+step determines the supported SQLite schema version. Append a guarded step and
+historical-layout preservation tests when changing storage. Never relabel a
+shipped step: rebase before choosing a version, and append a repair if released
+layouts collided. Bootstrap DDL and the upgrade transaction stay in `store.ts`.
+Registry validation runs before bootstrap writes, and schema postconditions run
+before the upgrade commits and on current-version opens. Step failures report
+only the version/name, not stored content. A version stamp is not an execution
+ledger; postconditions check the required effects.
+
 ### Data flow
 
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
