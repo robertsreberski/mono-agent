@@ -739,9 +739,23 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   const fetchableImage = storedImage === undefined
     && isReplyImage(part?.mediaType)
     && (declaredContentUrl !== undefined || canMintAccess);
+  /**
+   * Every picture this card could put on screen, however its bytes arrive.
+   *
+   * The console's own durable copy is the ORDINARY case -- the service persists
+   * one for nearly every raster reply image -- so gating only the capability
+   * path left the common picture downloading at full resolution near the
+   * viewport while the indicator and the Lean offer both said pictures load only
+   * when they are asked for. The gate belongs to the picture, not to the route
+   * its bytes take.
+   */
+  const displayableImage = fetchableImage || storedImage !== undefined;
   const imageSource: ReplyImageSource = lean
     ? "tap"
     : typeof IntersectionObserver === "function" ? "viewport" : "eager";
+  // Only the capability path is ENABLED here -- a durable copy has nothing to
+  // fetch -- but the gate the hook keeps is the picture's, and a stored copy is
+  // no more free to arrive unasked than a fetched one.
   const {
     state: replyImage,
     holderRef,
@@ -757,7 +771,25 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     part?.integrityId,
     canMintAccess ? mintAccess : undefined,
   );
-  const shownImage = storedImage ?? (replyImage.status === "ready" ? replyImage.src : undefined);
+  const gatedByTap = imageSource === "tap" && !imageWanted;
+  const shownStored = gatedByTap ? undefined : storedImage;
+  const shownImage = shownStored ?? (replyImage.status === "ready" ? replyImage.src : undefined);
+
+  /**
+   * The estimate for a durable copy, which an `<img>` fetches on its own.
+   *
+   * A no-op wherever resource timing is measuring that fetch already. Where it
+   * is not, this is a floor that also OVERSTATES a second view: PR 1 serves
+   * these immutably, so the browser's cache answers the next one for nothing and
+   * a size the part declared cannot know that.
+   */
+  const countedStoredRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (shownStored === undefined || part === undefined) return;
+    if (countedStoredRef.current === identity) return;
+    countedStoredRef.current = identity;
+    recordTransferredBody(part.sizeBytes);
+  }, [identity, part, shownStored]);
 
   if (part === undefined) {
     return <div className="reply-part-error" role="alert">An attachment reference was invalid.</div>;
@@ -779,7 +811,7 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   // Lean: the picture is not bought until it is asked for, and the tile says
   // exactly what asking costs. A real button, so a keyboard and a screen reader
   // reach it the same way a thumb does.
-  if (fetchableImage && imageSource === "tap" && !imageWanted && replyImage.status === "pending") {
+  if (displayableImage && gatedByTap) {
     return (
       <button
         type="button"
@@ -1162,6 +1194,13 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       mountedRef.current = false;
     };
   }, []);
+
+  // A Full -> Lean flip tears the observer down before it has ever reported, and
+  // an unsettled card renders an empty status line -- it is waiting for an
+  // answer that is no longer coming. Nothing to wait for is itself an answer.
+  useEffect(() => {
+    if (!autoOpens) setViewportSettled(true);
+  }, [autoOpens]);
 
   useEffect(() => {
     const container = containerRef.current;

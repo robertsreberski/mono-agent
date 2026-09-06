@@ -7,13 +7,18 @@ import { writeDataModeSetting } from "../data-mode";
 import type { AskSnapshot } from "../types";
 import { AskReconciliationProvider, ToolFallback } from "./Messages";
 
-vi.mock("../console-store", () => ({
-  useConsoleStore: () => ({
-    selectedThread: { id: "thread-1" },
-    selectedAgent: { status: "online" },
-    connection: "live",
-  }),
-}));
+const storeMock = vi.hoisted(() => ({ transcriptMovedAt: (): number => 0 }));
+
+// One object, as the real store hands out: a fresh one per render would give
+// every field a new identity and restart anything keyed on one.
+const consoleStore = {
+  selectedThread: { id: "thread-1" },
+  selectedAgent: { status: "online" },
+  connection: "live",
+  transcriptMovedAt: (): number => storeMock.transcriptMovedAt(),
+};
+
+vi.mock("../console-store", () => ({ useConsoleStore: () => consoleStore }));
 
 const snapshot: AskSnapshot = {
   interactionId: "ask-test",
@@ -580,6 +585,7 @@ describe("AskUser polling hygiene", () => {
   afterEach(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     localStorage.clear();
+    storeMock.transcriptMovedAt = () => 0;
   });
 
   it("asks nothing while the tab is in the background and picks up when it returns", async () => {
@@ -597,6 +603,31 @@ describe("AskUser polling hygiene", () => {
     setVisibility("visible");
 
     await waitFor(() => { expect(pendingAsk).toHaveBeenCalledTimes(1); });
+  });
+
+  it("skips one round the stream has just answered, and never more than one", async () => {
+    // A running turn writes the transcript about once a second. A question poll
+    // issued in the same breath asks about a conversation the agent side has
+    // only just moved -- but skipping on every write would let a busy stream
+    // starve the poll, so at most one round in a row gives way.
+    vi.useFakeTimers();
+    const pendingAsk = vi.spyOn(api, "pendingAsk").mockResolvedValue(snapshot);
+    const ask = vi.spyOn(api, "ask").mockResolvedValue(snapshot);
+    const asked = () => pendingAsk.mock.calls.length + ask.mock.calls.length;
+    render(askUserTool());
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const settled = asked();
+    expect(settled).toBeGreaterThan(0);
+
+    // The stream moves the transcript. The very next round gives way.
+    storeMock.transcriptMovedAt = () => Date.now();
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(asked()).toBe(settled);
+
+    // And the round after it asks anyway, however busy the stream still is.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(asked()).toBeGreaterThan(settled);
   });
 
   it("re-reads a question whose answer is already recorded, but not on a lean link", async () => {

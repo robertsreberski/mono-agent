@@ -41,6 +41,14 @@ import type { RequestLanding } from "./console-store";
 import { canSendInConsole } from "./capabilities";
 import { agent, bootstrap, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
+import {
+  acquireReplyImageBlob,
+  clearReplyImageBlobs,
+  publishReplyImageBlob,
+  releaseReplyImageBlob,
+  replyImageKey,
+  retainedReplyImageBytes,
+} from "./components/reply-image-cache";
 import { createThreadPersistence } from "./thread-persistence";
 import type {
   AgentSkillRegistry,
@@ -5695,6 +5703,42 @@ describe("ConsoleStoreProvider integration", () => {
         .toEqual([beta.id]);
     });
 
+
+    it("gives back the pictures it is keeping for nobody, and none of the one on screen", async () => {
+      const revokeObjectURL = vi.fn();
+      const originalCreate = URL.createObjectURL;
+      const originalRevoke = URL.revokeObjectURL;
+      let issued = 0;
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: () => `blob:cleared-${String(++issued)}`,
+      });
+      Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+      try {
+        const store = openConsole();
+        await waitFor(() => expect(store.current.loading).toBe(false));
+
+        const onScreen = replyImageKey("sha256:on-screen", 4);
+        const kept = replyImageKey("sha256:kept", 4);
+        const shown = publishReplyImageBlob(onScreen, new Blob(["abcd"]));
+        publishReplyImageBlob(kept, new Blob(["abcd"]));
+        releaseReplyImageBlob(kept);
+
+        await act(async () => { await store.current.clearCachedData(); });
+
+        // Pictures the retention window is holding for nobody are cached data
+        // like any other, and were the one thing this action did not take off
+        // the device. The picture still on screen is not: revoking the URL an
+        // <img> is pointing at would blank it in front of the operator.
+        expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+        expect(retainedReplyImageBytes()).toBe(0);
+        expect(acquireReplyImageBlob(onScreen)).toBe(shown);
+      } finally {
+        clearReplyImageBlobs();
+        Object.defineProperty(URL, "createObjectURL", { configurable: true, value: originalCreate });
+        Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: originalRevoke });
+      }
+    });
 
     it("asks the server anyway when the device never answers", async () => {
       // An `indexedDB.open` that fires nothing at all -- no success, no error,

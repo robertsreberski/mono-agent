@@ -20,6 +20,7 @@ import {
   type NotModified,
   type ReadThreadDetail,
 } from "./api";
+import { clearRetainedReplyImages } from "./components/reply-image-cache";
 import { currentDataMode } from "./data-mode";
 import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
@@ -144,6 +145,18 @@ interface ConsoleStoreValue {
    * not gone, and this is how the transcript asks for the key again.
    */
   readonly refreshReplyAttachmentAccess: (partId: string) => Promise<ReplyAttachmentMessagePart>;
+  /**
+   * When this tab last saw the stream move a conversation's transcript, as an
+   * epoch millisecond, or `0` for one it has seen nothing for.
+   *
+   * For the pollers. A round issued in the same breath as a streamed write asks
+   * about a conversation the agent side has only just moved, and this is what
+   * lets one give way -- once -- rather than spending a request on it. Per
+   * CONVERSATION, not per message: a card rendered by assistant-ui has no props
+   * path to the message that owns it, and the pollers' whole scope is the open
+   * conversation anyway.
+   */
+  readonly transcriptMovedAt: (threadId: string) => number;
   /**
    * Forget everything this browser is keeping on the device, and everything it
    * is keeping in memory except the conversation on screen.
@@ -1450,6 +1463,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
   const refreshScopeRef = useRef<RefreshScope>(NOTHING_TO_REFRESH);
+  /** The last conversation the stream moved, and when. */
+  const transcriptWriteRef = useRef<{ threadId: string; at: number } | null>(null);
   /** Conversations whose applied deltas are waiting for the lean paint tick. */
   const deltaPublishRef = useRef<{ timer: number | null; threads: Set<string> }>({
     timer: null,
@@ -2761,6 +2776,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * and nothing else. Anything this cannot apply for certain re-reads the ONE
    * message -- never the conversation, and never a guess.
    */
+  /**
+   * Records that the stream moved a transcript, for the pollers to give way to.
+   *
+   * Only where something actually MOVED: a delta this tab could not apply, or a
+   * hint for a conversation it does not hold, tells a poller nothing.
+   */
+  const noteTranscriptWrite = useCallback((threadId: string) => {
+    transcriptWriteRef.current = { threadId, at: Date.now() };
+  }, []);
+
+  const transcriptMovedAt = useCallback((threadId: string): number => {
+    const write = transcriptWriteRef.current;
+    return write?.threadId === threadId ? write.at : 0;
+  }, []);
+
   const applyMessageDeltaEvent = useCallback((threadId: string, delta: MessageDelta) => {
     const cache = threadCacheRef.current;
     if (threadId !== selectedThreadRef.current) {
@@ -2773,6 +2803,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     switch (cache.applyDelta(threadId, delta)) {
       case "applied": {
+        noteTranscriptWrite(threadId);
         // The cache is already written, in order. What is batched is only when
         // the operator's screen is redrawn -- and only for a turn still running,
         // because a turn that has FINISHED must read as finished at once.
@@ -2805,7 +2836,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       default:
         void repairMessage(threadId, delta.messageId, delta.seq);
     }
-  }, [flushDeltaPublishes, publishDetail, repairMessage]);
+  }, [flushDeltaPublishes, noteTranscriptWrite, publishDetail, repairMessage]);
 
   const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
     // A response can outlive the conversation it describes: the migration's
@@ -3151,6 +3182,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // is a row this transcript does not have at all -- a new turn, an
           // appended notification -- and only the conversation read can place
           // it.
+          noteTranscriptWrite(threadId);
           const { messageId } = payload;
           if (messageId !== undefined
             && threadCacheRef.current.holdsMessage(threadId, messageId)) {
@@ -3620,6 +3652,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * the moment this returns; ordinary use fills the device again from here.
    */
   const clearCachedData = useCallback(async () => {
+    // Pictures the retention window is holding for nobody are cached data like
+    // any other. Only those: a blob an on-screen <img> is pointing at would
+    // blank the picture in front of the operator, which is not what they asked
+    // to lose -- the same rule the open conversation is kept by below.
+    clearRetainedReplyImages();
     // The armed flush FIRST. It carries the snapshot, the listing and every
     // entry held as of a moment ago, so leaving it to fire wrote all of it back
     // a second after the "Cleared…" toast. The cache goes next, so anything a
@@ -4844,6 +4881,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadCronRunActivity,
       loadFullToolCall,
       refreshReplyAttachmentAccess,
+      transcriptMovedAt,
       clearCachedData,
       hasServerSnapshot,
       clearError: () => setError(null),
@@ -4881,6 +4919,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadCronRunActivity,
       loadFullToolCall,
       refreshReplyAttachmentAccess,
+      transcriptMovedAt,
       loading,
       hasRunOverride,
       model,

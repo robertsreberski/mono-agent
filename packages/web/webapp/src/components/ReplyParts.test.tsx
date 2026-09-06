@@ -50,6 +50,7 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
 
 import { ApiError, api, type ReplyAccessRefreshHandler } from "../api";
 import { writeDataModeSetting } from "../data-mode";
+import { dataUsage, resetDataUsage } from "../data-usage";
 import { ReplyAccessProvider } from "./reply-access";
 import type { McpAppPart as McpAppPartValue } from "../types";
 import { REPLY_IMAGE_REQUEST_TIMEOUT_MS, clearReplyImageBlobs } from "./reply-image-cache";
@@ -1876,6 +1877,26 @@ describe("MCP App sandbox", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
   });
 
+  it("stops waiting for an observation the mode change cancelled", async () => {
+    // Switching to Lean tears the reveal observer down before it has ever
+    // reported. The card was left waiting for an answer that is no longer
+    // coming, and rendered an empty status line for the rest of its life.
+    const viewport = stubIntersectionObserver();
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    expect(screen.getByRole("status")).not.toHaveTextContent("Tap Show to load the app");
+
+    await act(async () => { writeDataModeSetting("lean"); });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
+    expect(viewport.disconnects()).toBeGreaterThan(0);
+  });
+
   it("leaves an off-screen app document unrequested until it is asked for", async () => {
     const viewport = stubIntersectionObserver();
     const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
@@ -2219,5 +2240,54 @@ describe("a lean link, second look", () => {
     expect(access).not.toHaveBeenCalled();
     expect(fetchContent).not.toHaveBeenCalled();
     expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+  });
+});
+
+describe("the durable copy on a lean link", () => {
+  const storedImagePart = {
+    type: "attachment" as const,
+    id: "cover-part",
+    artifactId: "artifact-cover",
+    name: "cover.png",
+    mediaType: "image/png",
+    sizeBytes: 2_048,
+    integrityId: "sha256:abc",
+    storedUrl: "/api/v1/uploads/reply%3Amsg%3Acover-part/content",
+    contentUrl: imagePart.contentUrl,
+  };
+
+  afterEach(() => {
+    localStorage.clear();
+    resetDataUsage();
+  });
+
+  it("prices the console's own copy too, because the browser still fetches it", async () => {
+    // The service persists a durable copy of nearly every raster reply image, so
+    // this -- not the capability path -- is the ORDINARY picture. Left ungated
+    // it downloaded at full resolution near the viewport while the indicator and
+    // the Lean offer both said pictures load only when you ask for them.
+    writeDataModeSetting("lean");
+    resetDataUsage();
+    render(attachment(storedImagePart));
+
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+    const tile = screen.getByRole("button", { name: "Load cover.png, 2 KiB" });
+
+    fireEvent.click(tile);
+
+    expect(await screen.findByRole("img", { name: "cover.png" }))
+      .toHaveAttribute("src", storedImagePart.storedUrl);
+    // Bytes the browser fetches for an `<img>` are invisible to the body-length
+    // estimate, so the tile -- which knows the size -- counts them where there
+    // is no resource timing to do it instead.
+    expect(dataUsage().bytes).toBe(storedImagePart.sizeBytes);
+  });
+
+  it("shows the console's own copy straight away on a full link", () => {
+    render(attachment(storedImagePart));
+
+    expect(screen.getByRole("img", { name: "cover.png" }))
+      .toHaveAttribute("src", storedImagePart.storedUrl);
+    expect(screen.queryByRole("button", { name: /^Load cover\.png/u })).toBeNull();
   });
 });

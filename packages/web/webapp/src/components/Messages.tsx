@@ -353,8 +353,14 @@ const persistedAskStatus = (value: unknown, depth = 0): TerminalAskStatus | unde
  * snapshots keep old cards from adopting a later run's conversation-scoped ask.
  */
 export function AskReconciliationProvider({ children }: { readonly children: ReactNode }) {
-  const { selectedThread, selectedAgent, connection } = useConsoleStore();
+  const { selectedThread, selectedAgent, connection, transcriptMovedAt } = useConsoleStore();
   const visible = useDocumentVisible();
+  // Read when a round runs, never depended on. It is a stable callback in the
+  // store, but a loop that restarts because a reader's identity changed would
+  // reset its own backoff -- and the loop already treats everything it consults
+  // between rounds this way.
+  const transcriptMovedAtRef = useRef(transcriptMovedAt);
+  transcriptMovedAtRef.current = transcriptMovedAt;
   const threadId = selectedThread?.id;
   const requestsRef = useRef(new Map<string, VersionedAskCardRequest>());
   const nextRequestVersionRef = useRef(0);
@@ -435,6 +441,10 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
       const minDelayMs = lean ? LEAN_ASK_POLL_MIN_MS : ASK_POLL_MIN_MS;
       const maxDelayMs = lean ? LEAN_ASK_POLL_MAX_MS : ASK_POLL_MAX_MS;
       let delayMs = minDelayMs;
+      /** Rounds that actually asked; the first one always does. */
+      let asked = 0;
+      /** Whether the round before this one gave way, so this one cannot. */
+      let gaveWay = false;
       while (!controller.signal.aborted) {
         const requests = [...requestsRef.current.values()];
         if (requests.length === 0) return;
@@ -442,6 +452,18 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
           markUnavailable(requests);
           return;
         }
+        // The stream moved this conversation's transcript inside the interval
+        // this round waited out, so the agent side has only just spoken. One
+        // round gives way to it -- and only one, so a stream that never stops
+        // cannot starve the poll. The wait is repeated, not doubled: nothing was
+        // asked, so nothing has earned a longer backoff.
+        if (asked > 0 && !gaveWay && Date.now() - transcriptMovedAtRef.current(threadId) < delayMs) {
+          gaveWay = true;
+          await waitForAskPollDelay(delayMs, controller.signal);
+          continue;
+        }
+        gaveWay = false;
+        asked += 1;
 
         let pollAgain = false;
         const exact = requests.filter((request) => request.expectedInteractionId !== undefined);
