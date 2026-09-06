@@ -416,6 +416,8 @@ export interface MonoAgentConfig {
       readonly coordination?: "process" | "host";
       readonly search: {
         readonly backend: WebSearchBackend;
+        /** Hard ceiling on actual provider search requests in one logical runtime run. */
+        readonly maxRequestsPerRun: number;
         /** @deprecated Use searxng.endpoint. Accepted for programmatic embedders. */
         readonly endpoint?: string;
         readonly searxng?: SearxngWebSearchConfig;

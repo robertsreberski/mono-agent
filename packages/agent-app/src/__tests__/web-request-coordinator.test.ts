@@ -37,9 +37,14 @@ describe("host web request coordinator", () => {
   it("shares cooldowns and quota without persisting request content", async () => {
     const { directory, coordinator } = await setup();
     const permit = await coordinator.acquire(request());
-    await permit.complete({ status: "rate_limited", retryAfterMs: 60000 });
+    const retryAtMs = Date.now() + 60000;
+    await permit.complete({ status: "rate_limited", retryAfterMs: 1000, retryAtMs });
     const sibling = createHostWebRequestCoordinator({ directory });
-    await expect(sibling.acquire(request())).rejects.toMatchObject({ code: "rate_limited" });
+    await expect(sibling.acquire(request())).rejects.toMatchObject({
+      code: "rate_limited",
+      retryAtMs,
+      retryAfterMs: expect.any(Number),
+    });
     await coordinator.writeQuota({ windows: [{ usedPercent: 91, resetsAt: 1900000000 }] });
     expect((await sibling.readQuota())?.value).toEqual({ windows: [{ usedPercent: 91, resetsAt: 1900000000 }] });
     const state = await readFile(join(directory, "state.json"), "utf8");

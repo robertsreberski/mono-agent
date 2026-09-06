@@ -442,7 +442,7 @@ export interface RuntimeRunOptions {
     readonly scope: string;
     acquire(request: { kind: "searxng" | "ollama" | "duckduckgo" | "startpage" | "codex" | "fetch"; key: string; deadlineMs: number; signal?: AbortSignal }): Promise<{
       readonly waitMs: number;
-      complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number }): Promise<void>;
+      complete(outcome: { status: "ok" | "rate_limited" | "unavailable" | "cancelled"; retryAfterMs?: number; retryAtMs?: number }): Promise<void>;
     }>;
     readQuota(): Promise<{ checkedAt: number; value: unknown } | undefined>;
     writeQuota(value: unknown): Promise<void>;
@@ -450,6 +450,7 @@ export interface RuntimeRunOptions {
   /** Local-first WebSearch backend selection for this run. */
   readonly webSearchConfig?: {
     readonly backend?: "auto" | "searxng" | "ollama" | "codex" | "keyless";
+    readonly maxRequestsPerRun?: number;
     /** @deprecated Use searxng.endpoint. */
     readonly endpoint?: string;
     readonly searxng?: { readonly endpoint?: string };

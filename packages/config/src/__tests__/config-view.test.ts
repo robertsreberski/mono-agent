@@ -362,6 +362,7 @@ describe("buildMonoAgentConfigView", () => {
   it("shows web tool defaults and JSON/env precedence", () => {
     const defaults = buildView(baseEnv);
     expect(field(defaults, "tools.web.search.backend")).toMatchObject({ value: "auto", source: "default" });
+    expect(field(defaults, "tools.web.search.maxRequestsPerRun")).toMatchObject({ value: "4", source: "default" });
     expect(field(defaults, "tools.web.search.codex.model")).toMatchObject({
       value: "gpt-5.6-luna",
       source: "default",
@@ -376,6 +377,7 @@ describe("buildMonoAgentConfigView", () => {
         web: {
           search: {
             backend: "searxng",
+            maxRequestsPerRun: 7,
             searxng: { endpoint: "http://127.0.0.1:8088" },
             codex: { model: "gpt-5.6-sol" },
           },
@@ -384,6 +386,7 @@ describe("buildMonoAgentConfigView", () => {
       },
     });
     expect(field(configured, "tools.web.search.backend")).toMatchObject({ value: "searxng", source: "json" });
+    expect(field(configured, "tools.web.search.maxRequestsPerRun")).toMatchObject({ value: "7", source: "json" });
     expect(field(configured, "tools.web.search.searxng.endpoint")).toMatchObject({
       value: "http://127.0.0.1:8088",
       source: "json",

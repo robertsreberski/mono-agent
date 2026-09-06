@@ -5,6 +5,7 @@ import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
+import { createWebSearchRunState, webSearchBudgetSnapshot } from "./web-search-state.js";
 
 const MAX_CACHE_ENTRIES = 64;
 const MAX_SHARED_SEARCH_ENTRIES = 256;
@@ -28,11 +29,12 @@ const sharedSearchCache = new Map();
  * cleanup. Search results are the exception: they live in the process-wide
  * cache above so sibling subagents and later turns can reuse them.
  *
- * @param {{coordinator?: any, searchConfig?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
+ * @param {{coordinator?: any, searchConfig?: any, searchState?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
  */
 export function createWebToolController({
   coordinator,
   searchConfig,
+  searchState: suppliedSearchState,
   fetchConfig,
   sandboxPolicy,
   sandboxEngine,
@@ -47,6 +49,7 @@ export function createWebToolController({
   const fetchInFlight = new Map();
   const cleanups = new Set();
   let closed = false;
+  const searchState = createWebSearchRunState(searchConfig, suppliedSearchState);
 
   function registerCleanup(cleanup) {
     if (closed) {
@@ -92,9 +95,9 @@ export function createWebToolController({
   async function cachedSearch(key, execute) {
     if (closed) return closedResult();
     const cached = readSharedSearch(key);
-    if (cached) return withCacheHit(cached);
+    if (cached) return withSearchCacheHit(cached, searchState);
     const active = searchInFlight.get(key);
-    if (active) return withCacheHit(await active);
+    if (active) return withSearchCacheHit(await active, searchState);
     const task = Promise.resolve().then(execute);
     searchInFlight.set(key, task);
     try {
@@ -142,6 +145,7 @@ export function createWebToolController({
         ctx: resolvedCtx,
         fetchImpl,
         codexSearch,
+        searchState,
         signal: execution.signal,
       }));
     },
@@ -183,9 +187,11 @@ export function createWebToolController({
 }
 
 function safeSearchCacheIdentity(searchConfig) {
-  if (typeof searchConfig?.ollama?.apiKey !== "string") return searchConfig;
+  if (!searchConfig || typeof searchConfig !== "object") return searchConfig;
+  const { maxRequestsPerRun: _budget, ...identity } = searchConfig;
+  if (typeof searchConfig?.ollama?.apiKey !== "string") return identity;
   return {
-    ...searchConfig,
+    ...identity,
     ollama: {
       ...searchConfig.ollama,
       apiKey: `sha256:${createHash("sha256").update(searchConfig.ollama.apiKey).digest("hex")}`,
@@ -237,7 +243,15 @@ function sortValue(value) {
 function cloneResult(result) {
   return {
     ...result,
-    outcome: result.outcome ? { ...result.outcome } : result.outcome,
+    outcome: result.outcome ? {
+      ...result.outcome,
+      ...(Array.isArray(result.outcome.providerAttempts)
+        ? { providerAttempts: result.outcome.providerAttempts.map((entry) => ({ ...entry })) }
+        : {}),
+      ...(Array.isArray(result.outcome.failureMetadata)
+        ? { failureMetadata: result.outcome.failureMetadata.map((entry) => ({ ...entry })) }
+        : {}),
+    } : result.outcome,
   };
 }
 
@@ -249,6 +263,22 @@ function withCacheHit(result) {
       cacheHit: true,
       attempts: 0, durationMs: 0, queueWaitMs: 0, backendDurationMs: 0,
       cooldownSkipCount: 0, quotaSkipCount: 0,
+    },
+  };
+}
+
+function withSearchCacheHit(result, searchState) {
+  const cloned = withCacheHit(result);
+  const budget = webSearchBudgetSnapshot(searchState, 0);
+  const control = `[Search control: requests=${budget.requestsUsed}/${budget.maxRequestsPerRun}; remaining=${budget.requestsRemaining}; Use WebFetch on the strongest returned URLs before searching again.]`;
+  return {
+    ...cloned,
+    text: typeof cloned.text === "string" && cloned.text.startsWith("[Search control:")
+      ? cloned.text.replace(/^\[Search control:[^\n]*\]/u, control)
+      : `${control}\n${cloned.text}`,
+    outcome: {
+      ...cloned.outcome,
+      ...budget,
     },
   };
 }

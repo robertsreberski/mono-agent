@@ -1243,7 +1243,9 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     const fetch = tools.find((tool) => tool.name === "WebFetch");
     const search = tools.find((tool) => tool.name === "WebSearch");
 
-    expect(search.description).toContain("never silently selects Ollama");
+    expect(search.description).toContain("configured Ollama");
+    expect(search.description).toContain("one broad, high-yield query");
+    expect(search.description).toContain("Never sleep");
     expect(search.description).toContain("snippets as leads");
     expect(fetch.description).toContain("Prefer static markdown");
     expect(fetch.description).toContain("does not bypass login, CAPTCHA, Cloudflare");

@@ -665,7 +665,7 @@ Per-call options (a non-exhaustive selection):
 | `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, searxng?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped SearXNG, explicit Ollama, ChatGPT-subscription Codex, and keyless WebSearch backend selection. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. |
+| `webSearchConfig` | `{ backend?, maxRequestsPerRun?, searxng?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped ordered WebSearch selection and a 1–20 actual-provider-request budget (default 4). `auto` uses explicitly configured Ollama, configured SearXNG, Codex, then keyless; named modes are strict. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. |
 | `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
@@ -731,10 +731,10 @@ contract package for this boundary.
 
 `NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Exec`/`Bash` and communicates through token-authenticated, length-prefixed JSON frames on ordinary stdin/stdout; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
 
-`WebSearch` uses a configured loopback SearXNG endpoint, explicit Ollama Web
-Search, and/or deterministic public fallbacks. Strict backends do not fall
-through, and `auto` preserves SearXNG → Codex → keyless without silently
-selecting Ollama. Hosted Ollama bearer credentials are accepted only for the
+`WebSearch` uses explicit Ollama Web Search, a configured loopback SearXNG
+endpoint, and deterministic public fallbacks. Strict backends do not fall
+through, and `auto` tries explicitly configured Ollama → configured SearXNG →
+Codex → keyless. Hosted Ollama bearer credentials are accepted only for the
 exact official origin. Search canonicalizes and deduplicates results, trying
 supplied alternate queries only if the primary has no relevant results. Codex
 subscription search preserves a 10% allowance reserve. An optional host-injected
@@ -747,6 +747,11 @@ One ephemeral controller per run deduplicates identical calls and closes every
 browser namespace at run end. WebFetch `start_line` and `max_lines` reuse a
 bounded run-scoped document cache. Search and fetch use total deadlines of 60
 and 45 seconds respectively, with bounded transport cleanup after cancellation.
+WebSearch also shares a default hard budget of four actual provider requests
+across route retries in one logical run. Cache hits, in-flight followers,
+cooldown skips, and quota skips do not spend it. Rate-limited providers are
+deferred for that run, with retry timing and an explicit next action returned
+to the model; children and later runs receive fresh budgets.
 
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete
 skill instructions by default, including content beyond the former

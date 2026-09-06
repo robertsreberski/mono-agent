@@ -1813,12 +1813,17 @@ async function webToolsSection(
   liveness: boolean,
 ): Promise<ValidationSection> {
   const web = config.tools.web;
-  const search = web?.search ?? {
+  const search: NonNullable<MonoAgentConfig["tools"]["web"]>["search"] = web?.search ?? {
     backend: "auto" as const,
+    maxRequestsPerRun: 4,
     codex: { model: "gpt-5.6-luna" },
   };
   const fetchConfig = web?.fetch ?? { render: "never" as const, browserCommand: "agent-browser" };
-  const details = [`WebSearch backend: ${search.backend}.`, `Web coordination: ${web?.coordination ?? "process"}.`];
+  const details = [
+    `WebSearch backend: ${search.backend}.`,
+    `WebSearch request budget: ${search.maxRequestsPerRun ?? 4} per logical run.`,
+    `Web coordination: ${web?.coordination ?? "process"}.`,
+  ];
   let status: ValidationStatus = "ok";
   if (web?.coordination === "host") {
     try {
@@ -1838,7 +1843,9 @@ async function webToolsSection(
         ? "SearXNG is not configured; strict Codex subscription search is enabled."
         : search.backend === "searxng"
           ? "SearXNG is not configured."
-          : "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.");
+          : search.ollama === undefined
+            ? "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search."
+            : "SearXNG is not configured; auto mode uses configured Ollama, then Codex subscription search, then keyless search.");
   } else {
     details.push(`SearXNG endpoint: ${searxngEndpoint}.`);
     if (!liveness) {
@@ -1859,31 +1866,31 @@ async function webToolsSection(
     }
   }
 
-  if (search.backend === "ollama") {
+  if (search.backend === "ollama" || (search.backend === "auto" && search.ollama !== undefined)) {
     const ollama = search.ollama;
     if (ollama === undefined) {
       status = "waiting";
       details.push("[WARN] Ollama Web Search is selected but its resolved configuration is missing.");
     } else if (!liveness) {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. Strict Ollama mode has no fallback.`);
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : "Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable."}`);
       details.push("Ollama Web Search liveness was not probed.");
     } else {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. Strict Ollama mode has no fallback.`);
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : "Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable."}`);
       const probe = await probeOllamaWebSearch(ollama);
       if (probe.ok) details.push("Ollama Web Search JSON probe succeeded.");
       else {
         status = "waiting";
-        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). Strict Ollama mode has no fallback.`);
+        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : "Auto mode can still advance to configured SearXNG, Codex subscription search, then keyless search."}`);
       }
     }
   } else if (search.ollama !== undefined) {
-    details.push("Ollama Web Search is configured but inactive; select backend ollama explicitly to use it.");
+    details.push(`Ollama Web Search is configured but inactive because backend ${search.backend} is strict.`);
   }
 
   if (search.backend === "auto") {
     const codexModel = search.codex?.model ?? "gpt-5.6-luna";
     details.push(
-      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches that fallback.`,
+      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches it after configured Ollama and SearXNG.`,
     );
   } else if (search.backend === "codex") {
     const codexModel = search.codex?.model ?? "gpt-5.6-luna";

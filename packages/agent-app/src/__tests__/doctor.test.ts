@@ -3991,8 +3991,9 @@ describe("validateMonoAgentFolder — web tools", () => {
       status: "ok",
       details: expect.arrayContaining([
         "WebSearch backend: auto.",
+        "WebSearch request budget: 4 per logical run.",
         "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.",
-        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches that fallback.",
+        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it after configured Ollama and SearXNG.",
         "WebFetch browser rendering: never.",
         "Static Defuddle/Readability extraction is active; agent-browser is not required.",
       ]),
@@ -4063,7 +4064,7 @@ describe("validateMonoAgentFolder — web tools", () => {
     expect(web.details.some((detail) => detail.includes("response exceeded 2097152 bytes"))).toBe(true);
   });
 
-  it("does not probe an inactive Ollama block and reports it explicitly", async () => {
+  it("does not probe an Ollama block outside auto or strict Ollama and reports it explicitly", async () => {
     const fetchSpy = vi.fn();
     vi.stubGlobal("fetch", fetchSpy);
     const configPath = await writeWebToolsConfig({
@@ -4071,9 +4072,35 @@ describe("validateMonoAgentFolder — web tools", () => {
     });
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
     expect(sectionById(report, "web-tools").details).toContain(
-      "Ollama Web Search is configured but inactive; select backend ollama explicitly to use it.",
+      "Ollama Web Search is configured but inactive because backend keyless is strict.",
     );
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("probes explicitly configured Ollama in auto and documents the remaining chain", async () => {
+    const fetchSpy = vi.fn(async (url: string | URL) => String(url).includes("ollama")
+      ? new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } })
+      : new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const configPath = await writeWebToolsConfig({
+      search: {
+        backend: "auto",
+        maxRequestsPerRun: 6,
+        ollama: { baseUrl: "http://127.0.0.1:11434" },
+        searxng: { endpoint: "http://127.0.0.1:8088" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: true });
+    const web = sectionById(report, "web-tools");
+    expect(web.status).toBe("ok");
+    expect(web.details).toContain("WebSearch request budget: 6 per logical run.");
+    expect(web.details).toContain("Ollama Web Search JSON probe succeeded.");
+    expect(web.details).toContain("Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable.");
+    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://127.0.0.1:8088/search",
+      "http://127.0.0.1:11434/api/experimental/web_search",
+    ]);
   });
 
   it("warns when the SearXNG endpoint answers with every engine unresponsive", async () => {

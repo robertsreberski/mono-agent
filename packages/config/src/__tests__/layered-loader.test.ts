@@ -74,6 +74,7 @@ describe("layerJsonOntoEnv", () => {
           web: {
             search: {
               backend: "searxng",
+              maxRequestsPerRun: 6,
               endpoint: "http://127.0.0.1:8088",
               codex: { model: "gpt-5.6-sol" },
             },
@@ -122,6 +123,7 @@ describe("layerJsonOntoEnv", () => {
     expect(layered.MONO_AGENT_MCP_CALL_TIMEOUT_MS).toBe("150000");
     expect(layered.MONO_AGENT_MCP_CALL_MAX_TOTAL_TIMEOUT_MS).toBe("2700000");
     expect(layered.MONO_AGENT_WEB_SEARCH_BACKEND).toBe("searxng");
+    expect(layered.MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN).toBe("6");
     expect(layered.MONO_AGENT_WEB_SEARCH_ENDPOINT).toBe("http://127.0.0.1:8088");
     expect(layered.MONO_AGENT_WEB_SEARCH_CODEX_MODEL).toBe("gpt-5.6-sol");
     expect(layered.MONO_AGENT_WEB_FETCH_RENDER).toBe("auto");
@@ -150,6 +152,7 @@ describe("layerJsonOntoEnv", () => {
   it("projects canonical SearXNG and Ollama blocks while real env wins across the SearXNG alias", () => {
     const layered = layerJsonOntoEnv({ tools: { web: { search: {
       backend: "ollama",
+      maxRequestsPerRun: 6,
       searxng: { endpoint: "http://127.0.0.1:8088" },
       ollama: { baseUrl: "https://ollama.com", apiKeyEnv: "OLLAMA_WEB_KEY", trustPublicUrl: false },
     } } } }, {
@@ -157,6 +160,7 @@ describe("layerJsonOntoEnv", () => {
     });
     expect(layered).toMatchObject({
       MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
+      MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN: "6",
       MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:9090",
       MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://ollama.com",
       MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV: "OLLAMA_WEB_KEY",

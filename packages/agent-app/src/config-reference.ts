@@ -1266,6 +1266,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
     "runtime.retry.primaryAttempts": { minimum: 1, maximum: 10 },
     "runtime.retry.backoffMs": { minimum: 0, maximum: 60_000 },
     "runtime.retry.maxBackoffMs": { minimum: 0, maximum: 300_000 },
+    "tools.web.search.maxRequestsPerRun": { minimum: 1, maximum: 20 },
   };
   const bounds = numericBounds[field.jsonPath];
   if (bounds !== undefined) {
@@ -1375,6 +1376,7 @@ function inferType(id: string): ConfigReferenceType {
   if (id === "runtime.compaction.fixedOverheadEnabled") {
     return "boolean";
   }
+  if (id === "tools.web.search.maxRequestsPerRun") return "integer";
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
@@ -1462,6 +1464,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
     "tools.web.coordination": "process",
     "tools.web.search.backend": "auto",
+    "tools.web.search.maxRequestsPerRun": 4,
     "tools.web.search.ollama.baseUrl": "http://127.0.0.1:11434",
     "tools.web.search.ollama.trustPublicUrl": false,
     "tools.web.search.codex.model": "gpt-5.6-luna",
@@ -1718,7 +1721,10 @@ function descriptionFor(id: string): string {
   }
   if (id === "tools.web.coordination") return "Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination.";
   if (id === "tools.web.search.backend") {
-    return "WebSearch backend: auto preserves configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict; Ollama is never silently selected by auto.";
+    return "WebSearch backend: auto uses explicitly configured Ollama, configured local SearXNG, ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict.";
+  }
+  if (id === "tools.web.search.maxRequestsPerRun") {
+    return "Hard ceiling from 1 to 20 on actual provider search requests in one logical runtime run; cache hits, coalesced followers, cooldown skips, and quota skips consume no request. Default 4.";
   }
   if (id === "tools.web.search.searxng.endpoint") {
     return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";

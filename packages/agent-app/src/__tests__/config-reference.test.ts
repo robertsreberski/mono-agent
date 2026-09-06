@@ -93,6 +93,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "tools.mcpCallMaxTotalTimeoutMs": "integer",
   "tools.web.coordination": "string",
   "tools.web.search.backend": "string",
+  "tools.web.search.maxRequestsPerRun": "integer",
   "tools.web.search.codex.model": "string",
   "tools.web.search.endpoint": "string",
   "tools.web.search.searxng.endpoint": "string",
