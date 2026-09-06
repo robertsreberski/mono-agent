@@ -117,9 +117,14 @@
     "bmp-ts": "1.0.9",
     "cross-spawn": "^7.0.6",
     "defuddle": "0.19.2",
+    "fast-xml-parser": "5.7.3",
     "linkedom": "0.18.13",
     "sharp": "0.35.3",
+    "turndown": "7.2.4",
     "unpdf": "1.8.0",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/turndown": "5.0.6"
   }
 }

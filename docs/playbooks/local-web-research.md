@@ -1,12 +1,12 @@
 ---
 title: "Local-first web research agent"
-description: "Build a Pi agent that searches through loopback SearXNG and fetches pages with static extraction plus optional isolated rendering."
+description: "Build a Pi agent that searches through explicit Ollama or loopback SearXNG and fetches pages with deterministic static extraction plus optional isolated rendering."
 sidebar:
   order: 12
 ---
 
 This playbook gives a Pi-backed mono-agent a reliable public-web research path:
-local SearXNG for discovery, deterministic result fusion, local content
+explicit Ollama or local SearXNG for discovery, deterministic result fusion, local content
 extraction, and optional isolated browser rendering for sparse JavaScript pages.
 SearXNG and the browser run locally, but fetched/search-engine traffic still
 leaves the machine.
@@ -200,7 +200,7 @@ tools enabled and add their local-first settings:
       "coordination": "host",
       "search": {
         "backend": "searxng",
-        "endpoint": "http://127.0.0.1:8088"
+        "searxng": { "endpoint": "http://127.0.0.1:8088" }
       },
       "fetch": {
         "render": "never",
@@ -232,6 +232,29 @@ fall through to ChatGPT-subscription Codex search and then DuckDuckGo/Startpage.
 The existing `codex` CLI must be signed in with ChatGPT; mono-agent consumes
 only app-server's structured search sources and never extracts OAuth tokens.
 
+To use a signed-in local Ollama daemon instead, replace the search block with:
+
+```json
+{ "search": { "backend": "ollama" } }
+```
+
+This defaults to `http://127.0.0.1:11434` and sends no credential. Hosted
+Ollama Web Search is explicit and host-bound:
+
+```json
+{
+  "search": {
+    "backend": "ollama",
+    "ollama": { "baseUrl": "https://ollama.com", "apiKeyEnv": "OLLAMA_API_KEY" }
+  }
+}
+```
+
+Set the named variable outside repository config. Mono-agent never auto-reads
+it, never sends it to a different origin, and never falls back from strict
+Ollama to another provider. Existing top-level `search.endpoint` remains a
+SearXNG compatibility alias; use `search.searxng.endpoint` for new config.
+
 `network.mode: "all"` is required here because SearXNG itself contacts public
 engines and `WebFetch` contacts the result sites. A narrower allowlist works
 only when the research targets are known in advance. `localhost` admits
@@ -239,7 +262,7 @@ SearXNG but blocks public page fetches.
 
 ## 3. Optionally enable browser rendering
 
-Static Defuddle/Readability extraction is the safe default and handles ordinary
+Static Defuddle/Readability/Turndown extraction is the safe default and handles ordinary
 HTML, JSON, feeds, PDFs, and text without a browser.
 
 For client-rendered sites:
@@ -264,6 +287,10 @@ Then change:
 }
 ```
 
+Use `render: "always"` in one `WebFetch` call only for a known JavaScript page
+or when `browserRecommended` is reported. That call is browser-first. It does
+not bypass login, CAPTCHA, Cloudflare, robots/access controls, or site policy.
+
 `auto` renders only successful, sparse, SPA-like HTML. Each render gets a fresh
 anonymous namespace and closes after the fetch; it does not reuse a personal
 Chrome profile.
@@ -275,17 +302,22 @@ mono-agent validate
 mono-agent start
 ```
 
-Require these lines in the validation report:
+Require the validation lines for the selected backend:
 
-- **WebSearch backend: searxng**
-- **SearXNG JSON search probe succeeded**
-- **WebFetch browser rendering: never**, or an `agent-browser` version at least
-  0.33.1 when rendering is enabled
+- strict SearXNG: **WebSearch backend: searxng.** and
+  **SearXNG JSON search probe succeeded.** (`auto` with a configured SearXNG
+  endpoint also requires the successful SearXNG probe)
+- strict Ollama: **WebSearch backend: ollama.** and
+  **Ollama Web Search JSON probe succeeded.**
+- every backend: **WebFetch browser rendering: never.**, or an `agent-browser`
+  version at least 0.33.1 when rendering is enabled
 
-The probe fails when the endpoint answers with an empty result set *and* one or
-more unresponsive engines — a fully blocked instance still returns `HTTP 200`,
-so treat that `[WARN]` as "search is down", not as a slow start. Fix the engine
-selection in the operator-owned SearXNG instance before continuing.
+The SearXNG probe fails when the endpoint answers with an empty result set *and*
+one or more unresponsive engines — a fully blocked instance still returns
+`HTTP 200`, so treat that `[WARN]` as "search is down", not as a slow start. Fix
+the engine selection in the operator-owned SearXNG instance before continuing.
+An Ollama probe failure is likewise terminal in strict `ollama` mode; it never
+falls through to another search provider.
 
 ## 5. Smoke the real tools
 

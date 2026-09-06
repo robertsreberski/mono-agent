@@ -665,7 +665,7 @@ Per-call options (a non-exhaustive selection):
 | `skills` / `skillsRoot` | `{name, description}[]` / `string` | Skills disclosed to the run and the directory holding `<name>/SKILL.md`. |
 | `mcpServers` | `Record<string, McpServerConfig>` | Configured MCP servers (stdio / sse / http). |
 | `sandboxPolicy` | `SandboxPolicy` | Optional fail-closed sandbox policy for built-in tools and stdio MCP process startup. |
-| `webSearchConfig` | `{ backend?, endpoint?, codex?: { model? } }` | Run-scoped local SearXNG, ChatGPT-subscription Codex, and keyless WebSearch backend selection. |
+| `webSearchConfig` | `{ backend?, searxng?: { endpoint? }, ollama?: { baseUrl?, apiKey?, apiKeyEnv?, trustPublicUrl? }, codex?: { model? } }` | Run-scoped SearXNG, explicit Ollama, ChatGPT-subscription Codex, and keyless WebSearch backend selection. The deprecated top-level `endpoint` remains a SearXNG compatibility alias. |
 | `webFetchConfig` | `{ render?, browserCommand? }` | Run-scoped static extraction and optional isolated browser-render policy. |
 | `piToolExecutionMode` | `"safe-parallel" \| "sequential"` | Pi built-in scheduling. Safe parallelism is the default; read-only tools may overlap only when the offered tool set contains no stateful/mutating or MCP tool. Otherwise Pi 0.85 serializes the whole batch. |
 | `maxTurns` | `number` | Hard cap on agent turns. |
@@ -731,18 +731,22 @@ contract package for this boundary.
 
 `NodeRepl` uses Node's default `node:repl` evaluator, so variables, `_`, `_error`, and loaded modules persist across calls in the same run. It supports multiline input and top-level `await`, resolves workspace-installed packages, and is closed with the run. Its child is prepared through the same sandbox seam as `Exec`/`Bash` and communicates through token-authenticated, length-prefixed JSON frames on ordinary stdin/stdout; abort, the fixed 120-second timeout, child exit, or hard output overflow resets the session. It deliberately has no session ids, persistent history, terminal commands, or package-install surface.
 
-`WebSearch` uses a configured loopback SearXNG endpoint and/or deterministic
-public fallbacks that require no credentials. It canonicalizes and deduplicates
-results, trying supplied alternate queries only if the primary has no relevant
-results. Codex subscription search preserves a 10% allowance reserve. An optional
-host-injected coordinator shares admission and cooldowns across processes. `WebFetch` extracts HTML, JSON,
-feeds, PDFs, and text locally with
-bounded redirects, bodies, headers, and retries. Config can opt into isolated
-`agent-browser` rendering for sparse client-rendered HTML. One ephemeral
-controller per run deduplicates identical calls and closes every browser
-namespace at run end. WebFetch `start_line` and `max_lines` reuse a bounded
-run-scoped document cache. Search and fetch use total deadlines of 60 and 45
-seconds respectively, with bounded transport cleanup after cancellation.
+`WebSearch` uses a configured loopback SearXNG endpoint, explicit Ollama Web
+Search, and/or deterministic public fallbacks. Strict backends do not fall
+through, and `auto` preserves SearXNG → Codex → keyless without silently
+selecting Ollama. Hosted Ollama bearer credentials are accepted only for the
+exact official origin. Search canonicalizes and deduplicates results, trying
+supplied alternate queries only if the primary has no relevant results. Codex
+subscription search preserves a 10% allowance reserve. An optional host-injected
+coordinator shares admission and cooldowns across processes. `WebFetch`
+deterministically decodes and extracts HTML, JSON, feeds, PDFs, and text locally
+with bounded redirects, bodies, headers, retries, and structured parser
+failures. Config can opt into isolated `agent-browser` rendering for sparse
+client-rendered HTML; an explicit `render: "always"` call is browser-first.
+One ephemeral controller per run deduplicates identical calls and closes every
+browser namespace at run end. WebFetch `start_line` and `max_lines` reuse a
+bounded run-scoped document cache. Search and fetch use total deadlines of 60
+and 45 seconds respectively, with bounded transport cleanup after cancellation.
 
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete
 skill instructions by default, including content beyond the former
@@ -975,9 +979,12 @@ These are stable but treated as advanced API. Most consumers should reach for `c
 
 ## Dependency Boundary
 
-This package has zero `@mono-agent/*` workspace dependencies. Its runtime
-dependencies are `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
+This package has zero `@mono-agent/*` workspace dependencies. Its runtime core
+uses `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
 `@modelcontextprotocol/sdk`, `@vscode/ripgrep`, `cross-spawn`, and `zod`.
+Managed web extraction owns its direct parser dependencies: Defuddle,
+Readability, linkedom, Turndown, fast-xml-parser, and unpdf. Image inspection
+uses bmp-ts and sharp.
 
 The runtime owns and exact-pins its Pi dependencies; consumers use the runtime's
 Pi façade rather than coordinating a second direct `@earendil-works/pi-ai`
@@ -1009,7 +1016,8 @@ runtime fails closed.
 - [Programmatic approvals and structured output](https://mono-agent-docs.vercel.app/programmatic/approval-and-structured-output/)
   shows the code-only host hooks.
 - [Local-first web research](https://mono-agent-docs.vercel.app/tools/web-research/)
-  documents SearXNG, extraction, retry, browser isolation, and sandbox policy.
+  documents Ollama/SearXNG selection, extraction, retry, browser isolation, and
+  sandbox policy.
 - [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
   documents the host bridge, browser sandbox, and lifecycle limits.
 - [Architecture](https://github.com/robertsreberski/mono-agent/blob/main/packages/agent-runtime/ARCHITECTURE.md)

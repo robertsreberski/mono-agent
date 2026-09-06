@@ -171,6 +171,9 @@ describe("mono-agent-composer reference parity", () => {
   const composerPlaybooks = readRepoFile(
     "packages/agent-app/skills/mono-agent-composer/references/playbooks.md",
   );
+  const composerDiscovery = readRepoFile(
+    "packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md",
+  );
 
   it("represents every config-bearing registry row exactly once", () => {
     expect(auditComposerConfigCoverage(registry, coverage)).toEqual({
@@ -193,6 +196,15 @@ describe("mono-agent-composer reference parity", () => {
       expectOptionalEnvMappingLegend(legend, label);
     }
     expect(pluginConfigRow?.[2]).toBe("`--`");
+  });
+
+  it("distinguishes config-level automatic rendering from browser-first WebFetch calls", () => {
+    for (const page of [composerDiscovery, composerPlaybooks]) {
+      expect(page).toMatch(/config(?:-level| render)[^.\n]*`"?auto"?`/iu);
+      expect(page).toContain('per-call `WebFetch` `render: "always"`');
+      expect(page).not.toContain('config render `always`');
+      expect(page).not.toContain('config-level `"always"`');
+    }
   });
 
   it("keeps copyable webhook blueprints free of pseudo-interpolated credentials", () => {

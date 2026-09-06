@@ -690,14 +690,14 @@ export function getPiBuiltinTools(allowedTools, {
         toolContext,
       )
       : null,
-    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Fetch and extract one HTTP(S) URL locally. Static extraction is preferred; browser rendering is available only through the configured render policy.", objectSchema({
+    WebFetch: createBuiltinTool("WebFetch", "Web Fetch", "Retrieve one HTTP(S) source. Prefer static markdown; use text when Markdown semantics are harmful, and raw only for decoded source with rendering off. When browser rendering is configured, auto renders only sparse JavaScript shells; retry with always only when metadata recommends a browser or JavaScript is known to be required. Rendering does not bypass login, CAPTCHA, Cloudflare, robots/access controls, or site policy; treat those failures as evidence.", objectSchema({
       url: { type: "string" },
       start_line: { type: "integer", minimum: 1, description: "First line to read; use nextLine from a truncated page." },
       max_lines: { type: "integer", minimum: 1, maximum: 10000, description: "Lines to read, default 200 when selecting a range. Later ranges reuse the extracted page." },
       headers: { type: "object", additionalProperties: { type: "string" } },
       max_output_chars: textLimitSchema,
-      format: { type: "string", enum: ["markdown", "text", "raw"] },
-      render: { type: "string", enum: ["never", "auto", "always"] },
+      format: { type: "string", enum: ["markdown", "text", "raw"], description: "markdown (default) preserves semantic structure; text removes decoration; raw returns decoded source and requires render=never." },
+      render: { type: "string", enum: ["never", "auto", "always"], description: "never uses static fetch, auto may render a sparse JavaScript shell, always explicitly uses the isolated browser first when the configured ceiling permits it." },
     }, ["url"]), webController
       ? (params, execution) => webController.fetch(params, execution)
       : async () => ({
@@ -705,7 +705,7 @@ export function getPiBuiltinTools(allowedTools, {
         outcome: { status: "error", code: "controller_unavailable", retryable: false, attempts: 0 },
         error: true,
       }), toolContext),
-    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Search the public web through local SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks according to the configured backend, then return relevance-filtered deduplicated results. Start with one precise query; alternates run only when needed. Respect cooldowns; verify dates and language in fetched sources.", objectSchema({
+    WebSearch: createBuiltinTool("WebSearch", "Web Search", "Discover public sources through the configured backend: strict Ollama and strict SearXNG never fall back; auto preserves configured SearXNG, then Codex subscription search, then keyless providers, and never silently selects Ollama. Start with one precise query and treat snippets as leads. Fetch authoritative sources, verify dates/language, and do not repeat requests to bypass cooldowns or access gates.", objectSchema({
       query: { type: "string" },
       limit: { type: "integer" },
       alternate_queries: { type: "array", items: { type: "string" }, maxItems: 3 },

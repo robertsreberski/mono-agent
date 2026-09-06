@@ -65,10 +65,31 @@ const JSON_RUNTIME_SOURCES: readonly {
   readonly env: string;
   readonly path: string;
   readonly read: (json: MonoAgentConfigJson) => unknown;
+  readonly isOverriddenByEnv?: (
+    json: MonoAgentConfigJson,
+    env: Record<string, string | undefined>,
+  ) => boolean;
 }[] = [
   { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
   { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
   { env: "MONO_AGENT_SUBAGENTS_JSON", path: "subagents", read: (json) => json.subagents },
+  { env: "MONO_AGENT_WEB_SEARCH_BACKEND", path: "tools.web.search.backend", read: (json) => json.tools?.web?.search?.backend },
+  { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT", path: "tools.web.search.endpoint", read: (json) => json.tools?.web?.search?.endpoint },
+  { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT", path: "tools.web.search.searxng.endpoint", read: (json) => json.tools?.web?.search?.searxng?.endpoint },
+  { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL", path: "tools.web.search.ollama.baseUrl", read: (json) => json.tools?.web?.search?.ollama?.baseUrl },
+  {
+    env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV",
+    path: "tools.web.search.ollama.apiKeyEnv",
+    read: (json) => {
+      const ollama = json.tools?.web?.search?.ollama;
+      return ollama?.apiKeyEnv !== undefined ? ollama.apiKeyEnv : ollama?.baseUrl;
+    },
+    isOverriddenByEnv: (json, env) => (
+      json.tools?.web?.search?.ollama?.apiKeyEnv === undefined
+      && hasValue(env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL)
+    ),
+  },
+  { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL", path: "tools.web.search.ollama.trustPublicUrl", read: (json) => json.tools?.web?.search?.ollama?.trustPublicUrl },
 ];
 
 /** Preserve the operator's real source surface when a layered runtime setting fails. */
@@ -82,7 +103,11 @@ function remapJsonRuntimeError(
   if (typeof source !== "string") return error;
   const mapping = JSON_RUNTIME_SOURCES.find((candidate) => candidate.env === source);
   if (mapping === undefined) return error;
-  if (hasValue(env[source]) || mapping.read(json) === undefined) return error;
+  if (
+    hasValue(env[source])
+    || mapping.isOverriddenByEnv?.(json, env) === true
+    || mapping.read(json) === undefined
+  ) return error;
   return remapConfigErrorToJson(error, source, mapping.path);
 }
 
@@ -980,6 +1005,18 @@ export function layerJsonOntoEnv(
   if (json.tools?.web?.search?.endpoint !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_ENDPOINT = json.tools.web.search.endpoint;
   }
+  if (json.tools?.web?.search?.searxng?.endpoint !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT = json.tools.web.search.searxng.endpoint;
+  }
+  if (json.tools?.web?.search?.ollama?.baseUrl !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL = json.tools.web.search.ollama.baseUrl;
+  }
+  if (json.tools?.web?.search?.ollama?.apiKeyEnv !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV = json.tools.web.search.ollama.apiKeyEnv;
+  }
+  if (json.tools?.web?.search?.ollama?.trustPublicUrl !== undefined) {
+    fromJson.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL = String(json.tools.web.search.ollama.trustPublicUrl);
+  }
   if (json.tools?.web?.search?.codex?.model !== undefined) {
     fromJson.MONO_AGENT_WEB_SEARCH_CODEX_MODEL = json.tools.web.search.codex.model;
   }
@@ -988,6 +1025,16 @@ export function layerJsonOntoEnv(
   }
   if (json.tools?.web?.fetch?.browserCommand !== undefined) {
     fromJson.MONO_AGENT_WEB_BROWSER_COMMAND = json.tools.web.fetch.browserCommand;
+  }
+  // The canonical and legacy SearXNG endpoint names describe one setting. A
+  // real env value wins over either JSON spelling; two JSON spellings or two
+  // env spellings remain visible to the core loader so conflicting values fail.
+  if (
+    hasValue(env.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT)
+    || hasValue(env.MONO_AGENT_WEB_SEARCH_ENDPOINT)
+  ) {
+    delete fromJson.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT;
+    delete fromJson.MONO_AGENT_WEB_SEARCH_ENDPOINT;
   }
   if (json.sandbox?.mode !== undefined) {
     fromJson.MONO_AGENT_SANDBOX_MODE = json.sandbox.mode;

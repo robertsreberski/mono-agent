@@ -66,7 +66,7 @@ Equivalent environment overrides exist for headless deploys:
 | `tools.disallowedTools` | `MONO_AGENT_DISALLOWED_TOOLS` |
 | `tools.mcpConfigPath` | `MONO_AGENT_MCP_CONFIG_PATH` |
 | `tools.continuationServers` | `MONO_AGENT_CONTINUATION_SERVERS` |
-| `tools.web.search.backend` / `.endpoint` / `.codex.model` | `MONO_AGENT_WEB_SEARCH_BACKEND` / `MONO_AGENT_WEB_SEARCH_ENDPOINT` / `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` |
+| `tools.web.search.backend` / `.searxng.endpoint` / `.ollama.*` / `.codex.model` | `MONO_AGENT_WEB_SEARCH_BACKEND` / `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` / `MONO_AGENT_WEB_SEARCH_OLLAMA_*` / `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` |
 | `tools.web.fetch.render` / `.browserCommand` | `MONO_AGENT_WEB_FETCH_RENDER` / `MONO_AGENT_WEB_BROWSER_COMMAND` |
 | `sandbox.mode` | `MONO_AGENT_SANDBOX_MODE` |
 | `sandbox.network.mode` / `.allowlist` | `MONO_AGENT_SANDBOX_NETWORK` / `MONO_AGENT_SANDBOX_NETWORK_ALLOWLIST` |
@@ -96,7 +96,7 @@ approximated.
 ## Where to go next
 
 - **[Tool Policy](/tools/policy/)** — allowlist/denylist semantics, built-in tools, naming MCP tools, and how approval gates relate (the latter is `code`-only, and covers built-in tools only — MCP-backed tools are authorized by declaring their server, not per call. See [programmatic/](/programmatic/approval-and-structured-output/)).
-- **[Local-first web research](/tools/web-research/)** — SearXNG, ChatGPT-subscription Codex, and keyless discovery with static extraction, retry, browser isolation, and validation.
+- **[Local-first web research](/tools/web-research/)** — explicit Ollama or SearXNG, ChatGPT-subscription Codex, and keyless discovery with deterministic static extraction, retry, browser isolation, and validation.
 - **[MCP Servers](/tools/mcp/)** — authoring `mcp.json`, stdio/sse/http transports, and how the Pi runtime inlines servers into run options.
 - **[Reply files and MCP Apps](/tools/rich-replies/)** — opaque file publication, native Slack/Telegram delivery, browser sandboxing, limits, retention, and fallback policy.
 - **[Documentation MCP companion](/tools/documentation-mcp/)** — offline semantic and exact-identifier search for the composer and other MCP clients.

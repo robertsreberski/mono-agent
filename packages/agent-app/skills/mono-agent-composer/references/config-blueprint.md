@@ -159,12 +159,13 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "web": {
       "search": {
-        "backend": "auto",                 // auto | searxng | codex | keyless
+        "backend": "auto",                 // auto | searxng | ollama | codex | keyless
         "codex": { "model": "gpt-5.6-luna" },
-        "endpoint": "http://127.0.0.1:8088" // optional unauthenticated loopback HTTP SearXNG base URL
+        "searxng": { "endpoint": "http://127.0.0.1:8088" }, // optional unauthenticated loopback HTTP
+        "ollama": { "baseUrl": "http://127.0.0.1:11434" }   // used only when backend is ollama
       },
       "fetch": {
-        "render": "never",                 // never disables browser capability; auto is static-first
+        "render": "never",                 // never disables browser capability; auto is static-first; always permits browser-first calls
         "browserCommand": "agent-browser"  // direct executable name/path
       }
     }

@@ -1216,7 +1216,7 @@ describe("agent host composition helpers", () => {
           ...baseConfig.tools,
           web: {
             coordination: "host",
-            search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+            search: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false } },
             fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
           },
         },
@@ -1232,8 +1232,8 @@ describe("agent host composition helpers", () => {
 
     expect(fake.calls[0]?.options.webRequestCoordinator?.scope).toMatch(/^host:/u);
     expect(fake.calls[0]?.options.webSearchConfig).toEqual({
-      backend: "searxng",
-      endpoint: "http://127.0.0.1:8088",
+      backend: "ollama",
+      ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false },
     });
     expect(fake.calls[0]?.options.webFetchConfig).toEqual({
       render: "auto",
@@ -1261,7 +1261,7 @@ describe("agent host composition helpers", () => {
           allowedTools: [...(baseConfig.tools.allowedTools ?? []), "Agent"],
           web: {
             coordination: "host",
-            search: { backend: "searxng", endpoint: "http://127.0.0.1:8088" },
+            search: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false } },
             fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
           },
         },
@@ -1296,8 +1296,8 @@ describe("agent host composition helpers", () => {
     expect(childCall?.options.webRequestCoordinator?.scope).toBe(fake.calls[0]?.options.webRequestCoordinator?.scope);
     expect(childCall?.options.webRequestCoordinator?.acquire).toBeTypeOf("function");
     expect(childCall?.options.webSearchConfig).toEqual({
-      backend: "searxng",
-      endpoint: "http://127.0.0.1:8088",
+      backend: "ollama",
+      ollama: { baseUrl: "http://127.0.0.1:11434", trustPublicUrl: false },
     });
     expect(childCall?.options.webFetchConfig).toEqual({
       render: "auto",

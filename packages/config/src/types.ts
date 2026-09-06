@@ -14,8 +14,24 @@ import type {
 
 export type MemoryWriteMode = (typeof MEMORY_WRITE_MODES)[number];
 export type MemoryMode = (typeof MEMORY_MODES)[number];
-export type WebSearchBackend = "auto" | "searxng" | "codex" | "keyless";
+export type WebSearchBackend = "auto" | "searxng" | "ollama" | "codex" | "keyless";
 export type WebFetchRenderMode = "never" | "auto";
+
+export interface SearxngWebSearchConfig {
+  /** SearXNG must be unauthenticated loopback HTTP. */
+  readonly endpoint: string;
+}
+
+export interface OllamaWebSearchConfig {
+  /** Ollama service origin. Defaults to http://127.0.0.1:11434. */
+  readonly baseUrl: string;
+  /** Resolved API key for the exact https://ollama.com origin only. */
+  readonly apiKey?: string;
+  /** Name of the environment variable holding the API key. */
+  readonly apiKeyEnv?: string;
+  /** Required acknowledgement for non-private custom HTTPS origins. */
+  readonly trustPublicUrl: boolean;
+}
 /**
  * Which memory engine backs the store. `"bujo"` (default) is the homegrown
  * SQLite/embeddings engine selected by {@link MemoryMode}. External backends
@@ -400,8 +416,10 @@ export interface MonoAgentConfig {
       readonly coordination?: "process" | "host";
       readonly search: {
         readonly backend: WebSearchBackend;
-        /** SearXNG must be unauthenticated loopback HTTP. */
+        /** @deprecated Use searxng.endpoint. Accepted for programmatic embedders. */
         readonly endpoint?: string;
+        readonly searxng?: SearxngWebSearchConfig;
+        readonly ollama?: OllamaWebSearchConfig;
         /** ChatGPT-subscription Codex app-server search settings. */
         readonly codex?: {
           /** Defaults to the low-cost, low-latency GPT-5.6 Luna route. */
@@ -495,6 +513,18 @@ export type RedactedMemorySupermemoryConfig = Omit<MemorySupermemoryConfig, "api
   readonly apiKey?: RedactedSecretValue;
 };
 
+export type RedactedOllamaWebSearchConfig = Omit<OllamaWebSearchConfig, "apiKey"> & {
+  readonly apiKey?: RedactedSecretValue;
+};
+
+export type RedactedToolsConfig = Omit<MonoAgentConfig["tools"], "web"> & {
+  readonly web?: Omit<NonNullable<MonoAgentConfig["tools"]["web"]>, "search"> & {
+    readonly search: Omit<NonNullable<MonoAgentConfig["tools"]["web"]>["search"], "ollama"> & {
+      readonly ollama?: RedactedOllamaWebSearchConfig;
+    };
+  };
+};
+
 export type RedactedMemoryConfig = Omit<
   NonNullable<MonoAgentConfig["memory"]>,
   "embeddings" | "supermemory"
@@ -520,7 +550,7 @@ export interface RedactedMonoAgentConfig {
   readonly concurrency?: MonoAgentConfig["concurrency"];
   readonly context: MonoAgentConfig["context"];
   readonly memory?: RedactedMemoryConfig;
-  readonly tools: MonoAgentConfig["tools"];
+  readonly tools: RedactedToolsConfig;
   readonly sandbox?: MonoAgentConfig["sandbox"];
   readonly artifacts: MonoAgentConfig["artifacts"];
   readonly traceability: MonoAgentConfig["traceability"];

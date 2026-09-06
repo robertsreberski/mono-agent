@@ -92,9 +92,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 - Resolve local-first WebSearch/WebFetch settings into every runtime run and
-  report a separate bounded readiness section for loopback SearXNG plus the
-  optional `agent-browser` renderer; the app never owns either companion's
-  lifecycle. Opt-in `tools.web.coordination: "host"` injects the same private
+  report a separate bounded readiness section for explicit Ollama or loopback
+  SearXNG plus the optional `agent-browser` renderer; the app never owns any
+  companion's lifecycle. Opt-in `tools.web.coordination: "host"` injects the same private
   admission and cooldown store into parent and subagent runs;
   `mono-agent web-control status|reset` inspects or clears idle operational state.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
@@ -307,10 +307,11 @@ names its full closure id plus sanitized install metadata; other executions repo
 `dev (unmanaged)`. With `--consumer`, this remains the validator CLI's provenance,
 not an attestation of a separately running daemon.
 
-Its **Web search & fetch** section reports the resolved SearXNG backend and
+Its **Web search & fetch** section reports the resolved search backend and
 static/browser extraction mode. With liveness enabled it performs one bounded
-JSON query against a configured loopback SearXNG endpoint and checks that an
-enabled browser renderer reports `agent-browser` 0.33.1 or newer. Start
+JSON query against the selected SearXNG or Ollama endpoint and checks that an
+enabled browser renderer reports `agent-browser` 0.33.1 or newer. Hosted Ollama
+authentication is sent only to the exact official origin. Start
 preflight (`liveness: false`) skips both probes without changing structural
 validation.
 

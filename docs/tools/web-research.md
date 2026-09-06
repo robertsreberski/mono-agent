@@ -1,6 +1,6 @@
 ---
 title: "Local-first web research"
-description: "Configure WebSearch with local SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks, plus static or browser-backed WebFetch."
+description: "Configure WebSearch with explicit Ollama or SearXNG, ChatGPT-subscription Codex search, and keyless fallbacks, plus deterministic static or browser-backed WebFetch."
 sidebar:
   order: 5
 ---
@@ -29,7 +29,7 @@ agents running under the same OS user, opt into host coordination:
       "coordination": "host",
       "search": {
         "backend": "auto",
-        "endpoint": "http://127.0.0.1:8088",
+        "searxng": { "endpoint": "http://127.0.0.1:8088" },
         "codex": { "model": "gpt-5.6-luna" }
       },
       "fetch": {
@@ -41,7 +41,8 @@ agents running under the same OS user, opt into host coordination:
 }
 ```
 
-`tools.web.search.endpoint` is optional in `auto` mode. When present, it must be
+`tools.web.search.searxng.endpoint` is optional in `auto` mode. The legacy
+`tools.web.search.endpoint` spelling remains a migration alias. When present, it must be
 an unauthenticated loopback `http://` URL; remote endpoints, URL credentials,
 queries, and fragments are rejected during config loading. The companion
 service is deliberately operator-owned—mono-agent probes it but never starts,
@@ -57,7 +58,11 @@ Environment equivalents:
 | --- | --- | --- |
 | `tools.web.coordination` | `MONO_AGENT_WEB_COORDINATION` | `process` |
 | `tools.web.search.backend` | `MONO_AGENT_WEB_SEARCH_BACKEND` | `auto` |
-| `tools.web.search.endpoint` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset |
+| `tools.web.search.searxng.endpoint` | `MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` | unset |
+| legacy `tools.web.search.endpoint` | `MONO_AGENT_WEB_SEARCH_ENDPOINT` | unset |
+| `tools.web.search.ollama.baseUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` in strict Ollama mode |
+| `tools.web.search.ollama.apiKeyEnv` | `MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV` | unset |
+| `tools.web.search.ollama.trustPublicUrl` | `MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL` | `false` |
 | `tools.web.search.codex.model` | `MONO_AGENT_WEB_SEARCH_CODEX_MODEL` | `gpt-5.6-luna` |
 | `tools.web.fetch.render` | `MONO_AGENT_WEB_FETCH_RENDER` | `never` |
 | `tools.web.fetch.browserCommand` | `MONO_AGENT_WEB_BROWSER_COMMAND` | `agent-browser` |
@@ -70,8 +75,38 @@ Search backends have explicit behavior:
 | --- | --- |
 | `auto` | Try configured SearXNG first, then ChatGPT-subscription Codex search, then the keyless chain. A non-empty but irrelevant or out-of-domain result does not stop the chain. Without an endpoint, start with Codex. |
 | `searxng` | Require the configured local endpoint and fail when it fails. No silent fallback. |
+| `ollama` | Require the configured Ollama Web Search origin and fail when it fails. Ollama is explicit-only and never participates in `auto`. |
 | `codex` | Require a ChatGPT-authenticated `codex` CLI whose app-server exposes web search and the configured model. No SearXNG/keyless fallback. |
 | `keyless` | Skip SearXNG and try DuckDuckGo HTML, then Startpage. |
+
+### Ollama Web Search
+
+Local and signed-in self-hosted Ollama default to `http://127.0.0.1:11434`:
+
+```json
+{ "tools": { "web": { "search": { "backend": "ollama" } } } }
+```
+
+Hosted search is bound to the exact official origin and an explicitly named
+environment variable:
+
+```json
+{
+  "tools": { "web": { "search": {
+    "backend": "ollama",
+    "ollama": { "baseUrl": "https://ollama.com", "apiKeyEnv": "OLLAMA_API_KEY" }
+  } } }
+}
+```
+
+Mono-agent posts to `/api/experimental/web_search` locally and retries
+`/api/web_search` at the same origin only for `404` or `405`. Hosted search uses
+only `https://ollama.com/api/web_search` with bearer auth. The credential is
+never sent to local, private, or custom origins; `apiKeyEnv` is rejected for
+those origins. A custom public origin requires HTTPS and
+`trustPublicUrl: true`, remains unauthenticated, and never receives an Ollama
+hosted key. Redirects are rejected. Language and time range are advisory for
+Ollama, and strict Ollama never falls back to another provider.
 
 The tool accepts one `query`, up to three `alternate_queries`, a result `limit`
 from 1–10, `domains`, `exclude_domains`, `language`, and a `time_range` of
@@ -175,6 +210,7 @@ agent and subagent under the same OS user:
 | Backend scope | Concurrent requests | Minimum start spacing |
 | --- | --- | --- |
 | SearXNG endpoint | 1 | 2 seconds |
+| Ollama origin | 1 | 2 seconds |
 | DuckDuckGo / Startpage, separately | 1 each | 3 seconds |
 | Codex subscription | 1 | serialized |
 | Fetch origin (HTTP and renderer admission) | 2 | 500 ms |
@@ -238,11 +274,12 @@ Static extraction is local and content-aware:
 
 1. Follow at most five redirects, re-checking sandbox network policy at every
    hop.
-2. Bound the decoded response at 20 MiB.
-3. Parse HTML with Defuddle, then Readability as a fallback.
-4. Pretty-print JSON, extract RSS/Atom/XML entries, extract PDF text, or decode
+2. Bound transport at 20 MiB and structured parsing at 8 MiB.
+3. Decode by BOM, HTTP charset, HTML meta/XML declaration, then UTF-8, reporting replacement characters and rejecting unsupported declared charsets.
+4. Parse HTML with Defuddle, then Readability plus Turndown, then a cleaned-body Turndown fallback. Relative links become safe absolute HTTP(S) links.
+5. Strictly parse declared JSON/XML, extract RSS/Atom entries and PDF text, or decode
    ordinary text.
-5. Apply the normal tool-output cap and wrap the result in explicit untrusted
+6. Apply the normal tool-output cap and wrap the result in explicit untrusted
    content boundaries.
 
 Request headers are limited to `Accept`, `Accept-Language`, `Range`, and
@@ -283,20 +320,26 @@ agent config is the authority:
   model input requests `always`.
 - Config `auto` lets individual calls request or automatically trigger browser
   rendering.
-- Call `always` is strict: a rendering failure is a tool error.
-- Call `auto` falls back only when the static extraction is readable. An unusable
-  loading shell is an error; cancellation is never returned as static success.
+- Call `always` is browser-first and strict: Node static fetch is not attempted, and a rendering failure is a tool error.
+- Call `auto` escalates only after a successful HTML response is classified as
+  a sparse application shell. If rendering then fails, the loading shell is not
+  returned as success; cancellation is never returned as static success.
 
 Automatic rendering is attempted only for successful HTML whose extracted text
 is sparse and whose markup looks like a client-rendered application. JSON,
 PDFs, feeds, plain text, and HTTP errors never launch a browser.
 
-Each render uses a random `agent-browser` namespace and session, an empty locked
+Each render uses one 20-second budget, a random `agent-browser` namespace and session, an empty locked
 config file, origin-scoped `--allowed-domains`, untrusted-content boundaries,
-and no profile, restore state, auto-connect, or state autosave. It opens the
-final URL, waits for `DOMContentLoaded`, reads agent-oriented page content, then
+and no profile, restore state, remote CDP attachment, auto-connect, or state autosave. It opens the
+requested URL, waits for `DOMContentLoaded`, validates the browser's final URL against the sandbox and domain policy, reads agent-oriented page content, then
 closes the browser and removes its temporary config. The executable is invoked
 directly—`browserCommand` is not evaluated by a shell.
+
+Clear authentication pages and CAPTCHA/access challenges return
+`authentication_required` or `access_challenge`. The renderer does not click,
+type, solve challenges, reuse a profile, defeat Cloudflare, or bypass robots,
+access controls, authentication, or site policy.
 
 ## Sandbox and validation
 
@@ -304,7 +347,7 @@ Tool policy controls whether `WebSearch` / `WebFetch` exist. The native sandbox
 separately controls which network destinations they may contact:
 
 - `network.mode: "none"` blocks every web request.
-- `localhost` admits the local SearXNG companion but blocks public keyless
+- `localhost` admits local SearXNG or Ollama but blocks public keyless
   search and public fetches.
 - an allowlist must include the local endpoint, `chatgpt.com` for Codex search,
   plus every public destination
@@ -312,7 +355,7 @@ separately controls which network destinations they may contact:
 - `all` permits public egress while retaining filesystem enforcement.
 
 `mono-agent validate` adds a **Web search & fetch** section. With liveness
-enabled it sends a bounded JSON query to a configured SearXNG endpoint. Strict
+enabled it sends a bounded JSON query to the selected SearXNG or Ollama endpoint. Strict
 `codex` mode also verifies ChatGPT login, web-search capability, and model
 availability; `auto` checks that fallback lazily only if a search reaches it.
 When rendering is enabled, validation checks that `browserCommand --version`
@@ -328,10 +371,13 @@ backend and stable category. Timing events retain only bounded operational
 fields such as status, error code, backend, attempt count, byte count,
 HTTP/exit status, timeout, rendered, cache-hit, truncation flags, queue wait,
 backend time, cooldown skips and quota skips; request
-headers and command arguments stay out of them.
+headers and command arguments stay out of them. WebFetch additionally reports
+bounded content-kind, charset, extraction-stage, parser-failure, rendering-reason,
+and browser-recommendation metadata without source URLs or page content.
 
 The tools are public-web readers, not an authenticated browsing surface. Codex
 uses an existing ChatGPT subscription only as the search transport; neither
 search results nor model-visible output receives account data. The tools do not
 expose browser profiles, cookies, login state, file downloads, arbitrary
-headers, or remote SearXNG credentials.
+headers, or remote SearXNG credentials. Browser rendering is a retrieval mode,
+not an anti-bot or authenticated browsing feature.

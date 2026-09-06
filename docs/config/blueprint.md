@@ -205,9 +205,13 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     "mcpCallMaxTotalTimeoutMs": 2700000,   // hard per-call wall clock (45 min); no-expiry AskUser is exempt
     "web": {
       "search": {
-        "backend": "auto",                 // auto | searxng | codex | keyless
+        "backend": "auto",                 // auto | searxng | ollama | codex | keyless
         "codex": { "model": "gpt-5.6-luna" },
-        "endpoint": "http://127.0.0.1:8088" // optional loopback HTTP SearXNG base URL
+        "searxng": { "endpoint": "http://127.0.0.1:8088" },
+        "ollama": {                         // used only when backend is ollama
+          "baseUrl": "http://127.0.0.1:11434",
+          "trustPublicUrl": false
+        }
       },
       "fetch": {
         "render": "never",                 // never (capability disabled) | auto

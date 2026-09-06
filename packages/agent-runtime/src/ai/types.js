@@ -220,7 +220,7 @@
  * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
  * @property {any} [webRequestCoordinator] Host-owned shared web admission and quota state.
- * @property {{backend?: "auto"|"searxng"|"codex"|"keyless", endpoint?: string, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
+ * @property {{backend?: "auto"|"searxng"|"ollama"|"codex"|"keyless", endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
  * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
