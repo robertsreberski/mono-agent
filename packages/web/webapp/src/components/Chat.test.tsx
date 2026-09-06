@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, thread } from "../test/fixtures";
+import { WebRuntimeProvider } from "../runtime";
+import type { ThreadDetail, ThreadSummary, WebMessage } from "../types";
 
 const MODEL = "pi:openai-codex:gpt-5.5";
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
@@ -10,26 +13,121 @@ vi.mock("../console-store", async (importOriginal) => {
   return {
     ...actual,
     useConsoleStore: () => storeMock.current,
+    useUploadLimits: () => ({
+      maxFileBytes: 20,
+      maxFilesPerTurn: 10,
+      maxTurnBytes: 100,
+      accept: ["image/png"],
+    }),
   };
 });
 
-import { CONNECTION_NOTICE_DELAY_MS, ConnectionBanner, ModelControls } from "./Chat";
+vi.mock("../notifications", () => ({
+  NotificationBell: () => null,
+}));
+vi.mock("./CronChannelHeader", () => ({
+  CronChannelHeader: () => null,
+}));
+vi.mock("./assistant-ui/Quote", () => ({
+  SelectionToolbar: () => null,
+}));
+vi.mock("./Composer", () => ({
+  Composer: () => null,
+}));
+vi.mock("./Messages", () => ({
+  AskReconciliationProvider: ({ children }: { readonly children: ReactNode }) => <>{children}</>,
+  AssistantMessage: () => <div data-testid="thread-message" />,
+  SystemMessage: () => <div data-testid="thread-message" />,
+  UserMessage: () => <div data-testid="thread-message" />,
+}));
 
+import { CONNECTION_NOTICE_DELAY_MS, Chat, ConnectionBanner, ModelControls } from "./Chat";
+
+const resizeObserverCallbacks = new Set<ResizeObserverCallback>();
 class ResizeObserverStub implements ResizeObserver {
+  private readonly callback: ResizeObserverCallback;
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    resizeObserverCallbacks.add(callback);
+  }
+
   observe() {}
   unobserve() {}
-  disconnect() {}
+  disconnect() {
+    resizeObserverCallbacks.delete(this.callback);
+  }
 }
+
+const notifyResizeObservers = () => {
+  for (const callback of resizeObserverCallbacks) callback([], {} as ResizeObserver);
+};
+
+const scrollDescriptors = {
+  scrollTop: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTop"),
+  scrollHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight"),
+  clientHeight: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight"),
+  scrollTo: Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo"),
+};
+const scrollTopByElement = new WeakMap<HTMLElement, number>();
+let messageRowHeight = 100;
+
+const isThreadViewport = (element: HTMLElement) => element.classList.contains("thread-viewport");
+const maxScrollTop = (element: HTMLElement) => Math.max(0, element.scrollHeight - element.clientHeight);
 
 beforeAll(() => {
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
   vi.stubGlobal("PointerEvent", MouseEvent);
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+    window.setTimeout(() => callback(performance.now()), 0),
+  );
+  vi.stubGlobal("cancelAnimationFrame", (id: number) => window.clearTimeout(id));
   Element.prototype.scrollIntoView = vi.fn();
+
+  Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+    configurable: true,
+    get() {
+      return scrollTopByElement.get(this) ?? 0;
+    },
+    set(value: number) {
+      scrollTopByElement.set(this, value);
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true,
+    get() {
+      return isThreadViewport(this) ? 100 : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get() {
+      return isThreadViewport(this)
+        ? this.querySelectorAll("[data-testid='thread-message']").length * messageRowHeight
+        : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+    configurable: true,
+    value({ top = 0 }: ScrollToOptions) {
+      this.scrollTop = Math.min(Number(top), maxScrollTop(this));
+      this.dispatchEvent(new Event("scroll"));
+    },
+  });
 });
 
 afterAll(() => {
   vi.unstubAllGlobals();
   Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+  for (const [key, descriptor] of Object.entries(scrollDescriptors)) {
+    if (descriptor) Object.defineProperty(HTMLElement.prototype, key, descriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, key);
+  }
+});
+
+beforeEach(() => {
+  messageRowHeight = 100;
+  resizeObserverCallbacks.clear();
 });
 
 describe("ConnectionBanner", () => {
@@ -49,6 +147,119 @@ describe("ConnectionBanner", () => {
     rerender(<ConnectionBanner connection="offline" />);
     expect(screen.getByText(/You’re offline/u)).toBeVisible();
     vi.useRealTimers();
+  });
+});
+
+const chatMessage = (id: string, threadId: string): WebMessage => ({
+  id,
+  threadId,
+  role: "assistant",
+  parts: [{ type: "text", text: id }],
+  attachments: [],
+  createdAt: "2026-07-17T10:00:00.000Z",
+  updatedAt: "2026-07-17T10:00:00.000Z",
+  finishedAt: "2026-07-17T10:00:00.000Z",
+  status: "complete",
+});
+
+const chatDetail = (selectedThread: ThreadSummary, count: number): ThreadDetail => ({
+  thread: selectedThread,
+  messages: Array.from(
+    { length: count },
+    (_, index) => chatMessage(`${selectedThread.id}-message-${index}`, selectedThread.id),
+  ),
+});
+
+const chatStore = (
+  selectedThread: ThreadSummary,
+  detail: ThreadDetail | null,
+  detailLoading = false,
+) => {
+  const selectedAgent = agent("agent", { supportsAttachments: false });
+  return {
+    bootstrap: null,
+    agents: [selectedAgent],
+    threads: [selectedThread],
+    visibleThreads: [selectedThread],
+    selectedAgent,
+    selectedThread,
+    detail,
+    selectedAgentId: selectedAgent.sourceId,
+    selectedThreadId: selectedThread.id,
+    loading: false,
+    detailLoading,
+    connection: "live" as const,
+    model: "",
+    effort: "",
+    createThread: vi.fn(),
+    selectThread: vi.fn(),
+    renameThread: vi.fn(),
+    archiveThread: vi.fn().mockResolvedValue(undefined),
+    unarchiveThread: vi.fn().mockResolvedValue(undefined),
+    deleteThread: vi.fn().mockResolvedValue(undefined),
+    hasOlderMessages: false,
+    loadOlderMessages: vi.fn().mockResolvedValue(undefined),
+    sendTurn: vi.fn().mockResolvedValue(undefined),
+    sendLiveInput: vi.fn().mockResolvedValue(undefined),
+    cancelTurn: vi.fn(),
+    loadFullToolCall: vi.fn().mockResolvedValue(false),
+  };
+};
+
+const chatTree = () => (
+  <WebRuntimeProvider>
+    <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />
+  </WebRuntimeProvider>
+);
+
+describe("Chat conversation viewport", () => {
+  it("recreates the viewport for an async conversation switch without interrupting a current conversation", async () => {
+    const firstThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
+    const secondThread = thread("thread-b", "agent", { trigger: { kind: "cron" } });
+    storeMock.current = chatStore(firstThread, chatDetail(firstThread, 4));
+
+    const { container, rerender } = render(chatTree());
+    const firstViewport = container.querySelector<HTMLElement>(".thread-viewport");
+    expect(firstViewport).not.toBeNull();
+    await waitFor(() => expect(firstViewport!.scrollTop).toBe(maxScrollTop(firstViewport!)));
+
+    firstViewport!.scrollTop = 120;
+    fireEvent.scroll(firstViewport!);
+
+    storeMock.current = chatStore(secondThread, null, true);
+    rerender(chatTree());
+
+    const secondViewport = container.querySelector<HTMLElement>(".thread-viewport");
+    expect(secondViewport).not.toBeNull();
+    expect(secondViewport).not.toBe(firstViewport);
+    expect(secondViewport!.scrollTop).toBe(0);
+
+    storeMock.current = chatStore(secondThread, chatDetail(secondThread, 4));
+    rerender(chatTree());
+    await waitFor(() => expect(secondViewport!.scrollTop).toBe(maxScrollTop(secondViewport!)));
+
+    messageRowHeight = 180;
+    await act(async () => {
+      notifyResizeObservers();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(secondViewport!.scrollTop).toBe(maxScrollTop(secondViewport!)));
+
+    fireEvent.pointerDown(secondViewport!);
+    secondViewport!.scrollTop = 0;
+    fireEvent.scroll(secondViewport!);
+    const scrollTo = vi.spyOn(HTMLElement.prototype, "scrollTo");
+
+    storeMock.current = chatStore(secondThread, chatDetail(secondThread, 5));
+    rerender(chatTree());
+    await act(async () => {
+      notifyResizeObservers();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container.querySelector<HTMLElement>(".thread-viewport")).toBe(secondViewport);
+    expect(scrollTo).not.toHaveBeenCalled();
+    scrollTo.mockRestore();
   });
 });
 
