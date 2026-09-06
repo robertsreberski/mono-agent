@@ -110,7 +110,7 @@ export interface ProcessJobProjectionOutput {
   readonly stdoutBytes: number;
   readonly stderrBytes: number;
   readonly truncated: boolean;
-  /** Bounded, redacted, untrusted preview suitable for an operator UI. */
+  /** Bounded, redacted, untrusted output tail; it may evolve before settlement and is safe for operator UI. */
   readonly preview: string;
   /** Agent-root-relative artifact references; never arbitrary filesystem paths. */
   readonly stdoutRef: string | null;

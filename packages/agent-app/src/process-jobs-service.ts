@@ -21,6 +21,7 @@ import type {
 
 import type { NotifyDeliveryResult } from "./channels.js";
 import { PROCESS_JOBS_CAPS, type ProcessJobsSettings } from "./process-jobs-config.js";
+import { ProcessJobOutputTail } from "./process-job-output-tail.js";
 import { acquireOwnerPrivateLock, type OwnerPrivateLock } from "./owner-private-lock.js";
 import {
   attestProcessJobsRootRegistration,
@@ -81,6 +82,7 @@ interface PendingProcessJob {
 
 interface ActiveProcessJob extends PendingProcessJob {
   readonly handle: ProcessJobProcessHandle;
+  readonly outputTail: ProcessJobOutputTail;
   groupExitConfirmed?: boolean;
 }
 
@@ -333,19 +335,39 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       records = this.snapshotRecords();
     }
     return boundedNewestRecords(records)
-      .map((record) => structuredClone(this.completionOverlays.get(record.jobId) ?? projectProcessJob(record)));
+      .map((record) => structuredClone(this.projectWithOutput(record)));
   }
 
   async get(jobId: string): Promise<ProcessJobProjection | undefined> {
     try {
       const record = await this.storeGet(jobId, "get");
       if (record === undefined) return undefined;
-      return structuredClone(this.completionOverlays.get(jobId) ?? projectProcessJob(record));
+      return structuredClone(this.projectWithOutput(record));
     } catch {
       const record = this.recordSnapshot.get(jobId);
       if (record === undefined) return undefined;
-      return structuredClone(this.completionOverlays.get(jobId) ?? projectProcessJob(record));
+      return structuredClone(this.projectWithOutput(record));
     }
+  }
+
+  /** Overlay only memory-safe live output; durable lifecycle and refs stay authoritative. */
+  private projectWithOutput(record: DurableProcessJobRecord): ProcessJobProjection {
+    const completion = this.completionOverlays.get(record.jobId);
+    if (completion !== undefined) return completion;
+    const projection = projectProcessJob(record);
+    if (isTerminalProcessJobState(record.state)) return projection;
+    const snapshot = this.active.get(record.jobId)?.outputTail.snapshot();
+    if (snapshot === undefined) return projection;
+    return {
+      ...projection,
+      output: {
+        ...projection.output,
+        stdoutBytes: Math.max(projection.output.stdoutBytes, snapshot.stdoutBytes),
+        stderrBytes: Math.max(projection.output.stderrBytes, snapshot.stderrBytes),
+        truncated: projection.output.truncated || snapshot.truncated,
+        preview: snapshot.preview,
+      },
+    };
   }
 
   async applyRetention(): Promise<void> {
@@ -388,7 +410,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       } else {
         this.active.get(jobId)?.handle.cancel();
       }
-      return projectProcessJob(record);
+      return structuredClone(this.projectWithOutput(record));
     });
   }
 
@@ -701,14 +723,25 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       record.state = "starting";
     });
 
+    const outputTail = new ProcessJobOutputTail({
+      previewChars: current.previewChars,
+      maxOutputBytes: current.maxOutputBytes,
+      secrets: pending.redactionSecrets,
+      onFailure: () => this.options.logger?.warn?.("Process-job live output tail was discarded after an internal failure.", {
+        jobId,
+      }),
+    });
     let handle: ProcessJobProcessHandle | undefined;
     try {
       handle = pending.request.launch({
         timeoutMs: current.maxRuntimeMs,
         maxBufferBytes: current.maxOutputBytes,
+        onStdout: (chunk: Buffer) => outputTail.writeStdout(chunk),
+        onStderr: (chunk: Buffer) => outputTail.writeStderr(chunk),
       });
       assertOwnedProcessHandle(handle);
     } catch (error) {
+      outputTail.discard();
       await cancelMalformedHandle(handle);
       let cleanupIncomplete = false;
       try { await pending.cleanup(); } catch { cleanupIncomplete = true; }
@@ -741,7 +774,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       (result) => result,
       (error) => rejectedProcessResult(error),
     );
-    const active: ActiveProcessJob = { ...pending, handle };
+    const active: ActiveProcessJob = { ...pending, handle, outputTail };
     this.active.set(jobId, active);
     try {
       const processIncarnation = await this.readIncarnation(handle.pid);
@@ -781,6 +814,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (termination?.groupExitConfirmed !== undefined) {
         active.groupExitConfirmed = termination.groupExitConfirmed;
       }
+      active.outputTail.discard();
       const terminationConfirmed = termination?.groupExitConfirmed !== false;
       let cleanupIncomplete = !terminationConfirmed;
       if (cleanupIncomplete) {
@@ -842,6 +876,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       const active = this.active.get(jobId);
       if (active === undefined) return;
       try {
+      const finalTail = active.outputTail.finalize();
       let cleanupError: unknown;
       if (result.groupExitConfirmed === false) {
         cleanupError = new Error(
@@ -885,13 +920,16 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (artifactWrites[0]?.status !== "fulfilled") record.stdoutRef = null;
           if (artifactWrites[1]?.status !== "fulfilled") record.stderrRef = null;
           record.truncated = result.truncated || result.bufferExceeded
+            || finalTail?.truncated === true
             || stdout.truncated
             || stderr.truncated
             || artifactError !== undefined;
           // Even when an artifact cannot be published, keep the bounded,
           // redacted preview in the durable terminal record instead of silently
           // dropping the process result.
-          record.preview = outputPreview(stdout.text, stderr.text, record.previewChars);
+          record.preview = finalTail?.preview.length
+            ? finalTail.preview
+            : outputPreview(stdout.text, stderr.text, record.previewChars);
           if (alreadyTerminal) {
             if (cleanupError !== undefined) {
               appendOperationalFailure(
@@ -971,10 +1009,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (artifactWrites[0]?.status !== "fulfilled") completionRecord.stdoutRef = null;
           if (artifactWrites[1]?.status !== "fulfilled") completionRecord.stderrRef = null;
           completionRecord.truncated = result.truncated || result.bufferExceeded
+            || finalTail?.truncated === true
             || stdout.truncated
             || stderr.truncated
             || artifactError !== undefined;
-          completionRecord.preview = outputPreview(stdout.text, stderr.text, completionRecord.previewChars);
+          completionRecord.preview = finalTail?.preview.length
+            ? finalTail.preview
+            : outputPreview(stdout.text, stderr.text, completionRecord.previewChars);
           transitionTerminal(
             completionRecord,
             "failed",
@@ -1402,6 +1443,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
                 failures.push(error);
               }
             }
+            active.outputTail.discard();
             this.active.delete(jobId);
             this.pending.delete(jobId);
           }
@@ -2057,13 +2099,54 @@ function decodeUtf8Prefix(value: Buffer, maxBytes: number): string {
 }
 
 function outputPreview(stdout: string, stderr: string, maxChars: number): string {
-  const combined = stdout.length > 0 && stderr.length > 0
-    ? `STDOUT:\n${stdout}\nSTDERR:\n${stderr}`
-    : stdout || stderr || "(no output)";
+  const entries = [
+    ...previewLines(stdout).map((line) => ({ stream: "STDOUT:" as const, line })),
+    ...previewLines(stderr).map((line) => ({ stream: "STDERR:" as const, line })),
+  ];
+  if (entries.length === 0) return "(no output)".slice(0, maxChars);
+  let omitted = entries.length > 100;
+  let tail = entries.slice(-100);
+  let combined = formatOutputPreview(tail, omitted);
+  while (combined.length > maxChars && tail.length > 1) {
+    tail = tail.slice(1);
+    omitted = true;
+    combined = formatOutputPreview(tail, omitted);
+  }
   if (combined.length <= maxChars) return combined;
-  const marker = "\n… [preview truncated; see retained artifact refs]";
-  if (maxChars <= marker.length) return combined.slice(0, maxChars);
-  return `${combined.slice(0, Math.max(0, maxChars - marker.length))}${marker}`;
+  const last = tail.at(-1)!;
+  const prefix = `${omitted ? "… [earlier output omitted]\n" : ""}${last.stream}\n`;
+  if (prefix.length >= maxChars) return prefix.slice(0, maxChars);
+  return `${prefix}${safeCharacterTail(last.line, maxChars - prefix.length)}`;
+}
+
+function previewLines(output: string): readonly string[] {
+  if (output.length === 0) return [];
+  const lines = output.split(/\r?\n/u);
+  if (lines.at(-1) === "") lines.pop();
+  return lines;
+}
+
+function formatOutputPreview(
+  entries: readonly { readonly stream: "STDOUT:" | "STDERR:"; readonly line: string }[],
+  omitted: boolean,
+): string {
+  const parts = omitted ? ["… [earlier output omitted]"] : [];
+  let stream: "STDOUT:" | "STDERR:" | undefined;
+  for (const entry of entries) {
+    if (stream !== entry.stream) {
+      stream = entry.stream;
+      parts.push(stream);
+    }
+    parts.push(entry.line);
+  }
+  return parts.join("\n");
+}
+
+function safeCharacterTail(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  let result = value.slice(-Math.max(0, maxChars));
+  if (/^[\uDC00-\uDFFF]/u.test(result)) result = result.slice(1);
+  return result;
 }
 
 function effectiveEnvironmentKeys(overrides: Readonly<Record<string, string | undefined>> | undefined): readonly string[] {

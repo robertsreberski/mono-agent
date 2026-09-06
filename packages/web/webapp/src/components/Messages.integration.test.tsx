@@ -967,7 +967,7 @@ describe("message actions", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("File expired.");
   });
 
-  it("polls only one job with backoff and stops after the terminal projection", async () => {
+  it("polls one running job every second and stops after the terminal projection", async () => {
     vi.useFakeTimers();
     const complete = processJob();
     const running = processJob({
@@ -996,7 +996,7 @@ describe("message actions", () => {
     });
     expect(threadJob).toHaveBeenCalledTimes(2);
     await act(async () => {
-      vi.advanceTimersByTime(1_999);
+      vi.advanceTimersByTime(999);
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(2);

@@ -62,6 +62,83 @@ afterEach(async () => {
 });
 
 describe("process job service", () => {
+  it("publishes throttled live output from synchronous launch callbacks without durable chunk writes", async () => {
+    const fixture = await createFixture({ previewChars: 2_000 });
+    const completion = deferred<ProcessJobProcessResult>();
+    const handle = handleOf(completion);
+    const surfaceUpdate = vi.fn(async () => undefined);
+    let launchOptions: Parameters<ProcessJobStartRequest["launch"]>[0];
+    const base = requestOf(handle, undefined, { SECRET_TOKEN: "streamed-secret-value" });
+    const service = await startService(fixture, { surfaceUpdate });
+    const started = await service.controller(ORIGIN, 0).start({
+      ...base,
+      launch(options) {
+        launchOptions = options;
+        options?.onStdout?.(Buffer.from("synchronous line.\n"));
+        return handle;
+      },
+    });
+    const failSafe = setTimeout(() => completion.resolve(processResult()), 3_000);
+    const recordPath = join(fixture.settings.stateDir, "records-v1", `${started.jobId}.json`);
+    const stdoutPath = join(fixture.settings.stateDir, "artifacts", started.jobId, "stdout.log");
+    const durableBefore = await readFile(recordPath, "utf8");
+    expect(JSON.parse(durableBefore)).toMatchObject({ preview: "", stdoutBytes: 0, stderrBytes: 0 });
+    expect(await readFile(stdoutPath, "utf8")).toBe("");
+    await new Promise((resolve) => setTimeout(resolve, 275));
+    const firstPreview = (await service.get(started.jobId))?.output.preview ?? "";
+    expect(firstPreview).toMatch(/^STDOUT:\n(?:synchronous line\.|\[REDACTED\])$/u);
+    expect(firstPreview).not.toContain("streamed-secret-value");
+
+    launchOptions?.onStderr?.(Buffer.from("token=streamed-secret-value\n"));
+    launchOptions?.onStdout?.(Buffer.from("second line.\n"));
+    expect((await service.get(started.jobId))?.output.preview).toBe(firstPreview);
+    await new Promise((resolve) => setTimeout(resolve, 275));
+
+    const live = await service.get(started.jobId);
+    expect(live).toMatchObject({
+      state: "running",
+      output: { stdoutBytes: 31, stderrBytes: 28, truncated: false },
+    });
+    expect(live?.output.preview).toMatch(
+      /^STDOUT:\n(?:synchronous line\.|\[REDACTED\])\nSTDERR:\ntoken=\[REDACTED\]\nSTDOUT:\n(?:second line\.|\[REDACTED\])$/u,
+    );
+    expect((await service.list()).find((job) => job.jobId === started.jobId)?.output.preview)
+      .toBe(live?.output.preview);
+    expect(JSON.stringify(live)).not.toContain("streamed-secret-value");
+    expect(await readFile(recordPath, "utf8")).toBe(durableBefore);
+    expect(await readFile(stdoutPath, "utf8")).toBe("");
+    expect(surfaceUpdate).toHaveBeenCalledOnce();
+
+    const cancelled = await service.cancel(started.jobId);
+    expect(cancelled.cancelRequested).toBe(true);
+    expect(cancelled.output.preview).toBe(live?.output.preview);
+    completion.resolve(processResult({
+      stdout: "synchronous line.\nsecond line.\n",
+      stderr: "token=streamed-secret-value\n",
+      aborted: true,
+      code: null,
+      signal: "SIGTERM",
+    }));
+    clearTimeout(failSafe);
+    await waitFor(async () => (await service.get(started.jobId))?.state === "cancelled");
+  });
+
+  it("falls back to the newest 100 redacted lines when a custom launcher omits callbacks", async () => {
+    const fixture = await createFixture({ previewChars: 8_000 });
+    const completion = deferred<ProcessJobProcessResult>();
+    const service = await startService(fixture);
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult({
+      stdout: `${Array.from({ length: 105 }, (_, index) => `line-${String(index + 1)}`).join("\n")}\n`,
+    }));
+    await waitFor(async () => (await service.get(started.jobId))?.state === "succeeded");
+    const preview = (await service.get(started.jobId))?.output.preview ?? "";
+    expect(preview).toContain("… [earlier output omitted]");
+    expect(preview).not.toContain("line-5\n");
+    expect(preview).toContain("line-6\n");
+    expect(preview).toContain("line-105");
+  });
+
   it("persists the job before returning, redacts output, cleans once, and wakes exactly once", async () => {
     const fixture = await createFixture();
     const completion = deferred<ProcessJobProcessResult>();

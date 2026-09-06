@@ -334,6 +334,17 @@ An `Agent` call is one foldable row inside Activity — profile name, the model'
 
 Every Activity row is one line at every width: the tool name and status hold their place and a long argument is truncated with an ellipsis, so a list of rows stays scannable rather than reflowing into a ragged block on a phone. Expanding a row reveals the full value. The nesting rails narrow below 560px and the settled Activity list scrolls with the page instead of inside its own box. Individual tool payloads stay height-capped and selectable so their output can still be copied on a phone, and they wrap within the panel rather than extending past it.
 
+A background `Exec` or `Bash` job is a standalone Activity row. While it runs,
+the browser polls its exact source- and thread-bound projection once per second
+in Full data mode and at the slower two-second Lean cadence, and shows a redacted
+tail of roughly the newest 100 stdout/stderr lines. Polling pauses while the tab
+is hidden and reads immediately when it returns. The row opens when the first
+output appears. Collapsing it is sticky through later output and settlement, and
+scrolling upward pauses bottom-follow until the tail is near the bottom again.
+Live chunks remain memory-only in the agent; the web service does not write each
+refresh to SQLite or broadcast it as a message delta. The same bounded final tail
+remains behind the row after settlement.
+
 Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
 
 ## Reply files and MCP Apps

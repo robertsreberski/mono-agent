@@ -68,6 +68,7 @@ export function ActivityRow({
   failed,
   duration,
   open,
+  onToggle,
   ariaLabel,
   children,
 }: {
@@ -80,13 +81,24 @@ export function ActivityRow({
   /** A string for a settled figure, or a node such as `ActivityElapsed` that keeps ticking. */
   readonly duration?: ReactNode;
   readonly open?: boolean;
+  /** Controlled disclosure callback; omitted rows retain native details behavior. */
+  readonly onToggle?: (open: boolean) => void;
   /** Accessible name for the disclosure; rows without one are named by their contents. */
   readonly ariaLabel?: string;
   readonly children: ReactNode;
 }) {
   return (
-    <details className={`activity-row is-${variant} is-${status}`} open={open} aria-label={ariaLabel}>
-      <summary>
+    <details
+      className={`activity-row is-${variant} is-${status}`}
+      open={open}
+      aria-label={ariaLabel}
+    >
+      <summary
+        onClick={onToggle === undefined ? undefined : (event) => {
+          event.preventDefault();
+          onToggle(!open);
+        }}
+      >
         <span className="activity-row-glyph">
           {(variant === "tool" || variant === "job") && <i className="activity-dot" />}
           {variant === "thinking" && <Icon name="bulb" size={14} />}

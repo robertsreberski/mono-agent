@@ -1,5 +1,5 @@
 import type { DataMessagePartProps } from "@assistant-ui/react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { api } from "../api";
 import { currentDataMode } from "../data-mode";
@@ -54,27 +54,37 @@ export const processJobAdvances = (from: ProcessJobState, to: ProcessJobState): 
   PROCESS_JOB_STATE_RANK[to] > PROCESS_JOB_STATE_RANK[from];
 
 /**
- * Whether a projection fetched by the poll should replace the one the row has.
- * Rank decides across states. Within one nonterminal state the row renders a
- * single field the producer fills without a transition: the process start,
- * which the host records while the job is still `starting` and only then
- * promotes to `running`. So a same-state answer counts exactly when it brings
- * that start where none was known; one that adds nothing, or that would
- * forget a start already known, is the slower answer and is left alone.
+ * Whether a projection fetched by the poll or supplied by a card repair should
+ * replace the one the row has. Rank decides across states. Within one state,
+ * lifecycle facts and byte counters may only move forward; this admits a live
+ * output tail without letting a delayed response erase a richer projection.
  */
 export const processJobSupersedes = (current: ProcessJobProjection, next: ProcessJobProjection): boolean => {
   if (processJobAdvances(current.state, next.state)) return true;
-  if (current.state !== next.state || TERMINAL_PROCESS_JOB_STATES.has(next.state)) return false;
-  return current.timestamps.startedAt === null && next.timestamps.startedAt !== null;
+  if (current.state !== next.state) return false;
+  if (current.timestamps.startedAt !== null && next.timestamps.startedAt === null) return false;
+  if (current.cancelRequested && !next.cancelRequested) return false;
+  if (next.output.stdoutBytes < current.output.stdoutBytes
+    || next.output.stderrBytes < current.output.stderrBytes) return false;
+  const started = current.timestamps.startedAt === null && next.timestamps.startedAt !== null;
+  const cancelled = !current.cancelRequested && next.cancelRequested;
+  const output = next.output.stdoutBytes > current.output.stdoutBytes
+    || next.output.stderrBytes > current.output.stderrBytes;
+  const wakeRank = (wake: ProcessJobProjection["wake"]): number => wake.state === "pending" ? 0 : 1;
+  const wake = TERMINAL_PROCESS_JOB_STATES.has(next.state)
+    && (wakeRank(next.wake) > wakeRank(current.wake)
+      || (next.wake.state === current.wake.state && next.wake.attempts > current.wake.attempts));
+  const error = current.lastError === null && next.lastError !== null;
+  return started || cancelled || output || wake || error;
 };
 
 /**
  * What a projection would tell this card that it does not already know.
  *
- * The fields the row and its poll actually turn on: the lifecycle state, the
- * process start (the one field a producer fills without a transition), how many
- * wake attempts have been made, and the exit code. Two projections agreeing on
- * these say the same thing however many times the transcript is rebuilt.
+ * The fields the row and its poll actually turn on: lifecycle state, process
+ * start, wake attempts, exit code, output byte counts, and cancellation. Two
+ * projections agreeing on these say the same thing however many times the
+ * transcript is rebuilt.
  */
 const projectionSignature = (job: ProcessJobProjection | undefined): string =>
   job === undefined ? "" : [
@@ -82,6 +92,9 @@ const projectionSignature = (job: ProcessJobProjection | undefined): string =>
     job.timestamps.startedAt ?? "",
     String(job.wake.attempts),
     job.exitCode === null ? "" : String(job.exitCode),
+    String(job.output.stdoutBytes),
+    String(job.output.stderrBytes),
+    String(job.cancelRequested),
   ].join(" ");
 
 /** The retained web thread a job reports to, or nothing for an origin the console cannot poll. */
@@ -173,6 +186,11 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
   const initial = payload.job;
   const [live, setLive] = useState(initial);
   const visible = useDocumentVisible();
+  const [open, setOpen] = useState(false);
+  const autoOpened = useRef(false);
+  const manuallyCollapsed = useRef(false);
+  const outputRef = useRef<HTMLPreElement>(null);
+  const followOutput = useRef(true);
   const threadId = initial === undefined ? undefined : processJobThreadId(initial);
   const jobId = initial?.jobId;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
@@ -188,15 +206,35 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
    */
   const projectedRef = useRef({ signature: projectionSignature(initial), at: 0 });
 
-  // The store's projection is authoritative and already monotonic (the web
-  // server rejects a card update that moves backwards), so it always lands.
   useEffect(() => {
-    setLive(initial);
+    setLive((current) => {
+      if (initial === undefined || current === undefined || current.jobId !== initial.jobId) return initial;
+      return processJobSupersedes(current, initial) ? initial : current;
+    });
     const signature = projectionSignature(initial);
     if (projectedRef.current.signature !== signature) {
       projectedRef.current = { signature, at: Date.now() };
     }
   }, [initial]);
+
+  useEffect(() => {
+    autoOpened.current = false;
+    manuallyCollapsed.current = false;
+    followOutput.current = true;
+    setOpen(false);
+  }, [jobId]);
+
+  useEffect(() => {
+    if (live?.state !== "running" || live.output.preview.length === 0 || autoOpened.current) return;
+    autoOpened.current = true;
+    if (!manuallyCollapsed.current) setOpen(true);
+  }, [live?.output.preview, live?.state]);
+
+  useLayoutEffect(() => {
+    const output = outputRef.current;
+    if (!open || output === null || !followOutput.current) return;
+    output.scrollTop = output.scrollHeight;
+  }, [live?.output.preview, open]);
 
   useEffect(() => {
     // A hidden tab has nobody to show a state change to. The card keeps what it
@@ -237,6 +275,11 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
         // Terminal always advances the nonterminal row this effect exists for,
         // so the answer that ends the loop is one the row has taken.
         if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;
+        if (next.state === "running") {
+          // A live tail stays at the mode's initial cadence. Queued/starting
+          // jobs and failed reads retain the existing exponential backoff.
+          delayMs = initialDelayMs;
+        }
       } catch {
         // The retained card remains authoritative while its owner is offline.
       }
@@ -265,6 +308,11 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
       summary={live.summary}
       failed={status === "failed" ? stateLabel : undefined}
       duration={processJobMeta(live, terminal)}
+      open={open}
+      onToggle={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) manuallyCollapsed.current = true;
+      }}
       ariaLabel={`${live.tool} background job ${stateLabel}`}
     >
       <div className="activity-payload is-indented">
@@ -277,7 +325,14 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
         {live.output.preview.length > 0 && (
           <>
             <span>Output{live.output.truncated ? " (truncated)" : ""}</span>
-            <pre>{live.output.preview}</pre>
+            <pre
+              ref={outputRef}
+              className="process-job-output"
+              onScroll={(event) => {
+                const target = event.currentTarget;
+                followOutput.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
+              }}
+            >{live.output.preview}</pre>
           </>
         )}
         {outputRefs.length > 0 && (

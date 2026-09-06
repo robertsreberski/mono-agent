@@ -504,6 +504,19 @@ describe("monitors service", () => {
     expect(body).toContain("[REDACTED]");
   });
 
+  it("redacts a credential value split from its label across events", async () => {
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start(fake.request);
+    fake.process().emit("token=\n");
+    fake.process().emit("not-in-env\n");
+    await waitForWakes(1);
+
+    const body = fenced(wakes[0]!.prompt);
+    expect(body).not.toContain("not-in-env");
+    expect(JSON.parse(body).events).toEqual(["token=", "[REDACTED]"]);
+  });
+
   it("neutralizes a fence forged inside monitored output", async () => {
     const handle = await open();
     const fake = fakeRequest();
@@ -1204,6 +1217,22 @@ describe("monitors service", () => {
     expect(body).not.toContain(secret);
     const events = JSON.parse(body).events as string[];
     expect(events).toEqual(["[REDACTED]", "[REDACTED]", "[REDACTED]"]);
+  });
+
+  it("redacts a held known-secret prefix when the shared streaming redactor finalizes", async () => {
+    const secret = "alpha-bravo-charlie";
+    const handle = await open();
+    const fake = fakeRequest({ env: { APP_TOKEN: secret } });
+    await handle.controller(origin(), 0).start(fake.request);
+    fake.process().emit("prefix alpha-bravo-\n");
+    await settle();
+    expect(wakes).toHaveLength(0);
+
+    await fake.process().finish({ code: 0 });
+    await waitForTerminal("mon-1", "exited");
+    const body = JSON.parse(fenced(wakes.at(-1)!.prompt));
+    expect(body.events).toEqual(["[REDACTED]"]);
+    expect(wakes.at(-1)!.prompt).not.toContain("alpha-bravo-");
   });
 
   it("redacts a multi-word secret a label rule would otherwise bisect", async () => {
