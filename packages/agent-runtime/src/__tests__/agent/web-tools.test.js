@@ -8,6 +8,7 @@ import {
   __resetSharedSearchCacheForTests,
   createWebToolController,
 } from "../../agent/tools/web-controller.js";
+import { markdownToText } from "../../agent/tools/web-document-extractor.js";
 import { performWebFetch } from "../../agent/tools/web-fetch.js";
 import {
   __resetWebSearchThrottleForTests,
@@ -1057,6 +1058,47 @@ describe("WebFetch", () => {
       "const listed = \"*_`~\";",
     ].join("\n"));
     expect(text.outcome).toMatchObject({ contentKind: "markdown", extractionStage: "markdown" });
+  });
+
+  it.each([
+    {
+      name: "top-level",
+      opening: "   ```js",
+      body: "   inside",
+      validCloser: "   ```",
+      invalidCloser: "      ```",
+      following: "after",
+      invalidMarker: "   ```",
+    },
+    {
+      name: "block-quoted",
+      opening: ">    ```js",
+      body: ">    inside",
+      validCloser: ">    ```",
+      invalidCloser: ">       ```",
+      following: "> after",
+      invalidMarker: "   ```",
+    },
+    {
+      name: "list-nested",
+      opening: "- ```js",
+      body: "  inside",
+      validCloser: "     ```",
+      invalidCloser: "      ```",
+      following: "after",
+      invalidMarker: "    ```",
+    },
+  ])("allows three-space but not over-indented $name fence closers", ({
+    opening,
+    body,
+    validCloser,
+    invalidCloser,
+    following,
+    invalidMarker,
+  }) => {
+    expect(markdownToText([opening, body, validCloser, following].join("\n"))).toBe("inside\nafter");
+    expect(markdownToText([opening, body, invalidCloser, following].join("\n")))
+      .toBe(["inside", invalidMarker, "after"].join("\n"));
   });
 
   it("rejects bounded static access/auth interstitials without false-positive evidence", async () => {

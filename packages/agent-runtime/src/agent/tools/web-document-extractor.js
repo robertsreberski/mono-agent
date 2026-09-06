@@ -298,8 +298,8 @@ function protectFencedCode(value) {
   let code = [];
   for (const line of lines) {
     if (fence !== undefined) {
-      const content = stripFenceContainer(line, fence);
-      const closing = content.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
+      const containerContent = stripFenceContainer(line, fence, fence.containerIndent);
+      const closing = containerContent.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
       if (closing !== undefined && closing[0] === fence.marker[0] && closing.length >= fence.marker.length) {
         const token = uniqueCodeToken(value, codeBlocks.length);
         codeBlocks.push({ token, body: code.join("\n") });
@@ -307,7 +307,7 @@ function protectFencedCode(value) {
         fence = undefined;
         code = [];
       } else {
-        code.push(content);
+        code.push(stripFenceContainer(line, fence, fence.contentIndent));
       }
       continue;
     }
@@ -342,17 +342,22 @@ function readFenceOpening(line) {
   candidate = candidate.slice(indentation);
   const match = candidate.match(/^(`{3,}|~{3,})([^\n]*)$/u);
   if (match === null || (match[1][0] === "`" && match[2].includes("`"))) return undefined;
-  return { marker: match[1], quoteDepth, contentIndent: listIndent + indentation };
+  return {
+    marker: match[1],
+    quoteDepth,
+    containerIndent: listIndent,
+    contentIndent: listIndent + indentation,
+  };
 }
 
-function stripFenceContainer(line, fence) {
+function stripFenceContainer(line, fence, indentation) {
   let candidate = line;
   for (let depth = 0; depth < fence.quoteDepth; depth += 1) {
     const quote = candidate.match(/^ {0,3}>[ \t]?/u)?.[0];
     if (quote === undefined) return line;
     candidate = candidate.slice(quote.length);
   }
-  let remainingIndent = fence.contentIndent;
+  let remainingIndent = indentation;
   while (remainingIndent > 0 && candidate.startsWith(" ")) {
     candidate = candidate.slice(1);
     remainingIndent -= 1;

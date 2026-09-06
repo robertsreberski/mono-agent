@@ -65,6 +65,7 @@ const JSON_RUNTIME_SOURCES: readonly {
   readonly env: string;
   readonly path: string;
   readonly read: (json: MonoAgentConfigJson) => unknown;
+  readonly overriddenByEnv?: readonly string[];
 }[] = [
   { env: "MONO_AGENT_MODEL", path: "runtime.model", read: (json) => json.runtime?.model },
   { env: "MONO_AGENT_FALLBACKS_JSON", path: "runtime.fallbacks", read: (json) => json.runtime?.fallbacks },
@@ -73,7 +74,12 @@ const JSON_RUNTIME_SOURCES: readonly {
   { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT", path: "tools.web.search.endpoint", read: (json) => json.tools?.web?.search?.endpoint },
   { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT", path: "tools.web.search.searxng.endpoint", read: (json) => json.tools?.web?.search?.searxng?.endpoint },
   { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL", path: "tools.web.search.ollama.baseUrl", read: (json) => json.tools?.web?.search?.ollama?.baseUrl },
-  { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV", path: "tools.web.search.ollama.apiKeyEnv", read: (json) => json.tools?.web?.search?.ollama },
+  {
+    env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV",
+    path: "tools.web.search.ollama.apiKeyEnv",
+    read: (json) => json.tools?.web?.search?.ollama?.baseUrl,
+    overriddenByEnv: ["MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL"],
+  },
   { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL", path: "tools.web.search.ollama.trustPublicUrl", read: (json) => json.tools?.web?.search?.ollama?.trustPublicUrl },
 ];
 
@@ -88,7 +94,11 @@ function remapJsonRuntimeError(
   if (typeof source !== "string") return error;
   const mapping = JSON_RUNTIME_SOURCES.find((candidate) => candidate.env === source);
   if (mapping === undefined) return error;
-  if (hasValue(env[source]) || mapping.read(json) === undefined) return error;
+  if (
+    hasValue(env[source])
+    || mapping.overriddenByEnv?.some((candidate) => hasValue(env[candidate])) === true
+    || mapping.read(json) === undefined
+  ) return error;
   return remapConfigErrorToJson(error, source, mapping.path);
 }
 
