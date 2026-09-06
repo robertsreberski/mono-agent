@@ -86,7 +86,8 @@ describe("WebStore", () => {
     // must not, or the whole agent list is rebroadcast every discovery pass.
     const base = await temporaryRoot();
     cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
     const first = { ...agent(), generation: "gen-1" };
 
     expect(store.replaceAgents([first])).toBe(true);
@@ -1434,15 +1435,26 @@ describe("WebStore", () => {
   it("maps warnings/failover/usage and persists runtime telemetry payloads", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
-    const store = await WebStore.open({ stateDir: join(base, "state") });
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
-    const turn = store.beginTurn({ threadId: thread.id, text: "telemetry", attachmentIds: [] });
-    store.applyStreamFrames(turn.turnId, [
+    const turn = store.beginTurn({
+      threadId: thread.id,
+      text: "telemetry",
+      attachmentIds: [],
+      model: "primary",
+      effort: "high",
+      requestedModel: "primary",
+      requestedEffort: "high",
+    });
+    const streamed = store.applyStreamFrames(turn.turnId, [
       { kind: "event", event: { type: "runtime_warning", message: "fallback", warningKind: "provider" } },
-      { kind: "event", event: { type: "provider_status", kind: "failover_started", from: "one", to: "two" } },
+      { kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "primary", effort: "high", effectiveEffort: "high" } } },
+      { kind: "event", event: { type: "provider_status", kind: "retry_started", model: "primary", retryIndex: 1, reason: "overloaded" } },
+      { kind: "event", event: { type: "provider_status", kind: "failover_started", from: "primary", to: "actual", attemptIndex: 1, reason: "overloaded" } },
       { kind: "event", event: { type: "usage_update", model: "two", cumulativeUsd: 0.01 } },
-      { kind: "event", event: { type: "runtime_telemetry", kind: "run_config", data: { model: "actual", effort: "xhigh" } } },
+      { kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "actual", effort: "xhigh", effectiveEffort: "max" } } },
       {
         kind: "event",
         event: {
@@ -1452,10 +1464,31 @@ describe("WebStore", () => {
         },
       },
     ]);
-    const detail = store.completeTurn(turn.turnId, "");
-    expect(detail.thread.runState).toMatchObject({ model: "actual", effort: "xhigh" });
+    expect(streamed.attributionChanged).toBe(true);
+    expect(streamed.delta?.attribution).toMatchObject({
+      requested: { model: "primary", effort: "high" },
+      attempted: { model: "actual", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback",
+      transitions: [{ from: "primary", to: "actual", attemptIndex: 1, reason: "overloaded" }],
+      retries: [{ model: "primary", retryIndex: 1, reason: "overloaded" }],
+    });
+    expect(streamed.delta?.attribution).not.toHaveProperty("executed");
+    const detail = store.completeTurn(turn.turnId, "", {
+      runtime: { model: "actual", effort: "xhigh", effectiveEffort: "max" },
+    });
+    expect(detail.thread.runState).toMatchObject({
+      model: "actual",
+      effort: "xhigh",
+      attribution: {
+        requested: { model: "primary", effort: "high" },
+        attempted: { model: "actual", effort: "xhigh", effectiveEffort: "max" },
+        executed: { model: "actual", effort: "xhigh", effectiveEffort: "max" },
+        disposition: "fallback",
+      },
+    });
+    expect(detail.messages.at(-1)?.attribution).toEqual(detail.thread.runState.attribution);
     expect(detail.messages.at(-1)?.parts.map((part) => part.type === "telemetry" ? part.event : part.type)).toEqual([
-      "runtime_warning", "provider_status", "usage_update", "runtime_telemetry", "runtime_telemetry",
+      "runtime_warning", "runtime_telemetry", "provider_status", "provider_status", "usage_update", "runtime_telemetry", "runtime_telemetry",
     ]);
     expect(detail.messages.at(-1)?.parts.at(-1)).toEqual({
       type: "telemetry",
@@ -1465,6 +1498,99 @@ describe("WebStore", () => {
         kind: "context_usage",
         data: { contextWindow: 372_000, tokens: { total: 12_345 } },
       },
+    });
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.attribution)
+      .toEqual(detail.thread.runState.attribution);
+    reopened.close();
+  });
+
+  it("keeps failed routes unexecuted and bounds fallback history first-plus-newest", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({
+      threadId: thread.id,
+      text: "telemetry",
+      attachmentIds: [],
+      requestedModel: "route-0",
+    });
+    const frames = Array.from({ length: 40 }, (_, index) => ({
+      kind: "event" as const,
+      event: {
+        type: "provider_status" as const,
+        kind: "failover_started" as const,
+        from: `route-${String(index)}`,
+        to: `route-${String(index + 1)}`,
+        attemptIndex: index + 1,
+        reason: `classified-${String(index)}-${"x".repeat(200)}`,
+      },
+    }));
+    store.applyStreamFrames(turn.turnId, frames);
+    const detail = store.failTurn(turn.turnId, { message: "all routes failed", cancelled: false });
+    const attribution = detail.thread.runState.attribution;
+
+    expect(attribution).toMatchObject({ disposition: "fallback", truncated: true });
+    expect(attribution?.transitions).toHaveLength(32);
+    expect(attribution?.transitions[0]).toMatchObject({ from: "route-0", to: "route-1" });
+    expect(attribution?.transitions.at(-1)).toMatchObject({ from: "route-39", to: "route-40" });
+    expect(attribution?.transitions.at(-1)?.reason).toHaveLength(128);
+    expect(attribution).not.toHaveProperty("executed");
+    store.close();
+  });
+
+  it("does not label a same-model retry as fallback", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({
+      threadId: thread.id,
+      text: "retry",
+      attachmentIds: [],
+      model: "primary",
+      requestedModel: "primary",
+    });
+    store.applyStreamFrames(turn.turnId, [{
+      kind: "event",
+      event: { type: "provider_status", kind: "retry_started", model: "primary", retryIndex: 1, reason: "overloaded" },
+    }]);
+    const detail = store.completeTurn(turn.turnId, "done", { runtime: { model: "primary" } });
+    expect(detail.thread.runState.attribution).toMatchObject({
+      disposition: "requested",
+      executed: { model: "primary" },
+      transitions: [],
+      retries: [{ model: "primary", retryIndex: 1, reason: "overloaded" }],
+    });
+    store.close();
+  });
+
+  it("labels a terminal model mismatch as fallback without inventing a reason", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({
+      threadId: thread.id,
+      text: "bridge without route events",
+      attachmentIds: [],
+      model: "primary",
+      requestedModel: "primary",
+    });
+    const detail = store.completeTurn(turn.turnId, "done", { runtime: { model: "fallback" } });
+
+    expect(detail.thread.runState.attribution).toEqual({
+      requested: { model: "primary" },
+      attempted: { model: "fallback" },
+      executed: { model: "fallback" },
+      disposition: "fallback",
+      transitions: [],
+      retries: [],
     });
     store.close();
   });
@@ -2218,7 +2344,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v19 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v21 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2642,7 +2768,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 21");
+    future.exec("PRAGMA user_version = 22");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -3214,6 +3340,35 @@ describe("WebStore subagent parts", () => {
       costUsd: 0.0042,
       status: "complete",
     });
+  });
+
+  it("keeps child routing attribution on the nested delegation only", async () => {
+    const attribution = {
+      requested: { model: "child-primary", effort: "high" },
+      attempted: { model: "child-fallback", effort: "xhigh", effectiveEffort: "max" },
+      executed: { model: "child-fallback", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback",
+      transitions: [{ from: "child-primary", to: "child-fallback", reason: "overloaded" }],
+      retries: [],
+    };
+    const parts = await turnWith([
+      launch("call-1", "researcher"),
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_completed",
+          id: "agent:call-1",
+          name: "Agent(researcher)",
+          metadata: {
+            subagent: { id: "call-1", name: "researcher", callIndex: 0, attribution },
+            synthetic: true,
+            subagentLifecycle: true,
+          },
+        },
+      },
+    ] as never);
+
+    expect(parts.find((part) => part.type === "subagent")).toMatchObject({ attribution });
   });
 
   it("leaves the cost off a delegation the runtime never priced", async () => {

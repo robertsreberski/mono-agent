@@ -2128,6 +2128,88 @@ describe("web HTTP server", () => {
     await Promise.all([subscribedReader.cancel(), unsubscribedReader.cancel()]);
   });
 
+  it("projects bounded fallback attribution through live deltas and full reads without raw provider data", async () => {
+    const secretRequestId = "request-secret-must-not-reach-browser";
+    const secretError = "raw-provider-error-must-not-reach-browser";
+    const classifiedReason = `overloaded-${"r".repeat(300)}`;
+    const lines = [
+      JSON.stringify({ kind: "event", event: {
+        type: "runtime_telemetry",
+        kind: "provider_execution_config",
+        data: { model: "provider/default", effort: "high", effectiveEffort: "high", requestId: secretRequestId },
+      } }),
+      JSON.stringify({ kind: "event", event: {
+        type: "provider_status",
+        kind: "retry_started",
+        model: "provider/default",
+        retryIndex: 1,
+        reason: classifiedReason,
+        requestId: secretRequestId,
+        error: secretError,
+      } }),
+      JSON.stringify({ kind: "event", event: {
+        type: "provider_status",
+        kind: "failover_started",
+        from: "provider/default",
+        to: "provider/fallback",
+        attemptIndex: 1,
+        reason: classifiedReason,
+        requestId: secretRequestId,
+        error: secretError,
+      } }),
+      JSON.stringify({ kind: "event", event: {
+        type: "runtime_telemetry",
+        kind: "provider_execution_config",
+        data: { model: "provider/fallback", effort: "high", effectiveEffort: "off", requestId: secretRequestId },
+      } }),
+      JSON.stringify({
+        kind: "finish",
+        finalText: "fallback answer",
+        metadata: { runtime: { model: "provider/fallback", effort: "high", effectiveEffort: "off" } },
+      }),
+      "",
+    ];
+    const { baseUrl } = await start({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+
+    const started = await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "go", model: "provider/default", effort: "high" }),
+    });
+    expect(started.status).toBe(202);
+    const events = await drainTurn(next);
+    const liveAttribution = events
+      .filter((event) => event.type === "message.delta")
+      .map((event) => (event.payload as { attribution?: unknown }).attribution)
+      .find((attribution) => (attribution as { disposition?: string } | undefined)?.disposition === "fallback") as {
+        transitions: readonly { reason?: string }[];
+        retries: readonly { reason?: string }[];
+      } | undefined;
+    expect(liveAttribution).toBeDefined();
+    expect(liveAttribution?.transitions[0]?.reason).toHaveLength(128);
+    expect(liveAttribution?.retries[0]?.reason).toHaveLength(128);
+
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+    const assistant = wireMessages(detail).at(-1) as WireMessage & { readonly attribution?: unknown };
+    expect(detail).toMatchObject({ thread: { runState: { attribution: {
+      requested: { model: "provider/default", effort: "high" },
+      attempted: { model: "provider/fallback", effort: "high", effectiveEffort: "off" },
+      executed: { model: "provider/fallback", effort: "high", effectiveEffort: "off" },
+      disposition: "fallback",
+    } } } });
+    expect(assistant.attribution).toMatchObject({ disposition: "fallback" });
+    const browserWire = JSON.stringify({ events, detail });
+    expect(browserWire).not.toContain(secretRequestId);
+    expect(browserWire).not.toContain(secretError);
+    await reader.cancel();
+  });
+
   it("rejects a conversation subscription that names nothing usable", async () => {
     const { baseUrl } = await start();
     // Oversized, empty and blank alike: a console that asked for a conversation

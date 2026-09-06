@@ -158,8 +158,8 @@ reconcile.
 
 A run that answers from a fallback behaves differently from one that answers from
 the primary — different schema adherence, tool-calling conventions, cost, and
-sometimes capabilities. Two operator-visible signals cover that, and both appear
-only when a transition actually happened.
+sometimes capabilities. Operator surfaces show that from runtime-owned route
+evidence rather than comparing their own model-selector state.
 
 **While the run is in flight**, the transition joins the activity log:
 
@@ -184,6 +184,19 @@ answer reaches — including a cron or webhook `notify` payload, where nobody is
 watching activity lines. A same-model retry that recovered on the configured route
 produces no note: the run's identity did not change. A turn whose answer is
 `NOTHING_TO_REPORT` also produces no note, so notification suppression is unaffected.
+
+The web console additionally persists structured attribution per run. The
+assistant message and conversation header distinguish the requested route, the
+current or last attempt, and the route that actually answered. Known classified
+transition reasons and same-route retries are available in a bounded disclosure;
+a terminal model mismatch without a transition is still marked as a fallback
+with “reason not reported.” An exhausted chain never claims an answering model.
+Configured subagents carry the same evidence inside their own delegation card.
+
+Pi also reports the effective thinking level used for each provider request.
+That makes normalizations such as non-reasoning to `off`, unsupported `max` to
+`xhigh`, and the current `ultra` compatibility mapping to `low` visible without
+reimplementing Pi's rules in the browser.
 
 ## Guided readiness
 

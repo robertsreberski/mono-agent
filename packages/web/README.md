@@ -26,6 +26,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   `~/.mono-agent/web`.
 - Persist optional per-agent model/effort defaults for new interactive web
   threads, copied at creation and clearable back to resolved config.
+- Preserve each turn's requested, attempted, and answering route plus the Pi
+  wrapper's effective thinking level, and project bounded fallback/retry
+  attribution without exposing raw provider diagnostics.
 - Proxy ephemeral, exact-origin provider-auth status and login sessions to the
   currently connected bearer-protected agent without storing credentials,
   prompt input, or session projections.
@@ -188,6 +191,16 @@ Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
 
+The picker is labelled **Next turn**. The current or last assistant run has a
+separate route marker in the header and below its message. A normal run names
+the route that answered; a fallback names requested and answering models plus
+the classified reason when the runtime supplied one. Expanding the marker shows
+the bounded route chain, same-model retries, route-level effort, and Pi's actual
+effective thinking level. Configured subagents keep independent attribution in
+their own Activity row. The browser never infers a fallback from selector state,
+and the route-attribution payload never carries raw provider errors or request
+identifiers.
+
 The agent rail's settings action opens a separate **Agent settings** dialog.
 Its model and effort choices become the defaults for subsequently created web
 console conversations for that agent. Either field may inherit resolved config,
@@ -208,6 +221,10 @@ bearer, marks responses no-store, and never reads the Pi auth path. Auth state
 is component/agent memory only—not SQLite, thread history, browser storage, or
 run artifacts. The console remains a trusted-network single-user surface, not a
 per-human authenticated application.
+
+Standalone process-job and Monitor revival turns in an existing web conversation
+read that conversation's model/effort snapshot immediately before admission. A
+wake steered into an active run stays on that run's already selected route.
 
 New interactive threads initially use the first user message as their fallback
 title. On compatible routes, an allowlisted app-owned `SetConversationTitle`
@@ -582,9 +599,14 @@ WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
 WebQuote
+WebRunAttribution
+WebRunExecution
+WebRunRetry
+WebRunSelection
 WebRunSettingSource
 WebRunState
 WebRunStatus
+WebRunTransition
 WebServerHandle
 WebSkillAvailability
 WebSkillInfo

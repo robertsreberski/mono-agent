@@ -637,6 +637,7 @@ describe("AgentHarness", () => {
         usage: { inputTokens: 1 },
         cost: { totalUsd: 0.01 },
         capabilitiesUsed: ["tools:read"],
+        effectiveEffort: "off",
       };
     });
 
@@ -673,7 +674,11 @@ describe("AgentHarness", () => {
       capabilitiesUsed: ["tools:read"],
     });
     expect(recorder.startCount).toBe(1);
-    expect(response.metadata.runtime).toMatchObject({ cost: { totalUsd: 0.01 }, capabilitiesUsed: ["tools:read"] });
+    expect(response.metadata.runtime).toMatchObject({
+      cost: { totalUsd: 0.01 },
+      capabilitiesUsed: ["tools:read"],
+      effectiveEffort: "off",
+    });
     // Recalled memory no longer lives in the system prompt, so it is not a context
     // section/source — it rides on the user message instead (asserted below).
     expect(response.metadata.contextSectionIds).toEqual(["core", "identity", "session", "history", "skills", "skill-instructions", "user-message"]);

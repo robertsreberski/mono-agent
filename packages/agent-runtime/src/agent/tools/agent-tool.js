@@ -450,7 +450,7 @@ export function createAgentTool(subagents, context = {}) {
 
       const durationMs = Date.now() - startedAt;
       const outcome = classifyOutcome({ result, thrown, timedOut, abandoned });
-      collector.finished({ status: outcome.status, durationMs });
+      collector.finished({ status: outcome.status, durationMs, result });
       // Each result is individually capped, but the parent's context sees the
       // SUM. The description encourages parallel calls, so twenty valid results
       // would otherwise land ~480KB in one batch. Later calls get whatever
@@ -601,6 +601,22 @@ function normalizeProfile(definition) {
 
 /** Hard cap on any single forwarded payload, so the operator wire's binary-search reducer never has to run. */
 const WIRE_CONTENT_MAX_CHARS = 2_000;
+const ROUTE_HISTORY_MAX_ENTRIES = 32;
+
+function boundedRouteString(value, max = 256) {
+  return typeof value === "string" && value.length > 0 ? value.slice(0, max) : undefined;
+}
+
+function boundedRouteIndex(value) {
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+}
+
+function appendRouteEntry(entries, entry, routeState) {
+  entries.push(entry);
+  if (entries.length <= ROUTE_HISTORY_MAX_ENTRIES) return;
+  entries.splice(1, entries.length - ROUTE_HISTORY_MAX_ENTRIES);
+  routeState.truncated = true;
+}
 
 /**
  * Translates the child's raw provider events into (a) a bounded per-tool-call
@@ -627,6 +643,7 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
   /** What the child reported spending, so the parent run can own it. */
   const usage = emptyUsage();
   const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
+  const routeState = { requested: {}, attempted: undefined, transitions: [], retries: [], truncated: false };
 
   /** @param {*} event */
   const publish = (event) => {
@@ -649,11 +666,32 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
         arguments: { name: profileName, ...(label === undefined ? {} : { description: label }) },
       });
     },
-    /** @param {{status: string, durationMs: number}} outcome */
-    finished({ status, durationMs }) {
+    /** @param {{status: string, durationMs: number, result?: *}} outcome */
+    finished({ status, durationMs, result }) {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
       recordUsage?.(usage);
+      const executed = status === "ok" && result && typeof result === "object"
+        ? {
+            ...(boundedRouteString(result.model) === undefined ? {} : { model: boundedRouteString(result.model) }),
+            ...(boundedRouteString(result.effort, 64) === undefined ? {} : { effort: boundedRouteString(result.effort, 64) }),
+            ...(boundedRouteString(result.effectiveEffort, 64) === undefined ? {} : { effectiveEffort: boundedRouteString(result.effectiveEffort, 64) }),
+          }
+        : undefined;
+      const requestedModel = routeState.requested.model;
+      const fallback = routeState.transitions.length > 0
+        || (executed?.model !== undefined && requestedModel !== undefined && executed.model !== requestedModel);
+      const attribution = requestedModel === undefined && routeState.attempted === undefined && executed === undefined
+        ? undefined
+        : {
+            requested: routeState.requested,
+            ...(routeState.attempted === undefined ? {} : { attempted: routeState.attempted }),
+            ...(executed === undefined ? {} : { executed }),
+            disposition: requestedModel === undefined ? "unknown" : fallback ? "fallback" : "requested",
+            transitions: routeState.transitions,
+            retries: routeState.retries,
+            ...(routeState.truncated ? { truncated: true } : {}),
+          };
       publish({
         phase: "agent_completed",
         id: `agent:${callId}`,
@@ -661,7 +699,13 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
         // The one place the child's price is knowable per delegation: operator
         // surfaces show it on the row so an expensive one is identifiable, not
         // just visible in the run total it disappears into.
-        ...(usage.costUsd > 0 ? { subagent: { ...subagent, costUsd: usage.costUsd } } : {}),
+        ...((usage.costUsd > 0 || attribution !== undefined)
+          ? { subagent: {
+              ...subagent,
+              ...(usage.costUsd > 0 ? { costUsd: usage.costUsd } : {}),
+              ...(attribution === undefined ? {} : { attribution }),
+            } }
+          : {}),
         isError: status !== "ok",
         executionMs: durationMs,
         content: `${status} · ${done.length} tool call${done.length === 1 ? "" : "s"}`,
@@ -684,6 +728,58 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
     /** @param {*} event */
     observe(event) {
       const type = event?.type;
+      if (type === "provider_execution_config") {
+        const model = boundedRouteString(event.model);
+        const effort = boundedRouteString(event.effort, 64);
+        const effectiveEffort = boundedRouteString(event.effectiveEffort, 64);
+        routeState.attempted = {
+          ...(model === undefined ? {} : { model }),
+          ...(effort === undefined ? {} : { effort }),
+          ...(effectiveEffort === undefined ? {} : { effectiveEffort }),
+        };
+        if (routeState.requested.model === undefined && routeState.transitions.length === 0) {
+          routeState.requested = {
+            ...(model === undefined ? {} : { model }),
+            ...(effort === undefined ? {} : { effort }),
+          };
+        }
+        return;
+      }
+      if (type === "provider_failover_started") {
+        const from = boundedRouteString(event.from);
+        const to = boundedRouteString(event.to);
+        if (from !== undefined && to !== undefined) {
+          if (routeState.requested.model === undefined) routeState.requested = { model: from };
+          const attemptIndex = boundedRouteIndex(event.attemptIndex);
+          const reason = boundedRouteString(event.reason, 128);
+          appendRouteEntry(routeState.transitions, {
+            from,
+            to,
+            ...(attemptIndex === undefined ? {} : { attemptIndex }),
+            ...(reason === undefined ? {} : { reason }),
+          }, routeState);
+          routeState.attempted = { model: to };
+        }
+        return;
+      }
+      if (type === "provider_retry_started") {
+        const model = boundedRouteString(event.model);
+        const retryIndex = boundedRouteIndex(event.retryIndex);
+        const attempts = boundedRouteIndex(event.attempts);
+        const reason = boundedRouteString(event.reason, 128);
+        appendRouteEntry(routeState.retries, {
+          ...(model === undefined ? {} : { model }),
+          ...(retryIndex === undefined ? {} : { retryIndex }),
+          ...(attempts === undefined ? {} : { attempts }),
+          ...(reason === undefined ? {} : { reason }),
+        }, routeState);
+        return;
+      }
+      if (type === "provider_failover_completed") {
+        const model = boundedRouteString(event.model);
+        if (model !== undefined) routeState.attempted = { ...(routeState.attempted || {}), model };
+        return;
+      }
       // Providers legitimately forward multiple blocks in one message; the
       // Claude bridges do routinely. Inspecting only content[0] dropped every
       // tool call after the first.
