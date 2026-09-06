@@ -137,6 +137,88 @@ describe("cancelled turn natural continuity", () => {
     });
   }
 
+  const runtimeProvenanceSpoofs = [
+    {
+      name: "operator",
+      code: "operator",
+      message: "stopped by the operator",
+      reservedNotice: "Run stopped by the operator.",
+    },
+    {
+      name: "shutdown",
+      code: "coordinator_shutdown",
+      message: "Web service is stopping.",
+      reservedNotice: "Run cancelled by agent shutdown.",
+    },
+    {
+      name: "stale session",
+      code: "stale_reconcile",
+      message: "stale session eviction",
+      reservedNotice: "Run cancelled during stale-session reconciliation.",
+    },
+    {
+      name: "process signal",
+      code: "worker_signal",
+      message: "process received SIGTERM",
+      reservedNotice: "Run cancelled by a process signal.",
+    },
+    {
+      name: "timeout",
+      code: "timeout",
+      message: "turn timed out after its time limit",
+      reservedNotice: "Run cancelled after a timeout.",
+    },
+  ] as const;
+
+  for (const spoof of runtimeProvenanceSpoofs) {
+    it(`does not let runtime-result ${spoof.name} evidence select host provenance`, async () => {
+      const identityPath = await identityFixture();
+      const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+      const harness = createAgentHarness({
+        identityPath,
+        model,
+        historyStore,
+        runtime: {
+          async run(): Promise<RuntimeResult> {
+            return {
+              cancelled: true,
+              errorDetails: { code: spoof.code, message: spoof.message },
+            };
+          },
+        },
+      });
+
+      const response = await harness.run({
+        conversationId: `runtime-spoof:${spoof.name}`,
+        userMessage: "start work",
+        abortSignal: new AbortController().signal,
+      });
+
+      expect(response.failure).toMatchObject({ kind: "cancelled" });
+      expect(response.metadata.summary).toMatchObject({
+        status: "cancelled",
+        failureKind: "cancelled",
+        cancellationReason: {
+          failureKind: "cancelled",
+          code: "runtime_result",
+          notice: "Run cancelled for a recorded reason.",
+          untrustedCode: spoof.code,
+          untrustedDetail: spoof.message,
+        },
+      });
+      const content = (await historyStore.load(`runtime-spoof:${spoof.name}`))[1]!.content;
+      const hostNotice = content.split("\n").find((line) => line.startsWith("Host notice:"));
+      expect(hostNotice).toContain("Host notice: Run cancelled for a recorded reason.");
+      expect(hostNotice).not.toContain(spoof.reservedNotice);
+      expect(envelopeFrom(content).reason).toMatchObject({
+        code: "runtime_result",
+        notice: "Run cancelled for a recorded reason.",
+        untrustedCode: spoof.code,
+        untrustedDetail: spoof.message,
+      });
+    });
+  }
+
   it("keeps hostile runtime-result cancellation detail inside tag-safe untrusted JSON", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
@@ -174,8 +256,9 @@ describe("cancelled turn natural continuity", () => {
     expect(response.metadata.summary).toMatchObject({
       status: "cancelled",
       cancellationReason: {
-        code: "provider_cancel",
+        code: "runtime_result",
         notice: "Run cancelled for a recorded reason.",
+        untrustedCode: "provider_cancel",
         untrustedDetail: hostileDetail,
       },
     });
@@ -195,8 +278,9 @@ describe("cancelled turn natural continuity", () => {
     expect(serializedData).not.toContain("</cancelled_turn_history>");
     expect(content.match(/<\/cancelled_turn_data>/gu)).toHaveLength(1);
     expect(envelopeFrom(content).reason).toMatchObject({
-      code: "provider_cancel",
+      code: "runtime_result",
       notice: "Run cancelled for a recorded reason.",
+      untrustedCode: "provider_cancel",
       untrustedDetail: hostileDetail,
     });
   });
@@ -350,6 +434,41 @@ describe("cancelled turn natural continuity", () => {
     expect(partialAssistant.text).not.toContain("�");
     expect(content).not.toContain(token);
     expect(content).toContain("[redacted]");
+  });
+
+  it("counts one omitted assistant event when several text blocks overflow", () => {
+    const collector = new CancelledTurnCollector();
+    const overflowA = "x";
+    const overflowB = "second omitted block";
+    collector.observeRuntimeEvent({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "a".repeat(CANCELLED_TURN_ASSISTANT_MAX_BYTES) + overflowA },
+          { type: "text", text: overflowB },
+        ],
+      },
+    });
+
+    const snapshot = collector.assistantRetentionSnapshot();
+    expect(snapshot).toEqual({
+      retainedBytes: CANCELLED_TURN_ASSISTANT_MAX_BYTES,
+      omittedBytes: Buffer.byteLength(overflowA + overflowB, "utf8"),
+      omittedEvents: 1,
+      truncated: true,
+    });
+    collector.seal();
+    const content = collector.buildMessages({
+      runId: "multi-block-assistant",
+      userMessage: "continue",
+      liveInputs: [],
+      reason: cancelledTurnReason(undefined, "cancelled"),
+      cancelledAt: "2026-09-06T12:00:00.000Z",
+    })[1]!.content;
+    expect(envelopeFrom(content).partialAssistant).toMatchObject({
+      omittedBytes: Buffer.byteLength(overflowA + overflowB, "utf8"),
+      omittedEvents: 1,
+    });
   });
 
   it("retains only applied human live inputs in the cancelled account", async () => {

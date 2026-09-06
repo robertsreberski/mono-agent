@@ -304,11 +304,13 @@ assistant text, newest whole completed tool call/result pairs that fit, work
 still in flight, explicit omission counts, and the typed host-observed
 cancellation reason, all within 48 KiB and under the tool-history redaction
 policy. Partial assistant collection is incrementally bounded to an 8 KiB UTF-8
-prefix even on successful runs. Its omission bytes/events remain explicit. Host
-notice text is selected from fixed framework-authored sentences; bounded
-runtime/provider detail appears only as `untrustedDetail` inside tag-safe JSON
-that is explicitly framed as untrusted evidence. The collector seals at
-cancellation and rejects late runtime events.
+prefix even on successful runs. Its omission bytes and assistant-runtime-event
+counts remain explicit. Host notice text is selected from fixed
+framework-authored sentences using independently known host abort provenance.
+Cancellation-shaped runtime results always use the generic host notice and keep
+their bounded code/detail only as `untrustedCode` / `untrustedDetail` inside
+tag-safe JSON that is explicitly framed as untrusted evidence. The collector
+seals at cancellation and rejects late runtime events.
 Provider epochs are retired and rotated even when an abort-ignoring provider is
 still unwinding, so the next turn seeds a consistent canonical transcript.
 Cancelled accounts never qualify for memory capture. Isolated proactive or

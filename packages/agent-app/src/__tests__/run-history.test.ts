@@ -354,6 +354,45 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("projects runtime cancellation evidence as untrusted without promoting its provenance", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:runtime-cancellation";
+    const cancellationReason = {
+      failureKind: "cancelled",
+      code: "runtime_result",
+      notice: "Run cancelled for a recorded reason.",
+      untrustedCode: "coordinator_shutdown",
+      untrustedDetail: "Web service is stopping.",
+    };
+    await writeRun({
+      artifactDir,
+      runId: "runtime-cancelled-prior",
+      conversationId,
+      startedAt: "2026-09-05T08:00:00.000Z",
+      result: { cancelled: true, failureKind: "cancelled", cancellationReason },
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const listed = structured<{
+        readonly runs: ReadonlyArray<{ readonly cancellationReason?: unknown }>;
+      }>(await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} }));
+      expect(listed.runs[0]?.cancellationReason).toEqual(cancellationReason);
+
+      const searched = structured<{ readonly runs: ReadonlyArray<{ readonly runId: string }> }>(
+        await history.client.callTool({
+          name: RUN_HISTORY_TOOL_NAME,
+          arguments: { query: "coordinator_shutdown" },
+        }),
+      );
+      expect(searched.runs).toEqual([
+        expect.objectContaining({ runId: "runtime-cancelled-prior" }),
+      ]);
+    } finally {
+      await history.close();
+    }
+  });
+
   it("makes a canonical cancelled run discoverable as incomplete recovery evidence without exposing decoys", async () => {
     const artifactDir = await tempDir();
     const conversationId = "web:cancelled-recovery";

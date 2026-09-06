@@ -670,12 +670,14 @@ function coerceCancellationReason(value: unknown, maxStringBytes: number): RunCa
   const notice = stringField(redacted, "notice");
   if (failureKind === undefined || code === undefined || notice === undefined) return undefined;
   const channel = stringField(redacted, "channel");
+  const untrustedCode = stringField(redacted, "untrustedCode");
   const untrustedDetail = stringField(redacted, "untrustedDetail");
   return {
     failureKind,
     code,
     notice,
     ...(channel === undefined ? {} : { channel }),
+    ...(untrustedCode === undefined ? {} : { untrustedCode }),
     ...(untrustedDetail === undefined ? {} : { untrustedDetail }),
   };
 }

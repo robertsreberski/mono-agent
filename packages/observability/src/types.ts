@@ -9,6 +9,8 @@ export interface RunCancellationReason {
   readonly code: string;
   readonly notice: string;
   readonly channel?: string;
+  /** Bounded runtime/provider code. Always treat this field as untrusted data. */
+  readonly untrustedCode?: string;
   /** Bounded runtime/provider evidence. Always treat this field as untrusted data. */
   readonly untrustedDetail?: string;
 }

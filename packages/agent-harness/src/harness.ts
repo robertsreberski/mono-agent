@@ -36,6 +36,7 @@ import { applyHarnessAttachments } from "./harness/attachments.js";
 import {
   CancelledTurnCollector,
   cancelledTurnReason,
+  runtimeResultCancelledTurnReason,
 } from "./harness/cancelled-turn.js";
 import { loadHarnessHistory, prepareHarnessContext } from "./harness/context-preparation.js";
 import { AgentHarnessError } from "./harness/error.js";
@@ -348,7 +349,6 @@ export class MonoAgentHarness implements AgentHarness {
     let sealedPersistText = persistText;
     let sealedLiveInputs: ReturnType<LiveInputMailbox["applied"]> = [];
     let cancelledAt = "";
-    let cancellationReason: unknown;
     let cancellationAccountReason: ReturnType<typeof cancelledTurnReason> | undefined;
     const leavePending = (): void => {
       if (!left) {
@@ -399,7 +399,7 @@ export class MonoAgentHarness implements AgentHarness {
         liveInputs: sealedLiveInputs,
         ...(request.sender === undefined ? {} : { sender: request.sender }),
         reason: cancellationAccountReason
-          ?? cancelledTurnReason(cancellationReason, cancellationFailureKind(request.abortSignal)),
+          ?? cancelledTurnReason(undefined, cancellationFailureKind(request.abortSignal)),
         cancelledAt,
       });
       let cancellationAppend: PreparedHistoryAppend | undefined;
@@ -457,13 +457,12 @@ export class MonoAgentHarness implements AgentHarness {
         );
       }
     };
-    const onCancellation = (reason: unknown): void => {
+    const onCancellation = (reason: ReturnType<typeof cancelledTurnReason>): void => {
       if (isolated || terminalOwner !== "running") return;
       terminalOwner = "cancelled";
       toolHistoryStatus = "cancelled";
       cancelledAt = this.nowIso();
-      cancellationReason = reason;
-      cancellationAccountReason = cancelledTurnReason(reason, cancellationFailureKind(request.abortSignal));
+      cancellationAccountReason = reason;
       sealedPersistText = persistText;
       sealedLiveInputs = liveInputMailbox?.applied() ?? [];
       liveInputMailbox?.cancel();
@@ -491,7 +490,12 @@ export class MonoAgentHarness implements AgentHarness {
         },
       };
     };
-    const onAbort = (): void => { onCancellation(request.abortSignal.reason); };
+    const onAbort = (): void => {
+      onCancellation(cancelledTurnReason(
+        request.abortSignal.reason,
+        cancellationFailureKind(request.abortSignal),
+      ));
+    };
     request.abortSignal.addEventListener("abort", onAbort, { once: true });
     if (request.abortSignal.aborted) onAbort();
     try {
@@ -775,7 +779,10 @@ export class MonoAgentHarness implements AgentHarness {
       const failure = failureFromRuntimeResult(runtimeResult);
       if (failure !== undefined) {
         if (failure.kind === "cancelled" && !isolated) {
-          onCancellation(runtimeResult.errorDetails ?? runtimeResult.error ?? runtimeResult.failureKind);
+          onCancellation(runtimeResultCancelledTurnReason(
+            runtimeResult.errorDetails ?? runtimeResult.error ?? runtimeResult.failureKind,
+            cancellationFailureKind(request.abortSignal),
+          ));
           return await cancellationResponse();
         }
         // Failure-shaped results may still have appended provider transcript

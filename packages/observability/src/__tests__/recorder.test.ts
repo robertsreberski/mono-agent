@@ -112,15 +112,16 @@ describe("JsonlRunRecorder", () => {
       artifactDir: dir,
     });
     const cancellationReason = {
-      failureKind: "cancelled_user",
-      code: "operator",
-      notice: "Run stopped by the operator.",
-      channel: "Web",
+      failureKind: "cancelled",
+      code: "runtime_result",
+      notice: "Run cancelled for a recorded reason.",
+      untrustedCode: "coordinator_shutdown",
+      untrustedDetail: "Web service is stopping.",
     };
 
     const summary = await recorder.finish({
       cancelled: true,
-      failureKind: "cancelled_user",
+      failureKind: "cancelled",
       cancellationReason,
     });
     const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
@@ -128,8 +129,8 @@ describe("JsonlRunRecorder", () => {
       readonly cancellationReason?: unknown;
     };
 
-    expect(summary).toMatchObject({ status: "cancelled", failureKind: "cancelled_user", cancellationReason });
-    expect(onDisk).toMatchObject({ failureKind: "cancelled_user", cancellationReason });
+    expect(summary).toMatchObject({ status: "cancelled", failureKind: "cancelled", cancellationReason });
+    expect(onDisk).toMatchObject({ failureKind: "cancelled", cancellationReason });
   });
 
   it("persists the model (from the result) and system prompt (from the recorder option)", async () => {

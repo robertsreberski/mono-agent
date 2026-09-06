@@ -568,6 +568,9 @@ function projectCancellationReason(
     ...(reason.channel === undefined
       ? {}
       : { channel: sanitizeVisibleText(reason.channel, artifactDir, 128) }),
+    ...(reason.untrustedCode === undefined
+      ? {}
+      : { untrustedCode: sanitizeVisibleText(reason.untrustedCode, artifactDir, 128) }),
     ...(reason.untrustedDetail === undefined
       ? {}
       : { untrustedDetail: sanitizeDiagnosticText(reason.untrustedDetail, artifactDir) }),
@@ -680,6 +683,7 @@ function searchHaystack(run: RecordedRunListItem, artifactDir: string): string {
     metadata.failureKind,
     metadata.cancellationReason?.code,
     metadata.cancellationReason?.channel,
+    metadata.cancellationReason?.untrustedCode,
     metadata.cancellationReason?.untrustedDetail,
     metadata.trigger,
   ].filter((value): value is string => typeof value === "string").join("\n"));

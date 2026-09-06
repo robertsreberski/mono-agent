@@ -44,6 +44,7 @@ export interface CancelledTurnReason {
   readonly code: string;
   readonly notice: CancelledTurnNotice;
   readonly channel?: string;
+  readonly untrustedCode?: string;
   readonly untrustedDetail?: string;
 }
 
@@ -143,11 +144,18 @@ export class CancelledTurnCollector {
     if (event.type !== "assistant") return true;
     const message = dataRecord(event.message);
     if (message === undefined || !Array.isArray(message.content)) return true;
+    let eventOmitted = false;
     for (const rawBlock of message.content) {
       const block = dataRecord(rawBlock);
       if (block?.type === "text" && typeof block.text === "string") {
-        this.observeAssistantText(block.text);
+        eventOmitted = this.observeAssistantText(block.text) || eventOmitted;
       }
+    }
+    if (eventOmitted) {
+      this.partialAssistantOmittedEvents = saturatingAdd(
+        this.partialAssistantOmittedEvents,
+        1,
+      );
     }
     return true;
   }
@@ -262,8 +270,8 @@ export class CancelledTurnCollector {
     return call;
   }
 
-  private observeAssistantText(text: string): void {
-    if (text.length === 0) return;
+  private observeAssistantText(text: string): boolean {
+    if (text.length === 0) return false;
     const sourceBytes = Buffer.byteLength(text, "utf8");
     const remainingBytes = this.partialAssistantOmittedBytes > 0
       ? 0
@@ -283,11 +291,8 @@ export class CancelledTurnCollector {
         this.partialAssistantOmittedBytes,
         omittedBytes,
       );
-      this.partialAssistantOmittedEvents = saturatingAdd(
-        this.partialAssistantOmittedEvents,
-        1,
-      );
     }
+    return omittedBytes > 0;
   }
 
   private buildContent(
@@ -407,6 +412,33 @@ export function cancelledTurnReason(
     };
   }
   return { failureKind, code: directCode ?? "unrecorded", notice: "Run cancelled; reason not recorded." };
+}
+
+/**
+ * Builds a cancellation reason from runtime/provider-controlled result fields.
+ * Those fields may preserve evidence, but cannot select host provenance.
+ */
+export function runtimeResultCancelledTurnReason(
+  rawEvidence: unknown,
+  failureKind: "cancelled" | "cancelled_user",
+): CancelledTurnReason {
+  const rawCode = firstOwnDataString(rawEvidence, ["cancelInitiator", "code", "kind", "name"]);
+  const untrustedCode = rawCode === undefined ? undefined : boundedText(rawCode, ID_MAX_BYTES);
+  const rawDetail = firstOwnDataString(rawEvidence, ["message", "reason", "detail"])
+    ?? (typeof rawEvidence === "string" ? rawEvidence : undefined);
+  const untrustedDetail = rawDetail === undefined ? undefined : boundedText(rawDetail, DETAIL_MAX_BYTES);
+  const evidenceRecorded =
+    (untrustedCode !== undefined && untrustedCode.trim().length > 0)
+    || (untrustedDetail !== undefined && untrustedDetail.trim().length > 0);
+  return {
+    failureKind,
+    code: "runtime_result",
+    notice: evidenceRecorded
+      ? "Run cancelled for a recorded reason."
+      : "Run cancelled; reason not recorded.",
+    ...(untrustedCode === undefined ? {} : { untrustedCode }),
+    ...(untrustedDetail === undefined ? {} : { untrustedDetail }),
+  };
 }
 
 export function representedCancellationToolRecordIds(
