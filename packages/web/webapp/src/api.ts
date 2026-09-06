@@ -5,12 +5,8 @@ import type {
   AskSnapshot,
   AskSubmissionResult,
   Bootstrap,
-  ChannelConfigView,
   ConfigurationSession,
-  CronJob,
-  CronMutationResult,
   CronOverview,
-  CronRun,
   CronRunPage,
   LiveInputReceipt,
   McpAppPart,
@@ -294,23 +290,6 @@ const withReplyAccessRetry = async <T extends RichReplyType, TResult>(
   // Only an authenticated expiry response reaches this retry, and the newly
   // minted request is attempted exactly once.
   return await operation(boundNextUrl);
-};
-
-const cronMutation = async <T>(path: string, body: Readonly<Record<string, unknown>>): Promise<CronMutationResult<T>> => {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      "X-Mono-Agent-Web-Origin": window.location.origin,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok && response.status !== 428) throw await readError(response);
-  // Through the accounting helper like every other JSON body. `response.json()`
-  // decoded these outside the meter, so a console that ran a cron mutation on a
-  // browser with no resource timing under-reported it by the whole response.
-  return await readJson<CronMutationResult<T>>(response);
 };
 
 /**
@@ -786,35 +765,6 @@ export const api = {
     );
     return result.message;
   },
-
-  cronConfigView: async (sourceId: string, signal?: AbortSignal) => {
-    const result = await request<{ configView: ChannelConfigView }>(
-      `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/config-view`,
-      { signal },
-    );
-    return result.configView;
-  },
-
-  cronRunNow: (
-    sourceId: string,
-    jobId: string,
-    idempotencyKey: string,
-    confirmationToken?: string,
-  ) => cronMutation<{ readonly run: CronRun }>(
-    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/run`,
-    { idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
-  ),
-
-  cronSetEnabled: (
-    sourceId: string,
-    jobId: string,
-    enabled: boolean,
-    idempotencyKey: string,
-    confirmationToken?: string,
-  ) => cronMutation<{ readonly job: CronJob }>(
-    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/effective-enabled`,
-    { enabled, idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
-  ),
 
   registerPushSubscription: async (subscription: PushSubscription, previousSubscriptionId?: string) => {
     const serialized = subscription.toJSON();

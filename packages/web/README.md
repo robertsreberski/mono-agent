@@ -301,12 +301,19 @@ late or replayed delivery cannot recreate the channel. Bootstrap and paging are
 bounded per source and archive state, with redirect-resolving thread fetches for selections
 or mutations outside the current window.
 
-Run-now and runtime enable/disable controls appear only when the agent advertises
-them. They require same-origin browser mutation, source-qualified routing, an
-operator API key, explicit agent-side opt-in, an idempotency key, and an
-agent-issued confirmation. The console neither edits config nor computes a
-schedule. Runtime enable state, run history, action audit, and idempotency are
-agent-owned; the web SQLite database is a reconnect/refresh projection.
+The cron header is read-only: a quiet line shows human-language cadence and the
+agent-authored next run in the viewer's local date/time, with the viewer timezone
+available on the time label. Wall-clock cadence includes the scheduler timezone
+(UTC by default); unsupported expressions retain normalized cron text and timezone.
+Disabled or removed jobs say so. Missing, invalid, past, or offline/stale next-run
+state says **Next run unavailable**. Configuration stays in files/config JSON;
+the browser neither edits it nor computes a schedule.
+
+The web HTTP config-view, run-now, and effective-enabled proxies remain available
+for operator clients. Mutations still require same-origin requests, source-qualified
+routing, an operator API key, explicit agent-side opt-in, an idempotency key, and
+agent-issued confirmation. Runtime enable state, run history, action audit, and
+idempotency are agent-owned; web SQLite is a reconnect/refresh projection.
 
 When the selected agent advertises `capabilities.askUser`, a running `AskUser`
 tool call appears as one form containing all remaining questions. Each question
