@@ -807,6 +807,19 @@ export class WebService {
       ?? null;
   }
 
+  /**
+   * The ONLY place `supportsConfiguration` is added to a summary.
+   *
+   * It is derived from live in-memory state -- the discovery record, an open
+   * operator connection and the host's own answer -- and has no column in
+   * `agents`, so a stored row can never carry it. Putting it on the discovery
+   * summary instead (as the capability first shipped) made every poll's
+   * summary differ from the row it was compared against, so `replaceAgents`
+   * reported a change roughly every five seconds and every open console
+   * re-fetched its bootstrap, skills registry and cron overview for a
+   * heartbeat. Anything else that is projected rather than persisted belongs
+   * here too, not in `refreshAgentsOnce`.
+   */
   private decorateConfigurationCapability(agent: WebAgentSummary): WebAgentSummary {
     const host = this.options.configurationHost;
     const target = this.discoveredAgents.get(agent.sourceId);
@@ -2616,9 +2629,6 @@ export class WebService {
           pinned: false,
           health: agent.source.health,
           supportsAttachments: info.supportsAttachments,
-          ...(this.options.configurationHost?.supports(agent) === true
-            ? { supportsConfiguration: true as const }
-            : {}),
           ...(info.models === undefined ? {} : { models: info.models }),
           ...(info.model === undefined ? {} : { defaultModel: info.model }),
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),

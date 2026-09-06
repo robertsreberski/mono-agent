@@ -206,6 +206,53 @@ describe("web SELF-CONFIG sessions", () => {
       await service.stop();
     }
   });
+
+  it("does not announce an agent change on every discovery heartbeat", async () => {
+    // A configuration host that supports everything is the shape that made
+    // discovery look changed forever: `supportsConfiguration` is derived at
+    // projection time and has no column, so a summary carrying it could never
+    // deep-equal the row read back out of the store.
+    const host = {
+      supports: () => true,
+      create: async (): Promise<never> => { throw new Error("configuration session not used by this test"); },
+    };
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({ discoverImpl: async () => discovered, configurationHost: host });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    try {
+      discovered = [fakeDiscoveredAgent()];
+      await service.refreshAgents();
+      // The agent appearing IS an announcement.
+      expect(events).toEqual([undefined]);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // Two more polls in which only the heartbeat moves. Nothing about the
+      // fleet changed, so no console should be told to re-bootstrap.
+      const base = fakeDiscoveredAgent();
+      for (const updatedAt of ["2026-07-17T09:00:05.000Z", "2026-07-17T09:00:10.000Z"]) {
+        discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+        await service.refreshAgents();
+      }
+      expect(events).toEqual([undefined]);
+      // And the capability still reaches the browser -- it is projected, not stored.
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // Silence the heartbeat, not the event: something the fleet actually did
+      // still reaches every console.
+      discovered = [fakeDiscoveredAgent({
+        source: { ...base.source, health: "stale", updatedAt: "2026-07-17T09:00:15.000Z" },
+      })];
+      await service.refreshAgents();
+      expect(events).toEqual([undefined, undefined]);
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "degraded", health: "stale" });
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
 });
 
 describe("WebService", () => {

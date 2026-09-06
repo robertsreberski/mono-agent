@@ -152,7 +152,14 @@ export interface WebAgentSummary {
   readonly pinned?: boolean;
   readonly health?: string;
   readonly supportsAttachments: boolean;
-  /** True only when this web host can grant an owner-local SELF-CONFIG capability. */
+  /**
+   * True only when this web host can grant an owner-local SELF-CONFIG capability.
+   *
+   * Projected, never persisted: the console's own state database has no column
+   * for it, so it is added when a summary is answered to a client and must
+   * stay off the summaries discovery hands to `replaceAgents` -- a field the
+   * store cannot store makes every heartbeat look like a fleet change.
+   */
   readonly supportsConfiguration?: true;
   /** Agent operator exposes bearer-protected Pi provider authentication v1. */
   readonly supportsProviderAuth?: true;
