@@ -70,7 +70,7 @@ describe("web storage migration history", () => {
       } finally { store.close(); }
       const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 19 });
         expect(schema(database)).toEqual(expectedShape);
         expect(database.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
         expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -161,12 +161,12 @@ describe("web storage migration history", () => {
     store.close();
   });
 
-  it.each([19, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
+  it.each([20, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
     const stateDir = await seeded(0);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(`PRAGMA user_version = ${version}`);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 19 ? "unsupported_storage_schema" : "storage_corrupt" });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 20 ? "unsupported_storage_schema" : "storage_corrupt" });
     const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
     try {
       expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
@@ -177,7 +177,7 @@ describe("web storage migration history", () => {
   it("rejects a current stamp lacking seq instead of pretending it ran the repair", async () => {
     const stateDir = await seeded(17);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
-    database.exec("PRAGMA user_version = 18");
+    database.exec("PRAGMA user_version = 19");
     database.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt", message: "Web storage migration postconditions failed." });
   });
@@ -185,8 +185,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 18 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(18);
+  it("is immutable and derives schema 19 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(19);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);

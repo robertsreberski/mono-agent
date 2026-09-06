@@ -63,6 +63,21 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
+  it("persists the protected provider-auth capability in agent projections", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    const capable = { ...agent(), supportsProviderAuth: true as const };
+
+    expect(store.replaceAgents([capable])).toBe(true);
+    expect(store.getAgent("agent-one")?.supportsProviderAuth).toBe(true);
+    expect(store.listAgents()[0]?.supportsProviderAuth).toBe(true);
+
+    expect(store.replaceAgents([agent()])).toBe(true);
+    expect(store.getAgent("agent-one")?.supportsProviderAuth).toBeUndefined();
+    store.close();
+  });
+
   it("broadcasts a replaced agent process without broadcasting its heartbeat", async () => {
     // The generation is what the browser watches to know its per-agent caches
     // -- the `/v1/models` pages above all -- describe a process that is gone.
@@ -2609,7 +2624,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 19");
+    future.exec("PRAGMA user_version = 20");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

@@ -558,7 +558,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 18. Schema 9 added the `message_search` FTS5
+The web state database is at schema 19. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
@@ -568,8 +568,10 @@ discovery presence. Schema 18 adds `messages.seq`, the per-message write counter
 a console compares against to tell the next delta from one it missed; existing
 rows start at 0, which is exactly what a browser that has never seen a delta
 holds. An earlier build numbered that column 17, so 18 also repairs that shape
-without resetting sequence values already assigned. These migrations are
-additive and transactional. An older
+without resetting sequence values already assigned. Schema 19 persists the
+live agent's protected provider-auth capability so Agent settings receives it
+through the same bootstrap projection as the rest of the agent summary. These
+migrations are additive and transactional. An older
 `@mono-agent/web` binary refuses to open a newer database rather than reading it
 incorrectly, so downgrading means restoring a pre-upgrade copy of
 `~/.mono-agent/web/state.sqlite`.

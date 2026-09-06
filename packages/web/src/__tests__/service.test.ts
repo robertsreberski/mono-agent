@@ -209,6 +209,15 @@ describe("web SELF-CONFIG sessions", () => {
 });
 
 describe("WebService", () => {
+  it("includes a live agent's protected provider-auth capability in bootstrap", async () => {
+    const service = await createService({ fetchImpl: operatorFetch({ supportsProviderAuth: true }) });
+    try {
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("saves strict web defaults, snapshots new threads, and reverts without changing existing threads", async () => {
     const turnBodies: Record<string, unknown>[] = [];
     const service = await createService({ fetchImpl: operatorFetch({ onTurn: (body) => turnBodies.push(body) }) });

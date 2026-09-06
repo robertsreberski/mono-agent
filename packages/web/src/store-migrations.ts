@@ -73,6 +73,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     // Two shipped schema-17 layouts exist; never reset an existing sequence.
     addColumn(database, "messages", "seq", "INTEGER NOT NULL DEFAULT 0");
   } },
+  { version: 19, name: "agent-provider-auth-capability", up: ({ database }) => {
+    addColumn(database, "agents", "supports_provider_auth", "INTEGER NOT NULL DEFAULT 0 CHECK (supports_provider_auth IN (0, 1))");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -118,7 +121,7 @@ export function runWebStorageMigrations(
 export function validateWebStorageShape(database: DatabaseSync): void {
   try {
     const required: Readonly<Record<string, readonly string[]>> = {
-      agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered"],
+      agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
       threads: ["trigger_kind", "run_model", "run_effort"],
       cron_overviews: ["jobs_truncated"],
       attachments: ["origin"],
