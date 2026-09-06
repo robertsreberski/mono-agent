@@ -1136,6 +1136,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .app-shell { grid-template-columns: minmax(0, 1fr); }
   .desktop-agent-rail, .desktop-thread-sidebar { display: none; }
   .mobile-navigation { display: flex; align-items: center; gap: 2px; margin-left: -6px; }
+  .mobile-navigation .icon-button { width: 44px; height: 44px; }
   .chat-header { min-height: 58px; gap: 8px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
   .conversation-title { max-width: min(42vw, 340px); }
   .chat-status { display: none; }
@@ -1154,7 +1155,6 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 @media (max-width: 560px) {
   .chat-header { flex-wrap: wrap; align-content: center; padding-left: max(9px, env(safe-area-inset-left)); padding-right: max(9px, env(safe-area-inset-right)); padding-bottom: 8px; }
   .mobile-navigation { order: 1; }
-  .mobile-navigation .icon-button { width: 36px; height: 38px; }
   .chat-title-block { order: 2; flex: 1; gap: 0; }
   .conversation-title { max-width: calc(100vw - 118px); min-width: 64px; padding-inline: 2px; font-size: 13px; }
   .title-input { width: calc(100vw - 118px); min-width: 84px; }
