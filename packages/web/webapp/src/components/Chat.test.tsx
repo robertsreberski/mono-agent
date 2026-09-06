@@ -90,7 +90,7 @@ beforeAll(() => {
       return scrollTopByElement.get(this) ?? 0;
     },
     set(value: number) {
-      scrollTopByElement.set(this, value);
+      scrollTopByElement.set(this, Math.min(Number(value), maxScrollTop(this)));
     },
   });
   Object.defineProperty(HTMLElement.prototype, "clientHeight", {
@@ -174,6 +174,7 @@ const chatStore = (
   selectedThread: ThreadSummary,
   detail: ThreadDetail | null,
   detailLoading = false,
+  selectedThreadId = selectedThread.id,
 ) => {
   const selectedAgent = agent("agent", { supportsAttachments: false });
   return {
@@ -185,7 +186,7 @@ const chatStore = (
     selectedThread,
     detail,
     selectedAgentId: selectedAgent.sourceId,
-    selectedThreadId: selectedThread.id,
+    selectedThreadId,
     loading: false,
     detailLoading,
     connection: "live" as const,
@@ -226,7 +227,7 @@ describe("Chat conversation viewport", () => {
     firstViewport!.scrollTop = 120;
     fireEvent.scroll(firstViewport!);
 
-    storeMock.current = chatStore(secondThread, null, true);
+    storeMock.current = chatStore(firstThread, null, true, secondThread.id);
     rerender(chatTree());
 
     const secondViewport = container.querySelector<HTMLElement>(".thread-viewport");

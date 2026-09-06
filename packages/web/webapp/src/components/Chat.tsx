@@ -1,5 +1,5 @@
 import { ThreadPrimitive } from "@assistant-ui/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
 import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
@@ -26,6 +26,93 @@ const runLabel: Record<string, string> = {
 };
 
 export const CONNECTION_NOTICE_DELAY_MS = 5_000;
+const BOTTOM_TOLERANCE_PX = 1;
+
+function useConversationBottomFollow(selectedThreadId: string | null) {
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const lastScrollTopRef = useRef(0);
+  const lastScrollHeightRef = useRef(0);
+  const selectedThreadIdRef = useRef(selectedThreadId);
+  selectedThreadIdRef.current = selectedThreadId;
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const content = contentRef.current;
+    if (!viewport || !content) return;
+
+    const effectThreadId = selectedThreadId;
+    let active = true;
+    let frame: number | null = null;
+    shouldStickToBottomRef.current = true;
+
+    const rememberGeometry = () => {
+      lastScrollTopRef.current = viewport.scrollTop;
+      lastScrollHeightRef.current = viewport.scrollHeight;
+    };
+    const isAtBottom = () =>
+      Math.abs(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop)
+        <= BOTTOM_TOLERANCE_PX;
+    const scrollToBottom = () => {
+      if (
+        !active
+        || selectedThreadIdRef.current !== effectThreadId
+        || viewportRef.current !== viewport
+        || contentRef.current !== content
+        || !viewport.isConnected
+        || !content.isConnected
+        || !shouldStickToBottomRef.current
+      ) return;
+
+      viewport.scrollTop = viewport.scrollHeight;
+      rememberGeometry();
+    };
+    const scheduleScrollToBottom = () => {
+      if (frame !== null) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        scrollToBottom();
+      });
+    };
+    const handleScroll = () => {
+      const scrollTop = viewport.scrollTop;
+      const scrollHeight = viewport.scrollHeight;
+      if (isAtBottom()) {
+        shouldStickToBottomRef.current = true;
+      } else if (
+        // Height changes can clamp scrollTop; only stable geometry proves an upward operator scroll.
+        scrollHeight === lastScrollHeightRef.current
+        && scrollTop < lastScrollTopRef.current
+      ) {
+        shouldStickToBottomRef.current = false;
+      }
+      lastScrollTopRef.current = scrollTop;
+      lastScrollHeightRef.current = scrollHeight;
+    };
+
+    rememberGeometry();
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    const resizeObserver = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(() => {
+        rememberGeometry();
+        if (shouldStickToBottomRef.current) scheduleScrollToBottom();
+      });
+    resizeObserver?.observe(content);
+    resizeObserver?.observe(viewport);
+    scheduleScrollToBottom();
+
+    return () => {
+      active = false;
+      viewport.removeEventListener("scroll", handleScroll);
+      resizeObserver?.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, [selectedThreadId]);
+
+  return { viewportRef, contentRef };
+}
 
 export function ConnectionBanner({ connection }: { readonly connection: ConnectionState }) {
   const [visible, setVisible] = useState(connection === "offline");
@@ -237,6 +324,7 @@ export function Chat({
   const {
     selectedAgent,
     selectedThread,
+    selectedThreadId,
     connection,
     detailLoading,
     archiveThread,
@@ -245,6 +333,7 @@ export function Chat({
     hasOlderMessages,
     loadOlderMessages,
   } = useConsoleStore();
+  const { viewportRef, contentRef } = useConversationBottomFollow(selectedThreadId);
   const runStatus = selectedThread?.runState.status;
   const runNeedsAttention =
     runStatus === "running" ||
@@ -329,11 +418,12 @@ export function Chat({
         <ThreadPrimitive.Root className="thread-root">
           <SelectionToolbar />
           <ThreadPrimitive.Viewport
-            key={selectedThread?.id ?? "no-thread"}
+            key={selectedThreadId ?? "no-thread"}
+            ref={viewportRef}
             className="thread-viewport"
             autoScroll
           >
-            <div className="message-column">
+            <div ref={contentRef} className="message-column">
               <EmptyConversation />
               {hasOlderMessages && (
                 <button
