@@ -15,7 +15,7 @@ import { WebStore } from "../store.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import * as migrationsModule from "../store-migrations.js";
 import { fakeMonitor, temporaryRoot } from "./helpers.js";
-import { seedLegacyStorage } from "./fixtures/storage-layouts.js";
+import { seedLegacyStorage, seedLegacySilentCron } from "./fixtures/storage-layouts.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -48,7 +48,7 @@ function schema(database: DatabaseSync): unknown {
   }));
 }
 
-const historical = [...Array.from({ length: 19 }, (_, version) => ({ version, sequenced17: false })),
+const historical = [...Array.from({ length: 20 }, (_, version) => ({ version, sequenced17: false })),
   { version: 17, sequenced17: true }];
 
 describe("web storage migration history", () => {
@@ -70,7 +70,7 @@ describe("web storage migration history", () => {
       } finally { store.close(); }
       const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 19 });
+        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 20 });
         expect(schema(database)).toEqual(expectedShape);
         expect(database.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
         expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -161,12 +161,12 @@ describe("web storage migration history", () => {
     store.close();
   });
 
-  it.each([20, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
+  it.each([21, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
     const stateDir = await seeded(0);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(`PRAGMA user_version = ${version}`);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 20 ? "unsupported_storage_schema" : "storage_corrupt" });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 21 ? "unsupported_storage_schema" : "storage_corrupt" });
     const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
     try {
       expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
@@ -177,7 +177,7 @@ describe("web storage migration history", () => {
   it("rejects a current stamp lacking seq instead of pretending it ran the repair", async () => {
     const stateDir = await seeded(17);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
-    database.exec("PRAGMA user_version = 19");
+    database.exec("PRAGMA user_version = 20");
     database.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt", message: "Web storage migration postconditions failed." });
   });
@@ -185,8 +185,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 19 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(19);
+  it("is immutable and derives schema 20 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(20);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -210,7 +210,7 @@ describe("named migration registry", () => {
     const cron = vi.fn();
     const monitor = vi.fn();
     const search = vi.fn();
-    const context = { database, originalVersion: 1, migrateCronChannels: cron, migrateMonitorWakeDeliveries: monitor, backfillMessageSearch: search };
+    const context = { database, originalVersion: 1, migrateCronChannels: cron, migrateMonitorWakeDeliveries: monitor, backfillMessageSearch: search, suppressSilentCronHistory: vi.fn() };
     try {
       database.exec("BEGIN IMMEDIATE");
       runWebStorageMigrations(context);
@@ -226,5 +226,59 @@ describe("named migration registry", () => {
       expect(database.prepare("SELECT seq FROM messages").get()).toMatchObject({ seq: 7 });
       database.exec("ROLLBACK");
     } finally { database.close(); }
+  });
+});
+
+
+describe("migration 19 silent history", () => {
+  it("preserves a real v18 mixed history, receipts and attachments and advances each affected revision once", async () => {
+    const stateDir = await seeded(18);
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    seedLegacySilentCron(database);
+    seedLegacySilentCron(database, "second-silent");
+    seedLegacySilentCron(database, "failed", { status: "failed" });
+    seedLegacySilentCron(database, "real", { text: "Real answer", messageText: "Real answer" });
+    seedLegacySilentCron(database, "ambiguous", { fieldsTruncated: ["text"] });
+    seedLegacySilentCron(database, "delivered", { delivered: true });
+    seedLegacySilentCron(database, "retained-content", { messageText: "Notification answer" });
+    const before = database.prepare("SELECT revision, updated_at FROM threads").get() as { revision: number; updated_at: string };
+    database.close();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      expect(store.getMessage("legacy-silent")).toBeUndefined();
+      expect(store.getMessage("delivered")!.parts).not.toContainEqual(expect.objectContaining({
+        type: "telemetry", event: "cron_run", data: expect.objectContaining({ silent: true }),
+      }));
+      expect(store.getThreadDetail("fixture-thread")!.messages.map((message) => message.id).sort()).toEqual([
+        "fixture-message", "failed", "real", "ambiguous", "delivered", "retained-content",
+      ].sort());
+      store.close();
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 20 });
+        expect(inspected.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+        expect(inspected.prepare("SELECT revision, updated_at FROM threads").get()).toEqual({ ...before, revision: before.revision + 1 });
+        expect(inspected.prepare("SELECT seq, cron_suppressed FROM messages WHERE id = 'legacy-silent'").get()).toEqual({ seq: 9, cron_suppressed: 1 });
+        expect(inspected.prepare("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 8 });
+        expect(inspected.prepare("SELECT COUNT(*) AS count FROM attachments").get()).toEqual({ count: 1 });
+        expect(inspected.prepare("SELECT COUNT(*) AS count FROM monitor_wake_deliveries").get()).toEqual({ count: 1 });
+        expect(inspected.prepare("SELECT COUNT(*) AS count FROM notification_deliveries").get()).toEqual({ count: 2 });
+      } finally { inspected.close(); }
+    }
+  });
+
+  it("rolls the new column, all marker writes and the version back on invalid stored cron text", async () => {
+    const stateDir = await seeded(18);
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    for (let index = 0; index < 105; index += 1) seedLegacySilentCron(database, `silent-${index}`);
+    seedLegacySilentCron(database, "invalid", { text: 42 });
+    database.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt", message: "Web storage migration 19 (silent-cron-projections) failed." });
+    const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
+    try {
+      expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+      expect(inspected.prepare("PRAGMA table_info(messages)").all()).not.toContainEqual(expect.objectContaining({ name: "cron_suppressed" }));
+      expect(inspected.prepare("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 107 });
+    } finally { inspected.close(); }
   });
 });

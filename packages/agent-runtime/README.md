@@ -948,6 +948,25 @@ Hosts that don't supply `persistArtifact` get the truncation summary but no on-d
 
 Before that byte cap runs, the builtin `Read` tool normalizes raster images with an edge longer than 8,000 px to fit within an 8,000 × 8,000 px box. Resizing preserves aspect ratio and the source format (resized BMP input becomes PNG), retains GIF/WebP animation, and never modifies the source file. Images already within the limit are embedded byte-for-byte unchanged.
 
+### System instructions and transcript assembly
+
+The host supplies stable system instructions separately from ordered messages.
+`@mono-agent/agent-harness` projects core/SOUL, identity and skill instructions
+by typed section ids; its full inspection prompt is not dispatched as system
+text. The runtime still appends its structured-output instruction here.
+The current user message starts with the host's latest Session/warm-skill
+envelope, followed by user/attachment text and recall. Tool authorization and
+delivery routing remain host-enforced.
+
+On every cold/stateless/retry path, canonical historical text precedes the cold
+untrusted tool-history projection and current turn. Canonical replay preserves
+speaker and stored timestamp labels, but cannot reconstruct native reasoning
+signatures or tool calls. A true Pi resume skips all supplied prior messages and
+keeps its native transcript; a missing durable JSONL seeds prior messages once.
+History retention remains last-64 for the configured host. Compaction can replace
+an older native prefix and remove previously loaded skill bodies, so warm-skill
+guidance only says complete instructions may remain visible.
+
 ### Context compaction
 
 The sole pi bridge runs on pi-agent-core's native `AgentHarness`. pi performs **no**

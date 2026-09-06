@@ -11,6 +11,14 @@ This is the chat-first companion to [`mono-agent tui`](/observability/tui/). The
 
 The web service does not run the terminal UI. Both consoles discover and connect to each agent's `metadata.channels.tui.baseUrl`, whose default path is `/gui`; they merely share the same bidirectional operator protocol.
 
+Successful cron runs suppressed by the shared `NOTHING_TO_REPORT` classifier have
+no visible message row. Compact run history remains available separately from the
+conversation feed. Failures, real output and completed notification content remain
+visible. A cron revision change resets that conversation's cached transcript,
+including previously loaded pages, so hidden history cannot reappear from an old
+browser cache. Offline cleanup preserves real text and rich replies even when an
+older server marked their cron metadata silent.
+
 ## Start it once
 
 On Linux, use the [systemd user-service backend](./linux-services.md) for
@@ -212,6 +220,14 @@ one.
 
 The left rail lists auto-discovered trace sources and their current health. On desktop, its explicit toggle switches between a fixed compact rail and a fixed expanded rail with full agent names. The chosen state is a browser-local presentation preference, so different browser profiles can keep different layouts without a drag-resize target.
 
+On narrow touch screens, swipe right across the unoccupied chat surface to open
+the conversation drawer. Swipe left across either open navigation drawer to
+close it. Message content, controls, inputs, modal surfaces, and any native
+horizontal scroller keep their normal touch behavior. The gesture requires at
+least 64 pixels of clearly horizontal travel, so short drags and ordinary
+vertical scrolling do not change navigation. The header's agent and
+conversation buttons remain available as 44-pixel touch targets.
+
 Use the star beside an agent to add or remove it from favorites. The same pin control is available in the mobile agent picker. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first and remain visible while offline.
 
 Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. Unpinned agents that remain discovered but are temporarily offline are hidden by default behind a subtle **Show N offline** control shared by the desktop rail, mobile picker, and command palette. Pinned agents and the currently selected agent remain visible while that source is still discovered. When a successful discovery refresh omits a source, the console removes it from every picker and from the offline count regardless of its prior pin or selection. Its rows, conversations, and pin remain retained in SQLite and return if the same source id is discovered again. A discovery error only marks current sources offline; it is not treated as an authoritative removal. The offline filter resets to hidden on a full page load, and sending stays disabled until the exact source is reachable again.
@@ -222,7 +238,7 @@ Every turn tells the agent that it is in an interactive web console conversation
 
 Cron jobs and webhook endpoints can explicitly target `notifyConversationId: "web:new"` with `notify: true`. Webhook results retain one assistant-only thread per delivery. Cron results instead fold into one durable, source-qualified channel per job, with the stable route `/agents/<sourceId>/cron/<jobId>`. Its chronological feed includes scheduled/manual admission, running, queued, succeeded, failed, cancelled, overlap-skipped, and dropped states, plus artifact/session links when the agent reports them. The header shows the agent-authoritative schedule, timezone, declared/effective state, last/next run, and health; it never computes next-run locally. Cron channels are read-only in this release, so console interaction cannot occupy the cron job's own conversation and cause a scheduled firing to overlap.
 
-The console retains at most 500 run rows per cron job. A bootstrap carries one page of one `(sourceId, archived)` bucket -- the one `?sourceId=` names, or the agent of the current conversation when it names none -- and answers with `threadsSourceId` and `threadsNextCursor` alongside it. That page and every thread page are bounded to 50 rows by default and 200 at most, message pages to 30 by default and 100 at most, and all older-page queries use opaque keyset cursors. Conversation search is bounded to 50 conversations per query. A selected thread outside the current window is fetched through redirect-resolving `GET /threads/:id` before a mutation instead of silently no-oping.
+The console retains at most 500 visible and 500 suppressed run projections per cron job. Silent history does not consume the visible-message allowance. A bootstrap carries one page of one `(sourceId, archived)` bucket -- the one `?sourceId=` names, or the agent of the current conversation when it names none -- and answers with `threadsSourceId` and `threadsNextCursor` alongside it. That page and every thread page are bounded to 50 rows by default and 200 at most, message pages to 30 by default and 100 at most, and all older-page queries use opaque keyset cursors. Conversation search is bounded to 50 conversations per query. A selected thread outside the current window is fetched through redirect-resolving `GET /threads/:id` before a mutation instead of silently no-oping.
 
 Configured cron channels may be archived but not deleted. If a job disappears from config, the channel becomes a `configured:false` historical tombstone; an archived tombstone may be deleted. Deletion retains a local suppression marker plus threadless notification-delivery receipts, so authoritative historical overviews and late or replayed deliveries cannot resurrect it. The marker clears only if that job id becomes configured again.
 
@@ -558,7 +574,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 19. Schema 9 added the `message_search` FTS5
+The web state database is at schema 20. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
@@ -568,10 +584,11 @@ discovery presence. Schema 18 adds `messages.seq`, the per-message write counter
 a console compares against to tell the next delta from one it missed; existing
 rows start at 0, which is exactly what a browser that has never seen a delta
 holds. An earlier build numbered that column 17, so 18 also repairs that shape
-without resetting sequence values already assigned. Schema 19 persists the
-live agent's protected provider-auth capability so Agent settings receives it
-through the same bootstrap projection as the rest of the agent summary. These
-migrations are additive and transactional. An older
+without resetting sequence values already assigned. Schema 19 suppresses silent
+cron projections at the storage read boundary. Schema 20 persists the live
+agent's protected provider-auth capability so Agent settings receives it through
+the same bootstrap projection as the rest of the agent summary. These migrations
+are additive and transactional. An older
 `@mono-agent/web` binary refuses to open a newer database rather than reading it
 incorrectly, so downgrading means restoring a pre-upgrade copy of
 `~/.mono-agent/web/state.sqlite`.

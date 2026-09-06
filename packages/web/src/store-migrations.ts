@@ -8,6 +8,7 @@ export interface WebStorageMigrationContext {
   readonly originalVersion: number;
   readonly migrateCronChannels: () => void;
   readonly migrateMonitorWakeDeliveries: () => void;
+  readonly suppressSilentCronHistory: () => void;
   readonly backfillMessageSearch: () => void;
 }
 
@@ -73,7 +74,11 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     // Two shipped schema-17 layouts exist; never reset an existing sequence.
     addColumn(database, "messages", "seq", "INTEGER NOT NULL DEFAULT 0");
   } },
-  { version: 19, name: "agent-provider-auth-capability", up: ({ database }) => {
+  { version: 19, name: "silent-cron-projections", up: ({ database, suppressSilentCronHistory }) => {
+    addColumn(database, "messages", "cron_suppressed", "INTEGER NOT NULL DEFAULT 0 CHECK (cron_suppressed IN (0,1))");
+    suppressSilentCronHistory();
+  } },
+  { version: 20, name: "agent-provider-auth-capability", up: ({ database }) => {
     addColumn(database, "agents", "supports_provider_auth", "INTEGER NOT NULL DEFAULT 0 CHECK (supports_provider_auth IN (0, 1))");
   } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
@@ -128,13 +133,22 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
-      messages: ["seq"],
+      messages: ["seq", "cron_suppressed"],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;
     }>).find((column) => column.name === "seq");
     if (seq?.type !== "INTEGER" || seq.notnull !== 1 || seq.dflt_value !== "0") throw new Error("Invalid sequence column.");
+    const suppressed = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
+      name: string; type: string; notnull: number; dflt_value: string | null;
+    }>).find((column) => column.name === "cron_suppressed");
+    const messageDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'messages'").get() as { sql: string };
+    if (suppressed?.type !== "INTEGER" || suppressed.notnull !== 1 || suppressed.dflt_value !== "0"
+      || !/CHECK\s*\(cron_suppressed\s+IN\s*\(0,\s*1\)\)/iu.test(messageDdl.sql)
+      || database.prepare("SELECT 1 FROM messages WHERE cron_suppressed NOT IN (0,1) LIMIT 1").get() !== undefined) {
+      throw new Error("Invalid cron suppression column.");
+    }
     for (const [index, expected] of [
       ["messages_by_thread", ["thread_id", "created_at"]],
       ["cron_run_messages_by_order", ["source_id", "job_id", "ordered_at", "sequence", "run_id"]],

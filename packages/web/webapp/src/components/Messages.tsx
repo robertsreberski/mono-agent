@@ -1,3 +1,4 @@
+import { isSilentCronData } from "../cron-visibility";
 import {
   ActionBarPrimitive,
   MessagePrimitive,
@@ -907,11 +908,11 @@ export function CronRunPart({ data }: DataMessagePartProps) {
   const [copied, setCopied] = useState(false);
   const [activityLoading, setActivityLoading] = useState(false);
   const { loadCronRunActivity } = useConsoleStore();
-  if (runId === undefined) return null;
+  if (runId === undefined || (isSilentCronData(payload) && payload.hasVisibleContent !== true)) return null;
   const sequence = typeof payload.sequence === "number" ? payload.sequence : undefined;
   const status = typeof payload.status === "string" ? payload.status : "unknown";
   const stateLabel = status === "succeeded"
-    ? payload.silent === true ? "completed silently" : "completed"
+    ? "completed"
     : status.replaceAll("_", " ");
   const trigger = payload.trigger === "manual" ? "manual" : "scheduled";
   const artifactRunId = typeof payload.artifactRunId === "string" ? payload.artifactRunId : undefined;

@@ -136,6 +136,12 @@ managed agent protects its loopback operator endpoint, discovery reads only
 
 On desktop, the agent rail has fixed compact and expanded layouts selected by
 an explicit expand/collapse control. That choice is remembered by the browser.
+On narrow touch screens, a deliberate right swipe across the unoccupied chat
+surface opens the conversation drawer. A left swipe across either open
+navigation drawer closes it. Message content, controls, inputs, and any native
+horizontal scroller keep their normal touch behavior; short drags and vertically
+dominant scrolling do not trigger navigation. The two header navigation controls
+remain available as 44-pixel touch targets.
 Offline agents that remain in the current discovery result are hidden behind a
 subtle count by default; pinned agents and the currently selected agent remain
 visible even while offline. An agent omitted by a successful discovery refresh
@@ -386,6 +392,21 @@ cross-resource requests fail. See
 [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).
 
 ## Architecture
+
+### Silent cron history
+
+Successful empty answers and answers suppressed by `NOTHING_TO_REPORT` add no
+visible conversation row. Failures, real output and completed notification
+content remain visible. The console retains compact silent run history separately
+from visible messages; each job keeps up to 500 visible and 500 suppressed run
+projections. Paging, search, previews and message counts exclude suppressed rows.
+
+Schema 19 marks existing definitely-silent projections without deleting their
+messages, turns or delivery receipts. Ambiguous text truncated by an older agent
+stays visible until authoritative evidence arrives. Cron transcript caches reset
+when their authoritative revision advances, so previously loaded older pages may
+need to be loaded again. Offline hydration also hides old synthetic-only silent
+rows while preserving delivered text and rich replies.
 
 ### Storage migrations
 

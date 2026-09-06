@@ -1,7 +1,8 @@
 import { DEFAULT_SOUL_TEXT } from './default-soul.js';
 import { ContextValidationError } from './errors.js';
 import { normalizeJsonValue } from './json.js';
-import { buildSkillIndex, renderSkillIndexEntries } from './skill-index.js';
+import { buildSkillIndex, renderSkillIndexEntries, WARM_SESSION_SKILL_GUIDANCE } from './skill-index.js';
+import { HOST_TURN_CONTEXT_GUIDANCE } from './turn-envelope.js';
 import { normalizeInlineText } from './text.js';
 import type {
   BuildContextInput,
@@ -68,6 +69,26 @@ export function buildAgentContext(input: BuildContextInput): BuiltAgentContext {
 
   return {
     prompt: sections.map(renderSection).join('\n\n'),
+    systemPrompt: [
+      ...sections.flatMap((section) => {
+        switch (section.id) {
+          case 'core':
+          case 'identity':
+          case 'skill-instructions':
+            return [renderSection(section)];
+          case 'skills':
+            return [renderSection({ ...section, content: renderSkillIndexEntries(skills, input.skillDisclosure) })];
+          default:
+            return [];
+        }
+      }),
+      HOST_TURN_CONTEXT_GUIDANCE,
+    ].join('\n\n'),
+    turnContext: [
+      ...sections.filter((section) => section.id === 'session').map(renderSection),
+      ...(skills.length > 0 && input.skillDisclosure === 'index' && input.warmSession === true
+        ? [WARM_SESSION_SKILL_GUIDANCE] : []),
+    ].join('\n\n'),
     sections,
     metadata: {
       usedDefaultCore,

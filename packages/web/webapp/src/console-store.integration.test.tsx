@@ -3,7 +3,8 @@
 // and the debounced write-through behind it. The store is emptied before each
 // test, so what any one of them restores is exactly what it seeded.
 import "fake-indexeddb/auto";
-import { act, cleanup as cleanupDom, render, screen, waitFor } from "@testing-library/react";
+import { ThreadPrimitive } from "@assistant-ui/react";
+import { act, cleanup as cleanupDom, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -39,7 +40,7 @@ import {
 } from "./console-store";
 import type { RequestLanding } from "./console-store";
 import { canSendInConsole } from "./capabilities";
-import { agent, bootstrap, thread, uploadLimits } from "./test/fixtures";
+import { agent, bootstrap, processJob, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
 import {
   acquireReplyImageBlob,
@@ -61,6 +62,9 @@ import type {
   WebEvent,
   WebMessage,
 } from "./types";
+import { WebRuntimeProvider } from "./runtime";
+import { Composer } from "./components/Composer";
+import { AssistantMessage, SystemMessage, UserMessage } from "./components/Messages";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
 // `instanceof ApiError` and on its status to tell a server that refused a
@@ -90,6 +94,7 @@ vi.mock("./api", async (importOriginal) => ({
     message: vi.fn(),
     threadIfChanged: vi.fn(),
     liveInput: vi.fn(),
+    threadJob: vi.fn(),
   },
 }));
 
@@ -787,6 +792,112 @@ describe("ConsoleStoreProvider integration", () => {
       { type: "text", text: "answered elsewhere" },
     ]));
     expect(vi.mocked(api.cronRuns).mock.calls.length).toBeGreaterThan(initialRunReads);
+  });
+
+  it("evicts already-paged cron rows on a revision advance and rejects an old activity answer", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { cron: { read: true, actions: true } })], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    const initial = { ...detail(), messagesNextCursor: "older" };
+    vi.mocked(api.thread).mockResolvedValue(initial);
+    vi.mocked(api.messages).mockResolvedValue({ messages: [{ ...initial.messages[0]!, id: "paged-silent" }] });
+    let finish: (message: WebMessage) => void = () => undefined;
+    vi.mocked(api.cronRun).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.messages).toHaveLength(1));
+    await act(async () => store.current.loadOlderMessages());
+    expect(store.current.detail?.messages).toHaveLength(2);
+    let activity: Promise<void>;
+    act(() => { activity = store.current.loadCronRunActivity("old-run"); });
+    const changed = { ...cronThread, revision: cronThread.revision + 1, messageCount: 0 };
+    vi.mocked(api.thread).mockResolvedValue({ thread: changed, messages: [] });
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", threadId: cronThread.id,
+      at: "2026-08-14T09:00:00.000Z", payload: { thread: changed } }));
+    await waitFor(() => expect(store.current.detail?.messages).toEqual([]));
+    await act(async () => { finish(initial.messages[0]!); await activity!; });
+    expect(store.current.detail?.messages).toEqual([]);
+    const reads = vi.mocked(api.thread).mock.calls.length;
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", threadId: cronThread.id,
+      at: "2026-08-14T09:00:00.000Z", payload: { thread: changed } }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    expect(api.thread).toHaveBeenCalledTimes(reads);
+  });
+
+  it("evicts an unselected cached cron thread before it is opened again", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    const other = thread("other", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { cron: { read: true, actions: true } })], [cronThread, other]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread, other] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    let currentCron = detail();
+    vi.mocked(api.thread).mockImplementation(async (id) => id === other.id ? detail(other) : currentCron);
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
+    await act(async () => store.current.selectThread(other.id));
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(other.id));
+    const changed = { ...cronThread, revision: cronThread.revision + 1, messageCount: 0 };
+    currentCron = { thread: changed, messages: [] };
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", threadId: cronThread.id,
+      at: "2026-08-14T09:00:00.000Z", payload: { thread: changed } }));
+    expect(store.current.detail?.thread.id).toBe(other.id);
+    await act(async () => store.current.selectThread(cronThread.id));
+    await waitFor(() => expect(store.current.detail?.messages).toEqual([]));
+  });
+
+  it("keeps a running cron summary in the staged-build guard while its transcript is evicted", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    const other = thread("other", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { cron: { read: true, actions: true } })], [cronThread, other]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread, other] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.thread).mockImplementation(async (id) => detail(id === other.id ? other : cronThread));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
+    await act(async () => store.current.selectThread(other.id));
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(other.id));
+    const running = { ...cronThread, revision: cronThread.revision + 1, runState: { status: "running" as const, id: "cron-turn" } };
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", threadId: cronThread.id,
+      at: "2026-08-14T09:00:00.000Z", payload: { thread: running } }));
+    expect(store.current.hasRunningThread).toBe(true);
+    expect(store.current.detail?.thread.id).toBe(other.id);
+    const settled = { ...running, revision: running.revision + 1, messageCount: 0, runState: { status: "idle" as const } };
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", threadId: cronThread.id,
+      at: "2026-08-14T09:01:00.000Z", payload: { thread: settled } }));
+    expect(store.current.hasRunningThread).toBe(false);
+  });
+
+  it("discards held cron history and its run cursor when a reconnect discovers a newer revision", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { cron: { read: true, actions: true } })], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.cronRuns).mockResolvedValue({ runs: [], nextCursor: "old-run-cursor" });
+    vi.mocked(api.thread).mockResolvedValue(detail());
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.hasOlderMessages).toBe(true));
+    act(() => FakeEventSource.latest?.onerror?.(new Event("error")));
+    const changed = { ...cronThread, revision: cronThread.revision + 1, messageCount: 0 };
+    vi.mocked(api.thread).mockResolvedValue({ thread: changed, messages: [] });
+    vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
+    act(() => FakeEventSource.latest?.emit("ready", { version: 1, type: "ready", at: "2026-08-14T09:00:00.000Z", payload: { version: 1 } }));
+    await waitFor(() => expect(store.current.detail?.messages).toEqual([]));
+    expect(store.current.hasOlderMessages).toBe(false);
+  });
+
+  it("treats a silent cron detail 404 as transcript invalidation with no error placeholder", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { cron: { read: true, actions: true } })], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.thread).mockResolvedValue(detail());
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.messages).toHaveLength(1));
+    vi.mocked(api.thread).mockResolvedValue({ thread: { ...cronThread, revision: cronThread.revision + 1 }, messages: [] });
+    vi.mocked(api.cronRun).mockRejectedValue(new ApiError("hidden", 404, "cron_run_not_visible"));
+    await act(async () => store.current.loadCronRunActivity("silent"));
+    await waitFor(() => expect(store.current.detail?.messages).toEqual([]));
+    expect(store.current.cronError).toBeNull();
   });
 
   it("keeps an unrelated mutation error through a successful periodic cron refresh", async () => {
@@ -3668,6 +3779,275 @@ describe("ConsoleStoreProvider integration", () => {
 
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
+    });
+
+    it("keeps a streamed terminal turn settled when its stale start response arrives", async () => {
+      seedTwoThreads();
+      const started = thread(selected.id, selected.sourceId, {
+        ...selected,
+        revision: 2,
+        updatedAt: "2026-08-14T09:00:01.000Z",
+        messageCount: 3,
+        runState: {
+          id: "turn-1",
+          status: "running",
+          startedAt: "2026-08-14T09:00:00.000Z",
+        },
+      });
+      const settled = thread(selected.id, selected.sourceId, {
+        ...started,
+        revision: 3,
+        updatedAt: "2026-08-14T09:00:03.000Z",
+        runState: {
+          id: "turn-1",
+          status: "complete",
+          startedAt: "2026-08-14T09:00:00.000Z",
+          finishedAt: "2026-08-14T09:00:03.000Z",
+        },
+      });
+      const completedJob = processJob();
+      const runningJob = processJob({
+        state: "running",
+        origin: { ...completedJob.origin, conversationId: `web:${selected.id}` },
+        timestamps: { ...completedJob.timestamps, completedAt: null },
+        output: { ...completedJob.output, preview: "still working\n" },
+        wake: { ...completedJob.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+        exitCode: null,
+        durationMs: null,
+      });
+      const turnMessage: WebMessage = {
+        id: "turn-message",
+        threadId: selected.id,
+        turnId: "turn-1",
+        role: "assistant",
+        parts: [{ type: "text", text: "The background job is running." }],
+        attachments: [],
+        createdAt: "2026-08-14T09:00:00.000Z",
+        updatedAt: "2026-08-14T09:00:01.000Z",
+        status: "running",
+        seq: 1,
+      };
+      const jobMessage: WebMessage = {
+        id: "job-message",
+        threadId: selected.id,
+        role: "assistant",
+        parts: [{ type: "process-job", job: runningJob }],
+        attachments: [],
+        createdAt: "2026-08-14T09:00:01.000Z",
+        updatedAt: "2026-08-14T09:00:01.000Z",
+        status: "running",
+        seq: 1,
+      };
+      const settledTurnMessage: WebMessage = {
+        ...turnMessage,
+        updatedAt: "2026-08-14T09:00:03.000Z",
+        finishedAt: "2026-08-14T09:00:03.000Z",
+        status: "complete",
+        seq: 2,
+      };
+      let releaseStart!: () => void;
+      vi.mocked(api.startTurn).mockReturnValue(new Promise((resolve) => {
+        releaseStart = () => resolve({
+          thread: started,
+          turn: { id: "turn-1", status: "running" },
+        });
+      }));
+      vi.mocked(api.threadJob).mockImplementation(() => new Promise(() => undefined));
+
+      let current: Store | undefined;
+      const onChange = (store: Store) => { current = store; };
+      const view = render(
+        <ConsoleStoreProvider>
+          <WebRuntimeProvider>
+            <StoreProbe onChange={onChange} />
+            <ThreadPrimitive.Root>
+              <ThreadPrimitive.Messages components={{
+                AssistantMessage,
+                SystemMessage,
+                UserMessage,
+              }} />
+              <Composer />
+            </ThreadPrimitive.Root>
+          </WebRuntimeProvider>
+        </ConsoleStoreProvider>,
+      );
+      await waitFor(() => expect(current?.selectedThreadId).toBe(selected.id));
+      await waitFor(() => expect(current?.detail?.thread.id).toBe(selected.id));
+      const store = {
+        get current() {
+          if (!current) throw new Error("Store did not initialize.");
+          return current;
+        },
+      };
+      const sending = store.current.sendTurn({ text: "go" });
+      await waitFor(() => expect(api.startTurn).toHaveBeenCalledTimes(1));
+
+      emit("turn.changed", {
+        threadId: selected.id,
+        payload: { turn: started.runState },
+      });
+      emit("thread.changed", {
+        threadId: selected.id,
+        payload: { thread: started },
+      });
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: started,
+        messages: [turnMessage, jobMessage],
+      });
+      emit("message.changed", {
+        threadId: selected.id,
+        payload: { messageId: turnMessage.id, updatedAt: turnMessage.updatedAt },
+      });
+      await waitFor(() => expect(store.current.detail?.messages.map((message) => message.id))
+        .toEqual([turnMessage.id, jobMessage.id]));
+      await waitFor(() => expect(api.threadJob).toHaveBeenCalledWith(
+        selected.id,
+        runningJob.jobId,
+        expect.any(AbortSignal),
+      ));
+
+      emit("message.delta", {
+        threadId: selected.id,
+        payload: {
+          messageId: turnMessage.id,
+          baseSeq: 1,
+          seq: 2,
+          status: "complete",
+          updatedAt: settledTurnMessage.updatedAt,
+          finishedAt: settledTurnMessage.finishedAt,
+          ops: [],
+        },
+      });
+      emit("turn.changed", {
+        threadId: selected.id,
+        payload: { turn: settled.runState },
+      });
+      emit("thread.changed", {
+        threadId: selected.id,
+        payload: { thread: settled },
+      });
+      emit("threads.changed", {
+        threadId: selected.id,
+        payload: { thread: settled },
+      });
+      await waitFor(() => expect(store.current.selectedThread?.runState.status).toBe("complete"));
+      expect(store.current.detail?.thread.runState.status).toBe("complete");
+      expect(store.current.detail?.messages.find((message) => message.id === turnMessage.id)?.status)
+        .toBe("complete");
+
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: settled,
+        messages: [settledTurnMessage, jobMessage],
+      });
+      await act(async () => {
+        releaseStart();
+        await sending;
+      });
+      await quiet();
+
+      expect(store.current.selectedThread?.runState.status).toBe("complete");
+      expect(store.current.threads.find((item) => item.id === selected.id)?.runState.status)
+        .toBe("complete");
+      expect(store.current.detail?.thread.runState.status).toBe("complete");
+      expect(store.current.detail?.messages.find((message) => message.id === jobMessage.id))
+        .toMatchObject({ status: "running", parts: [{ type: "process-job", job: { state: "running" } }] });
+      expect(screen.getByRole("group", { name: "Exec background job running" }))
+        .toHaveClass("is-running");
+      expect(view.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
+      expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
+      expect(screen.getByRole("combobox", { name: "Message" }))
+        .toHaveAttribute("placeholder", "Message Alpha…");
+      fireEvent.change(screen.getByRole("combobox", { name: "Message" }), {
+        target: { value: "next turn" },
+      });
+      expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+
+      await quiet(PERSIST_DEBOUNCE_MS + 400);
+      const persisted = await deviceStore.hydrate();
+      expect(persisted?.buckets
+        .flatMap((bucket) => bucket.threads)
+        .find((item) => item.id === selected.id)?.runState.status).toBe("complete");
+      expect(persisted?.threads.find((item) => item.id === selected.id)?.thread.runState.status)
+        .toBe("complete");
+    });
+
+    it("does not resurrect a remotely removed conversation from its stale start response", async () => {
+      seedTwoThreads();
+      const started = thread(selected.id, selected.sourceId, {
+        ...selected,
+        revision: 2,
+        updatedAt: "2026-08-14T09:00:01.000Z",
+        runState: {
+          id: "turn-1",
+          status: "running",
+          startedAt: "2026-08-14T09:00:00.000Z",
+        },
+      });
+      let rejectDeletedThreadRead = false;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === selected.id && rejectDeletedThreadRead) {
+          throw new Error("deletion reconciliation unavailable");
+        }
+        return detail(
+          threadId === other.id ? other : selected,
+          threadId === other.id ? "other" : "hello",
+        );
+      });
+      let releaseStart!: () => void;
+      vi.mocked(api.startTurn).mockReturnValue(new Promise((resolve) => {
+        releaseStart = () => resolve({
+          thread: started,
+          turn: { id: "turn-1", status: "running" },
+        });
+      }));
+      const store = await openedOnAlpha();
+
+      const sending = store.current.sendTurn({ text: "go" });
+      await waitFor(() => expect(api.startTurn).toHaveBeenCalledTimes(1));
+
+      // The remote removal wins while this tab's own delete is between its
+      // already-resolved summary lookup and request issuance. Its later
+      // transport failure cannot prove what happened, so reconciliation drops
+      // the live tombstone but deliberately retains the removal fence. That is
+      // the state where a response must quote the epoch from when ITS request
+      // was issued: quoting the current epoch would admit the deleted row.
+      rejectDeletedThreadRead = true;
+      vi.mocked(api.deleteThread).mockRejectedValue(new Error("delete response lost"));
+      vi.mocked(api.bootstrap).mockRejectedValue(new Error("refresh unavailable"));
+      const deletionError = store.current.deleteThread(selected.id).catch((error: unknown) => error);
+      emit("thread.changed", {
+        threadId: selected.id,
+        payload: { threadId: selected.id, removed: true },
+      });
+      await waitFor(() => expect(store.current.threads.map((item) => item.id))
+        .toEqual([other.id]));
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(other.id));
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(other.id));
+      await act(async () => {
+        await expect(deletionError).resolves.toEqual(expect.objectContaining({
+          message: "delete response lost",
+        }));
+      });
+
+      await act(async () => {
+        releaseStart();
+        await sending;
+      });
+      await quiet();
+
+      expect(store.current.threads.map((item) => item.id)).toEqual([other.id]);
+      expect(store.current.selectedThreadId).toBe(other.id);
+      expect(store.current.detail?.thread.id).toBe(other.id);
+      expect(store.current.selectedThread?.id).toBe(other.id);
+      expect(api.bootstrap).toHaveBeenCalledTimes(2);
+
+      await quiet(PERSIST_DEBOUNCE_MS + 400);
+      const persisted = await deviceStore.hydrate();
+      expect(persisted?.buckets.flatMap((bucket) => bucket.threads)
+        .some((item) => item.id === selected.id)).toBe(false);
+      expect(persisted?.threads.some((item) => item.id === selected.id)).toBe(false);
     });
 
     it("tombstones a conversation another client deleted, so a slow response cannot restore it", async () => {

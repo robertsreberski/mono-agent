@@ -828,6 +828,12 @@ ten-minute idle timeout. See
 [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/)
 for native channel behavior, fallbacks, browser security, and limits.
 
+Successful cron answers suppressed by the shared notification classifier project
+`NOTHING_TO_REPORT` as operator summary and detail text. Classification uses the
+full stored answer before either byte limit, including a sentinel on the final
+line of long narration. Agent SQLite and retained activity keep the original
+text; failures and non-suppressed output retain their existing truncation rules.
+
 ## Architecture
 
 ### Data flow

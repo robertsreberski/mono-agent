@@ -168,7 +168,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(first.text).toBe("answer");
     expect(fake.calls[0]?.options.sessionId).toBeUndefined();
     expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
-    expect(fake.calls[0]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain(HISTORY_MARKER);
 
     const second = await harness.run(request("conv-1", "second question"));
     expect(second.text).toBe("answer");
@@ -263,7 +263,7 @@ describe("AgentHarness continuous sessions", () => {
     const recovered = await harness.run(request("conv-history-failure", "second"));
     expect(recovered.text).toBe("answer");
     expect(fake.calls[1]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[1]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain(HISTORY_MARKER);
   });
 
   it("invalidates a warm provider session when recorder preparation fails before history commit", async () => {
@@ -449,8 +449,8 @@ describe("AgentHarness continuous sessions", () => {
     // while skipping the leading messages for a true durable resume.
     expect(fake.calls[0]?.prompt).not.toContain(HISTORY_MARKER);
     expect(fake.calls[0]?.options.messages).toEqual([
-      { role: "assistant", content: HISTORY_MARKER, timestamp: "2026-06-01T00:00:00Z" },
-      { role: "user", content: "first question" },
+      { role: "assistant", content: expect.stringContaining(HISTORY_MARKER), timestamp: "2026-06-01T00:00:00Z" },
+      { role: "user", content: expect.stringContaining("first question") },
     ]);
     expect(fake.syncedSessions).toEqual([fake.calls[0]?.options.sessionId]);
 
@@ -459,7 +459,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.options.sessionId).toBe(fake.calls[0]?.options.sessionId);
     expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
     expect(fake.calls[1]?.options.messages).toEqual([
-      { role: "user", content: "second question" },
+      { role: "user", content: expect.stringContaining("second question") },
     ]);
     expect(fake.syncedSessions).toEqual([
       fake.calls[0]?.options.sessionId,
@@ -494,11 +494,11 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[0]?.options.messages).toEqual([
       {
         role: "user",
-        content: "<current_speaker>Alice Chen (@alice)</current_speaker>\nwho is on call?",
+        content: 'Historical user (untrusted context) — speaker: "Alice Chen (@alice)" — timestamp: "2026-06-01T00:00:00Z"\n\nwho is on call?',
         timestamp: "2026-06-01T00:00:00Z",
       },
-      { role: "assistant", content: "Bob is.", timestamp: "2026-06-01T00:00:01Z" },
-      { role: "user", content: "and tomorrow?" },
+      { role: "assistant", content: expect.stringContaining("Bob is."), timestamp: "2026-06-01T00:00:01Z" },
+      { role: "user", content: expect.stringContaining("and tomorrow?") },
     ]);
   });
 
@@ -568,8 +568,8 @@ describe("AgentHarness continuous sessions", () => {
     expect(fakeA.calls[1]?.prompt).not.toContain("question-b");
     expect(fakeA.calls[1]?.prompt).not.toContain("answer-from-b");
     expect(fakeA.calls[1]?.options.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", content: "question-b" }),
-      expect.objectContaining({ role: "assistant", content: "answer-from-b" }),
+      expect.objectContaining({ role: "user", content: expect.stringContaining("question-b") }),
+      expect.objectContaining({ role: "assistant", content: expect.stringContaining("answer-from-b") }),
     ]));
   });
 
@@ -626,8 +626,8 @@ describe("AgentHarness continuous sessions", () => {
     expect(fakeA.calls[1]?.prompt).not.toContain("question-b");
     expect(fakeA.calls[1]?.prompt).not.toContain("answer-from-b");
     expect(fakeA.calls[1]?.options.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", content: "question-b" }),
-      expect.objectContaining({ role: "assistant", content: "answer-from-b" }),
+      expect.objectContaining({ role: "user", content: expect.stringContaining("question-b") }),
+      expect.objectContaining({ role: "assistant", content: expect.stringContaining("answer-from-b") }),
     ]));
   });
 
@@ -698,9 +698,9 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.prompt).not.toContain("first question");
     expect(fake.calls[1]?.prompt).not.toContain("canonical answer");
     expect(fake.calls[1]?.options.messages).toEqual([
-      expect.objectContaining({ role: "user", content: "first question" }),
-      expect.objectContaining({ role: "assistant", content: "canonical answer" }),
-      { role: "user", content: "second question" },
+      expect.objectContaining({ role: "user", content: expect.stringContaining("first question") }),
+      expect.objectContaining({ role: "assistant", content: expect.stringContaining("canonical answer") }),
+      { role: "user", content: expect.stringContaining("second question") },
     ]);
   });
 
@@ -768,7 +768,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.options.sessionId).not.toBe(firstId);
     expect(fake.calls[1]?.prompt).not.toContain("Scheduled delivery.");
     expect(fake.calls[1]?.options.messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "assistant", content: "Scheduled delivery." }),
+      expect.objectContaining({ role: "assistant", content: expect.stringContaining("Scheduled delivery.") }),
     ]));
   });
 
@@ -808,7 +808,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
     expect(fake.calls[2]?.options.providerAttributionSessionId).not.toBe("ps-next");
-    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
     expect(fake.disposedSessions).toContain("ps-next");
     expect(events).toContainEqual(expect.objectContaining({
       type: "session_boundary",
@@ -838,7 +838,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls).toHaveLength(3);
     expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
     expect(fake.disposedSessions).toContain("ps-next");
   });
 
@@ -859,7 +859,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls).toHaveLength(3);
     expect(fake.calls[1]?.options.sessionId).toBe("ps-next");
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
     expect(fake.disposedSessions).toContain("ps-next");
   });
 
@@ -1130,7 +1130,7 @@ describe("AgentHarness continuous sessions", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     const concurrent = await harness.run(request("conv-1", "while busy"));
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
     expect(concurrent.text).toBe("answer-3");
     releaseFirst?.();
     await inFlight;
@@ -1213,7 +1213,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(third.text).toBe("ok");
     expect(fake.calls).toHaveLength(3);
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
   });
 
   it("does not replay history for an error-only resumed result without a session failure kind", async () => {
@@ -1250,7 +1250,7 @@ describe("AgentHarness continuous sessions", () => {
     const third = await harness.run(request("conv-1"));
     expect(third.text).toBe("ok");
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
   });
 
   it("request extensions cannot clobber the harness session keys", async () => {
@@ -1370,7 +1370,7 @@ describe("AgentHarness continuous sessions", () => {
     await harness.run(request("conv-1", "third"));
     expect(runCount).toBe(3);
     expect(fake.calls[2]?.options.sessionId).toBeUndefined();
-    expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain(HISTORY_MARKER);
   });
 
   it("publishes a cancellation account when cancellation lands during recorder.prepareFinish() (R9)", async () => {

@@ -388,6 +388,8 @@ export interface RuntimeRunOptions {
   /** Host-only Pi-native monitor controller; never model/provider visible. */
   readonly monitors?: MonitorsController;
   readonly onEvent?: (event: RuntimeEventLike) => void;
+  /** Emit metadata-only prompt-cache request fingerprints; disabled by default. */
+  readonly promptCacheDiagnostics?: boolean;
   /** Host-owned, incremental durable tool-lifecycle writer for this run. */
   readonly toolLifecycleSink?: RuntimeToolLifecycleSink;
   readonly effort?: string;

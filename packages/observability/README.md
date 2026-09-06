@@ -107,6 +107,12 @@ filesystem failure never changes the run result. A terminal `finish` / `fail`
 write waits behind any queued checkpoint and is always last, so a late `running`
 snapshot cannot overwrite a completed status.
 
+`fail(error, { systemPrompt })` can record instructions assembled after recorder
+creation, with the same redaction and size bound as `finish`. The optional second
+argument preserves compatibility with one-argument recorders. Thrown failures
+bypass successful-result preparation, including a rejected `prepareFinish`, and
+the composite calls `RunExporter.fail` with the original error and failed summary.
+
 This is bounded crash-prefix recovery, not a guarantee that the whole live trail
 survives. With a healthy local filesystem, fewer than 25 newly accepted events
 (or roughly five seconds of sparse events) remain unscheduled; write latency and
@@ -192,6 +198,7 @@ ArtifactAuditFileIssue
 ArtifactAuditReport
 ArtifactFailureKindRate
 AuditRecordedRunsOptions
+CacheUsageMetrics
 CompositeRunRecorderOptions
 DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS
 DescribeRunFailureKindInput
@@ -286,6 +293,7 @@ VisibleTextSanitizationOptions
 auditRecordedRuns
 buildEventSpanAttributes
 buildRootSpanAttributes
+cacheUsageMetrics
 combineRecordedRunEvents
 containsVisibleSensitiveText
 countRuntimeWarnings

@@ -656,6 +656,15 @@ export class WebService {
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
   private discoveredAgents = new Map<string, DiscoveredOperatorAgent>();
+  /**
+   * Source id -> the capability signature projected for it on the last
+   * discovery pass. No projected capability is on the summary or in the store,
+   * so this is the only record of them that survives a poll -- and the only way
+   * `refreshAgentsOnce` can tell that a capability itself moved. One map rather
+   * than a set per flag, so adding the next projected capability is a term in
+   * `projectedCapabilitySignature`, not another field to remember to track.
+   */
+  private projectedCapabilities = new Map<string, string>();
   private readonly configurationSessions = new Map<string, ActiveConfigurationSession>();
   private readonly configuringSources = new Set<string>();
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
@@ -751,7 +760,7 @@ export class WebService {
       && this.store.getAgent(currentThread.sourceId) !== undefined
       ? currentThreadId
       : undefined;
-    const agents = this.store.listAgents().map((agent) => this.decorateConfigurationCapability(agent));
+    const agents = this.store.listAgents().map((agent) => this.decorateProjectedCapabilities(agent));
     const threadsSourceId = this.bootstrapSourceId(scope.sourceId, currentThread, agents);
     const archived = scope.archived ?? false;
     const page = threadsSourceId === null
@@ -807,15 +816,61 @@ export class WebService {
       ?? null;
   }
 
-  private decorateConfigurationCapability(agent: WebAgentSummary): WebAgentSummary {
+  /**
+   * The ONLY place a projected capability is added to a summary:
+   * `supportsConfiguration` and `supportsProviderAuth`.
+   *
+   * Both are derived from live in-memory state -- the discovery record, an open
+   * operator connection, and either the host's own answer or what that
+   * connection's `/v1/info` advertised -- and neither has a column in `agents`,
+   * so a stored row can never carry them. Putting one on the discovery summary
+   * instead (as both capabilities first shipped) makes every poll's summary
+   * differ from the row it is compared against, so `replaceAgents` reports a
+   * change roughly every five seconds: every open console re-fetches its
+   * bootstrap, skills registry and cron overview for a heartbeat, and the store
+   * runs a full replace transaction for one. Worse, the field is then dropped
+   * on write and never read back, so it does not even reach the browser.
+   * Anything else that is projected rather than persisted belongs here too, not
+   * in `refreshAgentsOnce`.
+   *
+   * Both also require a live connection, deliberately: the routes they unlock
+   * (`createConfigurationSession`, `requireProviderAuthConnection`) refuse
+   * without one, so advertising either to a browser that cannot use it just
+   * buys a button that 409s.
+   *
+   * The cost of parking a field here is that it changes without any
+   * `agents.changed`, so an open console never learns: if its transitions have
+   * to reach the browser, announce them explicitly in `refreshAgentsOnce`, the
+   * way `projectedCapabilities` does for these two.
+   */
+  private decorateProjectedCapabilities(agent: WebAgentSummary): WebAgentSummary {
+    const connection = this.connections.get(agent.sourceId);
     const host = this.options.configurationHost;
     const target = this.discoveredAgents.get(agent.sourceId);
-    return host !== undefined
+    const configuration = host !== undefined
       && target !== undefined
-      && this.connections.has(agent.sourceId)
-      && host.supports(target)
-      ? { ...agent, supportsConfiguration: true }
-      : agent;
+      && connection !== undefined
+      && host.supports(target);
+    const providerAuth = connection?.info.supportsProviderAuth === true;
+    if (!configuration && !providerAuth) return agent;
+    return {
+      ...agent,
+      ...(configuration ? { supportsConfiguration: true as const } : {}),
+      ...(providerAuth ? { supportsProviderAuth: true as const } : {}),
+    };
+  }
+
+  /**
+   * A projected agent's capabilities as one comparable string, in a fixed
+   * order. Compared pass to pass, this is what says a capability moved when
+   * nothing on the summary did.
+   */
+  private projectedCapabilitySignature(agent: WebAgentSummary): string {
+    const projected = this.decorateProjectedCapabilities(agent);
+    return [
+      projected.supportsConfiguration === true ? "config" : "",
+      projected.supportsProviderAuth === true ? "providerAuth" : "",
+    ].join("|");
   }
 
   createThread(sourceId: string, input: Omit<CreateWebThreadInput, "sourceId"> = {}): WebThread {
@@ -1210,7 +1265,7 @@ export class WebService {
     // this call's own response.
     const payload: WebAgentsChangedPayload = { sourceId: agent.sourceId, pinned: agent.pinned === true };
     this.emit("agents.changed", undefined, payload);
-    return this.decorateConfigurationCapability(agent);
+    return this.decorateProjectedCapabilities(agent);
   }
 
   setAgentRunDefaults(sourceId: string, input: PutWebAgentRunSettingsInput): WebAgentSummary {
@@ -1228,13 +1283,13 @@ export class WebService {
     );
     const updated = this.store.setAgentRunOverride(sourceId, input);
     this.emit("agents.changed");
-    return this.decorateConfigurationCapability(updated);
+    return this.decorateProjectedCapabilities(updated);
   }
 
   clearAgentRunDefaults(sourceId: string): WebAgentSummary {
     const agent = this.store.clearAgentRunOverride(sourceId);
     this.emit("agents.changed");
-    return this.decorateConfigurationCapability(agent);
+    return this.decorateProjectedCapabilities(agent);
   }
 
   agentSkills(sourceId: string): WebSkillRegistry {
@@ -1305,12 +1360,15 @@ export class WebService {
     const run = await connection.client.cronRun(jobId, runId, AbortSignal.timeout(INFO_TIMEOUT_MS));
     const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [run]);
     const message = reconciled.messages[0];
-    if (message === undefined) {
-      throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
-    }
     if (reconciled.changed) {
       this.announceReconciledMessages(reconciled);
-      this.emitStoredThread(message.threadId, ["thread.changed", "threads.changed"]);
+      this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
+    }
+    if (message === undefined) {
+      if (reconciled.suppressedRunIds?.includes(runId)) {
+        throw new WebConsoleError("cron_run_not_visible", "This cron run has no visible message.", 404);
+      }
+      throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
     }
     return this.shapeMessage(message);
   }
@@ -2573,6 +2631,13 @@ export class WebService {
       const changed = this.store.markDiscoveredAgentsOffline();
       this.connections = new Map();
       this.discoveredAgents = new Map();
+      // Every input the projection reads is gone, so nothing is capable now.
+      // Clearing it here is what makes the recovery a transition worth
+      // announcing rather than a no-op against a stale map. It is belt and
+      // braces today: a projected capability implies a live connection, which
+      // implies a row that was not offline, so `markDiscoveredAgentsOffline`
+      // returns true and the failure is announced anyway.
+      this.projectedCapabilities = new Map();
       if (changed) this.emit("agents.changed");
       return;
     }
@@ -2616,9 +2681,6 @@ export class WebService {
           pinned: false,
           health: agent.source.health,
           supportsAttachments: info.supportsAttachments,
-          ...(this.options.configurationHost?.supports(agent) === true
-            ? { supportsConfiguration: true as const }
-            : {}),
           ...(info.models === undefined ? {} : { models: info.models }),
           ...(info.model === undefined ? {} : { defaultModel: info.model }),
           ...(info.effort === undefined ? {} : { defaultEffort: info.effort }),
@@ -2628,7 +2690,6 @@ export class WebService {
           ...(info.providers === undefined ? {} : { providers: info.providers }),
           ...(info.cron === undefined ? {} : { cron: info.cron }),
           ...(info.supportsAskById ? { supportsAskById: true } : {}),
-          ...(info.supportsProviderAuth ? { supportsProviderAuth: true } : {}),
           updatedAt: agent.source.updatedAt,
         };
       } catch (error) {
@@ -2642,6 +2703,21 @@ export class WebService {
     this.connections = nextConnections;
     this.discoveredAgents = new Map(discovered.map((agent) => [agent.source.sourceId, agent]));
     const agentsChanged = this.store.replaceAgents(summaries);
+    // Projected capabilities are never stored, so when one turns on or off
+    // NOTHING on the summary moves and `replaceAgents` is right to say so. Both
+    // genuinely flip mid-life: the configuration host's `supports()` reads
+    // managed-startup completion, which finishes after the channels that serve
+    // `/v1/info` and can be revoked later, and an operator can start or stop
+    // advertising `capabilities.providerAuth` across a restart. An open console
+    // would otherwise keep the action hidden until an unrelated change, or keep
+    // offering one whose route now 409s. Read here, off the connections and
+    // discovery records just assigned and before the cron refresh awaits on the
+    // network.
+    const projected = new Map(
+      summaries.map((summary) => [summary.sourceId, this.projectedCapabilitySignature(summary)] as const),
+    );
+    const capabilityChanged = projected.size !== this.projectedCapabilities.size
+      || [...projected].some(([sourceId, signature]) => this.projectedCapabilities.get(sourceId) !== signature);
     const cronChangedSources = new Set<string>();
     await Promise.all([...nextConnections.entries()].map(async ([sourceId, connection]) => {
       if (connection.info.cron?.read !== true) return;
@@ -2658,7 +2734,13 @@ export class WebService {
         });
       }
     }));
-    if (agentsChanged) this.emit("agents.changed");
+    // Adopted only once the announcement is about to go out. Assigning it
+    // before the cron refresh would let a throw in that window consume the
+    // transition: the next pass would compare against a map that already
+    // carried the new signatures, find nothing changed, and the flip would be
+    // lost rather than deferred.
+    this.projectedCapabilities = projected;
+    if (agentsChanged || capabilityChanged) this.emit("agents.changed");
     for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
     if (cronChangedSources.size > 0) this.emit("threads.changed");
     for (const threadId of this.store.queuedLiveInputThreadIds()) {

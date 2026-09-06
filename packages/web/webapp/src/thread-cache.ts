@@ -785,6 +785,8 @@ export interface ThreadCache {
    */
   readonly markAllStale: () => void;
   readonly evict: (threadId: string) => void;
+  /** A response issued before explicit eviction cannot repopulate a newer window. */
+  readonly accepts: (threadId: string, issuedAt: number) => boolean;
   /**
    * Forget everything, except optionally the conversation on screen.
    *
@@ -879,6 +881,8 @@ export const createThreadCache = (
    * reconnect that suspects all eight has moved none of them.
    */
   onCommit: () => void = () => undefined,
+  /** Reset the agent-owned run cursor when a read discovers a newer cron revision. */
+  onCronRevisionReset: (thread: ThreadSummary) => void = () => undefined,
 ): ThreadCache => {
   // Insertion order IS recency order: every touch deletes before it sets, so
   // the first key is always the least recently used.
@@ -891,6 +895,7 @@ export const createThreadCache = (
   // whether an entry is held -- see {@link OBSERVED_CONVERSATIONS}. Insertion
   // order is recency order, so eviction takes the oldest.
   const observedAt = new Map<string, number>();
+  const evictedAt = new Map<string, number>();
   let selectedId: string | null = null;
 
   const observe = (threadId: string): void => {
@@ -988,13 +993,23 @@ export const createThreadCache = (
       if (threadId !== null) touch(threadId);
     },
     touch,
+    accepts: (threadId, issuedAt) => (evictedAt.get(threadId) ?? 0) <= issuedAt,
     upsertFull: (detail, options = {}) => {
       const threadId = detail.thread.id;
+      if (options.issuedAt !== undefined && (evictedAt.get(threadId) ?? 0) > options.issuedAt) return undefined;
+      const stale = overtaken(threadId, options.issuedAt);
+      const prior = entries.get(threadId);
+      if (prior?.thread.trigger?.kind === "cron" && detail.thread.revision > prior.thread.revision) {
+        observe(threadId);
+        evictedAt.set(threadId, clock);
+        while (evictedAt.size > OBSERVED_CONVERSATIONS) evictedAt.delete(evictedAt.keys().next().value!);
+        entries.delete(threadId);
+        onCronRevisionReset(detail.thread);
+      }
       const held = entries.get(threadId);
       const reset = options.reset === true;
       // Anything observed AFTER this read went out is something it cannot have
       // seen, so it lands stale however complete it looks.
-      const stale = overtaken(threadId, options.issuedAt);
       if (held === undefined) {
         const entry = withCursor(
           {
@@ -1194,7 +1209,13 @@ export const createThreadCache = (
         if (!entry.stale) entries.set(threadId, { ...entry, stale: true });
       }
     },
-    evict: (threadId) => { committed(entries.delete(threadId)); },
+    evict: (threadId) => {
+      observe(threadId);
+      evictedAt.delete(threadId);
+      evictedAt.set(threadId, clock);
+      while (evictedAt.size > OBSERVED_CONVERSATIONS) evictedAt.delete(evictedAt.keys().next().value!);
+      committed(entries.delete(threadId));
+    },
     clear: (keep) => {
       const kept = keep === undefined ? undefined : entries.get(keep);
       entries.clear();

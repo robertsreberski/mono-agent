@@ -206,6 +206,246 @@ describe("web SELF-CONFIG sessions", () => {
       await service.stop();
     }
   });
+
+  it("does not announce an agent change on every discovery heartbeat", async () => {
+    // A configuration host that supports everything is the shape that made
+    // discovery look changed forever: `supportsConfiguration` is derived at
+    // projection time and has no column, so a summary carrying it could never
+    // deep-equal the row read back out of the store.
+    const host = {
+      supports: () => true,
+      create: async (): Promise<never> => { throw new Error("configuration session not used by this test"); },
+    };
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({ discoverImpl: async () => discovered, configurationHost: host });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    try {
+      discovered = [fakeDiscoveredAgent()];
+      await service.refreshAgents();
+      // The agent appearing IS an announcement.
+      expect(events).toEqual([undefined]);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // Two more polls in which only the heartbeat moves. Nothing about the
+      // fleet changed, so no console should be told to re-bootstrap.
+      const base = fakeDiscoveredAgent();
+      for (const updatedAt of ["2026-07-17T09:00:05.000Z", "2026-07-17T09:00:10.000Z"]) {
+        discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+        await service.refreshAgents();
+      }
+      expect(events).toEqual([undefined]);
+      // And the capability still reaches the browser -- it is projected, not stored.
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // Silence the heartbeat, not the event: something the fleet actually did
+      // still reaches every console.
+      discovered = [fakeDiscoveredAgent({
+        source: { ...base.source, health: "stale", updatedAt: "2026-07-17T09:00:15.000Z" },
+      })];
+      await service.refreshAgents();
+      expect(events).toEqual([undefined, undefined]);
+      expect((await service.bootstrap()).agents[0]).toMatchObject({ status: "degraded", health: "stale" });
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("announces a configuration capability that turns on after discovery", async () => {
+    // The real host's `supports()` also reads managed-startup completion, which
+    // finishes AFTER the channels that serve `/v1/info` and can be revoked
+    // later. So the console can already hold a live connection and a complete
+    // summary while the capability is still off, and when it turns on nothing
+    // on the summary moves. With the field off the summary, only the projection
+    // knows -- so the projection's own transitions have to be announced, or an
+    // open console never learns it can configure the agent.
+    let supported = false;
+    const host = {
+      supports: () => supported,
+      create: async (): Promise<never> => { throw new Error("configuration session not used by this test"); },
+    };
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({ discoverImpl: async () => discovered, configurationHost: host });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      expect(events).toHaveLength(1);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+
+      // The capability turns on. Only the heartbeat moves with it.
+      supported = true;
+      await poll("2026-07-17T09:00:05.000Z");
+      expect(events).toHaveLength(2);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // Still on, so still nothing to say.
+      await poll("2026-07-17T09:00:10.000Z");
+      expect(events).toHaveLength(2);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // And revoking it is a transition too -- otherwise the console keeps
+      // offering a button whose session now 409s.
+      supported = false;
+      await poll("2026-07-17T09:00:15.000Z");
+      expect(events).toHaveLength(3);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("withholds the capability without a host, without its consent, and without a live connection", async () => {
+    const stub = (supports: () => boolean) => ({
+      supports,
+      create: async (): Promise<never> => { throw new Error("configuration session not used by this test"); },
+    });
+
+    // The host answers no.
+    const refused = await createService({ configurationHost: stub(() => false) });
+    try {
+      expect((await refused.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+    } finally {
+      await refused.stop();
+    }
+
+    // The host would answer yes, but the operator probe failed, so there is no
+    // connection to configure THROUGH. The projection is the only guard left
+    // for that, and offering the button here would hand the browser a session
+    // the service cannot open.
+    const upstream = operatorFetch();
+    const unreachable = await createService({
+      configurationHost: stub(() => true),
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/v1/info")) throw new Error("operator probe failed");
+        return upstream(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      const agent = (await unreachable.bootstrap()).agents[0];
+      expect(agent).toMatchObject({ sourceId: "agent-one", status: "offline" });
+      expect(agent?.supportsConfiguration).toBeUndefined();
+    } finally {
+      await unreachable.stop();
+    }
+
+    // No host at all.
+    const bare = await createService();
+    try {
+      expect((await bare.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+    } finally {
+      await bare.stop();
+    }
+  });
+
+  it("does not announce an agent change on every heartbeat of a provider-auth agent", async () => {
+    // Every agent behind the tui operator advertises `capabilities.providerAuth`,
+    // so on the deployed fleet this is the common case, not an edge one.
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: operatorFetch({ supportsProviderAuth: true }),
+    });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      await poll("2026-07-17T09:00:05.000Z");
+      await poll("2026-07-17T09:00:10.000Z");
+      // One announcement for the agent appearing, and nothing for the two
+      // heartbeats after it.
+      expect(events).toEqual([undefined]);
+      // The capability still reaches the browser -- projected off the live
+      // connection, exactly like `supportsConfiguration`.
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("announces provider authentication that an agent starts advertising", async () => {
+    let advertised = false;
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const withAuth = operatorFetch({ supportsProviderAuth: true });
+    const without = operatorFetch();
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: ((input: string | URL | Request, init?: RequestInit) =>
+        (advertised ? withAuth : without)(input, init)) as typeof fetch,
+    });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      expect(events).toHaveLength(1);
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBeUndefined();
+
+      // The operator starts advertising it. Nothing else about the fleet moves.
+      advertised = true;
+      await poll("2026-07-17T09:00:05.000Z");
+      expect(events).toHaveLength(2);
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+
+      // Still advertised, so still nothing to say.
+      await poll("2026-07-17T09:00:10.000Z");
+      expect(events).toHaveLength(2);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("withholds provider authentication when there is no live connection to use it through", async () => {
+    // The route this flag gates (`requireProviderAuthConnection`) needs a live
+    // connection, so the projection must not advertise it without one --
+    // otherwise the browser offers a button that can only 409.
+    let reachable = true;
+    const upstream = operatorFetch({ supportsProviderAuth: true });
+    const service = await createService({
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (!reachable && url.endsWith("/v1/info")) throw new Error("operator probe failed");
+        return upstream(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+      reachable = false;
+      await service.refreshAgents();
+      const agent = (await service.bootstrap()).agents[0];
+      expect(agent).toMatchObject({ sourceId: "agent-one", status: "offline" });
+      expect(agent?.supportsProviderAuth).toBeUndefined();
+    } finally {
+      await service.stop();
+    }
+  });
 });
 
 describe("WebService", () => {
@@ -959,6 +1199,30 @@ describe("WebService", () => {
       }],
     });
     await service.stop();
+  });
+
+  it("invalidates a newly hidden cron detail before returning its specific 404 and keeps run paging", async () => {
+    const run = { projection: "summary", runId: "cron:digest:2026-08-14T09:55:00.000Z", jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z", orderedAt: "2026-08-14T09:55:00.000Z", sequence: 4,
+      trigger: "scheduled", status: "running", eventCount: 0 };
+    const service = await createService({ fetchImpl: operatorFetch({ cronOverview: operatorCronOverview(),
+      cronRuns: { runs: [run], nextCursor: "older-runs" },
+      cronRun: { ...run, projection: "detail", status: "succeeded", text: "NOTHING_TO_REPORT", eventCount: 1,
+        events: [{ type: "tool_call_started", id: "old-tool", name: "Read", arguments: {} }], eventsIncluded: 1 },
+    }) });
+    try {
+      const page = await service.cronRuns("agent-one", "digest", { limit: 100 });
+      expect(page.messages).toHaveLength(1);
+      const events: string[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+      await expect(service.cronRun("agent-one", "digest", run.runId)).rejects.toMatchObject({ code: "cron_run_not_visible", status: 404 });
+      expect(events).toContain("thread.changed");
+      expect(events).toContain("threads.changed");
+      const hiddenMessage = page.messages![0]!;
+      expect(() => service.message(hiddenMessage.threadId, hiddenMessage.id)).toThrowError(expect.objectContaining({ code: "message_not_found" }));
+      expect(() => service.toolCallPart(hiddenMessage.threadId, hiddenMessage.id, "old-tool")).toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+      unsubscribe();
+    } finally { await service.stop(); }
   });
 
   it("does not duplicate overview reads while paging and loads bounded selected-run activity on demand", async () => {
