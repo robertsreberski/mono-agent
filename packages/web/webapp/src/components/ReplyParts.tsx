@@ -22,6 +22,8 @@ import { ImageTile } from "./ImageGallery";
 import { isReplyImage } from "./reply-image";
 import {
   acquireReplyImageBlob,
+  dropReplyImageFetch,
+  joinReplyImageFetch,
   publishReplyImageBlob,
   releaseReplyImageBlob,
   replyImageKey,
@@ -394,24 +396,63 @@ interface ReplyImageState {
 const PENDING_REPLY_IMAGE: ReplyImageState = { status: "pending" };
 const UNAVAILABLE_REPLY_IMAGE: ReplyImageState = { status: "unavailable" };
 
+/** Bytes that contradict what the part declared about them. */
+class ReplyImageIntegrityError extends Error {}
+
+/**
+ * Whether a failure is the picture's verdict or just this attempt's.
+ *
+ * Bytes that contradict their declaration, and the server's own terminal states,
+ * say the same thing however fresh the capability. Everything else — a dropped
+ * connection, a deadline, a transport error — is about the attempt, and the next
+ * capability the service mints is a new chance at it.
+ */
+const permanentReplyImageFailure = (error: unknown): boolean =>
+  error instanceof ReplyImageIntegrityError
+  || (error instanceof ApiError
+    && error.code !== undefined
+    && TERMINAL_ATTACHMENT_ERROR_MESSAGES.has(error.code));
+
+/** The authorized read, with both declarations checked before the bytes count. */
+const replyImageBytes = async (
+  contentUrl: string,
+  signal: AbortSignal,
+  sizeBytes: number,
+  integrityId: string,
+): Promise<Blob> => {
+  const response = await api.replyAttachmentContent(contentUrl, signal);
+  const declaredLength = response.headers.get("content-length");
+  if (
+    (declaredLength !== null && Number(declaredLength) !== sizeBytes)
+    || response.headers.get("x-mono-agent-integrity-id") !== integrityId
+  ) {
+    throw new ReplyImageIntegrityError("The reply image contradicted its declaration.");
+  }
+  const blob = await response.blob();
+  if (blob.size !== sizeBytes) {
+    throw new ReplyImageIntegrityError("The reply image contradicted its declared length.");
+  }
+  return blob;
+};
+
 /**
  * Fallback for an image with no durable copy yet. Goes through `fetch` rather
  * than pointing an `<img>` at the capability URL, because only this path can
  * check the integrity headers and reach the one-shot access refresh — an
  * `<img>` `onerror` reports no status at all.
  *
- * Two things keep that fetch to one per picture. The effect is keyed on the
+ * Three things keep that fetch to one per picture. The effect is keyed on the
  * part's own identity and reads the capability from `accessRef` when it runs:
  * the service re-mints `contentUrl` on every projection of the message, so an
  * effect keyed on the URL re-downloads the image for every frame of a running
- * turn. And the bytes are held in the shared blob store rather than in this
- * component, so scrolling away, switching conversations and coming back all
- * resolve from what is already here.
+ * turn. The request itself belongs to the shared store, so two parts carrying
+ * the same picture — and StrictMode's discarded first mount — issue one. And
+ * the bytes are held there too, so scrolling away, switching conversations and
+ * coming back all resolve from what is already here.
  *
- * The fetch itself waits for the picture to approach the viewport wherever the
- * browser can say so. `IntersectionObserver` is feature-detected rather than
- * assumed: without it — jsdom, and very old browsers — everything loads as it
- * always did.
+ * The fetch waits for the picture to approach the viewport wherever the browser
+ * can say so. `IntersectionObserver` is feature-detected rather than assumed:
+ * without it — jsdom, and very old browsers — everything loads as it always did.
  */
 function useReplyImage(
   enabled: boolean,
@@ -424,11 +465,41 @@ function useReplyImage(
   readonly state: ReplyImageState;
   readonly holderRef: RefObject<HTMLDivElement | null>;
 } {
+  const viewportGated = typeof IntersectionObserver === "function";
   const [state, setState] = useState<ReplyImageState>(PENDING_REPLY_IMAGE);
-  const [inViewport, setInViewport] = useState(() => typeof IntersectionObserver !== "function");
+  const [inViewport, setInViewport] = useState(!viewportGated);
+  const [attempt, setAttempt] = useState(0);
   const holderRef = useRef<HTMLDivElement>(null);
   const identityRef = useRef(identity);
   identityRef.current = identity;
+  /** The access generation whose transient failure is waiting for a newer one. */
+  const retryAfterRef = useRef<number | undefined>(undefined);
+
+  // A slot recycled to a different picture keeps nothing of the last one: not
+  // the bytes on screen, not its failure, and not the fact that it was in view.
+  // Adjusting here rather than in an effect means no frame is ever committed
+  // showing one part's image under another part's name.
+  const content = `${partId ?? ""} ${integrityId ?? ""} ${String(sizeBytes ?? "")}`;
+  const [renderedContent, setRenderedContent] = useState(content);
+  if (renderedContent !== content) {
+    setRenderedContent(content);
+    setState(PENDING_REPLY_IMAGE);
+    setInViewport(!viewportGated);
+    setAttempt(0);
+    retryAfterRef.current = undefined;
+  }
+
+  // A transient failure re-arms on the next capability the service mints, which
+  // is what keying the effect on the URL used to do by accident.
+  const generation = access.current?.identity === identity ? access.current.generation : undefined;
+  if (
+    retryAfterRef.current !== undefined
+    && generation !== undefined
+    && generation > retryAfterRef.current
+  ) {
+    retryAfterRef.current = undefined;
+    setAttempt((value) => value + 1);
+  }
 
   useEffect(() => {
     if (!enabled || inViewport) return undefined;
@@ -456,48 +527,48 @@ function useReplyImage(
     }
     const current = access.current;
     const contentUrl = current?.identity === identityRef.current ? current.currentUrl : undefined;
-    if (contentUrl === undefined) {
+    if (current === undefined || contentUrl === undefined) {
       setState(UNAVAILABLE_REPLY_IMAGE);
       return undefined;
     }
-    const controller = new AbortController();
+    const startedGeneration = current.generation;
+    let cancelled = false;
+    let joined: Promise<Blob> | undefined;
     let held = false;
     void (async () => {
+      // React StrictMode tears this effect down before the microtask runs, so
+      // its discarded generation never starts a request of its own.
+      await Promise.resolve();
+      if (cancelled) return;
+      const request = joinReplyImageFetch(
+        key,
+        (signal) => replyImageBytes(contentUrl, signal, sizeBytes, integrityId),
+      );
+      joined = request;
       try {
-        const response = await api.replyAttachmentContent(contentUrl, controller.signal);
-        if (controller.signal.aborted) return;
-        const declaredLength = response.headers.get("content-length");
-        if (
-          (declaredLength !== null && Number(declaredLength) !== sizeBytes)
-          || response.headers.get("x-mono-agent-integrity-id") !== integrityId
-        ) {
-          setState(UNAVAILABLE_REPLY_IMAGE);
-          return;
-        }
-        const blob = await response.blob();
-        if (controller.signal.aborted) return;
-        if (blob.size !== sizeBytes) {
-          setState(UNAVAILABLE_REPLY_IMAGE);
-          return;
-        }
+        const blob = await request;
+        if (cancelled) return;
         const objectUrl = publishReplyImageBlob(key, blob);
         held = true;
         setState({ status: "ready", src: objectUrl });
-      } catch {
+      } catch (error) {
+        if (cancelled) return;
         // Showing the image is best-effort: the card and its download action
         // take over, and they report what went wrong.
-        if (!controller.signal.aborted) setState(UNAVAILABLE_REPLY_IMAGE);
+        if (!permanentReplyImageFailure(error)) retryAfterRef.current = startedGeneration;
+        setState(UNAVAILABLE_REPLY_IMAGE);
       }
     })();
     return () => {
-      controller.abort();
+      cancelled = true;
+      if (joined !== undefined) dropReplyImageFetch(key, joined);
       if (held) releaseReplyImageBlob(key);
       setState(PENDING_REPLY_IMAGE);
     };
   // The capability is read from `access` when the effect runs, never depended
   // on: a re-minted token is the same picture and must not re-download it.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [access, enabled, inViewport, partId, sizeBytes, integrityId]);
+  }, [access, attempt, enabled, inViewport, partId, sizeBytes, integrityId]);
 
   return { state, holderRef };
 }
@@ -587,7 +658,15 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   // and it must be reachable, because a placeholder hidden from assistive tech
   // is a picture a screen reader can never scroll to and therefore never load.
   if (fetchableImage && replyImage.status === "pending") {
-    return <div ref={holderRef} className="image-tile is-loading" role="img" aria-label={`Loading ${part.name}`} />;
+    return (
+      <div
+        ref={holderRef}
+        className="image-tile is-loading"
+        role="img"
+        aria-busy="true"
+        aria-label={`Loading ${part.name}`}
+      />
+    );
   }
 
   const contentUrl = accessRef.current?.identity === identity ? accessRef.current.currentUrl : undefined;
@@ -844,7 +923,10 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   // scrolling past a long transcript costs no documents, bridges or sandboxes.
   // Without an IntersectionObserver — jsdom, very old browsers — it opens as it
   // always did.
-  const [collapsed, setCollapsed] = useState(() => typeof IntersectionObserver === "function");
+  const viewportGated = typeof IntersectionObserver === "function";
+  const [collapsed, setCollapsed] = useState(viewportGated);
+  /** False until the first observation says where this card actually is. */
+  const [viewportSettled, setViewportSettled] = useState(!viewportGated);
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [accessExpired, setAccessExpired] = useState(false);
   const [reloadRevision, setReloadRevision] = useState(0);
@@ -855,18 +937,36 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const containerRef = useRef<HTMLElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   /** Set once the card has been opened, by the viewport or by the operator. */
-  const revealedRef = useRef(typeof IntersectionObserver !== "function");
+  const revealedRef = useRef(!viewportGated);
   const bridgeRef = useRef<AppBridge | null>(null);
   const nonce = useMemo(createNonce, [part?.connectionId, part?.invocationId]);
+
+  // A slot recycled to a different app keeps nothing of the last one. Adjusting
+  // here rather than in an effect means no frame is ever committed holding the
+  // previous app's document, which the bridge would then hand to this app's
+  // sandbox under this app's connection.
+  const [renderedIdentity, setRenderedIdentity] = useState(identity);
+  const recycled = renderedIdentity !== identity;
+  if (recycled) {
+    setRenderedIdentity(identity);
+    setResource(null);
+    setAccessExpired(false);
+    setStatus("loading");
+    setStatusText("Loading interactive app…");
+    setCollapsed(viewportGated);
+    setViewportSettled(!viewportGated);
+    revealedRef.current = !viewportGated;
+  }
+  const opened = recycled ? !viewportGated : !collapsed;
 
   // The document is fetched for an app that has actually been opened. Hiding one
   // again keeps what it loaded, so re-showing it costs nothing; only an explicit
   // reopen, or a different app in this slot, asks the service again.
   const loadKey = `${identity}:${String(reloadRevision)}`;
-  const loadLatchRef = useRef({ key: loadKey, wanted: !collapsed });
+  const loadLatchRef = useRef({ key: loadKey, wanted: opened });
   if (loadLatchRef.current.key !== loadKey) {
-    loadLatchRef.current = { key: loadKey, wanted: !collapsed };
-  } else if (!collapsed) {
+    loadLatchRef.current = { key: loadKey, wanted: opened };
+  } else if (opened) {
     loadLatchRef.current = { key: loadKey, wanted: true };
   }
   const loadWanted = loadLatchRef.current.wanted;
@@ -903,6 +1003,8 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     const container = containerRef.current;
     if (container === null || typeof IntersectionObserver !== "function") return undefined;
     const observer = new IntersectionObserver((entries) => {
+      // Where the card is is now known, whichever way the answer went.
+      setViewportSettled(true);
       // Opening is a first-arrival rule, not a scroll rule: once the operator
       // has the control, scrolling back must never reopen what they hid.
       if (revealedRef.current) {
@@ -916,7 +1018,9 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     }, { rootMargin: MCP_APP_PRELOAD_MARGIN });
     observer.observe(container);
     return () => observer.disconnect();
-  }, []);
+  // A recycled slot is a different card in a different place: it is watched
+  // again from scratch, because its predecessor's arrival says nothing about it.
+  }, [identity]);
 
   const settleConfirmation = useCallback((confirmed: boolean) => {
     const pending = confirmationRef.current;
@@ -1327,6 +1431,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const appLabel = part.title ?? part.toolName;
   const reopenApp = () => {
     revealedRef.current = true;
+    setViewportSettled(true);
     setCollapsed(false);
     setStatus("loading");
     setStatusText("Loading interactive app…");
@@ -1361,6 +1466,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
             disabled={confirmation !== null}
             onClick={() => {
               revealedRef.current = true;
+              setViewportSettled(true);
               setCollapsed((value) => !value);
             }}
           >{collapsed ? "Show" : "Hide"}<span className="sr-only"> {appLabel}</span></button>
@@ -1368,7 +1474,13 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       </header>
       <p className={`mcp-app-status is-${status}`} role="status">
         {collapsed
-          ? (resource === null ? "Tap Show to load the app" : "Hidden. Choose Show to bring the app back.")
+          // Until the first observation lands, the card does not yet know it is
+          // closed for want of the viewport, and must not ask for a tap.
+          ? (!viewportSettled
+              ? ""
+              : resource === null
+                ? "Tap Show to load the app"
+                : "Hidden. Choose Show to bring the app back.")
           : statusText}
       </p>
       {frameVisible && (

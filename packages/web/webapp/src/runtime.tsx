@@ -205,11 +205,12 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
 };
 
 const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
-  // The upload route is the picture's one durable, immutable address, so it is
-  // also the browser's cache key for it. A picture is rendered from that address
-  // and nothing else: whatever the payload offers instead may carry a token that
-  // is re-minted per response, which turns every projection of the message into
-  // a fresh download of bytes the browser already has.
+  // A guard, not a correction: the store already answers with exactly this path
+  // for an uploaded attachment. It keeps the address a picture renders from out
+  // of the payload's reach, because that address is the browser's cache key for
+  // bytes the service marks immutable for a year — anything token-bearing or
+  // off-origin arriving in an <img src> would turn every projection of the
+  // message into a fresh download of bytes the browser already has.
   const storedUrl = `/api/v1/uploads/${encodeURIComponent(attachment.id)}/content`;
   const contentUrl = attachment.kind === "image" ? storedUrl : attachment.contentUrl ?? storedUrl;
   return {
