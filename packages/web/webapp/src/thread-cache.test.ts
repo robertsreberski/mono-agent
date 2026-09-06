@@ -1151,3 +1151,34 @@ describe("createThreadCache", () => {
     expect(commitCount).toBe(3);
   });
 });
+
+describe("cron revision eviction", () => {
+  it("forgets paged history, validators and identities on a newer authoritative cron window", () => {
+    const resets: string[] = [];
+    const cache = createThreadCache(undefined, undefined, undefined, (thread) => { resets.push(thread.id); });
+    const cron = { ...thread("alpha-thread", "alpha"), trigger: { kind: "cron" as const, jobId: "digest" }, revision: 1 };
+    cache.upsertFull({ thread: cron, messages: [message("recent")] }, { etag: "old-validator" });
+    cache.prependOlder(cron.id, { messages: [message("older-silent")], nextCursor: "old-cursor" });
+    const inFlight = cache.clock();
+    cache.upsertFull({ thread: { ...cron, revision: 2 }, messages: [], messagesNextCursor: "fresh-cursor" }, { issuedAt: inFlight });
+    expect(cache.get(cron.id)).toMatchObject({ messages: [], messagesNextCursor: "fresh-cursor", pagedInIds: new Set() });
+    expect(cache.get(cron.id)?.etag).toBeUndefined();
+    expect(resets).toEqual([cron.id]);
+    expect(cache.accepts(cron.id, inFlight)).toBe(false);
+    expect(cache.upsertFull({ thread: cron, messages: [message("older-silent")] }, { issuedAt: inFlight })).toBeUndefined();
+    expect(cache.get(cron.id)?.messages).toEqual([]);
+  });
+
+  it("rejects pre-eviction responses even after the entry is refilled, while unrelated threads survive", () => {
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("old")]));
+    cache.upsertFull({ thread: thread("other", "alpha"), messages: [] });
+    const other = cache.get("other");
+    const issuedAt = cache.clock();
+    cache.evict("alpha-thread");
+    cache.upsertFull(detail([]), { issuedAt: cache.clock(), etag: "new" });
+    expect(cache.accepts("alpha-thread", issuedAt)).toBe(false);
+    expect(cache.upsertFull(detail([message("old")]), { issuedAt })).toBeUndefined();
+    expect(cache.get("other")).toBe(other);
+  });
+});

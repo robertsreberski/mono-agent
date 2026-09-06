@@ -393,6 +393,21 @@ cross-resource requests fail. See
 
 ## Architecture
 
+### Silent cron history
+
+Successful empty answers and answers suppressed by `NOTHING_TO_REPORT` add no
+visible conversation row. Failures, real output and completed notification
+content remain visible. The console retains compact silent run history separately
+from visible messages; each job keeps up to 500 visible and 500 suppressed run
+projections. Paging, search, previews and message counts exclude suppressed rows.
+
+Schema 19 marks existing definitely-silent projections without deleting their
+messages, turns or delivery receipts. Ambiguous text truncated by an older agent
+stays visible until authoritative evidence arrives. Cron transcript caches reset
+when their authoritative revision advances, so previously loaded older pages may
+need to be loaded again. Offline hydration also hides old synthetic-only silent
+rows while preserving delivered text and rich replies.
+
 ### Storage migrations
 
 `src/store-migrations.ts` owns the ordered, named migration registry; its last

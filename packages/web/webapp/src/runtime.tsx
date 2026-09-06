@@ -1,3 +1,4 @@
+import { isLegacySilentCronMessage } from "./cron-visibility";
 import {
   AssistantRuntimeProvider,
   type AppendMessage,
@@ -458,7 +459,9 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
     // server upgrade can be handed a part type it does not know yet. `== null`
     // covers that `undefined` too: pushing it into content breaks the whole
     // transcript over one unrecognized row.
-    const convertedPart = convertPart(part);
+    const convertedPart = convertPart(part.type === "telemetry" && part.event === "cron_run"
+      ? { ...part, data: { ...(part.data as Record<string, unknown>), hasVisibleContent: !isLegacySilentCronMessage(message) } }
+      : part);
     return convertedPart == null ? [] : [convertedPart];
   }));
   const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
@@ -737,7 +740,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   );
 
   const messages = useMemo(
-    () => coalesceMonitorWakeMessages(store.detail?.messages ?? []),
+    () => coalesceMonitorWakeMessages((store.detail?.messages ?? []).filter((message) => !isLegacySilentCronMessage(message))),
     [store.detail?.messages],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
