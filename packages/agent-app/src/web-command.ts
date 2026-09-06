@@ -1094,8 +1094,9 @@ async function resetWeb(options: RunWebCommandOptions, deps: RunWebCommandDeps):
   if ((deps.platform ?? process.platform) === "linux") {
     const { inspectSystemd, readSystemdDefinition, SYSTEMD_WEB_IDENTITY } = await import("./systemd.js");
     const systemdDeps = { ...deps.systemd, ...(deps.homeDir === undefined ? {} : { homeDir: deps.homeDir }) };
-    const service = await inspectSystemd(SYSTEMD_WEB_IDENTITY, systemdDeps);
-    if (service.pid > 0 || service.activeState === "activating" || await readSystemdDefinition(SYSTEMD_WEB_IDENTITY, systemdDeps)) {
+    const service = await inspectSystemd(SYSTEMD_WEB_IDENTITY, systemdDeps).catch(() => undefined);
+    const definition = await readSystemdDefinition(SYSTEMD_WEB_IDENTITY, systemdDeps);
+    if (definition !== undefined || (service?.pid ?? 0) > 0 || service?.activeState === "activating") {
       stderr.write(ui.errorLine("Run mono-agent web stop before resetting the systemd console."));
       return 1;
     }

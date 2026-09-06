@@ -623,6 +623,25 @@ describe("runWebCommand", () => {
     expect(resetState).not.toHaveBeenCalled();
   });
 
+  it("allows foreground-only Linux reset when the systemd user manager is unavailable", async () => {
+    const home = await testHome();
+    const resetState = vi.fn(async () => undefined);
+    await expect(runWebCommand(
+      { positionals: ["reset"], env: {}, all: true, yes: true },
+      {
+        platform: "linux",
+        homeDir: home,
+        systemd: { run: async () => ({ code: 1, stdout: "", stderr: "Failed to connect to bus" }) },
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        resetState,
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    )).resolves.toBe(0);
+    expect(resetState).toHaveBeenCalledOnce();
+  });
+
   it("refuses reset while the maintenance helper is loaded", async () => {
     const home = await testHome();
     const resetState = vi.fn();
@@ -904,6 +923,7 @@ describe("runWebCommand", () => {
       {
         platform: "linux",
         homeDir: home,
+        systemd: { run: async () => ({ code: 1, stdout: "", stderr: "Failed to connect to bus" }) },
         prepareState,
         acquireLifecycleLock: async () => async () => undefined,
         resetState,
@@ -928,6 +948,7 @@ describe("runWebCommand", () => {
       {
         platform: "linux",
         homeDir: home,
+        systemd: { run: async () => ({ code: 1, stdout: "", stderr: "Failed to connect to bus" }) },
         prepareState,
         acquireLifecycleLock: async () => async () => undefined,
         resetState: async () => { await rm(paths.tailscalePath); },

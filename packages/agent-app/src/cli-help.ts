@@ -176,7 +176,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     command: "status",
     group: "Run",
     short: "status",
-    summary: "Show this config's instance plus other running instances.",
+    summary: "Show this config's service and readiness; macOS also lists other running instances.",
     json: true,
     signature: "mono-agent status [--config <path>] [--json]",
     lines: ["Show this config's service and readiness; macOS also lists other running instances."],
