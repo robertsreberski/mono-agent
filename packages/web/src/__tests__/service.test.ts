@@ -148,6 +148,66 @@ describe("agentGeneration", () => {
   });
 });
 
+describe("web SELF-CONFIG sessions", () => {
+  it("keeps capability metadata host-owned and redacts restart credentials", async () => {
+    const turns: Record<string, unknown>[] = [];
+    let proposalReads = 0;
+    let disposed = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
+      configurationHost: {
+        supports: () => true,
+        create: async () => ({
+          configuration: {
+            sessionId: "11111111-2222-4333-8444-555555555555",
+            conversationId: "web-config-test",
+            roleLocation: "/tmp/IDENTITY.md -> ## Role",
+            initialPrompt: "Open configuration.",
+            prompt: "Open configuration.",
+            operatorPrompt: "Continue configuration.",
+            takeProposal: async () => proposalReads++ === 0 ? undefined : ({
+              id: "proposal-one",
+              title: "Change Role",
+              rationale: "Align behavior.",
+              details: ["Replace Role."],
+            }),
+            approve: async () => ({
+              kind: "applied",
+              message: "Applied and restarted.",
+              connection: { baseUrl: "http://127.0.0.1:45123/gui", apiKey: "owner-secret" },
+            }),
+            reject: async () => ({ kind: "rejected", message: "Rejected." }),
+            abandon: async () => undefined,
+          },
+          dispose: async () => { disposed += 1; },
+        }),
+      },
+    });
+    try {
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+      const opened = await service.createConfigurationSession("agent-one");
+      expect(opened.status).toBe("active");
+      const proposed = await service.continueConfigurationSession(opened.id, "Adjust the Role.");
+      expect(proposed.status).toBe("proposal");
+      expect(turns[1]?.metadata).toMatchObject({
+        source: "web",
+        configuration: {
+          configuration: true,
+          configurationSessionId: "11111111-2222-4333-8444-555555555555",
+          configurationPhase: "operator",
+        },
+      });
+      const settled = await service.settleConfigurationSession(opened.id, "proposal-one", "approve");
+      expect(JSON.stringify(settled)).not.toContain("owner-secret");
+      expect(settled.messages.at(-1)).toEqual({ role: "host", text: "Applied and restarted." });
+      await service.closeConfigurationSession(opened.id);
+      expect(disposed).toBe(1);
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
 describe("WebService", () => {
   it("saves strict web defaults, snapshots new threads, and reverts without changing existing threads", async () => {
     const turnBodies: Record<string, unknown>[] = [];

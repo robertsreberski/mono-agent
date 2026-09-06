@@ -578,3 +578,37 @@ function shellQuote(value: string): string {
 function isConfigurationReadySource(source: TraceSourceListItem): boolean {
   return source.health === "running" && hasCompletedManagedStartup(source);
 }
+
+/** Grant the web host the same verified owner-local controller as `tui --configure`. */
+export async function createManagedWebConfigurationSession(
+  source: TraceSourceListItem,
+  env: Record<string, string | undefined>,
+): Promise<{
+  readonly configuration: import("@mono-agent/tui").TuiConfigurationController;
+  dispose(): Promise<void>;
+}> {
+  if (process.platform !== "darwin") {
+    throw new Error("Web self-configuration requires a macOS managed background agent.");
+  }
+  if (source.configPath === undefined || !isConfigurationReadySource(source)) {
+    throw new Error("The selected agent is not a configuration-ready managed background process.");
+  }
+  const options: RunTuiOptions = {
+    cwd: dirname(source.configPath),
+    configPath: source.configPath,
+    env,
+  };
+  const environment = await loadManagedConfigurationEnvironment(options);
+  const verified = await verifyManagedConfigurationSource(options, source, environment);
+  if (verified === undefined || verified.sourceId !== source.sourceId) {
+    throw new Error("The managed background agent changed before configuration authority could be granted.");
+  }
+  const { createRemoteConfigurationSession } = await import("./local-configuration.js");
+  return await createRemoteConfigurationSession({
+    cwd: options.cwd,
+    configPath: options.configPath,
+    env: environment,
+    restartBackground: async (expectedSnapshot) =>
+      await restartManagedBackground(options, expectedSnapshot, environment),
+  });
+}

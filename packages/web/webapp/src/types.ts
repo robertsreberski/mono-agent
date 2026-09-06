@@ -221,6 +221,7 @@ export interface AgentSummary {
   readonly pinned: boolean;
   readonly health?: string;
   readonly supportsAttachments: boolean;
+  readonly supportsConfiguration?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly defaultEffort?: string;
@@ -237,6 +238,26 @@ export interface AgentSummary {
   readonly cron?: { readonly read: boolean; readonly actions: boolean };
   readonly supportsAskById?: boolean;
   readonly updatedAt: string;
+}
+
+export interface ConfigurationProposal {
+  readonly id: string;
+  readonly title: string;
+  readonly rationale: string;
+  readonly details: readonly string[];
+  readonly role?: { readonly location: string; readonly proposedBody: string };
+}
+
+export interface ConfigurationSession {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly roleLocation: string;
+  readonly status: "active" | "proposal" | "applying";
+  readonly messages: readonly {
+    readonly role: "operator" | "assistant" | "host";
+    readonly text: string;
+  }[];
+  readonly proposal?: ConfigurationProposal;
 }
 
 export type SkillAvailability = "inlined" | "on-demand" | "unavailable";
