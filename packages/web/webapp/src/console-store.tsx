@@ -514,7 +514,6 @@ const anySignal = (first: AbortSignal, second: AbortSignal): AbortSignal => {
   return controller.signal;
 };
 
-/** {@link startBoundedRequest} for callers with no queue to advance. */
 /**
  * ONE conversation read, conditional whenever a validator is held.
  *
@@ -531,6 +530,7 @@ export const readConversation = (
   ? api.thread(threadId, signal)
   : api.threadIfChanged(threadId, etag, signal));
 
+/** {@link startBoundedRequest} for callers with no queue to advance. */
 export const boundedRequest = <T,>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
@@ -1794,14 +1794,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [publishDetail]);
 
   /**
-   * Read one conversation in full and put it into the cache.
-   *
-   * `cold` is whether the operator is looking at an empty pane while this runs.
-   * A conversation the cache already holds is on screen from the moment it is
-   * selected, and a revalidation behind it is not something to show a spinner
-   * for -- that spinner replaced a transcript the tab already had.
-   */
-  /**
    * Apply a 304 to the conversation it was asked about.
    *
    * Nothing is replaced -- every message comes back by reference -- and only
@@ -1818,6 +1810,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, []);
 
+  /**
+   * Read one conversation in full and put it into the cache.
+   *
+   * `cold` is whether the operator is looking at an empty pane while this runs.
+   * A conversation the cache already holds is on screen from the moment it is
+   * selected, and a revalidation behind it is not something to show a spinner
+   * for -- that spinner replaced a transcript the tab already had.
+   */
   const loadThread = useCallback(async (
     threadId: string,
     signal: AbortSignal,
@@ -2006,7 +2006,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         scheduleRefreshRef.current({});
       }
     }
-  }, [applyBootstrap, bootstrapScope, publishDetail]);
+  }, [applyBootstrap, bootstrapScope, confirmConversation, publishDetail]);
 
   const scheduleRefresh = useCallback((scope: Partial<RefreshScope>) => {
     // A refresh that settles after the tree is gone re-queues through the
@@ -3172,9 +3172,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         });
         return;
       }
-      // A 304 for a registry there is no stale copy of: the validator and what
-      // this tab holds have come apart. Read once more without one rather than
-      // leave the operator looking at a registry that will never resolve.
+      // A 304 for a registry there is no stale copy to lift. Either the
+      // validator and the copy this tab holds have come apart, or this read is
+      // simply one commit ahead of the ref it checks -- `skillRegistryStateRef`
+      // is assigned by an effect, so a 304 that lands before React has
+      // committed the "stale" this effect just set finds the PREVIOUS registry
+      // here. Neither is something to leave the operator inside: read once more
+      // without a validator rather than sit at a registry that never resolves.
       if (retried) return;
       retried = true;
       await readRegistry(undefined);
