@@ -231,6 +231,12 @@ The agent reads memory back through a single, read-only `MemoryRecall` tool: hyb
 
 Questions about the active chat are intentionally not durable-memory queries. For unqualified prompts such as `What did you send in the last message?`, `What was your previous reply?`, or `What happened in this conversation?`, automatic recall injects nothing and `MemoryRecall` returns guidance to use the active conversation history without calling the memory backend. Qualified archived questions—such as `What did Alice's last message say?` or `What did we decide last month?`—still use durable recall. This prevents an older semantically similar record from displacing the actual latest Telegram message.
 
+Interrupted-run recovery is also not a durable-memory query. For a request to
+pick up, continue, or recover interrupted work, the model-facing tool contract
+routes to `RunHistory {}` first when available. An empty `MemoryRecall` response
+repeats that conditional exact handoff so the agent does not keep rephrasing
+memory searches for evidence owned by run history.
+
 :::note
 **Where recalled memory appears in the prompt.** Beyond this on-demand tool, the harness *automatically* appends recalled memory to the **user message** at the start of each turn (when a recall returns hits), clearly delimited as background context — it is **not** folded into the system prompt. Riding the user message is what lets memory survive a session resume on runtimes that drop the system prompt. The injected block is not persisted to history, and a `memory_recalled` diagnostic records that recall fired (source + byte size, not the content). See [Context assembly → Memory recall](/context/assembly/#memory-recall).
 :::

@@ -285,7 +285,7 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
     "MemoryRecall",
     {
       title: "Recall from memory",
-      description: "Read-only hybrid (keyword + semantic) search over durable long-term memory. Use it for prior preferences, facts, decisions, and qualified archived history. Do not use it for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.",
+      description: "Read-only hybrid (keyword + semantic) search over intentionally captured durable preferences, facts, decisions, and qualified archived history. For a request to pick up, continue, or recover interrupted work, do not search MemoryRecall: call RunHistory with {} first when that tool is available, because exact prior-run evidence does not belong to durable memory. Do not use MemoryRecall for unqualified questions about what you or the user just said or sent in the current or last message; use the active conversation history for those questions.",
       inputSchema: {
         query: z.string().min(1).describe("Natural-language description of what to recall."),
         limit: z.number().int().min(1).max(50).optional().describe("Max results (default 8)."),
@@ -323,7 +323,21 @@ export function createMemoryRecallServer(store: RecallCapableStore): McpServer {
         };
       }
       if (hits.length === 0) {
-        return { content: [{ type: "text", text: `No memories matched "${args.query}".` }], structuredContent: { hits: [] } };
+        const guidance = "If this request is to pick up, continue, or recover interrupted work and RunHistory is available, call RunHistory with {} first. Do not keep rephrasing MemoryRecall queries for exact prior-run evidence.";
+        return {
+          content: [{ type: "text", text: `No memories matched "${args.query}". ${guidance}` }],
+          structuredContent: {
+            hits: [],
+            navigation: {
+              guidance,
+              relatedTools: [{
+                tool: "RunHistory",
+                description: "Discover settled prior runs before asking for missing interrupted-work context.",
+                arguments: {},
+              }],
+            },
+          },
+        };
       }
       const text = hits.map((hit) => `${hit.score.toFixed(3)}  ${hit.record.text}`).join("\n");
       return {
