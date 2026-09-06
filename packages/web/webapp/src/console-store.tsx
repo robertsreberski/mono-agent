@@ -21,6 +21,7 @@ import {
   type ReadThreadDetail,
 } from "./api";
 import { clearRetainedReplyImages } from "./components/reply-image-cache";
+import { forgetComposerDraft, transferComposerDraft } from "./composer-draft";
 import { currentDataMode } from "./data-mode";
 import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
@@ -4139,6 +4140,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (!admitThread(removedThreadsRef.current, thread, issuedAt)) {
         throw new Error("This conversation was deleted.");
       }
+      transferComposerDraft(selectedAgentId, null, thread.id);
       setModelByContext((current) => {
         if (current[draftPreferenceKey] === undefined) return current;
         const next = { ...current };
@@ -4331,6 +4333,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const completeThreadRemoval = useCallback((thread: ThreadSummary, requestedId: string) => {
     // Nothing can write to it again, so its write generation is dead weight.
     overrideWriteRef.current.delete(thread.id);
+    forgetComposerDraft(thread.sourceId, thread.id);
+    forgetComposerDraft(thread.sourceId, requestedId);
     const preferenceKey = preferenceKeyForThread(thread.sourceId, thread.id);
     setModelByContext((current) => {
       const next = { ...current };

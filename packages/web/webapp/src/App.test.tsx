@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
-import { noteComposerDraft, resetComposerDraft } from "./composer-draft";
+import { resetComposerDraft, writeComposerDraft } from "./composer-draft";
 import { readDataModeSetting, resetDataModeSession, writeDataModeSetting } from "./data-mode";
 import { recordDataUsage, resetDataUsage } from "./data-usage";
 import {
@@ -440,7 +440,7 @@ describe("App service worker update", () => {
     // assistant-ui's composer is in-memory: a reload destroys whatever is typed
     // in it and whatever is staged beside it, and nothing anywhere puts them
     // back.
-    noteComposerDraft(true);
+    writeComposerDraft("agent", "thread", "unsent");
     const apply = stageUpdate();
     render(<App />);
 
@@ -448,7 +448,7 @@ describe("App service worker update", () => {
     expect(apply).not.toHaveBeenCalled();
 
     // Sent, or cleared: now there is nothing to lose.
-    noteComposerDraft(false);
+    writeComposerDraft("agent", "thread", "");
     visibility("hidden");
     visibility("visible");
     expect(apply).toHaveBeenCalledTimes(1);
@@ -468,7 +468,7 @@ describe("App service worker update", () => {
 
   it("reloads on the operator's own word, whatever is running", () => {
     storeMock.hasRunningThread = true;
-    noteComposerDraft(true);
+    writeComposerDraft("agent", "thread", "unsent");
     const apply = stageUpdate();
     render(<App />);
 
