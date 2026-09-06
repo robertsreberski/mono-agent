@@ -5584,6 +5584,45 @@ describe("ConsoleStoreProvider integration", () => {
       };
     };
 
+    it("does not believe a turn is running because the device kept one that was", async () => {
+      // `runState` is stored verbatim. A tab killed mid-turn restores `running`
+      // for a turn that finished while the browser was shut, and nothing will
+      // ever say otherwise -- so the flag latched true for the whole session
+      // and the staged service-worker build was never applied.
+      const runningAlpha = { ...alpha, runState: { status: "running" as const, id: "turn-1" } };
+      await previousVisit({
+        entries: [entry(runningAlpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [runningAlpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [runningAlpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      // Held open, so the console is observed in the state that used to latch:
+      // the transcript is on screen and nothing has confirmed a word of it.
+      const answers: (() => void)[] = [];
+      vi.mocked(api.threadIfChanged).mockImplementation(async () =>
+        new Promise((resolve) => { answers.push(() => resolve(NOT_MODIFIED)); }));
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await waitFor(() => expect(answers.length).toBeGreaterThan(0));
+      // Drawn from the device, and NOT counted: nothing has confirmed it.
+      expect(store.current.hasRunningThread).toBe(false);
+
+      // The conditional read says the body -- run state included -- is what the
+      // server has. Now it counts.
+      await act(async () => { for (const answer of answers) answer(); await Promise.resolve(); });
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
+
+      // "Clear cached data" deliberately KEEPS the conversation in front of the
+      // operator, so the answer it is holding is kept with it -- the flag
+      // tracks the held set, whatever emptied the rest of it.
+      await act(async () => { await store.current.clearCachedData(); });
+      expect(store.current.hasRunningThread).toBe(true);
+      expect(store.current.detail?.thread.id).toBe(alpha.id);
+    });
+
     it("draws what it kept before anything answers, and confirms it with one conditional read", async () => {
       await previousVisit({
         entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],

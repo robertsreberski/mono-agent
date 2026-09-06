@@ -226,11 +226,40 @@ describe("a device that will not remember anything", () => {
       restore();
     }
 
+    // Some OTHER setting, written by that tab. It says nothing about the mode,
+    // and giving up the fallback for it hands the control back to the very
+    // value this device refused to overwrite.
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: "mono-agent.web.selected-agent" }));
+    });
+    expect(view.result.current).toBe("lean");
+    expect(readDataModeSetting()).toBe("lean");
+
     localStorage.setItem(DATA_MODE_STORAGE_KEY, "full");
-    act(() => { window.dispatchEvent(new StorageEvent("storage")); });
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: DATA_MODE_STORAGE_KEY }));
+    });
 
     expect(view.result.current).toBe("full");
     expect(readDataModeSetting()).toBe("full");
+    view.unmount();
+  });
+
+  it("gives way to a storage clear, which names no key at all", () => {
+    // `localStorage.clear()` is reported with a null key by the spec, and it
+    // takes the mode with everything else.
+    const view = renderHook(() => useDataModeSetting());
+    const restore = denyStorage();
+    try {
+      act(() => { writeDataModeSetting("lean"); });
+      expect(view.result.current).toBe("lean");
+    } finally {
+      restore();
+    }
+
+    act(() => { window.dispatchEvent(new StorageEvent("storage", { key: null })); });
+
+    expect(view.result.current).toBe("auto");
     view.unmount();
   });
 });

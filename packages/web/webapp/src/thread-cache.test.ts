@@ -695,6 +695,68 @@ describe("createThreadCache", () => {
     expect(cache.get("alpha-thread")?.pagedInIds.has("m1")).toBe(false);
   });
 
+  it("marks what the device restored as unconfirmed until the server touches it", () => {
+    // `runState` is stored verbatim, so a tab killed mid-turn keeps `running`
+    // for a turn that finished while the browser was shut -- and no event is
+    // ever coming for it. Anything reading "is a turn running" off the held set
+    // would have latched true for the rest of the session.
+    const cache = createThreadCache();
+    const running = thread("alpha-thread", "alpha", {
+      runState: { status: "running", id: "turn-1" },
+    });
+    cache.restore({ thread: running, messages: [message("m1")] });
+
+    const restored = cache.get("alpha-thread")!;
+    expect(restored.fromDevice).toBe(true);
+    expect(restored.thread.runState.status).toBe("running");
+
+    // Suspicion is not the same question: a live entry the reconnect marked
+    // stale is still an entry the server has confirmed.
+    cache.markAllStale();
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+
+    // A 304 is the server saying this body -- summary and run state -- is what
+    // it has, which is exactly the confirmation that was missing.
+    expect(cache.confirmFresh("alpha-thread", cache.clock())).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+    expect(cache.get("alpha-thread")?.thread.runState.status).toBe("running");
+  });
+
+  it("confirms a restored conversation through any answer the server gave", () => {
+    const cache = createThreadCache();
+    const restore = () => {
+      cache.evict("alpha-thread");
+      cache.restore({
+        thread: thread("alpha-thread", "alpha", { runState: { status: "running" } }),
+        messages: [message("m1", { seq: 1 })],
+      });
+      expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    };
+
+    restore();
+    cache.upsertFull(detail([message("m1")]));
+    expect(cache.get("alpha-thread")?.fromDevice).toBeFalsy();
+
+    restore();
+    // A `turn.changed` restating what is held still CONFIRMS it, even though it
+    // moves nothing: the news is that the server spoke about this conversation.
+    expect(cache.patchRunState("alpha-thread", { status: "running" })).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    restore();
+    cache.applyDelta("alpha-thread", delta({ ops: [{ op: "append", index: 0, delta: "lo" }] }));
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    // A markAllStale on a confirmed entry leaves it confirmed.
+    cache.markAllStale();
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    // And what `clear` empties is gone from the held set entirely, so anything
+    // derived from it -- "is a turn running" -- goes with it.
+    cache.clear();
+    expect(cache.snapshot()).toEqual([]);
+  });
+
   it("patches the summary of a conversation it holds and inserts none it does not", () => {
     const cache = createThreadCache();
     cache.upsertFull(detail([]));

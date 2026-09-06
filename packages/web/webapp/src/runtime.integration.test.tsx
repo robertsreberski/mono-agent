@@ -2,7 +2,7 @@ import type { AssistantRuntime } from "@assistant-ui/react";
 import { useAssistantRuntime } from "@assistant-ui/react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StartTurnInput } from "./types";
 import { agent, attachment, thread, uploadLimits } from "./test/fixtures";
 
@@ -21,6 +21,7 @@ vi.mock("./api", () => ({
 }));
 
 import { api, uploadContent } from "./api";
+import { hasUnsentComposerDraft, resetComposerDraft } from "./composer-draft";
 import { Composer } from "./components/Composer";
 import { WebRuntimeProvider } from "./runtime";
 
@@ -666,5 +667,70 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
 
     await waitFor(() => expect(view.runtime.thread.composer.getState().canSend).toBe(false));
     expect(view.runtime.thread.composer.getState().text).toBe("");
+  });
+});
+
+describe("what the composer is holding, for anything that would destroy it", () => {
+  beforeEach(() => {
+    storeMock.current = null;
+    resetComposerDraft();
+    vi.clearAllMocks();
+  });
+  afterEach(() => { resetComposerDraft(); });
+
+  it("says what is typed and unsent, and stops saying it once it is sent", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn);
+    await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" });
+
+    expect(hasUnsentComposerDraft()).toBe(false);
+    fireEvent.change(input, { target: { value: "half a thought" } });
+    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(true));
+
+    // Whitespace is not a draft.
+    fireEvent.change(input, { target: { value: "   " } });
+    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(false));
+
+    fireEvent.change(input, { target: { value: "half a thought" } });
+    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(true));
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => expect(sendTurn).toHaveBeenCalled());
+    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(false));
+  });
+
+  it("keeps saying so when the composer is taken off screen with a draft in it", async () => {
+    // `Chat` swaps the composer for the archived and cron read-only footers,
+    // and the assistant-ui runtime that holds the text outlives it. Reporting
+    // "nothing is held" there let the next visibility flip reload over a draft
+    // that was still there.
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn);
+    let runtime: AssistantRuntime | undefined;
+    const onReady = (value: AssistantRuntime) => { runtime = value; };
+    const tree = (composer: boolean) => (
+      <WebRuntimeProvider>
+        <RuntimeCapture onReady={onReady} />
+        {composer && <Composer />}
+      </WebRuntimeProvider>
+    );
+    const view = render(tree(true));
+    await waitFor(() => expect(runtime).toBeDefined());
+    fireEvent.change(screen.getByRole("combobox", { name: "Message" }), {
+      target: { value: "half a thought" },
+    });
+    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(true));
+
+    // The operator opens an archived conversation: the composer goes, the text
+    // does not.
+    view.rerender(tree(false));
+    expect(screen.queryByRole("combobox", { name: "Message" })).toBeNull();
+    expect(hasUnsentComposerDraft()).toBe(true);
+
+    // Emptied for real, and the composer comes back to say so.
+    act(() => { runtime!.thread.composer.setText(""); });
+    view.rerender(tree(true));
+    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(false));
   });
 });

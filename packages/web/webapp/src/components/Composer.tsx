@@ -111,10 +111,20 @@ export function Composer() {
   // decision that would DESTROY it can read it -- the automatic service-worker
   // reload above all. Not a hook there: the answer is wanted at the moment of
   // the event, and subscribing would re-render for every keystroke.
+  const draftRef = useRef(false);
   useEffect(() => {
-    noteComposerDraft(composer.value.trim().length > 0 || attachmentCount > 0);
+    draftRef.current = composer.value.trim().length > 0 || attachmentCount > 0;
+    noteComposerDraft(draftRef.current);
   }, [attachmentCount, composer.value]);
-  useEffect(() => resetComposerDraft, []);
+  useEffect(() => () => {
+    // Only when there is genuinely nothing left. This component is unmounted
+    // for reasons that have nothing to do with the draft -- `Chat` swaps it for
+    // the archived and cron read-only footers -- while the assistant-ui runtime
+    // that actually holds the text outlives it. Resetting unconditionally said
+    // "nothing is held" about a draft still sitting in that runtime, and the
+    // next visibility flip reloaded over it.
+    if (!draftRef.current) resetComposerDraft();
+  }, []);
 
   const captureSelection = useCallback((input = inputRef.current) => {
     if (input === null) return;

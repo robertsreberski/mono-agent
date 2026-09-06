@@ -163,12 +163,18 @@ export const currentDataMode = (): DataMode =>
 let detachSources: (() => void) | undefined;
 
 /**
- * Another tab of the same console has written the setting for real. That is a
- * newer answer than this session's fallback, which exists only because this
- * device refused a write.
+ * Another tab of the same console wrote something.
+ *
+ * The session fallback is only given up for a write that is actually ABOUT the
+ * mode -- this key, or a `localStorage.clear()`, which the spec reports with a
+ * null key. Any other key is a different setting entirely (the selected agent,
+ * the sidebar width, the run preferences), and dropping the fallback for one of
+ * those handed the control straight back to the stale value this device had
+ * refused to overwrite. Every storage event still notifies: the resolved mode
+ * can move for reasons other than the setting.
  */
-const onStorage = (): void => {
-  sessionSetting = undefined;
+const onStorage = (event: StorageEvent): void => {
+  if (event.key === null || event.key === DATA_MODE_STORAGE_KEY) sessionSetting = undefined;
   notify();
 };
 

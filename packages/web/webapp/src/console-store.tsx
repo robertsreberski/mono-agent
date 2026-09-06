@@ -1774,15 +1774,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [hasRunningThread, setHasRunningThread] = useState(false);
   const hasRunningThreadRef = useRef(false);
   /**
-   * Recomputed on every cache commit, and published only when it MOVED.
+   * Recomputed on every cache mutation, and published only when it MOVED.
    *
    * A running turn commits several times a second, so a `setState` per commit
    * would re-render every consumer of the store for a boolean that changes
-   * twice a turn.
+   * twice a turn -- hence the transition guard, which is also what makes it
+   * safe for the cache's commit hook to reach a `setState`. That hook is only
+   * ever reached from an event handler or a response; the cache is never
+   * written during render, and this must stay true.
+   *
+   * An entry the DEVICE restored says nothing about whether a turn is running.
+   * `runState` is persisted verbatim, so a tab killed mid-turn stores
+   * `running` for a turn that finished while the browser was shut -- and no
+   * event is ever coming for it, so the flag would have latched true for the
+   * whole session and the staged build would never have been applied. Such an
+   * entry counts only once a server answer has touched it. Deliberately not
+   * keyed on `stale`, which `markAllStale` sets on genuinely live entries.
    */
   const noteHeldRunState = useCallback(() => {
     const running = threadCacheRef.current.snapshot()
-      .some((entry) => entry.thread.runState.status === "running");
+      .some((entry) => entry.fromDevice !== true && entry.thread.runState.status === "running");
     if (running === hasRunningThreadRef.current) return;
     hasRunningThreadRef.current = running;
     setHasRunningThread(running);
@@ -1890,6 +1901,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // write for them: without this every cold start rewrote all eight
       // transcripts a second after restoring them.
       persistence?.markPersisted(cache.snapshot());
+      // What the cache holds has changed, so the flag derived from it is
+      // recomputed -- once, after the whole restore.
+      noteHeldRunStateRef.current();
       const agentId = selectedAgentRef.current;
       const bucket = agentId === null
         ? undefined
@@ -1956,6 +1970,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // conversations, and letting it fire would write them straight back.
     cancelPersist();
     threadCacheRef.current.clear();
+    noteHeldRunStateRef.current();
     selectedThreadRef.current = null;
     setDetail(null);
     // A read for the other console's copy may already be on the wire, and it
@@ -2281,6 +2296,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const confirmConversation = useCallback((threadId: string, issuedAt: number) => {
     const cache = threadCacheRef.current;
     cache.confirmFresh(threadId, issuedAt);
+    // `confirmFresh` deliberately does not announce a commit -- a reconnect
+    // answering eight conditional reads must not rewrite eight rows -- so what
+    // the store derives from the held set is recomputed here. A 304 is what
+    // turns a restored entry into a confirmed one.
+    noteHeldRunStateRef.current();
     if (cache.get(threadId)?.stale === true && selectedThreadRef.current === threadId) {
       scheduleRefreshRef.current({ detail: true });
     }
@@ -3715,6 +3735,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // and the second cancel drops even that.
     cancelPersist();
     threadCacheRef.current.clear(selectedThreadRef.current ?? undefined);
+    noteHeldRunStateRef.current();
     await persistenceRef.current?.clearAll();
     cancelPersist();
   }, [cancelPersist]);

@@ -152,11 +152,11 @@ let armedRetentionMs = REPLY_IMAGE_RETENTION_MS;
 
 const rearmRetained = (): void => {
   const retentionMs = replyImageRetentionMs();
-  // The subscription fires on a `storage` event and on a connection change too,
-  // and neither has to have moved the resolved mode. Re-arming regardless would
-  // restart every retained picture's countdown from zero on a `storage` write
-  // this document did not make -- and another tab writes one on every keystroke
-  // of the search box. Only an actual change to the window re-times anything.
+  // The subscription fires on a connection change and on any `storage` event,
+  // and neither has to have moved the resolved mode -- a cycle back to the same
+  // setting notifies too. Re-arming regardless restarted every retained
+  // picture's countdown from zero, so the window stopped meaning anything.
+  // Only an actual change to the window re-times anything.
   if (retentionMs !== armedRetentionMs) {
     armedRetentionMs = retentionMs;
     for (const key of retained) {
