@@ -1,4 +1,5 @@
 import { ThreadPrimitive } from "@assistant-ui/react";
+import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
 import { NotificationBell } from "../notifications";
@@ -269,7 +270,9 @@ export function ModelControls() {
             if (next) openCatalog();
           }}
           disabled={disabled}
-          badge={hasRunOverride ? "custom" : "default"}
+          conciseValue
+          side="top"
+          align="end"
           agentDefaultId={agentDefaultModel}
           providerStatus={catalogStatusByProvider}
           onProviderRequest={requestProvider}
@@ -277,6 +280,61 @@ export function ModelControls() {
         />
       )}
     </div>
+  );
+}
+
+function ConversationActions() {
+  const { selectedThread, archiveThread, unarchiveThread, deleteThread } = useConsoleStore();
+  if (selectedThread === null) return null;
+  const archived = selectedThread.archivedAt !== null;
+  const canDelete = archived
+    && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false);
+
+  return (
+    <Menu.Root>
+      <Menu.Trigger
+        type="button"
+        className="icon-button header-more"
+        aria-label="Conversation actions"
+        title="Conversation actions"
+      >
+        <Icon name="more" size={19} />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={5}>
+          <Menu.Popup className="conversation-menu-popup" aria-label="Conversation actions">
+            <Menu.Item
+              className="conversation-menu-item"
+              onClick={() => {
+                if (archived) {
+                  void unarchiveThread(selectedThread.id).catch(() => undefined);
+                  return;
+                }
+                const confirmed = window.confirm(
+                  "Archive this conversation? Empty conversations will be permanently removed. Conversations with messages remain available in Archived.",
+                );
+                if (confirmed) void archiveThread(selectedThread.id).catch(() => undefined);
+              }}
+            >
+              <Icon name={archived ? "restore" : "archive"} size={16} />
+              <span>{archived ? "Restore conversation" : "Archive conversation"}</span>
+            </Menu.Item>
+            {canDelete && (
+              <Menu.Item
+                className="conversation-menu-item is-danger"
+                onClick={() => {
+                  if (!window.confirm("Permanently delete this conversation and its attachments? This cannot be undone.")) return;
+                  void deleteThread(selectedThread.id).catch(() => undefined);
+                }}
+              >
+                <Icon name="trash" size={16} />
+                <span>Permanently delete</span>
+              </Menu.Item>
+            )}
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   );
 }
 
@@ -327,9 +385,7 @@ export function Chat({
     selectedThreadId,
     connection,
     detailLoading,
-    archiveThread,
     unarchiveThread,
-    deleteThread,
     hasOlderMessages,
     loadOlderMessages,
   } = useConsoleStore();
@@ -376,40 +432,8 @@ export function Chat({
           </span>
         </div>
         <div className="chat-header-actions">
-          {selectedThread?.trigger?.kind !== "cron" && <ModelControls />}
           <NotificationBell />
-          {selectedThread && (
-            <button
-              type="button"
-              className="icon-button header-archive"
-              aria-label={selectedThread.archivedAt ? "Restore conversation" : "Archive conversation"}
-              title={selectedThread.archivedAt ? "Restore conversation" : "Archive conversation"}
-              onClick={() => {
-                const action = selectedThread.archivedAt
-                  ? unarchiveThread(selectedThread.id)
-                  : archiveThread(selectedThread.id);
-                void action.catch(() => undefined);
-              }}
-            >
-              <Icon name={selectedThread.archivedAt ? "restore" : "archive"} size={17} />
-            </button>
-          )}
-          {selectedThread?.archivedAt
-            && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false)
-            && (
-            <button
-              type="button"
-              className="icon-button header-delete"
-              aria-label="Permanently delete conversation"
-              title="Permanently delete conversation"
-              onClick={() => {
-                if (!window.confirm("Permanently delete this conversation and its attachments? This cannot be undone.")) return;
-                void deleteThread(selectedThread.id).catch(() => undefined);
-              }}
-            >
-              <Icon name="trash" size={17} />
-            </button>
-          )}
+          <ConversationActions />
         </div>
       </header>
       <ConnectionBanner connection={connection} />
@@ -461,7 +485,7 @@ export function Chat({
                   Cron channels are read-only. Open the originating session to continue the conversation.
                 </div>
               ) : (
-                <Composer />
+                <Composer runSettings={<ModelControls />} />
               )}
             </ThreadPrimitive.ViewportFooter>
           </ThreadPrimitive.Viewport>

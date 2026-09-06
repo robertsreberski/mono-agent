@@ -3,7 +3,7 @@ import {
   unstable_useComposerInput,
   useAuiState,
 } from "@assistant-ui/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canUploadInConsole } from "../capabilities";
 import { noteComposerDraft, resetComposerDraft } from "../composer-draft";
 import { useConsoleStore } from "../console-store";
@@ -70,7 +70,7 @@ export const buildComposerCommands = ({
     : []),
 ];
 
-export function Composer() {
+export function Composer({ runSettings }: { readonly runSettings?: ReactNode } = {}) {
   const store = useConsoleStore();
   const { connection, selectedAgent, selectedThread } = store;
   const composer = unstable_useComposerInput();
@@ -244,6 +244,7 @@ export function Composer() {
               </span>
             </div>
             <div className="composer-actions">
+              {runSettings}
               <ComposerPrimitive.Send
                 className="composer-send"
                 aria-label={isRunning ? "Send live follow-up" : "Send message"}

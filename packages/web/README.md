@@ -152,9 +152,12 @@ desktop rail, mobile picker, and command palette. Pin or unpin with the star
 control; pins live in the web service so favorites stay consistent over
 localhost, LAN, and Tailscale.
 
-The assistant-ui run-settings popover combines searchable model selection with
-the selected model's supported reasoning-effort choices and becomes a
-viewport-safe bottom sheet on narrow screens. Model rows use the configured
+The single-row mobile header keeps navigation, title, notifications, and a
+conversation actions menu together. Run settings sit beside **Send** in the
+composer, where the compact trigger shows only the resolved model and effort.
+Its popover combines searchable model selection with the selected model's
+supported reasoning-effort choices and becomes a viewport-safe bottom sheet on
+narrow screens. Model rows use the configured
 display name when present and otherwise use the running agent's catalog name.
 Choosing a model applies it immediately while keeping the popover open for an
 effort choice; the explicit **Close** action finishes the interaction.
@@ -229,6 +232,8 @@ unavailable entries disabled with their status. Keyboard, pointer, and touch
 selection only inserts the canonical `$skill-name` token at the caret; it never
 sends the draft. Loading, stale, empty, unsupported, offline, and registry-error
 states leave normal composition available.
+The browse control uses a library icon, and touch opening leaves the search
+unfocused so the software keyboard does not cover the viewport-safe sheet.
 
 Select rendered message text to quote it into the composer. One quote is kept
 with the authored user message and supplied to the operator as Markdown
@@ -649,7 +654,11 @@ with `disposition: "pending" | "queued"`; SSE invalidation exposes its later
 Permanent deletion is limited to archived, inactive conversations. It removes
 database descendants transactionally and deletes committed attachment files;
 startup and scheduled cleanup remove any file orphaned by a crash or transient
-filesystem failure after the database commit.
+filesystem failure after the database commit. Archiving a truly empty manual
+conversation conditionally removes it instead; any authoritative trigger,
+message, turn, attachment, live input, or delivery evidence makes the server
+preserve it in Archived, including activity that arrives during the archive
+race.
 
 ## Dependency Boundary
 

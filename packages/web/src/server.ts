@@ -714,9 +714,14 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   });
 
   app.delete("/api/v1/threads/:id", (req, res, next) => {
-    void trackOperation(service.deleteThread(pathParam(req.params.id)), activeOperations)
-      .then(() => res.status(204).end())
-      .catch(next);
+    try {
+      const emptyOnly = optionalEmptyOnlyQuery(req.query.emptyOnly);
+      void trackOperation(service.deleteThread(pathParam(req.params.id), { emptyOnly }), activeOperations)
+        .then(() => res.status(204).end())
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/v1/threads/:id/turns", (req, res, next) => {
@@ -1764,6 +1769,12 @@ function optionalArchivedQuery(value: unknown): boolean | undefined {
   if (value === "false") return false;
   if (value === undefined) return undefined;
   throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+}
+
+function optionalEmptyOnlyQuery(value: unknown): boolean {
+  if (value === undefined) return false;
+  if (value === "true") return true;
+  throw new WebConsoleError("invalid_delete", "emptyOnly must be true when provided.", 400);
 }
 
 /**
