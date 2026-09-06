@@ -13,6 +13,8 @@ import {
 } from "./launchd.js";
 import { parseWebLogMaintenanceArguments } from "./web-log-maintenance-command.js";
 
+const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
+
 export const PUBLIC_COMMANDS = ["init", "setup", "validate", "doctor", "auth", "sandbox", "config", "presets", "start", "restart", "stop", "status", "logs", "tui", "web", "bridge", "install-skill", "backfill", "runs", "memory", "continuations", "jobs", "monitors", "web-control"] as const;
 const KNOWN_COMMANDS = [
   ...PUBLIC_COMMANDS,
@@ -65,6 +67,7 @@ type CliCommand =
 export interface ParsedCliArgs {
   readonly command: CliCommand;
   readonly configPath?: string;
+  /** init: public agent name; web: console display label. */
   readonly name?: string;
   readonly model?: string;
   readonly fallbacks?: readonly CliFallbackArg[];
@@ -469,16 +472,22 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
       case "--model":
         model = requireValue(rest, ++i, flag);
         break;
-      case "--name":
+      case "--name": {
         name = requireValue(rest, ++i, flag).trim();
+        const maxNameLength = cmd === "web"
+          ? WEB_CONSOLE_NAME_MAX_CHARACTERS
+          : MAX_AGENT_NAME_LENGTH;
         if (
           Array.from(name).length === 0
-          || Array.from(name).length > MAX_AGENT_NAME_LENGTH
-          || /[\u0000-\u001f\u007f]/u.test(name)
+          || Array.from(name).length > maxNameLength
+          || (cmd === "web"
+            ? /[\u0000-\u001f\u007f-\u009f\u2028-\u202e]/u.test(name)
+            : /[\u0000-\u001f\u007f]/u.test(name))
         ) {
-          throw new Error(`--name must be 1-${MAX_AGENT_NAME_LENGTH} characters on one line.`);
+          throw new Error(`--name must be 1-${String(maxNameLength)} characters on one line.`);
         }
         break;
+      }
       case "--fallback-models":
         throw new Error("`--fallback-models` was removed; repeat `--fallback <ref>` instead.");
       case "--fallback": {
@@ -748,7 +757,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     "init", "validate", "auth", "config", "start", "restart", "stop", "status", "logs", "tui",
     "runs", "backfill", "memory", "continuations", "jobs", "monitors", INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   ]);
-  assertFlagCommand(name !== undefined, "--name", cmd, ["init"]);
+  assertFlagCommand(name !== undefined, "--name", cmd, ["init", "web"]);
   assertFlagCommand(model !== undefined, "--model", cmd, ["init"]);
   assertFlagCommand(fallbacks.length > 0, "--fallback", cmd, ["init"]);
   assertFlagCommand(effort !== undefined, "--effort", cmd, ["init"]);
@@ -780,8 +789,9 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
 
   if (cmd === "web") {
     const action = positionals[0];
-    if ((host !== undefined || port !== undefined || theme !== undefined || loopback) && action !== "start" && action !== "restart" && action !== "run") {
-      throw new Error("--host, --port, --theme, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
+    if ((host !== undefined || port !== undefined || theme !== undefined || name !== undefined || loopback)
+      && action !== "start" && action !== "restart" && action !== "run") {
+      throw new Error("--host, --port, --theme, --name, and --loopback are only supported for `mono-agent web start`, `web restart`, or `web run`.");
     }
     if ((follow || lines !== undefined) && action !== "logs") {
       throw new Error("--follow and --lines are only supported for `mono-agent web logs`.");

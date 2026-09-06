@@ -105,12 +105,13 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   admission and cooldown store into parent and subagent runs;
   `mono-agent web-control status|reset` inspects or clears idle operational state.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
-  `mono-agent web`, including persisted curated host themes and hostname
-  identity; on macOS pair its worker with one helper-only, stopped-writer log
-  controller while the worker remains wake-only; publish a bounded, refreshable
-  skill registry through each running operator endpoint so the web composer can
-  discover valid `$skill-name` references; use `mono-agent tui` for bounded
-  recorded-run replay.
+  `mono-agent web`, including persisted curated host themes and a console label
+  that defaults to the hostname and can be restored with `--name -`; on macOS
+  pair its worker with one helper-only,
+  stopped-writer log controller while the worker remains wake-only; publish a
+  bounded, refreshable skill registry through each running operator endpoint so
+  the web composer can discover valid `$skill-name` references; use
+  `mono-agent tui` for bounded recorded-run replay.
 - Discover and expose one exact running agent through the ACP core-session
   profile with `mono-agent bridge acp`, including durable session resume, while
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,

@@ -11,7 +11,7 @@ vi.mock("../console-store", () => ({
 import { AgentRail, MobileAgentPicker } from "./AgentRail";
 
 const createStore = () => ({
-  bootstrap: { console: { hostName: "fable", theme: "plum" as const } },
+  bootstrap: { console: { hostName: "fable", displayName: "fable", theme: "plum" as const } },
   agents: [
     agent("favorite", {
       label: "A complete favorite agent name",

@@ -371,6 +371,8 @@ describe("response notifications", () => {
       expect.objectContaining({
         body: "The investigation is complete.",
         tag: "mono-agent-turn-turn-1",
+        icon: "/icon-192.png",
+        badge: "/badge-96.png",
         data: expect.objectContaining({ threadId: "thread" }),
       }),
     ));

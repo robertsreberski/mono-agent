@@ -166,7 +166,7 @@ export const bootstrap = (
   } = {},
 ): Bootstrap => ({
   version: 1,
-  console: { hostName: "test-host", theme: "evergreen" },
+  console: { hostName: "test-host", displayName: "test-host", theme: "evergreen" },
   push: {
     applicationServerKey: "B".repeat(87),
     keyFingerprint: "test-fingerprint",

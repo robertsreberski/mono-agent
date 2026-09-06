@@ -27,6 +27,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import {
   DEFAULT_WEB_THEME,
   WEB_API_VERSION,
+  WEB_CONSOLE_NAME_MAX_CHARACTERS,
   WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_THEMES,
   type CreateWebThreadInput,
@@ -105,6 +106,8 @@ export interface StartWebServerOptions extends CreateWebServiceOptions {
   readonly host?: string;
   readonly port?: number;
   readonly theme?: WebTheme;
+  /** Operator-chosen console label for the PWA manifest, tab title, and rail brand. Defaults to the machine hostname. */
+  readonly name?: string;
   readonly staticDir?: string;
   /** Exact additional DNS hostnames accepted at the browser boundary (for example this node's Tailscale DNSName). */
   readonly allowedHosts?: readonly string[];
@@ -125,8 +128,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   const port = normalizePort(options.port ?? DEFAULT_WEB_PORT);
   const staticDir = options.staticDir ?? defaultStaticDir();
   const theme = resolveWebTheme(options.theme);
+  const hostName = systemHostname().trim() || "localhost";
   const consoleIdentity: WebConsoleIdentity = {
-    hostName: systemHostname().trim() || "localhost",
+    hostName,
+    displayName: resolveWebConsoleName(options.name) ?? hostName,
     theme,
   };
   const webManifest = await loadWebManifest(staticDir, consoleIdentity);
@@ -1035,6 +1040,36 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   }
 }
 
+/**
+ * Normalize the operator-chosen console label. Control characters are rejected rather
+ * than stripped so a typo cannot silently install under a different name than requested.
+ */
+function resolveWebConsoleName(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new WebConsoleError("invalid_console_name", "Web console name must be a string.", 400);
+  }
+  const name = value.trim();
+  if (name.length === 0) {
+    throw new WebConsoleError("invalid_console_name", "Web console name must not be empty.", 400);
+  }
+  if (/[\u0000-\u001f\u007f-\u009f\u2028-\u202e]/u.test(name)) {
+    throw new WebConsoleError(
+      "invalid_console_name",
+      "Web console name must not contain control characters, line separators, or bidirectional overrides.",
+      400,
+    );
+  }
+  if ([...name].length > WEB_CONSOLE_NAME_MAX_CHARACTERS) {
+    throw new WebConsoleError(
+      "invalid_console_name",
+      `Web console name must be at most ${String(WEB_CONSOLE_NAME_MAX_CHARACTERS)} characters.`,
+      400,
+    );
+  }
+  return name;
+}
+
 function resolveWebTheme(value: unknown): WebTheme {
   if (value === undefined) return DEFAULT_WEB_THEME;
   if (typeof value === "string" && (WEB_THEMES as readonly string[]).includes(value)) {
@@ -1072,8 +1107,8 @@ async function loadWebManifest(
   const chrome = WEB_THEME_CHROME[identity.theme];
   return {
     ...(template as Readonly<Record<string, unknown>>),
-    name: `${identity.hostName} · mono-agent Console`,
-    short_name: identity.hostName,
+    name: `${identity.displayName} · mono-agent Console`,
+    short_name: identity.displayName,
     theme_color: chrome.dark,
     background_color: chrome.dark,
   };

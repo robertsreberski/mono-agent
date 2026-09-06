@@ -12,7 +12,7 @@ import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
   loading: false,
-  bootstrap: { console: { hostName: "console-host", theme: "ocean" as const } },
+  bootstrap: { console: { hostName: "console-host", displayName: "console-host", theme: "ocean" as const } },
   error: null,
   actionError: null,
   clearActionError: vi.fn(),
@@ -307,7 +307,7 @@ describe("App data mode", () => {
     resetDataModeSession();
     localStorage.clear();
     storeMock.loading = false;
-    storeMock.bootstrap = { console: { hostName: "console-host", theme: "ocean" as const } };
+    storeMock.bootstrap = { console: { hostName: "console-host", displayName: "console-host", theme: "ocean" as const } };
   });
 
   const standalone = (matches: boolean): void => {
@@ -377,7 +377,7 @@ describe("App data mode", () => {
     first.unmount();
 
     storeMock.loading = false;
-    storeMock.bootstrap = { console: { hostName: "console-host", theme: "ocean" as const } };
+    storeMock.bootstrap = { console: { hostName: "console-host", displayName: "console-host", theme: "ocean" as const } };
     render(<App />);
 
     expect(await screen.findByRole("button", { name: "Use Lean" })).toBeVisible();

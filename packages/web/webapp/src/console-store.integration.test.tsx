@@ -5981,7 +5981,11 @@ describe("ConsoleStoreProvider integration", () => {
         entries: options.entries,
         snapshot: {
           agents,
-          console: { hostName: options.hostName ?? "test-host", theme: "evergreen" },
+          console: {
+            hostName: options.hostName ?? "test-host",
+            displayName: options.hostName ?? "test-host",
+            theme: "evergreen",
+          },
           limits: uploadLimits,
           push: {
             applicationServerKey: "B".repeat(87),

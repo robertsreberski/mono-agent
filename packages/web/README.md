@@ -99,9 +99,12 @@ when its staged service worker is applied.
 Bare `mono-agent web` reports status and usable URLs; it does not implicitly
 start or mutate the service. Use `mono-agent web run` for a foreground process
 or `--loopback` to bind only `127.0.0.1`. The curated `--theme` values are
-`evergreen` (default), `ocean`, `plum`, and `terracotta`. Managed starts persist
-the selection, restarts retain it unless explicitly replaced, and `web status`
-reports the effective theme.
+`evergreen` (default), `ocean`, `plum`, and `terracotta`. `--name <label>` sets
+the console label used for the installed PWA name/short name, browser title, and
+rail brand, defaulting to the machine hostname. Managed starts persist both
+selections, restarts retain them unless explicitly replaced, `--name -` clears
+the stored label back to the hostname default, and `web status` reports the
+effective values.
 
 Install this package directly only when embedding the server in another host:
 
@@ -122,13 +125,14 @@ who can reach port 5050 can inspect conversations and operate discovered agents;
 use host firewall/LAN policy and Tailscale ACLs as the access boundary. The
 server emits no CORS permission and rejects cross-origin mutations.
 
-The service derives its console identity from the operating-system hostname.
-That hostname replaces the generic mono-agent brand in the desktop/mobile
-header, prefixes the browser title, and becomes the installed PWA name. The
-selected theme changes shell and accent colors while keeping content, status,
-warning, and danger semantics consistent across hosts. The generated PWA
-manifest remains network-fetched rather than service-worker-cached so its host
-identity cannot be masked by a generic build-time manifest.
+The service uses the operating-system hostname as its machine identity and as
+the default display name. An operator-selected `name` replaces that default in
+the desktop/mobile header, browser title, and installed PWA name while the
+hostname continues to key browser cache ownership. The selected theme changes
+shell and accent colors while keeping content, status, warning, and danger
+semantics consistent across hosts. The generated PWA manifest remains
+network-fetched rather than service-worker-cached so its console identity cannot
+be masked by a generic build-time manifest.
 
 Private IP literals, localhost, the machine hostname, and its exact `.local`
 name are accepted as browser hosts. Set `MONO_AGENT_WEB_ALLOWED_HOSTS` to a
@@ -494,7 +498,7 @@ ledger; postconditions check the required effects.
 
 | Source area | Responsibility |
 | --- | --- |
-| [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, host/theme bootstrap identity, per-host PWA manifest, uploads, SSE invalidations, host/origin checks, provider-auth no-store proxy routes, and static webapp serving. |
+| [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, hostname/display-name/theme bootstrap identity, per-console PWA manifest, uploads, SSE invalidations, host/origin checks, provider-auth no-store proxy routes, and static webapp serving. |
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, provider-auth connection-generation guarding, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and bearer-authenticated provider-auth/process-job requests over the operator protocol. |
@@ -514,7 +518,7 @@ ledger; postconditions check the required effects.
 | `discoverAcpBridgeAgents` | Discover Worklab-importable ACP sources through a credential-free, versioned ownership contract. |
 | `discoverOperatorAgents` | Read trusted operator endpoints from trace-source manifests. |
 | `WebBootstrap`, `WebThreadDetail`, `WebEvent`, and related `Web*` DTOs | Build another client against the versioned browser API. |
-| `WEB_THEMES`, `DEFAULT_WEB_THEME`, `WebTheme`, and `WebConsoleIdentity` | Select a curated theme and consume the hostname/theme identity returned to browsers. |
+| `WEB_THEMES`, `DEFAULT_WEB_THEME`, `WEB_CONSOLE_NAME_MAX_CHARACTERS`, `WebTheme`, and `WebConsoleIdentity` | Select a curated theme/name and consume the hostname/display-name/theme identity returned to browsers. |
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -559,6 +563,7 @@ StartWebLiveInputInput
 StartWebServerOptions
 StartWebTurnInput
 WEB_API_VERSION
+WEB_CONSOLE_NAME_MAX_CHARACTERS
 WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES
 WEB_MAX_CONCURRENT_UPLOADS
 WEB_MAX_FILES_PER_TURN

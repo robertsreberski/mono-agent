@@ -37,6 +37,7 @@ Bare `mono-agent web` is read-only: it prints service status, the usable URLs, a
 
 ```bash
 mono-agent web start --theme ocean  # install/start with a distinctive shell
+mono-agent web start --name "Flockbox"  # label tabs and the installed PWA
 mono-agent web stop
 mono-agent web restart
 mono-agent web status
@@ -44,15 +45,37 @@ mono-agent web logs
 mono-agent web run         # foreground service, including non-macOS hosts
 ```
 
-Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind, theme, and any owned Tailscale route so later commands operate on the same service rather than guessing.
+Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. Advanced `--host` and `--port` overrides are available when `0.0.0.0:5050` is not appropriate. The lifecycle status records the effective bind, theme, console name, and any owned Tailscale route so later commands operate on the same service rather than guessing.
 
-## Host identity and curated themes
+## Console identity and curated themes
 
-Every console identifies itself with the operating-system hostname. The desktop
-rail and mobile agent-picker header show that hostname, the browser title is
-`<host> · mono-agent`, and an installed PWA is named
-`<host> · mono-agent Console` with `<host>` as its short name. This makes tabs
-and home-screen installations distinguishable even before opening a thread.
+By default every console identifies itself with the operating-system hostname.
+The desktop rail and mobile agent-picker header show that name, the browser
+title is `<name> · mono-agent`, and an installed PWA is named
+`<name> · mono-agent Console` with `<name>` as its short name. Android uses the
+short name as the home-screen label. This makes tabs and home-screen
+installations distinguishable even before opening a thread.
+
+Override the hostname with `--name` on `start`, `restart`, or `run` when the
+machine hostname is not what belongs on a phone home screen:
+
+```bash
+mono-agent web start --name "Flockbox"
+# Later, restore the hostname-derived label:
+mono-agent web restart --name -
+```
+
+The label is 1-80 characters on a single line. Like `--theme`, it is persisted
+in the managed service record and re-baked into the LaunchAgent arguments, so a
+later restart without `--name` retains it and `mono-agent web status` prints the
+effective value (or `— (machine hostname)` when unset). The documented `-`
+value is a reset sentinel rather than a literal label. It is a machine-level
+service flag: the web console deliberately reads no agent `--config` or
+`--env-file`. On Linux the same value is persisted into the systemd user
+unit's arguments instead of a LaunchAgent.
+
+Android captures the launcher label when the PWA is installed, so an already
+installed console keeps its old name until it is reinstalled.
 
 Choose one of four curated shell/accent themes on `start`, `restart`, or the
 foreground `run` command:
@@ -667,7 +690,7 @@ cron channels rebuild from the running agents.
 
 ## Current scope
 
-The web console covers discovery, hostname identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
+The web console covers discovery, configurable console identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a console-named PWA when served from a secure browser context.
 
 General recorded-run replay, source-annotated configuration, and managed conversational configuration remain in the TUI for now. Use:
 

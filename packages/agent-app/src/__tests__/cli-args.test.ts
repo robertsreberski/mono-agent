@@ -623,6 +623,20 @@ describe("parseCliArgs", () => {
     expect(() => parseCliArgs(["status", "--theme", "plum"])).toThrow(/theme/u);
     expect(() => parseCliArgs(["web", "status", "--theme", "plum"])).toThrow(/web start/u);
     expect(() => parseCliArgs(["web", "start", "--theme", " "])).toThrow(/must not be empty/u);
+    expect(parseCliArgs(["web", "start", "--name", "Flockbox"])).toMatchObject({
+      command: "web",
+      positionals: ["start"],
+      name: "Flockbox",
+    });
+    expect(parseCliArgs(["web", "restart", "--name", "-"])).toMatchObject({
+      command: "web",
+      positionals: ["restart"],
+      name: "-",
+    });
+    expect(() => parseCliArgs(["web", "run", "--name", "bad\u2028name"])).toThrow(/one line/u);
+    expect(() => parseCliArgs(["web", "run", "--name", "bad\u202ename"])).toThrow(/one line/u);
+    expect(() => parseCliArgs(["web", "status", "--name", "Flockbox"])).toThrow(/web start/u);
+    expect(() => parseCliArgs(["status", "--name", "Flockbox"])).toThrow(/--name/u);
     expect(() => parseCliArgs(["web", "run", "--env-file", ".env"])).toThrow(/does not load/u);
     expect(() => parseCliArgs(["web", "--config", "agent.json"])).toThrow(/does not load/u);
   });
@@ -676,6 +690,11 @@ describe("parseCliArgs", () => {
     expect(help).toContain("presets list|show <id>");
     expect(help).not.toContain("mono-agent init [--preset");
     expect(help).not.toContain("Effort levels:");
+
+    const webHelp = helpTopicText("web");
+    expect(webHelp).toContain("[--name <label>]");
+    expect(webHelp).toContain("PWA, tab, and rail label");
+    expect(webHelp).toContain("--name -");
     expect(help).not.toContain("--fallback-effort");
     expect(help).not.toContain("--artifact-dir");
     expect(help).not.toContain("web reset --all --yes");

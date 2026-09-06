@@ -631,21 +631,22 @@ Operates the [always-on browser console](/observability/web-console/) for persis
 mono-agent web
 mono-agent web start --theme ocean
 mono-agent web restart --port 5051 --theme plum
+mono-agent web restart --name "Flockbox"
 mono-agent web logs --follow
 mono-agent web run --loopback
 mono-agent web stop
 ```
 
-`start`, `restart`, `stop`, `status`, and `logs` manage the dedicated launchd service on macOS or systemd user service on Linux. When Linux has no usable user manager, the read-only bare/status view falls back to foreground-state reporting; mutations still fail and `run` remains available. `run` is the blocking foreground path on every supported platform. The default is `0.0.0.0:5050`; use `--loopback` to bind `127.0.0.1`. `--loopback` conflicts with `--host`. `--theme` accepts `evergreen` (default), `ocean`, `plum`, or `terracotta` on `start`, `restart`, and `run`.
+`start`, `restart`, `stop`, `status`, and `logs` manage the dedicated launchd service on macOS or systemd user service on Linux. When Linux has no usable user manager, the read-only bare/status view falls back to foreground-state reporting; mutations still fail and `run` remains available. `run` is the blocking foreground path on every supported platform. The default is `0.0.0.0:5050`; use `--loopback` to bind `127.0.0.1`. `--loopback` conflicts with `--host`. `--theme` accepts `evergreen` (default), `ocean`, `plum`, or `terracotta` on `start`, `restart`, and `run`. `--name` sets the console label used for the installed PWA name/short name, browser title, and rail brand on the same three subcommands; it defaults to the machine hostname. Pass `--name -` to clear a stored override and restore that default.
 
 | Command / flag | Effect |
 | --- | --- |
-| `start [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Install/start the paired managed macOS worker and maintenance helper or the Linux systemd user unit. Defaults to `0.0.0.0:5050` and `evergreen`; a stopped service retains its recorded theme unless replaced. |
-| `restart [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Restart with the stored bind/theme or replace supplied values. macOS republishes both plists from one fresh composite main-plist identity; Linux republishes its unit and accepts host-only changes on the owned active port. |
+| `start [--host <addr> \| --loopback] [--port <n>] [--theme <name>] [--name <label>]` | Install/start the paired managed macOS worker and maintenance helper or the Linux systemd user unit. Defaults to `0.0.0.0:5050`, `evergreen`, and the machine hostname; a stopped service retains its recorded theme and name unless replaced. |
+| `restart [--host <addr> \| --loopback] [--port <n>] [--theme <name>] [--name <label>]` | Restart with the stored bind/theme/name, replace supplied values, or use `--name -` to return to the hostname default. macOS republishes both plists from one fresh composite main-plist identity; Linux republishes its unit and accepts host-only changes on the owned active port. |
 | `stop` | Stop the owned service. macOS unloads the helper before the worker, removes both definitions after PID-death proof, and removes only the Tailscale Serve route it owns; Linux disables and removes its unit while preserving external HTTPS routes. |
-| `status` | Print process health and effective bind/theme. macOS also reports local/LAN/Tailscale URLs, Serve state, and durable log maintenance. Linux reports systemd state and externally managed HTTPS; without a user manager it falls back to the foreground-state view. |
+| `status` | Print process health and effective bind/theme/name. macOS also reports local/LAN/Tailscale URLs, Serve state, and durable log maintenance. Linux reports systemd state and externally managed HTTPS; without a user manager it falls back to the foreground-state view. |
 | `logs [--follow\|-f] [--lines <n>]` | Print/follow `web.err.log` and `web.out.log` on macOS or the unit's user journal on Linux. macOS follow uses `tail -F`; retained `.1`–`.3` files have no CLI selector. |
-| `run [--host <addr> \| --loopback] [--port <n>] [--theme <name>]` | Run the service in the foreground; cross-platform. The theme defaults to `evergreen`. |
+| `run [--host <addr> \| --loopback] [--port <n>] [--theme <name>] [--name <label>]` | Run the service in the foreground; cross-platform. The theme defaults to `evergreen` and the name to the machine hostname. |
 | `reset --all --yes` | With both worker and helper stopped and both plist files absent, take the web lifecycle lock and erase the whole web-console store and uploads. Both confirmations are mandatory. |
 
 There is no application authentication. Anyone who can reach the port can read conversations, upload files, and operate discovered agents. Keep the listener on a trusted LAN/tailnet or use `--loopback`; Host/Origin checks and the absence of CORS do not turn an untrusted network into a safe one.
