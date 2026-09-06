@@ -2194,6 +2194,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     selectedThreadRef.current = null;
     setSelectedThreadId(null);
     threadCacheRef.current.evict(threadId);
+    // The server has answered "not found" about this exact conversation, which
+    // is a fact and not an inference from what this tab still holds -- so the
+    // device is told outright rather than left to a flush that only sweeps rows
+    // this instance wrote.
+    void persistenceRef.current?.forget([threadId]).catch(() => undefined);
     setDetail(null);
     const sourceId = selectedAgentRef.current;
     if (sourceId !== null && readPersistedThreadIds()[sourceId] === threadId) {
@@ -3140,6 +3145,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // selection also makes a detail read still in flight for it inert:
             // `loadThread` only applies what the selection still points at.
             threadCacheRef.current.evict(threadId);
+            void persistenceRef.current?.forget([threadId]).catch(() => undefined);
             if (threadId === selectedThreadRef.current) {
               selectedThreadRef.current = null;
               setSelectedThreadId(null);
@@ -4149,6 +4155,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       : current);
     threadCacheRef.current.evict(thread.id);
     threadCacheRef.current.evict(requestedId);
+    // The device is told OUTRIGHT, not left to infer it from a flush: a sweep
+    // only removes rows this tab wrote, and a conversation the operator deleted
+    // has to go whoever wrote its row.
+    void persistenceRef.current?.forget([thread.id, requestedId]).catch(() => undefined);
     if (selectedThreadRef.current === thread.id || selectedThreadRef.current === requestedId) {
       const replacement = visibleThreads.find((item) => item.id !== thread.id);
       selectedThreadRef.current = replacement?.id ?? null;

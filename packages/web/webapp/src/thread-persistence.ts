@@ -36,9 +36,30 @@ import type {
  */
 
 export const PERSISTENCE_DB_NAME = "mono-agent-web";
-export const PERSISTENCE_DB_VERSION = 1;
+/** 2 adds the `writer` index; see {@link createThreadPersistence}. */
+export const PERSISTENCE_DB_VERSION = 2;
+
+/**
+ * How long a row nothing has rewritten is kept.
+ *
+ * Rows are swept by the instance that wrote them, and an instance ends with its
+ * page. What a closed tab left behind has no owner, so without this the device
+ * grew by up to one cache's worth on every cold start that read rows and never
+ * changed them. Thirty days is well past any conversation a cold start would
+ * still want to draw, and losing one costs a read, never a fact.
+ */
+export const PERSISTED_ROW_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1_000;
+/**
+ * A hard ceiling on stored conversations, oldest dropped first.
+ *
+ * The age sweep bounds the store in TIME; this bounds it in SIZE, which is what
+ * a phone actually runs out of. Three tabs' worth of the cache's own eight.
+ */
+export const PERSISTED_THREAD_LIMIT = 24;
 
 const THREAD_STORE = "threads";
+/** Which instance last wrote a row, and so which one may sweep it. */
+const WRITER_INDEX = "writer";
 const BUCKET_STORE = "buckets";
 const META_STORE = "meta";
 /** The one snapshot row: everything a cold start needs that is not a conversation. */
@@ -57,6 +78,15 @@ export interface PersistedThread {
   readonly repairedToolCallIds: readonly string[];
   readonly pagedInIds: readonly string[];
   readonly savedAt: number;
+  /**
+   * The {@link createThreadPersistence} instance that last put this row.
+   *
+   * Every tab on this origin owns the same database, and a flush is one tab's
+   * statement about its own eight conversations. Read as a statement about the
+   * store, it deleted whatever another tab was live in. Absent on rows written
+   * before this field existed.
+   */
+  readonly writer?: string;
 }
 
 /** One (agent, archived) listing, keyed exactly as the store keys its buckets. */
@@ -121,6 +151,16 @@ export interface ThreadPersistence {
    * restoring them.
    */
   readonly markPersisted: (entries: readonly ThreadCacheEntry[]) => void;
+  /**
+   * These conversations are GONE -- deleted, or destroyed on the server.
+   *
+   * A sweep is an inference from what a tab still holds, and it is scoped to
+   * the rows this instance wrote precisely because it cannot tell its own
+   * eviction from another tab's live conversation. A tombstone is not an
+   * inference: the operator asked for the conversation to stop existing, so its
+   * row goes whoever wrote it.
+   */
+  readonly forget: (threadIds: readonly string[]) => Promise<void>;
   /**
    * Let go of the connection, WITHOUT disabling: the next call reopens.
    *
@@ -238,6 +278,7 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
     repairedToolCallIds: stringsOf(value.repairedToolCallIds),
     pagedInIds: stringsOf(value.pagedInIds),
     savedAt: typeof value.savedAt === "number" ? value.savedAt : 0,
+    ...(typeof value.writer === "string" ? { writer: value.writer } : {}),
   };
 };
 
@@ -264,6 +305,79 @@ const readSnapshotRow = (value: unknown): PersistedSnapshot | undefined => {
     limits: value.limits as unknown as UploadLimits,
     push: value.push as unknown as PushBootstrap,
   };
+};
+
+/**
+ * What one hydration decides the device should stop keeping.
+ *
+ * Three rules, none of them about what any tab currently holds:
+ *
+ * - **Age.** A row more than {@link PERSISTED_ROW_MAX_AGE_MS} older than the
+ *   NEWEST row here is past any cold start that would still draw it. Measured
+ *   against the store's own newest stamp rather than against this browser's
+ *   clock: both stamps were written by the same kind of clock, and a device
+ *   whose clock jumps forward -- or a test with a fixed one -- must not be able
+ *   to decide the whole store is ancient.
+ * - **Ceiling.** Conversations beyond {@link PERSISTED_THREAD_LIMIT}, oldest
+ *   first. Rows are swept by the instance that wrote them and an instance ends
+ *   with its page, so what a closed tab left behind has no owner; this is what
+ *   keeps that from growing without a bound.
+ * - **Agents that are gone.** A listing for an agent the stored snapshot no
+ *   longer names can never be shown again, and nothing else ever removed it.
+ *
+ * Losing any of these costs a read, never a fact: everything restored is marked
+ * suspect and revalidated anyway.
+ */
+export const sweepableRows = (
+  threads: readonly PersistedThread[],
+  buckets: readonly PersistedBucket[],
+  snapshot: PersistedSnapshot | null,
+): { readonly threads: ReadonlySet<string>; readonly buckets: ReadonlySet<string> } => {
+  // Seeded at zero, NOT at the reader's clock: seeded at `at`, a store whose
+  // rows were all written by a fixed or a slow clock reads as entirely ancient
+  // and the first hydration empties it.
+  const newest = [...threads, ...buckets].reduce((latest, row) => Math.max(latest, row.savedAt), 0);
+  const oldest = newest - PERSISTED_ROW_MAX_AGE_MS;
+  const doomedThreads = new Set(
+    [...threads]
+      .sort((left, right) => right.savedAt - left.savedAt)
+      .filter((row, index) => row.savedAt < oldest || index >= PERSISTED_THREAD_LIMIT)
+      .map((row) => row.id),
+  );
+  // Only when there IS a snapshot: with none, this device knows no agent list
+  // and every bucket would look orphaned.
+  const known = snapshot === null
+    ? undefined
+    : new Set(snapshot.agents.map((agent) => agent.sourceId));
+  const doomedBuckets = new Set(
+    buckets
+      .filter((row) => row.savedAt < oldest
+        || (known !== undefined && !known.has(bucketSourceId(row.key))))
+      .map((row) => row.key),
+  );
+  return { threads: doomedThreads, buckets: doomedBuckets };
+};
+
+/** The agent half of a bucket key; see `threadBucketKey` in the store. */
+const bucketSourceId = (key: string): string => key.split("\u0000", 1)[0] ?? key;
+
+/**
+ * Remove what {@link sweepableRows} named, best effort.
+ *
+ * Its own transaction, after the read that decided it: a failure here means the
+ * device keeps a few rows longer than it should, which is not a reason to give
+ * up on the store or to fail a cold start.
+ */
+const discard = async (
+  db: IDBDatabase,
+  doomed: { readonly threads: ReadonlySet<string>; readonly buckets: ReadonlySet<string> },
+): Promise<void> => {
+  const transaction = db.transaction([THREAD_STORE, BUCKET_STORE], "readwrite");
+  const threads = transaction.objectStore(THREAD_STORE);
+  const buckets = transaction.objectStore(BUCKET_STORE);
+  for (const id of doomed.threads) threads.delete(id);
+  for (const key of doomed.buckets) buckets.delete(key);
+  await settled(transaction);
 };
 
 const asPromise = <T>(request: IDBRequest<T>): Promise<T> =>
@@ -296,6 +410,15 @@ export const createThreadPersistence = (
     ?? (() => (globalThis as { indexedDB?: IDBFactory }).indexedDB);
   const now = options.now ?? (() => Date.now());
   /**
+   * This instance, named on every row it writes.
+   *
+   * Per `createThreadPersistence()` -- so per page, not per browser: a tab that
+   * reloads is a new writer and adopts a row the moment it rewrites it. What it
+   * buys is the only thing a flush can honestly claim, that these eight rows are
+   * MINE, and that is exactly the set it may remove from.
+   */
+  const writerId = `w-${Math.random().toString(36).slice(2)}-${String(Date.now())}`;
+  /**
    * This device cannot keep anything, and asking again would only spend more
    * time to be told so. Set by every failure there is: no IndexedDB, storage
    * refused, a quota that is full, a database a newer build owns.
@@ -321,14 +444,6 @@ export const createThreadPersistence = (
    * actually changed rather than all eight.
    */
   const written = new Map<string, ThreadCacheEntry>();
-  /**
-   * The rows THIS instance has put, and so the only ones it may sweep.
-   *
-   * Every browser tab on this origin owns the same database, and a flush is one
-   * tab's statement about its own eight conversations -- never about the store.
-   * Read as the latter, two tabs deleted each other's rows on every flush.
-   */
-  const mine = new Set<string>();
 
   /** The connection is gone; the next call opens a new one. */
   const release = (): void => {
@@ -340,7 +455,6 @@ export const createThreadPersistence = (
     if (disabled) return;
     disabled = true;
     written.clear();
-    mine.clear();
     // One line, once. A store that silently stops keeping anything is a
     // support question nobody can answer; this is what makes it answerable
     // without putting a failure the operator cannot act on in front of them.
@@ -384,6 +498,7 @@ export const createThreadPersistence = (
       repairedToolCallIds: [...entry.repairedToolCallIds],
       pagedInIds: [...entry.pagedInIds],
       savedAt,
+      writer: writerId,
     };
   };
 
@@ -419,8 +534,15 @@ export const createThreadPersistence = (
       }
       request.onupgradeneeded = () => {
         const db = request.result;
-        if (!db.objectStoreNames.contains(THREAD_STORE)) {
-          db.createObjectStore(THREAD_STORE, { keyPath: "id" });
+        const upgrade = request.transaction;
+        const threads = db.objectStoreNames.contains(THREAD_STORE)
+          ? upgrade?.objectStore(THREAD_STORE)
+          : db.createObjectStore(THREAD_STORE, { keyPath: "id" });
+        // Rows written before version 2 carry no `writer` and so are absent
+        // from this index: no instance owns them, and the hydration sweep is
+        // what eventually takes them.
+        if (threads !== undefined && !threads.indexNames.contains(WRITER_INDEX)) {
+          threads.createIndex(WRITER_INDEX, "writer");
         }
         if (!db.objectStoreNames.contains(BUCKET_STORE)) {
           db.createObjectStore(BUCKET_STORE, { keyPath: "key" });
@@ -442,9 +564,9 @@ export const createThreadPersistence = (
           release();
           written.clear();
         };
-        // `mine` deliberately survives both: the rows are still this instance's
-        // to sweep, and a row another owner has since replaced is put back by
-        // whichever tab still holds that conversation.
+        // Ownership survives both, because it lives on the rows rather than in
+        // this instance: whatever this writer's name is still on is still its
+        // to sweep, and a row another tab has taken over is that tab's now.
         answer(db);
       };
       // A version error (a database a newer build owns), storage that is not
@@ -481,28 +603,29 @@ export const createThreadPersistence = (
           asPromise<unknown>(meta.get(HOST_KEY)),
         ] as const;
         const [threadRows, bucketRows, snapshotRow, hostRow] = await Promise.all(pending);
-        // OWNED from here, whatever becomes of them. The device can hold more
-        // than one tab's eight, a restore keeps only what the cache has room
-        // for, and a hydration that answered too late is dropped without
-        // restoring anything -- and a row no instance owns is a row nothing can
-        // ever sweep. Claimed before any of those paths can drop it, so the
-        // first flush removes what this tab read and does not hold. A row
-        // another live tab is holding comes back through the absent-key path in
-        // `save`, which is the convergence this store already relies on.
-        for (const row of threadRows) {
-          if (isRecord(row) && typeof row.id === "string") mine.add(row.id);
+        const snapshot = readSnapshotRow(snapshotRow) ?? null;
+        const threads = threadRows.flatMap((row) => {
+          const entry = readThreadRow(row);
+          return entry === undefined ? [] : [entry];
+        });
+        const buckets = bucketRows.flatMap((row) => {
+          const bucket = readBucketRow(row);
+          return bucket === undefined ? [] : [bucket];
+        });
+        // The janitor runs HERE, once per page, and never in a flush: it is a
+        // statement about the whole store, and the only moment a tab has a
+        // whole-store view is when it has just read one. Rows it takes are
+        // dropped from what is handed back too, so the cache never restores a
+        // conversation the device is about to stop keeping.
+        const doomed = sweepableRows(threads, buckets, snapshot);
+        if (doomed.threads.size > 0 || doomed.buckets.size > 0) {
+          void discard(db, doomed).catch(() => undefined);
         }
         return {
           host: typeof hostRow === "string" ? hostRow : null,
-          snapshot: readSnapshotRow(snapshotRow) ?? null,
-          buckets: bucketRows.flatMap((row) => {
-            const bucket = readBucketRow(row);
-            return bucket === undefined ? [] : [bucket];
-          }),
-          threads: threadRows.flatMap((row) => {
-            const entry = readThreadRow(row);
-            return entry === undefined ? [] : [entry];
-          }),
+          snapshot,
+          buckets: buckets.filter((bucket) => !doomed.buckets.has(bucket.key)),
+          threads: threads.filter((entry) => !doomed.threads.has(entry.id)),
         };
       } catch (readError) {
         // The connection was let go while this was out. Nothing is known about
@@ -531,25 +654,27 @@ export const createThreadPersistence = (
         const heldIds = new Set(state.entries.map((entry) => entry.thread.id));
         const next = new Map<string, ThreadCacheEntry>();
         const wrote: string[] = [];
-        const swept: string[] = [];
-        // Issued inside the same transaction as the writes, and answered by its
-        // own callback rather than an `await`: nothing else may run in between
-        // or the transaction commits without them. The whole flush is decided
-        // in here, because what is already on the device is what decides it.
-        const keys = threads.getAllKeys();
-        keys.onsuccess = () => {
-          const stored = new Set(
-            keys.result.filter((key): key is string => typeof key === "string"),
-          );
-          // ONLY what this instance wrote. A flush is one tab's statement about
-          // its own eight conversations, and it used to be read as a statement
-          // about the whole store: two tabs each deleted the other's rows,
-          // skipped rewriting their own (the skip is per instance), and emptied
-          // the device between them.
-          for (const key of mine) {
+        // Both issued inside the same transaction as the writes, and answered by
+        // their own callbacks rather than an `await`: nothing else may run in
+        // between or the transaction commits without them. The whole flush is
+        // decided in here, because what is already on the device is what decides
+        // it. The index answers with primary keys only, so asking who owns what
+        // costs nothing like reading the transcripts would.
+        const keysRequest = threads.getAllKeys();
+        const ownedRequest = threads.index(WRITER_INDEX).getAllKeys(writerId);
+        let stored: Set<string> | undefined;
+        let owned: Set<string> | undefined;
+        const decide = (): void => {
+          if (stored === undefined || owned === undefined) return;
+          const stillStored = stored;
+          // ONLY the rows carrying THIS writer's name. A flush is one tab's
+          // statement about its own eight conversations, and it used to be read
+          // as a statement about the whole store: a tab that had just hydrated
+          // deleted whatever another tab was live in, and the two put each
+          // other's conversations back for as long as both stayed open.
+          for (const key of owned) {
             if (heldIds.has(key)) continue;
             threads.delete(key);
-            swept.push(key);
           }
           for (const entry of state.entries) {
             const id = entry.thread.id;
@@ -558,7 +683,7 @@ export const createThreadPersistence = (
             // is still THERE. Another owner of this database may have removed
             // it, and a tab that still holds the conversation is what puts it
             // back.
-            if (describesSameRow(written.get(id), entry) && stored.has(id)) {
+            if (describesSameRow(written.get(id), entry) && stillStored.has(id)) {
               next.set(id, entry);
               continue;
             }
@@ -579,6 +704,14 @@ export const createThreadPersistence = (
             threads.put(row);
           }
         };
+        keysRequest.onsuccess = () => {
+          stored = new Set(keysRequest.result.filter((key): key is string => typeof key === "string"));
+          decide();
+        };
+        ownedRequest.onsuccess = () => {
+          owned = new Set(ownedRequest.result.filter((key): key is string => typeof key === "string"));
+          decide();
+        };
         if (state.bucket !== undefined) {
           transaction.objectStore(BUCKET_STORE).put({ ...state.bucket, savedAt });
         }
@@ -588,10 +721,10 @@ export const createThreadPersistence = (
           meta.put(state.snapshot.console.hostName, HOST_KEY);
         }
         await settled(transaction);
-        // Only after it committed: what this instance owns on the device is
-        // what actually landed there.
-        for (const id of swept) mine.delete(id);
-        for (const id of wrote) mine.add(id);
+        // Only after it committed. Ownership itself is on the rows; this is the
+        // per-instance record of what has been written, which is what keeps a
+        // flush during a streaming turn to the one transcript that moved.
+        void wrote;
         written.clear();
         for (const [id, entry] of next) written.set(id, entry);
       } catch (writeError) {
@@ -607,16 +740,31 @@ export const createThreadPersistence = (
       }
     },
 
-    markPersisted: (entries) => {
-      for (const entry of entries) {
-        const id = entry.thread.id;
-        written.set(id, entry);
-        // And OWNED, not merely known: a conversation this tab restored and
-        // then dropped -- a tombstone, an eviction -- is one whose row it has
-        // to take with it. A row another tab is still holding is put back by
-        // that tab on its next flush.
-        mine.add(id);
+    forget: async (threadIds) => {
+      const ids = [...new Set(threadIds)].filter((id) => id.length > 0);
+      if (ids.length === 0) return;
+      for (const id of ids) written.delete(id);
+      const heldGeneration = generation;
+      const db = await open();
+      if (db === null) return;
+      try {
+        const transaction = db.transaction([THREAD_STORE], "readwrite");
+        const threads = transaction.objectStore(THREAD_STORE);
+        for (const id of ids) threads.delete(id);
+        await settled(transaction);
+      } catch (forgetError) {
+        if (heldGeneration !== generation) return;
+        disable(`a delete was refused (${String(forgetError)})`);
       }
+    },
+
+    markPersisted: (entries) => {
+      // KNOWN, not owned. These rows are byte-identical to what is stored, so
+      // the next flush has nothing to write for them -- but they were written
+      // by whoever wrote them, and this instance takes a row over only by
+      // rewriting it. A restored conversation this tab then drops without ever
+      // changing is left where it is and swept by age, not by this tab.
+      for (const entry of entries) written.set(entry.thread.id, entry);
     },
 
     close: () => {
@@ -639,7 +787,6 @@ export const createThreadPersistence = (
       // Whole-store on purpose: "Clear cached data" means this BROWSER is not
       // keeping conversations, not that this tab has stopped.
       written.clear();
-      mine.clear();
       try {
         const transaction = db.transaction(
           [THREAD_STORE, BUCKET_STORE, META_STORE],
