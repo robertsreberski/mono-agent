@@ -4875,10 +4875,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // write issued before this send must reach the server before the send
         // asks the server what to run on.
         await settleThreadWrites(thread.id);
+        const issuedAt = removedThreadsRef.current.epoch();
         const result = await api.startTurn(thread.id, {
           ...input,
         });
-        applyThreadUpdate(result.thread, removedThreadsRef.current.epoch());
+        applyThreadUpdate(result.thread, issuedAt);
         setActionError(null);
         // The POST already returned the conversation's new summary, applied
         // above; only its messages have to be read back.

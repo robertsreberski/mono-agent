@@ -3867,6 +3867,83 @@ describe("ConsoleStoreProvider integration", () => {
         .toBe("complete");
     });
 
+    it("does not resurrect a remotely removed conversation from its stale start response", async () => {
+      seedTwoThreads();
+      const started = thread(selected.id, selected.sourceId, {
+        ...selected,
+        revision: 2,
+        updatedAt: "2026-08-14T09:00:01.000Z",
+        runState: {
+          id: "turn-1",
+          status: "running",
+          startedAt: "2026-08-14T09:00:00.000Z",
+        },
+      });
+      let rejectDeletedThreadRead = false;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === selected.id && rejectDeletedThreadRead) {
+          throw new Error("deletion reconciliation unavailable");
+        }
+        return detail(
+          threadId === other.id ? other : selected,
+          threadId === other.id ? "other" : "hello",
+        );
+      });
+      let releaseStart!: () => void;
+      vi.mocked(api.startTurn).mockReturnValue(new Promise((resolve) => {
+        releaseStart = () => resolve({
+          thread: started,
+          turn: { id: "turn-1", status: "running" },
+        });
+      }));
+      const store = await openedOnAlpha();
+
+      const sending = store.current.sendTurn({ text: "go" });
+      await waitFor(() => expect(api.startTurn).toHaveBeenCalledTimes(1));
+
+      // The remote removal wins while this tab's own delete is between its
+      // already-resolved summary lookup and request issuance. Its later
+      // transport failure cannot prove what happened, so reconciliation drops
+      // the live tombstone but deliberately retains the removal fence. That is
+      // the state where a response must quote the epoch from when ITS request
+      // was issued: quoting the current epoch would admit the deleted row.
+      rejectDeletedThreadRead = true;
+      vi.mocked(api.deleteThread).mockRejectedValue(new Error("delete response lost"));
+      vi.mocked(api.bootstrap).mockRejectedValue(new Error("refresh unavailable"));
+      const deletionError = store.current.deleteThread(selected.id).catch((error: unknown) => error);
+      emit("thread.changed", {
+        threadId: selected.id,
+        payload: { threadId: selected.id, removed: true },
+      });
+      await waitFor(() => expect(store.current.threads.map((item) => item.id))
+        .toEqual([other.id]));
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(other.id));
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(other.id));
+      await act(async () => {
+        await expect(deletionError).resolves.toEqual(expect.objectContaining({
+          message: "delete response lost",
+        }));
+      });
+
+      await act(async () => {
+        releaseStart();
+        await sending;
+      });
+      await quiet();
+
+      expect(store.current.threads.map((item) => item.id)).toEqual([other.id]);
+      expect(store.current.selectedThreadId).toBe(other.id);
+      expect(store.current.detail?.thread.id).toBe(other.id);
+      expect(store.current.selectedThread?.id).toBe(other.id);
+      expect(api.bootstrap).toHaveBeenCalledTimes(2);
+
+      await quiet(PERSIST_DEBOUNCE_MS + 400);
+      const persisted = await deviceStore.hydrate();
+      expect(persisted?.buckets.flatMap((bucket) => bucket.threads)
+        .some((item) => item.id === selected.id)).toBe(false);
+      expect(persisted?.threads.some((item) => item.id === selected.id)).toBe(false);
+    });
+
     it("tombstones a conversation another client deleted, so a slow response cannot restore it", async () => {
       // The removal used to fall through to a bootstrap, and that bootstrap
       // settled the question. Now nothing re-reads afterwards, so a response
