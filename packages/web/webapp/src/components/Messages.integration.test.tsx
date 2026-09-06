@@ -514,7 +514,7 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("The watch finished normally.").closest(".activity-root")).toBeNull();
   });
 
-  it("uses the canonical terminal state but keeps successful persistence bookkeeping out of the transcript", () => {
+  it("uses the canonical terminal state but keeps deferred persistence bookkeeping out of the transcript", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [
@@ -526,9 +526,7 @@ describe("AssistantMessage grouped parts", () => {
           result: "bounded output",
           status: "failed",
           history: {
-            recordId: "sth1_result",
-            sequence: 2,
-            persistence: "persisted",
+            persistence: "deferred",
             terminalState: "timeout",
             truncated: true,
             originalBytes: 30_000,

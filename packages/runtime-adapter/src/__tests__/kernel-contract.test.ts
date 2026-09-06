@@ -155,7 +155,7 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
             expectTypeOf(event.failureKind).toEqualTypeOf<string | undefined>();
           }
           return {
-            persistence: "persisted",
+            persistence: event.phase === "invocation" ? "deferred" : "persisted",
             artifactReferences: [{ id: "artifact-1", available: true }],
           };
         },

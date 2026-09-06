@@ -408,7 +408,7 @@ function validToolHistoryMetadata(value: unknown): boolean {
     ])
     || !optionalString(value.recordId)
     || !optionalNonnegativeInteger(value.sequence)
-    || !["persisted", "failed"].includes(String(value.persistence))
+    || !["persisted", "deferred", "failed"].includes(String(value.persistence))
     || (value.terminalState !== undefined && ![
       "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
     ].includes(String(value.terminalState)))

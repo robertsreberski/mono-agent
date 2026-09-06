@@ -110,9 +110,12 @@ the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main
 runtime sends redaction-eligible raw arguments/content plus stable provider call
 id and name; the host returns only record/sequence, persistence/truncation byte
 metadata, and opaque artifact references. That returned metadata is attached to
-the exact normalized `tool_use` / `tool_result` event rendered by clients. Sink
-failure is fail-soft and explicit (`persistence: "failed"` plus an error code),
-never fake success. A callback exception cannot duplicate a client event.
+the exact normalized `tool_use` / `tool_result` event rendered by clients.
+`persistence: "deferred"` preserves a host-accepted write whose foreground
+confirmation window elapsed; `failed` plus an error code is reserved for a
+definitive sink rejection. Both remain fail-soft for the provider outcome and
+neither is converted into fake success. A callback exception cannot duplicate a
+client event.
 
 Provider bridges only claim terminal distinctions their structured protocol
 actually supplies:

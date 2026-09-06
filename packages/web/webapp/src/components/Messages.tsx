@@ -822,7 +822,11 @@ function toolCallArtifact(value: unknown): ToolCallArtifact | undefined {
 function sessionToolHistory(value: unknown): Record<string, unknown> | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const history = value as Record<string, unknown>;
-  return (history.persistence === "persisted" || history.persistence === "failed") && history.untrusted === true
+  return (
+    history.persistence === "persisted"
+    || history.persistence === "deferred"
+    || history.persistence === "failed"
+  ) && history.untrusted === true
     ? history
     : undefined;
 }

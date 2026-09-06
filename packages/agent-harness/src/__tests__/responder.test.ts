@@ -1425,6 +1425,21 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     expect(streamEventFromRuntimeEvent({
       type: "assistant",
       message: { content: [{
+        type: "tool_use",
+        id: "t-history-deferred",
+        name: "Read",
+        input: { path: "deferred.txt" },
+        history: { persistence: "deferred", untrusted: true },
+      }] },
+    })).toMatchObject({
+      type: "tool_call_started",
+      id: "t-history-deferred",
+      history: { persistence: "deferred", untrusted: true },
+    });
+
+    expect(streamEventFromRuntimeEvent({
+      type: "assistant",
+      message: { content: [{
         type: "tool_use", id: "invalid-history", name: "Read", input: {},
         history: { persistence: "persisted", recordId: "leak", untrusted: false },
       }] },

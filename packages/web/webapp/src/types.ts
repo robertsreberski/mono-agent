@@ -389,7 +389,7 @@ export type ToolCallStatus = "running" | "complete" | "failed";
 export interface SessionToolHistoryMetadata {
   readonly recordId?: string;
   readonly sequence?: number;
-  readonly persistence: "persisted" | "failed";
+  readonly persistence: "persisted" | "deferred" | "failed";
   readonly terminalState?: "success" | "rejected" | "error" | "exit_nonzero" | "timeout" | "signal" | "cancelled" | "interrupted";
   readonly truncated?: boolean;
   readonly originalBytes?: number;

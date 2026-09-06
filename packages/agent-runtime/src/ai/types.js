@@ -110,7 +110,7 @@
  * @typedef {Readonly<{
  *   recordId?: string,
  *   sequence?: number,
- *   persistence: "persisted"|"failed",
+ *   persistence: "persisted"|"deferred"|"failed",
  *   truncated?: boolean,
  *   originalBytes?: number,
  *   retainedBytes?: number,

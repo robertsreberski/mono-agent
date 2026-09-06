@@ -22,12 +22,12 @@ const tempDirs: string[] = [];
 
 /**
  * `ToolHistoryWriter.persist` waits at most `persistenceCeilingMs` (default
- * 250 ms) for its worker, and a timeout is swallowed into a `failed` result
- * that records a write incident — while the worker may still land the row.
- * Under the full repo gate every package's vitest runs at once, and a first
- * round-trip that includes worker startup plus SQLite open can exceed 250 ms.
- * That turns a lifecycle assertion into a wall-clock race. These tests are
- * about lifecycle semantics, not the host wait ceiling, so lift it.
+ * 250 ms) before returning a `deferred` receipt while the accepted worker
+ * request continues toward reconciliation. Under the full repo gate every
+ * package's vitest runs at once, and a first round-trip that includes worker
+ * startup plus SQLite open can exceed 250 ms. That turns a lifecycle assertion
+ * into a wall-clock race. These tests are about lifecycle semantics, not the
+ * foreground deferral boundary, so lift it.
  */
 const HISTORY_CEILING_MS = 30_000;
 

@@ -116,9 +116,10 @@ Important slash commands:
 2. `RemoteAgentResponder` reads `/v1/info`, forwards turns with session-scoped
    model/effort metadata, and decodes structured NDJSON stream frames.
 3. `MonoAgentTuiApp` routes frames into `TurnPresenter` and the chat, replay,
-   config, and picker views. Tool panels render the harness writer's exact
-   persisted-or-failed record metadata and terminal state; they do not infer it
-   from prose or run artifacts. The in-memory history store exists only for
+   config, and picker views. Tool panels consume the harness writer's exact
+   persisted, deferred, or failed metadata and terminal state; they show a
+   history warning only for definitive failure and do not infer persistence from
+   prose or run artifacts. The in-memory history store exists only for
    display and is not a canonical lifecycle source.
 4. Replay readers load bounded terminal artifacts directly. Config readers build
    a redacted source summary directly from the selected agent's config path.

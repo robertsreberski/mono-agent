@@ -547,6 +547,14 @@ successful-turn commit. A lifecycle record may therefore exist without a
 canonical message-history entry. Stable conversation/run/tool-call keys and
 writer-assigned per-run start/end sequences make retries idempotent; process
 recovery closes dangling starts as `interrupted` without rerunning a tool.
+Each client event waits at most 250 ms for foreground confirmation. If an
+accepted write is still queued or syncing, the event records immutable
+`persistence: "deferred"` metadata without an error code while the worker keeps
+the real request alive. The harness drains those accepted writes before bounded
+run finalization. `persisted` means the row committed before publication;
+`failed` is reserved for a definitive writer rejection. A deferred run artifact
+is not final storage evidence: after the run, `SessionHistory` is authoritative
+for committed rows. All three event states keep `untrusted: true`.
 Arguments/results are securely pre-bounded, redacted, and byte-bounded, with truncation metadata and
 opaque artifact ids. Filesystem-shaped spans in object keys and string values use an opaque host-root token plus
 at most two non-sensitive trailing components, so commands and results remain

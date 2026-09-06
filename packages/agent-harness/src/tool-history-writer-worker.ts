@@ -84,6 +84,7 @@ const WRITER_STAT_DETAIL_MAX_INSPECTION_CODE_UNITS = 4_096;
 const WRITER_STAT_DETAIL_POLICY_VERSION = "visible-text-v1";
 const WRITER_STAT_DETAIL_OMISSION = "[writer detail omitted because it contained private data]";
 const WRITER_STAT_DETAIL_OVERSIZED_OMISSION = "[writer detail omitted because it exceeded the inspection bound]";
+const TOOL_HISTORY_WRITER_BUSY_TIMEOUT_MS = 200;
 const TOOL_DIR_ALLOWED = new Set([TOOL_HISTORY_DATABASE, `${TOOL_HISTORY_DATABASE}-journal`]);
 const TERMINAL_STATES = new Set<RuntimeToolLifecycleTerminalState>([
   "success", "rejected", "error", "exit_nonzero", "timeout", "signal", "cancelled", "interrupted",
@@ -820,7 +821,7 @@ function openContentDatabase(
   database.exec("PRAGMA synchronous=FULL");
   database.exec("PRAGMA secure_delete=ON");
   database.exec("PRAGMA foreign_keys=ON");
-  database.exec("PRAGMA busy_timeout=250");
+  database.exec(`PRAGMA busy_timeout=${String(TOOL_HISTORY_WRITER_BUSY_TIMEOUT_MS)}`);
   transaction(database, () => {
     database.exec(`PRAGMA application_id=${String(TOOL_HISTORY_APPLICATION_ID)}`);
     database.exec(`

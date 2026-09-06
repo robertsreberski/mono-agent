@@ -747,7 +747,11 @@ function structuredContentFromToolResult(rawResult: unknown): unknown {
 function toolHistoryEventMetadata(value: unknown): NonNullable<
   Extract<AgentStreamEvent, { readonly type: "tool_call_started" }>['history']
 > | undefined {
-  if (!isRecord(value) || (value.persistence !== "persisted" && value.persistence !== "failed") || value.untrusted !== true) {
+  if (
+    !isRecord(value)
+    || (value.persistence !== "persisted" && value.persistence !== "deferred" && value.persistence !== "failed")
+    || value.untrusted !== true
+  ) {
     return undefined;
   }
   const terminalState = stringField(value, "terminalState");
