@@ -77,9 +77,17 @@ export const applyServiceWorkerUpdate = (): void => {
   waiting = false;
   notify();
   const apply = stagedApplier;
-  // A refusal here is not something an operator can act on, and the page is
-  // still perfectly usable on the build it has.
-  void apply?.(true).catch(() => undefined);
+  if (apply === undefined) return;
+  void apply(true).catch(() => {
+    // The build is STILL staged: nothing about a failed hand-over unstages it,
+    // and the page carries on perfectly well on the build it has. Withdrawing
+    // the notice as well would leave the operator with a console that had
+    // silently stopped offering an update it is still holding, so it comes
+    // back and they can ask again.
+    if (waiting) return;
+    waiting = true;
+    notify();
+  });
 };
 
 export const useServiceWorkerUpdateWaiting = (): boolean =>

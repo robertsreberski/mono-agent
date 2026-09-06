@@ -105,6 +105,15 @@ interface ConsoleStoreValue {
   readonly cronError: string | null;
   readonly hasMoreThreads: boolean;
   readonly hasOlderMessages: boolean;
+  /**
+   * Whether any conversation this tab is HOLDING has a turn running.
+   *
+   * The cache's whole set, not the visible listing: the listing is one agent's
+   * one bucket, and a turn running on another agent -- or on a conversation
+   * past the listed page -- is still one the operator is watching and still one
+   * whose stream a reload would drop.
+   */
+  readonly hasRunningThread: boolean;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
@@ -1532,9 +1541,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     THREAD_CACHE_ENTRIES,
     undefined,
     // Off the render path by construction: the cache is written from event
-    // handlers and from responses, and this only arms a timer.
-    () => schedulePersistRef.current(),
+    // handlers and from responses, and this only arms a timer and reads a flag
+    // off the held set.
+    () => {
+      schedulePersistRef.current();
+      noteHeldRunStateRef.current();
+    },
   ));
+  const noteHeldRunStateRef = useRef<() => void>(() => undefined);
   /**
    * The message repairs on the wire, by (conversation, message).
    *
@@ -1757,6 +1771,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       });
     }, PERSIST_DEBOUNCE_MS);
   }, []);
+  const [hasRunningThread, setHasRunningThread] = useState(false);
+  const hasRunningThreadRef = useRef(false);
+  /**
+   * Recomputed on every cache commit, and published only when it MOVED.
+   *
+   * A running turn commits several times a second, so a `setState` per commit
+   * would re-render every consumer of the store for a boolean that changes
+   * twice a turn.
+   */
+  const noteHeldRunState = useCallback(() => {
+    const running = threadCacheRef.current.snapshot()
+      .some((entry) => entry.thread.runState.status === "running");
+    if (running === hasRunningThreadRef.current) return;
+    hasRunningThreadRef.current = running;
+    setHasRunningThread(running);
+  }, []);
+  // Assigned during render, like `schedulePersistRef`: the cache's commit hook
+  // is created once, and an effect would leave it a commit behind.
+  noteHeldRunStateRef.current = noteHeldRunState;
+
   /** Disarm the pending flush. What it would have written is no longer wanted. */
   const cancelPersist = useCallback(() => {
     if (persistTimerRef.current === null) return;
@@ -2948,12 +2982,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // the deltas exist is that they are cheaper than re-reading -- and it is
       // the one transfer resource timing cannot report, so it is counted here.
       //
-      // The WHOLE frame, reassembled exactly as the service formats it
-      // (`formatSse`): the `id:` and `event:` lines, the field names and the
-      // newlines that terminate them are all bytes on the wire, and counting
-      // `data` alone under-reported every frame by around forty of them. What
-      // is still outside any page's reach is the stream's own response headers
-      // and the `: heartbeat` comments, which no browser API exposes.
+      // EXACT for the frame, and only for the frame. Reassembled byte for byte
+      // as the service formats it (`formatSse`): the `id:` and `event:` lines,
+      // the field names and the newlines that terminate them are all bytes on
+      // the wire, and counting `data` alone under-reported every frame by around
+      // forty of them. What this cannot see is everything that is not a frame --
+      // the connection's own response headers, and the `: heartbeat` comments,
+      // which no browser API exposes to a page. So the stream's total is a
+      // per-frame exact count plus a fixed, uncounted overhead, not an estimate
+      // of each frame.
       if (typeof frame === "string") {
         const message = event as MessageEvent<string>;
         recordDataUsage(new TextEncoder().encode(
@@ -4869,6 +4906,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       cronLoading,
       cronError,
       hasMoreThreads,
+      hasRunningThread,
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
@@ -4929,6 +4967,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       error,
       hiddenOfflineAgentCount,
       hasMoreThreads,
+      hasRunningThread,
       hasOlderMessages,
       hasServerSnapshot,
       loadBootstrap,

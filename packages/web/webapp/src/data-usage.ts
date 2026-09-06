@@ -134,9 +134,20 @@ const pruneRecent = (now: number): void => {
  * Armed by a record and disarmed by the first tick with nothing left, so an
  * idle console decays to `0 B/min` and then costs nothing at all -- rather than
  * either freezing on its last minute or running a timer for the session.
+ *
+ * NOT while the tab is hidden. Nobody is reading the indicator there, and a
+ * backgrounded PWA on a phone is the state this console spends most of its life
+ * in: a timer that wakes it every thirty seconds to redraw a number nobody can
+ * see is exactly the kind of cost the rest of this file exists to remove. The
+ * window ages out on its own; returning to the foreground re-arms and publishes
+ * once, which is when the number is worth having.
  */
 const armRateRefresh = (): void => {
   if (rateTimer !== null || typeof window === "undefined") return;
+  if (typeof document !== "undefined" && document.hidden) {
+    watchVisibilityForRate();
+    return;
+  }
   rateTimer = window.setTimeout(function tick() {
     rateTimer = null;
     pruneRecent(Date.now());
@@ -147,6 +158,27 @@ const armRateRefresh = (): void => {
     publish({ ...usage });
     if (recent.length > 0) armRateRefresh();
   }, RATE_REFRESH_MS);
+};
+
+/** One listener, attached only while a hidden tab has a window still to age out. */
+let rateVisibilityWatch: (() => void) | undefined;
+
+const watchVisibilityForRate = (): void => {
+  if (rateVisibilityWatch !== undefined || typeof document === "undefined") return;
+  const onVisible = (): void => {
+    if (document.hidden) return;
+    rateVisibilityWatch?.();
+    // The window may have emptied entirely while the tab was away, which is
+    // itself news the indicator has to be told.
+    pruneRecent(Date.now());
+    publish({ ...usage });
+    if (recent.length > 0) armRateRefresh();
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  rateVisibilityWatch = () => {
+    document.removeEventListener("visibilitychange", onVisible);
+    rateVisibilityWatch = undefined;
+  };
 };
 
 /** The session total, as one frozen snapshot `useSyncExternalStore` can cache. */
@@ -210,6 +242,7 @@ export const recordResponsePayload = (response: Response, text: string): void =>
 export const resetDataUsage = (): void => {
   if (throttleTimer !== null) window.clearTimeout(throttleTimer);
   if (rateTimer !== null) window.clearTimeout(rateTimer);
+  rateVisibilityWatch?.();
   throttleTimer = null;
   rateTimer = null;
   notifyPending = false;

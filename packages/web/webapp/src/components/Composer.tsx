@@ -3,8 +3,9 @@ import {
   unstable_useComposerInput,
   useAuiState,
 } from "@assistant-ui/react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { canUploadInConsole } from "../capabilities";
+import { noteComposerDraft, resetComposerDraft } from "../composer-draft";
 import { useConsoleStore } from "../console-store";
 import {
   detectSkillQuery,
@@ -105,6 +106,15 @@ export function Composer() {
       : [],
     [skillQuery, store.skillRegistry],
   );
+
+  // What the operator has typed or staged and not sent, published where a
+  // decision that would DESTROY it can read it -- the automatic service-worker
+  // reload above all. Not a hook there: the answer is wanted at the moment of
+  // the event, and subscribing would re-render for every keystroke.
+  useEffect(() => {
+    noteComposerDraft(composer.value.trim().length > 0 || attachmentCount > 0);
+  }, [attachmentCount, composer.value]);
+  useEffect(() => resetComposerDraft, []);
 
   const captureSelection = useCallback((input = inputRef.current) => {
     if (input === null) return;

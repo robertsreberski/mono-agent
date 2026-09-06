@@ -388,12 +388,16 @@ function shapeSubagentPart(part: WebSubagentPart): WebSubagentPart {
 }
 
 /**
- * The whole payloads, named the way the preview of them was.
+ * ONE part's own payloads, named the way a preview of them would be.
  *
  * The repair read serves what is stored; without these the console has nothing
  * to compare a later preview against and, failing closed, would drop every
- * repair it made. A nested delegation's children are named too, because the
- * repair is addressed by tool-call id and one of those may be the id asked for.
+ * repair it made.
+ *
+ * Only the part handed to it -- a delegation's `calls` are NOT walked. They do
+ * not need to be: a repair is addressed by tool-call id, and a request naming a
+ * child is answered by synthesizing that child as the tool-call part it would
+ * have been, which comes back through here as a part in its own right.
  */
 function nameWholePayloads(part: WebToolCallPart | WebSubagentPart): WebToolCallPart | WebSubagentPart {
   const args = wholePayloadDigest(part.args);

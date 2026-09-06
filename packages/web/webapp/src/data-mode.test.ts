@@ -195,15 +195,42 @@ describe("a device that will not remember anything", () => {
     }
   });
 
-  it("lets a value the device really kept win over the session's own", () => {
+  it("keeps this session's answer over a stale value the device refused to replace", () => {
+    // The stored value is the one the failed write was TRYING to overwrite, so
+    // it is older than what the operator just said, not newer. It stops winning
+    // only when something genuinely newer arrives.
+    localStorage.setItem(DATA_MODE_STORAGE_KEY, "full");
     const restore = denyStorage();
     try {
       writeDataModeSetting("lean");
+      expect(readDataModeSetting()).toBe("lean");
     } finally {
       restore();
     }
-    // Another tab wrote it for real.
+
+    // A write that lands clears the fallback, and the device is authoritative
+    // again.
+    writeDataModeSetting("auto");
+    expect(readDataModeSetting()).toBe("auto");
+  });
+
+  it("gives way to another tab that really wrote the setting", () => {
+    // A `storage` event is a different document saying something newer, which
+    // this session's fallback -- a write this device refused -- is not.
+    const view = renderHook(() => useDataModeSetting());
+    const restore = denyStorage();
+    try {
+      act(() => { writeDataModeSetting("lean"); });
+      expect(view.result.current).toBe("lean");
+    } finally {
+      restore();
+    }
+
     localStorage.setItem(DATA_MODE_STORAGE_KEY, "full");
+    act(() => { window.dispatchEvent(new StorageEvent("storage")); });
+
+    expect(view.result.current).toBe("full");
     expect(readDataModeSetting()).toBe("full");
+    view.unmount();
   });
 });

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
+import { noteComposerDraft, resetComposerDraft } from "./composer-draft";
 import { readDataModeSetting, resetDataModeSession, writeDataModeSetting } from "./data-mode";
 import { recordDataUsage, resetDataUsage } from "./data-usage";
 import {
@@ -17,9 +18,9 @@ const storeMock = vi.hoisted(() => ({
   clearActionError: vi.fn(),
   agents: [],
   visibleAgents: [],
-  threads: [] as readonly { readonly runState: { readonly status: string } }[],
   selectedAgent: null,
-  selectedThread: null as { readonly runState: { readonly status: string } } | null,
+  selectedThread: null,
+  hasRunningThread: false,
   showArchived: false,
   showOfflineAgents: false,
   hiddenOfflineAgentCount: 0,
@@ -262,9 +263,9 @@ describe("App service worker update", () => {
 
   afterEach(() => {
     resetServiceWorkerUpdates();
+    resetComposerDraft();
     Reflect.deleteProperty(document, "visibilityState");
-    storeMock.threads = [];
-    storeMock.selectedThread = null;
+    storeMock.hasRunningThread = false;
   });
 
   /** Registers, then plays the worker's "a new build is staged" callback. */
@@ -279,13 +280,11 @@ describe("App service worker update", () => {
     return apply;
   };
 
-  const runningThread = {
-    id: "thread-running",
-    runState: { status: "running" },
-  } as unknown as (typeof storeMock)["selectedThread"];
-
-  it("does not take the page from under a running turn", () => {
-    storeMock.threads = [runningThread] as unknown as (typeof storeMock)["threads"];
+  it("does not take the page from under a turn this tab is watching", () => {
+    // ANY held conversation, not the listed ones: the sidebar shows one agent's
+    // one bucket, and a turn running on another agent -- or past the listed
+    // page -- is still one whose stream this reload would drop.
+    storeMock.hasRunningThread = true;
     const apply = stageUpdate();
     render(<App />);
 
@@ -293,6 +292,24 @@ describe("App service worker update", () => {
 
     expect(apply).not.toHaveBeenCalled();
     expect(screen.getByRole("status")).toHaveTextContent("new version");
+  });
+
+  it("does not throw away a message the operator has not sent yet", () => {
+    // assistant-ui's composer is in-memory: a reload destroys whatever is typed
+    // in it and whatever is staged beside it, and nothing anywhere puts them
+    // back.
+    noteComposerDraft(true);
+    const apply = stageUpdate();
+    render(<App />);
+
+    visibility("visible");
+    expect(apply).not.toHaveBeenCalled();
+
+    // Sent, or cleared: now there is nothing to lose.
+    noteComposerDraft(false);
+    visibility("hidden");
+    visibility("visible");
+    expect(apply).toHaveBeenCalledTimes(1);
   });
 
   it("takes the staged build the moment an idle console comes back", () => {
@@ -308,7 +325,8 @@ describe("App service worker update", () => {
   });
 
   it("reloads on the operator's own word, whatever is running", () => {
-    storeMock.selectedThread = runningThread;
+    storeMock.hasRunningThread = true;
+    noteComposerDraft(true);
     const apply = stageUpdate();
     render(<App />);
 
@@ -318,14 +336,14 @@ describe("App service worker update", () => {
   });
 
   it("keeps the deferral armed after the notice is dismissed", () => {
-    storeMock.threads = [runningThread] as unknown as (typeof storeMock)["threads"];
+    storeMock.hasRunningThread = true;
     const apply = stageUpdate();
     const view = render(<App />);
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss update notice" }));
     expect(screen.queryByRole("button", { name: "Reload now" })).toBeNull();
 
-    storeMock.threads = [];
+    storeMock.hasRunningThread = false;
     view.rerender(<App />);
     visibility("visible");
     expect(apply).toHaveBeenCalledTimes(1);

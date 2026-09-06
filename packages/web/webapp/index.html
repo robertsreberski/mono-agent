@@ -7,8 +7,14 @@
     <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1110" />
     <meta name="description" content="Always-on local console for your mono-agent fleet." />
     <!--
-      Home-screen install: no browser chrome, and the name under the icon is the
-      console's, not the document title's.
+      Home-screen install: no browser chrome.
+
+      Deliberately NO `apple-mobile-web-app-title`. This document is served as a
+      static file to every host, and that meta OVERRIDES the manifest's
+      `short_name` on iOS -- which the service templates per host
+      (`short_name: identity.hostName`), so two installed consoles are
+      distinguishable on the same home screen. A constant here would name them
+      both "mono-agent". iOS 16.4+ takes the name from the manifest.
 
       The status bar stays `default` rather than `black-translucent` on purpose.
       `black-translucent` draws WHITE status-bar glyphs whatever is behind them,
@@ -21,7 +27,6 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <meta name="apple-mobile-web-app-title" content="mono-agent" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />

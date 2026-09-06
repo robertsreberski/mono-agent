@@ -4409,6 +4409,38 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1));
     });
 
+    it("knows a turn is running on a conversation the listing does not show", async () => {
+      // The sidebar shows one agent's one bucket. A turn running on another
+      // agent -- or past the listed page -- is still one this tab is watching,
+      // and everything that defers to a running turn has to be able to see it.
+      // Read off the CACHE's held set for exactly that reason.
+      const runningAlpha = { ...alpha, runState: { status: "running" as const, id: "turn-1" } };
+      const gamma = thread("gamma-thread", "beta");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [runningAlpha],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [gamma] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === gamma.id
+        ? { thread: gamma, messages: [] }
+        : { thread: runningAlpha, messages: [streamed("m1", "Hel")] });
+      const store = await openedOnAlpha();
+      expect(store.current.hasRunningThread).toBe(true);
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma.id));
+      await quiet();
+
+      // Beta's bucket is what the sidebar draws, and alpha is nowhere in it...
+      expect(store.current.visibleThreads.map((row) => row.id)).toEqual([gamma.id]);
+      expect(store.current.selectedThread?.id).toBe(gamma.id);
+      expect(store.current.selectedThread?.runState.status).not.toBe("running");
+      // ...but alpha is still held, and still running.
+      expect(store.current.hasRunningThread).toBe(true);
+    });
+
     it("buys each bucket's page once, however often the operator switches back", async () => {
       const gamma = thread("gamma-thread", "beta");
       vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(

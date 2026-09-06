@@ -278,11 +278,10 @@ afterEach(() => {
   // Shared image blobs outlive the components that fetched them, so one case's
   // picture must not silently satisfy the next case's fetch.
   clearReplyImageBlobs();
-  // The data mode is stored, so a case that switches to Lean was switching every
-  // case after it too -- silently, and only for the cases that ran later in the
-  // file. Cleared here rather than in one describe, because every describe in
-  // this file has a case that reads it.
-  localStorage.clear();
+  // `setup.ts` clears `localStorage` after every test, but the data mode also
+  // has an in-memory fallback for a device that refuses storage -- and that
+  // outlived the case that set it, so a case switching to Lean was switching
+  // every case after it in this file.
   resetDataModeSession();
   Object.defineProperty(URL, "createObjectURL", { configurable: true, value: originalCreateObjectUrl });
   Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: originalRevokeObjectUrl });

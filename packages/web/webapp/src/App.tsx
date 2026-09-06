@@ -27,6 +27,7 @@ import {
   useDataModeSetting,
   writeDataModeSetting,
 } from "./data-mode";
+import { hasUnsentComposerDraft } from "./composer-draft";
 import { formatDataBytes, useDataUsage } from "./data-usage";
 import {
   applyServiceWorkerUpdate,
@@ -323,9 +324,8 @@ export function App() {
     clearActionError,
     clearError,
     hasServerSnapshot,
+    hasRunningThread,
     retry,
-    threads,
-    selectedThread,
   } = useConsoleStore();
   const [agentDrawer, setAgentDrawer] = useState(false);
   const [threadDrawer, setThreadDrawer] = useState(false);
@@ -439,22 +439,30 @@ export function App() {
   /**
    * A staged build takes over on the next quiet moment, not on arrival.
    *
-   * Read from a ref at the event rather than depended on: what matters is
-   * whether anything is running WHEN the operator comes back, and re-arming the
-   * listener on every status change would be a listener per streamed frame.
+   * Read from a ref at the event rather than depended on: what matters is what
+   * is true WHEN the operator comes back, and re-arming the listener on every
+   * status change would be a listener per streamed frame. Kept current in an
+   * effect rather than during render, because a render is not allowed to write
+   * to a ref another render might read.
    */
-  const busy = selectedThread?.runState.status === "running"
-    || threads.some((thread) => thread.runState.status === "running");
-  const busyRef = useRef(busy);
-  busyRef.current = busy;
+  const busyRef = useRef(hasRunningThread);
+  useEffect(() => {
+    busyRef.current = hasRunningThread;
+  }, [hasRunningThread]);
   const updateWaiting = useServiceWorkerUpdateWaiting();
   useEffect(() => {
     if (!updateWaiting) return;
     const onVisibility = () => {
-      // A reload discards the transcript on screen and the composer's draft, so
-      // it happens where neither costs anything: the operator has just come
-      // back to a console with nothing in flight.
-      if (document.visibilityState !== "visible" || busyRef.current) return;
+      if (document.visibilityState !== "visible") return;
+      // A reload takes the page apart. Two things it would destroy, and neither
+      // is recoverable: a turn this tab is WATCHING -- any held conversation,
+      // not just the listed ones, because the listing is one agent's one
+      // bucket -- and whatever the operator has typed or staged in the composer,
+      // which lives only in assistant-ui's in-memory runtime.
+      //
+      // Either one defers it. The notice stays on screen throughout, so an
+      // operator who would rather have the new build now still can.
+      if (busyRef.current || hasUnsentComposerDraft()) return;
       applyServiceWorkerUpdate();
     };
     document.addEventListener("visibilitychange", onVisibility);

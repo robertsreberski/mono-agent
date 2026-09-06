@@ -291,6 +291,45 @@ describe("what the meter is willing to call a measurement", () => {
     view.unmount();
   });
 
+  it("does not wake a hidden tab to redraw a number nobody can see", () => {
+    // A backgrounded PWA on a phone is where this console spends most of its
+    // life. The rate only has a reader in the foreground, so the refresh waits
+    // for one -- and publishes once on the way back, because the window may
+    // have emptied entirely while the tab was away.
+    vi.useFakeTimers();
+    resetDataUsage();
+    const hidden = (value: boolean): void => {
+      Object.defineProperty(document, "hidden", { configurable: true, value });
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: value ? "hidden" : "visible",
+      });
+    };
+    try {
+      hidden(true);
+      recordDataUsage(4_096);
+      expect(vi.getTimerCount()).toBe(1); // the publish throttle only
+
+      let renders = 0;
+      const view = renderHook(() => {
+        renders += 1;
+        return useDataUsage();
+      });
+      act(() => { vi.advanceTimersByTime(RATE_WINDOW_MS + RATE_REFRESH_MS * 3); });
+      const asleep = renders;
+
+      hidden(false);
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+
+      expect(renders).toBeGreaterThan(asleep);
+      expect(dataUsageRatePerMinute()).toBe(0);
+      view.unmount();
+    } finally {
+      Reflect.deleteProperty(document, "hidden");
+      Reflect.deleteProperty(document, "visibilityState");
+    }
+  });
+
   it("stops ticking once there is nothing left to age out", () => {
     vi.useFakeTimers();
     resetDataUsage();

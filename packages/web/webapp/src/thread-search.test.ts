@@ -96,10 +96,8 @@ describe("the search debounce", () => {
   });
 
   it("takes the new wait while the operator is still typing", async () => {
-    // The debounce is read when the effect runs. Without the resolved mode in
-    // its dependencies, a switch made mid-search did nothing until the next
-    // keystroke re-ran the effect -- and on a query the operator had already
-    // finished typing, never.
+    // The wait is re-read inside the timer chain, so a switch made mid-search
+    // extends it -- without re-running the effect, whose cleanup aborts.
     vi.useFakeTimers();
     const search = vi.spyOn(api, "searchThreads").mockResolvedValue({ hits: [], truncated: false });
     try {
@@ -108,11 +106,44 @@ describe("the search debounce", () => {
       expect(search).not.toHaveBeenCalled();
 
       await act(async () => { writeDataModeSetting("lean"); });
-      // The full-mode wait would have fired here. The lean one has not.
-      await act(async () => { await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS); });
+      // The full-mode wait would have fired at its own 200 ms. It woke there,
+      // found the wait is the lean one now, and went back to sleep for the
+      // difference -- so nothing goes out until the lean wait is up.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(
+          LEAN_SEARCH_DEBOUNCE_MS - (SEARCH_DEBOUNCE_MS - 50) - 1,
+        );
+      });
       expect(search).not.toHaveBeenCalled();
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(LEAN_SEARCH_DEBOUNCE_MS); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(search).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      search.mockRestore();
+    }
+  });
+
+  it("never abandons a search already on the wire because the link was reclassified", async () => {
+    // `auto` follows the browser's own reading of the connection, which can
+    // change on its own while a request is out. Re-running the effect for it
+    // would abort that request -- cancelling a search the operator is waiting
+    // on, to issue the identical one again.
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const search = vi.spyOn(api, "searchThreads").mockImplementation(async (_source, _query, signal) => {
+      if (signal !== undefined) signals.push(signal);
+      return new Promise(() => undefined);
+    });
+    try {
+      renderHook(() => useThreadSearch("alpha", "needle"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS + 1); });
+      expect(search).toHaveBeenCalledTimes(1);
+
+      await act(async () => { writeDataModeSetting("lean"); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(LEAN_SEARCH_DEBOUNCE_MS * 2); });
+
+      expect(signals.every((signal) => !signal.aborted)).toBe(true);
       expect(search).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();

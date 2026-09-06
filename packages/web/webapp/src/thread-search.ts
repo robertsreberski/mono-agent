@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { currentDataMode, useDataMode } from "./data-mode";
+import { currentDataMode } from "./data-mode";
 import type { ThreadSearchHit } from "./types";
 
 /**
@@ -107,11 +107,6 @@ export function useThreadSearch(
   const latest = useRef(state);
   latest.current = state;
 
-  // The RESOLVED mode, in the dependencies: the debounce is read when the effect
-  // runs, so a switch made while the operator is typing had no effect until the
-  // next keystroke re-ran it -- and on a settled query, never.
-  const dataMode = useDataMode();
-
   useEffect(() => {
     const trimmed = query.trim();
     if (sourceId === null || trimmed.length < MIN_SEARCH_QUERY) {
@@ -120,7 +115,27 @@ export function useThreadSearch(
     }
     setState({ ...latest.current, status: "loading" });
     const controller = new AbortController();
-    const timer = setTimeout(() => {
+    const startedAt = Date.now();
+    let timer = 0;
+    /**
+     * The wait is re-read on every wake, INSIDE the timer chain.
+     *
+     * The mode deliberately does not appear in this effect's dependencies. It
+     * would re-run the effect, and the cleanup aborts -- so a link the browser
+     * re-classified while a search was on the wire would have cancelled a
+     * request the operator was waiting on, to start the same one again. Waking
+     * to compare the elapsed time against the wait now in force changes only
+     * when the request goes out, which is all the mode has any business
+     * changing. A wait that got LONGER extends here; one that got shorter takes
+     * effect at the wake it was already scheduled for, which is a settled query
+     * arriving no later than it would have.
+     */
+    const fire = (): void => {
+      const remaining = searchDebounceMs() - (Date.now() - startedAt);
+      if (remaining > 0) {
+        timer = window.setTimeout(fire, remaining);
+        return;
+      }
       api.searchThreads(sourceId, trimmed, controller.signal)
         .then((page) => {
           setState({ hits: page.hits, status: "ready", truncated: page.truncated });
@@ -130,12 +145,13 @@ export function useThreadSearch(
           if (error instanceof DOMException && error.name === "AbortError") return;
           setState({ hits: [], status: "error", truncated: false });
         });
-    }, searchDebounceMs());
+    };
+    timer = window.setTimeout(fire, searchDebounceMs());
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [dataMode, query, sourceId]);
+  }, [query, sourceId]);
 
   return state;
 }

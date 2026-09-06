@@ -398,6 +398,26 @@ describe("what a picture costs", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-2");
   });
 
+  it("leaves a picture's countdown alone when the mode did not actually move", () => {
+    // The subscription fires on a `storage` event and on a connection change as
+    // well as on a real switch, and another tab writes to `localStorage` often.
+    // Re-arming on every notification restarted every retained picture's
+    // countdown from zero, so a busy second tab could hold this one's cache
+    // open indefinitely.
+    vi.useFakeTimers();
+    const { revokeObjectURL } = stubObjectUrls();
+    const key = replyImageKey("sha256:steady", 4);
+    publishReplyImageBlob(key, new Blob(["abcd"]));
+    releaseReplyImageBlob(key);
+
+    vi.advanceTimersByTime(REPLY_IMAGE_RETENTION_MS - 1_000);
+    // Same mode, said again.
+    writeDataModeSetting("auto");
+    vi.advanceTimersByTime(1_001);
+
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-1");
+  });
+
   it("frees a lean device's oldest pictures at the lean ceiling", () => {
     vi.useFakeTimers();
     writeDataModeSetting("lean");

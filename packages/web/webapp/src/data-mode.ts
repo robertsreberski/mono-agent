@@ -101,16 +101,20 @@ const writeStored = (key: string, value: string): boolean => {
  * A browser that refuses storage -- Safari private browsing, a locked-down
  * profile -- threw on the write and the read then handed back the old value, so
  * the control moved and nothing else did: the operator could not switch modes at
- * all on exactly the kind of device this feature exists for. Set only when the
- * write FAILED, so a stored value always wins and nothing outlives a real one.
+ * all on exactly the kind of device this feature exists for.
+ *
+ * Set ONLY by a failed write, and it WINS while it is set: a stale value the
+ * device is refusing to overwrite is not a newer answer than the one the
+ * operator just gave. It is cleared the moment a write succeeds, and by a
+ * `storage` event, which is another tab genuinely saying something newer.
  */
 let sessionSetting: DataModeSetting | undefined;
 let offeredInSession = false;
 
 export const readDataModeSetting = (): DataModeSetting => {
+  if (sessionSetting !== undefined) return sessionSetting;
   const stored = readStored(DATA_MODE_STORAGE_KEY);
-  if (stored !== null && SETTINGS.has(stored)) return stored as DataModeSetting;
-  return sessionSetting ?? "auto";
+  return stored !== null && SETTINGS.has(stored) ? stored as DataModeSetting : "auto";
 };
 
 export const writeDataModeSetting = (setting: DataModeSetting): void => {
@@ -158,14 +162,23 @@ export const currentDataMode = (): DataMode =>
  */
 let detachSources: (() => void) | undefined;
 
+/**
+ * Another tab of the same console has written the setting for real. That is a
+ * newer answer than this session's fallback, which exists only because this
+ * device refused a write.
+ */
+const onStorage = (): void => {
+  sessionSetting = undefined;
+  notify();
+};
+
 const attachSources = (): void => {
   const connection = networkInformation();
   connection?.addEventListener?.("change", notify);
-  // Another tab of the same console changing the setting is the same event.
-  window.addEventListener("storage", notify);
+  window.addEventListener("storage", onStorage);
   detachSources = () => {
     connection?.removeEventListener?.("change", notify);
-    window.removeEventListener("storage", notify);
+    window.removeEventListener("storage", onStorage);
   };
 };
 

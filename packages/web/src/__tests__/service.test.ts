@@ -4434,8 +4434,10 @@ describe("transcript shaping", () => {
       argsDigest: sha(JSON.stringify(bigArgs)),
       resultDigest: sha(bigResult),
     });
-    // A payload under the budget is not truncated, so it names nothing.
+    // And the whole body is the whole body: it names its content, but it is not
+    // a preview of anything and never claims to be truncated.
     expect(service.toolCallPart(thread.id, message.id, "cut")).not.toHaveProperty("resultTruncated");
+    expect(service.toolCallPart(thread.id, message.id, "cut")).not.toHaveProperty("resultBytes");
     await service.stop();
   });
 

@@ -147,14 +147,26 @@ const evictRetained = (): void => {
  * Each retained picture's timer is re-armed to the mode now in force before the
  * ceilings are applied.
  */
+/** The window every retained picture's timer was last armed against. */
+let armedRetentionMs = REPLY_IMAGE_RETENTION_MS;
+
 const rearmRetained = (): void => {
   const retentionMs = replyImageRetentionMs();
-  for (const key of retained) {
-    const image = sharedImages.get(key);
-    if (image === undefined) continue;
-    if (image.timer !== undefined) window.clearTimeout(image.timer);
-    image.timer = window.setTimeout(() => revokeShared(key), retentionMs);
+  // The subscription fires on a `storage` event and on a connection change too,
+  // and neither has to have moved the resolved mode. Re-arming regardless would
+  // restart every retained picture's countdown from zero on a `storage` write
+  // this document did not make -- and another tab writes one on every keystroke
+  // of the search box. Only an actual change to the window re-times anything.
+  if (retentionMs !== armedRetentionMs) {
+    armedRetentionMs = retentionMs;
+    for (const key of retained) {
+      const image = sharedImages.get(key);
+      if (image === undefined) continue;
+      if (image.timer !== undefined) window.clearTimeout(image.timer);
+      image.timer = window.setTimeout(() => revokeShared(key), retentionMs);
+    }
   }
+  // The ceilings are read at every decision and cost nothing to re-apply.
   evictRetained();
 };
 
@@ -231,7 +243,8 @@ export const releaseReplyImageBlob = (key: string): void => {
   if (image.refs > 0) return;
   retained.push(key);
   retainedBytes += image.size;
-  image.timer = window.setTimeout(() => revokeShared(key), replyImageRetentionMs());
+  armedRetentionMs = replyImageRetentionMs();
+  image.timer = window.setTimeout(() => revokeShared(key), armedRetentionMs);
   evictRetained();
 };
 

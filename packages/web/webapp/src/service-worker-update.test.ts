@@ -64,6 +64,32 @@ describe("service worker updates", () => {
     unsubscribe();
   });
 
+  it("offers the build again when the hand-over is refused", async () => {
+    // A refused `updateSW` does not unstage anything -- the new worker is still
+    // waiting -- so withdrawing the notice would leave the operator holding an
+    // update the console had quietly stopped mentioning.
+    const apply = vi.fn(async () => { throw new Error("The worker refused to activate."); });
+    const listener = vi.fn();
+    let needRefresh = (): void => undefined;
+    registerServiceWorkerUpdates((options) => {
+      needRefresh = options.onNeedRefresh ?? needRefresh;
+      return apply;
+    });
+    needRefresh();
+    const unsubscribe = subscribeToServiceWorkerUpdate(listener);
+
+    applyServiceWorkerUpdate();
+    expect(serviceWorkerUpdateWaiting()).toBe(false);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(serviceWorkerUpdateWaiting()).toBe(true);
+    // Withdrawn, then offered again: both are news.
+    expect(listener).toHaveBeenCalledTimes(2);
+    unsubscribe();
+  });
+
   it("does nothing at all when no build is staged", () => {
     const apply = vi.fn(async () => undefined);
     registerServiceWorkerUpdates(() => apply);

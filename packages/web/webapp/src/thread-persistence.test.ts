@@ -60,6 +60,76 @@ describe("createThreadPersistence", () => {
     await deleteDatabase();
   });
 
+  it("takes over a database a previous build wrote at version 1", async () => {
+    // The upgrade is the one path no other case exercises: every other test
+    // starts from an empty database and creates version 2 outright. A phone
+    // that had this console installed before this build has real rows in a real
+    // version-1 store, written with no `writer` and with no index to put them
+    // in, and a failure here does not degrade -- `disable()` takes the whole
+    // device store down for the session.
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(PERSISTENCE_DB_NAME, 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        db.createObjectStore("threads", { keyPath: "id" });
+        db.createObjectStore("buckets", { keyPath: "key" });
+        db.createObjectStore("meta");
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction(["threads", "buckets", "meta"], "readwrite");
+        // Exactly the shape version 1 wrote: no `writer` anywhere.
+        transaction.objectStore("threads").put({
+          id: "legacy-thread",
+          thread: thread("legacy-thread", "alpha"),
+          messages: [message("legacy-message")],
+          repairedToolCallIds: [],
+          pagedInIds: [],
+          savedAt: 1_000,
+        });
+        transaction.objectStore("buckets").put({
+          key: "alpha\u0000active",
+          threads: [thread("legacy-thread", "alpha")],
+          nextCursor: null,
+          savedAt: 1_000,
+        });
+        const meta = transaction.objectStore("meta");
+        meta.put({ ...snapshot(), savedAt: 1_000 }, "agents");
+        meta.put("kitchen", "host");
+        transaction.oncomplete = () => { db.close(); resolve(); };
+        transaction.onerror = () => reject(transaction.error ?? new Error("seed failed"));
+        transaction.onabort = () => reject(transaction.error ?? new Error("seed aborted"));
+      };
+      request.onerror = () => reject(request.error ?? new Error("open failed"));
+    });
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    // Stamped like the rows already there, so the age sweep has nothing to say
+    // about this and the upgrade is the only thing under test.
+    const store = createThreadPersistence({ now: () => 1_000 });
+    const restored = await store.hydrate();
+
+    // Everything the old build wrote is still there and still usable.
+    expect(restored?.host).toBe("kitchen");
+    expect(restored?.snapshot?.console.hostName).toBe("kitchen");
+    expect(restored?.threads.map((row) => row.id)).toEqual(["legacy-thread"]);
+    expect(restored?.threads[0]?.messages.map((row) => row.id)).toEqual(["legacy-message"]);
+    expect(restored?.buckets.map((row) => row.key)).toEqual(["alpha\u0000active"]);
+    expect(restored?.threads[0]?.writer).toBeUndefined();
+
+    // And the index the upgrade added really works: this instance writes its
+    // own conversation, sweeps it when it stops holding it, and leaves the
+    // writer-less row -- which belongs to nobody -- exactly where it is.
+    await store.save({ entries: [entry("alpha-thread"), entry("beta-thread")] });
+    await store.save({ entries: [entry("alpha-thread")] });
+
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id).sort())
+      .toEqual(["alpha-thread", "legacy-thread"]);
+    // Nothing about any of that disabled the device store.
+    expect(debug).not.toHaveBeenCalled();
+    debug.mockRestore();
+  });
+
   it("hands back the conversations it was given, with their cursors and validators", async () => {
     const writer = createThreadPersistence({ now: () => 1_000 });
     await writer.save({
