@@ -5,7 +5,6 @@ import type {
   AskSnapshot,
   AskSubmissionResult,
   Bootstrap,
-  ConfigurationSession,
   CronOverview,
   CronRunPage,
   LiveInputReceipt,
@@ -492,52 +491,6 @@ export const api = {
       ...(signal === undefined ? {} : { signal }),
     });
     return result.thread;
-  },
-
-  createConfigurationSession: async (sourceId: string) => {
-    const result = await request<{ session: ConfigurationSession }>(
-      `/api/v1/agents/${encodeURIComponent(sourceId)}/configuration-sessions`,
-      {
-        method: "POST",
-        headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
-      },
-    );
-    return result.session;
-  },
-
-  continueConfigurationSession: async (sessionId: string, text: string) => {
-    const result = await request<{ session: ConfigurationSession }>(
-      `/api/v1/configuration-sessions/${encodeURIComponent(sessionId)}/turns`,
-      {
-        method: "POST",
-        headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
-        body: JSON.stringify({ text }),
-      },
-    );
-    return result.session;
-  },
-
-  settleConfigurationSession: async (
-    sessionId: string,
-    proposalId: string,
-    decision: "approve" | "reject",
-  ) => {
-    const result = await request<{ session: ConfigurationSession }>(
-      `/api/v1/configuration-sessions/${encodeURIComponent(sessionId)}`
-        + `/proposals/${encodeURIComponent(proposalId)}/${decision}`,
-      {
-        method: "POST",
-        headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
-      },
-    );
-    return result.session;
-  },
-
-  closeConfigurationSession: async (sessionId: string) => {
-    await send(`/api/v1/configuration-sessions/${encodeURIComponent(sessionId)}`, {
-      method: "DELETE",
-      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
-    });
   },
 
   patchAgent: async (sourceId: string, pinned: boolean) => {

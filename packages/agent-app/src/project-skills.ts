@@ -21,7 +21,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { GeneratedFile } from "./modules/types.js";
 import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 
-export const PROJECT_SKILL_VERSION = "1.3.0";
+export const PROJECT_SKILL_VERSION = "1.2.0";
 export const PROJECT_SKILL_MANIFEST_PATH = "skills/.mono-agent-managed.json";
 
 export const PROJECT_SKILL_NAMES = [
@@ -38,7 +38,7 @@ interface BundledProjectSkill {
 
 const CONFIGURE_SKILL = `---
 name: mono-agent-configure
-description: Safely refine this agent's identity and config from a host-marked mono-agent SELF-CONFIG session.
+description: Safely refine this agent's identity and config from the local mono-agent TUI.
 version: ${PROJECT_SKILL_VERSION}
 ---
 
@@ -49,15 +49,13 @@ Use this skill when the operator asks to configure, tune, or change this agent.
 1. Treat the current resolved config, the configured identity document's \`## Role\` (normally \`IDENTITY.md → ## Role\`), and validation output as operational truth. Memory may recall preferences, but never use memory as proof that a change is active.
 2. This is a dedicated, multi-turn SELF-CONFIG session, separate from ordinary chat. On the opening turn only, show a compact user-led map of all capability areas: identity and knowledge; runtime and models; skills, tools, MCP servers, and plugins; memory; channels, APIs, and A2A; automation and proactive work; security, sandboxing, and secrets; observability and operations; and acceptance criteria. Then let the operator choose where to start. Do not repeat the map on later turns.
 3. Build the operator's workflow conversationally, one focused question at a time: trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks. Do not turn the map into a long questionnaire. A turn may explore, explain, or ask the next question without making a proposal.
-4. Approval, rejection, a no-proposal turn, \`done\`, and \`no changes\` do not end SELF-CONFIG. Continue from the host outcome and suggest the next relevant area. Only closing the host session exits self-configuration. If the reply is an ordinary task, do not execute it with configuration authority; help translate it into the desired agent workflow, or tell the operator to close SELF-CONFIG before running the task.
+4. Approval, rejection, a no-proposal turn, \`done\`, and \`no changes\` do not end SELF-CONFIG. Continue from the host outcome and suggest the next relevant area. Only quitting the TUI session exits self-configuration. If the reply is an ordinary task, do not execute it with configuration authority; help translate it into the desired agent workflow, or tell the operator to quit SELF-CONFIG before running the task.
 5. Never ask for API keys, OAuth tokens, passwords, bot tokens, or other secrets in chat. Explain the exact masked mono-agent auth or owner-only .env flow instead.
 6. For one decision-complete, safe local checkpoint, call ProposeAgentConfiguration once with a short rationale, an RFC 6902 JSON Patch against mono-agent.config.json, and optionally a replacement body for the configured identity document's \`## Role\` (normally \`IDENTITY.md → ## Role\`). A Role-only proposal uses an empty patch. Keep each proposal coherent and incremental; continue the conversation after the host reports its outcome.
 7. Do not claim the proposal was applied. The local host validates it, shows an out-of-band review, requires the operator to approve it, commits files atomically, restarts the authoritative background agent, and proves readiness. A failed restart restores the approved files and attempts to restore the previous daemon before reporting recovery instructions.
 8. Keep config proposals to the host's documented low-risk allowlist: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; and tool-policy tightening. Paths, memory tier/capture behavior, external MCP servers, plugins, channels or cron/proactive jobs, tool/runtime permissions, model-route or provider posture, embeddings/LLM endpoints, exporters, sandboxing, and network exposure require the explicit guided flow named by the host. Explain those capabilities and their prerequisites, but do not smuggle them into a proposal.
 
 Keep proposals minimal. Preserve unrelated config, existing knowledge references, and every identity section except the optional Role body. Treat every non-command operator message in this session as self-configuration input. The host, not the model, owns session exit and proposal settlement.
-
-The proposal tool exists only in a host-marked SELF-CONFIG operator turn. Enter through the web console's Configure agent action when offered, or run \`bin/mono-agent tui --configure\`. If the tool is unavailable, do not edit configuration directly and do not stop at "no files changed"; explain that this is not a host-marked SELF-CONFIG turn and point the operator to one of those entry points.
 `;
 
 const MEMORY_SKILL = `---

@@ -374,7 +374,7 @@ export interface ConfigurationRuntimeExtensionOptions {
   readonly env: Record<string, string | undefined>;
 }
 
-/** Install proposal-only authority on explicitly host-capability-marked requests. */
+/** Install proposal-only authority on explicitly capability-marked TUI requests. */
 export function createLocalConfigurationRuntimeExtension(
   options: ConfigurationRuntimeExtensionOptions,
 ): (input: AgentHarnessRuntimeOptionsInput) => Promise<AgentHarnessRuntimeOptionsExtension> {
@@ -893,10 +893,9 @@ export function isLocalConfigurationRequest(metadata: Record<string, unknown> | 
 function configurationRequestFromMetadata(
   metadata: Record<string, unknown> | undefined,
 ): { readonly sessionId: string; readonly phase: "invitation" | "operator" } | undefined {
-  const source = metadata?.source;
-  const scoped = source === "tui" ? metadata?.tui : source === "web" ? metadata?.configuration : undefined;
-  if (typeof scoped !== "object" || scoped === null) return undefined;
-  const record = scoped as Record<string, unknown>;
+  const tui = metadata?.tui;
+  if (metadata?.source !== "tui" || typeof tui !== "object" || tui === null) return undefined;
+  const record = tui as Record<string, unknown>;
   const sessionId = record.configurationSessionId;
   const phase = record.configurationPhase;
   return record.configuration === true
