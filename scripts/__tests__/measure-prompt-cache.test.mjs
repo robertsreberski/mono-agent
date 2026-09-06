@@ -26,10 +26,18 @@ describe("prompt cache measurement", () => {
     const { report, stdout } = runScenario("multi-turn");
     expect(report).toMatchObject({ schema: 2, mode: "dry-run", scenario: "multi-turn", model: "benchmark-faux:cache-model" });
     expect(report.runs).toHaveLength(2);
-    expect(report.runs[0].requests[0]).toMatchObject({ supported: true, payloadFamily: "openai-responses", toolDefinitionCount: 1, historyMode: "fresh", costSource: "pi_usage" });
+    const first = report.runs[0].requests[0];
+    const second = report.runs[1].requests[0];
+    expect(first).toMatchObject({ supported: true, payloadFamily: "openai-responses", toolDefinitionCount: 1, historyMode: "fresh", costSource: "pi_usage" });
     expect(report.runs[1].historyMode).toBe("provider-session");
     expect(report.runs.flatMap((run) => run.contextUsageSnapshots).some((usage) => usage.cacheRead > 0)).toBe(true);
-    expect(report.runs[0].requests[0].systemFingerprint).not.toBe(report.runs[1].requests[0].systemFingerprint);
+    // #759 keeps system instructions stable while the per-turn message history grows.
+    expect(first.systemBytes).toBeGreaterThan(0);
+    expect(first.systemFingerprint).toMatch(/^[a-f0-9]{16}$/u);
+    expect(second.systemFingerprint).toBe(first.systemFingerprint);
+    expect(first.messageCount).toBeGreaterThan(0);
+    expect(second.messageCount).toBeGreaterThan(first.messageCount);
+    expect(second.toolDefinitionCount).toBe(1);
     expect(JSON.stringify(report)).not.toContain("Read fixture.txt");
     expect(stdout).not.toContain("cache-fixture-");
   });
