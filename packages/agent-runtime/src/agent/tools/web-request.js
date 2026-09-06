@@ -18,10 +18,24 @@ export async function coordinatedWebRequest(coordinator, kind, key, signal, exec
   try {
     signal?.throwIfAborted();
     const value = await execute();
-    await permit?.complete(signal?.aborted ? { status: "cancelled" } : classify(value));
-    return { ...value, coordinationWaitMs: permit?.waitMs ?? 0, backendDurationMs: Date.now() - started };
+    const completion = await permit?.complete(signal?.aborted ? { status: "cancelled" } : classify(value));
+    const persistedCooldown = value?.rateLimited ? completion : undefined;
+    return {
+      ...value,
+      ...(Number.isFinite(persistedCooldown?.retryAfterMs) ? { retryAfterMs: persistedCooldown.retryAfterMs } : {}),
+      ...(Number.isFinite(persistedCooldown?.retryAtMs) ? { retryAtMs: persistedCooldown.retryAtMs } : {}),
+      coordinationWaitMs: permit?.waitMs ?? 0,
+      backendDurationMs: Date.now() - started,
+    };
   } catch (error) {
-    await permit?.complete({ status: signal?.aborted ? "cancelled" : "unavailable" });
+    // A run-local budget refusal happens after admission but before a provider
+    // request. Release the lease without teaching the shared host coordinator
+    // that the provider failed.
+    await permit?.complete({
+      status: signal?.aborted || error?.code === "search_budget_exhausted"
+        ? "cancelled"
+        : "unavailable",
+    });
     throw error;
   }
 }
@@ -30,6 +44,7 @@ function classifySearch(result) {
   return {
     status: result.rateLimited ? "rate_limited" : result.ok ? "ok" : result.retryable ? "unavailable" : "cancelled",
     ...(result.retryAfterMs === undefined ? {} : { retryAfterMs: result.retryAfterMs }),
+    ...(result.retryAtMs === undefined ? {} : { retryAtMs: result.retryAtMs }),
   };
 }
 
@@ -39,10 +54,12 @@ export function webRequestFailure(error, backend, signal) {
     ok: false, backend, code: code || "backend_unavailable",
     message: code === "coordination_unavailable" ? "Web request coordination is unavailable."
       : code === "rate_limited" ? `${backend} is cooling down.`
+        : code === "search_budget_exhausted" ? "WebSearch request budget exhausted for this run."
         : code === "deadline_exceeded" ? "Web request deadline exceeded."
           : code === "aborted" ? "Web request was aborted." : `${backend} request unavailable.`,
-    retryable: code !== "aborted",
+    retryable: !["aborted", "search_budget_exhausted"].includes(code),
     cooldown: code === "rate_limited", rateLimited: code === "rate_limited",
     retryAfterMs: error?.retryAfterMs,
+    retryAtMs: error?.retryAtMs,
   };
 }

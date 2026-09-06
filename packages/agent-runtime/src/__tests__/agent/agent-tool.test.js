@@ -402,6 +402,22 @@ describe("Agent tool confinement", () => {
     expect(run.mock.calls[0][0]).toMatchObject({ toolEnvironment });
   });
 
+  it("offers web configuration and host coordination to every child request", async () => {
+    const run = okRun();
+    const webSearchConfig = { backend: "auto", maxRequestsPerRun: 4 };
+    const webFetchConfig = { render: "never", browserCommand: "agent-browser" };
+    const webRequestCoordinator = { scope: "host:test" };
+    const tool = createAgentTool(subagentOptions({ run }), {
+      webSearchConfig, webFetchConfig, webRequestCoordinator,
+    });
+    await tool.execute("c1", { prompt: "x" });
+
+    expect(run.mock.calls[0][0]).toMatchObject({
+      webSearchConfig, webFetchConfig, webRequestCoordinator,
+    });
+    expect(run.mock.calls[0][0]).not.toHaveProperty("webSearchState");
+  });
+
   it("offers the parent's skill index and skills root to every child request", async () => {
     const run = okRun();
     const skills = [{ name: "research", description: "Reads the web." }];

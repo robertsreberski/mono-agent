@@ -92,7 +92,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Scaffold (`mono-agent init`) and validate (`mono-agent validate`) agent
   folders non-destructively.
 - Resolve local-first WebSearch/WebFetch settings into every runtime run and
-  report a separate bounded readiness section for explicit Ollama or loopback
+  report the four-request default WebSearch budget plus separate bounded
+  readiness for explicit Ollama or loopback
   SearXNG plus the optional `agent-browser` renderer; the app never owns any
   companion's lifecycle. Opt-in `tools.web.coordination: "host"` injects the same private
   admission and cooldown store into parent and subagent runs;

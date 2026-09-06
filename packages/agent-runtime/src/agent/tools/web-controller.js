@@ -5,6 +5,7 @@ import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
 import { performWebFetch, formatWebFetchDocument } from "./web-fetch.js";
 import { performWebSearch } from "./web-search.js";
+import { createWebSearchRunState, webSearchBudgetSnapshot } from "./web-search-state.js";
 
 const MAX_CACHE_ENTRIES = 64;
 const MAX_SHARED_SEARCH_ENTRIES = 256;
@@ -28,11 +29,12 @@ const sharedSearchCache = new Map();
  * cleanup. Search results are the exception: they live in the process-wide
  * cache above so sibling subagents and later turns can reuse them.
  *
- * @param {{coordinator?: any, searchConfig?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
+ * @param {{coordinator?: any, searchConfig?: any, searchState?: any, fetchConfig?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, fetchImpl?: typeof fetch, browserRenderer?: any, codexSearch?: any}} [options]
  */
 export function createWebToolController({
   coordinator,
   searchConfig,
+  searchState: suppliedSearchState,
   fetchConfig,
   sandboxPolicy,
   sandboxEngine,
@@ -47,6 +49,7 @@ export function createWebToolController({
   const fetchInFlight = new Map();
   const cleanups = new Set();
   let closed = false;
+  const searchState = createWebSearchRunState(searchConfig, suppliedSearchState);
 
   function registerCleanup(cleanup) {
     if (closed) {
@@ -89,12 +92,15 @@ export function createWebToolController({
    * @param {string} key
    * @param {() => Promise<any>} execute
    */
-  async function cachedSearch(key, execute) {
+  async function cachedSearch(key, query, execute) {
     if (closed) return closedResult();
     const cached = readSharedSearch(key);
-    if (cached) return withCacheHit(cached);
+    if (cached) return withSearchCacheHit(cached, searchState, query);
     const active = searchInFlight.get(key);
-    if (active) return withCacheHit(await active);
+    if (active) {
+      const result = await active;
+      return result.error ? withCacheHit(result) : withSearchCacheHit(result, searchState, query);
+    }
     const task = Promise.resolve().then(execute);
     searchInFlight.set(key, task);
     try {
@@ -135,13 +141,14 @@ export function createWebToolController({
       const resolvedCtx = ctx ?? readToolRuntime();
       const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
       const key = stableKey({ params, searchConfig: safeSearchCacheIdentity(searchConfig), policy, coordination: coordinator?.scope });
-      return cachedSearch(key, async () => performWebSearch(params, {
+      return cachedSearch(key, params.query, async () => performWebSearch(params, {
         coordinator,
         searchConfig,
         sandboxPolicy: policy,
         ctx: resolvedCtx,
         fetchImpl,
         codexSearch,
+        searchState,
         signal: execution.signal,
       }));
     },
@@ -183,9 +190,11 @@ export function createWebToolController({
 }
 
 function safeSearchCacheIdentity(searchConfig) {
-  if (typeof searchConfig?.ollama?.apiKey !== "string") return searchConfig;
+  if (!searchConfig || typeof searchConfig !== "object") return searchConfig;
+  const { maxRequestsPerRun: _budget, ...identity } = searchConfig;
+  if (typeof searchConfig?.ollama?.apiKey !== "string") return identity;
   return {
-    ...searchConfig,
+    ...identity,
     ollama: {
       ...searchConfig.ollama,
       apiKey: `sha256:${createHash("sha256").update(searchConfig.ollama.apiKey).digest("hex")}`,
@@ -237,7 +246,15 @@ function sortValue(value) {
 function cloneResult(result) {
   return {
     ...result,
-    outcome: result.outcome ? { ...result.outcome } : result.outcome,
+    outcome: result.outcome ? {
+      ...result.outcome,
+      ...(Array.isArray(result.outcome.providerAttempts)
+        ? { providerAttempts: result.outcome.providerAttempts.map((entry) => ({ ...entry })) }
+        : {}),
+      ...(Array.isArray(result.outcome.failureMetadata)
+        ? { failureMetadata: result.outcome.failureMetadata.map((entry) => ({ ...entry })) }
+        : {}),
+    } : result.outcome,
   };
 }
 
@@ -249,8 +266,61 @@ function withCacheHit(result) {
       cacheHit: true,
       attempts: 0, durationMs: 0, queueWaitMs: 0, backendDurationMs: 0,
       cooldownSkipCount: 0, quotaSkipCount: 0,
+      ...(Number.isSafeInteger(result.outcome?.requestsThisCall) ? { requestsThisCall: 0 } : {}),
     },
   };
+}
+
+function withSearchCacheHit(result, searchState, requestedQuery) {
+  const cloned = withCacheHit(result);
+  const budget = webSearchBudgetSnapshot(searchState, 0);
+  const resultCount = Number.isSafeInteger(cloned.outcome?.resultCount) ? cloned.outcome.resultCount : 0;
+  const nextAction = resultCount > 0
+    ? "fetch_existing_sources"
+    : budget.requestsRemaining > 0 ? "refine_query" : "use_available_evidence";
+  const action = nextAction === "fetch_existing_sources"
+    ? "Use WebFetch on the strongest returned URLs before searching again."
+    : nextAction === "refine_query"
+      ? "Refine the query only for a material evidence gap."
+      : "Do not retry WebSearch in this run; use available evidence and state the limitation.";
+  const control = `[Search control: requests=${budget.requestsUsed}/${budget.maxRequestsPerRun}; remaining=${budget.requestsRemaining}; ${action}]`;
+  const query = collapseWhitespace(requestedQuery).slice(0, 500);
+  const metadata = `[Search metadata: backend=${cloned.outcome?.backend || "unknown"}; attempted=none; actual_query=${JSON.stringify(query)}; fallback=none]`;
+  const textWithControl = typeof cloned.text === "string" && cloned.text.startsWith("[Search control:")
+    ? cloned.text.replace(/^\[Search control:[^\n]*\]/u, control)
+    : `${control}\n${cloned.text}`;
+  const text = textWithControl.includes("[Search metadata:")
+    ? textWithControl.replace(/^\[Search metadata:[^\n]*\]/mu, metadata)
+    : textWithControl.replace("[BEGIN UNTRUSTED WEB SEARCH RESULTS]", `[BEGIN UNTRUSTED WEB SEARCH RESULTS]\n${metadata}`);
+  const {
+    retryAfterMs: _retryAfterMs,
+    retryAt: _retryAt,
+    retryAtMs: _retryAtMs,
+    ...cachedOutcome
+  } = cloned.outcome || {};
+  return {
+    ...cloned,
+    text,
+    outcome: {
+      ...cachedOutcome,
+      ...budget,
+      bytes: Buffer.byteLength(text, "utf8"),
+      attemptedBackends: [],
+      actualQueries: [],
+      providerAttempts: [],
+      failureMetadata: [],
+      providerFailureCount: 0,
+      rateLimited: false,
+      cooldownBackends: [],
+      fallbackUsed: false,
+      retryInRun: budget.requestsRemaining > 0,
+      nextAction,
+    },
+  };
+}
+
+function collapseWhitespace(value) {
+  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
 }
 
 function closedResult() {

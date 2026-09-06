@@ -42,6 +42,7 @@ import { passthroughSandbox } from "../../agent/sandbox-seam.js";
 import { resolveRuntimeBrand } from "../../runtime-brand.js";
 import { createObserverHub } from "../observer.js";
 import { instrumentLiveInputAppliedEvents } from "./live-input-events.js";
+import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
 
 /**
  * @typedef {import('../types.js').RuntimeModelRef} RuntimeModelRef
@@ -98,6 +99,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
+  "webSearchState",
   "outputSchema", "liveInput", "toolEnvironment",
 ]);
 
@@ -143,6 +145,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
      * @returns {Promise<RuntimeResult>}
      */
     async run(systemPrompt, options = {}) {
+      options = {
+        ...options,
+        webSearchState: createWebSearchRunState(options.webSearchConfig, options.webSearchState),
+      };
       const liveInputHub = options.liveInput === undefined
         ? undefined
         : createObserverHub({

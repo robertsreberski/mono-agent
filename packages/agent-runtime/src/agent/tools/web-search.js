@@ -8,6 +8,14 @@ import { searchCodexSubscription } from "./codex-subscription-search.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { createCountingSemaphore } from "./shared/semaphore.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import {
+  claimWebSearchRequest,
+  createWebSearchRunState,
+  deferWebSearchProvider,
+  deferredWebSearchProvider,
+  MAX_WEB_SEARCH_REQUESTS_PER_RUN,
+  webSearchBudgetSnapshot,
+} from "./web-search-state.js";
 
 const SEARCH_TIMEOUT_MS = 15_000;
 const SEARCH_RESPONSE_MAX_BYTES = 2 * 1024 * 1024;
@@ -58,6 +66,8 @@ let keylessSemaphore = createCountingSemaphore(keylessThrottle.maxConcurrency);
 const backendCooldownUntil = new Map();
 /** @type {Map<string, number>} Backend -> epoch ms its next request may start. */
 const backendNextAvailableAt = new Map();
+/** @type {Map<string, ReturnType<typeof createCountingSemaphore>>} */
+const processProviderSemaphores = new Map();
 const TRACKING_PARAMETERS = new Set([
   "dclid",
   "fbclid",
@@ -89,7 +99,7 @@ export async function webSearchToolImpl(params, options = {}) {
  * internal outcome for the Pi bridge.
  *
  * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
+ * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
  */
 export async function performWebSearch(params, options = {}) {
   return await withWebDeadline(options.signal, 60_000, (signal) => performSearch(params, { ...options, signal }));
@@ -101,7 +111,7 @@ export async function performWebSearch(params, options = {}) {
  * internal outcome for the Pi bridge.
  *
  * @param {{query: string, limit?: number, alternate_queries?: string[], domains?: string[], exclude_domains?: string[], language?: string, time_range?: string}} params
- * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
+ * @param {{sandboxPolicy?: any, ctx?: any, signal?: AbortSignal, coordinator?: any, searchConfig?: any, searchState?: any, fetchImpl?: typeof fetch, codexSearch?: typeof searchCodexSubscription}} [options]
  */
 async function performSearch(
   {
@@ -118,25 +128,30 @@ async function performSearch(
     ctx,
     signal,
     searchConfig,
+    searchState: suppliedSearchState,
     coordinator,
     fetchImpl = globalThis.fetch,
     codexSearch = searchCodexSubscription,
   } = {},
 ) {
   const startedAt = Date.now();
+  const searchState = createWebSearchRunState(searchConfig, suppliedSearchState);
+  const callClaims = { requests: 0 };
   const normalizedQuery = typeof query === "string" ? query.trim() : "";
   if (!normalizedQuery) {
-    return failure("Error: WebSearch query must not be empty.", "invalid_query", startedAt);
+    return searchFailure("Error: WebSearch query must not be empty.", "invalid_query", startedAt, searchState, callClaims.requests);
   }
   const max = clampInteger(limit, 1, 10, 5);
   const explicitDomains = normalizeDomains(Array.isArray(domains) ? domains : []);
   const includeDomains = normalizeDomains([...explicitDomains, ...querySiteDomains(normalizedQuery)]);
   const excludeDomains = normalizeDomains(exclude_domains);
   const config = normalizeSearchConfig(searchConfig);
-  if ("error" in config) return failure(
+  if ("error" in config) return searchFailure(
     `Error: ${config.error}`,
     "code" in config ? config.code : "invalid_search_config",
     startedAt,
+    searchState,
+    callClaims.requests,
   );
 
   const resolvedCtx = ctx ?? readToolRuntime();
@@ -174,6 +189,8 @@ async function performSearch(
         signal: stageSignal,
         fetchImpl,
         codexSearch,
+        searchState,
+        callClaims,
       },
     );
   };
@@ -184,6 +201,9 @@ async function performSearch(
     // so a silent degradation to the fallback is still visible in the outcome.
     if (result.failures?.length) providerFailures.push(...result.failures);
     if (result.ok) {
+      if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
+        actualQueries.push(result.actualQuery.trim());
+      }
       const filtered = filterRelevantResults(
         filterByDomains(result.results, includeDomains, excludeDomains),
         normalizedQuery,
@@ -192,6 +212,7 @@ async function performSearch(
         anyProviderSucceeded = true;
         providersUsed.add(result.backend);
         rankedLists.push(filtered);
+        return true;
       } else if (result.results.length === 0) {
         anyProviderSucceeded = true;
       } else {
@@ -203,58 +224,61 @@ async function performSearch(
           relevance: true,
         });
       }
-      if (typeof result.actualQuery === "string" && result.actualQuery.trim()) {
-        actualQueries.push(result.actualQuery.trim());
-      }
     } else if (!result.failures?.length) {
       providerFailures.push(result);
     }
+    return false;
   };
 
-  const runStage = async (backend, candidates) => {
-    if (providerFailures.some((r) => r.code === "coordination_unavailable")) return [];
-    const run = async (stageSignal) => {
-      for (const candidate of candidates) {
-        if (stageSignal?.aborted) break;
-        const result = await runQuery(candidate, backend, stageSignal);
-        recordResult(result);
-        // Alternate wording cannot repair transport or quota failures.
-        if (!result.ok && !result.relevance) break;
-        const accepted = mergeRankedResults(rankedLists, max);
-        if (accepted.length > 0) return accepted;
-      }
-      return mergeRankedResults(rankedLists, max);
-    };
-    return backend === "searxng" && config.backend === "auto"
-      ? await withWebDeadline(signal, 3000, run) : await run(signal);
-  };
-
+  // A broad primary query walks the eligible provider chain before any
+  // alternate wording. Auto includes Ollama only when its block was explicitly
+  // configured; all named backend modes remain strict.
+  const eligibleBackends = config.backend === "auto"
+    ? [...(config.ollama ? ["ollama"] : []), ...(config.endpoint ? ["searxng"] : []), "codex", "keyless"]
+    : [config.backend];
+  const disabledForCall = new Set();
   let merged = [];
-  if (config.backend === "searxng" || (config.backend === "auto" && config.endpoint)) {
-    merged = await runStage("searxng", initialQueries);
-  }
-  if (config.backend === "ollama") {
-    merged = await runStage("ollama", initialQueries);
-  }
-  if (config.backend === "codex" || (config.backend === "auto" && merged.length === 0)) {
-    // Exactly one subscription turn per WebSearch call. Alternate queries still
-    // help local/keyless rank fusion but never multiply paid subscription work.
-    merged = await runStage("codex", [normalizedQuery]);
-  }
-  if (config.backend === "keyless" || (config.backend === "auto" && merged.length === 0)) {
-    merged = await runStage("keyless", initialQueries);
+  for (let queryIndex = 0; queryIndex < initialQueries.length && merged.length === 0; queryIndex += 1) {
+    const candidate = initialQueries[queryIndex];
+    for (const backend of eligibleBackends) {
+      if (signal?.aborted || disabledForCall.has(backend)) continue;
+      // Subscription search remains exactly one turn per WebSearch call.
+      if (backend === "codex" && queryIndex > 0) continue;
+      const run = (stageSignal) => runQuery(candidate, backend, stageSignal);
+      const result = backend === "searxng" && config.backend === "auto"
+        ? await withWebDeadline(signal, 3000, run)
+        : await run(signal);
+      const usable = recordResult(result);
+      if (usable) {
+        merged = mergeRankedResults(rankedLists, max);
+        break;
+      }
+      if (!result.ok && !result.relevance) disabledForCall.add(backend);
+      if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
+    }
+    if (providerFailures.some((entry) => ["coordination_unavailable", "search_budget_exhausted"].includes(entry.code))) break;
   }
   if (signal?.aborted) {
-    return failure("Error: WebSearch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", startedAt, {
+    return searchFailure("Error: WebSearch was aborted or exceeded its deadline.", signal.reason?.code === "deadline_exceeded" ? "deadline_exceeded" : "aborted", startedAt, searchState, callClaims.requests, {
       attempts,
       retryable: false,
     });
   }
 
   if (providerFailures.some((r) => r.code === "coordination_unavailable")) {
-    return failure("Error: Web request coordination is unavailable; no uncoordinated fallback was attempted.", "coordination_unavailable", startedAt, { attempts });
+    return searchFailure("Error: Web request coordination is unavailable; no uncoordinated fallback was attempted.", "coordination_unavailable", startedAt, searchState, callClaims.requests, { attempts });
   }
-  if (!anyProviderSucceeded) {
+  if (providerFailures.some((entry) => entry.code === "search_budget_exhausted")) {
+    return searchFailure("Error: WebSearch request budget exhausted for this run.", "search_budget_exhausted", startedAt, searchState, callClaims.requests, {
+      attempts,
+      backend: config.backend,
+      attemptedBackends: [...attemptedBackends],
+      providerAttempts: providerAttemptMetadata(providerFailures),
+      retryInRun: false,
+      nextAction: "use_available_evidence",
+    });
+  }
+  if (!anyProviderSucceeded || (merged.length === 0 && providerFailures.some((entry) => !entry.relevance))) {
     // Four query variants against two backends produce the same handful of
     // messages over and over; dedupe so the reason stays readable.
     const reason = [...new Set(providerFailures.map((entry) => entry.message).filter(Boolean))].join("; ")
@@ -265,21 +289,27 @@ async function performSearch(
     const strictProviderCode = config.backend !== "auto"
       ? providerFailures.find((entry) => typeof entry.code === "string")?.code
       : undefined;
-    return failure(networkDenied
+    const retryAfterMs = shortestRetry(providerFailures);
+    const retryAt = earliestRetryAt(providerFailures);
+    return searchFailure(networkDenied
       ? "Error: Network access denied by sandbox policy."
       : `Error: WebSearch failed: ${reason}`,
-    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (strictProviderCode || "backend_unavailable")), startedAt, {
+    networkDenied ? "network_denied" : (throttled ? "rate_limited" : (strictProviderCode || "backend_unavailable")), startedAt, searchState, callClaims.requests, {
       attempts,
       backend: config.backend,
       retryable: providerFailures.some((entry) => entry.retryable),
       rateLimited: throttled,
-      cooldownBackends: [...backendCooldownUntil.keys()],
+      cooldownBackends: cooldownBackendNames(searchState),
       attemptedBackends: [...attemptedBackends],
       failureMetadata: sanitizeFailureMetadata(providerFailures),
       queueWaitMs, backendDurationMs,
       cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
       quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
-      retryAfterMs: shortestRetry(providerFailures),
+      retryAfterMs,
+      ...(retryAt === undefined ? {} : { retryAt: new Date(retryAt).toISOString() }),
+      retryInRun: false,
+      nextAction: "use_available_evidence",
+      providerAttempts: providerAttemptMetadata(providerFailures),
     });
   }
 
@@ -292,7 +322,11 @@ async function performSearch(
         const snippet = result.snippet ? `\n   ${collapseWhitespace(result.snippet)}` : "";
         return `${index + 1}. [${escapeMarkdownLabel(result.title || result.url)}](${result.url})${snippet}`;
       }).join("\n\n");
+  const nextAction = merged.length > 0
+    ? "fetch_existing_sources"
+    : searchState.requestsUsed < searchState.maxRequests ? "refine_query" : "use_available_evidence";
   const text = [
+    searchControlLine(searchState, callClaims.requests, providerFailures, nextAction),
     "[BEGIN UNTRUSTED WEB SEARCH RESULTS]",
     searchMetadataLine({
       backend,
@@ -323,10 +357,15 @@ async function performSearch(
       filterSupport: { language: language ? (backend === "searxng" ? "provider" : "advisory") : "not_requested", timeRange: time_range ? (["codex", "ollama", "startpage"].includes(backend) ? "advisory" : "provider") : "not_requested" },
       providerFailureCount: providerFailures.length,
       rateLimited: providerFailures.some((entry) => entry.rateLimited || entry.cooldown),
-      cooldownBackends: [...backendCooldownUntil.keys()],
+      cooldownBackends: cooldownBackendNames(searchState),
       attemptedBackends: [...attemptedBackends],
       actualQueries: uniqueStrings(actualQueries.length > 0 ? actualQueries : [normalizedQuery], 4),
       failureMetadata: sanitizeFailureMetadata(providerFailures),
+      ...webSearchBudgetSnapshot(searchState, callClaims.requests),
+      fallbackUsed: attemptedBackends.size > 1,
+      retryInRun: searchState.requestsUsed < searchState.maxRequests,
+      nextAction,
+      providerAttempts: providerAttemptMetadata(providerFailures),
     },
     error: false,
   };
@@ -350,14 +389,20 @@ async function searchOneQuery(query, options) {
   let emptySuccess = null;
   if (options.signal?.aborted) return abortedSearch(config.backend, failures);
   if (config.backend === "searxng") {
-    const result = await guardedSearch("searxng", options.config.endpoint, options, () => searchSearxng(query, options));
-    return { ...result, failures };
+    const deferred = deferredResult(options.searchState, "searxng");
+    if (deferred) return { ...deferred, failures };
+    const result = await searchWithRequestCount(options.callClaims, () => guardedSearch("searxng", options.config.endpoint, options, () => searchSearxng(query, options)));
+    return { ...rememberProviderDeferral(result, options.searchState), failures };
   }
   if (config.backend === "ollama") {
-    const result = await guardedSearch("ollama", config.ollama.baseUrl, options, () => searchOllama(query, options));
-    return { ...result, failures };
+    const deferred = deferredResult(options.searchState, "ollama");
+    if (deferred) return { ...deferred, failures };
+    const result = await searchWithRequestCount(options.callClaims, () => guardedSearch("ollama", config.ollama.baseUrl, options, () => searchOllama(query, options)));
+    return { ...rememberProviderDeferral(result, options.searchState), failures };
   }
   if (config.backend === "codex") {
+    const deferred = deferredResult(options.searchState, "codex");
+    if (deferred) return { ...deferred, failures };
     if (!options.sandbox.networkAllowsUrl(options.policy, "https://chatgpt.com")) {
       return {
         ok: false,
@@ -367,15 +412,21 @@ async function searchOneQuery(query, options) {
         failures,
       };
     }
-    const result = await guardedSearch("codex", "codex", options, () => options.codexSearch(query, {
+    const result = await searchWithRequestCount(options.callClaims, () => guardedSearch("codex", "codex", options, () => options.codexSearch(query, {
       model: config.codex.model, signal: options.signal, coordinator: options.coordinator,
       language: options.language, timeRange: options.timeRange,
-    }));
-    return { ...result, failures };
+      claimRequest: () => claimWebSearchRequest(options.searchState, "codex", options.callClaims),
+    })));
+    return { ...rememberProviderDeferral(result, options.searchState), failures };
   }
   if (config.backend === "keyless") {
     for (const backend of KEYLESS_BACKENDS) {
       if (options.signal?.aborted) return abortedSearch(backend, failures);
+      const runDeferred = deferredResult(options.searchState, backend);
+      if (runDeferred) {
+        failures.push(runDeferred);
+        continue;
+      }
       if (backendInCooldown(backend)) {
         failures.push({
           ok: false,
@@ -383,11 +434,13 @@ async function searchOneQuery(query, options) {
           message: `${backend} skipped: cooling down after rate limiting.`,
           retryable: true,
           cooldown: true,
-          retryAfterMs: Math.max(0, (backendCooldownUntil.get(backend) ?? Date.now()) - Date.now()),
+          retryAfterMs: processCooldownRemaining(backend),
+          retryAtMs: Date.now() + processCooldownRemaining(backend),
         });
         continue;
       }
-      const result = await guardedSearch(backend, backend, options, () => KEYLESS_RUNNERS[backend](query, options));
+      const result = await searchWithRequestCount(options.callClaims, () => guardedSearch(backend, backend, options, () => KEYLESS_RUNNERS[backend](query, options)));
+      rememberProviderDeferral(result, options.searchState);
       if (result.ok) {
         if (result.results.length > 0) {
           const usable = filterRelevantResults(filterByDomains(result.results, options.includeDomains, options.excludeDomains), options.relevanceQuery);
@@ -415,6 +468,39 @@ async function searchOneQuery(query, options) {
   };
 }
 
+function deferredResult(searchState, backend) {
+  const deferred = deferredWebSearchProvider(searchState, backend);
+  if (!deferred) return null;
+  const retryAfterMs = deferred.retryAtMs === undefined ? undefined : Math.max(0, deferred.retryAtMs - Date.now());
+  return {
+    ok: false,
+    backend,
+    code: "rate_limited",
+    message: `${backend} is deferred for the remainder of this run.`,
+    retryable: true,
+    retryInRun: false,
+    cooldown: true,
+    rateLimited: true,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs, retryAtMs: deferred.retryAtMs }),
+  };
+}
+
+function rememberProviderDeferral(result, searchState) {
+  if (result?.rateLimited || result?.cooldown) {
+    const retryAtMs = Number.isFinite(result.retryAtMs)
+      ? result.retryAtMs
+      : Number.isFinite(result.retryAfterMs) ? Date.now() + result.retryAfterMs : undefined;
+    deferWebSearchProvider(searchState, result.backend, retryAtMs);
+  }
+  return result;
+}
+
+async function searchWithRequestCount(callClaims, execute) {
+  const before = callClaims.requests;
+  const result = await execute();
+  return { ...result, requestsConsumed: callClaims.requests - before };
+}
+
 function abortedSearch(backend, failures = []) {
   return {
     ok: false,
@@ -425,14 +511,23 @@ function abortedSearch(backend, failures = []) {
   };
 }
 
-function backendInCooldown(backend) {
-  const until = backendCooldownUntil.get(backend);
+function backendInCooldown(backend, key = backend) {
+  const cooldownKey = processCooldownKey(backend, key);
+  const until = backendCooldownUntil.get(cooldownKey);
   if (until === undefined) return false;
   if (Date.now() >= until) {
-    backendCooldownUntil.delete(backend);
+    backendCooldownUntil.delete(cooldownKey);
     return false;
   }
   return true;
+}
+
+function processCooldownKey(backend, key) {
+  return `${backend}:${String(key)}`;
+}
+
+function processCooldownRemaining(backend, key = backend) {
+  return Math.max(0, (backendCooldownUntil.get(processCooldownKey(backend, key)) ?? Date.now()) - Date.now());
 }
 
 /**
@@ -481,6 +576,7 @@ export function __resetWebSearchThrottleForTests(overrides = {}) {
   keylessSemaphore = createCountingSemaphore(keylessThrottle.maxConcurrency);
   backendCooldownUntil.clear();
   backendNextAvailableAt.clear();
+  processProviderSemaphores.clear();
 }
 
 async function searchSearxng(query, options) {
@@ -500,6 +596,7 @@ async function searchSearxng(query, options) {
     body.set("time_range", options.timeRange);
   }
   try {
+    claimWebSearchRequest(options.searchState, "searxng", options.callClaims);
     const response = await options.fetchImpl(url, {
       method: "POST",
       headers: {
@@ -574,6 +671,7 @@ async function searchOllama(query, options) {
       return { ok: false, backend: "ollama", message: "Network access denied by sandbox policy.", retryable: false };
     }
     try {
+      claimWebSearchRequest(options.searchState, "ollama", options.callClaims);
       const response = await options.fetchImpl(url, {
         method: "POST",
         headers: {
@@ -653,7 +751,7 @@ async function keylessHtmlSearch(spec, options) {
     // so by the time this one is admitted a sibling may already have been
     // blocked. Without this second look the very first block still costs a full
     // round of requests against a backend we know is refusing them.
-    if (backendInCooldown(spec.backend)) {
+    if (backendInCooldown(spec.backend, spec.backend)) {
       return {
         ok: false,
         backend: spec.backend,
@@ -662,6 +760,7 @@ async function keylessHtmlSearch(spec, options) {
         cooldown: true,
       };
     }
+    claimWebSearchRequest(options.searchState, spec.backend, options.callClaims);
     const response = await options.fetchImpl(spec.url, {
       // "manual", not "error": these engines answer a throttled query with a
       // redirect to a captcha page, and "error" collapses that into an opaque
@@ -755,12 +854,15 @@ function searchStartpage(query, options) {
 // so a queued sibling would otherwise be admitted and re-check the cooldown
 // while it was still closed, and every variant in flight would hit the wire.
 function rateLimited(spec, detail, response) {
-  backendCooldownUntil.set(spec.backend, Date.now() + keylessThrottle.cooldownMs);
+  const retryAfterMs = parseRetryAfter(response) ?? keylessThrottle.cooldownMs;
+  const retryAtMs = Date.now() + retryAfterMs;
+  backendCooldownUntil.set(processCooldownKey(spec.backend, spec.backend), retryAtMs);
   return {
     ok: false,
     backend: spec.backend,
     message: `${spec.label} rate-limited (${detail})`,
-    retryAfterMs: parseRetryAfter(response),
+    retryAfterMs,
+    retryAtMs,
     retryable: true,
     rateLimited: true,
   };
@@ -894,6 +996,10 @@ function normalizeSearchConfig(input) {
   if (!["auto", "searxng", "ollama", "codex", "keyless"].includes(backend)) {
     return { error: "Web search backend must be auto, searxng, ollama, codex, or keyless." };
   }
+  const maxRequestsPerRun = input?.maxRequestsPerRun ?? 4;
+  if (!Number.isSafeInteger(maxRequestsPerRun) || maxRequestsPerRun < 1 || maxRequestsPerRun > MAX_WEB_SEARCH_REQUESTS_PER_RUN) {
+    return { error: `Web search maxRequestsPerRun must be an integer from 1 to ${MAX_WEB_SEARCH_REQUESTS_PER_RUN}.` };
+  }
   const legacyEndpoint = input?.endpoint;
   const nestedEndpoint = input?.searxng?.endpoint;
   if (legacyEndpoint && nestedEndpoint && String(legacyEndpoint).trim() !== String(nestedEndpoint).trim()) {
@@ -930,7 +1036,7 @@ function normalizeSearchConfig(input) {
   if (model.length > 160 || /[\u0000-\u001f\u007f]/u.test(model)) {
     return { error: "Codex web search model must be a valid model id." };
   }
-  return { backend, endpoint, ...(ollama.value === undefined ? {} : { ollama: ollama.value }), codex: { model } };
+  return { backend, maxRequestsPerRun, endpoint, ...(ollama.value === undefined ? {} : { ollama: ollama.value }), codex: { model } };
 }
 
 function normalizeOllamaSearchConfig(input, backend) {
@@ -1065,7 +1171,7 @@ function sanitizeFailureMetadata(failures) {
   const metadata = [];
   for (const failureEntry of failures) {
     const backend = collapseWhitespace(failureEntry?.backend).slice(0, 40) || "unknown";
-    const code = ["quota_reserved", "quota_unavailable", "coordination_unavailable"].includes(failureEntry?.code) ? failureEntry.code : failureEntry?.relevance
+    const code = ["quota_reserved", "quota_unavailable", "coordination_unavailable", "search_budget_exhausted", "auth_failed", "invalid_response", "timeout", "provider_unavailable", "access_challenge"].includes(failureEntry?.code) ? failureEntry.code : failureEntry?.relevance
       ? "no_relevant_results"
       : failureEntry?.rateLimited ? "rate_limited"
         : failureEntry?.cooldown ? "cooldown"
@@ -1079,6 +1185,55 @@ function sanitizeFailureMetadata(failures) {
     if (metadata.length >= 12) break;
   }
   return metadata;
+}
+
+function providerAttemptMetadata(failures) {
+  return sanitizeFailureMetadata(failures).slice(0, 12).map((entry) => {
+    const source = failures.find((failureEntry) => collapseWhitespace(failureEntry?.backend).slice(0, 40) === entry.backend
+      && sanitizeFailureMetadata([failureEntry])[0]?.code === entry.code);
+    const retryAtMs = Number.isFinite(source?.retryAtMs)
+      ? source.retryAtMs
+      : Number.isFinite(source?.retryAfterMs) ? Date.now() + source.retryAfterMs : undefined;
+    return {
+      backend: entry.backend,
+      code: entry.code,
+      disposition: source?.cooldown || source?.rateLimited ? "deferred_for_run" : "advanced",
+      requests: Number.isSafeInteger(source?.requestsConsumed)
+        ? source.requestsConsumed
+        : source?.cooldown || source?.quotaSkipped ? 0 : 1,
+      ...(Number.isFinite(source?.retryAfterMs) ? { retryAfterMs: source.retryAfterMs } : {}),
+      ...(retryAtMs === undefined ? {} : { retryAt: new Date(retryAtMs).toISOString() }),
+    };
+  });
+}
+
+function earliestRetryAt(failures) {
+  const values = failures.flatMap((entry) => {
+    if (Number.isFinite(entry.retryAtMs)) return [entry.retryAtMs];
+    if (Number.isFinite(entry.retryAfterMs)) return [Date.now() + entry.retryAfterMs];
+    return [];
+  }).filter((value) => value >= 0 && value <= 8_640_000_000_000_000);
+  return values.length ? Math.min(...values) : undefined;
+}
+
+function cooldownBackendNames(searchState) {
+  const processNames = [...backendCooldownUntil.keys()].map((key) => key.split(":", 1)[0]);
+  const runNames = [...(searchState?.deferredProviders?.keys?.() ?? [])];
+  return [...new Set([...processNames, ...runNames])];
+}
+
+function searchControlLine(searchState, requestsThisCall, providerFailures, nextAction) {
+  const budget = webSearchBudgetSnapshot(searchState, requestsThisCall);
+  const deferred = providerFailures.filter((entry) => entry.rateLimited || entry.cooldown).map((entry) => entry.backend);
+  const deferText = deferred.length > 0
+    ? ` ${[...new Set(deferred)].join(", ")} deferred for the remainder of this run.`
+    : "";
+  const action = nextAction === "fetch_existing_sources"
+    ? "Use WebFetch on the strongest returned URLs before searching again."
+    : nextAction === "refine_query"
+      ? "Refine the query only for a material evidence gap."
+      : "Do not retry WebSearch in this run; use available evidence and state the limitation.";
+  return `[Search control: requests=${budget.requestsUsed}/${budget.maxRequestsPerRun}; remaining=${budget.requestsRemaining};${deferText} ${action}]`;
 }
 
 function searchMetadataLine({ backend, attemptedBackends, query, providerFailures }) {
@@ -1156,9 +1311,10 @@ const RETRYABLE_FETCH_CODES = new Set([
 
 function fetchFailure(backend, error, label = backend) {
   const name = error?.name;
-  const retryable = name === "AbortError"
+  const code = error?.code ?? error?.cause?.code;
+  const retryable = code !== "search_budget_exhausted" && (name === "AbortError"
     || name === "TimeoutError"
-    || RETRYABLE_FETCH_CODES.has(error?.code ?? error?.cause?.code);
+    || RETRYABLE_FETCH_CODES.has(code));
   const message = error?.message || String(error);
   const cause = error?.cause?.message;
   const detail = cause && cause !== message ? `${message} (${cause})` : message;
@@ -1167,6 +1323,7 @@ function fetchFailure(backend, error, label = backend) {
     backend,
     message: `${label} request failed: ${detail}`,
     retryable,
+    ...(code === undefined ? {} : { code }),
   };
 }
 
@@ -1177,6 +1334,7 @@ function ollamaFetchFailure(error, signal) {
     : undefined;
   const suppliedCode = error?.code ?? error?.cause?.code;
   const code = abortCode
+    || (suppliedCode === "search_budget_exhausted" ? "search_budget_exhausted" : undefined)
     || (suppliedCode === "deadline_exceeded" ? "deadline_exceeded" : undefined)
     || (suppliedCode === "response_too_large" ? "response_too_large" : undefined)
     || (suppliedCode === "invalid_response" ? "invalid_response" : undefined)
@@ -1186,7 +1344,7 @@ function ollamaFetchFailure(error, signal) {
   return {
     ...base,
     code,
-    retryable: !["aborted", "response_too_large", "invalid_response"].includes(code),
+    retryable: !["aborted", "response_too_large", "invalid_response", "search_budget_exhausted"].includes(code),
   };
 }
 
@@ -1209,6 +1367,27 @@ function failure(text, code, startedAt, extra = {}) {
   };
 }
 
+function searchFailure(text, code, startedAt, searchState, requestsThisCall, extra = {}) {
+  const budget = webSearchBudgetSnapshot(searchState, requestsThisCall);
+  const retryAfterMs = extra.retryAfterMs;
+  const retryAt = extra.retryAt;
+  const guidance = code === "rate_limited"
+    ? `Provider retry${Number.isFinite(retryAfterMs) ? ` after ${Math.ceil(retryAfterMs / 1000)} seconds` : " time is unknown"}${retryAt ? `, at ${retryAt}` : ""}. Do not sleep or retry WebSearch to wait out this cooldown in this run. Fetch already returned URLs, or answer from available evidence and state the limitation.`
+    : code === "search_budget_exhausted"
+      ? "Do not retry WebSearch in this run. Fetch already returned URLs, or answer from available evidence and state the limitation."
+      : "";
+  const completeText = guidance
+    ? `${text}\n${guidance}\nSearch requests used: ${budget.requestsUsed}/${budget.maxRequestsPerRun}.`
+    : text;
+  return failure(completeText, code, startedAt, {
+    ...extra,
+    ...budget,
+    retryInRun: extra.retryInRun ?? false,
+    nextAction: extra.nextAction ?? "use_available_evidence",
+    bytes: Buffer.byteLength(completeText, "utf8"),
+  });
+}
+
 function clampInteger(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -1216,15 +1395,72 @@ function clampInteger(value, min, max, fallback) {
 }
 
 async function guardedSearch(kind, key, options, execute) {
-  try { return await coordinatedWebRequest(options.coordinator, kind, key, options.signal, execute); }
+  try {
+    if (options.coordinator || !["ollama", "searxng"].includes(kind)) {
+      return await coordinatedWebRequest(options.coordinator, kind, key, options.signal, execute);
+    }
+    const cooldown = processCooldownRemaining(kind, key);
+    if (cooldown > 0) return processCooldownResult(kind, cooldown);
+    const scopedKey = processCooldownKey(kind, key);
+    let semaphore = processProviderSemaphores.get(scopedKey);
+    if (!semaphore) {
+      semaphore = createCountingSemaphore(1);
+      processProviderSemaphores.set(scopedKey, semaphore);
+    }
+    const release = await semaphore.acquire(options.signal);
+    try {
+      const queuedCooldown = processCooldownRemaining(kind, key);
+      if (queuedCooldown > 0) return processCooldownResult(kind, queuedCooldown);
+      const result = await execute();
+      if (result?.rateLimited) {
+        const retryAfterMs = result.retryAfterMs ?? keylessThrottle.cooldownMs;
+        const retryAtMs = Date.now() + retryAfterMs;
+        backendCooldownUntil.set(scopedKey, retryAtMs);
+        return { ...result, retryAfterMs, retryAtMs };
+      }
+      return result;
+    } finally {
+      release();
+    }
+  }
   catch (error) { return webRequestFailure(error, kind, options.signal); }
+}
+
+function processCooldownResult(backend, retryAfterMs) {
+  return {
+    ok: false,
+    backend,
+    code: "rate_limited",
+    message: `${backend} is cooling down.`,
+    retryable: true,
+    cooldown: true,
+    rateLimited: true,
+    retryAfterMs,
+    retryAtMs: Date.now() + retryAfterMs,
+  };
 }
 
 function parseRetryAfter(response) {
   const raw = response?.headers?.get("retry-after");
   if (!raw) return undefined;
-  const ms = Number.isFinite(Number(raw)) ? Number(raw) * 1000 : Date.parse(raw) - Date.now();
-  return Number.isFinite(ms) ? Math.max(0, ms) : undefined;
+  const now = Date.now();
+  const value = raw.trim();
+  let ms;
+  if (/^\d+$/u.test(value)) {
+    const seconds = Number(value);
+    if (!Number.isSafeInteger(seconds)) return undefined;
+    ms = seconds * 1000;
+  } else {
+    // Retry-After allows only an integer delta-seconds or an HTTP date. Do not
+    // let Date.parse reinterpret malformed numeric values such as "1.5" as a
+    // calendar date.
+    if (/^[+-]?(?:\d+\.?\d*|\.\d+)$/u.test(value)) return undefined;
+    const parsed = Date.parse(value);
+    if (!Number.isFinite(parsed)) return undefined;
+    ms = parsed - now;
+  }
+  if (!Number.isFinite(ms)) return undefined;
+  return Math.min(8_640_000_000_000_000 - now, Math.max(1000, ms));
 }
 
 function shortestRetry(failures) {

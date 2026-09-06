@@ -60,7 +60,7 @@ export async function inspectCodexSubscriptionSearch(options = {}) {
  * turns or cross-wire app-server notifications between requests.
  *
  * @param {string} query
- * @param {{model?: string, signal?: AbortSignal, clientFactory?: typeof createCodexAppServerClient, coordinator?: any, language?: string, timeRange?: string}} [options]
+ * @param {{model?: string, signal?: AbortSignal, clientFactory?: typeof createCodexAppServerClient, coordinator?: any, language?: string, timeRange?: string, claimRequest?: () => void}} [options]
  */
 export function searchCodexSubscription(query, options = {}) {
   let executing = false;
@@ -322,6 +322,7 @@ async function runSearch(current, query, model, signal, preferences = {}) {
     }, { timeoutMs: REQUEST_TIMEOUT_MS }, signal);
     state.threadId = thread?.thread?.id || "";
     if (!state.threadId) throw new Error("Codex did not return a search thread id.");
+    preferences.claimRequest?.();
     const turn = await searchRequest(current.client, "turn/start", {
       threadId: state.threadId,
       input: [{ type: "text", text: String(query), text_elements: [] }],

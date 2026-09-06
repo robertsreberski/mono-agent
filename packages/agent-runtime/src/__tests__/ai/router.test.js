@@ -83,6 +83,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(result.failoverHistory).toHaveLength(1);
     expect(result.failoverHistory[0].model.model).toBe("claude-opus-4-7");
     expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[0][1].webSearchState).toBe(executeMock.mock.calls[1][1].webSearchState);
     // Payloads, not just types: every renderer reads these fields as strings, so
     // an object here is silently dropped downstream rather than failing loudly.
     const failoverEvents = events.filter((e) => e.type?.startsWith("provider_failover"));

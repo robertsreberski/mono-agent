@@ -276,8 +276,11 @@ See [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions pe
 
 `WebSearch` supports explicit Ollama Web Search, a loopback SearXNG companion, structured
 ChatGPT-subscription Codex app-server search, and deterministic keyless
-fallbacks. Ollama and SearXNG strict modes never fall back; `auto` retains
-SearXNG → Codex → keyless and never silently selects Ollama. `WebFetch` performs
+fallbacks. Named modes never fall back; `auto` tries explicitly configured
+Ollama → configured SearXNG → Codex → keyless. It enforces a configurable hard
+budget of four actual provider requests per logical run by default, advances
+immediately past a provider cooldown, and tells the model to fetch returned
+URLs instead of sleeping or retrying. `WebFetch` performs
 local Defuddle/Readability/Turndown extraction for HTML,
 plus JSON, feed, PDF, and text handling. Optional `agent-browser` rendering is
 off by default and is a config-level capability ceiling.

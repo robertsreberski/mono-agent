@@ -80,7 +80,7 @@ describe("loadMonoAgentConfig", () => {
       mcpCallMaxTotalTimeoutMs: 2700000,
       web: {
         coordination: "process",
-        search: { backend: "auto", codex: { model: "gpt-5.6-luna" } },
+        search: { backend: "auto", maxRequestsPerRun: 4, codex: { model: "gpt-5.6-luna" } },
         fetch: { render: "never", browserCommand: "agent-browser" },
       },
     });
@@ -106,7 +106,7 @@ describe("loadMonoAgentConfig", () => {
     expect(config.artifacts.memoryRetention).toEqual({ maxAgeDays: 7, maxCount: 5000, dryRun: false });
     expect(config.tools.web).toEqual({
       coordination: "process",
-      search: { backend: "auto", codex: { model: "gpt-5.6-luna" } },
+      search: { backend: "auto", maxRequestsPerRun: 4, codex: { model: "gpt-5.6-luna" } },
       fetch: { render: "never", browserCommand: "agent-browser" },
     });
   });
@@ -118,6 +118,7 @@ describe("loadMonoAgentConfig", () => {
         ...baseEnv,
         MONO_AGENT_WEB_COORDINATION: "host",
         MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
+        MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN: "7",
         MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088/",
         MONO_AGENT_WEB_SEARCH_CODEX_MODEL: "gpt-5.6-sol",
         MONO_AGENT_WEB_FETCH_RENDER: "auto",
@@ -129,6 +130,7 @@ describe("loadMonoAgentConfig", () => {
       coordination: "host",
       search: {
         backend: "searxng",
+        maxRequestsPerRun: 7,
         searxng: { endpoint: "http://127.0.0.1:8088" },
         codex: { model: "gpt-5.6-sol" },
       },
@@ -229,6 +231,7 @@ describe("loadMonoAgentConfig", () => {
     });
     expect(config.tools.web?.search).toEqual({
       backend: "codex",
+      maxRequestsPerRun: 4,
       codex: { model: "gpt-5.6-luna" },
     });
     expect(() => loadMonoAgentConfig({
@@ -238,6 +241,19 @@ describe("loadMonoAgentConfig", () => {
         MONO_AGENT_WEB_SEARCH_CODEX_MODEL: `gpt${"x".repeat(200)}`,
       },
     })).toThrow(/MONO_AGENT_WEB_SEARCH_CODEX_MODEL/u);
+  });
+
+  it("bounds the per-run WebSearch provider-request budget", () => {
+    for (const invalid of ["0", "21", "1.5", "nope"]) {
+      expect(() => loadMonoAgentConfig({
+        cwd: "/repo",
+        env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN: invalid },
+      })).toThrow(/MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN/u);
+    }
+    expect(loadMonoAgentConfig({
+      cwd: "/repo",
+      env: { ...baseEnv, MONO_AGENT_WEB_SEARCH_MAX_REQUESTS_PER_RUN: "20" },
+    }).tools.web?.search.maxRequestsPerRun).toBe(20);
   });
 
   it("loads every runtime compaction override from env", () => {
