@@ -302,9 +302,17 @@ const readSnapshotRow = (value: unknown): PersistedSnapshot | undefined => {
     return undefined;
   }
   if (typeof value.console.hostName !== "string" || !isRecord(value.push)) return undefined;
+  if (value.console.displayName !== undefined && typeof value.console.displayName !== "string") {
+    return undefined;
+  }
   return {
     agents: value.agents as readonly AgentSummary[],
-    console: value.console as unknown as ConsoleIdentity,
+    console: {
+      ...(value.console as unknown as ConsoleIdentity),
+      // Snapshots written before displayName was added used hostName for every
+      // visible label. Preserve that cold/offline startup behavior on upgrade.
+      displayName: value.console.displayName ?? value.console.hostName,
+    },
     limits: value.limits as unknown as UploadLimits,
     push: value.push as unknown as PushBootstrap,
   };
