@@ -12,6 +12,7 @@ import {
   TOOL_HISTORY_DATABASE,
   TOOL_HISTORY_DIRECTORY,
   type ToolHistoryRunBinding,
+  type ToolHistoryWriterOptions,
 } from "@mono-agent/agent-harness";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -24,6 +25,30 @@ import {
 } from "../session-history.js";
 
 const tempDirs: string[] = [];
+const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;
+
+// Match the harness storage-test ceiling: these tests assert durable history
+// semantics, not the production 250 ms host-wait timing contract.
+async function openStorageTestWriter(options: ToolHistoryWriterOptions): Promise<ToolHistoryWriter> {
+  return await ToolHistoryWriter.open({
+    ...options,
+    persistenceCeilingMs: STORAGE_TEST_PERSISTENCE_CEILING_MS,
+  });
+}
+
+type ToolHistoryPersistence = Awaited<ReturnType<ToolHistoryWriter["persist"]>>;
+
+function persistedRecordId(
+  receipt: ToolHistoryPersistence,
+  phase: "invocation" | "result",
+  toolCallId: string,
+): string {
+  if (receipt.recordId !== undefined) return receipt.recordId;
+  throw new Error(
+    `Tool history ${phase} was not persisted for toolCallId=${JSON.stringify(toolCallId)} `
+    + `(persistence=${receipt.persistence}, errorCode=${receipt.errorCode ?? "undefined"}).`,
+  );
+}
 
 async function tempRoot(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "mono-agent-session-history-"));
@@ -69,8 +94,10 @@ async function writeCall(
     ...(state === "success" ? {} : { failureKind: "runtime_error" as const }),
     content: options.content ?? `result-${toolCallId}`,
   });
-  if (invocation.recordId === undefined || result.recordId === undefined) throw new Error("Tool history record was not persisted.");
-  return { invocationId: invocation.recordId, resultId: result.recordId };
+  return {
+    invocationId: persistedRecordId(invocation, "invocation", toolCallId),
+    resultId: persistedRecordId(result, "result", toolCallId),
+  };
 }
 
 interface OpenClient {
@@ -147,7 +174,7 @@ describe("isSessionHistoryToolAllowed", () => {
 describe("SessionHistory request handler", () => {
   it("keeps ordinary tool context inspectable while host paths stay opaque in search previews and get chunks", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const run = binding("path-run");
     const sourcePath = "/Users/example/work/repo/src/index.ts";
     const outputPath = "/Users/example/work/repo/src/generated/output.ts";
@@ -175,7 +202,10 @@ describe("SessionHistory request handler", () => {
           state: "success",
           content: call.content,
         });
-        recordIds.push(invocation.recordId!, result.recordId!);
+        recordIds.push(
+          persistedRecordId(invocation, "invocation", call.id),
+          persistedRecordId(result, "result", call.id),
+        );
       }
     } finally {
       await writer.close();
@@ -221,7 +251,7 @@ describe("SessionHistory request handler", () => {
       [linuxPath, ["linux-value", "needle"]],
       [privatePath, "private-path-value"],
     ]);
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const invocation = await writer.persist(binding("path-keyed-run"), {
       phase: "invocation",
       toolCallId: "path-keyed-call",
@@ -235,7 +265,7 @@ describe("SessionHistory request handler", () => {
       content: "complete-value",
     });
     await writer.close();
-    if (invocation.recordId === undefined) throw new Error("Path-keyed invocation was not persisted.");
+    const invocationRecordId = persistedRecordId(invocation, "invocation", "path-keyed-call");
 
     const requestBinding = {
       reader: new ToolHistoryReader(root),
@@ -253,7 +283,7 @@ describe("SessionHistory request handler", () => {
     const pages: unknown[] = [];
     for (let pageCount = 0; pageCount < 100; pageCount += 1) {
       const result = handleSessionHistoryRequest(requestBinding, cursor === undefined
-        ? { action: "get", recordId: invocation.recordId, chunkBytes: 48 }
+        ? { action: "get", recordId: invocationRecordId, chunkBytes: 48 }
         : { action: "get", cursor, chunkBytes: 48 });
       pages.push(result);
       const page = body<{
@@ -291,7 +321,7 @@ describe("SessionHistory request handler", () => {
 
   it("enforces current-run, logical-session, isolated, filter, and cursor authorization without a transport", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const first = await writeCall(writer, binding("prior-a"), "prior-a", { toolName: "Read" });
     const second = await writeCall(writer, binding("prior-b"), "prior-b", { toolName: "Bash", state: "error" });
     const reusedPrior = await writeCall(
@@ -366,7 +396,7 @@ describe("SessionHistory request handler", () => {
 
   it("guides exact isolated search results to distinct invocation and paged result records", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const resultEnd = "focused-large-result-end";
     const stored = await writeCall(
       writer,
@@ -499,7 +529,7 @@ describe("SessionHistory request handler", () => {
 
   it("returns bounded get chunks, rejects negative continuation offsets, and hides nested history results", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const large = await writeCall(writer, binding("large-run"), "large", { content: "x".repeat(12_000) });
     const nested = await writeCall(writer, binding("nested-run"), "nested", {
       toolName: `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`,
@@ -536,7 +566,7 @@ describe("SessionHistory request handler", () => {
 
   it("advances every minimum-size get cursor across accented and four-byte Unicode scalars", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const cases = [
       { runId: "accent-run", toolCallId: "accent", content: "café", scalarBytes: 2 },
       { runId: "emoji-run", toolCallId: "emoji", content: "😀", scalarBytes: 4 },
@@ -619,7 +649,7 @@ describe("SessionHistory MCP tool", () => {
       input_tokens: 37,
       marker: "useful-mcp-context-marker",
     };
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const stored = await writeCall(writer, binding("compound-credential-mcp-run"), "compound-credential-mcp", {
       toolName: "Inspect",
       content: "writer-safe-placeholder",
@@ -752,7 +782,7 @@ describe("SessionHistory MCP tool", () => {
       benign,
       oversizedKeys: { __oversized_key_0__: preprocessingOmission },
     };
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     let stored: { readonly invocationId: string; readonly resultId: string };
     try {
       stored = await writeCall(writer, binding("serialized-json-mcp-run"), "serialized-json-mcp", {
@@ -827,7 +857,7 @@ describe("SessionHistory MCP tool", () => {
 
   it("is capability-path and host bound, and keeps current-run and foreign-conversation records opaque", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const prior = await writeCall(writer, binding("prior-run"), "prior");
     const current = await writeCall(writer, binding("current-run", "chat:42#2026-08-14"), "current");
     const foreign = await writeCall(writer, binding("foreign-run", "chat:99#2026-08-13", "chat:99"), "foreign");
@@ -868,7 +898,7 @@ describe("SessionHistory MCP tool", () => {
 
   it("paginates overlapping per-run sequences without gaps and rejects cursor/query substitution", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     for (const runId of ["run-a", "run-b", "run-c", "run-d"]) await writeCall(writer, binding(runId), runId);
     await writer.close();
 
@@ -904,7 +934,7 @@ describe("SessionHistory MCP tool", () => {
 
   it("returns bounded untrusted get chunks, omits nested SessionHistory payloads, and reports tombstones", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     const large = await writeCall(writer, binding("large-run"), "large", { content: "x".repeat(12_000) });
     const nested = await writeCall(writer, binding("nested-run"), "nested", {
       toolName: `mcp__${SESSION_HISTORY_MCP_SERVER_NAME}__${SESSION_HISTORY_TOOL_NAME}`,
@@ -955,7 +985,10 @@ describe("SessionHistory MCP tool", () => {
     }
 
     const tombstoneRoot = await tempRoot();
-    const pruningWriter = await ToolHistoryWriter.open({ root: tombstoneRoot, retention: { maxCompletedCalls: 0 } });
+    const pruningWriter = await openStorageTestWriter({
+      root: tombstoneRoot,
+      retention: { maxCompletedCalls: 0 },
+    });
     const removed = await writeCall(pruningWriter, binding("removed-run"), "removed");
     await pruningWriter.close();
     const tombstoneClient = await openClient(tombstoneRoot, "chat:42#2026-08-14", "current-run");

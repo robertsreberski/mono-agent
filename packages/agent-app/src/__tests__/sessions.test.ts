@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ToolHistoryWriter } from "@mono-agent/agent-harness";
+import { ToolHistoryWriter, type ToolHistoryWriterOptions } from "@mono-agent/agent-harness";
 
 const processIdentity = vi.hoisted(() => ({
   schema: "mono-agent.process-incarnation.v1" as const,
@@ -35,6 +35,16 @@ import {
 } from "../sessions.js";
 
 let dir: string;
+const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;
+
+// Match the harness storage-test ceiling: this test asserts durable history
+// accounting, not the production 250 ms host-wait timing contract.
+async function openStorageTestWriter(options: ToolHistoryWriterOptions): Promise<ToolHistoryWriter> {
+  return await ToolHistoryWriter.open({
+    ...options,
+    persistenceCeilingMs: STORAGE_TEST_PERSISTENCE_CEILING_MS,
+  });
+}
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "sessions-test-"));
@@ -155,7 +165,7 @@ describe("purgeConversationHistory", () => {
     const root = join(dir, ".mono-agent", "history");
     await mkdir(root, { recursive: true, mode: 0o700 });
     await writeFile(join(root, "conversation.history.json"), "{}\n");
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await openStorageTestWriter({ root });
     await writer.persist({
       conversationId: "chat:42",
       logicalConversationId: "chat:42",
