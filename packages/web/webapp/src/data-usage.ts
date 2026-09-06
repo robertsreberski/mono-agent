@@ -40,8 +40,12 @@ export interface DataUsage {
   /** When the session started. */
   readonly since: number;
   /**
-   * Whether the browser is measuring transfers for us, or the console is adding
-   * up body lengths and guessing. Shown, because the two are not the same claim.
+   * Whether EVERY component of this total is a browser measurement.
+   *
+   * False while there is no resource observer, and false once anything the
+   * console counted for itself -- a body length, an upload's own size -- has
+   * been added to it, because a total that mixes the two is not a reading.
+   * Shown as a tilde, and said in words in the accessible name.
    */
   readonly measured: boolean;
 }
@@ -57,12 +61,33 @@ export interface DataUsage {
 export const METER_PUBLISH_MS = 500;
 
 /** The window the displayed rate describes. */
-const RATE_WINDOW_MS = 60_000;
+export const RATE_WINDOW_MS = 60_000;
+
+/**
+ * How often an idle console re-reads its own rate.
+ *
+ * The rate is a trailing sixty-second window, and nothing recomputes it between
+ * records -- so a console that stopped spending anything went on displaying the
+ * last minute it had for the rest of the session. This is not an accounting
+ * tick: it notifies subscribers only while there is something in the window
+ * left to age out, and stops on its own once there is not.
+ */
+export const RATE_REFRESH_MS = 30_000;
 
 let usage: DataUsage = { bytes: 0, since: Date.now(), measured: false };
 const listeners = new Set<() => void>();
 let throttleTimer: number | null = null;
 let notifyPending = false;
+let rateTimer: number | null = null;
+/**
+ * Whether anything in the session total was ESTIMATED rather than measured.
+ *
+ * `measured` used to describe only whether a resource observer was installed,
+ * which said nothing about the components resource timing cannot see. Once a
+ * body length or an upload's own size has been added, the total is a mixture
+ * and the console says so with a tilde rather than presenting it as a reading.
+ */
+let estimated = false;
 
 const notify = (): void => {
   for (const listener of [...listeners]) listener();
@@ -94,21 +119,62 @@ const publish = (next: DataUsage): void => {
 /** What each of the last {@link RATE_WINDOW_MS} carried, for the rate. */
 const recent: { at: number; bytes: number }[] = [];
 
+/**
+ * Only ever called from a WRITE. `dataUsageRatePerMinute` is read during render
+ * and filters instead: a reader that spliced module state made rendering a
+ * mutation, which React is entitled to run twice.
+ */
 const pruneRecent = (now: number): void => {
   while (recent.length > 0 && now - recent[0]!.at >= RATE_WINDOW_MS) recent.shift();
+};
+
+/**
+ * Wakes subscribers while the window still has something to lose.
+ *
+ * Armed by a record and disarmed by the first tick with nothing left, so an
+ * idle console decays to `0 B/min` and then costs nothing at all -- rather than
+ * either freezing on its last minute or running a timer for the session.
+ */
+const armRateRefresh = (): void => {
+  if (rateTimer !== null || typeof window === "undefined") return;
+  rateTimer = window.setTimeout(function tick() {
+    rateTimer = null;
+    pruneRecent(Date.now());
+    // A NEW snapshot object with the same totals in it. `useSyncExternalStore`
+    // compares snapshots by identity, so telling it to look again at the object
+    // it already has is telling it nothing -- and what has moved here is not the
+    // total but the minute the indicator draws beside it.
+    publish({ ...usage });
+    if (recent.length > 0) armRateRefresh();
+  }, RATE_REFRESH_MS);
 };
 
 /** The session total, as one frozen snapshot `useSyncExternalStore` can cache. */
 export const dataUsage = (): DataUsage => usage;
 
-/** One count of bytes that actually crossed the link. */
+/** One count of bytes the browser itself measured crossing the link. */
 export const recordDataUsage = (bytes: number): void => {
+  record(bytes, false);
+};
+
+/**
+ * Bytes the console counted for itself -- a body length, a request body, a
+ * declared size -- which are floors, not readings. Recorded the same way and
+ * marked, so the total stops claiming to be a measurement.
+ */
+export const recordEstimatedUsage = (bytes: number): void => {
+  record(bytes, true);
+};
+
+const record = (bytes: number, isEstimate: boolean): void => {
   if (!Number.isFinite(bytes) || bytes <= 0) return;
   const counted = Math.round(bytes);
   const now = Date.now();
   pruneRecent(now);
   recent.push({ at: now, bytes: counted });
-  publish({ ...usage, bytes: usage.bytes + counted });
+  if (isEstimate) estimated = true;
+  armRateRefresh();
+  publish({ ...usage, bytes: usage.bytes + counted, measured: resourceTimingActive && !estimated });
 };
 
 const encodedLength = (text: string): number => new TextEncoder().encode(text).byteLength;
@@ -125,7 +191,7 @@ let resourceTimingActive = false;
  */
 export const recordTransferredBody = (bytes: number): void => {
   if (resourceTimingActive) return;
-  recordDataUsage(bytes);
+  recordEstimatedUsage(bytes);
 };
 
 /**
@@ -137,14 +203,17 @@ export const recordTransferredBody = (bytes: number): void => {
 export const recordResponsePayload = (response: Response, text: string): void => {
   if (resourceTimingActive) return;
   const declared = Number(response.headers.get("content-length"));
-  recordDataUsage(Number.isFinite(declared) && declared > 0 ? declared : encodedLength(text));
+  recordEstimatedUsage(Number.isFinite(declared) && declared > 0 ? declared : encodedLength(text));
 };
 
 /** Test hook: a fresh session, because the meter is module state by design. */
 export const resetDataUsage = (): void => {
   if (throttleTimer !== null) window.clearTimeout(throttleTimer);
+  if (rateTimer !== null) window.clearTimeout(rateTimer);
   throttleTimer = null;
+  rateTimer = null;
   notifyPending = false;
+  estimated = false;
   recent.length = 0;
   usage = { bytes: 0, since: Date.now(), measured: resourceTimingActive };
   notify();
@@ -209,7 +278,7 @@ export const observeTransferredResources = (): (() => void) => {
     return () => undefined;
   }
   resourceTimingActive = true;
-  publish({ ...usage, measured: true });
+  publish({ ...usage, measured: !estimated });
   return () => {
     resourceTimingActive = false;
     observer.disconnect();
@@ -246,6 +315,12 @@ export const formatDataBytes = (bytes: number): string => {
  */
 export const dataUsageRatePerMinute = (now = Date.now()): number => {
   if (now - usage.since < RATE_WINDOW_MS) return 0;
-  pruneRecent(now);
-  return recent.reduce((sum, entry) => sum + entry.bytes, 0);
+  // FILTERED, never pruned: this runs during render, and a render that splices
+  // module state is a render with a side effect -- which React is entitled to
+  // run twice. The ring is trimmed by {@link recordDataUsage} and by the
+  // refresh tick, both of which are writes.
+  return recent.reduce(
+    (sum, entry) => (now - entry.at < RATE_WINDOW_MS ? sum + entry.bytes : sum),
+    0,
+  );
 };

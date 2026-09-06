@@ -441,15 +441,27 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
     };
 
     const poll = async (): Promise<void> => {
-      const lean = currentDataMode() === "lean";
-      const minDelayMs = lean ? LEAN_ASK_POLL_MIN_MS : ASK_POLL_MIN_MS;
-      const maxDelayMs = lean ? LEAN_ASK_POLL_MAX_MS : ASK_POLL_MAX_MS;
-      let delayMs = minDelayMs;
+      // Read PER ROUND, not once at the top. This loop runs for as long as a
+      // question is open, which is exactly the interval in which an operator on
+      // a metered link reaches for the mode control -- and a mode read once
+      // meant the switch did nothing until the card settled and a new loop
+      // started. The backoff already reached is clamped into whatever bounds
+      // are now in force rather than reset, so changing the mode neither
+      // restarts the wait nor keeps a wait the new mode does not allow.
+      let delayMs = 0;
       /** Rounds that actually asked; the first one always does. */
       let asked = 0;
       /** Whether the round before this one gave way, so this one cannot. */
       let gaveWay = false;
+      /** The bounds in force, clamped onto the backoff already reached. */
+      const bounded = (): { readonly delayMs: number; readonly maxDelayMs: number } => {
+        const lean = currentDataMode() === "lean";
+        const minDelayMs = lean ? LEAN_ASK_POLL_MIN_MS : ASK_POLL_MIN_MS;
+        const maxDelayMs = lean ? LEAN_ASK_POLL_MAX_MS : ASK_POLL_MAX_MS;
+        return { delayMs: Math.min(maxDelayMs, Math.max(minDelayMs, delayMs)), maxDelayMs };
+      };
       while (!controller.signal.aborted) {
+        delayMs = bounded().delayMs;
         const requests = [...requestsRef.current.values()];
         if (requests.length === 0) return;
         if (connection !== "live" || selectedAgent?.status === "offline") {
@@ -542,8 +554,13 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
         }
 
         if (!pollAgain || controller.signal.aborted) return;
+        // Read AGAIN here, not only at the top: this is the wait the switch has
+        // to govern, and a mode changed while the round was on the wire would
+        // otherwise sleep out one more interval of the mode it replaced.
+        const next = bounded();
+        delayMs = next.delayMs;
         await waitForAskPollDelay(delayMs, controller.signal);
-        delayMs = Math.min(maxDelayMs, delayMs * 2);
+        delayMs = Math.min(next.maxDelayMs, delayMs * 2);
       }
     };
 

@@ -672,7 +672,7 @@ describe("createThreadCache", () => {
     // and rewrote a byte-identical row on every flush.
     const cache = createThreadCache();
     cache.upsertFull(detail([message("m2")], "cursor-older"));
-    cache.prependOlder("alpha-thread", { messages: [message("m1")], nextCursor: null });
+    cache.prependOlder("alpha-thread", { messages: [message("m1")] });
     const held = cache.get("alpha-thread")!;
     expect(held.pagedInIds.has("m1")).toBe(true);
 

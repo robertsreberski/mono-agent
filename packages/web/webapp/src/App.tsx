@@ -410,14 +410,31 @@ export function App() {
     return applyConsolePresentation(bootstrap.console);
   }, [bootstrap]);
 
+  /**
+   * Whether the ordinary shell is what is on screen.
+   *
+   * The two states below return before any toast is rendered, so an offer made
+   * while one of them is up is marked as offered and never seen -- and, being
+   * once per install, never made again. It waits for a console that can show it.
+   */
+  const shellReady = Boolean(bootstrap) || (!loading && !error);
+
   // A home-screen install whose browser cannot describe the network is the one
   // case Auto cannot answer, so the console says so -- once, and only once,
   // marked as offered before it is shown so a reload cannot nag.
   useEffect(() => {
-    if (!shouldOfferLeanDataMode()) return;
+    if (!shellReady || !shouldOfferLeanDataMode()) return;
     markLeanDataModeOffered();
     setLeanOffer(true);
-  }, []);
+  }, [shellReady]);
+
+  // The offer is about Auto. An operator who set the mode -- from the palette,
+  // from the sidebar, or by taking the offer -- has answered it, and a notice
+  // still on screen after that is stale.
+  const dataModeSetting = useDataModeSetting();
+  useEffect(() => {
+    if (dataModeSetting !== "auto") setLeanOffer(false);
+  }, [dataModeSetting]);
 
   /**
    * A staged build takes over on the next quiet moment, not on arrival.

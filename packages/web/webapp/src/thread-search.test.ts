@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { api } from "./api";
 import { writeDataModeSetting } from "./data-mode";
 import {
   LEAN_SEARCH_DEBOUNCE_MS,
@@ -9,6 +11,7 @@ import {
   highlightSegments,
   highlightTitle,
   searchDebounceMs,
+  useThreadSearch,
 } from "./thread-search";
 
 describe("search highlight contract", () => {
@@ -90,5 +93,30 @@ describe("the search debounce", () => {
     writeDataModeSetting("lean");
     expect(searchDebounceMs()).toBe(LEAN_SEARCH_DEBOUNCE_MS);
     expect(LEAN_SEARCH_DEBOUNCE_MS).toBeGreaterThan(SEARCH_DEBOUNCE_MS);
+  });
+
+  it("takes the new wait while the operator is still typing", async () => {
+    // The debounce is read when the effect runs. Without the resolved mode in
+    // its dependencies, a switch made mid-search did nothing until the next
+    // keystroke re-ran the effect -- and on a query the operator had already
+    // finished typing, never.
+    vi.useFakeTimers();
+    const search = vi.spyOn(api, "searchThreads").mockResolvedValue({ hits: [], truncated: false });
+    try {
+      renderHook(() => useThreadSearch("alpha", "needle"));
+      await act(async () => { await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS - 50); });
+      expect(search).not.toHaveBeenCalled();
+
+      await act(async () => { writeDataModeSetting("lean"); });
+      // The full-mode wait would have fired here. The lean one has not.
+      await act(async () => { await vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS); });
+      expect(search).not.toHaveBeenCalled();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(LEAN_SEARCH_DEBOUNCE_MS); });
+      expect(search).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      search.mockRestore();
+    }
   });
 });

@@ -368,6 +368,36 @@ describe("what a picture costs", () => {
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-1");
   });
 
+  it("re-times what it is already holding when the mode changes, in both directions", () => {
+    // The ceilings answer a mode change; the retention TIMER did not. It was
+    // armed at release against the window in force then and went on counting
+    // down against it -- so Full -> Lean kept a picture for sixty seconds after
+    // the operator asked for twenty, and Lean -> Full threw one away at twenty
+    // after they asked for sixty.
+    vi.useFakeTimers();
+    const { revokeObjectURL } = stubObjectUrls();
+    const key = replyImageKey("sha256:retimed", 4);
+    publishReplyImageBlob(key, new Blob(["abcd"]));
+    releaseReplyImageBlob(key);
+
+    // Full -> Lean: the shorter window applies to the picture already waiting.
+    writeDataModeSetting("lean");
+    vi.advanceTimersByTime(LEAN_REPLY_IMAGE_RETENTION_MS + 1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-1");
+
+    // Lean -> Full: the longer window does too, so a picture is not thrown away
+    // on a bound its operator has just left behind.
+    revokeObjectURL.mockClear();
+    const second = replyImageKey("sha256:retimed-back", 4);
+    publishReplyImageBlob(second, new Blob(["abcd"]));
+    releaseReplyImageBlob(second);
+    writeDataModeSetting("full");
+    vi.advanceTimersByTime(LEAN_REPLY_IMAGE_RETENTION_MS + 1);
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(REPLY_IMAGE_RETENTION_MS);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-2");
+  });
+
   it("frees a lean device's oldest pictures at the lean ceiling", () => {
     vi.useFakeTimers();
     writeDataModeSetting("lean");

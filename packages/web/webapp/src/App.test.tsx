@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
-import { readDataModeSetting, writeDataModeSetting } from "./data-mode";
+import { readDataModeSetting, resetDataModeSession, writeDataModeSetting } from "./data-mode";
 import { recordDataUsage, resetDataUsage } from "./data-usage";
 import {
   registerServiceWorkerUpdates,
@@ -158,7 +158,13 @@ describe("App data mode", () => {
   afterEach(() => {
     Reflect.deleteProperty(window, "matchMedia");
     resetDataUsage();
+    // The module remembers a once-per-install offer in memory as well as in
+    // storage, for a device that refuses storage -- so a test that made one has
+    // to put that back too.
+    resetDataModeSession();
     localStorage.clear();
+    storeMock.loading = false;
+    storeMock.bootstrap = { console: { hostName: "console-host", theme: "ocean" as const } };
   });
 
   const standalone = (matches: boolean): void => {
@@ -210,6 +216,40 @@ describe("App data mode", () => {
   it("never offers Lean to a console running in an ordinary browser tab", () => {
     standalone(false);
     render(<App />);
+    expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
+  });
+
+  it("waits for a shell that can actually show the offer", async () => {
+    // It is offered ONCE per install, and the two pre-shell states return
+    // before any toast is rendered -- so an offer made while the console was
+    // still discovering agents was marked as offered, never seen, and never
+    // made again.
+    standalone(true);
+    storeMock.loading = true;
+    storeMock.bootstrap = null as unknown as (typeof storeMock)["bootstrap"];
+    const first = render(<App />);
+    expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
+    // The visit ends there -- the operator put the phone down, the OS reclaimed
+    // the PWA. Nothing was shown, so nothing may have been spent.
+    first.unmount();
+
+    storeMock.loading = false;
+    storeMock.bootstrap = { console: { hostName: "console-host", theme: "ocean" as const } };
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Use Lean" })).toBeVisible();
+  });
+
+  it("takes the offer down once the operator has answered it", async () => {
+    // The offer is about Auto. Setting the mode anywhere -- the palette, the
+    // sidebar footer, another tab -- answers it, and a notice still on screen
+    // after that is telling the operator about a decision they have made.
+    standalone(true);
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Use Lean" })).toBeVisible();
+
+    await act(async () => { writeDataModeSetting("full"); });
+
     expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
   });
 });

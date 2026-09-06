@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { currentDataMode } from "./data-mode";
+import { currentDataMode, useDataMode } from "./data-mode";
 import type { ThreadSearchHit } from "./types";
 
 /**
@@ -107,6 +107,11 @@ export function useThreadSearch(
   const latest = useRef(state);
   latest.current = state;
 
+  // The RESOLVED mode, in the dependencies: the debounce is read when the effect
+  // runs, so a switch made while the operator is typing had no effect until the
+  // next keystroke re-ran it -- and on a settled query, never.
+  const dataMode = useDataMode();
+
   useEffect(() => {
     const trimmed = query.trim();
     if (sourceId === null || trimmed.length < MIN_SEARCH_QUERY) {
@@ -130,7 +135,7 @@ export function useThreadSearch(
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query, sourceId]);
+  }, [dataMode, query, sourceId]);
 
   return state;
 }

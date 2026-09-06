@@ -85,21 +85,36 @@ const readStored = (key: string): string | null => {
   }
 };
 
-const writeStored = (key: string, value: string): void => {
+/** Whether the device actually kept it. Storage can refuse outright. */
+const writeStored = (key: string, value: string): boolean => {
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch {
-    // A device that refuses storage still honours the mode for this session.
+    return false;
   }
 };
 
+/**
+ * What this SESSION chose when the device would not remember it.
+ *
+ * A browser that refuses storage -- Safari private browsing, a locked-down
+ * profile -- threw on the write and the read then handed back the old value, so
+ * the control moved and nothing else did: the operator could not switch modes at
+ * all on exactly the kind of device this feature exists for. Set only when the
+ * write FAILED, so a stored value always wins and nothing outlives a real one.
+ */
+let sessionSetting: DataModeSetting | undefined;
+let offeredInSession = false;
+
 export const readDataModeSetting = (): DataModeSetting => {
   const stored = readStored(DATA_MODE_STORAGE_KEY);
-  return stored !== null && SETTINGS.has(stored) ? stored as DataModeSetting : "auto";
+  if (stored !== null && SETTINGS.has(stored)) return stored as DataModeSetting;
+  return sessionSetting ?? "auto";
 };
 
 export const writeDataModeSetting = (setting: DataModeSetting): void => {
-  writeStored(DATA_MODE_STORAGE_KEY, setting);
+  sessionSetting = writeStored(DATA_MODE_STORAGE_KEY, setting) ? undefined : setting;
   notify();
 };
 
@@ -203,8 +218,20 @@ export const shouldOfferLeanDataMode = (): boolean =>
   readDataModeSetting() === "auto"
   && networkInformation() === undefined
   && standaloneDisplay()
+  && !offeredInSession
   && readStored(LEAN_SUGGESTION_STORAGE_KEY) === null;
 
 export const markLeanDataModeOffered = (): void => {
+  // Remembered in memory as well, for the same reason as the setting: on a
+  // device that refuses storage the write is a no-op, and without this the
+  // offer would reappear on every render for the rest of the session.
+  offeredInSession = true;
   writeStored(LEAN_SUGGESTION_STORAGE_KEY, "offered");
+};
+
+/** Test hook: this module owns document-lifetime state by design. */
+export const resetDataModeSession = (): void => {
+  sessionSetting = undefined;
+  offeredInSession = false;
+  notify();
 };

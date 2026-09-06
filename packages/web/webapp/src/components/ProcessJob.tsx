@@ -243,14 +243,21 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
     if (terminal || threadId === undefined || jobId === undefined || !visible) return;
     const controller = new AbortController();
     let timer: number | undefined;
-    const lean = currentDataMode() === "lean";
-    const initialDelayMs = lean ? LEAN_PROCESS_JOB_POLL_INITIAL_MS : PROCESS_JOB_POLL_INITIAL_MS;
-    const maxDelayMs = lean ? LEAN_PROCESS_JOB_POLL_MAX_MS : PROCESS_JOB_POLL_MAX_MS;
-    let delayMs = initialDelayMs;
+    // Read when each round is SCHEDULED, not once when the loop starts. A job
+    // runs for minutes and its backoff walks out to ten or twenty seconds, so a
+    // loop that captured the mode kept polling at full-mode intervals for the
+    // rest of the job after the operator asked for lean. The backoff already
+    // reached is clamped into the bounds now in force rather than reset, so the
+    // switch neither restarts the walk nor keeps an interval the new mode does
+    // not allow.
+    let delayMs = 0;
     const schedule = () => {
-      const waitedMs = delayMs;
+      const lean = currentDataMode() === "lean";
+      const initialDelayMs = lean ? LEAN_PROCESS_JOB_POLL_INITIAL_MS : PROCESS_JOB_POLL_INITIAL_MS;
+      const maxDelayMs = lean ? LEAN_PROCESS_JOB_POLL_MAX_MS : PROCESS_JOB_POLL_MAX_MS;
+      const waitedMs = Math.min(maxDelayMs, Math.max(initialDelayMs, delayMs));
       timer = window.setTimeout(() => void refresh(waitedMs), waitedMs);
-      delayMs = Math.min(maxDelayMs, delayMs * 2);
+      delayMs = Math.min(maxDelayMs, waitedMs * 2);
     };
     /** `waitedMs` is the interval this round slept; 0 for the read that opens the loop. */
     const refresh = async (waitedMs = 0) => {

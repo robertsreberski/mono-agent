@@ -3,10 +3,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DATA_MODE_STORAGE_KEY,
   LEAN_SUGGESTION_STORAGE_KEY,
+  currentDataMode,
   cycleDataModeSetting,
   markLeanDataModeOffered,
   nextDataModeSetting,
   readDataModeSetting,
+  resetDataModeSession,
   resolveDataMode,
   shouldOfferLeanDataMode,
   useDataMode,
@@ -141,5 +143,67 @@ describe("the standalone-iOS suggestion", () => {
     withStandalone(true);
     writeDataModeSetting("full");
     expect(shouldOfferLeanDataMode()).toBe(false);
+  });
+});
+
+describe("a device that will not remember anything", () => {
+  const denyStorage = (): (() => void) => {
+    const setItem = localStorage.setItem.bind(localStorage);
+    Object.defineProperty(Storage.prototype, "setItem", {
+      configurable: true,
+      value: () => { throw new DOMException("QuotaExceededError"); },
+    });
+    return () => {
+      Object.defineProperty(Storage.prototype, "setItem", { configurable: true, value: setItem });
+    };
+  };
+
+  afterEach(() => {
+    resetDataModeSession();
+    localStorage.clear();
+  });
+
+  it("still lets the operator change the mode for this session", () => {
+    // Safari private browsing throws on the write, and the read then handed the
+    // old value straight back: the control moved and nothing else did, on
+    // exactly the kind of device this feature exists for.
+    const restore = denyStorage();
+    try {
+      writeDataModeSetting("lean");
+      expect(readDataModeSetting()).toBe("lean");
+      expect(currentDataMode()).toBe("lean");
+      writeDataModeSetting("full");
+      expect(readDataModeSetting()).toBe("full");
+    } finally {
+      restore();
+    }
+  });
+
+  it("still offers Lean only once", () => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({ matches: query.includes("standalone"), media: query }),
+    });
+    const restore = denyStorage();
+    try {
+      expect(shouldOfferLeanDataMode()).toBe(true);
+      markLeanDataModeOffered();
+      expect(shouldOfferLeanDataMode()).toBe(false);
+    } finally {
+      restore();
+      Reflect.deleteProperty(window, "matchMedia");
+    }
+  });
+
+  it("lets a value the device really kept win over the session's own", () => {
+    const restore = denyStorage();
+    try {
+      writeDataModeSetting("lean");
+    } finally {
+      restore();
+    }
+    // Another tab wrote it for real.
+    localStorage.setItem(DATA_MODE_STORAGE_KEY, "full");
+    expect(readDataModeSetting()).toBe("full");
   });
 });

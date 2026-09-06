@@ -2948,10 +2948,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // the deltas exist is that they are cheaper than re-reading -- and it is
       // the one transfer resource timing cannot report, so it is counted here.
       //
-      // A FLOOR: `data` is all a page can see of a frame. The `event:` and `id:`
-      // lines, the field names, the newlines that terminate them and the
-      // connection's own headers are all real bytes this cannot count.
-      if (typeof frame === "string") recordDataUsage(new TextEncoder().encode(frame).byteLength);
+      // The WHOLE frame, reassembled exactly as the service formats it
+      // (`formatSse`): the `id:` and `event:` lines, the field names and the
+      // newlines that terminate them are all bytes on the wire, and counting
+      // `data` alone under-reported every frame by around forty of them. What
+      // is still outside any page's reach is the stream's own response headers
+      // and the `: heartbeat` comments, which no browser API exposes.
+      if (typeof frame === "string") {
+        const message = event as MessageEvent<string>;
+        recordDataUsage(new TextEncoder().encode(
+          `id: ${message.lastEventId}\nevent: ${message.type}\ndata: ${frame}\n\n`,
+        ).byteLength);
+      }
       let webEvent: WebEvent | undefined;
       try {
         const parsed = JSON.parse((event as MessageEvent<string>).data) as WebEvent;

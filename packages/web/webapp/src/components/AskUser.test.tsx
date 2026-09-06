@@ -7,7 +7,12 @@ import { writeDataModeSetting } from "../data-mode";
 import type { AskSnapshot } from "../types";
 import { AskReconciliationProvider, ToolFallback } from "./Messages";
 
-const storeMock = vi.hoisted(() => ({ transcriptMovedAt: (): number => 0 }));
+// A far-past stamp, expressed RELATIVE to whatever clock is in force: `0` is an
+// epoch millisecond, and under a fake clock set near zero it reads as "the
+// stream moved a moment ago" -- which silently spends the one give-way round
+// the cases below are about.
+const longAgo = (): number => Date.now() - 3_600_000;
+const storeMock = vi.hoisted(() => ({ transcriptMovedAt: (): number => Date.now() - 3_600_000 }));
 
 // One object, as the real store hands out: a fresh one per render would give
 // every field a new identity and restart anything keyed on one.
@@ -585,7 +590,7 @@ describe("AskUser polling hygiene", () => {
   afterEach(() => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     localStorage.clear();
-    storeMock.transcriptMovedAt = () => 0;
+    storeMock.transcriptMovedAt = longAgo;
   });
 
   it("asks nothing while the tab is in the background and picks up when it returns", async () => {
@@ -614,6 +619,9 @@ describe("AskUser polling hygiene", () => {
     const pendingAsk = vi.spyOn(api, "pendingAsk").mockResolvedValue(snapshot);
     const ask = vi.spyOn(api, "ask").mockResolvedValue(snapshot);
     const asked = () => pendingAsk.mock.calls.length + ask.mock.calls.length;
+    // Stated, not inherited: the one give-way this case is about must not have
+    // been spent before it began.
+    storeMock.transcriptMovedAt = longAgo;
     render(askUserTool());
 
     await act(async () => { await vi.advanceTimersByTimeAsync(250); });
@@ -628,6 +636,38 @@ describe("AskUser polling hygiene", () => {
     // And the round after it asks anyway, however busy the stream still is.
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(asked()).toBeGreaterThan(settled);
+  });
+
+  it("takes the mode in force when each round is scheduled, not when the card opened", async () => {
+    // A question can stand open for minutes, and the bounds were read once when
+    // the loop opened -- so a switch made while the operator was looking at the
+    // card did nothing until it settled and a new loop started, which on a
+    // question nobody answers is never. The two ladders share their first few
+    // rungs, so what this measures is the CEILING: full stops widening at two
+    // seconds, lean at four.
+    vi.useFakeTimers();
+    storeMock.transcriptMovedAt = longAgo;
+    const at: number[] = [];
+    const stamp = async () => {
+      at.push(Date.now());
+      return snapshot;
+    };
+    // Both: the first round asks for the pending question and every round after
+    // it asks about the one it was assigned.
+    vi.spyOn(api, "ask").mockImplementation(stamp);
+    vi.spyOn(api, "pendingAsk").mockImplementation(stamp);
+    render(askUserTool());
+
+    // Out to the full-mode ceiling first, so the switch has something to widen.
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+    const gapsInFull = at.slice(1).map((stamp, index) => stamp - at[index]!);
+    expect(Math.max(...gapsInFull)).toBe(2_000);
+
+    writeDataModeSetting("lean");
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+
+    const gaps = at.slice(1).map((stamp, index) => stamp - at[index]!);
+    expect(Math.max(...gaps)).toBe(4_000);
   });
 
   it("re-reads a question whose answer is already recorded, but not on a lean link", async () => {
