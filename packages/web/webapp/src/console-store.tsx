@@ -2909,8 +2909,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const handleEvent = (event: Event) => {
       const frame = (event as MessageEvent<unknown>).data;
       // The delta stream is a real cost on a metered link -- the whole reason
-      // the deltas exist is that they are cheaper than re-reading -- so it is
-      // counted where the frames land, and nowhere else.
+      // the deltas exist is that they are cheaper than re-reading -- and it is
+      // the one transfer resource timing cannot report, so it is counted here.
+      //
+      // A FLOOR: `data` is all a page can see of a frame. The `event:` and `id:`
+      // lines, the field names, the newlines that terminate them and the
+      // connection's own headers are all real bytes this cannot count.
       if (typeof frame === "string") recordDataUsage(new TextEncoder().encode(frame).byteLength);
       let webEvent: WebEvent | undefined;
       try {

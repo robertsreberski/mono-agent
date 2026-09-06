@@ -68,6 +68,22 @@ export const processJobSupersedes = (current: ProcessJobProjection, next: Proces
   return current.timestamps.startedAt === null && next.timestamps.startedAt !== null;
 };
 
+/**
+ * What a projection would tell this card that it does not already know.
+ *
+ * The fields the row and its poll actually turn on: the lifecycle state, the
+ * process start (the one field a producer fills without a transition), how many
+ * wake attempts have been made, and the exit code. Two projections agreeing on
+ * these say the same thing however many times the transcript is rebuilt.
+ */
+const projectionSignature = (job: ProcessJobProjection | undefined): string =>
+  job === undefined ? "" : [
+    job.state,
+    job.timestamps.startedAt ?? "",
+    String(job.wake.attempts),
+    job.exitCode === null ? "" : String(job.exitCode),
+  ].join(" ");
+
 /** The retained web thread a job reports to, or nothing for an origin the console cannot poll. */
 export const processJobThreadId = (job: ProcessJobProjection): string | undefined => {
   const base = job.origin.conversationId.split("#", 1)[0];
@@ -161,23 +177,25 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
   const jobId = initial?.jobId;
   const terminal = live === undefined || TERMINAL_PROCESS_JOB_STATES.has(live.state);
   /**
-   * When the store last handed this card a DIFFERENT projection.
+   * When the store last handed this card a projection that SAID something new.
    *
-   * The delta stream already carries the job forward, and a poll issued in the
-   * same breath asks a question that has just been answered. Compared by value
-   * rather than latched on mount, so neither the first render nor StrictMode's
-   * repeated effect can be mistaken for an arrival.
+   * By value, not by reference: every conversation read rebuilds the message and
+   * its parts, so the card is handed a fresh object carrying the same job about
+   * once a second during a turn. Reference equality read each of those as "the
+   * stream just answered" and suppressed every poll round for the length of the
+   * turn. Comparing the signature also means neither the first render nor
+   * StrictMode's repeated effect can be mistaken for an arrival.
    */
-  const projectedRef = useRef<{ job: ProcessJobProjection | undefined; at: number }>({
-    job: initial,
-    at: 0,
-  });
+  const projectedRef = useRef({ signature: projectionSignature(initial), at: 0 });
 
   // The store's projection is authoritative and already monotonic (the web
   // server rejects a card update that moves backwards), so it always lands.
   useEffect(() => {
     setLive(initial);
-    if (projectedRef.current.job !== initial) projectedRef.current = { job: initial, at: Date.now() };
+    const signature = projectionSignature(initial);
+    if (projectedRef.current.signature !== signature) {
+      projectedRef.current = { signature, at: Date.now() };
+    }
   }, [initial]);
 
   useEffect(() => {

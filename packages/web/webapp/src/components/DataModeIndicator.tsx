@@ -22,14 +22,21 @@ export function DataModeIndicator() {
   const setting = useDataModeSetting();
   const mode = useDataMode();
   const usage = useDataUsage();
-  const rate = dataUsageRatePerMinute(usage);
+  const rate = dataUsageRatePerMinute();
   const label = dataModeLabel(setting, mode);
-  const spent = formatDataBytes(usage.bytes);
+  // A total the browser measured and a total the console added up from body
+  // lengths are two different claims, and the second one overstates a compressed
+  // response. The tilde is the difference, and the accessible name says it in
+  // words rather than in punctuation.
+  const spent = `${usage.measured ? "" : "~"}${formatDataBytes(usage.bytes)}`;
+  const spoken = usage.measured
+    ? formatDataBytes(usage.bytes)
+    : `an estimated ${formatDataBytes(usage.bytes)}`;
   return (
     <button
       type="button"
       className={`data-mode-indicator is-${mode}`}
-      aria-label={`Data ${label}, ${spent} this session. Change data mode.`}
+      aria-label={`Data ${label}, ${spoken} this session. Change data mode.`}
       title="Auto follows the connection; Lean loads pictures and apps only when you ask."
       onClick={() => { cycleDataModeSetting(); }}
     >

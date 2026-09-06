@@ -2172,3 +2172,52 @@ describe("a lean link, and a device that kept the picture but not the key", () =
     expect(access).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("a lean link, second look", () => {
+  afterEach(() => {
+    localStorage.clear();
+    clearReplyImageBlobs();
+  });
+
+  it("just shows a picture it is already holding, rather than offering to load it again", async () => {
+    // Scrolling a picture out of the strip and back unmounts and remounts the
+    // tile, and the bytes are still in the shared store for the retention
+    // window. Offering "Load cover.png" for bytes already held is a tap target
+    // that lies about what it costs.
+    writeDataModeSetting("lean");
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+
+    const first = render(attachment(imagePart));
+    fireEvent.click(screen.getByRole("button", { name: "Load cover.png, 4 B" }));
+    expect(await screen.findByRole("img", { name: "cover.png" })).toBeInTheDocument();
+    first.unmount();
+
+    render(attachment(imagePart));
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(screen.queryByRole("button", { name: /^Load cover\.png/u })).toBeNull();
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("never mints a key for a picture whose own endpoint was refused", async () => {
+    // A part that DECLARES a capability the console rejects is not a part that
+    // lost its key: it is a payload trying to move a private read somewhere
+    // else. Only a part carrying no `contentUrl` at all -- what this device
+    // stores -- is offered a fresh one.
+    const offOrigin = { ...imagePart, contentUrl: "https://elsewhere.example/steal" };
+    const access = vi.fn().mockResolvedValue(imagePart);
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(offOrigin)}
+      </ReplyAccessProvider>,
+    );
+
+    expect(await screen.findByText("This file is no longer available.")).toBeVisible();
+    expect(access).not.toHaveBeenCalled();
+    expect(fetchContent).not.toHaveBeenCalled();
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+  });
+});

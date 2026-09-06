@@ -183,7 +183,8 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         // The setting AND what it resolves to, because on the phone this
         // console is installed on those two are never the same thing.
         label: `Data: ${dataModeLabel(dataModeSetting, dataMode)}`,
-        hint: formatDataBytes(dataUsage.bytes),
+        // `~` where the console is estimating rather than reading a measurement.
+        hint: `${dataUsage.measured ? "" : "~"}${formatDataBytes(dataUsage.bytes)}`,
         icon: "activity",
         run: () => { cycleDataModeSetting(); },
       },
@@ -217,7 +218,7 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
         run: () => store.selectAgent(agent.sourceId),
       })),
     ],
-    [dataMode, dataModeSetting, dataUsage.bytes, store],
+    [dataMode, dataModeSetting, dataUsage.bytes, dataUsage.measured, store],
   );
   const normalized = query.trim().toLowerCase();
   const visible = actions.filter((action) => action.label.toLowerCase().includes(normalized));

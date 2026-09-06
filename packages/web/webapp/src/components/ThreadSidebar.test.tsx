@@ -236,13 +236,16 @@ describe("the sidebar's data-mode footer", () => {
     recordDataUsage(3 * 1024);
     render(<ThreadSidebar />);
 
-    const control = screen.getByRole("button", { name: /^Data Auto · Full, 3 KiB this session/u });
+    // Nothing installed a resource observer here, so the console is adding up
+    // body lengths -- and says so rather than presenting a guess as a reading.
+    const control = screen.getByRole("button", { name: /^Data Auto · Full, an estimated 3 KiB this session/u });
     expect(control).toHaveTextContent("Auto · Full");
-    expect(control).toHaveTextContent("3 KiB");
+    expect(control).toHaveTextContent("~3 KiB");
 
     fireEvent.click(control);
     expect(readDataModeSetting()).toBe("lean");
     expect(screen.getByRole("button", { name: /^Data Lean/u })).toBeVisible();
+
 
     fireEvent.click(screen.getByRole("button", { name: /^Data Lean/u }));
     expect(readDataModeSetting()).toBe("full");

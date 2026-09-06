@@ -37,16 +37,65 @@ import { useSyncExternalStore } from "react";
 export interface DataUsage {
   /** Bytes this session, as far as this console can see them. */
   readonly bytes: number;
-  /** When the session started, for the rate. */
+  /** When the session started. */
   readonly since: number;
+  /**
+   * Whether the browser is measuring transfers for us, or the console is adding
+   * up body lengths and guessing. Shown, because the two are not the same claim.
+   */
+  readonly measured: boolean;
 }
 
-let usage: DataUsage = { bytes: 0, since: Date.now() };
-const listeners = new Set<() => void>();
+/**
+ * How long records are collected before subscribers are told again.
+ *
+ * A streaming turn records several times a second, and every notification
+ * rebuilds the command palette's action list and re-renders the indicator. The
+ * FIRST record of a burst still publishes immediately -- the meter must react
+ * when something happens -- and the rest ride the trailing edge.
+ */
+export const METER_PUBLISH_MS = 500;
 
+/** The window the displayed rate describes. */
+const RATE_WINDOW_MS = 60_000;
+
+let usage: DataUsage = { bytes: 0, since: Date.now(), measured: false };
+const listeners = new Set<() => void>();
+let throttleTimer: number | null = null;
+let notifyPending = false;
+
+const notify = (): void => {
+  for (const listener of [...listeners]) listener();
+};
+
+/**
+ * Snapshot first, notification maybe.
+ *
+ * `usage` is replaced synchronously, so `dataUsage()` is never behind and
+ * `useSyncExternalStore` cannot tear -- what is throttled is only how often
+ * React is told to look.
+ */
 const publish = (next: DataUsage): void => {
   usage = next;
-  for (const listener of [...listeners]) listener();
+  if (throttleTimer !== null) {
+    notifyPending = true;
+    return;
+  }
+  notify();
+  throttleTimer = window.setTimeout(function settle() {
+    throttleTimer = null;
+    if (!notifyPending) return;
+    notifyPending = false;
+    notify();
+    throttleTimer = window.setTimeout(settle, METER_PUBLISH_MS);
+  }, METER_PUBLISH_MS);
+};
+
+/** What each of the last {@link RATE_WINDOW_MS} carried, for the rate. */
+const recent: { at: number; bytes: number }[] = [];
+
+const pruneRecent = (now: number): void => {
+  while (recent.length > 0 && now - recent[0]!.at >= RATE_WINDOW_MS) recent.shift();
 };
 
 /** The session total, as one frozen snapshot `useSyncExternalStore` can cache. */
@@ -55,7 +104,11 @@ export const dataUsage = (): DataUsage => usage;
 /** One count of bytes that actually crossed the link. */
 export const recordDataUsage = (bytes: number): void => {
   if (!Number.isFinite(bytes) || bytes <= 0) return;
-  publish({ ...usage, bytes: usage.bytes + Math.round(bytes) });
+  const counted = Math.round(bytes);
+  const now = Date.now();
+  pruneRecent(now);
+  recent.push({ at: now, bytes: counted });
+  publish({ ...usage, bytes: usage.bytes + counted });
 };
 
 const encodedLength = (text: string): number => new TextEncoder().encode(text).byteLength;
@@ -89,7 +142,12 @@ export const recordResponsePayload = (response: Response, text: string): void =>
 
 /** Test hook: a fresh session, because the meter is module state by design. */
 export const resetDataUsage = (): void => {
-  publish({ bytes: 0, since: Date.now() });
+  if (throttleTimer !== null) window.clearTimeout(throttleTimer);
+  throttleTimer = null;
+  notifyPending = false;
+  recent.length = 0;
+  usage = { bytes: 0, since: Date.now(), measured: resourceTimingActive };
+  notify();
 };
 
 interface TransferEntry {
@@ -101,6 +159,23 @@ interface TransferEntry {
 
 /** The delta stream, whose frames are counted where they arrive instead. */
 const STREAM_PATH = "/api/v1/events";
+
+/**
+ * Whether this browser's resource entries carry a transfer size at all.
+ *
+ * The FIELD, not the entry type. `observe({ type: "resource" })` throwing
+ * detects an unsupported type, and the browser this guard exists for -- Safari
+ * before 16.4 -- accepts the type and reports no `transferSize`. Gating on the
+ * type alone silenced the body-length estimate and counted zeroes in its place,
+ * so the meter would have read a confident, permanent "0 B" on exactly the
+ * device the whole feature is for.
+ */
+const resourceTransferSizeReported = (): boolean => {
+  const timing = (globalThis as { PerformanceResourceTiming?: { readonly prototype?: object } })
+    .PerformanceResourceTiming;
+  const prototype = timing?.prototype;
+  return prototype !== undefined && "transferSize" in prototype;
+};
 
 /**
  * Counts what the browser says each request actually moved.
@@ -115,7 +190,7 @@ const STREAM_PATH = "/api/v1/events";
  */
 export const observeTransferredResources = (): (() => void) => {
   const Observer = (globalThis as { PerformanceObserver?: typeof PerformanceObserver }).PerformanceObserver;
-  if (typeof Observer !== "function") return () => undefined;
+  if (typeof Observer !== "function" || !resourceTransferSizeReported()) return () => undefined;
   const observer = new Observer((list) => {
     for (const raw of list.getEntries() as readonly TransferEntry[]) {
       if (raw.entryType !== "resource") continue;
@@ -126,13 +201,15 @@ export const observeTransferredResources = (): (() => void) => {
   try {
     observer.observe({ type: "resource", buffered: true });
   } catch {
-    // Safari before 16.4 has no `transferSize` and may refuse the type.
+    // A browser that reports the field but refuses the type. The estimate stays.
     return () => undefined;
   }
   resourceTimingActive = true;
+  publish({ ...usage, measured: true });
   return () => {
     resourceTimingActive = false;
     observer.disconnect();
+    publish({ ...usage, measured: false });
   };
 };
 
@@ -151,12 +228,20 @@ export const formatDataBytes = (bytes: number): string => {
 };
 
 /**
- * Bytes per minute over the session so far.
+ * What the last minute cost, not what the session averaged.
  *
- * Zero until the session has run for a minute: a rate extrapolated from the
- * first two seconds of a page load says more about the load than about the link.
+ * A session average is dominated by the page load for the rest of the visit and
+ * says nothing about the link the operator is on now. Zero until the session has
+ * run for a whole window, because a rate extrapolated from the first seconds of
+ * a load describes the load.
+ *
+ * Read from the module's own ring rather than from a snapshot: a rate is about
+ * WHEN bytes arrived, which a running total cannot say. Between records it is as
+ * stale as the total is -- a live console records on every stream frame, so in
+ * practice it decays continuously.
  */
-export const dataUsageRatePerMinute = (snapshot: DataUsage, now = Date.now()): number => {
-  const minutes = (now - snapshot.since) / 60_000;
-  return minutes < 1 ? 0 : Math.round(snapshot.bytes / minutes);
+export const dataUsageRatePerMinute = (now = Date.now()): number => {
+  if (now - usage.since < RATE_WINDOW_MS) return 0;
+  pruneRecent(now);
+  return recent.reduce((sum, entry) => sum + entry.bytes, 0);
 };

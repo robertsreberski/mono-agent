@@ -180,22 +180,22 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
         </div>
       </ThreadListPrimitive.Root>
       <div className="sidebar-footer">
-      <button
-        type="button"
-        className={`archive-toggle${showArchived ? " is-active" : ""}`}
-        onClick={() => setShowArchived(!showArchived)}
-      >
-        <Icon name={showArchived ? "threads" : "archive"} size={16} />
-        <span>{showArchived ? "Back to conversations" : "Archived"}</span>
-        <span className="archive-count">
-          {threads.filter(
-            (thread) => thread.sourceId === selectedAgentId && Boolean(thread.archivedAt),
-          ).length || ""}
-        </span>
-      </button>
-      {/* The one place the operator can see what this session has cost and
-          change what it is allowed to spend. */}
-      <DataModeIndicator />
+        <button
+          type="button"
+          className={`archive-toggle${showArchived ? " is-active" : ""}`}
+          onClick={() => setShowArchived(!showArchived)}
+        >
+          <Icon name={showArchived ? "threads" : "archive"} size={16} />
+          <span>{showArchived ? "Back to conversations" : "Archived"}</span>
+          <span className="archive-count">
+            {threads.filter(
+              (thread) => thread.sourceId === selectedAgentId && Boolean(thread.archivedAt),
+            ).length || ""}
+          </span>
+        </button>
+        {/* The one place the operator can see what this session has cost and
+            change what it is allowed to spend. */}
+        <DataModeIndicator />
       </div>
     </aside>
   );

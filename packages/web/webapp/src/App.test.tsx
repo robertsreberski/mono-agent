@@ -174,7 +174,9 @@ describe("App data mode", () => {
     fireEvent.keyDown(window, { key: "k", metaKey: true });
 
     const action = screen.getByRole("option", { name: /^Data: Auto · Full/u });
-    expect(action).toHaveTextContent("2 KiB");
+    // Estimated here, and marked as such: no resource observer is installed in
+    // a test, exactly as none exists on a browser without resource timing.
+    expect(action).toHaveTextContent("~2 KiB");
     fireEvent.click(action);
 
     await waitFor(() => { expect(readDataModeSetting()).toBe("lean"); });
@@ -200,7 +202,7 @@ describe("App data mode", () => {
     expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
   });
 
-  it("never offers Lean to a browser that can answer for itself", () => {
+  it("never offers Lean to a console running in an ordinary browser tab", () => {
     standalone(false);
     render(<App />);
     expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();

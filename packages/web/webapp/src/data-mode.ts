@@ -165,6 +165,15 @@ const subscribe = (listener: () => void): (() => void) => {
   };
 };
 
+/**
+ * Told whenever the resolved mode may have moved.
+ *
+ * Exported for the module that has to ACT on a change rather than re-render for
+ * it: the shared image store's retention bounds are read at the moment of a
+ * decision, so a full → lean flip has to sweep what is already held.
+ */
+export const subscribeToDataMode = (listener: () => void): (() => void) => subscribe(listener);
+
 /** The setting the operator chose, which is what a control has to show. */
 export const useDataModeSetting = (): DataModeSetting =>
   useSyncExternalStore(subscribe, readDataModeSetting, readDataModeSetting);

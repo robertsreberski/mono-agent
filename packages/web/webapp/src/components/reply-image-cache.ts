@@ -1,4 +1,4 @@
-import { currentDataMode } from "../data-mode";
+import { currentDataMode, subscribeToDataMode } from "../data-mode";
 import { recordTransferredBody } from "../data-usage";
 
 /**
@@ -133,6 +133,21 @@ const evictRetained = (): void => {
   }
 };
 
+/**
+ * Applies the new bounds the moment the operator changes the mode.
+ *
+ * The knobs are read at each decision, so without this a full → lean flip would
+ * only take effect on the next release -- which on a settled conversation may be
+ * never, leaving a phone holding a full-mode cache after its operator asked for
+ * lean. Attached lazily, on the first picture there is anything to sweep, and
+ * kept for the life of the document: it is one listener, for one boolean.
+ */
+let dataModeWatch: (() => void) | undefined;
+
+const watchDataMode = (): void => {
+  dataModeWatch ??= subscribeToDataMode(evictRetained);
+};
+
 /** Everything the store is holding for nobody, in bytes. Tests read it. */
 export const retainedReplyImageBytes = (): number => retainedBytes;
 
@@ -155,6 +170,14 @@ const hold = (image: SharedReplyImage, key: string): string => {
 export const replyImageKey = (integrityId: string, sizeBytes: number): string =>
   `${integrityId} ${sizeBytes}`;
 
+/**
+ * Whether these bytes are already here, WITHOUT taking a reference on them.
+ *
+ * A render-phase question -- "is there anything to show, or must I offer to
+ * fetch it?" -- and a render must not mutate the store's reference counts.
+ */
+export const hasReplyImageBlob = (key: string): boolean => sharedImages.has(key);
+
 /** The shared object URL for content already held, taking a reference on it. */
 export const acquireReplyImageBlob = (key: string): string | undefined => {
   const image = sharedImages.get(key);
@@ -170,6 +193,7 @@ export const publishReplyImageBlob = (key: string, blob: Blob): string => {
   // out of retention never reaches here at all. An estimate only -- silent
   // wherever the browser is measuring the transfer itself.
   recordTransferredBody(blob.size);
+  watchDataMode();
   const objectUrl = URL.createObjectURL(blob);
   sharedImages.set(key, { objectUrl, size: blob.size, refs: 1, timer: undefined });
   return objectUrl;

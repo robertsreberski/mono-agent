@@ -25,6 +25,7 @@ import { useReplyAttachmentAccess } from "./reply-access";
 import { isReplyImage } from "./reply-image";
 import {
   acquireReplyImageBlob,
+  hasReplyImageBlob,
   dropReplyImageFetch,
   joinReplyImageFetch,
   publishReplyImageBlob,
@@ -494,8 +495,19 @@ function useReplyImage(
   readonly wanted: boolean;
   readonly request: () => void;
 } {
+  /**
+   * Whether the bytes are wanted yet.
+   *
+   * `tap` starts false EXCEPT for a picture the shared store is already holding:
+   * scrolling one out of the strip and back inside the retention window costs
+   * nothing, so offering to "load" it would be a tap target that lies about what
+   * it costs. Read without taking a reference -- this is a render.
+   */
+  const held = sizeBytes !== undefined
+    && integrityId !== undefined
+    && hasReplyImageBlob(replyImageKey(integrityId, sizeBytes));
   const [state, setState] = useState<ReplyImageState>(PENDING_REPLY_IMAGE);
-  const [wanted, setWanted] = useState(source === "eager");
+  const [wanted, setWanted] = useState(source === "eager" || held);
   const [attempt, setAttempt] = useState(0);
   // Read when the effect runs rather than depended on: the capability minter is
   // a fresh closure every render and must not re-key the fetch.
@@ -517,7 +529,7 @@ function useReplyImage(
   if (renderedContent !== content) {
     setRenderedContent(content);
     setState(PENDING_REPLY_IMAGE);
-    setWanted(source === "eager");
+    setWanted(source === "eager" || held);
     setAttempt(0);
     retryAfterRef.current = undefined;
     retriesRef.current = 0;
@@ -708,8 +720,18 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     return nextUrl;
   }, [part, refreshAccess]);
 
-  /** Whether a key can still be asked for, which is not the same as holding one. */
-  const canMintAccess = refreshAccess !== undefined && part !== undefined;
+  /**
+   * Whether a key can still be asked for, which is not the same as holding one.
+   *
+   * Only for a part that carries NO `contentUrl`, which is what this device
+   * stores. A part that declares one the console then refuses -- off origin, or
+   * off the reply-part routes -- is not a part that lost its key: it is a
+   * payload trying to move a private read somewhere else, and it gets no fresh
+   * capability minted for it.
+   */
+  const canMintAccess = refreshAccess !== undefined
+    && part !== undefined
+    && part.contentUrl === undefined;
   const storedImage = storedReplyImageUrl(part);
   // An image with no capability and no way to mint one can never resolve, so it
   // goes straight to its file card rather than waiting on a viewport or a tap
@@ -862,8 +884,10 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
                     throw new AttachmentIntegrityError();
                   }
                   const blob = await response.blob();
-                  // The one fetch in this component that never reaches the
-                  // shared image store, and therefore never counts itself.
+                  // The estimate for a download, which never reaches the shared
+                  // image store and so is never counted there. A no-op wherever
+                  // resource timing is measuring this fetch already -- which is
+                  // every browser that has it, including in production.
                   recordTransferredBody(blob.size);
                   if (!isActive()) return;
                   if (blob.size !== part.sizeBytes) {

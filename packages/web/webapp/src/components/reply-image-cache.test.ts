@@ -345,6 +345,28 @@ describe("what a picture costs", () => {
     expect(replyImageRetentionMs()).toBe(REPLY_IMAGE_RETENTION_MS);
   });
 
+  it("frees down to the lean ceiling the moment the operator asks for lean", () => {
+    // The knobs are read at the moment of a decision, so without this the
+    // tighter bounds only take effect on the NEXT release -- which on a settled
+    // conversation may be never, leaving a phone holding a full-mode cache
+    // after its operator asked for lean.
+    vi.useFakeTimers();
+    const { revokeObjectURL } = stubObjectUrls();
+
+    for (let index = 0; index <= LEAN_REPLY_IMAGE_RETENTION_LIMIT; index += 1) {
+      const key = replyImageKey(`sha256:switch-${String(index)}`, 4);
+      publishReplyImageBlob(key, new Blob(["abcd"]));
+      releaseReplyImageBlob(key);
+    }
+    // Nine unreferenced pictures is well inside the full-mode bound.
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+
+    writeDataModeSetting("lean");
+
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-1");
+  });
+
   it("frees a lean device's oldest pictures at the lean ceiling", () => {
     vi.useFakeTimers();
     writeDataModeSetting("lean");

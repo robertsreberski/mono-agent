@@ -954,6 +954,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 /* The Lean suggestion carries an action, so its button is a word, not a glyph. */
 .toast .toast-action { width: auto; min-height: 30px; padding: 0 11px; color: #f8faf6; background: rgba(255, 255, 255, 0.12); font-weight: 600; font-size: 12px; }
 .toast .toast-action:hover { background: rgba(255, 255, 255, 0.2); }
+/* Its own row: the Lean offer and an ordinary toast can be on screen together,
+   and one covering the other would hide whichever arrived first. */
+.toast.is-offer { bottom: calc(max(18px, env(safe-area-inset-bottom)) + 60px); }
 
 /* Activity rows. A single call, a `Read ×4` cluster, a thought, and a subagent
    delegation are one shape: identical rows are what make a long log scannable,

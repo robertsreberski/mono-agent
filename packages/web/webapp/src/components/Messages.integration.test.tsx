@@ -16,6 +16,9 @@ import { ToolCallRepairProvider } from "./tool-call-repair";
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // A case that stubs this and then fails would otherwise leave every later
+  // test in this file rendering into a tab the console believes is hidden.
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 
 function MessageHarness({ message }: { readonly message: WebMessage }) {
@@ -1051,7 +1054,6 @@ describe("message actions", () => {
     setVisibility("visible");
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(2);
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
   });
 
   it("skips a poll round the store has already answered", async () => {

@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  METER_PUBLISH_MS,
   dataUsage,
   dataUsageRatePerMinute,
   formatDataBytes,
@@ -114,7 +115,38 @@ describe("resource entries", () => {
     vi.stubGlobal("PerformanceObserver", undefined);
     const stop = observeTransferredResources();
     expect(dataUsage().bytes).toBe(0);
+    expect(dataUsage().measured).toBe(false);
     expect(() => { stop(); }).not.toThrow();
+  });
+
+  it("keeps estimating on a browser whose entries carry no transfer size", () => {
+    // Safari before 16.4 ACCEPTS the resource entry type and reports no
+    // `transferSize` on it. Reading `observe()` not throwing as "the browser is
+    // measuring for us" silenced the estimate and counted zeroes in its place,
+    // so the meter read a confident, permanent "0 B" — the one number the whole
+    // feature exists to justify.
+    vi.stubGlobal("PerformanceObserver", FakePerformanceObserver);
+    vi.stubGlobal("PerformanceResourceTiming", class { });
+    const stop = observeTransferredResources();
+
+    expect(dataUsage().measured).toBe(false);
+    FakePerformanceObserver.latest?.deliver([
+      { entryType: "resource", initiatorType: "fetch", name: "/api/v1/bootstrap" },
+    ]);
+    recordTransferredBody(4_096);
+    recordResponsePayload(new Response("x".repeat(2_000)), "x".repeat(2_000));
+
+    expect(dataUsage().bytes).toBe(4_096 + 2_000);
+    stop();
+  });
+
+  it("says on the snapshot whether the browser is measuring or the console is guessing", () => {
+    expect(dataUsage().measured).toBe(false);
+    vi.stubGlobal("PerformanceObserver", FakePerformanceObserver);
+    const stop = observeTransferredResources();
+    expect(dataUsage().measured).toBe(true);
+    stop();
+    expect(dataUsage().measured).toBe(false);
   });
 });
 
@@ -126,20 +158,49 @@ describe("what the operator is shown", () => {
     expect(formatDataBytes(5 * 1024 * 1024)).toBe("5.0 MiB");
   });
 
-  it("reports a per-minute rate from the session it has actually run for", () => {
-    const usage = { bytes: 120_000, since: 1_000 };
-    expect(dataUsageRatePerMinute(usage, 61_000)).toBe(120_000);
-    expect(dataUsageRatePerMinute(usage, 121_000)).toBe(60_000);
-    // A session shorter than a moment cannot have a rate worth quoting.
-    expect(dataUsageRatePerMinute(usage, 1_000)).toBe(0);
+  it("reports what the last minute cost, not what the session averaged", () => {
+    vi.useFakeTimers();
+    try {
+      const started = Date.now();
+      recordDataUsage(100_000);
+      // A session shorter than the window cannot have a rate worth quoting: the
+      // first seconds of a page load say more about the load than the link.
+      expect(dataUsageRatePerMinute()).toBe(0);
+
+      vi.setSystemTime(started + 70_000);
+      recordDataUsage(20_000);
+      // The burst that loaded the page has aged out of the window; a session
+      // AVERAGE would still be reporting it as roughly 100 KB a minute.
+      expect(dataUsageRatePerMinute()).toBe(20_000);
+
+      vi.setSystemTime(started + 200_000);
+      expect(dataUsageRatePerMinute()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("publishes every record to a subscribed reader", () => {
-    const { result } = renderHook(() => useDataUsage());
-    expect(result.current.bytes).toBe(0);
+  it("publishes the first record at once and coalesces the burst behind it", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useDataUsage());
+      expect(result.current.bytes).toBe(0);
 
-    act(() => { recordDataUsage(1_500); });
+      act(() => { recordDataUsage(1_500); });
+      // A streaming turn records several times a second, and every publish
+      // rebuilds the palette's action list. The first one still lands at once.
+      expect(result.current.bytes).toBe(1_500);
 
-    expect(result.current.bytes).toBe(1_500);
+      act(() => {
+        recordDataUsage(500);
+        recordDataUsage(500);
+      });
+      expect(result.current.bytes).toBe(1_500);
+
+      act(() => { vi.advanceTimersByTime(METER_PUBLISH_MS); });
+      expect(result.current.bytes).toBe(2_500);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
