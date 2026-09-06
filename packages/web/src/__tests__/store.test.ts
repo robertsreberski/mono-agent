@@ -2184,7 +2184,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("migrates a seeded schema v10 database to v17 keeping its thread rows", async () => {
+  it("migrates a seeded schema v10 database to v18 keeping its thread rows", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -2219,7 +2219,7 @@ describe("WebStore", () => {
     const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
       .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(17);
+    expect(version.user_version).toBe(18);
     expect(agentColumns.has("providers_json")).toBe(true);
     expect(agentColumns.has("discovered")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
@@ -2246,7 +2246,7 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 17 });
+    ).toMatchObject({ user_version: 18 });
   });
 
   it("migrates schema v15 agents as discovered without losing their threads", async () => {
@@ -2273,7 +2273,7 @@ describe("WebStore", () => {
     migrated.close();
 
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
     expect(inspected.prepare(
       "SELECT discovered FROM agents WHERE source_id = 'agent-one'",
     ).get()).toMatchObject({ discovered: 1 });
@@ -2295,7 +2295,7 @@ describe("WebStore", () => {
     const migrated = await WebStore.open({ stateDir });
     migrated.close();
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
     expect(inspected.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
     ).get()).toBeDefined();
@@ -2359,7 +2359,7 @@ describe("WebStore", () => {
 
     const migrated = await WebStore.open({ stateDir });
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
     const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
       from: string;
       on_delete: string;
@@ -2482,7 +2482,7 @@ describe("WebStore", () => {
     migrated.close();
 
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 17 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
     expect(inspected.prepare("SELECT model, effort FROM agent_run_overrides WHERE source_id = ?")
       .get("agent-one")).toEqual({ model: "provider/default", effort: null });
     inspected.close();
@@ -2568,7 +2568,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(17);
+    expect(version.user_version).toBe(18);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -2595,7 +2595,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(17);
+    expect(version.user_version).toBe(18);
     expect(processJobCards).toBeDefined();
   });
 
@@ -2608,7 +2608,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 18");
+    future.exec("PRAGMA user_version = 19");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -3663,7 +3663,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 17 });
+    ).toMatchObject({ user_version: 18 });
     reopened.close();
   });
 });
@@ -4161,7 +4161,7 @@ describe("WebStore message sequence and part deltas", () => {
     context.store.close();
   });
 
-  it("adds the sequence column to a schema 16 database, whose rows read zero", async () => {
+  it.each([16, 17])("adds the sequence column to a schema %i database, whose rows read zero", async (version) => {
     const context = await openStreamingStore();
     stream(context, [{ kind: "append", delta: "written before the migration" }]);
     // Left running on purpose: recovery settles it on reopen, which is a parts
@@ -4170,7 +4170,7 @@ describe("WebStore message sequence and part deltas", () => {
 
     const database = new DatabaseSync(join(context.stateDir, "state.sqlite"));
     database.exec("ALTER TABLE messages DROP COLUMN seq");
-    database.exec("PRAGMA user_version = 16");
+    database.exec(`PRAGMA user_version = ${version}`);
     database.close();
 
     const reopened = await WebStore.open({ stateDir: context.stateDir });
@@ -4180,8 +4180,32 @@ describe("WebStore message sequence and part deltas", () => {
     expect(
       new DatabaseSync(join(context.stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 17 });
+    ).toMatchObject({ user_version: 18 });
     reopened.close();
+  });
+
+  it("preserves existing schema 17 sequences and remains stable on reopen", async () => {
+    const context = await openStreamingStore();
+    stream(context, [{ kind: "append", delta: "persisted before upgrade" }]);
+    context.store.completeTurn(context.turnId, "persisted before upgrade");
+    const before = context.store.getMessage(context.messageId);
+    expect(before?.seq).toBeGreaterThan(0);
+    context.store.close();
+
+    const database = new DatabaseSync(join(context.stateDir, "state.sqlite"));
+    database.exec("PRAGMA user_version = 17");
+    database.close();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reopened = await WebStore.open({ stateDir: context.stateDir });
+      expect(reopened.getMessage(context.messageId)).toEqual(before);
+      reopened.close();
+    }
+    const migrated = new DatabaseSync(join(context.stateDir, "state.sqlite"), { readOnly: true });
+    expect(migrated.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+    expect(migrated.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
+    expect(migrated.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    migrated.close();
   });
 
   it("never edits a stored part in place, which is what makes the diff sound", async () => {

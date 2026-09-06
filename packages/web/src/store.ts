@@ -471,7 +471,7 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 17;
+const WEB_STORAGE_SCHEMA_VERSION = 18;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 /**
@@ -3985,7 +3985,10 @@ export class WebStore {
         // which is exactly what a client that has never seen a delta holds.
         // Guarded on PRAGMA table_info so the ALTER is skipped when the column
         // already exists, keeping the migration re-runnable.
-        if (versionRow.user_version < 17) {
+        // Schema 17 was already used by agent run overrides before message
+        // sequencing landed. Both shapes exist, so schema 18 repairs the
+        // earlier shape without resetting existing sequence values.
+        if (versionRow.user_version < 18) {
           const columns = new Set((this.database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>)
             .map((column) => column.name));
           if (!columns.has("seq")) {
