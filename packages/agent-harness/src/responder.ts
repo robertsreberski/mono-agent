@@ -475,6 +475,7 @@ const RUNTIME_TELEMETRY_KINDS = new Set([
   "context_compaction",
   "context_usage",
   "provider_bridge_latency",
+  "provider_execution_config",
   "run_config",
   "session_boundary",
 ]);

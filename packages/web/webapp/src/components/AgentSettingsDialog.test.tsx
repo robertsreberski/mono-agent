@@ -63,6 +63,7 @@ describe("AgentSettingsDialog", () => {
 
     expect(screen.getByRole("dialog", { name: "Alpha settings" })).toBeVisible();
     expect(screen.getByText(/Existing conversations and other channels are unchanged/u)).toBeVisible();
+    expect(screen.getByText(/model that actually runs, including any fallback, appears on that run/u)).toBeVisible();
     expect(screen.getAllByText("config")).toHaveLength(2);
     fireEvent.click(screen.getByRole("button", { name: "Choose other model" }));
     fireEvent.click(screen.getByRole("button", { name: "Choose high effort" }));

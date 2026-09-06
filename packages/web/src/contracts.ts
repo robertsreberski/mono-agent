@@ -257,6 +257,39 @@ export type WebRunStatus =
   | "cancelled"
   | "interrupted";
 
+export interface WebRunSelection {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+export interface WebRunExecution extends WebRunSelection {
+  readonly effectiveEffort?: string;
+}
+
+export interface WebRunTransition {
+  readonly from: string;
+  readonly to: string;
+  readonly attemptIndex?: number;
+  readonly reason?: string;
+}
+
+export interface WebRunRetry {
+  readonly model?: string;
+  readonly retryIndex?: number;
+  readonly attempts?: number;
+  readonly reason?: string;
+}
+
+export interface WebRunAttribution {
+  readonly requested: WebRunSelection;
+  readonly attempted?: WebRunExecution;
+  readonly executed?: WebRunExecution;
+  readonly disposition: "requested" | "fallback" | "unknown";
+  readonly transitions: readonly WebRunTransition[];
+  readonly retries: readonly WebRunRetry[];
+  readonly truncated?: true;
+}
+
 export interface WebRunState {
   readonly id?: string;
   readonly status: WebRunStatus;
@@ -265,6 +298,7 @@ export interface WebRunState {
   readonly error?: { readonly code?: string; readonly message: string };
   readonly model?: string;
   readonly effort?: string;
+  readonly attribution?: WebRunAttribution;
 }
 
 export interface WebThread {
@@ -364,6 +398,8 @@ export type WebMessagePart =
       readonly executionMs?: number;
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
+      /** Provider route requested, attempted, and executed by this child. */
+      readonly attribution?: WebRunAttribution;
       /** Metadata for the persisted parent `Agent` call; child internals omit it. */
       readonly history?: SessionToolHistoryEventMetadata;
       /** See {@link WebToolCall.resultTruncated}; the delegation's report is truncated the same way. */
@@ -482,6 +518,7 @@ export interface WebMessage {
   readonly finishedAt?: string;
   readonly status: WebMessageStatus;
   readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  readonly attribution?: WebRunAttribution;
   /**
    * How many times this message's parts have been persisted, counted from the
    * row's creation. It is what makes a {@link WebMessageDelta} safe to apply:
@@ -756,6 +793,8 @@ export interface WebMessageDelta {
    * finish to draw it. Absent on every write that leaves the turn running.
    */
   readonly finishedAt?: string;
+  /** Full replacement snapshot when provider routing metadata changed. */
+  readonly attribution?: WebRunAttribution;
   readonly ops: readonly WebMessageDeltaOp[];
 }
 

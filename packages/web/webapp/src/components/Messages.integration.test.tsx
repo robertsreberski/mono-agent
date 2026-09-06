@@ -186,6 +186,43 @@ describe("AssistantMessage grouped parts", () => {
     ],
   });
 
+  it("keeps completed fallback attribution visible outside the folded activity log", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      attribution: {
+        requested: { model: "provider:primary", effort: "high" },
+        attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+        executed: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+        disposition: "fallback",
+        transitions: [{ from: "provider:primary", to: "provider:fallback", reason: "overloaded" }],
+        retries: [{ model: "provider:primary", retryIndex: 1, reason: "overloaded" }],
+        truncated: true,
+      },
+    }} />);
+
+    const summary = screen.getByText("Fallback: provider:primary → provider:fallback · overloaded");
+    expect(summary).toBeVisible();
+    expect(summary.closest("details")).toBeNull();
+    expect(screen.getByText("Requested High → effective Max")).toBeVisible();
+    expect(screen.getByText("Older routing entries were omitted.")).toBeInTheDocument();
+  });
+
+  it("never claims an exhausted fallback run answered", () => {
+    render(<MessageHarness message={{
+      ...assistantMessage("failed"),
+      attribution: {
+        requested: { model: "provider:primary", effort: "high" },
+        attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "xhigh" },
+        disposition: "fallback",
+        transitions: [{ from: "provider:primary", to: "provider:fallback" }],
+        retries: [],
+      },
+    }} />);
+
+    expect(screen.getByText("Fallback: provider:primary → provider:fallback · reason not reported")).toBeVisible();
+    expect(screen.queryByText(/Ran with/u)).toBeNull();
+  });
+
   it("says a tool result is a preview and loads the whole body on request", async () => {
     const repaired = vi.fn();
     const preview = truncatedToolMessage();

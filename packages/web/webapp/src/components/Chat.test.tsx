@@ -214,6 +214,30 @@ const chatTree = () => (
 );
 
 describe("Chat conversation viewport", () => {
+  it("shows the server-owned current route in the header independently of next-turn controls", () => {
+    const selected = thread("thread-a", "agent", {
+      trigger: { kind: "cron" },
+      runState: {
+        id: "turn-1",
+        status: "running",
+        attribution: {
+          requested: { model: "provider:primary", effort: "high" },
+          attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+          disposition: "fallback",
+          transitions: [{ from: "provider:primary", to: "provider:fallback", reason: "overloaded" }],
+          retries: [],
+        },
+      },
+    });
+    storeMock.current = chatStore(selected, chatDetail(selected, 1));
+
+    render(chatTree());
+
+    expect(screen.getByRole("status", { name: "Model fallback" })).toBeVisible();
+    expect(screen.getByText("provider:primary → provider:fallback")).toBeVisible();
+    expect(screen.queryByText(/overloaded/u)).toBeNull();
+  });
+
   it("recreates the viewport for an async conversation switch without interrupting a current conversation", async () => {
     const firstThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
     const secondThread = thread("thread-b", "agent", { trigger: { kind: "cron" } });

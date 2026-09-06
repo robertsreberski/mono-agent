@@ -352,6 +352,39 @@ export type SkillRegistryState =
       readonly truncated?: true;
     };
 
+export interface RunSelection {
+  readonly model?: string;
+  readonly effort?: string;
+}
+
+export interface RunExecution extends RunSelection {
+  readonly effectiveEffort?: string;
+}
+
+export interface RunTransition {
+  readonly from: string;
+  readonly to: string;
+  readonly attemptIndex?: number;
+  readonly reason?: string;
+}
+
+export interface RunRetry {
+  readonly model?: string;
+  readonly retryIndex?: number;
+  readonly attempts?: number;
+  readonly reason?: string;
+}
+
+export interface RunAttribution {
+  readonly requested: RunSelection;
+  readonly attempted?: RunExecution;
+  readonly executed?: RunExecution;
+  readonly disposition: "requested" | "fallback" | "unknown";
+  readonly transitions: readonly RunTransition[];
+  readonly retries: readonly RunRetry[];
+  readonly truncated?: true;
+}
+
 export interface RunState {
   readonly id?: string;
   readonly status: RunStatus;
@@ -360,6 +393,7 @@ export interface RunState {
   readonly error?: { readonly code?: string; readonly message: string };
   readonly model?: string;
   readonly effort?: string;
+  readonly attribution?: RunAttribution;
 }
 
 export interface ThreadSummary {
@@ -474,6 +508,7 @@ export type MessagePart =
       readonly executionMs?: number;
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
+      readonly attribution?: RunAttribution;
       readonly history?: SessionToolHistoryMetadata;
       /** See {@link ToolCall.resultTruncated}. */
       readonly resultTruncated?: boolean;
@@ -597,6 +632,7 @@ export interface WebMessage {
   readonly finishedAt?: string;
   readonly status: "running" | "complete" | "failed" | "cancelled" | "interrupted";
   readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  readonly attribution?: RunAttribution;
   /**
    * How many times the server has persisted this message's parts. It is what a
    * content delta applies against; absent on a message this console minted
@@ -653,6 +689,8 @@ export interface MessageDelta {
    * running, and never a clearing signal.
    */
   readonly finishedAt?: string;
+  /** Full replacement snapshot when provider routing metadata changed. */
+  readonly attribution?: RunAttribution;
   readonly ops: readonly MessageDeltaOp[];
 }
 

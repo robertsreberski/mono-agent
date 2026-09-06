@@ -302,6 +302,67 @@ describe("Agent tool activity forwarding", () => {
     expect(toolEvents[0].subagent).toEqual({ id: "call-1", name: "researcher", callIndex: 1 });
   });
 
+  it("attributes a child fallback without mixing it into the parent route", async () => {
+    const run = async (request) => {
+      request.onEvent({ type: "provider_execution_config", model: "provider:primary", effort: "high", effectiveEffort: "high" });
+      request.onEvent({ type: "provider_retry_started", model: "provider:primary", retryIndex: 1, reason: "overloaded" });
+      request.onEvent({ type: "provider_failover_started", from: "provider:primary", to: "provider:fallback", attemptIndex: 1, reason: "overloaded" });
+      request.onEvent({ type: "provider_execution_config", model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" });
+      return { text: "done", events: [], model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent.attribution).toEqual({
+      requested: { model: "provider:primary", effort: "high" },
+      attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+      executed: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+      disposition: "fallback",
+      transitions: [{ from: "provider:primary", to: "provider:fallback", attemptIndex: 1, reason: "overloaded" }],
+      retries: [{ model: "provider:primary", retryIndex: 1, reason: "overloaded" }],
+    });
+    expect(events.find((event) => event.phase === "agent_started")?.subagent.attribution).toBeUndefined();
+  });
+
+  it("bounds a child's multi-hop route history while retaining origin and newest hops", async () => {
+    const run = async (request) => {
+      for (let index = 0; index < 40; index += 1) {
+        request.onEvent({
+          type: "provider_failover_started",
+          from: `route-${index}`,
+          to: `route-${index + 1}`,
+          attemptIndex: index + 1,
+          reason: "overloaded",
+        });
+      }
+      return { text: "done", events: [], model: "route-40" };
+    };
+    const { events, done } = capture(run);
+    await done;
+    const attribution = events.find((event) => event.phase === "agent_completed")?.subagent.attribution;
+
+    expect(attribution).toMatchObject({ disposition: "fallback", truncated: true });
+    expect(attribution.transitions).toHaveLength(32);
+    expect(attribution.transitions[0]).toMatchObject({ from: "route-0", to: "route-1" });
+    expect(attribution.transitions.at(-1)).toMatchObject({ from: "route-39", to: "route-40" });
+  });
+
+  it("keeps a child same-model retry distinct from fallback", async () => {
+    const run = async (request) => {
+      request.onEvent({ type: "provider_execution_config", model: "provider:primary", effort: "high", effectiveEffort: "high" });
+      request.onEvent({ type: "provider_retry_started", model: "provider:primary", retryIndex: 1, attempts: 2, reason: "overloaded" });
+      return { text: "done", events: [], model: "provider:primary", effort: "high", effectiveEffort: "high" };
+    };
+    const { events, done } = capture(run);
+    await done;
+
+    expect(events.find((event) => event.phase === "agent_completed")?.subagent.attribution).toMatchObject({
+      disposition: "requested",
+      transitions: [],
+      retries: [{ model: "provider:primary", retryIndex: 1, attempts: 2, reason: "overloaded" }],
+    });
+  });
+
   it("never forwards the child's assistant text, which would splice into the parent answer", async () => {
     const run = async (request) => {
       request.onEvent({ type: "assistant", message: { content: [{ type: "text", text: "internal monologue" }] } });

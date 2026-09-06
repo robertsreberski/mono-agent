@@ -12,6 +12,11 @@
   prefix on every run, with omissions counted per assistant runtime event.
   Runtime/provider cancellation codes and details remain only in tag-safe JSON
   explicitly framed as untrusted evidence and cannot select host provenance.
+- Make web-console model routing explicit per run: requested, attempted, and
+  answering models, classified fallback/retry history, Pi's effective thinking
+  level, and nested subagent attribution are now visible without exposing raw
+  provider diagnostics. Standalone process-job and Monitor revival turns now
+  reuse the conversation's remembered web model/effort snapshot.
 - Add explicit Ollama Web Search alongside the existing SearXNG, Codex, and
   keyless routes. Preserve `auto` as SearXNG → Codex → keyless, repair the
   canonical nested SearXNG config while retaining its legacy endpoint alias,

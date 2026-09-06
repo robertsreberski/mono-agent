@@ -4528,6 +4528,53 @@ describe("ConsoleStoreProvider integration", () => {
       expect(after[1]?.seq).toBe(2);
     });
 
+    it("converges full-read and streamed attribution, then preserves it through one-message repair", async () => {
+      const initialAttribution = {
+        requested: { model: "provider:primary", effort: "high" },
+        attempted: { model: "provider:primary", effort: "high", effectiveEffort: "high" },
+        disposition: "requested" as const,
+        transitions: [],
+        retries: [],
+      };
+      const fallbackAttribution = {
+        requested: { model: "provider:primary", effort: "high" },
+        attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+        disposition: "fallback" as const,
+        transitions: [{ from: "provider:primary", to: "provider:fallback", reason: "overloaded" }],
+        retries: [{ model: "provider:primary", retryIndex: 1, reason: "overloaded" }],
+      };
+      seedTwo([streamed("m1", "Hel", { attribution: initialAttribution })]);
+      const store = await openedOnAlpha();
+      const conversationReads = vi.mocked(api.thread).mock.calls.length;
+
+      emitDelta(alpha.id, {
+        ops: [{ op: "append", index: 0, delta: "lo" }],
+        attribution: fallbackAttribution,
+      });
+      await waitFor(() => expect(store.current.detail?.messages[0]?.attribution).toEqual(fallbackAttribution));
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(conversationReads);
+      expect(api.message).not.toHaveBeenCalled();
+
+      vi.mocked(api.message).mockResolvedValue(streamed("m1", "Hello!", {
+        seq: 9,
+        status: "complete",
+        attribution: { ...fallbackAttribution, executed: fallbackAttribution.attempted },
+      }));
+      emitDelta(alpha.id, {
+        baseSeq: 8,
+        seq: 9,
+        status: "complete",
+        attribution: { ...fallbackAttribution, executed: fallbackAttribution.attempted },
+      });
+
+      await waitFor(() => expect(api.message).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(store.current.detail?.messages[0]?.attribution).toMatchObject({
+        disposition: "fallback",
+        executed: { model: "provider:fallback", effectiveEffort: "max" },
+      }));
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(conversationReads);
+    });
+
     it("consumes a status-only write so the next one still applies", async () => {
       seedTwo();
       const store = await openedOnAlpha();

@@ -29,6 +29,7 @@ import type {
   AskSnapshot,
   MonitorProjection,
   ToolCallArtifact,
+  RunAttribution as RunAttributionValue,
 } from "../types";
 import { UserMessageAttachments } from "./Attachments";
 import {
@@ -58,6 +59,7 @@ import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
+import { RunAttribution } from "./RunAttribution";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -1228,6 +1230,9 @@ function AssistantParts() {
   const content = useAuiState((state) => state.message.content);
   const startedAt = useAuiState((state) => state.message.createdAt.getTime());
   const finishedAt = useAuiState((state) => state.message.metadata.custom?.finishedAt);
+  const attribution = useAuiState((state) => state.message.metadata.custom?.attribution) as RunAttributionValue | undefined;
+  const runStatus = useAuiState((state) => state.message.metadata.custom?.runStatus) as
+    | "running" | "complete" | "failed" | "cancelled" | "interrupted" | undefined;
   const timing = useMemo(() => activityTiming(startedAt, finishedAt), [startedAt, finishedAt]);
   // Grouping coalesces ADJACENT parts, so prose between two runs of work
   // splits a streaming turn into several Activity bands. Each counts its own
@@ -1237,12 +1242,13 @@ function AssistantParts() {
   // band, which then owns it.
   const openBandIndex = lastActivityIndex(content);
   return (
-    <MessagePrimitive.GroupedParts
-      groupBy={ACTIVITY_GROUP_BY}
-      indicator={lastPartConveysProgress(content) ? "never" : "no-text"}
-    >
-      {({ part, children }) => {
-        switch (part.type) {
+    <>
+      <MessagePrimitive.GroupedParts
+        groupBy={ACTIVITY_GROUP_BY}
+        indicator={lastPartConveysProgress(content) ? "never" : "no-text"}
+      >
+        {({ part, children }) => {
+          switch (part.type) {
           case "group-activity": {
             const band = part.indices.map((index) => content[index]);
             return (
@@ -1287,9 +1293,11 @@ function AssistantParts() {
             return <RunningText status={{ type: "running" }} />;
           default:
             return null;
-        }
-      }}
-    </MessagePrimitive.GroupedParts>
+          }
+        }}
+      </MessagePrimitive.GroupedParts>
+      <RunAttribution attribution={attribution} status={runStatus ?? (isMessageRunning ? "running" : "complete")} />
+    </>
   );
 }
 

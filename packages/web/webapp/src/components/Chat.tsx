@@ -16,6 +16,7 @@ import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
 import { useRunControls } from "./run-controls";
+import { RunAttribution } from "./RunAttribution";
 
 const runLabel: Record<string, string> = {
   idle: "Ready",
@@ -246,7 +247,7 @@ export function ModelControls() {
   }, []);
 
   return (
-    <div className="model-controls" aria-label="Run settings">
+    <div className="model-controls" aria-label="Next turn settings">
       {usage && (
         <ContextDisplay
           context={usage.context}
@@ -430,6 +431,13 @@ export function Chat({
             <i />
             {status}
           </span>
+          {selectedThread?.runState.attribution && (
+            <RunAttribution
+              attribution={selectedThread.runState.attribution}
+              status={selectedThread.runState.status}
+              compact
+            />
+          )}
         </div>
         <div className="chat-header-actions">
           <NotificationBell />

@@ -201,6 +201,16 @@ describe("coalesceMonitorWakeMessages", () => {
         { type: "error" as const, code: "provider_failed", message: "Provider failed." },
       ],
     })],
+    ["model fallback", monitorWake("2", monitor(), {
+      attribution: {
+        requested: { model: "fixture:a", effort: "high" },
+        attempted: { model: "fixture:b", effort: "high", effectiveEffort: "off" },
+        executed: { model: "fixture:b", effort: "high", effectiveEffort: "off" },
+        disposition: "fallback" as const,
+        transitions: [{ from: "fixture:a", to: "fixture:b", reason: "overloaded" }],
+        retries: [],
+      },
+    })],
     ["reply attachment", monitorWake("2", monitor(), {
       parts: [
         { type: "monitor-activity" as const, monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
@@ -761,6 +771,29 @@ describe("convertWebMessage", () => {
         label: "read the router",
         status: "complete",
         calls: [{ toolCallId: "agent:call-1:t1", toolName: "Read" }],
+      },
+    });
+  });
+
+  it("keeps server-owned run attribution in assistant metadata", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant",
+      status: "complete",
+      attribution: {
+        requested: { model: "primary" },
+        executed: { model: "fallback", effectiveEffort: "xhigh" },
+        disposition: "fallback",
+        transitions: [{ from: "primary", to: "fallback", reason: "overloaded" }],
+        retries: [],
+      },
+    }));
+
+    expect(converted.metadata?.custom).toMatchObject({
+      runStatus: "complete",
+      attribution: {
+        requested: { model: "primary" },
+        executed: { model: "fallback", effectiveEffort: "xhigh" },
+        disposition: "fallback",
       },
     });
   });

@@ -1594,24 +1594,24 @@ export class WebService {
       );
     }
     const attachmentIds = input.attachmentIds ?? [];
-    const thread = this.store.getThread(threadId);
-    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const selection = this.resolveTurnSelection(threadId, input.model, input.effort);
+    const { thread, agent, model, effort, requestedModel, requestedEffort } = selection;
     threadId = thread.id;
-    const agent = this.store.getAgent(thread.sourceId);
     const connection = this.connections.get(thread.sourceId);
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
-    if (agent === undefined || connection === undefined || !thread.canSend) {
+    if (connection === undefined || !thread.canSend) {
       throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
     }
-    // The per-thread override is server state now, so it governs turns this
-    // server starts too -- process-job follow-ups and other assistant-owned
-    // wakes omit model/effort and would otherwise silently run on the agent
-    // default, ignoring the selection made in that very conversation. An
-    // explicit request value still wins.
-    const model = input.model ?? thread.runModel ?? undefined;
-    const effort = input.effort ?? thread.runEffort ?? undefined;
-    this.validateModelAndEffort(thread.sourceId, agent, model, effort);
-    const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
+    const started = this.store.beginTurn({
+      threadId,
+      text,
+      attachmentIds,
+      ...(input.quote === undefined ? {} : { quote: input.quote }),
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+      ...(requestedModel === undefined ? {} : { requestedModel }),
+      ...(requestedEffort === undefined ? {} : { requestedEffort }),
+    });
     this.launchTurn(started, connection.client, operatorText);
     // The operator's own row, inserted by `beginTurn` and announced by nothing
     // else. A console that did not issue this turn holds neither it nor the
@@ -2300,9 +2300,14 @@ export class WebService {
       }
       let started;
       try {
+        const selection = this.resolveTurnSelection(input.threadId);
         started = this.store.beginAssistantTurn({
           threadId: input.threadId,
           prompt: input.wakePrompt,
+          ...(selection.model === undefined ? {} : { model: selection.model }),
+          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+          ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
+          ...(selection.requestedEffort === undefined ? {} : { requestedEffort: selection.requestedEffort }),
         });
       } catch (error) {
         this.store.abandonProcessJobWake({
@@ -2484,10 +2489,15 @@ export class WebService {
       }
       let started;
       try {
+        const selection = this.resolveTurnSelection(input.threadId);
         started = this.store.beginAssistantTurn({
           threadId: input.threadId,
           prompt: input.wakePrompt,
           storedPrompt: "[Monitor wake]",
+          ...(selection.model === undefined ? {} : { model: selection.model }),
+          ...(selection.effort === undefined ? {} : { effort: selection.effort }),
+          ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
+          ...(selection.requestedEffort === undefined ? {} : { requestedEffort: selection.requestedEffort }),
         });
       } catch (error) {
         abandon();
@@ -2890,6 +2900,10 @@ export class WebService {
    *   sends it to the message read.
    */
   private emitMessageWrite(threadId: string, write: StoredMessageWrite | undefined): void {
+    if (write?.attributionChanged === true) {
+      const thread = this.store.getThread(threadId);
+      if (thread !== undefined) this.emit("turn.changed", threadId, { turn: thread.runState });
+    }
     if (write === undefined || write.delta === undefined) return;
     const { message, delta } = write;
     // An invariant, not a case: all three callers pass the assistant row of a
@@ -3289,6 +3303,40 @@ export class WebService {
       const oldest = entries.keys().next().value;
       if (oldest !== undefined) entries.delete(oldest);
     }
+  }
+
+  /** Resolve dispatch and durable attribution from the same fresh thread snapshot. */
+  private resolveTurnSelection(
+    threadId: string,
+    explicitModel?: string,
+    explicitEffort?: string,
+  ): {
+    readonly thread: WebThread;
+    readonly agent: WebAgentSummary;
+    readonly model?: string;
+    readonly effort?: string;
+    readonly requestedModel?: string;
+    readonly requestedEffort?: string;
+  } {
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const agent = this.store.getAgent(thread.sourceId);
+    if (agent === undefined) {
+      throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
+    }
+    const model = explicitModel ?? thread.runModel ?? undefined;
+    const effort = explicitEffort ?? thread.runEffort ?? undefined;
+    this.validateModelAndEffort(thread.sourceId, agent, model, effort);
+    const requestedModel = effectiveModelForAgent(agent, model);
+    const requestedEffort = effort ?? agent.defaultEffort ?? undefined;
+    return {
+      thread,
+      agent,
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+      ...(requestedModel === undefined ? {} : { requestedModel }),
+      ...(requestedEffort === undefined ? {} : { requestedEffort }),
+    };
   }
 
   private validateModelAndEffort(

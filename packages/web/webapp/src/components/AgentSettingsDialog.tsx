@@ -249,7 +249,7 @@ export function AgentSettingsDialog({
         <div className="agent-settings-body">
           <div>
             <h3>New conversation defaults</h3>
-            <p>Applies only to conversations created after you save. Existing conversations and other channels are unchanged.</p>
+            <p>Applies only to conversations created after you save. Existing conversations and other channels are unchanged. The model that actually runs, including any fallback, appears on that run.</p>
           </div>
           <ModelSelector
             models={models}

@@ -28,6 +28,22 @@ const delegation = {
 };
 
 describe("SubagentPart", () => {
+  it("shows the child run's own fallback attribution inside the delegation", () => {
+    render(part({
+      ...delegation,
+      attribution: {
+        requested: { model: "primary", effort: "high" },
+        executed: { model: "fallback", effort: "xhigh", effectiveEffort: "max" },
+        disposition: "fallback",
+        transitions: [{ from: "primary", to: "fallback", reason: "overloaded" }],
+        retries: [],
+      },
+    }));
+
+    expect(screen.getByText("Fallback: primary → fallback · overloaded")).toBeInTheDocument();
+    expect(screen.getByText("Requested High → effective Max")).toBeInTheDocument();
+  });
+
   it("renders one foldable section that owns the subagent's tool calls", () => {
     const { container } = render(part(delegation));
 
