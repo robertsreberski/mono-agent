@@ -9,6 +9,8 @@ import {
   MCP_APP_RESOURCE_MIME_TYPE,
   MCP_APP_SUPPORTED_VERSIONS,
   MAX_AGENT_REPLY_PARTS,
+  MAX_PROVIDER_AUTH_BODY_BYTES,
+  ProviderAuthOperationError,
   BoundedHttpResponseWriter,
   agentAttachmentKindFromMimeType,
   closeServerBounded,
@@ -19,6 +21,10 @@ import {
   parseMonitorProjections,
   parseProcessJobProjection,
   parseProcessJobProjections,
+  parseProviderAuthSessionInput,
+  parseProviderAuthSessionSnapshot,
+  parseProviderAuthSessionStartInput,
+  parseProviderAuthStatusSnapshot,
   serializeAgentStreamFrame,
   type AgentAttachment,
   type AgentMessageStream,
@@ -36,6 +42,7 @@ import {
   type ChannelInteractionHub,
   type ProcessJobOperator,
   type ProcessJobProjection,
+  type ProviderAuthOperator,
 } from "@mono-agent/agent-contracts";
 import {
   assertSafeBind,
@@ -239,6 +246,8 @@ export interface TuiAdapterOptions {
   readonly monitors?: MonitorOperator;
   /** Independent owner bearer for monitor routes. Required with monitors. */
   readonly monitorsBearer?: string;
+  /** Privileged Pi credential status/login surface; available only with apiKey. */
+  readonly providerAuth?: ProviderAuthOperator;
 }
 
 export interface TuiAdapterStartResult {
@@ -343,6 +352,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const monitorsPath = `${basePath}/v1/monitors`;
   const monitorPath = `${basePath}/v1/monitors/:monitorId`;
   const monitorCancelPath = `${basePath}/v1/monitors/:monitorId/cancel`;
+  const providerAuthPath = `${basePath}/v1/provider-auth`;
+  const providerAuthSessionsPath = `${providerAuthPath}/sessions`;
+  const providerAuthSessionPath = `${providerAuthSessionsPath}/:sessionId`;
+  const providerAuthInputPath = `${providerAuthSessionPath}/input`;
 
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
@@ -405,6 +418,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(options.modelCatalog === undefined
               ? {}
               : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
+            ...(options.providerAuth === undefined || apiKey === undefined
+              ? {}
+              : { providerAuth: { version: 1 } }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
@@ -967,6 +983,97 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
   });
 
+  const requireProviderAuth = (req: Request, res: Response): ProviderAuthOperator | undefined => {
+    if (options.providerAuth === undefined || apiKey === undefined) {
+      sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Provider authentication is unavailable."));
+      return undefined;
+    }
+    return authorize(req, res, apiKey) ? options.providerAuth : undefined;
+  };
+  const sendProviderAuth = (res: Response, status: number, body: unknown) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    res.status(status).json(body);
+  };
+
+  app.use(providerAuthPath, (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
+
+  app.get(providerAuthPath, (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    void providerAuth.status()
+      .then((snapshot) => sendProviderAuth(res, 200, parseProviderAuthStatusSnapshot(snapshot)))
+      .catch(next);
+  });
+
+  app.post(providerAuthSessionsPath, express.json({ limit: MAX_PROVIDER_AUTH_BODY_BYTES, strict: true }), (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    let input;
+    try {
+      input = parseProviderAuthSessionStartInput(req.body);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    void providerAuth.start(input)
+      .then((snapshot) => sendProviderAuth(res, 201, parseProviderAuthSessionSnapshot(snapshot)))
+      .catch(next);
+  });
+
+  app.get(providerAuthSessionPath, (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    const sessionId = boundedProviderAuthSessionId(req.params.sessionId);
+    if (sessionId === undefined) {
+      next(new TuiAdapterError("invalid_request", "A bounded provider auth session id is required."));
+      return;
+    }
+    void providerAuth.get(sessionId).then((snapshot) => {
+      if (snapshot === undefined) {
+        sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Provider authentication session was not found."));
+      } else {
+        sendProviderAuth(res, 200, parseProviderAuthSessionSnapshot(snapshot));
+      }
+    }).catch(next);
+  });
+
+  app.post(providerAuthInputPath, express.json({ limit: MAX_PROVIDER_AUTH_BODY_BYTES, strict: true }), (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    const sessionId = boundedProviderAuthSessionId(req.params.sessionId);
+    if (sessionId === undefined) {
+      next(new TuiAdapterError("invalid_request", "A bounded provider auth session id is required."));
+      return;
+    }
+    let input;
+    try {
+      input = parseProviderAuthSessionInput(req.body);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    void providerAuth.submit(sessionId, input)
+      .then((snapshot) => sendProviderAuth(res, 200, parseProviderAuthSessionSnapshot(snapshot)))
+      .catch(next);
+  });
+
+  app.delete(providerAuthSessionPath, (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    const sessionId = boundedProviderAuthSessionId(req.params.sessionId);
+    if (sessionId === undefined) {
+      next(new TuiAdapterError("invalid_request", "A bounded provider auth session id is required."));
+      return;
+    }
+    void providerAuth.cancel(sessionId).then(() => {
+      res.setHeader("Cache-Control", "private, no-store, max-age=0");
+      res.status(204).end();
+    }).catch(next);
+  });
+
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
@@ -981,6 +1088,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     // 400 only for client mistakes (invalid_request, body-parse SyntaxError);
     // anything else is a server-side failure and must read as one.
     if (error instanceof CronOperatorError) {
+      sendJsonError(res, error.status, error);
+      return;
+    }
+    if (error instanceof ProviderAuthOperationError) {
       sendJsonError(res, error.status, error);
       return;
     }
@@ -1091,7 +1202,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       stopPromise ??= (async () => {
         stopping = true;
         for (const controller of activeTurns) controller.abort(new Error("TUI adapter stopped."));
-        await closeServerBounded(server);
+        await Promise.all([closeServerBounded(server), options.providerAuth?.stop()]);
         activeTurns.clear();
       })();
       return stopPromise;
@@ -2195,6 +2306,12 @@ function authorize(req: Request, res: Response, apiKey: string | undefined): boo
   }
   res.status(401).json({ error: { message: "Invalid API key.", code: "invalid_api_key" } });
   return false;
+}
+
+function boundedProviderAuthSessionId(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= 128
+    ? value
+    : undefined;
 }
 
 function sendJsonError(res: Response, status: number, error: unknown): void {

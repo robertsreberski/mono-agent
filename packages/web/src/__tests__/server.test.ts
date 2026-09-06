@@ -961,6 +961,56 @@ describe("web HTTP server", () => {
     });
   });
 
+  it("requires exact origin for provider-auth reads and proxies no-store responses without persistence", async () => {
+    const providerAuthStatus = {
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go", usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "missing", verification: "not_verified",
+        methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true }],
+      }],
+    };
+    const providerAuthSession = {
+      schema: "mono-agent.provider-auth-session.v1",
+      id: "session-1", providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
+      state: "succeeded", createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+    };
+    const forwarded: { readonly url: string; readonly body?: string }[] = [];
+    const { baseUrl, handle } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        supportsProviderAuth: true,
+        providerAuthStatus,
+        providerAuthSession,
+        onProviderAuthRequest: (url, init) => forwarded.push({ url, ...(typeof init?.body === "string" ? { body: init.body } : {}) }),
+      }),
+    });
+    const path = `${baseUrl}/api/v1/agents/agent-one/provider-auth`;
+    const missingOrigin = await fetch(path);
+    expect(missingOrigin.status).toBe(403);
+    expect(missingOrigin.headers.get("cache-control")).toContain("no-store");
+    expect((await fetch(path, { headers: { "X-Mono-Agent-Web-Origin": "https://evil.example" } })).status).toBe(403);
+    const allowed = await fetch(path, { headers: { "X-Mono-Agent-Web-Origin": baseUrl } });
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("cache-control")).toContain("no-store");
+    expect(await allowed.json()).toEqual(providerAuthStatus);
+    expect(forwarded).toHaveLength(1);
+
+    const secret = "PROVIDER_AUTH_WEB_SECRET_SENTINEL";
+    const submitted = await fetch(`${baseUrl}/api/v1/agents/agent-one/provider-auth/sessions/session-1/input`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl },
+      body: JSON.stringify({ promptId: "prompt-1", value: secret }),
+    });
+    const submittedText = await submitted.text();
+    expect(submitted.status).toBe(200);
+    expect(submitted.headers.get("cache-control")).toContain("no-store");
+    expect(submittedText).not.toContain(secret);
+    expect(forwarded.at(-1)?.body).toContain(secret);
+    expect((await readFile(join(handle.stateDir, "state.sqlite"))).includes(Buffer.from(secret))).toBe(false);
+  });
+
   it("authenticates the owner-private notification ingress before reading a large body", async () => {
     const { handle } = await start({ host: "127.0.0.1" });
     const paths = await prepareWebStatePaths({ stateDir: handle.stateDir });

@@ -467,6 +467,18 @@ common monotonic contract covers the whole chain and rejects or skips a route
 that cannot represent it. Pi keeps mono-agent tool policy and optional SRT. No
 route silently drops a required capability.
 
+When the TUI/operator endpoint is protected by its normal API key, the app also
+owns an in-memory provider-auth service for the web console's Agent settings.
+It reports only providers used by effective configured routes and keeps
+credential detection distinct from a successful live request. GitHub Copilot
+and OpenAI Codex use Pi's native device-code flow; Anthropic uses the existing
+manual-code redirect callback; API-key providers use masked provider-owned
+prompts. Returned credentials pass through the same owner-private,
+cross-process-locked, sibling-preserving, no-clobber Pi-store transaction as
+the CLI API-key flow. Sessions, submitted values, URLs, and codes are never
+written to agent history. The service covers `providers.piAuthPath` only, not
+Codex CLI credentials.
+
 ### Run history
 
 `RunHistory` requires no config key. It is automatically available under

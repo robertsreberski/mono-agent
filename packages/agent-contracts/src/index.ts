@@ -1,5 +1,7 @@
 import { types as nodeUtilTypes } from "node:util";
 
+export * from "./provider-auth.js";
+
 export type AgentRequestMetadata = Record<string, unknown>;
 export type AgentResponseMetadata = Record<string, unknown>;
 export {

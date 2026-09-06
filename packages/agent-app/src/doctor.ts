@@ -115,6 +115,7 @@ import {
   probeMemoryEmbeddingSelection,
 } from "./memory-embedding-service.js";
 import { piAuthRecoveryCommand } from "./provider-setup.js";
+import { collectUsedProviderReferences } from "./provider-auth-status.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
 import { checkManagedProjectSkills, managedProjectSkillsExist } from "./project-skills.js";
 import { runtimeProvenanceDetail } from "./runtime-provenance.js";
@@ -234,7 +235,7 @@ export async function validateMonoAgentFolder(
   sections.push(await runtimeProvenanceSection(options.verifiedRuntimeProvenanceDetail));
 
   if (coreConfig !== undefined) {
-    const staticTriggerCredentialRefs = await collectStaticTriggerCredentialRefs(drivers, options);
+    const staticTriggerCredentialRefs = await collectStaticTriggerCredentialRefs(coreConfig, drivers, options);
     const jsonResult = await readMonoAgentConfigJson(options.configPath);
     // Channel secrets (bot tokens, API keys) live outside the core view, so the
     // placement check spans both: core sections + every channel's config view.
@@ -429,34 +430,13 @@ function staticTriggerConfigEntries(
  * webhook request-body overrides are intentionally unavailable at validate time.
  */
 async function collectStaticTriggerCredentialRefs(
+  config: MonoAgentConfig,
   drivers: readonly ChannelDriver[],
   input: MonoAgentAppConfigInput,
 ): Promise<readonly { label: string; ref: RuntimeModelReference }[]> {
-  const refs: { label: string; ref: RuntimeModelReference }[] = [];
-  const seen = new Set<string>();
-  for (const driver of drivers) {
-    if (driver.id !== "webhook" && driver.id !== "cron") continue;
-    let loaded: unknown;
-    try {
-      loaded = await driver.loadConfig(input);
-    } catch {
-      // The channel section owns malformed/unreadable config diagnostics.
-      continue;
-    }
-    for (const { entryPath, entry } of staticTriggerConfigEntries(driver.id, loaded)) {
-      if (typeof entry.model !== "string") continue;
-      try {
-        const ref = parseMonoRuntimeModelReference(entry.model);
-        const key = `${entryPath}\u0000${modelReferenceKey(ref)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        refs.push({ label: entryPath, ref });
-      } catch {
-        // The channel section owns invalid model-reference syntax.
-      }
-    }
-  }
-  return refs;
+  return (await collectUsedProviderReferences(config, drivers, input))
+    .filter(({ usage }) => usage.kind === "cron" || usage.kind === "webhook")
+    .map(({ usage, ref }) => ({ label: usage.label, ref }));
 }
 
 async function applyRequestModelOverrideCompatibilityChecks(

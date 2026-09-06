@@ -25,6 +25,8 @@ import type { NotifyDeliveryResult } from "./proactive-notify.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import type { MonitorsServiceHandle } from "./monitors-service.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import { createProviderAuthObservationTracker, type ProviderAuthObservationTracker } from "./provider-auth-observations.js";
+import { createProviderAuthOperator } from "./provider-auth-operator.js";
 import { startAppOwnedTuiChannel } from "./channel-drivers/tui.js";
 import {
   unsafeProcessJobsProtectionStatus,
@@ -50,6 +52,7 @@ export interface ChannelsControllerPort {
   readonly monitorsStateDir: string | undefined;
   readonly processJobsDegradation: { readonly stateDir: string; readonly reason: string } | undefined;
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
+  readonly providerAuthObservations?: ProviderAuthObservationTracker;
   setStatus(id: ChannelId, status: ChannelStatus): ChannelStatus;
   rememberSelectedSkills(coreConfig: MonoAgentConfig): void;
   ensureInteractionBridge(coreConfig: MonoAgentConfig): Promise<InteractionBridgeHandle | undefined>;
@@ -263,11 +266,19 @@ export async function startChannel(controller: ChannelsControllerPort, driver: C
         });
       },
     };
+    const providerAuth = driver.id === "tui" ? createProviderAuthOperator({
+      config: coreConfig,
+      env: controller.env,
+      drivers: controller.drivers,
+      input,
+      observations: controller.providerAuthObservations ?? createProviderAuthObservationTracker(),
+    }) : undefined;
     const appOwnedTuiStart = startAppOwnedTuiChannel(
       driver,
       channelStartInput,
       controller.processJobsService,
       controller.monitorsService,
+      providerAuth,
     );
     const runningChannel = await (appOwnedTuiStart ?? driver.start(channelStartInput));
     if (!isCurrentGeneration()) {
