@@ -10,9 +10,26 @@ import { useSyncExternalStore } from "react";
  * Read through `useSyncExternalStore` rather than an effect so a component that
  * pauses on this cannot render one frame believing it is visible when it is not.
  */
+/**
+ * One `visibilitychange` listener for the document, however many components ask.
+ *
+ * A transcript can hold dozens of pollers; registering a listener each would put
+ * dozens on `document` for one boolean. Attached with the first subscriber and
+ * detached with the last, the same way the data mode's sources are.
+ */
+const listeners = new Set<() => void>();
+
+const announce = (): void => {
+  for (const listener of [...listeners]) listener();
+};
+
 const subscribe = (listener: () => void): (() => void) => {
-  document.addEventListener("visibilitychange", listener);
-  return () => document.removeEventListener("visibilitychange", listener);
+  if (listeners.size === 0) document.addEventListener("visibilitychange", announce);
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) document.removeEventListener("visibilitychange", announce);
+  };
 };
 
 export const documentVisible = (): boolean => document.visibilityState !== "hidden";

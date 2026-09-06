@@ -12,6 +12,7 @@ import {
   REPLY_IMAGE_RETENTION_MS,
   acquireReplyImageBlob,
   clearReplyImageBlobs,
+  clearRetainedReplyImages,
   dropReplyImageFetch,
   joinReplyImageFetch,
   publishReplyImageBlob,
@@ -382,5 +383,42 @@ describe("what a picture costs", () => {
     // where a full-mode console would still be holding all of them.
     expect(revokeObjectURL).toHaveBeenCalledTimes(1);
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-1");
+  });
+});
+
+describe("what the store gives back on request", () => {
+  it("frees what nobody is holding without touching a picture on screen", () => {
+    const { revokeObjectURL } = stubObjectUrls();
+    const held = replyImageKey("sha256:held", 4);
+    const released = replyImageKey("sha256:released", 4);
+    const shown = publishReplyImageBlob(held, new Blob(["abcd"]));
+    publishReplyImageBlob(released, new Blob(["abcd"]));
+    releaseReplyImageBlob(released);
+
+    clearRetainedReplyImages();
+
+    // "Clear cached data" is about what this browser is KEEPING. Revoking a URL
+    // an on-screen <img> still points at would blank the picture in front of the
+    // operator, which is not what they asked for.
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-2");
+    expect(acquireReplyImageBlob(held)).toBe(shown);
+    expect(retainedReplyImageBytes()).toBe(0);
+  });
+
+  it("never parks a rejected request in the slot a later viewer would join", async () => {
+    // `start` running before the slot is registered meant a SYNCHRONOUS throw
+    // settled the request first and filled the slot afterwards, leaving a
+    // rejected promise for the next viewer of that picture to join.
+    const key = replyImageKey("sha256:throws", 4);
+    const request = joinReplyImageFetch(key, () => {
+      throw new Error("no transport");
+    });
+
+    await expect(request).rejects.toThrow("no transport");
+
+    const second = joinReplyImageFetch(key, async () => new Blob(["abcd"]));
+    expect(second).not.toBe(request);
+    await expect(second).resolves.toBeInstanceOf(Blob);
   });
 });

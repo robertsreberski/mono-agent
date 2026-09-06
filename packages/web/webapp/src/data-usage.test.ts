@@ -127,12 +127,13 @@ describe("resource entries", () => {
     // feature exists to justify.
     vi.stubGlobal("PerformanceObserver", FakePerformanceObserver);
     vi.stubGlobal("PerformanceResourceTiming", class { });
+    FakePerformanceObserver.latest = undefined;
     const stop = observeTransferredResources();
 
+    // No observer is built at all -- there would be nothing for it to read --
+    // so both estimate paths stay live and the snapshot says it is guessing.
+    expect(FakePerformanceObserver.latest).toBeUndefined();
     expect(dataUsage().measured).toBe(false);
-    FakePerformanceObserver.latest?.deliver([
-      { entryType: "resource", initiatorType: "fetch", name: "/api/v1/bootstrap" },
-    ]);
     recordTransferredBody(4_096);
     recordResponsePayload(new Response("x".repeat(2_000)), "x".repeat(2_000));
 

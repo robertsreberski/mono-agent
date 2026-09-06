@@ -245,16 +245,26 @@ export const joinReplyImageFetch = (
     }
     if (inFlight.get(key)?.controller === controller) inFlight.delete(key);
   };
-  const promise = (async () => {
-    try {
-      return await start(controller.signal);
-    } finally {
-      settle();
-    }
-  })();
+  // The slot is registered BEFORE `start` is allowed to run. Called first, a
+  // synchronous throw settled the request while there was no slot to clear, and
+  // the registration that followed parked a rejected promise for the next viewer
+  // of the same picture to join. `start` is still called synchronously, because
+  // its caller may abandon it in the same tick.
+  let succeed!: (blob: Blob) => void;
+  let fail!: (reason: unknown) => void;
+  const promise = new Promise<Blob>((resolve, reject) => {
+    succeed = resolve;
+    fail = reject;
+  });
   // Nothing is left unhandled if every waiter leaves before it settles.
   promise.catch(() => undefined);
   inFlight.set(key, { controller, settle, promise, waiters: 1 });
+  try {
+    start(controller.signal).then(succeed, fail).finally(() => { settle(); });
+  } catch (error) {
+    settle();
+    fail(error);
+  }
   return promise;
 };
 
@@ -272,6 +282,24 @@ export const dropReplyImageFetch = (key: string, request: Promise<Blob>): void =
   if (pending.waiters > 0) return;
   pending.settle();
   pending.controller.abort(new DOMException("The reply image is no longer shown.", "AbortError"));
+};
+
+/**
+ * Frees what nobody is holding, and nothing else.
+ *
+ * What "Clear cached data" means for pictures: the retention window exists to
+ * make scrolling back free, and emptying it is exactly what the operator asked
+ * for. A blob an on-screen `<img>` is pointing at is NOT cached data -- revoking
+ * it would blank a picture in front of them -- so only the unreferenced queue is
+ * swept, which by construction is every entry whose last viewer has left.
+ */
+export const clearRetainedReplyImages = (): void => {
+  for (const key of [...retained]) {
+    const image = sharedImages.get(key);
+    if (image === undefined || image.refs > 0) continue;
+    forgetRetained(key, image.size);
+    revokeShared(key);
+  }
 };
 
 /**

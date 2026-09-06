@@ -105,7 +105,17 @@ function useModalFocus(
   }, [initialFocusRef, onClose, open, rootRef]);
 }
 
+/**
+ * The palette is closed almost all of the time, and while it is closed it has no
+ * business subscribing to anything or building a list nobody can see. A shell
+ * with no hooks of its own is what makes that early return legal.
+ */
 function CommandPalette({ open, onClose }: { readonly open: boolean; readonly onClose: () => void }) {
+  if (!open) return null;
+  return <OpenCommandPalette onClose={onClose} />;
+}
+
+function OpenCommandPalette({ onClose }: { readonly onClose: () => void }) {
   const store = useConsoleStore();
   const dataModeSetting = useDataModeSetting();
   const dataMode = useDataMode();
@@ -114,13 +124,7 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
 
-  useModalFocus(open, dialogRef, onClose, inputRef);
-
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-    }
-  }, [open]);
+  useModalFocus(true, dialogRef, onClose, inputRef);
 
   const actions = useMemo<readonly PaletteAction[]>(
     () => [
@@ -223,7 +227,6 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
   const normalized = query.trim().toLowerCase();
   const visible = actions.filter((action) => action.label.toLowerCase().includes(normalized));
 
-  if (!open) return null;
   return (
     <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
       <section

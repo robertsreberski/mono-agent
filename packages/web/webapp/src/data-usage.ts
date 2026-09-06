@@ -191,14 +191,18 @@ const resourceTransferSizeReported = (): boolean => {
 export const observeTransferredResources = (): (() => void) => {
   const Observer = (globalThis as { PerformanceObserver?: typeof PerformanceObserver }).PerformanceObserver;
   if (typeof Observer !== "function" || !resourceTransferSizeReported()) return () => undefined;
-  const observer = new Observer((list) => {
-    for (const raw of list.getEntries() as readonly TransferEntry[]) {
-      if (raw.entryType !== "resource") continue;
-      if (raw.name?.includes(STREAM_PATH) === true) continue;
-      recordDataUsage(raw.transferSize ?? 0);
-    }
-  });
+  // Construction inside the guard as well as the call: this runs at module scope
+  // before `createRoot`, so a `PerformanceObserver` that throws on construction
+  // would white-screen the console rather than cost it a meter.
+  let observer: PerformanceObserver;
   try {
+    observer = new Observer((list) => {
+      for (const raw of list.getEntries() as readonly TransferEntry[]) {
+        if (raw.entryType !== "resource") continue;
+        if (raw.name?.includes(STREAM_PATH) === true) continue;
+        recordDataUsage(raw.transferSize ?? 0);
+      }
+    });
     observer.observe({ type: "resource", buffered: true });
   } catch {
     // A browser that reports the field but refuses the type. The estimate stays.
