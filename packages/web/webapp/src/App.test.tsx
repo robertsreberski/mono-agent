@@ -61,7 +61,19 @@ vi.mock("./components/AgentRail", () => ({
 }));
 
 vi.mock("./components/Chat", () => ({
-  Chat: () => <main>Chat</main>,
+  Chat: ({
+    onOpenAgents,
+    onOpenThreads,
+  }: {
+    readonly onOpenAgents: () => void;
+    readonly onOpenThreads: () => void;
+  }) => (
+    <main>
+      Chat
+      <button type="button" onClick={onOpenAgents}>Choose agent</button>
+      <button type="button" onClick={onOpenThreads}>Open conversations</button>
+    </main>
+  ),
 }));
 
 vi.mock("./components/ThreadSidebar", () => ({
@@ -112,6 +124,117 @@ describe("App viewport layout", () => {
 
     expect(document.title).toBe("console-host · mono-agent");
     expect(document.documentElement).toHaveAttribute("data-console-theme", "ocean");
+  });
+});
+
+describe("App mobile drawer gestures", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: query === "(max-width: 900px)",
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+    });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  const swipe = (
+    target: Element,
+    start: { readonly x: number; readonly y: number },
+    end: { readonly x: number; readonly y: number },
+  ) => {
+    fireEvent.touchStart(target, {
+      touches: [{ clientX: start.x, clientY: start.y }],
+    });
+    fireEvent.touchEnd(target, {
+      touches: [],
+      changedTouches: [{ clientX: end.x, clientY: end.y }],
+    });
+  };
+
+  it("opens conversations after a deliberate right swipe across the chat surface", () => {
+    const { container } = render(<App />);
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
+
+    swipe(shell!, { x: 180, y: 240 }, { x: 256, y: 250 });
+
+    expect(container.querySelector(".mobile-thread-drawer"))
+      .toHaveAttribute("aria-hidden", "false");
+    expect(container.querySelector(".mobile-agent-drawer"))
+      .toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("does not open for a short drag or a vertical scroll", () => {
+    const { container } = render(<App />);
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
+
+    swipe(shell!, { x: 180, y: 240 }, { x: 243, y: 245 });
+    swipe(shell!, { x: 180, y: 240 }, { x: 250, y: 320 });
+
+    expect(container.querySelector(".mobile-thread-drawer"))
+      .toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("does not compete with interactive controls", () => {
+    const { container } = render(<App />);
+    const chooseAgent = screen.getByRole("button", { name: "Choose agent" });
+
+    swipe(chooseAgent, { x: 12, y: 30 }, { x: 100, y: 32 });
+
+    expect(container.querySelector(".mobile-thread-drawer"))
+      .toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("leaves message content and native horizontal scrollers in control", () => {
+    const { container } = render(<App />);
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
+
+    const message = document.createElement("div");
+    const messageContent = document.createElement("p");
+    message.className = "message";
+    message.append(messageContent);
+    shell!.append(message);
+    swipe(messageContent, { x: 40, y: 200 }, { x: 130, y: 204 });
+
+    const scroller = document.createElement("div");
+    const scrollContent = document.createElement("span");
+    scroller.style.overflowX = "auto";
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 120 },
+      scrollWidth: { configurable: true, value: 240 },
+    });
+    scroller.append(scrollContent);
+    shell!.append(scroller);
+    swipe(scrollContent, { x: 40, y: 240 }, { x: 130, y: 244 });
+
+    expect(container.querySelector(".mobile-thread-drawer"))
+      .toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("closes either open drawer with a deliberate left swipe", () => {
+    const { container } = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Choose agent" }));
+    const agentDrawer = container.querySelector(".mobile-agent-drawer");
+    expect(agentDrawer).not.toBeNull();
+
+    swipe(agentDrawer!, { x: 220, y: 240 }, { x: 140, y: 245 });
+    expect(agentDrawer).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open conversations" }));
+    const threadDrawer = container.querySelector(".mobile-thread-drawer");
+    expect(threadDrawer).not.toBeNull();
+    swipe(threadDrawer!, { x: 220, y: 240 }, { x: 140, y: 245 });
+
+    expect(threadDrawer).toHaveAttribute("aria-hidden", "true");
   });
 });
 
