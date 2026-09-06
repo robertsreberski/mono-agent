@@ -4678,6 +4678,51 @@ describe("every transcript-moving write names its message", () => {
     await service.stop();
   });
 
+  it("names nothing when a completed notification had nothing left to write", async () => {
+    // The cron page reconciled this run's message first, text and all. The
+    // notification that follows maps onto the SAME row, finds the text already
+    // there and writes nothing -- and naming it anyway costs every subscribed
+    // console one message read for a transcript that did not move.
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z",
+      orderedAt: "2026-08-14T09:55:00.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      startedAt: "2026-08-14T09:55:01.000Z",
+      completedAt: "2026-08-14T09:55:02.000Z",
+      text: "Digest complete",
+      eventCount: 0,
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsHistoryAppend: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+      }),
+    });
+    await service.cronRuns("agent-one", "digest", { limit: 100 });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    const delivered = await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      text: "Digest complete",
+    });
+
+    expect(delivered.duplicate).toBe(false);
+    expect(messageEvents(events)).toEqual([]);
+    unsubscribe();
+    await service.stop();
+  });
+
   it("names every message a cron reconciliation wrote, and none it left alone", async () => {
     const run = {
       projection: "summary",

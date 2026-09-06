@@ -75,6 +75,14 @@ vi.mock("./api", async (importOriginal) => ({
   },
 }));
 
+/**
+ * Never emits `ready` and never calls `onopen` unless a test does so itself.
+ *
+ * Which is deliberate -- most tests are about what an EVENT costs -- but it
+ * means the read counts in the cache describe are not production request
+ * counts: a real console's first `ready` and every reconnect's resync are
+ * absent unless the test emits them.
+ */
 class FakeEventSource {
   static latest: FakeEventSource | undefined;
   /** Every stream this render opened, in order: a reconnect is a new entry. */

@@ -98,6 +98,57 @@ describe("createThreadPersistence", () => {
     expect(alpha?.savedAt).toBe(1_000);
   });
 
+  it("does not sweep away the conversations another tab is keeping", async () => {
+    // Two tabs, each flushing its own eight. The sweep was a WHOLE-STORE
+    // statement while the write-skip was per instance, so each tab deleted the
+    // other's rows and then skipped rewriting its own -- alternating saves
+    // emptied the device between them.
+    const tabA = createThreadPersistence();
+    const tabB = createThreadPersistence();
+    // The same entry OBJECTS each time, which is what the cache hands a tab
+    // that has not changed the conversation.
+    const alpha = entry("alpha-thread");
+    const beta = entry("beta-thread");
+
+    await tabA.save({ entries: [alpha] });
+    await tabB.save({ entries: [beta] });
+    await tabA.save({ entries: [alpha] });
+    await tabB.save({ entries: [beta] });
+
+    const restored = await createThreadPersistence().hydrate();
+    expect(restored?.threads.map((row) => row.id).sort())
+      .toEqual(["alpha-thread", "beta-thread"]);
+  });
+
+  it("puts back a held conversation whose row went away under it", async () => {
+    const store = createThreadPersistence({ now: () => 1_000 });
+    const alpha = entry("alpha-thread");
+    await store.save({ entries: [alpha] });
+
+    // Another owner of the same database removed it. The write-skip is a
+    // statement about what THIS instance wrote, and it is only good while the
+    // row is still there.
+    await createThreadPersistence().clearAll();
+
+    await store.save({ entries: [alpha] });
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id))
+      .toEqual(["alpha-thread"]);
+  });
+
+  it("clears the whole device when the operator asks, whichever tab asked", async () => {
+    // Deliberately NOT instance-scoped: "Clear cached data" means this browser
+    // is not keeping conversations, not "this tab is not".
+    const tabA = createThreadPersistence();
+    const tabB = createThreadPersistence();
+    await tabA.save({ entries: [entry("alpha-thread")], snapshot: snapshot() });
+    await tabB.save({ entries: [entry("beta-thread")] });
+
+    await tabA.clearAll();
+
+    expect(await createThreadPersistence().hydrate())
+      .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+  });
+
   it("drops the row for a conversation the cache stopped holding", async () => {
     const store = createThreadPersistence();
     await store.save({ entries: [entry("alpha-thread"), entry("beta-thread")] });
@@ -212,6 +263,33 @@ describe("createThreadPersistence", () => {
     expect(restored?.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
   });
 
+  it("skips a summary the sidebar could not draw", async () => {
+    const store = createThreadPersistence();
+    await store.save({ entries: [entry("alpha-thread")] });
+    await new Promise<void>((resolve) => {
+      const request = indexedDB.open(PERSISTENCE_DB_NAME);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("threads", "readwrite");
+        // Everything a row needs EXCEPT the run state every row and the chat
+        // header read unconditionally.
+        const { runState: _runState, ...withoutRunState } = thread("no-run-state", "alpha");
+        tx.objectStore("threads").put({
+          id: "no-run-state",
+          thread: withoutRunState,
+          messages: [],
+          repairedToolCallIds: [],
+          pagedInIds: [],
+          savedAt: 1,
+        });
+        tx.oncomplete = () => { db.close(); resolve(); };
+      };
+    });
+
+    const restored = await createThreadPersistence().hydrate();
+    expect(restored?.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+  });
+
   it("skips a row whose messages are the wrong shape, however well-formed the row is", async () => {
     // The row that mattered: a well-formed ARRAY of malformed messages. It used
     // to pass the "record with a string id" check, restore into the cache, and
@@ -254,6 +332,27 @@ describe("createThreadPersistence", () => {
     await expect(store.hydrate()).resolves.not.toBeNull();
   });
 
+  it("writes nothing when only the suspicion about a conversation changed", async () => {
+    // `markAllStale` replaces all eight entry OBJECTS on every app switch, and
+    // `stale`/`syncedAt` are the two things the device does not keep -- so by
+    // entry identity alone every switch re-stripped and rewrote eight identical
+    // transcripts.
+    let clock = 1_000;
+    const store = createThreadPersistence({ now: () => clock });
+    const alpha = entry("alpha-thread");
+    await store.save({ entries: [alpha] });
+
+    clock = 2_000;
+    await store.save({ entries: [{ ...alpha, stale: true, syncedAt: 42 }] });
+
+    expect((await createThreadPersistence().hydrate())?.threads[0]?.savedAt).toBe(1_000);
+
+    // And a real change still lands.
+    clock = 3_000;
+    await store.save({ entries: [{ ...alpha, messages: [message("later")] }] });
+    expect((await createThreadPersistence().hydrate())?.threads[0]?.savedAt).toBe(3_000);
+  });
+
   it("writes nothing for the rows it just handed back", async () => {
     const writer = createThreadPersistence({ now: () => 1_000 });
     const entries = [entry("alpha-thread"), entry("beta-thread")];
@@ -270,6 +369,12 @@ describe("createThreadPersistence", () => {
     expect(restored?.threads.every((row) => row.savedAt === 1_000)).toBe(true);
     const after = await createThreadPersistence().hydrate();
     expect(after?.threads.map((row) => row.savedAt)).toEqual([1_000, 1_000]);
+
+    // And what it restored is ITS to sweep: dropping one takes its row with it,
+    // which is how a tombstone and an eviction reach the device at all.
+    await reader.save({ entries: [entries[0]!] });
+    expect((await createThreadPersistence().hydrate())?.threads.map((row) => row.id))
+      .toEqual(["alpha-thread"]);
   });
 
   it("reopens after the connection is let go", async () => {

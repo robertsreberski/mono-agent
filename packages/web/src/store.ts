@@ -1077,6 +1077,14 @@ export class WebStore {
     let turnId: string = randomUUID();
     let assistantMessageId: string = randomUUID();
     let completedThreadId = existing.thread_id;
+    /**
+     * Whether this completion actually MOVED the assistant row.
+     *
+     * A notification that maps onto a cron run whose message already carries
+     * this text writes nothing at all, and naming the row anyway costs every
+     * subscribed console one message read for a transcript that did not change.
+     */
+    let wroteMessage = false;
     this.transaction(() => {
       const cronChannel = reservation.jobId === undefined
         ? undefined
@@ -1146,6 +1154,7 @@ export class WebStore {
           now,
           now,
         );
+        wroteMessage = true;
       } else {
         turnId = mappedRun.turn_id;
         assistantMessageId = mappedRun.message_id;
@@ -1159,6 +1168,7 @@ export class WebStore {
         if (!parts.some((part) => part.type === "text" && part.text === reservation.text)) {
           parts.push({ type: "text", text: reservation.text });
           this.writeMessageParts(assistantMessageId, parts, now);
+          wroteMessage = true;
         }
       }
       this.database.prepare(`
@@ -1184,7 +1194,8 @@ export class WebStore {
     return {
       thread: this.requireThread(completedThreadId),
       duplicate: false,
-      messageId: assistantMessageId,
+      // Only when there is a write to name. See `wroteMessage`.
+      ...(wroteMessage ? { messageId: assistantMessageId } : {}),
     };
   }
 

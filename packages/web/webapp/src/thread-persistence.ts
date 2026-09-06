@@ -179,8 +179,23 @@ export const stripCapabilityUrls = (
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/**
+ * A summary the sidebar and the header can actually draw.
+ *
+ * `runState.status` is read unconditionally by every row and by the chat
+ * header, and the title and stamp by every row -- a stored summary without them
+ * does not render as a degraded row, it throws. These rows were written by THIS
+ * console, so this is not a trust boundary; it is what keeps one interrupted
+ * write from taking the cold start down.
+ */
 const isSummary = (value: unknown): value is ThreadSummary =>
-  isRecord(value) && typeof value.id === "string" && typeof value.sourceId === "string";
+  isRecord(value)
+  && typeof value.id === "string"
+  && typeof value.sourceId === "string"
+  && typeof value.title === "string"
+  && typeof value.updatedAt === "string"
+  && isRecord(value.runState)
+  && typeof value.runState.status === "string";
 
 const stringsOf = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
@@ -302,6 +317,14 @@ export const createThreadPersistence = (
    * actually changed rather than all eight.
    */
   const written = new Map<string, ThreadCacheEntry>();
+  /**
+   * The rows THIS instance has put, and so the only ones it may sweep.
+   *
+   * Every browser tab on this origin owns the same database, and a flush is one
+   * tab's statement about its own eight conversations -- never about the store.
+   * Read as the latter, two tabs deleted each other's rows on every flush.
+   */
+  const mine = new Set<string>();
 
   /** The connection is gone; the next call opens a new one. */
   const release = (): void => {
@@ -313,6 +336,7 @@ export const createThreadPersistence = (
     if (disabled) return;
     disabled = true;
     written.clear();
+    mine.clear();
     // One line, once. A store that silently stops keeping anything is a
     // support question nobody can answer; this is what makes it answerable
     // without putting a failure the operator cannot act on in front of them.
@@ -321,6 +345,25 @@ export const createThreadPersistence = (
     connection = null;
     void pending?.then((db) => db?.close()).catch(() => undefined);
   };
+
+  /**
+   * Whether these two entries would produce the very same row.
+   *
+   * Compared field by field rather than by entry identity, because `stale` and
+   * `syncedAt` are the two things the device does NOT keep -- and `markAllStale`
+   * replaces all eight entry objects on every app switch, which by identity
+   * alone re-stripped and rewrote eight identical rows each time.
+   */
+  const describesSameRow = (
+    previous: ThreadCacheEntry | undefined,
+    entry: ThreadCacheEntry,
+  ): boolean => previous !== undefined
+    && previous.thread === entry.thread
+    && previous.messages === entry.messages
+    && previous.messagesNextCursor === entry.messagesNextCursor
+    && previous.etag === entry.etag
+    && previous.repairedToolCallIds === entry.repairedToolCallIds
+    && previous.pagedInIds === entry.pagedInIds;
 
   /** The row this entry becomes on the device. */
   const rowFor = (entry: ThreadCacheEntry, savedAt: number): PersistedThread => {
@@ -395,6 +438,9 @@ export const createThreadPersistence = (
           release();
           written.clear();
         };
+        // `mine` deliberately survives both: the rows are still this instance's
+        // to sweep, and a row another owner has since replaced is put back by
+        // whichever tab still holds that conversation.
         answer(db);
       };
       // A version error (a database a newer build owns), storage that is not
@@ -415,7 +461,7 @@ export const createThreadPersistence = (
 
   return {
     hydrate: async () => {
-      const held = generation;
+      const heldGeneration = generation;
       const db = await open();
       if (db === null) return null;
       try {
@@ -446,14 +492,14 @@ export const createThreadPersistence = (
       } catch (readError) {
         // The connection was let go while this was out. Nothing is known about
         // the storage itself, so nothing is given up on.
-        if (held !== generation) return null;
+        if (heldGeneration !== generation) return null;
         disable(`it could not be read (${String(readError)})`);
         return null;
       }
     },
 
     save: async (state) => {
-      const held = generation;
+      const heldGeneration = generation;
       const db = await open();
       if (db === null) return;
       // EVERYTHING below is inside the try, the row build included. Stripping a
@@ -467,39 +513,57 @@ export const createThreadPersistence = (
           "readwrite",
         );
         const threads = transaction.objectStore(THREAD_STORE);
-        const held = new Set(state.entries.map((entry) => entry.thread.id));
+        const heldIds = new Set(state.entries.map((entry) => entry.thread.id));
+        const next = new Map<string, ThreadCacheEntry>();
+        const wrote: string[] = [];
+        const swept: string[] = [];
         // Issued inside the same transaction as the writes, and answered by its
         // own callback rather than an `await`: nothing else may run in between
-        // or the transaction commits without the deletes.
+        // or the transaction commits without them. The whole flush is decided
+        // in here, because what is already on the device is what decides it.
         const keys = threads.getAllKeys();
         keys.onsuccess = () => {
-          for (const key of keys.result) {
-            if (typeof key === "string" && !held.has(key)) threads.delete(key);
+          const stored = new Set(
+            keys.result.filter((key): key is string => typeof key === "string"),
+          );
+          // ONLY what this instance wrote. A flush is one tab's statement about
+          // its own eight conversations, and it used to be read as a statement
+          // about the whole store: two tabs each deleted the other's rows,
+          // skipped rewriting their own (the skip is per instance), and emptied
+          // the device between them.
+          for (const key of mine) {
+            if (heldIds.has(key)) continue;
+            threads.delete(key);
+            swept.push(key);
+          }
+          for (const entry of state.entries) {
+            const id = entry.thread.id;
+            // The skip FIRST, so a flush during a streaming turn does not walk
+            // the seven transcripts that did not move -- but only while the row
+            // is still THERE. Another owner of this database may have removed
+            // it, and a tab that still holds the conversation is what puts it
+            // back.
+            if (describesSameRow(written.get(id), entry) && stored.has(id)) {
+              next.set(id, entry);
+              continue;
+            }
+            let row: PersistedThread;
+            try {
+              row = rowFor(entry, savedAt);
+            } catch {
+              // ONE conversation the device cannot represent -- a transcript
+              // some other path put in the cache malformed. It is skipped, its
+              // stored row (if any) is left alone because its id is still held,
+              // and every other conversation is written. Deliberately not a
+              // disable: this is a fact about one value, not about this
+              // browser's storage.
+              continue;
+            }
+            next.set(id, entry);
+            wrote.push(id);
+            threads.put(row);
           }
         };
-        const next = new Map<string, ThreadCacheEntry>();
-        for (const entry of state.entries) {
-          const id = entry.thread.id;
-          // The identity check FIRST, so a flush during a streaming turn does
-          // not walk the seven transcripts that did not move.
-          if (written.get(id) === entry) {
-            next.set(id, entry);
-            continue;
-          }
-          let row: PersistedThread;
-          try {
-            row = rowFor(entry, savedAt);
-          } catch {
-            // ONE conversation the device cannot represent -- a transcript some
-            // other path put in the cache malformed. It is skipped, its stored
-            // row (if any) is left alone because its id is still "held", and
-            // every other conversation is written. Deliberately not a disable:
-            // this is a fact about one value, not about this browser's storage.
-            continue;
-          }
-          next.set(id, entry);
-          threads.put(row);
-        }
         if (state.bucket !== undefined) {
           transaction.objectStore(BUCKET_STORE).put({ ...state.bucket, savedAt });
         }
@@ -509,13 +573,17 @@ export const createThreadPersistence = (
           meta.put(state.snapshot.console.hostName, HOST_KEY);
         }
         await settled(transaction);
+        // Only after it committed: what this instance owns on the device is
+        // what actually landed there.
+        for (const id of swept) mine.delete(id);
+        for (const id of wrote) mine.add(id);
         written.clear();
         for (const [id, entry] of next) written.set(id, entry);
       } catch (writeError) {
         // The connection was let go while this flush was in flight -- a
         // teardown, or another tab taking the version. This flush is simply
         // skipped; the next one opens again.
-        if (held !== generation) return;
+        if (heldGeneration !== generation) return;
         // A full quota, a database that went away, a value the browser refused
         // to clone. What is already stored stays stored -- it is a valid, older
         // copy, and every restored entry is read conditionally anyway -- and
@@ -525,7 +593,15 @@ export const createThreadPersistence = (
     },
 
     markPersisted: (entries) => {
-      for (const entry of entries) written.set(entry.thread.id, entry);
+      for (const entry of entries) {
+        const id = entry.thread.id;
+        written.set(id, entry);
+        // And OWNED, not merely known: a conversation this tab restored and
+        // then dropped -- a tombstone, an eviction -- is one whose row it has
+        // to take with it. A row another tab is still holding is put back by
+        // that tab on its next flush.
+        mine.add(id);
+      }
     },
 
     close: () => {
@@ -539,13 +615,16 @@ export const createThreadPersistence = (
     },
 
     clearAll: async () => {
-      const held = generation;
+      const heldGeneration = generation;
       const db = await open();
       if (db === null) return;
       // BEFORE the transaction, not after it. A flush that starts while this
       // one is committing would otherwise skip every entry it believes is
       // already stored -- and this is about to delete exactly those rows.
+      // Whole-store on purpose: "Clear cached data" means this BROWSER is not
+      // keeping conversations, not that this tab has stopped.
       written.clear();
+      mine.clear();
       try {
         const transaction = db.transaction(
           [THREAD_STORE, BUCKET_STORE, META_STORE],
@@ -556,7 +635,7 @@ export const createThreadPersistence = (
         transaction.objectStore(META_STORE).clear();
         await settled(transaction);
       } catch (clearError) {
-        if (held !== generation) return;
+        if (heldGeneration !== generation) return;
         disable(`it could not be cleared (${String(clearError)})`);
       }
     },

@@ -286,6 +286,40 @@ describe("mergeMessages", () => {
     expect(merged[2]).toBe(m1);
   });
 
+  it("keeps paged history when the window has moved past it entirely", () => {
+    // The ordinary app-switch case: the tab was suspended long enough for the
+    // window to advance by a whole page, so the answer shares NOTHING with what
+    // is held. That branch never reached `outsideAnswer`, so everything the
+    // operator had scrolled back to went with it.
+    const pagedOld = message("paged-old", { createdAt: "2026-08-14T07:00:00.000Z" });
+    const oldWindow = message("old-window", { createdAt: "2026-08-14T09:00:00.000Z" });
+    const newWindow = message("new-window", { createdAt: "2026-08-14T09:00:00.000Z" });
+
+    const merged = mergeMessages([pagedOld, oldWindow], [newWindow], {
+      resetWindow: true,
+      bounded: true,
+      pagedIn: new Set(["paged-old"]),
+    });
+
+    // The paged row is older than anything the answer carries, so the answer
+    // cannot speak for it; the un-paged row sits INSIDE the window the answer
+    // does speak for, so its absence is a deletion.
+    expect(merged.map((item) => item.id)).toEqual(["paged-old", "new-window"]);
+    expect(merged[0]).toBe(pagedOld);
+  });
+
+  it("drops everything an UNBOUNDED answer does not carry, overlap or not", () => {
+    const pagedOld = message("paged-old", { createdAt: "2026-08-14T07:00:00.000Z" });
+    const newWindow = message("new-window", { createdAt: "2026-08-14T09:00:00.000Z" });
+
+    const merged = mergeMessages([pagedOld], [newWindow], {
+      resetWindow: true,
+      pagedIn: new Set(["paged-old"]),
+    });
+
+    expect(merged.map((item) => item.id)).toEqual(["new-window"]);
+  });
+
   it("still reads an absence INSIDE the window as a deletion", () => {
     // The other half of the same rule: a row the answer's own range covers and
     // does not carry is gone, and keeping it would show the operator content

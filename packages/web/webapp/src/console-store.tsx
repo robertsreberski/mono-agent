@@ -4647,7 +4647,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (!selectedThreadId) throw new Error("Select a conversation before sending a follow-up.");
     try {
       const receipt = await api.liveInput(selectedThreadId, text);
-      if (threadCacheRef.current.upsertMessage(selectedThreadId, receipt.message, { replace: true })) {
+      // Merged by version like any other projection. `replace` is for an answer
+      // that is authoritative WITHOUT being newer -- the cron activity read --
+      // and this is not one: a repair that landed while this receipt was on the
+      // wire is a later version of the same row, and forcing this one over it
+      // walked the transcript backwards.
+      if (threadCacheRef.current.upsertMessage(selectedThreadId, receipt.message)) {
         publishDetail(selectedThreadId);
       }
       setActionError(null);

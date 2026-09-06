@@ -2363,14 +2363,6 @@ export class WebService {
   }
 
   /**
-   * The same, for a write whose caller kept no snapshot of what it produced --
-   * a cron reconcile, a live-input hand-off -- so the store is the only place
-   * the fresh summary can come from.
-   *
-   * A conversation that is no longer there leaves nothing to describe, and the
-   * bulk form is the only honest scope left for a listing that did change.
-   */
-  /**
    * Name every row a cron reconciliation actually wrote.
    *
    * A reconciliation moves a transcript and has no delta to describe it, so
@@ -2389,6 +2381,14 @@ export class WebService {
     }
   }
 
+  /**
+   * The same as {@link emitThread}, for a write whose caller kept no snapshot of
+   * what it produced -- a cron reconcile, a live-input hand-off -- so the store
+   * is the only place the fresh summary can come from.
+   *
+   * A conversation that is no longer there leaves nothing to describe, and the
+   * bulk form is the only honest scope left for a listing that did change.
+   */
   private emitStoredThread(
     threadId: string | undefined,
     types: readonly ("thread.changed" | "threads.changed")[],

@@ -566,16 +566,6 @@ export const mergeMessages = (
       ? held
       : result);
 
-  const positionOf = new Map(incoming.map((message, index) => [message.id, index]));
-  const overlaps = held.some((message) => positionOf.has(message.id));
-  if (!overlaps) {
-    // Nothing to interleave against. An authoritative answer that shares
-    // nothing with what is held IS the transcript; a partial one leaves the
-    // held rows in front of it, which is where every caller's held rows are.
-    const kept = options.resetWindow === true ? [] : [...held];
-    return settle([...kept, ...incoming.map(chosen)]);
-  }
-
   // What an authoritative answer's silence CANNOT mean.
   //
   // An UNBOUNDED answer is the whole conversation, so its silence is a deletion
@@ -605,6 +595,18 @@ export const mergeMessages = (
     options.bounded === true
     && (pagedIn.has(message.id)
       || (answerStartsAt !== undefined && message.createdAt < answerStartsAt));
+
+  const positionOf = new Map(incoming.map((message, index) => [message.id, index]));
+  const overlaps = held.some((message) => positionOf.has(message.id));
+  if (!overlaps) {
+    // Nothing to interleave against, and the same rule about what the answer
+    // may speak for. A window that advanced by a WHOLE page while this tab was
+    // suspended shares no id with what is held -- the ordinary app-switch case
+    // -- and reading that as "the answer is the transcript" threw away every
+    // row the operator had paged back to, along with their place in it.
+    const kept = options.resetWindow === true ? held.filter(outsideAnswer) : [...held];
+    return settle([...kept, ...incoming.map(chosen)]);
+  }
 
   // Held rows the answer did not carry, banked until the next row it did --
   // which is the position they must keep.
