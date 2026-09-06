@@ -115,6 +115,17 @@ describe("process-job contracts", () => {
     expect(() => parseProcessJobProjection(excessiveRuntime)).toThrow(/limits/u);
   });
 
+  it("keeps the v1 output shape while a running preview grows to its exact bound", () => {
+    const running: any = projection();
+    running.limits.previewChars = 8_000;
+    running.output.preview = "x".repeat(8_000);
+    expect(parseProcessJobProjection(running)).toEqual(running);
+
+    const invented: any = structuredClone(running);
+    invented.output.tail = "new wire field";
+    expect(() => parseProcessJobProjection(invented)).toThrow(/output/u);
+  });
+
   it("exports exact state and error-code guards", () => {
     expect(isProcessJobState("interrupted")).toBe(true);
     expect(isProcessJobState("active")).toBe(false);

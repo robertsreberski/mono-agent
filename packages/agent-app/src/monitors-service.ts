@@ -46,12 +46,11 @@ import {
 } from "./process-incarnation.js";
 import {
   longestSecretBytes,
-  isPrivateKeyBegin,
-  isPrivateKeyEnd,
   processDescriptionSecrets,
   processOutputSecrets,
   redactProcessOutput,
   redactProcessOutputLine,
+  StreamingProcessOutputRedactor,
 } from "./process-output-redaction.js";
 import { loadOrCreateProcessJobSecret } from "./process-jobs-store.js";
 import type { ProcessJobOriginRecord } from "./process-jobs-store.js";
@@ -70,8 +69,6 @@ const STDERR_RETAIN_MARGIN_BYTES = 4 * 1024;
 const ELLIPSIS_BYTES = 3;
 /** Bounded wait for owned watcher groups to exit during shutdown. */
 const SHUTDOWN_COMPLETION_GRACE_MS = 2_000;
-/** Avoid holding ordinary lines for one-character coincidences with ambient secrets. */
-const MIN_CROSS_LINE_SECRET_PREFIX = 4;
 
 export class MonitorServiceError extends Error {
   readonly code: MonitorErrorCode;
@@ -166,9 +163,7 @@ interface LiveMonitor {
   /** Raw bytes kept so the longest known secret is still whole when redacted. */
   readonly stderrRetainBytes: number;
   /** Lines held only while their suffix could still begin a known secret. */
-  redactionQueue: Array<{ text: string; redact: boolean }>;
-  /** True between PEM boundaries so even short key-body rows are withheld. */
-  privateKeyOpen: boolean;
+  readonly redactor: StreamingProcessOutputRedactor<undefined>;
   /** Redact, neutralize, and bound one stderr fragment into the retained tail. */
   appendStderr(text: string): void;
   released: boolean;
@@ -577,7 +572,7 @@ class MonitorsService implements MonitorsServiceHandle {
       const stranded = outstanding?.lines.length ?? 0;
       if (outstanding !== undefined) this.strandedWakes.add(`monitor:${record.monitorId}:${String(record.seq)}`);
       const lost = (live?.pending.length ?? 0)
-        + (live?.redactionQueue.length ?? 0)
+        + (live?.redactor.pendingCount ?? 0)
         + (live?.refused?.length ?? 0)
         + parked
         + stranded;
@@ -722,8 +717,7 @@ class MonitorsService implements MonitorsServiceHandle {
       overWindows: 0,
       rateLimited: false,
       stderrTail: "",
-      redactionQueue: [],
-      privateKeyOpen: false,
+      redactor: new StreamingProcessOutputRedactor(processOutputSecrets(request.prepared.env)),
       stderrRetainBytes: STDERR_TAIL_BYTES
         + longestSecretBytes(processOutputSecrets(request.prepared.env))
         + STDERR_RETAIN_MARGIN_BYTES,
@@ -1006,83 +1000,18 @@ class MonitorsService implements MonitorsServiceHandle {
     record.linesObserved += 1;
     if (this.trippedRateLimit(monitor, record)) return;
     const stripped = stripControlCharacters(rawLine);
-    // Apply all self-identifying and whole-line rules immediately. Cross-line
-    // matching then sees only text whose credential status genuinely depends on
-    // a later event, so `api_key=...` cannot be parked merely because its final
-    // character happens to begin an unrelated ambient secret.
-    const line = monitor.privateKeyOpen || isPrivateKeyBegin(stripped) || isPrivateKeyEnd(stripped)
-      ? stripped
-      : redactProcessOutputLine(stripped, monitor.redactionSecrets);
-    monitor.redactionQueue.push({ text: line, redact: false });
-    this.drainRedactionQueue(monitor, record, false);
+    for (const entry of monitor.redactor.push(stripped, undefined)) {
+      this.enqueueRedactedLine(monitor, record, entry.text);
+    }
     record.lastEventAt = this.now().toISOString();
-  }
-
-  /**
-   * Hold only a suffix that could still become a known secret when another
-   * physical line arrives. This lets a secret span any number of events without
-   * retaining ordinary output longer than one uncertain suffix requires.
-   */
-  private drainRedactionQueue(
-    monitor: LiveMonitor,
-    record: DurableMonitorRecord,
-    final: boolean,
-  ): void {
-    if (monitor.redactionQueue.length === 0) return;
-    let joined = "";
-    const spans = monitor.redactionQueue.map((entry) => {
-      const start = joined.length;
-      joined += entry.text;
-      return { start, end: joined.length };
-    });
-    const markRange = (start: number, end: number): void => {
-      spans.forEach((span, index) => {
-        if (span.start < end && span.end > start) monitor.redactionQueue[index]!.redact = true;
-      });
-    };
-
-    for (const secret of monitor.redactionSecrets) {
-      if (secret.length === 0) continue;
-      let at = joined.indexOf(secret);
-      while (at >= 0) {
-        markRange(at, at + secret.length);
-        at = joined.indexOf(secret, at + Math.max(1, secret.length));
-      }
-    }
-
-    let holdStart = joined.length;
-    for (const secret of monitor.redactionSecrets) {
-      const maximumPrefix = Math.min(secret.length - 1, joined.length);
-      for (let length = maximumPrefix; length >= MIN_CROSS_LINE_SECRET_PREFIX; length -= 1) {
-        if (!joined.endsWith(secret.slice(0, length))) continue;
-        const start = joined.length - length;
-        if (final) markRange(start, joined.length);
-        else holdStart = Math.min(holdStart, start);
-        break;
-      }
-    }
-
-    const flushCount = final
-      ? monitor.redactionQueue.length
-      : spans.findIndex((span) => span.end > holdStart);
-    const count = flushCount < 0 ? monitor.redactionQueue.length : flushCount;
-    const ready = monitor.redactionQueue.splice(0, count);
-    for (const entry of ready) this.enqueueRedactedLine(monitor, record, entry);
   }
 
   private enqueueRedactedLine(
     monitor: LiveMonitor,
     record: DurableMonitorRecord,
-    entry: { readonly text: string; readonly redact: boolean },
+    redactedLine: string,
   ): void {
-    const beginsPrivateKey = isPrivateKeyBegin(entry.text);
-    const endsPrivateKey = isPrivateKeyEnd(entry.text);
-    const redactWholeLine = entry.redact || monitor.privateKeyOpen || beginsPrivateKey || endsPrivateKey;
-    if (beginsPrivateKey) monitor.privateKeyOpen = true;
-    if (endsPrivateKey) monitor.privateKeyOpen = false;
-    const line = redactWholeLine
-      ? "[REDACTED]"
-      : clampUtf8(redactProcessOutputLine(entry.text, monitor.redactionSecrets), this.settings.maxLineBytes);
+    const line = clampUtf8(redactedLine, this.settings.maxLineBytes);
     monitor.pending.push(line);
     monitor.pendingBytes += Buffer.byteLength(line, "utf8") + 1;
     this.trimPending(monitor, record);
@@ -1185,7 +1114,9 @@ class MonitorsService implements MonitorsServiceHandle {
       if (trailing.length > 0 && !isTerminalMonitorState(record.state)) {
         this.acceptLine(monitor, record, trailing);
       }
-      this.drainRedactionQueue(monitor, record, true);
+      for (const entry of monitor.redactor.finalize()) {
+        this.enqueueRedactedLine(monitor, record, entry.text);
+      }
       if (monitor.coalesceTimer !== undefined) {
         clearTimeout(monitor.coalesceTimer);
         monitor.coalesceTimer = undefined;

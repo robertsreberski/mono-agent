@@ -54,8 +54,8 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   channel per `(sourceId, jobId)` and reconcile all run states from the agent.
 - Accept exact-source/thread process-job notifications through the same private
   ingress, update one durable job card in place without a verbatim-history
-  append, and proxy thread job refreshes through the agent's independent owner
-  operator capability.
+  append, and poll its bounded redacted live output tail through the agent's
+  independent owner operator capability without persisting each output chunk.
 - Accept exact-source/thread Monitor wakes through that private ingress, steer
   them into the active run or serialize one assistant-only follow-up, retain
   delivery identity plus a payload hash for fail-closed duplicate handling, and
@@ -378,7 +378,7 @@ cross-resource requests fail. See
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
-| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, atomic `AskUser` forms, tests, and its own dependency lockfile. |
+| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, process-job live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
 

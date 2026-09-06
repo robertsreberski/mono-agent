@@ -415,11 +415,21 @@ settles. Every 64 retention applications also reconcile orphan artifact
 directories, so long-running agents reach crash-cleanup work without restarting.
 
 Stdout and stderr are stored separately under the configured output budget.
+While a process is running, its operator projection exposes a memory-only tail
+of the newest 100 logical stdout/stderr lines. It is refreshed at most every 250
+milliseconds, carries stream headings and an omission marker, and remains under
+the job's `previewChars` bound. Chunk callbacks never mutate the durable store,
+write artifacts, or schedule channel lifecycle edits. The final redacted tail
+is persisted when the job settles; full bounded stdout/stderr remain available
+through their separate artifact references.
+
 The model, CLI, operator API, and web card receive only bounded redacted
-previews plus agent-root-relative artifact references. Treat every preview as
-untrusted process output. Records retain a redacted command summary and only
-environment key names; raw argv and environment values are never projected to
-operator clients. Distinctive effective environment values and values from
+previews plus agent-root-relative artifact references. Redaction occurs before
+line and character cuts, including for known secrets split across UTF-8 chunks
+or physical lines, credential-shaped values, and PEM blocks. Treat every
+preview as untrusted process output. Records retain a redacted command summary
+and only environment key names; raw argv and environment values are never
+projected to operator clients. Distinctive effective environment values and values from
 sensitive environment names are also scrubbed from previews and artifacts,
 including a retained secret prefix at the process-runner truncation boundary.
 Public `lastError` values and immediate background-tool failures use one stable
@@ -514,8 +524,12 @@ only while the controller and its owner bearer are present. List responses keep
 every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console keeps
 running and terminal jobs in the transcript as compact Activity rows (tool,
-purpose, state and elapsed time on the row; output preview, artifact paths, wake
-state and the wake's response behind it). Each nonterminal row polls only its
+purpose, state and elapsed time on the row; output tail, artifact paths, wake
+state and the wake's response behind it). A running row polls its exact job once
+per second and opens when its first output arrives. Operators may collapse it;
+later output and settlement preserve that choice, and the tail follows the
+bottom only until the operator scrolls upward. Queued/starting jobs and failed
+reads retain bounded backoff. Each nonterminal row polls only its
 exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.

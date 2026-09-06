@@ -50,7 +50,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   Slack/Telegram/web/WhatsApp wake routing with exact active-run steering and a
   reserved visible normal-turn fallback,
   wake with age-bounded busy deferrals, bounded pending/store materialization,
-  stable secret-free safety errors, native same-message lifecycle surfaces,
+  stable secret-free safety errors, a memory-only redacted live output tail,
+  native same-message lifecycle surfaces,
   fail-closed live store health, a bounded monotonic registry that seals every
   retained state root even after disable or reconfiguration, bounded locked
   recovery through a fixed-name owner-private sibling directory while request
