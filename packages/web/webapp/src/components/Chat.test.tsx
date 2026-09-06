@@ -223,6 +223,7 @@ describe("Chat conversation viewport", () => {
     const firstViewport = container.querySelector<HTMLElement>(".thread-viewport");
     expect(firstViewport).not.toBeNull();
     await waitFor(() => expect(firstViewport!.scrollTop).toBe(maxScrollTop(firstViewport!)));
+    expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeDisabled();
 
     firstViewport!.scrollTop = 120;
     fireEvent.scroll(firstViewport!);
@@ -249,6 +250,7 @@ describe("Chat conversation viewport", () => {
     fireEvent.pointerDown(secondViewport!);
     secondViewport!.scrollTop = 0;
     fireEvent.scroll(secondViewport!);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Scroll to latest message" })).toBeEnabled());
     const scrollTo = vi.spyOn(HTMLElement.prototype, "scrollTo");
 
     storeMock.current = chatStore(secondThread, chatDetail(secondThread, 5));
