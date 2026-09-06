@@ -235,7 +235,15 @@ export function createRuntime(host = {}) {
       // defaultSubagentRun is what increments it for the child.
       const subagents = options.subagents === undefined
         ? undefined
-        : { ...options.subagents, run: options.subagents.run ?? defaultSubagentRun };
+        : {
+            ...options.subagents,
+            run: options.subagents.run ?? ((request) => defaultSubagentRun({
+              ...request,
+              ...(options.webSearchConfig === undefined ? {} : { webSearchConfig: options.webSearchConfig }),
+              ...(options.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: options.webRequestCoordinator }),
+              ...(options.webFetchConfig === undefined ? {} : { webFetchConfig: options.webFetchConfig }),
+            })),
+          };
       try {
         return await bridge.execute(systemPrompt, {
           ...hostDefaults,

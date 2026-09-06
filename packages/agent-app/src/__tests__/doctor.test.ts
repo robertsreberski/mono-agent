@@ -3993,7 +3993,7 @@ describe("validateMonoAgentFolder — web tools", () => {
         "WebSearch backend: auto.",
         "WebSearch request budget: 4 per logical run.",
         "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.",
-        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it after configured Ollama and SearXNG.",
+        "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it as the first eligible backend.",
         "WebFetch browser rendering: never.",
         "Static Defuddle/Readability extraction is active; agent-browser is not required.",
       ]),
@@ -4078,9 +4078,16 @@ describe("validateMonoAgentFolder — web tools", () => {
   });
 
   it("probes explicitly configured Ollama in auto and documents the remaining chain", async () => {
-    const fetchSpy = vi.fn(async (url: string | URL) => String(url).includes("ollama")
-      ? new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } })
-      : new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } }));
+    const fetchSpy = vi.fn(async (url: string | URL) => {
+      const target = String(url);
+      if ([
+        "http://127.0.0.1:8088/search",
+        "http://127.0.0.1:11434/api/experimental/web_search",
+      ].includes(target)) {
+        return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected web-tools probe: ${target}`);
+    });
     vi.stubGlobal("fetch", fetchSpy);
     const configPath = await writeWebToolsConfig({
       search: {
@@ -4101,6 +4108,25 @@ describe("validateMonoAgentFolder — web tools", () => {
       "http://127.0.0.1:8088/search",
       "http://127.0.0.1:11434/api/experimental/web_search",
     ]);
+  });
+
+  it("omits absent SearXNG from the auto fallback diagnostics", async () => {
+    const configPath = await writeWebToolsConfig({
+      search: {
+        backend: "auto",
+        ollama: { baseUrl: "http://127.0.0.1:11434" },
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const details = sectionById(report, "web-tools").details;
+    expect(details).toContain(
+      "Ollama Web Search origin: http://127.0.0.1:11434. Auto mode advances to Codex, then keyless when Ollama is unavailable.",
+    );
+    expect(details).toContain(
+      "Codex subscription fallback model: gpt-5.6-luna; readiness is checked lazily when auto mode reaches it after configured Ollama.",
+    );
+    expect(details.some((detail) => detail.includes("advances to configured SearXNG"))).toBe(false);
   });
 
   it("warns when the SearXNG endpoint answers with every engine unresponsive", async () => {

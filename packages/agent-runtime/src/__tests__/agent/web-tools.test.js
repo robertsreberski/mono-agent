@@ -427,6 +427,68 @@ describe("WebSearch", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ["zero maximum", { maxRequests: 0, requestsUsed: 0 }],
+    ["maximum above the hard cap", { maxRequests: 21, requestsUsed: 0 }],
+    ["negative usage", { maxRequests: 4, requestsUsed: -1 }],
+    ["usage above the maximum", { maxRequests: 4, requestsUsed: 5 }],
+  ])("replaces injected WebSearch state with %s", (_label, values) => {
+    const injected = {
+      schema: "mono-agent.web-search-run.v1",
+      ...values,
+      deferredProviders: new Map(),
+    };
+    const state = createWebSearchRunState({ maxRequestsPerRun: 3 }, injected);
+
+    expect(state).not.toBe(injected);
+    expect(state).toMatchObject({ maxRequests: 3, requestsUsed: 0 });
+  });
+
+  it("tracks provider claims per call when concurrent searches share one run budget", async () => {
+    let release;
+    const gate = new Promise((resolvePromise) => { release = resolvePromise; });
+    const state = createWebSearchRunState({ maxRequestsPerRun: 2 });
+    const fetchImpl = vi.fn(async (url) => {
+      await gate;
+      if (String(url).includes(":8088")) return new Response("unavailable", { status: 503 });
+      return new Response(JSON.stringify({ results: [{
+        title: "Concurrent second result",
+        url: "https://example.com/concurrent-second",
+        content: "Concurrent second evidence",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+
+    const first = performWebSearch({ query: "concurrent first" }, {
+      searchConfig: { backend: "searxng", maxRequestsPerRun: 2, endpoint: "http://127.0.0.1:8088" },
+      searchState: state,
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+    const second = performWebSearch({ query: "concurrent second" }, {
+      searchConfig: { backend: "searxng", maxRequestsPerRun: 2, endpoint: "http://127.0.0.1:8089" },
+      searchState: state,
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+    release();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toMatchObject({
+      error: true,
+      outcome: {
+        requestsThisCall: 1,
+        requestsUsed: 2,
+        requestsRemaining: 0,
+        providerAttempts: [{ backend: "searxng", requests: 1 }],
+      },
+    });
+    expect(secondResult).toMatchObject({
+      error: false,
+      outcome: { requestsThisCall: 1, requestsUsed: 2, requestsRemaining: 0 },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects Ollama credential leaks and reports unsupported local routes honestly", async () => {
     const credentialFetch = vi.fn();
     const invalid = await performWebSearch({ query: "mono agent" }, {
@@ -656,6 +718,39 @@ describe("WebSearch", () => {
     expect(result.text).toContain("actual_query=\"site:anthropic.com \\\"Claude Opus 5\\\"\"");
     expect(result.text).toContain("https://www.anthropic.com/news/claude-opus-5");
     expect(result.text).not.toContain("Los Angeles");
+  });
+
+  it("reports the domain-expanded query actually dispatched to Codex", async () => {
+    const codexSearch = vi.fn(async (query, options) => {
+      options.claimRequest();
+      return {
+        ok: true,
+        backend: "codex",
+        actualQuery: query,
+        results: [{
+          title: "Claude Opus 5",
+          url: "https://www.anthropic.com/news/claude-opus-5",
+          snippet: "Anthropic announces Claude Opus 5.",
+          backend: "codex",
+        }],
+      };
+    });
+    const result = await performWebSearch({
+      query: '"Claude Opus 5"',
+      domains: ["anthropic.com"],
+    }, {
+      searchConfig: { backend: "codex" },
+      codexSearch,
+      ctx: runtimeContext(),
+    });
+    const actualQuery = '"Claude Opus 5" (site:anthropic.com)';
+
+    expect(codexSearch).toHaveBeenCalledWith(actualQuery, expect.any(Object));
+    expect(result).toMatchObject({
+      error: false,
+      outcome: { actualQueries: [actualQuery], requestsThisCall: 1 },
+    });
+    expect(result.text).toContain(`actual_query=${JSON.stringify(actualQuery)}`);
   });
 
   it("keeps strict Codex mode strict and never calls local or keyless HTTP backends", async () => {
@@ -1841,6 +1936,50 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(cached.outcome).toMatchObject({
       cacheHit: true, requestsThisCall: 0, requestsUsed: 1, requestsRemaining: 0,
     });
+    await controller.close();
+  });
+
+  it("preserves failure diagnostics for an in-flight search follower", async () => {
+    let release;
+    const gate = new Promise((resolvePromise) => { release = resolvePromise; });
+    const fetchImpl = vi.fn(async () => {
+      await gate;
+      return new Response("limited", { status: 429, headers: { "retry-after": "120" } });
+    });
+    const controller = createWebToolController({
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+      },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    const first = controller.search({ query: "coalesced rate limit evidence" });
+    const follower = controller.search({ query: "coalesced rate limit evidence" });
+    release();
+    const [firstResult, followerResult] = await Promise.all([first, follower]);
+
+    expect(firstResult).toMatchObject({ error: true, outcome: { cacheHit: false, code: "rate_limited" } });
+    expect(followerResult).toMatchObject({
+      error: true,
+      outcome: {
+        cacheHit: true,
+        code: "rate_limited",
+        attempts: 0,
+        requestsThisCall: 0,
+        rateLimited: true,
+        attemptedBackends: ["ollama"],
+        failureMetadata: [{ backend: "ollama", code: "rate_limited" }],
+        providerAttempts: [{ backend: "ollama", code: "rate_limited", requests: 1 }],
+        retryInRun: false,
+        nextAction: "use_available_evidence",
+      },
+    });
+    expect(followerResult.outcome.retryAfterMs).toBeGreaterThanOrEqual(119_000);
+    expect(followerResult.outcome.retryAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u);
+    expect(followerResult.text).toContain("Do not sleep or retry WebSearch");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     await controller.close();
   });
 

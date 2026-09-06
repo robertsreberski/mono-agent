@@ -834,7 +834,7 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         value: String(tools.web?.search.maxRequestsPerRun ?? 4),
         jsonPresent: json.tools?.web?.search?.maxRequestsPerRun !== undefined,
         jsonValue: json.tools?.web?.search?.maxRequestsPerRun,
-        defaultValue: "4",
+        defaultValue: 4,
       }),
       toField(env, {
         id: "tools.web.search.searxng.endpoint",

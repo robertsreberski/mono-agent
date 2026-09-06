@@ -28,7 +28,7 @@ export function createWebSearchRunState(searchConfig, existing) {
 }
 
 /** Claim one actual provider dispatch synchronously. */
-export function claimWebSearchRequest(state, backend) {
+export function claimWebSearchRequest(state, backend, callClaims) {
   if (!isWebSearchRunState(state)) throw new Error("Invalid WebSearch run state.");
   if (state.requestsUsed >= state.maxRequests) {
     throw Object.assign(new Error("WebSearch request budget exhausted for this run."), {
@@ -37,6 +37,7 @@ export function claimWebSearchRequest(state, backend) {
     });
   }
   state.requestsUsed += 1;
+  if (callClaims && Number.isSafeInteger(callClaims.requests)) callClaims.requests += 1;
 }
 
 export function webSearchBudgetSnapshot(state, requestsThisCall = 0) {
@@ -65,6 +66,10 @@ export function deferredWebSearchProvider(state, backend) {
 function isWebSearchRunState(value) {
   return value?.schema === "mono-agent.web-search-run.v1"
     && Number.isSafeInteger(value.maxRequests)
+    && value.maxRequests >= 1
+    && value.maxRequests <= MAX_WEB_SEARCH_REQUESTS_PER_RUN
     && Number.isSafeInteger(value.requestsUsed)
+    && value.requestsUsed >= 0
+    && value.requestsUsed <= value.maxRequests
     && value.deferredProviders instanceof Map;
 }

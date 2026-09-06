@@ -369,9 +369,6 @@ describe("createRuntime subagent seam", () => {
       model,
       maxTurns: 3,
       depth: 1,
-      webSearchConfig,
-      webFetchConfig,
-      webRequestCoordinator,
       abortSignal: new AbortController().signal,
       onEvent: () => {},
     });

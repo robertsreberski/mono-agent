@@ -159,6 +159,15 @@ describe("buildMonoAgentConfigView", () => {
       source: "json",
       restatesDefault: true,
     });
+
+    const webSections = buildView(baseEnv, {
+      tools: { web: { search: { maxRequestsPerRun: 4 } } },
+    });
+    expect(field(webSections, "tools.web.search.maxRequestsPerRun")).toMatchObject({
+      value: "4",
+      source: "json",
+      restatesDefault: true,
+    });
   });
 
   it("surfaces session rollover notice source and resolved value", () => {

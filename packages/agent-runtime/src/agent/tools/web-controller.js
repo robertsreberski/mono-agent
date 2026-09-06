@@ -97,7 +97,10 @@ export function createWebToolController({
     const cached = readSharedSearch(key);
     if (cached) return withSearchCacheHit(cached, searchState, query);
     const active = searchInFlight.get(key);
-    if (active) return withSearchCacheHit(await active, searchState, query);
+    if (active) {
+      const result = await active;
+      return result.error ? withCacheHit(result) : withSearchCacheHit(result, searchState, query);
+    }
     const task = Promise.resolve().then(execute);
     searchInFlight.set(key, task);
     try {
@@ -263,6 +266,7 @@ function withCacheHit(result) {
       cacheHit: true,
       attempts: 0, durationMs: 0, queueWaitMs: 0, backendDurationMs: 0,
       cooldownSkipCount: 0, quotaSkipCount: 0,
+      ...(Number.isSafeInteger(result.outcome?.requestsThisCall) ? { requestsThisCall: 0 } : {}),
     },
   };
 }

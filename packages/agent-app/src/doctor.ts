@@ -1807,6 +1807,11 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
 
 const MIN_AGENT_BROWSER_VERSION = [0, 33, 1] as const;
 
+function formatSearchBackendChain(backends: string[]): string {
+  if (backends.length <= 1) return backends[0] ?? "none";
+  return `${backends.slice(0, -1).join(", ")}, then ${backends.at(-1)}`;
+}
+
 async function webToolsSection(
   config: MonoAgentConfig,
   input: ValidateMonoAgentFolderOptions,
@@ -1836,6 +1841,13 @@ async function webToolsSection(
   }
 
   const searxngEndpoint = search.searxng?.endpoint ?? search.endpoint;
+  const autoEligibleBackends = [
+    ...(search.ollama === undefined ? [] : ["configured Ollama"]),
+    ...(searxngEndpoint === undefined ? [] : ["configured SearXNG"]),
+    "Codex",
+    "keyless",
+  ];
+  const autoAfterOllama = formatSearchBackendChain(autoEligibleBackends.slice(1));
   if (searxngEndpoint === undefined) {
     details.push(search.backend === "keyless"
       ? "SearXNG is not configured; keyless search is enabled."
@@ -1872,15 +1884,15 @@ async function webToolsSection(
       status = "waiting";
       details.push("[WARN] Ollama Web Search is selected but its resolved configuration is missing.");
     } else if (!liveness) {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : "Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable."}`);
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
       details.push("Ollama Web Search liveness was not probed.");
     } else {
-      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : "Auto mode advances to configured SearXNG, Codex, then keyless when Ollama is unavailable."}`);
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode advances to ${autoAfterOllama} when Ollama is unavailable.`}`);
       const probe = await probeOllamaWebSearch(ollama);
       if (probe.ok) details.push("Ollama Web Search JSON probe succeeded.");
       else {
         status = "waiting";
-        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : "Auto mode can still advance to configured SearXNG, Codex subscription search, then keyless search."}`);
+        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). ${search.backend === "ollama" ? "Strict Ollama mode has no fallback." : `Auto mode can still advance to ${autoAfterOllama}.`}`);
       }
     }
   } else if (search.ollama !== undefined) {
@@ -1889,8 +1901,12 @@ async function webToolsSection(
 
   if (search.backend === "auto") {
     const codexModel = search.codex?.model ?? "gpt-5.6-luna";
+    const beforeCodex = autoEligibleBackends.slice(0, autoEligibleBackends.indexOf("Codex"));
+    const codexPosition = beforeCodex.length === 0
+      ? "as the first eligible backend"
+      : `after ${formatSearchBackendChain(beforeCodex)}`;
     details.push(
-      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches it after configured Ollama and SearXNG.`,
+      `Codex subscription fallback model: ${codexModel}; readiness is checked lazily when auto mode reaches it ${codexPosition}.`,
     );
   } else if (search.backend === "codex") {
     const codexModel = search.codex?.model ?? "gpt-5.6-luna";
