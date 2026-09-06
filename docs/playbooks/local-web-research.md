@@ -302,17 +302,22 @@ mono-agent validate
 mono-agent start
 ```
 
-Require these lines in the validation report:
+Require the validation lines for the selected backend:
 
-- **WebSearch backend: searxng**
-- **SearXNG JSON search probe succeeded**
-- **WebFetch browser rendering: never**, or an `agent-browser` version at least
-  0.33.1 when rendering is enabled
+- strict SearXNG: **WebSearch backend: searxng.** and
+  **SearXNG JSON search probe succeeded.** (`auto` with a configured SearXNG
+  endpoint also requires the successful SearXNG probe)
+- strict Ollama: **WebSearch backend: ollama.** and
+  **Ollama Web Search JSON probe succeeded.**
+- every backend: **WebFetch browser rendering: never.**, or an `agent-browser`
+  version at least 0.33.1 when rendering is enabled
 
-The probe fails when the endpoint answers with an empty result set *and* one or
-more unresponsive engines — a fully blocked instance still returns `HTTP 200`,
-so treat that `[WARN]` as "search is down", not as a slow start. Fix the engine
-selection in the operator-owned SearXNG instance before continuing.
+The SearXNG probe fails when the endpoint answers with an empty result set *and*
+one or more unresponsive engines — a fully blocked instance still returns
+`HTTP 200`, so treat that `[WARN]` as "search is down", not as a slow start. Fix
+the engine selection in the operator-owned SearXNG instance before continuing.
+An Ollama probe failure is likewise terminal in strict `ollama` mode; it never
+falls through to another search provider.
 
 ## 5. Smoke the real tools
 

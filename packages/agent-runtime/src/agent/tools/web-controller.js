@@ -183,7 +183,7 @@ export function createWebToolController({
 }
 
 function safeSearchCacheIdentity(searchConfig) {
-  if (!searchConfig?.ollama?.apiKey) return searchConfig;
+  if (typeof searchConfig?.ollama?.apiKey !== "string") return searchConfig;
   return {
     ...searchConfig,
     ollama: {

@@ -11,6 +11,7 @@ const MAX_INTERSTITIAL_SAMPLE_CHARS = 32 * 1024;
  */
 export function classifyWebAccessInterstitial({ url, text, statusCode } = {}) {
   const finalUrl = String(url || "");
+  const pathname = urlPathname(finalUrl);
   const sample = normalizedSample(text);
 
   const challengeArtifact = /\b(?:cf-chl-[\w-]+|cloudflare ray id|challenge-platform)\b/iu.test(sample);
@@ -21,7 +22,7 @@ export function classifyWebAccessInterstitial({ url, text, statusCode } = {}) {
   const waitHeading = /\bjust a moment(?:\.{1,3})?\b/iu.test(sample);
   const blockedAccess = /\baccess denied\b[\s\S]{0,240}\b(?:blocked|permission|reference|administrator)\b/iu.test(sample);
 
-  if (/\/(?:captcha|challenge)(?:[/?#]|$)/iu.test(finalUrl)
+  if (/\/(?:captcha|challenge)(?:\/|$)/iu.test(pathname)
     || challengeArtifact
     || humanCheck
     || browserCheck
@@ -35,7 +36,7 @@ export function classifyWebAccessInterstitial({ url, text, statusCode } = {}) {
   }
 
   if (statusCode === 401 || statusCode === 407
-    || /\/(?:login|signin|sign-in)(?:[/?#]|$)/iu.test(finalUrl)
+    || /\/(?:login|signin|sign-in)(?:\/|$)/iu.test(pathname)
     || /\bauthentication required\b/iu.test(sample)
     || /\b(?:sign|log) in to continue\b/iu.test(sample)
     || (/\bsession (?:has )?expired\b/iu.test(sample) && /\b(?:sign|log) in\b/iu.test(sample))) {
@@ -45,6 +46,11 @@ export function classifyWebAccessInterstitial({ url, text, statusCode } = {}) {
     };
   }
   return undefined;
+}
+
+function urlPathname(value) {
+  try { return new URL(value).pathname; }
+  catch { return ""; }
 }
 
 /**

@@ -73,7 +73,7 @@ const JSON_RUNTIME_SOURCES: readonly {
   { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT", path: "tools.web.search.endpoint", read: (json) => json.tools?.web?.search?.endpoint },
   { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT", path: "tools.web.search.searxng.endpoint", read: (json) => json.tools?.web?.search?.searxng?.endpoint },
   { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL", path: "tools.web.search.ollama.baseUrl", read: (json) => json.tools?.web?.search?.ollama?.baseUrl },
-  { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV", path: "tools.web.search.ollama.apiKeyEnv", read: (json) => json.tools?.web?.search?.ollama?.apiKeyEnv },
+  { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV", path: "tools.web.search.ollama.apiKeyEnv", read: (json) => json.tools?.web?.search?.ollama },
   { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL", path: "tools.web.search.ollama.trustPublicUrl", read: (json) => json.tools?.web?.search?.ollama?.trustPublicUrl },
 ];
 

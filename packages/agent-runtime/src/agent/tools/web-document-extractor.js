@@ -271,12 +271,64 @@ export function shouldAutoRender(readableText, html) {
 function meaningfulCharacters(value) { return markdownToText(value).replace(/\s/gu, "").length; }
 
 export function markdownToText(value) {
-  return collapseDocumentText(String(value || "")
-    .replace(/```[\s\S]*?```/gu, (block) => block.replace(/^```[^\n]*\n?|```$/gu, ""))
+  const source = String(value || "").replace(/\r\n?/gu, "\n");
+  const { text, codeBlocks } = protectFencedCode(source);
+  let output = collapseDocumentText(text
     .replace(/!\[([^\]]*)\]\([^)]*\)/gu, "$1")
     .replace(/\[([^\]]+)\]\([^)]*\)/gu, "$1")
-    .replace(/^[#>*+-]+\s*/gmu, "")
-    .replace(/[*_`~]/gu, ""));
+    .replace(/^ {0,3}(?:[*_-][ \t]*){3,}$/gmu, "")
+    .replace(/^ {0,3}#{1,6}[ \t]+/gmu, "")
+    .replace(/^ {0,3}>[ \t]+/gmu, "")
+    .replace(/^ {0,3}[*+-][ \t]+/gmu, "")
+    .replace(/~~(?=\S)([^~\n]*?\S)~~/gu, "$1")
+    .replace(/\*\*(?=\S)([^*\n]*?\S)\*\*/gu, "$1")
+    .replace(/__(?=\S)([^_\n]*?\S)__/gu, "$1")
+    .replace(/(?<!\*)\*(?=\S)([^*\n]*?\S)\*(?!\*)/gu, "$1")
+    .replace(/(?<![\p{L}\p{N}_])_(?=\S)([^_\n]*?\S)_(?![\p{L}\p{N}_])/gu, "$1")
+    .replace(/`([^`\n]+)`/gu, "$1"));
+  for (const block of codeBlocks) output = output.replace(block.token, block.body);
+  return output;
+}
+
+function protectFencedCode(value) {
+  const lines = value.split("\n");
+  const output = [];
+  const codeBlocks = [];
+  let fence;
+  let code = [];
+  for (const line of lines) {
+    if (fence !== undefined) {
+      const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
+      if (closing !== undefined && closing[0] === fence[0] && closing.length >= fence.length) {
+        const token = uniqueCodeToken(value, codeBlocks.length);
+        codeBlocks.push({ token, body: code.join("\n") });
+        output.push(token);
+        fence = undefined;
+        code = [];
+      } else {
+        code.push(line);
+      }
+      continue;
+    }
+    const opening = line.match(/^ {0,3}(`{3,}|~{3,})[^\n]*$/u)?.[1];
+    if (opening !== undefined) {
+      fence = opening;
+      continue;
+    }
+    output.push(line);
+  }
+  if (fence !== undefined) {
+    const token = uniqueCodeToken(value, codeBlocks.length);
+    codeBlocks.push({ token, body: code.join("\n") });
+    output.push(token);
+  }
+  return { text: output.join("\n"), codeBlocks };
+}
+
+function uniqueCodeToken(source, index) {
+  let token = `\u0000MONOAGENTFENCE${index}\u0000`;
+  while (source.includes(token)) token = `\u0000${token}\u0000`;
+  return token;
 }
 
 function collapseDocumentText(value) {

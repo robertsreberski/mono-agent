@@ -90,7 +90,9 @@ optional `tools.web.search.ollama.*`, and optional
 `tools.web.search.codex.model` (default `gpt-5.6-luna`). Keep
 `tools.web.fetch.render: "never"` unless the user explicitly needs
 JavaScript-heavy pages and has `agent-browser` 0.33.1 or newer; then select
-`"auto"` or `"always"` plus the direct `browserCommand`. Explain that local
+config-level `"auto"` plus the direct `browserCommand`. Explain that the agent
+can request per-call `WebFetch` `render: "always"` when a known page must be
+browser-first; `"always"` is not a config value. Explain that local
 SearXNG/Ollama are infrastructure, not offline indexes, both search and fetch
 still generate public network traffic, hosted Ollama credentials are accepted
 only at the exact official origin, and rendering does not bypass access controls.

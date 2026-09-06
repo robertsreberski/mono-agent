@@ -268,7 +268,7 @@ async function performFetch(
   const contentType = response.headers.get("content-type") || "";
   const responseKind = contentKind(contentType, bytes);
   let decodedForExtraction;
-  if (["html", "markdown", "text"].includes(responseKind)) {
+  if (responseKind !== "binary") {
     try {
       decodedForExtraction = decodeWebBytes(bytes, contentType, responseKind);
       assertNoWebAccessInterstitial({
@@ -357,6 +357,22 @@ async function performFetch(
         hadDecodingReplacement: decoding.hadDecodingReplacement,
       }),
       ...(Array.isArray(error?.parserFailures) ? { parserFailures: error.parserFailures.slice(0, 3) } : {}),
+    });
+  }
+
+  try {
+    assertNoWebAccessInterstitial({
+      url: finalUrl,
+      text: extracted.readableText,
+      statusCode: response.status,
+    });
+  } catch (error) {
+    return failure(`Error fetching URL: ${error.message}`, error.code, startedAt, {
+      attempts,
+      statusCode: response.status,
+      bytes: responseBytes,
+      backend: "http",
+      redirectCount,
     });
   }
 

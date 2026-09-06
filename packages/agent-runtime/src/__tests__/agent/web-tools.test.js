@@ -185,6 +185,21 @@ describe("WebSearch", () => {
     expect(JSON.stringify(invalid)).not.toContain("sentinel-hosted-key");
     expect(credentialFetch).not.toHaveBeenCalled();
 
+    const envNameFetch = vi.fn();
+    const invalidEnvName = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "http://127.0.0.1:11434", apiKeyEnv: "OLLAMA_API_KEY" },
+      },
+      fetchImpl: envNameFetch,
+      ctx: runtimeContext(),
+    });
+    expect(invalidEnvName).toMatchObject({
+      error: true,
+      outcome: { code: "invalid_search_config", attempts: 0 },
+    });
+    expect(envNameFetch).not.toHaveBeenCalled();
+
     const unsupported = await performWebSearch({ query: "mono agent" }, {
       searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
       fetchImpl: vi.fn(async () => new Response("missing", { status: 404 })),
@@ -981,7 +996,22 @@ describe("WebFetch", () => {
     "application/markdown",
     "application/x-markdown",
   ])("preserves %s as Markdown/raw and removes decoration for text", async (contentType) => {
-    const source = "# Heading\n\n**Bold** and [linked text](https://example.com/source).\n";
+    const source = [
+      "# Heading",
+      "",
+      "**Bold** and [linked text](https://example.com/source).",
+      "#include <stdio.h>",
+      "+15551234567",
+      "-42",
+      "snake_case and 2*3 stay literal.",
+      "",
+      "```c",
+      "#include <stdio.h>",
+      "const marker = \"*_`~\";",
+      "-42",
+      "```",
+      "",
+    ].join("\n");
     const retrieve = (format) => performWebFetch({
       url: "https://example.com/readme",
       format,
@@ -997,7 +1027,19 @@ describe("WebFetch", () => {
     const text = await retrieve("text");
     expect(markdown.document.body).toBe(source);
     expect(raw.document.body).toBe(source);
-    expect(text.document.body).toBe("Heading\n\nBold and linked text.");
+    expect(text.document.body).toBe([
+      "Heading",
+      "",
+      "Bold and linked text.",
+      "#include <stdio.h>",
+      "+15551234567",
+      "-42",
+      "snake_case and 2*3 stay literal.",
+      "",
+      "#include <stdio.h>",
+      "const marker = \"*_`~\";",
+      "-42",
+    ].join("\n"));
     expect(text.outcome).toMatchObject({ contentKind: "markdown", extractionStage: "markdown" });
   });
 
@@ -1027,7 +1069,39 @@ describe("WebFetch", () => {
     });
     expect(authentication).toMatchObject({ error: true, outcome: { code: "authentication_required" } });
 
-    const ordinary = await performWebFetch({ url: "https://example.com/article" }, {
+    const structuredInterstitials = [
+      {
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Authentication required. Sign in to continue." }),
+        code: "authentication_required",
+      },
+      {
+        contentType: "application/xml",
+        body: "<feed><title>Just a moment...</title><summary>Performing security verification. Enable JavaScript and cookies to continue.</summary></feed>",
+        code: "access_challenge",
+      },
+      {
+        contentType: "application/pdf",
+        body: minimalPdf("Performing security verification. Enable JavaScript and cookies to continue.", { hex: true }),
+        code: "access_challenge",
+      },
+    ];
+    for (const testCase of structuredInterstitials) {
+      const result = await performWebFetch({ url: "https://example.com/protected", format: "text" }, {
+        fetchImpl: async () => new Response(testCase.body, { headers: { "content-type": testCase.contentType } }),
+        ctx: runtimeContext(),
+      });
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: testCase.code, backend: "http" },
+      });
+      expect(result.text).not.toContain("Performing security verification");
+      expect(result.text).not.toContain("Sign in to continue");
+    }
+
+    const ordinary = await performWebFetch({
+      url: "https://example.com/article?next=/login#redirect=/challenge",
+    }, {
       fetchImpl: async () => new Response(`
         <html><body><article><h1>Access vocabulary</h1>
         <p>This article compares CAPTCHA tools, Cloudflare products, login pages,
@@ -1038,6 +1112,17 @@ describe("WebFetch", () => {
     });
     expect(ordinary).toMatchObject({ error: false, outcome: { code: "ok" } });
     expect(ordinary.text).toContain("Access vocabulary");
+
+    const pathInterstitial = await performWebFetch({ url: "https://example.com/login" }, {
+      fetchImpl: async () => new Response("Ordinary response body.", {
+        headers: { "content-type": "text/plain" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(pathInterstitial).toMatchObject({
+      error: true,
+      outcome: { code: "authentication_required" },
+    });
   });
 
   it("rejects unsafe request headers and revalidates every redirect through the sandbox", async () => {
@@ -1311,6 +1396,24 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsAfterKeyless);
   });
 
+  it("lets malformed Ollama credentials reach structured validation before cache hashing", async () => {
+    const fetchImpl = vi.fn();
+    const controller = createWebToolController({
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKey: { malformed: true } },
+      },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    await expect(controller.search({ query: "mono agent" })).resolves.toMatchObject({
+      error: true,
+      outcome: { code: "auth_missing", attempts: 0 },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("does not serve cached searches to a run whose context denies network", async () => {
     const fetchImpl = vi.fn(async () => new Response(
       '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
@@ -1546,9 +1649,10 @@ describe("run-scoped web controller and browser isolation", () => {
   });
 });
 
-function minimalPdf(text) {
+function minimalPdf(text, { hex = false } = {}) {
   const escaped = String(text).replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
-  const stream = `BT /F1 12 Tf 72 720 Td (${escaped}) Tj ET`;
+  const encoded = hex ? `<${Buffer.from(String(text), "utf8").toString("hex")}>` : `(${escaped})`;
+  const stream = `BT /F1 12 Tf 72 720 Td ${encoded} Tj ET`;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",

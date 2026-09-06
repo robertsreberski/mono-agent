@@ -388,6 +388,10 @@ describe("buildMonoAgentConfigView", () => {
       value: "http://127.0.0.1:8088",
       source: "json",
     });
+    expect(field(configured, "tools.web.search.endpoint")).toMatchObject({
+      value: "http://127.0.0.1:8088",
+      source: "json",
+    });
     expect(field(configured, "tools.web.search.codex.model")).toMatchObject({
       value: "gpt-5.6-sol",
       source: "json",
@@ -396,6 +400,15 @@ describe("buildMonoAgentConfigView", () => {
     expect(field(configured, "tools.web.fetch.browserCommand")).toMatchObject({
       value: "agent-browser-next",
       source: "json",
+    });
+
+    const canonicalEnv = buildView({
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT: "http://127.0.0.1:9090",
+    });
+    expect(field(canonicalEnv, "tools.web.search.endpoint")).toMatchObject({
+      value: "http://127.0.0.1:9090",
+      source: "env",
     });
   });
 });

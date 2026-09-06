@@ -846,9 +846,13 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         label: "Legacy SearXNG endpoint alias",
         value: tools.web?.search.searxng?.endpoint ?? "not configured",
         jsonPresent: json.tools?.web?.search?.endpoint !== undefined,
-        source: envHas(env, "MONO_AGENT_WEB_SEARCH_ENDPOINT")
+        source: envHas(env, "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT")
+          || envHas(env, "MONO_AGENT_WEB_SEARCH_ENDPOINT")
           ? "env"
-          : json.tools?.web?.search?.endpoint !== undefined ? "json" : "default",
+          : json.tools?.web?.search?.searxng?.endpoint !== undefined
+              || json.tools?.web?.search?.endpoint !== undefined
+            ? "json"
+            : "default",
       }),
       toField(env, {
         id: "tools.web.search.ollama.baseUrl",

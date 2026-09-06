@@ -948,7 +948,7 @@ function normalizeOllamaSearchConfig(input, backend) {
   if (!official && !isPrivateOllamaOrigin(parsed) && (parsed.protocol !== "https:" || input?.trustPublicUrl !== true)) {
     return { error: "A public custom Ollama origin requires HTTPS and trustPublicUrl=true." };
   }
-  if (!official && input?.apiKey !== undefined) {
+  if (!official && (input?.apiKey !== undefined || input?.apiKeyEnv !== undefined)) {
     return { error: "Ollama Web Search credentials are allowed only for the exact https://ollama.com origin." };
   }
   if (official && (typeof input?.apiKey !== "string" || input.apiKey.trim().length === 0)) {
