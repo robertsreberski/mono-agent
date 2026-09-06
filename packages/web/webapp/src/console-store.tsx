@@ -213,9 +213,17 @@ const unlistedThreadKey = (sourceId: string, archived: boolean, threadId: string
  * bootstrap and a `{thread}` payload all describe the same rows -- so taking
  * the last arrival unconditionally let a delayed revision 2 overwrite a
  * revision 3 the tab had already applied, rolling back a title, an archive
- * state or a run override the server had accepted. An EQUAL revision is the
- * same server state, and the incoming one wins so an optimistic edit made at
- * the revision it is patching still lands.
+ * state or a run override the server had accepted. At an EQUAL revision the
+ * incoming one wins, so an optimistic edit made at the revision it patches
+ * still lands.
+ *
+ * Which is NOT "an equal revision is the same server state": `patchRunState`
+ * moves a listing row's `runState` without moving its `revision`, so a snapshot
+ * the server made before the turn event can overwrite it here for one window,
+ * until the `{thread}` payload emitted with that event lands. The reload gate
+ * does not read this projection -- it reads the cache, whose listing paths
+ * confirm through `confirmListed` and take a row only when it is strictly
+ * newer (see `newerProjection`'s doc in thread-cache.ts).
  */
 const mergeThreads = (
   current: readonly ThreadSummary[],

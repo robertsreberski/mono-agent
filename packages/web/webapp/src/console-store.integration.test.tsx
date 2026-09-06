@@ -5660,9 +5660,10 @@ describe("ConsoleStoreProvider integration", () => {
     });
 
     it("never lets the listing roll a cached summary backwards", async () => {
-      // `patchThread` is revision-ordered through `newerProjection`, which is
-      // what makes it safe to replay the whole listing into the cache: a
-      // bootstrap that lost its race with an event must not undo the event.
+      // The listing reaches the cache through `confirmListed`, which takes a
+      // row only when it is STRICTLY newer than what is held: a bootstrap that
+      // lost its race with an event must not undo the event, at an older
+      // revision or an equal one.
       const heldBeta = {
         ...beta,
         revision: beta.revision + 5,
