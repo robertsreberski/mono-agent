@@ -1033,6 +1033,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .image-row:empty { display: none; }
 .image-tile { height: 190px; aspect-ratio: 4 / 3; flex: none; min-width: 0; padding: 0; overflow: hidden; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
 .image-tile img { width: 100%; height: 100%; display: block; object-fit: cover; }
+/* A picture whose bytes are still coming — or which has not been asked for yet —
+   holds its own place in the strip rather than letting the row reflow under the
+   reader, and gives the viewport gate something to watch. */
+.image-tile.is-loading { cursor: default; animation: pulse 1.8s ease-in-out infinite; }
 /* Grouping keys off the declared media type, which cannot know whether the bytes
    will resolve. One that never does renders its file card instead: give it a
    line of its own rather than letting it stand in the strip. */

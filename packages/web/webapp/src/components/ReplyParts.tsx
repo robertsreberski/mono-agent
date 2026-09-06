@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { DataMessagePartProps } from "@assistant-ui/react";
 import {
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -19,6 +20,12 @@ import type { McpAppPart, McpAppResource, MessagePart } from "../types";
 import { Icon } from "./Icon";
 import { ImageTile } from "./ImageGallery";
 import { isReplyImage } from "./reply-image";
+import {
+  acquireReplyImageBlob,
+  publishReplyImageBlob,
+  releaseReplyImageBlob,
+  replyImageKey,
+} from "./reply-image-cache";
 import {
   mcpAppContentSecurityPolicy,
   secureMcpAppHtml,
@@ -34,6 +41,8 @@ const APP_MAX_HEIGHT = 1600;
 const APP_MAX_WIDTH = 1400;
 const APP_INITIAL_HEIGHT = 320;
 const MCP_APP_PROXY_PATH = "/api/v1/mcp-app-proxy";
+/** How far ahead of the viewport an app card opens itself. */
+const MCP_APP_PRELOAD_MARGIN = "200px";
 
 type ReplyAttachmentPart = Extract<MessagePart, { readonly type: "attachment" }>;
 type ReplyFailurePart = Extract<MessagePart, { readonly type: "failure" }>;
@@ -372,25 +381,87 @@ const storedReplyImageUrl = (part: { readonly mediaType: string; readonly stored
     ? part.storedUrl
     : undefined;
 
+/** How far ahead of the viewport a picture starts loading. */
+const REPLY_IMAGE_PRELOAD_MARGIN = "600px";
+
+type ReplyImageStatus = "pending" | "ready" | "unavailable";
+
+interface ReplyImageState {
+  readonly status: ReplyImageStatus;
+  readonly src?: string;
+}
+
+const PENDING_REPLY_IMAGE: ReplyImageState = { status: "pending" };
+const UNAVAILABLE_REPLY_IMAGE: ReplyImageState = { status: "unavailable" };
+
 /**
  * Fallback for an image with no durable copy yet. Goes through `fetch` rather
  * than pointing an `<img>` at the capability URL, because only this path can
  * check the integrity headers and reach the one-shot access refresh — an
  * `<img>` `onerror` reports no status at all.
+ *
+ * Two things keep that fetch to one per picture. The effect is keyed on the
+ * part's own identity and reads the capability from `accessRef` when it runs:
+ * the service re-mints `contentUrl` on every projection of the message, so an
+ * effect keyed on the URL re-downloads the image for every frame of a running
+ * turn. And the bytes are held in the shared blob store rather than in this
+ * component, so scrolling away, switching conversations and coming back all
+ * resolve from what is already here.
+ *
+ * The fetch itself waits for the picture to approach the viewport wherever the
+ * browser can say so. `IntersectionObserver` is feature-detected rather than
+ * assumed: without it — jsdom, and very old browsers — everything loads as it
+ * always did.
  */
-function useReplyImageBlob(
+function useReplyImage(
   enabled: boolean,
-  contentUrl: string | undefined,
+  access: { readonly current: AttachmentAccessState | undefined },
+  identity: string,
+  partId: string | undefined,
   sizeBytes: number | undefined,
   integrityId: string | undefined,
-): string | undefined {
-  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined);
+): {
+  readonly state: ReplyImageState;
+  readonly holderRef: RefObject<HTMLDivElement | null>;
+} {
+  const [state, setState] = useState<ReplyImageState>(PENDING_REPLY_IMAGE);
+  const [inViewport, setInViewport] = useState(() => typeof IntersectionObserver !== "function");
+  const holderRef = useRef<HTMLDivElement>(null);
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+
   useEffect(() => {
-    if (!enabled || contentUrl === undefined || sizeBytes === undefined || integrityId === undefined) {
+    if (!enabled || inViewport) return undefined;
+    const holder = holderRef.current;
+    if (holder === null || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      setInViewport(true);
+    }, { rootMargin: REPLY_IMAGE_PRELOAD_MARGIN });
+    observer.observe(holder);
+    return () => observer.disconnect();
+  }, [enabled, inViewport]);
+
+  useEffect(() => {
+    if (!enabled || !inViewport || sizeBytes === undefined || integrityId === undefined) return undefined;
+    const key = replyImageKey(integrityId, sizeBytes);
+    const shared = acquireReplyImageBlob(key);
+    if (shared !== undefined) {
+      setState({ status: "ready", src: shared });
+      return () => {
+        releaseReplyImageBlob(key);
+        setState(PENDING_REPLY_IMAGE);
+      };
+    }
+    const current = access.current;
+    const contentUrl = current?.identity === identityRef.current ? current.currentUrl : undefined;
+    if (contentUrl === undefined) {
+      setState(UNAVAILABLE_REPLY_IMAGE);
       return undefined;
     }
     const controller = new AbortController();
-    let created: string | undefined;
+    let held = false;
     void (async () => {
       try {
         const response = await api.replyAttachmentContent(contentUrl, controller.signal);
@@ -399,22 +470,36 @@ function useReplyImageBlob(
         if (
           (declaredLength !== null && Number(declaredLength) !== sizeBytes)
           || response.headers.get("x-mono-agent-integrity-id") !== integrityId
-        ) return;
+        ) {
+          setState(UNAVAILABLE_REPLY_IMAGE);
+          return;
+        }
         const blob = await response.blob();
-        if (controller.signal.aborted || blob.size !== sizeBytes) return;
-        created = URL.createObjectURL(blob);
-        setObjectUrl(created);
+        if (controller.signal.aborted) return;
+        if (blob.size !== sizeBytes) {
+          setState(UNAVAILABLE_REPLY_IMAGE);
+          return;
+        }
+        const objectUrl = publishReplyImageBlob(key, blob);
+        held = true;
+        setState({ status: "ready", src: objectUrl });
       } catch {
-        // Showing the image is best-effort; the download action still reports.
+        // Showing the image is best-effort: the card and its download action
+        // take over, and they report what went wrong.
+        if (!controller.signal.aborted) setState(UNAVAILABLE_REPLY_IMAGE);
       }
     })();
     return () => {
       controller.abort();
-      if (created !== undefined) URL.revokeObjectURL(created);
-      setObjectUrl(undefined);
+      if (held) releaseReplyImageBlob(key);
+      setState(PENDING_REPLY_IMAGE);
     };
-  }, [enabled, contentUrl, sizeBytes, integrityId]);
-  return objectUrl;
+  // The capability is read from `access` when the effect runs, never depended
+  // on: a re-minted token is the same picture and must not re-download it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [access, enabled, inViewport, partId, sizeBytes, integrityId]);
+
+  return { state, holderRef };
 }
 
 export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
@@ -465,13 +550,20 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   }
 
   const storedImage = storedReplyImageUrl(part);
-  const blobImage = useReplyImageBlob(
-    storedImage === undefined && isReplyImage(part?.mediaType),
-    declaredContentUrl,
+  // An image with no capability left can never resolve, so it goes straight to
+  // its file card rather than waiting on a viewport that would change nothing.
+  const fetchableImage = storedImage === undefined
+    && isReplyImage(part?.mediaType)
+    && declaredContentUrl !== undefined;
+  const { state: replyImage, holderRef } = useReplyImage(
+    fetchableImage,
+    accessRef,
+    identity,
+    part?.id,
     part?.sizeBytes,
     part?.integrityId,
   );
-  const imageSource = storedImage ?? blobImage;
+  const imageSource = storedImage ?? (replyImage.status === "ready" ? replyImage.src : undefined);
 
   if (part === undefined) {
     return <div className="reply-part-error" role="alert">An attachment reference was invalid.</div>;
@@ -488,6 +580,14 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   // show it, the operator still needs the file.
   if (imageSource !== undefined) {
     return <ImageTile image={{ key: part.id, src: imageSource, name: part.name }} />;
+  }
+
+  // A picture still on its way holds its own place in the strip. It is also the
+  // element the viewport gate watches, so it must exist before the bytes do —
+  // and it must be reachable, because a placeholder hidden from assistive tech
+  // is a picture a screen reader can never scroll to and therefore never load.
+  if (fetchableImage && replyImage.status === "pending") {
+    return <div ref={holderRef} className="image-tile is-loading" role="img" aria-label={`Loading ${part.name}`} />;
   }
 
   const contentUrl = accessRef.current?.identity === identity ? accessRef.current.currentUrl : undefined;
@@ -740,7 +840,11 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const [status, setStatus] = useState<"loading" | "connecting" | "ready" | "closed" | "error">("loading");
   const [statusText, setStatusText] = useState("Loading interactive app…");
   const [height, setHeight] = useState(APP_INITIAL_HEIGHT);
-  const [collapsed, setCollapsed] = useState(false);
+  // An app starts closed wherever the browser can tell us it is off screen, so
+  // scrolling past a long transcript costs no documents, bridges or sandboxes.
+  // Without an IntersectionObserver — jsdom, very old browsers — it opens as it
+  // always did.
+  const [collapsed, setCollapsed] = useState(() => typeof IntersectionObserver === "function");
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [accessExpired, setAccessExpired] = useState(false);
   const [reloadRevision, setReloadRevision] = useState(0);
@@ -750,8 +854,22 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const containerRef = useRef<HTMLElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  /** Set once the card has been opened, by the viewport or by the operator. */
+  const revealedRef = useRef(typeof IntersectionObserver !== "function");
   const bridgeRef = useRef<AppBridge | null>(null);
   const nonce = useMemo(createNonce, [part?.connectionId, part?.invocationId]);
+
+  // The document is fetched for an app that has actually been opened. Hiding one
+  // again keeps what it loaded, so re-showing it costs nothing; only an explicit
+  // reopen, or a different app in this slot, asks the service again.
+  const loadKey = `${identity}:${String(reloadRevision)}`;
+  const loadLatchRef = useRef({ key: loadKey, wanted: !collapsed });
+  if (loadLatchRef.current.key !== loadKey) {
+    loadLatchRef.current = { key: loadKey, wanted: !collapsed };
+  } else if (!collapsed) {
+    loadLatchRef.current = { key: loadKey, wanted: true };
+  }
+  const loadWanted = loadLatchRef.current.wanted;
 
   const adoptMcpAppAccess = useCallback((
     expectedIdentity: string,
@@ -779,6 +897,25 @@ export function McpAppPart({ data }: DataMessagePartProps) {
     return () => {
       mountedRef.current = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container === null || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      // Opening is a first-arrival rule, not a scroll rule: once the operator
+      // has the control, scrolling back must never reopen what they hid.
+      if (revealedRef.current) {
+        observer.disconnect();
+        return;
+      }
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      revealedRef.current = true;
+      observer.disconnect();
+      setCollapsed(false);
+    }, { rootMargin: MCP_APP_PRELOAD_MARGIN });
+    observer.observe(container);
+    return () => observer.disconnect();
   }, []);
 
   const settleConfirmation = useCallback((confirmed: boolean) => {
@@ -837,6 +974,9 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   }, [cancelConfirmation, identity]);
 
   useEffect(() => {
+    // Nothing is requested for a card nobody has opened: no document, no bridge
+    // capability spent, no sandbox.
+    if (!loadWanted) return undefined;
     const accessState = accessRef.current;
     const access = accessState?.current;
     setResource(null);
@@ -883,7 +1023,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       setStatusText(mcpAppLoadErrorMessage(error));
     });
     return () => controller.abort();
-  }, [accessAvailable, adoptMcpAppAccess, identity, reloadRevision]);
+  }, [accessAvailable, adoptMcpAppAccess, identity, loadWanted, reloadRevision]);
 
   const metadata = useMemo(
     () => safeMcpAppResourceMetadata(resource?.resourceMetadata),
@@ -1186,6 +1326,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const frameVisible = resource !== null && securedHtml !== undefined && !degraded && !collapsed;
   const appLabel = part.title ?? part.toolName;
   const reopenApp = () => {
+    revealedRef.current = true;
     setCollapsed(false);
     setStatus("loading");
     setStatusText("Loading interactive app…");
@@ -1218,12 +1359,17 @@ export function McpAppPart({ data }: DataMessagePartProps) {
             className="reply-part-action"
             aria-expanded={!collapsed}
             disabled={confirmation !== null}
-            onClick={() => setCollapsed((value) => !value)}
+            onClick={() => {
+              revealedRef.current = true;
+              setCollapsed((value) => !value);
+            }}
           >{collapsed ? "Show" : "Hide"}<span className="sr-only"> {appLabel}</span></button>
         )}
       </header>
       <p className={`mcp-app-status is-${status}`} role="status">
-        {collapsed ? "Hidden. Choose Show to bring the app back." : statusText}
+        {collapsed
+          ? (resource === null ? "Tap Show to load the app" : "Hidden. Choose Show to bring the app back.")
+          : statusText}
       </p>
       {frameVisible && (
         <iframe
