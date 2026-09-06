@@ -395,12 +395,12 @@ function shapeSubagentPart(part: WebSubagentPart): WebSubagentPart {
  * repair it made. A nested delegation's children are named too, because the
  * repair is addressed by tool-call id and one of those may be the id asked for.
  */
-function nameWholePayloads<T extends WebToolCall>(call: T): T {
-  const args = wholePayloadDigest(call.args);
-  const result = wholePayloadDigest(call.result);
-  if (args === undefined && result === undefined) return call;
+function nameWholePayloads(part: WebToolCallPart | WebSubagentPart): WebToolCallPart | WebSubagentPart {
+  const args = wholePayloadDigest(part.args);
+  const result = wholePayloadDigest(part.result);
+  if (args === undefined && result === undefined) return part;
   return {
-    ...call,
+    ...part,
     ...(args === undefined ? {} : { argsDigest: args }),
     ...(result === undefined ? {} : { resultDigest: result }),
   };

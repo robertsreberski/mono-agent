@@ -2472,6 +2472,31 @@ describe("web event dispatch", () => {
     expect(stream.written[1]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
   });
 
+  it("gives a downgraded frame an id of its own", async () => {
+    // `id:` is what names an SSE frame on the wire, and a `message.delta`
+    // reduced to a hint is a different frame of a different type carrying a
+    // different payload. It went out under the delta's own id, so one id named
+    // two frames -- and a console that deduplicated by id would drop the one it
+    // needed.
+    const stream = harness("thread-1");
+    stream.send(event("message.delta", "other", delta(1)));
+    stream.advance(1_000);
+    stream.send(event("message.delta", "other", delta(2)));
+    stream.send(event("turn.changed", "thread-1", { turn: { status: "running" } }));
+
+    const downgraded = stream.written.filter((written) => written.type === "message.changed");
+    expect(downgraded).toHaveLength(2);
+    for (const written of downgraded) {
+      expect(written.id).not.toBe("message.delta:other");
+      // Still traceable to the frame it was cut from.
+      expect(written.id).toContain("message.delta:other");
+    }
+    const ids = stream.written.map((written) => written.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    // A frame that passes through untouched keeps the id the service gave it.
+    expect(stream.written.at(-1)?.id).toBe("turn.changed:thread-1");
+  });
+
   it("rate-limits a conversation the console did not name to one frame a second", async () => {
     const stream = harness("thread-1");
     expect(stream.send(event("message.delta", "other", delta(1)))).toBe(true);

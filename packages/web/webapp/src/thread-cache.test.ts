@@ -664,6 +664,37 @@ describe("createThreadCache", () => {
     expect(unnamedPart.resultTruncated).toBe(true);
   });
 
+  it("hands back the very objects it was holding when a write changes nothing", () => {
+    // The device store decides what to rewrite by comparing entries FIELD BY
+    // FIELD and by identity -- `pagedInIds`, `thread`, `messages`. Two of those
+    // were rebuilt unconditionally, so a conversation re-read once a second
+    // during a turn, and a run state restated by every event, each re-stripped
+    // and rewrote a byte-identical row on every flush.
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("m2")], "cursor-older"));
+    cache.prependOlder("alpha-thread", { messages: [message("m1")], nextCursor: null });
+    const held = cache.get("alpha-thread")!;
+    expect(held.pagedInIds.has("m1")).toBe(true);
+
+    // A re-read that keeps every message it is holding keeps the SET too.
+    cache.upsertFull(detail([message("m1"), message("m2")]));
+    expect(cache.get("alpha-thread")?.pagedInIds).toBe(held.pagedInIds);
+
+    // A run state that says exactly what the summary already says is not news.
+    const before = cache.get("alpha-thread")!;
+    expect(cache.patchRunState("alpha-thread", { status: "idle" })).toBe(false);
+    expect(cache.get("alpha-thread")).toBe(before);
+    expect(cache.get("alpha-thread")?.thread).toBe(before.thread);
+
+    // A run state that says something else still lands.
+    expect(cache.patchRunState("alpha-thread", { status: "running", id: "turn-1" })).toBe(true);
+    expect(cache.get("alpha-thread")?.thread.runState).toEqual({ status: "running", id: "turn-1" });
+
+    // And a message that really went away still leaves the set behind it.
+    cache.upsertFull(detail([message("m2")]), { reset: true });
+    expect(cache.get("alpha-thread")?.pagedInIds.has("m1")).toBe(false);
+  });
+
   it("patches the summary of a conversation it holds and inserts none it does not", () => {
     const cache = createThreadCache();
     cache.upsertFull(detail([]));

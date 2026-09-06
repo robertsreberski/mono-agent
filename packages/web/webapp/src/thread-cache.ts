@@ -230,6 +230,23 @@ const sameUntruncatedBody = (
   && previewDigest !== undefined
   && heldDigest === previewDigest;
 
+/**
+ * Whether two run states say the same thing.
+ *
+ * Compared field by field rather than by identity, because every projection of
+ * a conversation builds a new one -- and the field the console actually turns
+ * on, `status`, is the same string in almost all of them.
+ */
+const sameRunState = (held: RunState, next: RunState): boolean =>
+  held.status === next.status
+  && held.id === next.id
+  && held.startedAt === next.startedAt
+  && held.finishedAt === next.finishedAt
+  && held.model === next.model
+  && held.effort === next.effort
+  && held.error?.code === next.error?.code
+  && held.error?.message === next.error?.message;
+
 const restorePayloads = <T extends TruncatablePayload>(held: TruncatablePayload, incoming: T): T => {
   const restoreResult = incoming.resultTruncated === true
     && held.resultTruncated !== true
@@ -934,8 +951,13 @@ export const createThreadCache = (
       const keptOlder = messages.length > detail.messages.length;
       const cursor = keptOlder ? held.messagesNextCursor : detail.messagesNextCursor;
       // Only what SURVIVED stays remembered as paged-in, so the set cannot
-      // outgrow the transcript it describes.
+      // outgrow the transcript it describes -- and when everything survived, the
+      // very set it was holding. The device store compares this by identity to
+      // decide whether a row has to be rewritten, so a fresh Set of the same
+      // ids made a conversation re-read once a second during a turn re-strip
+      // and rewrite a byte-identical row on every flush.
       const surviving = new Set(messages.map((message) => message.id));
+      const pagedIn = [...held.pagedInIds].filter((id) => surviving.has(id));
       const entry = withCursor(
         {
           thread: newerProjection(held.thread, detail.thread),
@@ -943,7 +965,7 @@ export const createThreadCache = (
           stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
-          pagedInIds: new Set([...held.pagedInIds].filter((id) => surviving.has(id))),
+          pagedInIds: pagedIn.length === held.pagedInIds.size ? held.pagedInIds : new Set(pagedIn),
           ...(options.etag === undefined
             ? (held.etag === undefined ? {} : { etag: held.etag })
             : { etag: options.etag }),
@@ -1005,8 +1027,14 @@ export const createThreadCache = (
       const next = newerProjection(entry.thread, thread);
       return next === entry.thread ? entry : { ...entry, thread: next };
     })),
+    // A run state restated by an event that changed nothing is not news: the
+    // summary comes back by reference and no commit is announced, so the flush
+    // this would otherwise schedule -- several a second during a turn -- does
+    // not happen.
     patchRunState: (threadId, runState) => committed(patchEntry(threadId, (entry) =>
-      ({ ...entry, thread: { ...entry.thread, runState } }))),
+      (sameRunState(entry.thread.runState, runState)
+        ? entry
+        : { ...entry, thread: { ...entry.thread, runState } }))),
     applyDelta: (threadId, delta) => {
       const entry = entries.get(threadId);
       if (entry === undefined) return "unheld";

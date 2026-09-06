@@ -1517,13 +1517,26 @@ export function createWebEventDispatch(options: {
   // Per connection, and cleared with it: what one console has already been told
   // about is no reason to keep another quiet.
   const hintedAt = new Map<string, number>();
+  /** How many frames this connection has minted an id for. */
+  let downgrades = 0;
 
-  const hint = (event: WebEvent, payload: WebMessageChangedPayload): boolean => write({
-    ...event,
-    type: "message.changed",
-    // `deltaDeclined` is this layer's own signal and stops here.
-    payload: { messageId: payload.messageId, updatedAt: payload.updatedAt },
-  });
+  const hint = (event: WebEvent, payload: WebMessageChangedPayload): boolean => {
+    const downgraded = event.type !== "message.changed" || payload.deltaDeclined === true;
+    if (downgraded) downgrades += 1;
+    return write({
+      ...event,
+      // A frame this layer rewrote is a DIFFERENT frame -- another type, another
+      // payload -- and `id:` is what names one on the wire. Sending it under the
+      // source event's id had one id naming two frames, which a console that
+      // deduplicates by id would read as one. Derived from the source so it
+      // stays traceable, and unique per connection because that is the scope the
+      // id is read in.
+      ...(downgraded ? { id: `${event.id}#${String(downgrades)}` } : {}),
+      type: "message.changed",
+      // `deltaDeclined` is this layer's own signal and stops here.
+      payload: { messageId: payload.messageId, updatedAt: payload.updatedAt },
+    });
+  };
 
   const rateLimited = (event: WebEvent, payload: WebMessageChangedPayload): boolean => {
     const key = event.threadId ?? "";

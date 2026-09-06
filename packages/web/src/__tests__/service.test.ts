@@ -4859,6 +4859,13 @@ describe("every transcript-moving write names its message", () => {
 
     const named = new Set(messageEvents(events)
       .map((event) => (event.payload as { readonly messageId: string }).messageId));
+    // BOTH rows: the assistant row the promotion opened, and the operator's own
+    // message it reparented. A console told only about the second was left
+    // showing a steer that still read "queued".
+    const opened = service.thread(thread.id).messages
+      .filter((message) => message.role === "assistant").at(-1);
+    expect(opened?.id).toEqual(expect.any(String));
+    expect(named.has(opened!.id)).toBe(true);
     expect(named.has(receipt.message.id)).toBe(true);
     const promoted = service.thread(thread.id).messages
       .find((message) => message.id === receipt.message.id);
