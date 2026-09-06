@@ -142,11 +142,11 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     command: "start",
     group: "Run",
     short: "start",
-    summary: "Start the agent as a background launchd service.",
+    summary: "Start the agent as a background service (launchd or systemd).",
     signature: "mono-agent start [--config <path>] [--env-file <path>] [--foreground]",
     lines: [
-      "Start the agent as a background macOS service (launchd), print its",
-      "instance info, and return. Re-running restarts the running instance.",
+      "Start the agent through macOS launchd or Linux systemd user services.",
+      "On Linux, start preserves a healthy running instance; use restart to apply changes.",
       "Refuses to start without a valid mono-agent.config.json in the folder.",
       "Use --foreground to run in the blocking foreground instead.",
     ],
@@ -161,24 +161,25 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "Restart the background instance for this config (starts it if stopped).",
       "--clear-sessions clears persisted Pi sessions, active conversation history, and ACP authorizations",
       "so the agent starts fresh. Durable memory and run artifacts are untouched.",
+      "Linux currently refuses --clear-sessions without changing service or conversation state.",
     ],
   },
   {
     command: "stop",
     group: "Run",
     short: "stop",
-    summary: "Stop the instance and remove its LaunchAgent.",
+    summary: "Stop the instance and remove its service definition.",
     signature: "mono-agent stop [--config <path>]",
-    lines: ["Stop the background instance and remove its LaunchAgent."],
+    lines: ["Stop the background instance and remove its LaunchAgent or systemd user unit."],
   },
   {
     command: "status",
     group: "Run",
     short: "status",
-    summary: "Show this config's instance plus other running instances.",
+    summary: "Show this config's service and readiness; macOS also lists other running instances.",
     json: true,
     signature: "mono-agent status [--config <path>] [--json]",
-    lines: ["Show this config's instance plus any other running instances."],
+    lines: ["Show this config's service and readiness; macOS also lists other running instances."],
   },
   {
     command: "logs",
@@ -186,7 +187,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
     short: "logs",
     summary: "Print (and optionally follow) the background log files.",
     signature: "mono-agent logs [--config <path>] [--follow|-f] [--lines <n>]",
-    lines: ["Print (and optionally follow) the background instance's log files."],
+    lines: ["Print (and optionally follow) log files on macOS or the user journal on Linux."],
   },
   {
     command: "tui",
@@ -359,7 +360,7 @@ const HELP_COMMANDS_BY_KEY = new Map(HELP_COMMANDS.map((entry) => [entry.command
 const HELP_GROUPS: readonly { readonly id: HelpGroupId; readonly note?: string }[] = [
   { id: "Setup" },
   { id: "Check" },
-  { id: "Run", note: "(background lifecycle is macOS/launchd; elsewhere use start --foreground)" },
+  { id: "Run", note: "(macOS launchd or Linux systemd user services; elsewhere use start --foreground)" },
   { id: "Console" },
   { id: "Observe" },
   { id: "Maintain" },
@@ -371,10 +372,12 @@ export const HELP_ALIASES = new Map<string, string>([
   ["setup", "init"],
 ]);
 
-const HELP_NOTES = `Background mode runs the agent under launchd, keeping it alive across logins
-(auto-restarting only on crash) until you run stop. Secrets are read from the
+const HELP_NOTES = `Background mode runs the agent under launchd or Linux systemd user services,
+auto-restarting only after a crash until you run stop. Linux requires
+loginctl enable-linger for this user to keep the service alive across logins. Secrets are read from the
 .env file in the working directory, the same as foreground mode. The background
-commands require macOS; elsewhere use start --foreground.
+commands require macOS or Linux with a running systemd user manager; elsewhere use start --foreground.
+Linux runtime provenance remains dev (unmanaged); managed configuration chat is macOS-only.
 
 Init model references use <provider>:<model>, for example
 openai-codex:gpt-5.6-terra or anthropic:claude-sonnet-4-6. The init wizard
