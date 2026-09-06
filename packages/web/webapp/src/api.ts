@@ -29,6 +29,8 @@ import type {
   WebMessage,
 } from "./types";
 
+import { recordDataUsage, recordResponsePayload } from "./data-usage";
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
@@ -41,15 +43,29 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * One body, read once and counted once.
+ *
+ * The console's whole data story is only as honest as its meter, so the single
+ * place every JSON body is decoded is the single place it is measured. `text()`
+ * rather than `json()` because the decoded length is the fallback for a chunked
+ * response that declared no `content-length`; the parse is identical either way.
+ */
+const readJson = async <T>(response: Response): Promise<T> => {
+  const text = await response.text();
+  recordResponsePayload(response, text);
+  return JSON.parse(text) as T;
+};
+
 const readError = async (response: Response): Promise<ApiError> => {
   let message = `${response.status} ${response.statusText}`.trim();
   let code: string | undefined;
   try {
-    const payload = (await response.json()) as {
+    const payload = await readJson<{
       error?: string | { message?: string; code?: string };
       message?: string;
       code?: string;
-    };
+    }>(response);
     if (typeof payload.error === "string") message = payload.error;
     if (payload.error && typeof payload.error === "object") {
       message = payload.error.message ?? message;
@@ -94,7 +110,7 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   if (response.status === 304) {
     throw new ApiError("The server answered a read that quoted no validator with 304.", 304);
   }
-  return (await response.json()) as T;
+  return await readJson<T>(response);
 };
 
 /**
@@ -126,7 +142,7 @@ const validatedRequest = async <T>(
     },
   });
   if (response.status === 304) return NOT_MODIFIED;
-  const value = (await response.json()) as T;
+  const value = await readJson<T>(response);
   const served = response.headers.get("ETag");
   return { ...value, ...(served === null ? {} : { etag: served }) };
 };
@@ -302,6 +318,24 @@ const cronMutation = async <T>(path: string, body: Readonly<Record<string, unkno
 export const THREAD_PAGE_LIMIT = 50;
 
 /**
+ * Half of it on a lean link.
+ *
+ * A sidebar shows a handful of rows before anything is scrolled, and every row
+ * carries a title, a preview and a run state. Paging is one tap; a page nobody
+ * reads is bytes nobody asked for.
+ */
+export const LEAN_THREAD_PAGE_LIMIT = 25;
+
+/**
+ * How much older transcript one "load older" buys.
+ *
+ * The server's own page for a cold read is 30 messages; this is the walk
+ * backwards from there, and it used to ask for the ceiling.
+ */
+export const MESSAGE_PAGE_LIMIT = 30;
+export const LEAN_MESSAGE_PAGE_LIMIT = 15;
+
+/**
  * The bucket a bootstrap should carry.
  *
  * A bootstrap answers with one page of one `(sourceId, archived)` bucket and
@@ -435,8 +469,13 @@ export const api = {
     return result.message;
   },
 
-  messages: (threadId: string, before: string, signal?: AbortSignal) => {
-    const query = new URLSearchParams({ before, limit: "100" });
+  messages: (
+    threadId: string,
+    before: string,
+    signal?: AbortSignal,
+    limit: number = MESSAGE_PAGE_LIMIT,
+  ) => {
+    const query = new URLSearchParams({ before, limit: String(limit) });
     return request<MessagePage>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/messages?${query.toString()}`,
       { signal },
@@ -779,6 +818,52 @@ export const api = {
     if (!response.ok) throw await readError(response);
   },
 
+  /**
+   * A fresh capability for one reply attachment, addressed by its own ids.
+   *
+   * The retry path inside {@link withReplyAccessRetry} derives this same route
+   * from a stale capability URL, which a part restored from this device does not
+   * have: persistence strips the credential deliberately. Addressed by
+   * (conversation, message, part) instead — the same triple the route itself is
+   * built from, and the same authorization: the server checks the origin header
+   * and mints for that exact part or refuses.
+   */
+  replyAttachmentAccess: async (
+    threadId: string,
+    messageId: string,
+    partId: string,
+    signal?: AbortSignal,
+  ): Promise<Extract<MessagePart, { readonly type: "attachment" }>> => {
+    const accessPath = `/api/v1/threads/${encodeURIComponent(threadId)}`
+      + `/messages/${encodeURIComponent(messageId)}`
+      + `/reply-attachments/${encodeURIComponent(partId)}/access`;
+    const payload = await request<{ readonly part: MessagePart }>(accessPath, {
+      method: "POST",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }),
+    });
+    const part = payload.part;
+    if (part.type !== "attachment" || part.id !== partId) {
+      throw new Error("The refreshed reply part identity changed.");
+    }
+    if (part.contentUrl === undefined) {
+      throw new Error("The refreshed reply part has no private endpoint.");
+    }
+    // The minted capability must address the part that was asked for, on this
+    // origin, through the route this access path owns. Same check the expiry
+    // retry makes, for the same reason: a compromised DTO must not be able to
+    // point a private read anywhere else.
+    const endpoint = replyEndpoint(part.contentUrl);
+    if (
+      endpoint.type !== "attachment"
+      || endpoint.partId !== partId
+      || endpoint.accessPath !== accessPath
+    ) {
+      throw new Error("The refreshed reply part binding changed.");
+    }
+    return part;
+  },
+
   replyAttachmentContent: (
     contentUrl: string,
     signal?: AbortSignal,
@@ -867,6 +952,9 @@ export const uploadContent = (
         onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
       }
     };
+    // Bytes LEAVING the device are bytes the operator is billed for too, and an
+    // XHR body is the one transfer no resource entry and no `request()` sees.
+    xhr.upload.onload = () => recordDataUsage(file.size);
     xhr.onerror = () => {
       cleanup();
       reject(new Error("The upload connection was interrupted."));

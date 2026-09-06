@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { DataMessagePartProps } from "@assistant-ui/react";
 import {
+  type RefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -14,11 +15,23 @@ import {
 } from "react";
 
 import { ApiError, api, isReplyAccessExpired, sameOriginReplyUrl } from "../api";
+import { useDataMode } from "../data-mode";
+import { recordTransferredBody } from "../data-usage";
 import { isMcpAppProtocolVersion } from "../mcp-app-protocol";
 import type { McpAppPart, McpAppResource, MessagePart } from "../types";
 import { Icon } from "./Icon";
 import { ImageTile } from "./ImageGallery";
+import { useReplyAttachmentAccess } from "./reply-access";
 import { isReplyImage } from "./reply-image";
+import {
+  acquireReplyImageBlob,
+  hasReplyImageBlob,
+  dropReplyImageFetch,
+  joinReplyImageFetch,
+  publishReplyImageBlob,
+  releaseReplyImageBlob,
+  replyImageKey,
+} from "./reply-image-cache";
 import {
   mcpAppContentSecurityPolicy,
   secureMcpAppHtml,
@@ -34,6 +47,8 @@ const APP_MAX_HEIGHT = 1600;
 const APP_MAX_WIDTH = 1400;
 const APP_INITIAL_HEIGHT = 320;
 const MCP_APP_PROXY_PATH = "/api/v1/mcp-app-proxy";
+/** How far ahead of the viewport an app card opens itself. */
+const MCP_APP_PRELOAD_MARGIN = "200px";
 
 type ReplyAttachmentPart = Extract<MessagePart, { readonly type: "attachment" }>;
 type ReplyFailurePart = Extract<MessagePart, { readonly type: "failure" }>;
@@ -372,53 +387,268 @@ const storedReplyImageUrl = (part: { readonly mediaType: string; readonly stored
     ? part.storedUrl
     : undefined;
 
+/** How far ahead of the viewport a picture starts loading. */
+const REPLY_IMAGE_PRELOAD_MARGIN = "600px";
+
+/**
+ * What has to happen before a picture's bytes are bought.
+ *
+ * `eager` is a browser that cannot say where anything is (jsdom, very old
+ * engines): everything loads, as it always did. `viewport` is the ordinary case
+ * — the picture loads as it comes within a screen of the viewport. `tap` is the
+ * lean case: nothing is bought until the operator asks for it, and the tile says
+ * what asking will cost.
+ */
+type ReplyImageSource = "eager" | "viewport" | "tap";
+
+/**
+ * How many times a picture may be tried again after a transient failure.
+ *
+ * The capability is re-minted on every projection of the message — about once a
+ * second while a turn runs — so "retry on the next capability" alone is a retry
+ * loop at the turn's own rate behind a card the operator can already download
+ * from. A few attempts cover the failure this is for: one dropped connection.
+ */
+export const REPLY_IMAGE_RETRY_LIMIT = 3;
+
+type ReplyImageStatus = "pending" | "ready" | "unavailable";
+
+interface ReplyImageState {
+  readonly status: ReplyImageStatus;
+  readonly src?: string;
+}
+
+const PENDING_REPLY_IMAGE: ReplyImageState = { status: "pending" };
+const UNAVAILABLE_REPLY_IMAGE: ReplyImageState = { status: "unavailable" };
+
+/** Bytes that contradict what the part declared about them. */
+class ReplyImageIntegrityError extends Error {}
+
+/**
+ * Whether a failure is the picture's verdict or just this attempt's.
+ *
+ * Bytes that contradict their declaration, and the server's own terminal states,
+ * say the same thing however fresh the capability. Everything else — a dropped
+ * connection, a deadline, a transport error — is about the attempt, and the next
+ * capability the service mints is a new chance at it.
+ */
+const permanentReplyImageFailure = (error: unknown): boolean =>
+  error instanceof ReplyImageIntegrityError
+  || (error instanceof ApiError
+    && error.code !== undefined
+    && TERMINAL_ATTACHMENT_ERROR_MESSAGES.has(error.code));
+
+/** The authorized read, with both declarations checked before the bytes count. */
+const replyImageBytes = async (
+  contentUrl: string,
+  signal: AbortSignal,
+  sizeBytes: number,
+  integrityId: string,
+): Promise<Blob> => {
+  const response = await api.replyAttachmentContent(contentUrl, signal);
+  const declaredLength = response.headers.get("content-length");
+  if (
+    (declaredLength !== null && Number(declaredLength) !== sizeBytes)
+    || response.headers.get("x-mono-agent-integrity-id") !== integrityId
+  ) {
+    throw new ReplyImageIntegrityError("The reply image contradicted its declaration.");
+  }
+  const blob = await response.blob();
+  if (blob.size !== sizeBytes) {
+    throw new ReplyImageIntegrityError("The reply image contradicted its declared length.");
+  }
+  return blob;
+};
+
 /**
  * Fallback for an image with no durable copy yet. Goes through `fetch` rather
  * than pointing an `<img>` at the capability URL, because only this path can
  * check the integrity headers and reach the one-shot access refresh — an
  * `<img>` `onerror` reports no status at all.
+ *
+ * Three things keep that fetch to one per picture. The effect is keyed on the
+ * part's own identity and reads the capability from `accessRef` when it runs:
+ * the service re-mints `contentUrl` on every projection of the message, so an
+ * effect keyed on the URL re-downloads the image for every frame of a running
+ * turn. The request itself belongs to the shared store, so two parts carrying
+ * the same picture — and StrictMode's discarded first mount — issue one. And
+ * the bytes are held there too, so scrolling away, switching conversations and
+ * coming back all resolve from what is already here.
+ *
+ * The fetch waits for the picture to approach the viewport wherever the browser
+ * can say so. `IntersectionObserver` is feature-detected rather than assumed:
+ * without it — jsdom, and very old browsers — everything loads as it always did.
  */
-function useReplyImageBlob(
+function useReplyImage(
   enabled: boolean,
-  contentUrl: string | undefined,
+  source: ReplyImageSource,
+  access: { readonly current: AttachmentAccessState | undefined },
+  identity: string,
+  partId: string | undefined,
   sizeBytes: number | undefined,
   integrityId: string | undefined,
-): string | undefined {
-  const [objectUrl, setObjectUrl] = useState<string | undefined>(undefined);
+  mintAccess: (() => Promise<string | undefined>) | undefined,
+): {
+  readonly state: ReplyImageState;
+  readonly holderRef: RefObject<HTMLDivElement | null>;
+  /** Whether the bytes have been asked for at all; false only in `tap`. */
+  readonly wanted: boolean;
+  readonly request: () => void;
+} {
+  /**
+   * Whether the bytes are wanted yet.
+   *
+   * `tap` starts false EXCEPT for a picture the shared store is already holding:
+   * scrolling one out of the strip and back inside the retention window costs
+   * nothing, so offering to "load" it would be a tap target that lies about what
+   * it costs. Read without taking a reference -- this is a render.
+   */
+  const held = sizeBytes !== undefined
+    && integrityId !== undefined
+    && hasReplyImageBlob(replyImageKey(integrityId, sizeBytes));
+  const [state, setState] = useState<ReplyImageState>(PENDING_REPLY_IMAGE);
+  const [wanted, setWanted] = useState(source === "eager" || held);
+  const [attempt, setAttempt] = useState(0);
+  // Read when the effect runs rather than depended on: the capability minter is
+  // a fresh closure every render and must not re-key the fetch.
+  const mintRef = useRef(mintAccess);
+  mintRef.current = mintAccess;
+  const holderRef = useRef<HTMLDivElement>(null);
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+  /** The access generation whose transient failure is waiting for a newer one. */
+  const retryAfterRef = useRef<number | undefined>(undefined);
+  const retriesRef = useRef(0);
+
+  // A slot recycled to a different picture keeps nothing of the last one: not
+  // the bytes on screen, not its failure, and not the fact that it was in view.
+  // Adjusting here rather than in an effect means no frame is ever committed
+  // showing one part's image under another part's name.
+  const content = `${partId ?? ""} ${integrityId ?? ""} ${String(sizeBytes ?? "")}`;
+  const [renderedContent, setRenderedContent] = useState(content);
+  if (renderedContent !== content) {
+    setRenderedContent(content);
+    setState(PENDING_REPLY_IMAGE);
+    setWanted(source === "eager" || held);
+    setAttempt(0);
+    retryAfterRef.current = undefined;
+    retriesRef.current = 0;
+  }
+
+  // A transient failure re-arms on the next capability the service mints, which
+  // is what keying the effect on the URL used to do by accident — but a bounded
+  // number of times, because those mints arrive at the rate of the running turn.
+  const generation = access.current?.identity === identity ? access.current.generation : undefined;
+  if (
+    retryAfterRef.current !== undefined
+    && generation !== undefined
+    && generation > retryAfterRef.current
+  ) {
+    retryAfterRef.current = undefined;
+    if (retriesRef.current < REPLY_IMAGE_RETRY_LIMIT) {
+      retriesRef.current += 1;
+      setAttempt((value) => value + 1);
+    }
+  }
+
   useEffect(() => {
-    if (!enabled || contentUrl === undefined || sizeBytes === undefined || integrityId === undefined) {
+    if (!enabled || wanted || source !== "viewport") return undefined;
+    const holder = holderRef.current;
+    if (holder === null || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      setWanted(true);
+    }, { rootMargin: REPLY_IMAGE_PRELOAD_MARGIN });
+    observer.observe(holder);
+    return () => observer.disconnect();
+  }, [enabled, source, wanted]);
+
+  useEffect(() => {
+    if (!enabled || !wanted || sizeBytes === undefined || integrityId === undefined) return undefined;
+    const key = replyImageKey(integrityId, sizeBytes);
+    const shared = acquireReplyImageBlob(key);
+    if (shared !== undefined) {
+      setState({ status: "ready", src: shared });
+      return () => {
+        releaseReplyImageBlob(key);
+        setState(PENDING_REPLY_IMAGE);
+      };
+    }
+    const current = access.current;
+    const declared = current?.identity === identityRef.current ? current.currentUrl : undefined;
+    const mint = mintRef.current;
+    if (current === undefined || (declared === undefined && mint === undefined)) {
+      setState(UNAVAILABLE_REPLY_IMAGE);
       return undefined;
     }
-    const controller = new AbortController();
-    let created: string | undefined;
+    const startedGeneration = current.generation;
+    let cancelled = false;
+    let joined: Promise<Blob> | undefined;
+    let held = false;
     void (async () => {
+      // React StrictMode tears this effect down before the microtask runs, so
+      // its discarded generation never starts a request of its own.
+      await Promise.resolve();
+      if (cancelled) return;
+      // A picture restored from this device has an identity and no key. Asking
+      // for a new one is what makes an offline transcript's pictures real
+      // pictures rather than dead file cards.
+      let contentUrl: string | undefined = declared;
+      if (contentUrl === undefined) {
+        try {
+          contentUrl = await mint?.();
+        } catch (error) {
+          if (cancelled) return;
+          if (!permanentReplyImageFailure(error)) retryAfterRef.current = startedGeneration;
+          setState(UNAVAILABLE_REPLY_IMAGE);
+          return;
+        }
+      }
+      if (cancelled) return;
+      if (contentUrl === undefined) {
+        setState(UNAVAILABLE_REPLY_IMAGE);
+        return;
+      }
+      const resolvedUrl = contentUrl;
+      const request = joinReplyImageFetch(
+        key,
+        (signal) => replyImageBytes(resolvedUrl, signal, sizeBytes, integrityId),
+      );
+      joined = request;
       try {
-        const response = await api.replyAttachmentContent(contentUrl, controller.signal);
-        if (controller.signal.aborted) return;
-        const declaredLength = response.headers.get("content-length");
-        if (
-          (declaredLength !== null && Number(declaredLength) !== sizeBytes)
-          || response.headers.get("x-mono-agent-integrity-id") !== integrityId
-        ) return;
-        const blob = await response.blob();
-        if (controller.signal.aborted || blob.size !== sizeBytes) return;
-        created = URL.createObjectURL(blob);
-        setObjectUrl(created);
-      } catch {
-        // Showing the image is best-effort; the download action still reports.
+        const blob = await request;
+        if (cancelled) return;
+        const objectUrl = publishReplyImageBlob(key, blob);
+        held = true;
+        setState({ status: "ready", src: objectUrl });
+      } catch (error) {
+        if (cancelled) return;
+        // Showing the image is best-effort: the card and its download action
+        // take over, and they report what went wrong.
+        if (!permanentReplyImageFailure(error)) retryAfterRef.current = startedGeneration;
+        setState(UNAVAILABLE_REPLY_IMAGE);
       }
     })();
     return () => {
-      controller.abort();
-      if (created !== undefined) URL.revokeObjectURL(created);
-      setObjectUrl(undefined);
+      cancelled = true;
+      if (joined !== undefined) dropReplyImageFetch(key, joined);
+      if (held) releaseReplyImageBlob(key);
+      setState(PENDING_REPLY_IMAGE);
     };
-  }, [enabled, contentUrl, sizeBytes, integrityId]);
-  return objectUrl;
+  // The capability is read from `access` when the effect runs, never depended
+  // on: a re-minted token is the same picture and must not re-download it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [access, attempt, enabled, wanted, partId, sizeBytes, integrityId]);
+
+  const request = useCallback(() => { setWanted(true); }, []);
+  return { state, holderRef, wanted, request };
 }
 
 export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   const part = parseAttachment(data);
+  const lean = useDataMode() === "lean";
+  const refreshAccess = useReplyAttachmentAccess();
   const identity = attachmentIdentity(part);
   const identityRef = useRef(identity);
   identityRef.current = identity;
@@ -464,14 +694,115 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
     };
   }
 
+  /**
+   * Mints a capability for this exact part and adopts it.
+   *
+   * The one caller that matters is a transcript restored from this device: the
+   * stored copy carries no `contentUrl` because that URL is a credential.
+   * Everything else about the part is intact, so the console asks for a new key
+   * rather than declaring the file gone.
+   */
+  const mintAccess = useCallback(async (): Promise<string | undefined> => {
+    if (refreshAccess === undefined || part === undefined) return undefined;
+    const expectedIdentity = identityRef.current;
+    const refreshed = await refreshAccess(part.id);
+    if (!mountedRef.current || identityRef.current !== expectedIdentity) return undefined;
+    // The answer must describe the same file this card is showing, on this
+    // origin: a refresh is not a licence to point a private read anywhere else.
+    if (!sameAttachmentIdentity(part, refreshed) || refreshed.contentUrl === undefined) {
+      throw new ApiError("The refreshed reply part identity changed.", 409, "reply_part_not_found");
+    }
+    const nextUrl = sameOriginReplyUrl(refreshed.contentUrl);
+    const current = accessRef.current;
+    if (current?.identity === expectedIdentity) {
+      accessRef.current = { ...current, currentUrl: nextUrl };
+    }
+    return nextUrl;
+  }, [part, refreshAccess]);
+
+  /**
+   * Whether a key can still be asked for, which is not the same as holding one.
+   *
+   * Only for a part that carries NO `contentUrl`, which is what this device
+   * stores. A part that declares one the console then refuses -- off origin, or
+   * off the reply-part routes -- is not a part that lost its key: it is a
+   * payload trying to move a private read somewhere else, and it gets no fresh
+   * capability minted for it.
+   */
+  const canMintAccess = refreshAccess !== undefined
+    && part !== undefined
+    && part.contentUrl === undefined;
   const storedImage = storedReplyImageUrl(part);
-  const blobImage = useReplyImageBlob(
-    storedImage === undefined && isReplyImage(part?.mediaType),
-    declaredContentUrl,
+  // An image with no capability and no way to mint one can never resolve, so it
+  // goes straight to its file card rather than waiting on a viewport or a tap
+  // that would change nothing.
+  const fetchableImage = storedImage === undefined
+    && isReplyImage(part?.mediaType)
+    && (declaredContentUrl !== undefined || canMintAccess);
+  /**
+   * Every picture this card could put on screen, however its bytes arrive.
+   *
+   * The console's own durable copy is the ORDINARY case -- the service persists
+   * one for nearly every raster reply image -- so gating only the capability
+   * path left the common picture downloading at full resolution near the
+   * viewport while the indicator and the Lean offer both said pictures load only
+   * when they are asked for. The gate belongs to the picture, not to the route
+   * its bytes take.
+   */
+  const displayableImage = fetchableImage || storedImage !== undefined;
+  const imageSource: ReplyImageSource = lean
+    ? "tap"
+    : typeof IntersectionObserver === "function" ? "viewport" : "eager";
+  // Only the capability path is ENABLED here -- a durable copy has nothing to
+  // fetch -- but the gate the hook keeps is the picture's, and a stored copy is
+  // no more free to arrive unasked than a fetched one.
+  const {
+    state: replyImage,
+    holderRef,
+    wanted: imageWanted,
+    request: requestImage,
+  } = useReplyImage(
+    fetchableImage,
+    imageSource,
+    accessRef,
+    identity,
+    part?.id,
     part?.sizeBytes,
     part?.integrityId,
+    canMintAccess ? mintAccess : undefined,
   );
-  const imageSource = storedImage ?? blobImage;
+  /**
+   * The identity whose durable copy has been put on screen.
+   *
+   * Two duties, and they are the same moment: it is when the bytes were spent,
+   * and it is why they are never asked for again. Switching to Lean cannot
+   * un-spend them -- and under PR 1's immutable headers a second view is a cache
+   * hit -- so re-pricing a picture already on screen as something to load would
+   * be a tap target that lies about its cost, and would take the picture away to
+   * offer it. Keyed on the identity, so a slot recycled to a different picture
+   * starts closed again.
+   */
+  const shownStoredRef = useRef<string | undefined>(undefined);
+  const gatedByTap = imageSource === "tap"
+    && !imageWanted
+    && shownStoredRef.current !== identity;
+  const shownStored = gatedByTap ? undefined : storedImage;
+  const shownImage = shownStored ?? (replyImage.status === "ready" ? replyImage.src : undefined);
+
+  /**
+   * The estimate for a durable copy, which an `<img>` fetches on its own.
+   *
+   * A no-op wherever resource timing is measuring that fetch already. Where it
+   * is not, this is a floor that also OVERSTATES a second view: PR 1 serves
+   * these immutably, so the browser's cache answers the next one for nothing and
+   * a size the part declared cannot know that.
+   */
+  useEffect(() => {
+    if (shownStored === undefined || part === undefined) return;
+    if (shownStoredRef.current === identity) return;
+    shownStoredRef.current = identity;
+    recordTransferredBody(part.sizeBytes);
+  }, [identity, part, shownStored]);
 
   if (part === undefined) {
     return <div className="reply-part-error" role="alert">An attachment reference was invalid.</div>;
@@ -486,13 +817,49 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
   // for a document, for `image/svg+xml`, and for an image whose bytes failed
   // their integrity check or whose access could not be refreshed. If we cannot
   // show it, the operator still needs the file.
-  if (imageSource !== undefined) {
-    return <ImageTile image={{ key: part.id, src: imageSource, name: part.name }} />;
+  if (shownImage !== undefined) {
+    return <ImageTile image={{ key: part.id, src: shownImage, name: part.name }} />;
+  }
+
+  // Lean: the picture is not bought until it is asked for, and the tile says
+  // exactly what asking costs. A real button, so a keyboard and a screen reader
+  // reach it the same way a thumb does.
+  if (displayableImage && gatedByTap) {
+    return (
+      <button
+        type="button"
+        className="image-tile is-tappable"
+        aria-label={`Load ${part.name}, ${formatBytes(part.sizeBytes)}`}
+        onClick={requestImage}
+      >
+        <span className="image-tile-load" aria-hidden="true">Load</span>
+        <span className="image-tile-size" aria-hidden="true">{formatBytes(part.sizeBytes)}</span>
+      </button>
+    );
+  }
+
+  // A picture still on its way holds its own place in the strip. It is also the
+  // element the viewport gate watches, so it must exist before the bytes do —
+  // and it must be reachable, because a placeholder hidden from assistive tech
+  // is a picture a screen reader can never scroll to and therefore never load.
+  if (fetchableImage && replyImage.status === "pending") {
+    return (
+      <div
+        ref={holderRef}
+        className="image-tile is-loading"
+        role="img"
+        aria-busy="true"
+        aria-label={`Loading ${part.name}`}
+      />
+    );
   }
 
   const contentUrl = accessRef.current?.identity === identity ? accessRef.current.currentUrl : undefined;
   const downloadState = downloadFeedback?.identity === identity ? downloadFeedback.state : "idle";
-  const unavailable = contentUrl === undefined || downloadState === "unavailable";
+  // A part restored from this device holds no capability and is still perfectly
+  // reachable: the console can mint one. "Unavailable" is reserved for a file
+  // there is genuinely no way back to.
+  const unavailable = (contentUrl === undefined && !canMintAccess) || downloadState === "unavailable";
   const downloadStatus = unavailable
     ? (downloadFeedback?.identity === identity && downloadFeedback.state === "unavailable"
         ? downloadFeedback.status
@@ -514,8 +881,9 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
             onClick={() => {
               if (activeDownloadRef.current?.identity === identity) return;
               const access = accessRef.current;
-              if (access?.identity !== identity || access.currentUrl === undefined) return;
-              const requestUrl = access.currentUrl;
+              if (access?.identity !== identity) return;
+              if (access.currentUrl === undefined && !canMintAccess) return;
+              const declaredUrl = access.currentUrl;
               const accessGeneration = access.generation;
               const controller = new AbortController();
               activeDownloadRef.current = { identity, controller };
@@ -526,6 +894,13 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
                 && activeDownloadRef.current?.controller === controller;
               void (async () => {
                 try {
+                  // No key held: ask for one before deciding anything about the
+                  // file. A refusal is reported as the refusal it was.
+                  const requestUrl = declaredUrl ?? await mintAccess();
+                  if (!isActive()) return;
+                  if (requestUrl === undefined) {
+                    throw new ApiError("The reply part is unavailable.", 404, "reply_part_not_found");
+                  }
                   const response = await api.replyAttachmentContent(
                     requestUrl,
                     controller.signal,
@@ -554,6 +929,11 @@ export function ReplyAttachmentPart({ data }: DataMessagePartProps) {
                     throw new AttachmentIntegrityError();
                   }
                   const blob = await response.blob();
+                  // The estimate for a download, which never reaches the shared
+                  // image store and so is never counted there. A no-op wherever
+                  // resource timing is measuring this fetch already -- which is
+                  // every browser that has it, including in production.
+                  recordTransferredBody(blob.size);
                   if (!isActive()) return;
                   if (blob.size !== part.sizeBytes) {
                     if (declaredLength === null && blob.size < part.sizeBytes) {
@@ -712,6 +1092,7 @@ const mcpAppLoadErrorMessage = (error: unknown): string => {
 
 export function McpAppPart({ data }: DataMessagePartProps) {
   const part = parseMcpApp(data);
+  const lean = useDataMode() === "lean";
   const identity = mcpAppIdentity(part);
   const identityRef = useRef(identity);
   identityRef.current = identity;
@@ -740,7 +1121,21 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const [status, setStatus] = useState<"loading" | "connecting" | "ready" | "closed" | "error">("loading");
   const [statusText, setStatusText] = useState("Loading interactive app…");
   const [height, setHeight] = useState(APP_INITIAL_HEIGHT);
-  const [collapsed, setCollapsed] = useState(false);
+  // An app starts closed wherever the browser can tell us it is off screen, so
+  // scrolling past a long transcript costs no documents, bridges or sandboxes.
+  // Without an IntersectionObserver — jsdom, very old browsers — it opens as it
+  // always did. On a lean link it stays closed either way: arriving on screen is
+  // not the operator asking for an app, and an app is the most expensive thing
+  // a transcript can hold.
+  const viewportGated = typeof IntersectionObserver === "function";
+  const autoOpens = viewportGated && !lean;
+  const [collapsed, setCollapsed] = useState(viewportGated || lean);
+  /**
+   * False until the first observation says where this card actually is — and
+   * immediately true on a lean link, where no observation is coming and the card
+   * can say what it is waiting for straight away.
+   */
+  const [viewportSettled, setViewportSettled] = useState(!viewportGated || lean);
   const [confirmation, setConfirmation] = useState<ConfirmationRequest | null>(null);
   const [accessExpired, setAccessExpired] = useState(false);
   const [reloadRevision, setReloadRevision] = useState(0);
@@ -750,8 +1145,40 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const containerRef = useRef<HTMLElement>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  /** Set once the card has been opened, by the viewport or by the operator. */
+  const revealedRef = useRef(!viewportGated && !lean);
   const bridgeRef = useRef<AppBridge | null>(null);
   const nonce = useMemo(createNonce, [part?.connectionId, part?.invocationId]);
+
+  // A slot recycled to a different app keeps nothing of the last one. Adjusting
+  // here rather than in an effect means no frame is ever committed holding the
+  // previous app's document, which the bridge would then hand to this app's
+  // sandbox under this app's connection.
+  const [renderedIdentity, setRenderedIdentity] = useState(identity);
+  const recycled = renderedIdentity !== identity;
+  if (recycled) {
+    setRenderedIdentity(identity);
+    setResource(null);
+    setAccessExpired(false);
+    setStatus("loading");
+    setStatusText("Loading interactive app…");
+    setCollapsed(viewportGated || lean);
+    setViewportSettled(!viewportGated || lean);
+    revealedRef.current = !viewportGated && !lean;
+  }
+  const opened = recycled ? (!viewportGated && !lean) : !collapsed;
+
+  // The document is fetched for an app that has actually been opened. Hiding one
+  // again keeps what it loaded, so re-showing it costs nothing; only an explicit
+  // reopen, or a different app in this slot, asks the service again.
+  const loadKey = `${identity}:${String(reloadRevision)}`;
+  const loadLatchRef = useRef({ key: loadKey, wanted: opened });
+  if (loadLatchRef.current.key !== loadKey) {
+    loadLatchRef.current = { key: loadKey, wanted: opened };
+  } else if (opened) {
+    loadLatchRef.current = { key: loadKey, wanted: true };
+  }
+  const loadWanted = loadLatchRef.current.wanted;
 
   const adoptMcpAppAccess = useCallback((
     expectedIdentity: string,
@@ -780,6 +1207,38 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       mountedRef.current = false;
     };
   }, []);
+
+  // A Full -> Lean flip tears the observer down before it has ever reported, and
+  // an unsettled card renders an empty status line -- it is waiting for an
+  // answer that is no longer coming. Nothing to wait for is itself an answer.
+  useEffect(() => {
+    if (!autoOpens) setViewportSettled(true);
+  }, [autoOpens]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    // No observer at all on a lean link: nothing it could report would open the
+    // card, and `viewportSettled` is already true.
+    if (container === null || !autoOpens) return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      // Where the card is is now known, whichever way the answer went.
+      setViewportSettled(true);
+      // Opening is a first-arrival rule, not a scroll rule: once the operator
+      // has the control, scrolling back must never reopen what they hid.
+      if (revealedRef.current) {
+        observer.disconnect();
+        return;
+      }
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      revealedRef.current = true;
+      observer.disconnect();
+      setCollapsed(false);
+    }, { rootMargin: MCP_APP_PRELOAD_MARGIN });
+    observer.observe(container);
+    return () => observer.disconnect();
+  // A recycled slot is a different card in a different place: it is watched
+  // again from scratch, because its predecessor's arrival says nothing about it.
+  }, [autoOpens, identity]);
 
   const settleConfirmation = useCallback((confirmed: boolean) => {
     const pending = confirmationRef.current;
@@ -837,6 +1296,9 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   }, [cancelConfirmation, identity]);
 
   useEffect(() => {
+    // Nothing is requested for a card nobody has opened: no document, no bridge
+    // capability spent, no sandbox.
+    if (!loadWanted) return undefined;
     const accessState = accessRef.current;
     const access = accessState?.current;
     setResource(null);
@@ -883,7 +1345,7 @@ export function McpAppPart({ data }: DataMessagePartProps) {
       setStatusText(mcpAppLoadErrorMessage(error));
     });
     return () => controller.abort();
-  }, [accessAvailable, adoptMcpAppAccess, identity, reloadRevision]);
+  }, [accessAvailable, adoptMcpAppAccess, identity, loadWanted, reloadRevision]);
 
   const metadata = useMemo(
     () => safeMcpAppResourceMetadata(resource?.resourceMetadata),
@@ -1186,6 +1648,8 @@ export function McpAppPart({ data }: DataMessagePartProps) {
   const frameVisible = resource !== null && securedHtml !== undefined && !degraded && !collapsed;
   const appLabel = part.title ?? part.toolName;
   const reopenApp = () => {
+    revealedRef.current = true;
+    setViewportSettled(true);
     setCollapsed(false);
     setStatus("loading");
     setStatusText("Loading interactive app…");
@@ -1218,12 +1682,24 @@ export function McpAppPart({ data }: DataMessagePartProps) {
             className="reply-part-action"
             aria-expanded={!collapsed}
             disabled={confirmation !== null}
-            onClick={() => setCollapsed((value) => !value)}
+            onClick={() => {
+              revealedRef.current = true;
+              setViewportSettled(true);
+              setCollapsed((value) => !value);
+            }}
           >{collapsed ? "Show" : "Hide"}<span className="sr-only"> {appLabel}</span></button>
         )}
       </header>
       <p className={`mcp-app-status is-${status}`} role="status">
-        {collapsed ? "Hidden. Choose Show to bring the app back." : statusText}
+        {collapsed
+          // Until the first observation lands, the card does not yet know it is
+          // closed for want of the viewport, and must not ask for a tap.
+          ? (!viewportSettled
+              ? ""
+              : resource === null
+                ? "Tap Show to load the app"
+                : "Hidden. Choose Show to bring the app back.")
+          : statusText}
       </p>
       {frameVisible && (
         <iframe

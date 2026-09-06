@@ -412,6 +412,41 @@ describe("ProcessJobPart", () => {
     expect(threadJob).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps polling when a re-read hands it the same job back under a new object", async () => {
+    // Every conversation read rebuilds the message and its parts, so the card is
+    // handed a NEW object carrying the same job roughly once a second during a
+    // turn. Treating each of those as "the stream just answered" suppressed
+    // every poll round for the length of the turn -- the card only looked fresh
+    // because the read that rebuilt it happened to carry the state.
+    vi.useFakeTimers();
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob").mockResolvedValue(running);
+    const { rerender } = render(part({ type: "process-job", job: running }));
+
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    await act(async () => { vi.advanceTimersByTime(600); });
+    // Structurally identical, deeply cloned: a re-read, not a state change.
+    rerender(part({
+      type: "process-job",
+      job: JSON.parse(JSON.stringify(running)) as typeof running,
+    }));
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+      await Promise.resolve();
+    });
+
+    expect(threadJob).toHaveBeenCalledTimes(2);
+  });
+
   it("renders nothing for a part without a projection", () => {
     const { container } = render(part({ type: "process-job" }));
     expect(container).toBeEmptyDOMElement();

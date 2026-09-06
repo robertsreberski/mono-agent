@@ -21,6 +21,8 @@ import {
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { useConsoleStore } from "../console-store";
+import { currentDataMode, useDataMode } from "../data-mode";
+import { useDocumentVisible } from "../document-visibility";
 import type {
   AskAnswer,
   AskSnapshot,
@@ -282,6 +284,9 @@ interface AskReconciliationValue {
 const AskReconciliationContext = createContext<AskReconciliationValue | null>(null);
 const ASK_POLL_MIN_MS = 250;
 const ASK_POLL_MAX_MS = 2_000;
+/** Half the rate on a metered link; a question that waits 4 s is still answered. */
+const LEAN_ASK_POLL_MIN_MS = 500;
+const LEAN_ASK_POLL_MAX_MS = 4_000;
 
 const waitForAskPollDelay = async (delayMs: number, signal: AbortSignal): Promise<void> => {
   if (signal.aborted) return;
@@ -348,7 +353,18 @@ const persistedAskStatus = (value: unknown, depth = 0): TerminalAskStatus | unde
  * snapshots keep old cards from adopting a later run's conversation-scoped ask.
  */
 export function AskReconciliationProvider({ children }: { readonly children: ReactNode }) {
-  const { selectedThread, selectedAgent, connection } = useConsoleStore();
+  const { selectedThread, selectedAgent, connection, transcriptMovedAt } = useConsoleStore();
+  const visible = useDocumentVisible();
+  // Read when a round runs, never depended on. It is a stable callback in the
+  // store, but a loop that restarts because a reader's identity changed would
+  // reset its own backoff -- and the loop already treats everything it consults
+  // between rounds this way.
+  //
+  // Optional on purpose: knowing when the stream last spoke is a courtesy the
+  // loop can run without, and a transcript rendered by something that does not
+  // offer it must lose one optimisation, not its poll.
+  const transcriptMovedAtRef = useRef<((threadId: string) => number) | undefined>(transcriptMovedAt);
+  transcriptMovedAtRef.current = transcriptMovedAt;
   const threadId = selectedThread?.id;
   const requestsRef = useRef(new Map<string, VersionedAskCardRequest>());
   const nextRequestVersionRef = useRef(0);
@@ -425,7 +441,14 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
     };
 
     const poll = async (): Promise<void> => {
-      let delayMs = ASK_POLL_MIN_MS;
+      const lean = currentDataMode() === "lean";
+      const minDelayMs = lean ? LEAN_ASK_POLL_MIN_MS : ASK_POLL_MIN_MS;
+      const maxDelayMs = lean ? LEAN_ASK_POLL_MAX_MS : ASK_POLL_MAX_MS;
+      let delayMs = minDelayMs;
+      /** Rounds that actually asked; the first one always does. */
+      let asked = 0;
+      /** Whether the round before this one gave way, so this one cannot. */
+      let gaveWay = false;
       while (!controller.signal.aborted) {
         const requests = [...requestsRef.current.values()];
         if (requests.length === 0) return;
@@ -433,6 +456,19 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
           markUnavailable(requests);
           return;
         }
+        // The stream moved this conversation's transcript inside the interval
+        // this round waited out, so the agent side has only just spoken. One
+        // round gives way to it -- and only one, so a stream that never stops
+        // cannot starve the poll. The wait is repeated, not doubled: nothing was
+        // asked, so nothing has earned a longer backoff.
+        const movedAt = transcriptMovedAtRef.current?.(threadId) ?? 0;
+        if (asked > 0 && !gaveWay && Date.now() - movedAt < delayMs) {
+          gaveWay = true;
+          await waitForAskPollDelay(delayMs, controller.signal);
+          continue;
+        }
+        gaveWay = false;
+        asked += 1;
 
         let pollAgain = false;
         const exact = requests.filter((request) => request.expectedInteractionId !== undefined);
@@ -507,15 +543,20 @@ export function AskReconciliationProvider({ children }: { readonly children: Rea
 
         if (!pollAgain || controller.signal.aborted) return;
         await waitForAskPollDelay(delayMs, controller.signal);
-        delayMs = Math.min(ASK_POLL_MAX_MS, delayMs * 2);
+        delayMs = Math.min(maxDelayMs, delayMs * 2);
       }
     };
 
-    void poll();
+    // A hidden tab asks for nothing -- and, just as importantly, concludes
+    // nothing: marking these cards unavailable here would tell the operator a
+    // question had expired when all that happened is that they switched apps.
+    // `visible` is a dependency, so coming back restarts the loop from its
+    // shortest delay, which is what a resume should cost.
+    if (visible) void poll();
     return () => controller.abort();
     // `states` is deliberately not a dependency: one loop owns its backoff and
     // consults terminal state only as an optimization, never as authority.
-  }, [connection, requestRevision, selectedAgent?.status, threadId, versionRequest]);
+  }, [connection, requestRevision, selectedAgent?.status, threadId, versionRequest, visible]);
 
   const value = useMemo<AskReconciliationValue>(
     () => ({ states, register, replace }),
@@ -551,6 +592,7 @@ function AskUserTool({
     () => persistedAskStatus(structuredResult) ?? persistedAskStatus(result),
     [result, structuredResult],
   );
+  const lean = useDataMode() === "lean";
   const cardState = coordinator?.states[toolCallId];
   const snapshot = cardState?.snapshot;
   const [selected, setSelected] = useState<Record<string, readonly string[]>>({});
@@ -559,11 +601,22 @@ function AskUserTool({
   const [error, setError] = useState<string>();
   const input = typeof args === "object" && args !== null ? args as Record<string, unknown> : {};
 
-  useEffect(() => registerAsk?.({
-    toolCallId,
-    ...(expectedInteractionId === undefined ? {} : { expectedInteractionId }),
-    running: status.type === "running",
-  }), [expectedInteractionId, registerAsk, status.type, toolCallId]);
+  // On a lean link a card whose tool result already records the outcome is not
+  // worth a request: the result IS the answer, durably. What it costs is the
+  // per-question summary, which only the live snapshot carries -- so this is a
+  // lean-mode trade and nothing more.
+  const settledWithoutAsking = lean
+    && durableTerminalStatus !== undefined
+    && status.type !== "running";
+
+  useEffect(() => {
+    if (settledWithoutAsking) return undefined;
+    return registerAsk?.({
+      toolCallId,
+      ...(expectedInteractionId === undefined ? {} : { expectedInteractionId }),
+      running: status.type === "running",
+    });
+  }, [expectedInteractionId, registerAsk, settledWithoutAsking, status.type, toolCallId]);
 
   const remaining = snapshot?.questions.slice(snapshot.activeQuestionIndex) ?? [];
   const complete = remaining.length > 0 && remaining.every((question) => {

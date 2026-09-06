@@ -1,6 +1,8 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readDataModeSetting } from "../data-mode";
+import { recordDataUsage, resetDataUsage } from "../data-usage";
 import { agent, thread } from "../test/fixtures";
 import { SEARCH_HIGHLIGHT_CLOSE, SEARCH_HIGHLIGHT_OPEN } from "../thread-search";
 import type { ThreadSearchHit } from "../types";
@@ -218,5 +220,36 @@ describe("ThreadSidebar search", () => {
 
     expect(screen.queryByRole("button", { name: "Open older title" })).toBeNull();
     expect(screen.getByRole("button", { name: "Load older conversations" })).toBeVisible();
+  });
+});
+
+describe("the sidebar's data-mode footer", () => {
+  afterEach(() => {
+    resetDataUsage();
+    localStorage.clear();
+  });
+
+  it("shows what the session has cost, and cycles the mode when tapped", () => {
+    // Auto cannot read the network in jsdom, exactly as it cannot on iOS, so it
+    // says so: Auto, resolving to Full. The number next to it is what makes the
+    // choice actionable.
+    recordDataUsage(3 * 1024);
+    render(<ThreadSidebar />);
+
+    // Nothing installed a resource observer here, so the console is adding up
+    // body lengths -- and says so rather than presenting a guess as a reading.
+    const control = screen.getByRole("button", { name: /^Data Auto · Full, an estimated 3 KiB this session/u });
+    expect(control).toHaveTextContent("Auto · Full");
+    expect(control).toHaveTextContent("~3 KiB");
+
+    fireEvent.click(control);
+    expect(readDataModeSetting()).toBe("lean");
+    expect(screen.getByRole("button", { name: /^Data Lean/u })).toBeVisible();
+
+
+    fireEvent.click(screen.getByRole("button", { name: /^Data Lean/u }));
+    expect(readDataModeSetting()).toBe("full");
+    fireEvent.click(screen.getByRole("button", { name: /^Data Full/u }));
+    expect(readDataModeSetting()).toBe("auto");
   });
 });

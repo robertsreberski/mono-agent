@@ -16,6 +16,9 @@ import { ToolCallRepairProvider } from "./tool-call-repair";
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // A case that stubs this and then fails would otherwise leave every later
+  // test in this file rendering into a tab the console believes is hidden.
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 
 function MessageHarness({ message }: { readonly message: WebMessage }) {
@@ -1010,6 +1013,85 @@ describe("message actions", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
+  });
+
+  const runningJob = () => {
+    const complete = processJob();
+    return processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+  };
+
+  const setVisibility = (state: "hidden" | "visible"): void => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  };
+
+  it("stops polling a background job while the tab is hidden and asks again on return", async () => {
+    vi.useFakeTimers();
+    const running = runningJob();
+    const threadJob = vi.spyOn(api, "threadJob").mockResolvedValue(running);
+    render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: running }],
+    }} />);
+
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    setVisibility("hidden");
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+    });
+    // Nothing was on screen to update, so nothing was bought.
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    setVisibility("visible");
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+  });
+
+  it("skips a poll round the store has already answered", async () => {
+    vi.useFakeTimers();
+    const running = runningJob();
+    const threadJob = vi.spyOn(api, "threadJob").mockResolvedValue(running);
+    const { rerender } = render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: running }],
+    }} />);
+
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    // Part-way through the interval, the delta stream delivers a fresh
+    // projection of the same job. The poll that was about to ask the same
+    // question has just been answered for free.
+    await act(async () => { vi.advanceTimersByTime(600); });
+    const started = { ...running, timestamps: { ...running.timestamps, startedAt: "2026-07-17T10:00:03.000Z" } };
+    rerender(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: started }],
+    }} />);
+    // The external store publishes to the card on the next tick, not in the
+    // commit that handed it the message.
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    // A whole interval with nothing arriving on its own, so it asks.
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
   });
 
   it("takes a newer projection from the store without waiting for its own poll", async () => {

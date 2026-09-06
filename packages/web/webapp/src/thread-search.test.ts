@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { writeDataModeSetting } from "./data-mode";
 import {
+  LEAN_SEARCH_DEBOUNCE_MS,
   MIN_SEARCH_QUERY,
+  SEARCH_DEBOUNCE_MS,
   SEARCH_HIGHLIGHT_CLOSE,
   SEARCH_HIGHLIGHT_OPEN,
   highlightSegments,
   highlightTitle,
+  searchDebounceMs,
 } from "./thread-search";
 
 describe("search highlight contract", () => {
@@ -70,5 +74,21 @@ describe("highlightTitle", () => {
       .toEqual([{ text: "Quarterly planning", match: false }]);
     expect(highlightTitle("Quarterly planning", "   "))
       .toEqual([{ text: "Quarterly planning", match: false }]);
+  });
+});
+
+describe("the search debounce", () => {
+  afterEach(() => {
+    localStorage.clear();
+  });
+
+  it("waits longer between keystrokes on a lean link", () => {
+    // Every settled keystroke is a whole-conversation search on the server. On
+    // a metered link the console waits a little longer for the operator to stop
+    // typing rather than paying for the prefixes on the way to the word.
+    expect(searchDebounceMs()).toBe(SEARCH_DEBOUNCE_MS);
+    writeDataModeSetting("lean");
+    expect(searchDebounceMs()).toBe(LEAN_SEARCH_DEBOUNCE_MS);
+    expect(LEAN_SEARCH_DEBOUNCE_MS).toBeGreaterThan(SEARCH_DEBOUNCE_MS);
   });
 });

@@ -3,16 +3,22 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
+import { writeDataModeSetting } from "../data-mode";
 import type { AskSnapshot } from "../types";
 import { AskReconciliationProvider, ToolFallback } from "./Messages";
 
-vi.mock("../console-store", () => ({
-  useConsoleStore: () => ({
-    selectedThread: { id: "thread-1" },
-    selectedAgent: { status: "online" },
-    connection: "live",
-  }),
-}));
+const storeMock = vi.hoisted(() => ({ transcriptMovedAt: (): number => 0 }));
+
+// One object, as the real store hands out: a fresh one per render would give
+// every field a new identity and restart anything keyed on one.
+const consoleStore = {
+  selectedThread: { id: "thread-1" },
+  selectedAgent: { status: "online" },
+  connection: "live",
+  transcriptMovedAt: (): number => storeMock.transcriptMovedAt(),
+};
+
+vi.mock("../console-store", () => ({ useConsoleStore: () => consoleStore }));
 
 const snapshot: AskSnapshot = {
   interactionId: "ask-test",
@@ -549,5 +555,96 @@ describe("AskUser web form", () => {
 
     rendered.unmount();
     expect(outstandingListeners()).toEqual([]);
+  });
+});
+
+describe("AskUser polling hygiene", () => {
+  const settledCall = () => (
+    <AskReconciliationProvider>
+      <ToolFallback
+        type="tool-call"
+        toolName="AskUser"
+        toolCallId="tool-settled"
+        args={toolArgs}
+        argsText={JSON.stringify(toolArgs)}
+        result={{ interactionId: "ask-test", answered: true }}
+        isError={false}
+        status={{ type: "complete" }}
+        addResult={vi.fn()}
+        resume={vi.fn()}
+        respondToApproval={vi.fn()}
+      />
+    </AskReconciliationProvider>
+  );
+
+  const setVisibility = (state: "hidden" | "visible"): void => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  };
+
+  afterEach(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    localStorage.clear();
+    storeMock.transcriptMovedAt = () => 0;
+  });
+
+  it("asks nothing while the tab is in the background and picks up when it returns", async () => {
+    // A backgrounded console on a phone is the console most of the time. It
+    // must not keep a question poll running there -- and it must not decide the
+    // question is unavailable either, because it did not ask.
+    const pendingAsk = vi.spyOn(api, "pendingAsk").mockResolvedValue(snapshot);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    render(askUserTool());
+
+    await act(async () => { await Promise.resolve(); });
+    expect(pendingAsk).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Question unavailable/u)).not.toBeInTheDocument();
+
+    setVisibility("visible");
+
+    await waitFor(() => { expect(pendingAsk).toHaveBeenCalledTimes(1); });
+  });
+
+  it("skips one round the stream has just answered, and never more than one", async () => {
+    // A running turn writes the transcript about once a second. A question poll
+    // issued in the same breath asks about a conversation the agent side has
+    // only just moved -- but skipping on every write would let a busy stream
+    // starve the poll, so at most one round in a row gives way.
+    vi.useFakeTimers();
+    const pendingAsk = vi.spyOn(api, "pendingAsk").mockResolvedValue(snapshot);
+    const ask = vi.spyOn(api, "ask").mockResolvedValue(snapshot);
+    const asked = () => pendingAsk.mock.calls.length + ask.mock.calls.length;
+    render(askUserTool());
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    const settled = asked();
+    expect(settled).toBeGreaterThan(0);
+
+    // The stream moves the transcript. The very next round gives way.
+    storeMock.transcriptMovedAt = () => Date.now();
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(asked()).toBe(settled);
+
+    // And the round after it asks anyway, however busy the stream still is.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(asked()).toBeGreaterThan(settled);
+  });
+
+  it("re-reads a question whose answer is already recorded, but not on a lean link", async () => {
+    const ask = vi.spyOn(api, "ask").mockResolvedValue({ ...snapshot, status: "answered" });
+    const { unmount } = render(settledCall());
+    await waitFor(() => { expect(ask).toHaveBeenCalled(); });
+    unmount();
+
+    ask.mockClear();
+    writeDataModeSetting("lean");
+    render(settledCall());
+    await act(async () => { await Promise.resolve(); });
+
+    // The tool result durably records the outcome, so the card can say what
+    // happened without buying the interaction again. What it loses is the
+    // per-question summary, which is why this is lean-only.
+    expect(ask).not.toHaveBeenCalled();
+    expect(screen.getByText("Answers submitted.")).toBeVisible();
   });
 });

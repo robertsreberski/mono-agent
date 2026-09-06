@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import { useConsoleStore } from "../console-store";
 import { MIN_SEARCH_QUERY, useThreadSearch } from "../thread-search";
 import type { ThreadSummary } from "../types";
+import { DataModeIndicator } from "./DataModeIndicator";
 import { Icon } from "./Icon";
 import { ThreadSearchResults } from "./ThreadSearchResults";
 import { relativeTime } from "./time";
@@ -178,19 +179,24 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           )}
         </div>
       </ThreadListPrimitive.Root>
-      <button
-        type="button"
-        className={`archive-toggle${showArchived ? " is-active" : ""}`}
-        onClick={() => setShowArchived(!showArchived)}
-      >
-        <Icon name={showArchived ? "threads" : "archive"} size={16} />
-        <span>{showArchived ? "Back to conversations" : "Archived"}</span>
-        <span className="archive-count">
-          {threads.filter(
-            (thread) => thread.sourceId === selectedAgentId && Boolean(thread.archivedAt),
-          ).length || ""}
-        </span>
-      </button>
+      <div className="sidebar-footer">
+        <button
+          type="button"
+          className={`archive-toggle${showArchived ? " is-active" : ""}`}
+          onClick={() => setShowArchived(!showArchived)}
+        >
+          <Icon name={showArchived ? "threads" : "archive"} size={16} />
+          <span>{showArchived ? "Back to conversations" : "Archived"}</span>
+          <span className="archive-count">
+            {threads.filter(
+              (thread) => thread.sourceId === selectedAgentId && Boolean(thread.archivedAt),
+            ).length || ""}
+          </span>
+        </button>
+        {/* The one place the operator can see what this session has cost and
+            change what it is allowed to spend. */}
+        <DataModeIndicator />
+      </div>
     </aside>
   );
 }

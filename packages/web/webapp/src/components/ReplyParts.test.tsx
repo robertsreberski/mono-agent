@@ -49,7 +49,11 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
 });
 
 import { ApiError, api, type ReplyAccessRefreshHandler } from "../api";
+import { writeDataModeSetting } from "../data-mode";
+import { dataUsage, resetDataUsage } from "../data-usage";
+import { ReplyAccessProvider } from "./reply-access";
 import type { McpAppPart as McpAppPartValue } from "../types";
+import { REPLY_IMAGE_REQUEST_TIMEOUT_MS, clearReplyImageBlobs } from "./reply-image-cache";
 import {
   McpAppPart,
   ReplyAttachmentPart,
@@ -58,6 +62,7 @@ import {
   mcpAppArgumentPreview,
   mcpAppPreferredHeight,
   openExternalMcpAppLink,
+  REPLY_IMAGE_RETRY_LIMIT,
   safeMcpAppResourceMetadata,
   secureMcpAppHtml,
   startReplyAttachmentDownload,
@@ -97,6 +102,41 @@ const attachmentPart = {
   sizeBytes: 6,
   integrityId: "sha256:abc",
   contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/file-1/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+};
+
+const imagePart = {
+  type: "attachment" as const,
+  id: "cover-part",
+  artifactId: "artifact-cover",
+  name: "cover.png",
+  mediaType: "image/png",
+  sizeBytes: 4,
+  integrityId: "sha256:cover",
+  contentUrl: "/api/v1/threads/t/messages/m/reply-attachments/cover-part/content?expires=1234567890&token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+};
+
+/** The same picture, re-projected with a freshly minted capability. */
+const rotatedImagePart = {
+  ...imagePart,
+  contentUrl: imagePart.contentUrl
+    .replace("1234567890", "2234567890")
+    .replace(/token=[^&]+/u, `token=${"b".repeat(43)}`),
+};
+
+const imageResponse = () => new Response("abcd", {
+  headers: {
+    "content-length": String(imagePart.sizeBytes),
+    "content-type": "image/png",
+    "x-mono-agent-integrity-id": imagePart.integrityId,
+  },
+});
+
+const stubImageObjectUrls = () => {
+  const createObjectUrl = vi.fn(() => "blob:cover-image");
+  const revokeObjectUrl = vi.fn();
+  Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectUrl });
+  Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectUrl });
+  return { createObjectUrl, revokeObjectUrl };
 };
 
 const attachmentResponse = (value = attachmentPart, content = "report") => new Response(content, {
@@ -172,6 +212,60 @@ const connectConfiguredApp = async (
   return bridgeHarness.instances[0] as unknown as TestAppBridgeInstance;
 };
 
+/**
+ * jsdom has no `IntersectionObserver`, so the console loads eagerly there and
+ * every case that predates viewport gating keeps its behaviour. A case that
+ * wants the gate installs this one and decides when something is on screen.
+ */
+const stubIntersectionObserver = () => {
+  const live = new Set<StubIntersectionObserver>();
+  let disconnects = 0;
+  class StubIntersectionObserver implements IntersectionObserver {
+    readonly root = null;
+    readonly rootMargin = "";
+    readonly thresholds = [];
+    readonly targets: Element[] = [];
+    readonly callback: IntersectionObserverCallback;
+    constructor(callback: IntersectionObserverCallback) {
+      this.callback = callback;
+      live.add(this);
+    }
+    observe(target: Element): void {
+      this.targets.push(target);
+    }
+    unobserve(): void {}
+    // A disconnected observer delivers nothing ever again, so the stub has to
+    // leave the set: an assertion about "one request" is worthless if the stub
+    // keeps calling a callback the component has already let go of.
+    disconnect(): void {
+      disconnects += 1;
+      this.targets.length = 0;
+      live.delete(this);
+    }
+    takeRecords(): IntersectionObserverEntry[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
+  const report = async (isIntersecting: boolean) => {
+    await act(async () => {
+      for (const observer of [...live]) {
+        observer.callback(
+          observer.targets.map((target) => ({ target, isIntersecting }) as IntersectionObserverEntry),
+          observer as unknown as IntersectionObserver,
+        );
+      }
+      await Promise.resolve();
+    });
+  };
+  return {
+    observing: () => live.size,
+    disconnects: () => disconnects,
+    report,
+    intersect: async () => report(true),
+  };
+};
+
 afterEach(() => {
   bridgeHarness.instances.length = 0;
   bridgeHarness.capabilities.length = 0;
@@ -180,6 +274,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  // Shared image blobs outlive the components that fetched them, so one case's
+  // picture must not silently satisfy the next case's fetch.
+  clearReplyImageBlobs();
   Object.defineProperty(URL, "createObjectURL", { configurable: true, value: originalCreateObjectUrl });
   Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: originalRevokeObjectUrl });
 });
@@ -308,6 +405,194 @@ describe("assistant reply files", () => {
 
     await waitFor(() => expect(api.replyAttachmentContent).toHaveBeenCalled());
     expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("keeps one download of a picture across every re-mint of its capability", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    const { createObjectUrl } = stubImageObjectUrls();
+    const view = render(attachment(imagePart));
+
+    const image = await screen.findByRole("img", { name: "cover.png" });
+    expect(image).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+
+    // The service re-mints `contentUrl` on every projection of the message. A
+    // picture keyed on that URL is re-downloaded once a second on a live turn.
+    view.rerender(attachment(rotatedImagePart));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+    expect(createObjectUrl).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("img", { name: "cover.png" })).toBe(image);
+    expect(image).toHaveAttribute("src", "blob:cover-image");
+    view.unmount();
+  });
+
+  it("re-shows a picture from the bytes it already holds after a conversation switch", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    const { createObjectUrl, revokeObjectUrl } = stubImageObjectUrls();
+    const first = render(attachment(imagePart));
+    await screen.findByRole("img", { name: "cover.png" });
+
+    // Leaving the conversation and coming back remounts the same part.
+    first.unmount();
+    const second = render(attachment(imagePart));
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+    expect(createObjectUrl).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).not.toHaveBeenCalled();
+    second.unmount();
+  });
+
+  it("spends nothing on a picture that has not reached the viewport", async () => {
+    const viewport = stubIntersectionObserver();
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+    const offscreen = render(attachment(imagePart));
+
+    expect(fetchContent).not.toHaveBeenCalled();
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+    // The placeholder keeps the picture's place and stays reachable, so a
+    // reader that moves to it brings it into view and loads it — and says it is
+    // busy rather than presenting itself as the picture.
+    const placeholder = screen.getByRole("img", { name: "Loading cover.png" });
+    expect(placeholder).toBeVisible();
+    expect(placeholder).toHaveAttribute("aria-busy", "true");
+    // Nothing of the file record is shown for a picture that is still coming.
+    expect(screen.queryByRole("button", { name: "Download cover.png" })).toBeNull();
+    expect(viewport.observing()).toBe(1);
+
+    // A message scrolled past and then evicted takes its observer with it.
+    offscreen.unmount();
+    expect(viewport.disconnects()).toBe(1);
+    expect(viewport.observing()).toBe(0);
+    expect(fetchContent).not.toHaveBeenCalled();
+
+    render(attachment(imagePart));
+    await viewport.intersect();
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+    // Arriving in view is the end of the gate's job: it lets its observer go.
+    expect(viewport.observing()).toBe(0);
+  });
+
+  it("tries a picture again on the next capability, but only after a transient failure", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent")
+      .mockRejectedValueOnce(new Error("connection lost"))
+      .mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+    const view = render(attachment(imagePart));
+
+    // A dropped connection is not the picture's verdict, but until something
+    // changes there is nothing to retry with, so the card takes over.
+    expect(await screen.findByRole("button", { name: "Download cover.png" })).toBeVisible();
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+
+    view.rerender(attachment(rotatedImagePart));
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(2);
+
+    // And a settled picture is not re-fetched by any later re-mint.
+    view.rerender(attachment(imagePart));
+    await act(async () => { await Promise.resolve(); });
+    expect(fetchContent).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
+  it("stops re-asking for a picture that keeps failing, however often the token turns", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockRejectedValue(new Error("connection lost"));
+    stubImageObjectUrls();
+    const view = render(attachment(imagePart));
+    expect(await screen.findByRole("button", { name: "Download cover.png" })).toBeVisible();
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+
+    // A live turn re-mints the capability about once a second, which is not a
+    // reason to re-download a picture that has failed every time so far.
+    for (let mint = 1; mint <= 5; mint += 1) {
+      view.rerender(attachment({
+        ...imagePart,
+        contentUrl: imagePart.contentUrl
+          .replace("1234567890", `${String(1234567890 + mint)}`)
+          .replace(/token=[^&]+/u, `token=${String(mint).repeat(43)}`),
+      }));
+      await act(async () => { await Promise.resolve(); });
+    }
+
+    expect(fetchContent).toHaveBeenCalledTimes(1 + REPLY_IMAGE_RETRY_LIMIT);
+    expect(screen.getByRole("button", { name: "Download cover.png" })).toBeVisible();
+    view.unmount();
+  });
+
+  it("never re-asks for bytes that already contradicted their declaration", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockResolvedValue(new Response("abcd", {
+      headers: { "content-length": "4", "x-mono-agent-integrity-id": "sha256:wrong" },
+    }));
+    stubImageObjectUrls();
+    const view = render(attachment(imagePart));
+
+    expect(await screen.findByRole("button", { name: "Download cover.png" })).toBeVisible();
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+
+    // The bytes are the verdict here, and a fresh token cannot change them.
+    view.rerender(attachment(rotatedImagePart));
+    await act(async () => { await Promise.resolve(); });
+
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks once under StrictMode's discarded first mount", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+    const view = render(<StrictMode>{attachment(imagePart)}</StrictMode>);
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("gives up on a picture whose request never answers and offers the file instead", async () => {
+    vi.useFakeTimers();
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(
+      (_url, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason as Error), { once: true });
+      }),
+    );
+    stubImageObjectUrls();
+    render(attachment(imagePart));
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(REPLY_IMAGE_REQUEST_TIMEOUT_MS - 1); });
+    expect(screen.queryByRole("button", { name: "Download cover.png" })).toBeNull();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+
+    // A picture that never arrives must not leave the operator with a shimmer
+    // and no way to get the file.
+    expect(screen.getByRole("button", { name: "Download cover.png" })).toBeVisible();
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks once for a picture two parts of one conversation both carry", async () => {
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+    const twin = { ...imagePart, id: "twin-part", artifactId: "artifact-twin" };
+    render(<>{attachment(imagePart)}{attachment(twin)}</>);
+
+    const shown = await screen.findAllByRole("img", { name: "cover.png" });
+    expect(shown).toHaveLength(2);
+    for (const image of shown) expect(image).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("still offers the file card for a picture whose bytes never arrive", async () => {
+    vi.spyOn(api, "replyAttachmentContent").mockRejectedValue(new Error("connection lost"));
+    stubImageObjectUrls();
+    render(attachment(imagePart));
+
+    expect(await screen.findByRole("button", { name: "Download cover.png" })).toBeVisible();
     expect(document.querySelector("img")).toBeNull();
   });
 
@@ -1516,6 +1801,160 @@ describe("MCP App sandbox", () => {
     expect(load).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("status")).toHaveTextContent("Starting the isolated app");
   });
+  it("never lends one app's document to the card that replaced it", async () => {
+    const replacement: McpAppPartValue = {
+      ...appPart,
+      id: "app-2",
+      invocationId: "22222222-2222-4222-8222-222222222222",
+      connectionId: "connection-2",
+      resourceUri: "ui://reports/replacement",
+      title: "Replacement",
+      resourceUrl: appPart.resourceUrl!.replaceAll("app-1", "app-2"),
+      bridgeUrl: appPart.bridgeUrl!.replaceAll("app-1", "app-2"),
+    };
+    const viewport = stubIntersectionObserver();
+    const load = vi.spyOn(api, "mcpAppResource").mockImplementation(async (url) => (url.includes("app-2")
+      ? { app: replacement, html: "<!doctype html><p>second-document</p>", connected: true }
+      : { app: appPart, html: "<!doctype html><p>first-document</p>", connected: true }));
+
+    const view = render(app(appPart));
+    await viewport.intersect();
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Hide Quarterly report" }));
+    await waitFor(() => {
+      expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+    });
+    bridgeHarness.instances.length = 0;
+    bridgeHarness.resources.length = 0;
+
+    // The same slot in the transcript, now holding a different app entirely.
+    view.rerender(app(replacement));
+
+    // Nothing of the previous app survives into this card: no frame, no bridge,
+    // and no inherited status.
+    expect(screen.queryByTitle("Replacement interactive app")).not.toBeInTheDocument();
+    expect(bridgeHarness.instances).toHaveLength(0);
+    expect(screen.getByRole("status")).not.toHaveTextContent("Hidden. Choose Show");
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // The card is watched again from scratch, and says what it is once the
+    // answer is in.
+    await viewport.report(false);
+    expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
+    expect(load).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Replacement" }));
+    const frame = await screen.findByTitle("Replacement interactive app") as HTMLIFrameElement;
+    const bridge = await connectRenderedApp(frame, replacement);
+    await act(async () => {
+      bridge.onsandboxready?.();
+      await Promise.resolve();
+    });
+
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(bridgeHarness.resources).toHaveLength(1);
+    const delivered = (bridgeHarness.resources[0] as { readonly html: string }).html;
+    expect(delivered).toContain("second-document");
+    expect(delivered).not.toContain("first-document");
+  });
+
+  it("waits to know where the card is before telling the operator to tap Show", async () => {
+    const viewport = stubIntersectionObserver();
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+
+    // The first observation lands a frame after mount. Until it does, the card
+    // has no business claiming the operator has to do something.
+    expect(screen.getByRole("status")).not.toHaveTextContent("Tap Show to load the app");
+
+    await viewport.report(false);
+
+    expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
+  });
+
+  it("stops waiting for an observation the mode change cancelled", async () => {
+    // Switching to Lean tears the reveal observer down before it has ever
+    // reported. The card was left waiting for an answer that is no longer
+    // coming, and rendered an empty status line for the rest of its life.
+    const viewport = stubIntersectionObserver();
+    vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    expect(screen.getByRole("status")).not.toHaveTextContent("Tap Show to load the app");
+
+    await act(async () => { writeDataModeSetting("lean"); });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
+    expect(viewport.disconnects()).toBeGreaterThan(0);
+  });
+
+  it("leaves an off-screen app document unrequested until it is asked for", async () => {
+    const viewport = stubIntersectionObserver();
+    const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    await viewport.report(false);
+
+    // An app the operator has not reached is a document, a bridge and a sandbox
+    // that nobody asked for. Scrolling past it must cost nothing.
+    expect(load).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
+    expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Quarterly report" }));
+
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens an app when it first scrolls in and then leaves the control to the operator", async () => {
+    const viewport = stubIntersectionObserver();
+    const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+    await act(async () => { await Promise.resolve(); });
+    expect(load).not.toHaveBeenCalled();
+
+    await viewport.intersect();
+
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+    expect(load).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide Quarterly report" }));
+    await waitFor(() => {
+      expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+    });
+
+    // Still on screen, and staying there: the viewport must not reopen an app
+    // the operator just closed.
+    await viewport.intersect();
+    expect(screen.queryByTitle("Quarterly report interactive app")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Hidden. Choose Show to bring the app back.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Quarterly report" }));
+
+    expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
+    // Re-showing what is already loaded does not fetch the document again.
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it("hides and restores the app from one reversible header control", async () => {
     vi.spyOn(api, "mcpAppResource").mockResolvedValue({
       app: appPart,
@@ -1645,5 +2084,229 @@ describe("MCP App sandbox", () => {
 
     expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
     await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("a lean link, and a device that kept the picture but not the key", () => {
+  afterEach(() => {
+    localStorage.clear();
+    clearReplyImageBlobs();
+  });
+
+  it("spends nothing on a picture until the operator asks for it", async () => {
+    writeDataModeSetting("lean");
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+
+    render(attachment(imagePart));
+
+    // Nothing has been asked for, and the tile says what asking will cost.
+    expect(fetchContent).not.toHaveBeenCalled();
+    const tile = screen.getByRole("button", { name: "Load cover.png, 4 B" });
+    expect(tile).toBeVisible();
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+
+    fireEvent.click(tile);
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an app closed on a lean link however far up the transcript it is", async () => {
+    writeDataModeSetting("lean");
+    const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+
+    // No IntersectionObserver here, so in full mode this card would have opened
+    // itself and bought its document on arrival.
+    expect(load).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Quarterly report" }));
+
+    await waitFor(() => { expect(load).toHaveBeenCalledTimes(1); });
+  });
+
+  it("asks for a fresh key for a picture the device restored without one", async () => {
+    // What PR 5 persists deliberately carries no capability URL, so a restored
+    // picture used to render as a dead file card. It is not dead: the console
+    // can mint a new capability for exactly this part.
+    const { contentUrl: _dropped, ...restored } = imagePart;
+    const access = vi.fn().mockResolvedValue(imagePart);
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(restored)}
+      </ReplyAccessProvider>,
+    );
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(access).toHaveBeenCalledTimes(1);
+    expect(access).toHaveBeenCalledWith("cover-part");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a restored file its download rather than calling it gone", async () => {
+    const { contentUrl: _dropped, ...restored } = attachmentPart;
+    const access = vi.fn().mockResolvedValue(attachmentPart);
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent")
+      .mockImplementation(async () => attachmentResponse());
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(restored)}
+      </ReplyAccessProvider>,
+    );
+
+    expect(screen.queryByText("This file is no longer available.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+
+    await waitFor(() => { expect(fetchContent).toHaveBeenCalledTimes(1); });
+    expect(access).toHaveBeenCalledWith("file-1");
+  });
+
+  it("says so, once, when a restored file really cannot be reached again", async () => {
+    const { contentUrl: _dropped, ...restored } = attachmentPart;
+    const access = vi.fn().mockRejectedValue(
+      new ApiError("The reply part is unavailable.", 404, "reply_part_not_found"),
+    );
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(restored)}
+      </ReplyAccessProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+
+    // The refusal is reported as the refusal it was, and the offer is withdrawn
+    // because there is nothing left to offer.
+    expect(await screen.findByText("The reply part is unavailable. (reply_part_not_found)")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Download report.txt" })).toBeNull();
+    expect(access).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a lean link, second look", () => {
+  afterEach(() => {
+    localStorage.clear();
+    clearReplyImageBlobs();
+  });
+
+  it("just shows a picture it is already holding, rather than offering to load it again", async () => {
+    // Scrolling a picture out of the strip and back unmounts and remounts the
+    // tile, and the bytes are still in the shared store for the retention
+    // window. Offering "Load cover.png" for bytes already held is a tap target
+    // that lies about what it costs.
+    writeDataModeSetting("lean");
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+
+    const first = render(attachment(imagePart));
+    fireEvent.click(screen.getByRole("button", { name: "Load cover.png, 4 B" }));
+    expect(await screen.findByRole("img", { name: "cover.png" })).toBeInTheDocument();
+    first.unmount();
+
+    render(attachment(imagePart));
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(screen.queryByRole("button", { name: /^Load cover\.png/u })).toBeNull();
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("never mints a key for a picture whose own endpoint was refused", async () => {
+    // A part that DECLARES a capability the console rejects is not a part that
+    // lost its key: it is a payload trying to move a private read somewhere
+    // else. Only a part carrying no `contentUrl` at all -- what this device
+    // stores -- is offered a fresh one.
+    const offOrigin = { ...imagePart, contentUrl: "https://elsewhere.example/steal" };
+    const access = vi.fn().mockResolvedValue(imagePart);
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(offOrigin)}
+      </ReplyAccessProvider>,
+    );
+
+    expect(await screen.findByText("This file is no longer available.")).toBeVisible();
+    expect(access).not.toHaveBeenCalled();
+    expect(fetchContent).not.toHaveBeenCalled();
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+  });
+});
+
+describe("the durable copy on a lean link", () => {
+  const storedImagePart = {
+    type: "attachment" as const,
+    id: "cover-part",
+    artifactId: "artifact-cover",
+    name: "cover.png",
+    mediaType: "image/png",
+    sizeBytes: 2_048,
+    integrityId: "sha256:abc",
+    storedUrl: "/api/v1/uploads/reply%3Amsg%3Acover-part/content",
+    contentUrl: imagePart.contentUrl,
+  };
+
+  afterEach(() => {
+    localStorage.clear();
+    resetDataUsage();
+  });
+
+  it("prices the console's own copy too, because the browser still fetches it", async () => {
+    // The service persists a durable copy of nearly every raster reply image, so
+    // this -- not the capability path -- is the ORDINARY picture. Left ungated
+    // it downloaded at full resolution near the viewport while the indicator and
+    // the Lean offer both said pictures load only when you ask for them.
+    writeDataModeSetting("lean");
+    resetDataUsage();
+    render(attachment(storedImagePart));
+
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+    const tile = screen.getByRole("button", { name: "Load cover.png, 2 KiB" });
+
+    fireEvent.click(tile);
+
+    expect(await screen.findByRole("img", { name: "cover.png" }))
+      .toHaveAttribute("src", storedImagePart.storedUrl);
+    // Bytes the browser fetches for an `<img>` are invisible to the body-length
+    // estimate, so the tile -- which knows the size -- counts them where there
+    // is no resource timing to do it instead.
+    expect(dataUsage().bytes).toBe(storedImagePart.sizeBytes);
+  });
+
+  it("shows the console's own copy straight away on a full link", () => {
+    // With an observer, which is the branch production takes: a durable copy is
+    // not gated on the viewport either, because there is nothing to fetch.
+    stubIntersectionObserver();
+    render(attachment(storedImagePart));
+
+    expect(screen.getByRole("img", { name: "cover.png" }))
+      .toHaveAttribute("src", storedImagePart.storedUrl);
+    expect(screen.queryByRole("button", { name: /^Load cover\.png/u })).toBeNull();
+  });
+
+  it("never takes back a picture the operator is already looking at", () => {
+    // Switching to Lean cannot un-spend bytes. A picture already on screen has
+    // been paid for -- and under PR 1's immutable headers a second view is a
+    // cache hit -- so re-pricing it as "Load cover.png, 2 KiB" would be a tap
+    // target that lies about its cost, and would take the picture away to do it.
+    stubIntersectionObserver();
+    render(attachment(storedImagePart));
+    expect(screen.getByRole("img", { name: "cover.png" })).toBeInTheDocument();
+
+    act(() => { writeDataModeSetting("lean"); });
+
+    expect(screen.getByRole("img", { name: "cover.png" }))
+      .toHaveAttribute("src", storedImagePart.storedUrl);
+    expect(screen.queryByRole("button", { name: /^Load cover\.png/u })).toBeNull();
   });
 });
