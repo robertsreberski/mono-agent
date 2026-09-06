@@ -98,6 +98,30 @@ export const providerOfModel = (model: string): string => {
 };
 
 /**
+ * The smallest provider set that can replace the current model reference with
+ * catalog metadata on first render. `/v1/info` labels are already authoritative;
+ * a canonical reference names one provider, while a bare reference must ask the
+ * providers the agent otherwise advertises.
+ */
+export const initialCatalogProviders = (
+  agent: AgentSummary | null,
+  model: string,
+  modelOptions: readonly string[],
+): readonly string[] => {
+  if (!agent || model === "" || agent.modelOptions?.[model]?.label?.trim()) return [];
+  const directProvider = providerOfModel(model);
+  if (directProvider !== model) return [directProvider];
+
+  const providers = new Set<string>();
+  for (const reference of modelOptions) {
+    const provider = providerOfModel(reference);
+    if (provider !== reference) providers.add(provider);
+  }
+  for (const provider of agent.providers ?? []) providers.add(provider.id);
+  return [...providers];
+};
+
+/**
  * The canonical `<provider>:<model>` reference for a catalog row. `/v1/models`
  * emits provider-local ids (`{provider:"anthropic", id:"claude-opus-5"}`), but
  * every selection surface — the thread override, the turn API, the agent's own

@@ -15,6 +15,7 @@ import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
 import { useConsoleStore, useUploadLimits } from "./console-store";
+import { noteComposerAttachments } from "./composer-draft";
 import type {
   MessagePart,
   ToolCall,
@@ -543,12 +544,14 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       previousAttachmentContext.current !== attachmentContext
     ) {
       attachmentAdapter.disposeUnsent();
+      noteComposerAttachments(false);
     }
     previousAttachmentContext.current = attachmentContext;
   }, [attachmentAdapter, attachmentContext]);
   useEffect(
     () => () => {
       attachmentAdapter.disposeUnsent({ includeRecovering: true });
+      noteComposerAttachments(false);
     },
     [attachmentAdapter],
   );
