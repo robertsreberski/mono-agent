@@ -41,6 +41,11 @@ export const agent = (
   supportsAttachments: true,
   models: ["provider/model"],
   defaultModel: "provider/model",
+  runSettings: {
+    config: { model: "provider/model" },
+    override: null,
+    effective: { model: "provider/model", modelSource: "config", effortSource: "config" },
+  },
   updatedAt: "2026-07-17T10:00:00.000Z",
   ...overrides,
 });
@@ -155,6 +160,10 @@ export const bootstrap = (
   agents: Bootstrap["agents"],
   threads: Bootstrap["threads"],
   currentThreadId?: string,
+  scope: {
+    readonly threadsSourceId?: string | null;
+    readonly threadsNextCursor?: string | null;
+  } = {},
 ): Bootstrap => ({
   version: 1,
   console: { hostName: "test-host", theme: "evergreen" },
@@ -165,6 +174,12 @@ export const bootstrap = (
   },
   agents,
   threads,
+  // A real bootstrap answers with one bucket, so the bucket it came from is
+  // the source of the rows it carries.
+  threadsSourceId: scope.threadsSourceId === undefined
+    ? threads[0]?.sourceId ?? agents[0]?.sourceId ?? null
+    : scope.threadsSourceId,
+  threadsNextCursor: scope.threadsNextCursor ?? null,
   currentThreadId,
   limits: uploadLimits,
 });

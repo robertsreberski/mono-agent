@@ -6,7 +6,8 @@ import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
+import { WEB_API_VERSION, type WebEvent } from "../contracts.js";
+import { createWebEventDispatch, isAllowedWebHostname, startWebServer, type WebServerHandle } from "../server.js";
 import { deliverWebNotification } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import { fakeDiscoveredAgent, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
@@ -59,6 +60,22 @@ async function start(options: Partial<Parameters<typeof startWebServer>[0]> = {}
 
 async function json(response: Response): Promise<Record<string, unknown>> {
   return response.json() as Promise<Record<string, unknown>>;
+}
+
+async function createThread(baseUrl: string, sourceId: string): Promise<string> {
+  const response = await fetch(`${baseUrl}/api/v1/threads`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sourceId }),
+  });
+  return ((await json(response)).thread as { id: string }).id;
+}
+
+interface ScopedBootstrap {
+  readonly threads: readonly { readonly id: string; readonly sourceId: string }[];
+  readonly threadsSourceId: string | null;
+  readonly threadsNextCursor: string | null;
+  readonly agents: readonly { readonly sourceId: string; readonly updatedAt: string }[];
 }
 
 interface RawResponse {
@@ -140,6 +157,63 @@ function pushSubscriptionBody(endpoint = "https://push.example.test/send/opaque"
 }
 
 describe("web HTTP server", () => {
+  it("persists, applies, validates, and reverts web-only new-conversation defaults", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const mutation = { "content-type": "application/json", origin: baseUrl };
+
+    const saved = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "PUT",
+      headers: mutation,
+      body: JSON.stringify({ model: "provider/fallback", effort: "high" }),
+    });
+    expect(saved.status).toBe(200);
+    expect(await json(saved)).toMatchObject({ agent: { runSettings: {
+      override: { model: "provider/fallback", effort: "high" },
+      effective: { modelSource: "override", effortSource: "override" },
+    } } });
+
+    const createdA = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    expect(createdA.status).toBe(201);
+    expect(await json(createdA)).toMatchObject({ thread: { runModel: "provider/fallback", runEffort: "high" } });
+
+    const invalid = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "PUT",
+      headers: mutation,
+      body: JSON.stringify({ model: "anthropic:never-advertised", effort: null }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await json(invalid)).toMatchObject({ error: { code: "invalid_model" } });
+
+    const meaningless = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "PUT",
+      headers: mutation,
+      body: JSON.stringify({ model: null, effort: null }),
+    });
+    expect(meaningless.status).toBe(400);
+    expect(await json(meaningless)).toMatchObject({ error: { code: "invalid_request" } });
+
+    const reverted = await fetch(`${baseUrl}/api/v1/agents/agent-one/run-defaults`, {
+      method: "DELETE",
+      headers: { origin: baseUrl },
+    });
+    expect(reverted.status).toBe(200);
+    expect(await json(reverted)).toMatchObject({ agent: { runSettings: {
+      override: null,
+      effective: { modelSource: "config", effortSource: "config" },
+    } } });
+
+    const createdB = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ sourceId: "agent-one" }),
+    });
+    expect(await json(createdB)).toMatchObject({ thread: { runModel: null, runEffort: null } });
+  });
+
   it("defaults to a LAN bind with no application auth or CORS grant", async () => {
     const { handle, baseUrl } = await start();
     expect(handle.host).toBe("0.0.0.0");
@@ -208,6 +282,95 @@ describe("web HTTP server", () => {
     const revalidated = await rawGet(baseUrl, "/api/v1/bootstrap", { "if-none-match": String(etag) });
     expect(revalidated.status).toBe(304);
     expect(revalidated.body.byteLength).toBe(0);
+  });
+
+  it("answers a bootstrap with one agent's bucket and a cursor for the rest of it", async () => {
+    // A bootstrap used to carry EVERY agent's conversations -- 187 KB of a
+    // 219 KB payload on the fleet -- and the console then re-read the one
+    // bucket it actually shows. One bucket is what it now carries.
+    const first = fakeDiscoveredAgent();
+    const second = fakeDiscoveredAgent({
+      source: { ...first.source, sourceId: "agent-two", label: "Agent Two" },
+    });
+    const { baseUrl } = await start({ host: "127.0.0.1", discoverImpl: async () => [first, second] });
+    const one = [
+      await createThread(baseUrl, "agent-one"),
+      await createThread(baseUrl, "agent-one"),
+      await createThread(baseUrl, "agent-one"),
+    ];
+    const two = await createThread(baseUrl, "agent-two");
+
+    const scoped = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one&limit=2`)) as unknown as ScopedBootstrap;
+    expect(scoped.threadsSourceId).toBe("agent-one");
+    expect(scoped.threads).toHaveLength(2);
+    expect(scoped.threads.every((thread) => thread.sourceId === "agent-one")).toBe(true);
+    expect(scoped.threads.map((thread) => thread.id)).not.toContain(two);
+    expect(scoped.threadsNextCursor).toEqual(expect.any(String));
+    // Every agent's summary still travels: the rail shows all of them, and a
+    // lazy agents route would put an RTT in front of every switch.
+    expect(scoped.agents.map((agent) => agent.sourceId)).toEqual(["agent-one", "agent-two"]);
+    expect(scoped.agents[0]).toMatchObject({ updatedAt: expect.any(String), models: expect.any(Array) });
+
+    const rest = await json(await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&before=${encodeURIComponent(String(scoped.threadsNextCursor))}`,
+    )) as unknown as { threads: readonly { readonly id: string }[] };
+    expect([...scoped.threads.map((thread) => thread.id), ...rest.threads.map((thread) => thread.id)].sort())
+      .toEqual([...one].sort());
+
+    const other = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-two`)) as unknown as ScopedBootstrap;
+    expect(other.threadsSourceId).toBe("agent-two");
+    expect(other.threads.map((thread) => thread.id)).toEqual([two]);
+    expect(other.threadsNextCursor).toBeNull();
+  });
+
+  it("serves the archived bucket only when the bootstrap asks for it", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const active = await createThread(baseUrl, "agent-one");
+    const archived = await createThread(baseUrl, "agent-one");
+    const patched = await fetch(`${baseUrl}/api/v1/threads/${archived}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect(patched.status).toBe(200);
+
+    const live = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one`)) as unknown as ScopedBootstrap;
+    expect(live.threads.map((thread) => thread.id)).toEqual([active]);
+
+    const shelf = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one&archived=true`)) as unknown as ScopedBootstrap;
+    expect(shelf.threadsSourceId).toBe("agent-one");
+    expect(shelf.threads.map((thread) => thread.id)).toEqual([archived]);
+
+    // A console that has not resolved an agent yet sends the parameter empty
+    // rather than omitting it; that is an absent bucket, not a bad request.
+    const unresolved = await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=`);
+    expect(unresolved.status).toBe(200);
+    expect(await json(unresolved) as unknown as ScopedBootstrap).toMatchObject({
+      threadsSourceId: "agent-one",
+    });
+
+    for (const query of ["limit=0", "limit=201", "limit=abc", "archived=sometimes"]) {
+      const rejected = await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one&${query}`);
+      expect({ query, status: rejected.status }).toEqual({ query, status: 400 });
+    }
+  });
+
+  it("pages both the bootstrap bucket and the thread list at fifty rows", async () => {
+    // The sidebar shows a handful of rows and pages from there. Both routes
+    // used to answer with the whole 200-row per-bucket cap.
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    for (let index = 0; index < 51; index += 1) await createThread(baseUrl, "agent-one");
+
+    const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap?sourceId=agent-one`)) as unknown as ScopedBootstrap;
+    expect(bootstrap.threads).toHaveLength(50);
+    expect(bootstrap.threadsNextCursor).toEqual(expect.any(String));
+
+    const page = await json(await fetch(`${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false`)) as unknown as {
+      threads: readonly unknown[];
+      nextCursor?: string;
+    };
+    expect(page.threads).toHaveLength(50);
+    expect(page.nextCursor).toEqual(expect.any(String));
   });
 
   it("caches hashed assets immutably while the shell and service workers revalidate", async () => {
@@ -1625,9 +1788,398 @@ describe("web HTTP server", () => {
         body: JSON.stringify({ pinned }),
       });
       expect(patch.status).toBe(200);
+      // The tab that pinned already holds this from the PATCH response, and
+      // every other tab can apply it without a bootstrap. Only discovery-driven
+      // invalidations stay payload-less.
+      expect(await nextEvent()).toMatchObject({
+        type: "agents.changed",
+        payload: { sourceId: "agent-one", pinned },
+      });
+    }
+    await reader.cancel();
+  });
+
+  /**
+   * A conversation shaped like the ones that made a thread read cost 231 KB:
+   * three 20 KB tool results and a mixed run of provider telemetry.
+   */
+  function toolHeavyAgentFetch(): typeof fetch {
+    const body = "R".repeat(20 * 1_024);
+    const telemetry = [
+      { type: "provider_status", provider: "anthropic", detail: "d".repeat(600) },
+      { type: "memory_recalled", entries: ["m".repeat(600)] },
+      { type: "runtime_telemetry", kind: "run_config", data: { model: "provider/default", effort: "high", raw: "r".repeat(600) } },
+      { type: "runtime_telemetry", kind: "cache_hit", data: { hits: 3, detail: "c".repeat(600) } },
+      { type: "capabilities_resolved", capabilities: { tools: Array.from({ length: 40 }, (_unused, index) => `tool-${String(index)}`) } },
+      { type: "provider_bridge_latency", ms: 12, samples: Array.from({ length: 100 }, (_unused, index) => index) },
+      { type: "runtime_warning", message: "w".repeat(600) },
+      { type: "runtime_telemetry", kind: "assistant_message_boundary", data: { kind: "assistant_message_boundary" } },
+      { type: "usage_update", data: { tokens: { input: 1_000, output: 200 }, cost: 0.02 } },
+      { type: "runtime_telemetry", kind: "context_usage", data: { used: 12_000, contextWindow: 200_000 } },
+    ];
+    return operatorFetch({
+      turns: () => [
+        ...[0, 1, 2].flatMap((index) => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: `call-${String(index)}`, name: "Exec", arguments: { command: `run ${String(index)}` } } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: `call-${String(index)}`, name: "Exec", content: body } }),
+        ]),
+        ...telemetry.map((event) => JSON.stringify({ kind: "event", event })),
+        JSON.stringify({ kind: "finish", finalText: "answer" }),
+        "",
+      ].join("\n"),
+    });
+  }
+
+  async function settleTurn(baseUrl: string, threadId: string, text: string): Promise<Record<string, unknown>> {
+    const started = await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    expect(started.status).toBe(202);
+    let detail: Record<string, unknown> = {};
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+      if ((detail.thread as { runState?: { status?: string } }).runState?.status === "complete") break;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    expect(detail).toMatchObject({ thread: { runState: { status: "complete" } } });
+    return detail;
+  }
+
+  interface WireMessage {
+    readonly id: string;
+    readonly parts: readonly Record<string, unknown>[];
+  }
+
+  const wireMessages = (detail: Record<string, unknown>): readonly WireMessage[] =>
+    detail.messages as readonly WireMessage[];
+
+  it("answers a bootstrap with one bucket, not with every agent's listing", async () => {
+    // The bootstrap used to carry every `(sourceId, archived)` bucket in full.
+    // This is the guard against that coming back: one named bucket, one page of
+    // it, and a body a fraction of what all three listings cost together.
+    const agents = ["agent-one", "agent-two", "agent-three"].map((sourceId) => ({
+      ...fakeDiscoveredAgent(),
+      source: { ...fakeDiscoveredAgent().source, sourceId, label: `Agent ${sourceId}` },
+    }));
+    const { baseUrl } = await start({ discoverImpl: async () => agents });
+    for (const agent of agents) {
+      for (let index = 0; index < 60; index += 1) await createThread(baseUrl, agent.source.sourceId);
+    }
+
+    const scoped = await rawGet(baseUrl, "/api/v1/bootstrap?sourceId=agent-one&limit=50");
+    const listings = await Promise.all(agents.map(async (agent) =>
+      rawGet(baseUrl, `/api/v1/threads?sourceId=${agent.source.sourceId}&archived=false&limit=200`)));
+    const everyBucket = listings.reduce((sum, listing) => sum + listing.body.length, 0);
+
+    const body = JSON.parse(scoped.body.toString("utf8")) as ScopedBootstrap;
+    expect(body.threadsSourceId).toBe("agent-one");
+    expect(body.threads).toHaveLength(50);
+    expect(body.threads.every((thread) => thread.sourceId === "agent-one")).toBe(true);
+    expect(body.threadsNextCursor).toEqual(expect.any(String));
+    // 180 rows across three buckets against one page of 50 from one of them.
+    // Measured: 18,480 B against 57,039 B, a factor of 3.1. A bootstrap that
+    // went back to carrying every bucket would be ~59.6 KB -- the same rows plus
+    // its own agents/limits/push overhead -- a factor of about 1. The boundary
+    // sits at 2 so both sides have most of a factor of margin, and a row growing
+    // a field cannot trip it.
+    // Anti-vacuity, derived from the fixture rather than from a measured byte
+    // count: 180 conversation rows cannot serialise in under 200 bytes each,
+    // whatever a summary grows or loses.
+    expect(everyBucket).toBeGreaterThan(agents.length * 60 * 200);
+    expect(scoped.body.length).toBeLessThan(everyBucket / 2);
+  });
+
+  it("puts a tool-heavy conversation on a diet, and serves the whole thing on request", async () => {
+    const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    await settleTurn(baseUrl, threadId, "go");
+
+    const shaped = await rawGet(baseUrl, `/api/v1/threads/${threadId}`, { "accept-encoding": "br" });
+    const whole = await rawGet(baseUrl, `/api/v1/threads/${threadId}?full=1`, { "accept-encoding": "br" });
+    const shapedRaw = await rawGet(baseUrl, `/api/v1/threads/${threadId}`);
+    const wholeRaw = await rawGet(baseUrl, `/api/v1/threads/${threadId}?full=1`);
+    expect(shaped.headers["content-encoding"]).toBe("br");
+    // Three 20 KB bodies and ten telemetry payloads leave the wire; what is left
+    // is three 4 KB previews plus the parts that stayed whole.
+    expect(wholeRaw.body.length).toBeGreaterThan(60 * 1_024);
+    expect(shapedRaw.body.length).toBeLessThan(wholeRaw.body.length / 4);
+    expect(shaped.body.length).toBeLessThan(whole.body.length);
+
+    const shapedDetail = JSON.parse(brotliDecompressSync(shaped.body).toString("utf8")) as Record<string, unknown>;
+    const wholeDetail = JSON.parse(brotliDecompressSync(whole.body).toString("utf8")) as Record<string, unknown>;
+    const shapedParts = wireMessages(shapedDetail).at(-1)?.parts ?? [];
+    const wholeParts = wireMessages(wholeDetail).at(-1)?.parts ?? [];
+    // No part is dropped, at either size: only payloads change.
+    expect(shapedParts.map((part) => part.type)).toEqual(wholeParts.map((part) => part.type));
+    expect(shapedParts.filter((part) => part.type === "tool-call")).toHaveLength(3);
+    expect(shapedParts.filter((part) => part.resultTruncated === true)).toHaveLength(3);
+    expect(wholeParts.filter((part) => part.resultTruncated === true)).toHaveLength(0);
+    // `usage_update`, `context_usage` and `assistant_message_boundary` keep
+    // their payloads; the other seven diagnostics keep only their identity.
+    expect(shapedParts.filter((part) => part.type === "telemetry" && part.data === undefined)).toHaveLength(7);
+    expect(wholeParts.filter((part) => part.type === "telemetry" && part.data === undefined)).toHaveLength(0);
+  });
+
+  it("serves one tool call's whole body, and refuses one that is not in the conversation asked for", async () => {
+    const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const detail = await settleTurn(baseUrl, threadId, "go");
+    const message = wireMessages(detail).at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const other = await createThread(baseUrl, "agent-one");
+
+    const found = await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}/tool-calls/call-1`);
+    expect(found.status).toBe(200);
+    const part = (await json(found)).part as Record<string, unknown>;
+    expect(part).toMatchObject({
+      type: "tool-call",
+      toolCallId: "call-1",
+      toolName: "Exec",
+      result: "R".repeat(20 * 1_024),
+    });
+    expect(part).not.toHaveProperty("resultTruncated");
+
+    for (const path of [
+      `/api/v1/threads/${threadId}/messages/${message.id}/tool-calls/missing`,
+      `/api/v1/threads/${threadId}/messages/no-such-message/tool-calls/call-1`,
+      `/api/v1/threads/${other}/messages/${message.id}/tool-calls/call-1`,
+    ]) {
+      const refused = await fetch(`${baseUrl}${path}`);
+      expect(refused.status).toBe(404);
+      expect(await json(refused)).toMatchObject({ error: { code: "tool_call_not_found" } });
+    }
+  });
+
+  it("streams content for the conversation a console subscribed to and hints for everything else", async () => {
+    const lines = [
+      JSON.stringify({ kind: "append", delta: "hello " }),
+      JSON.stringify({ kind: "append", delta: "world" }),
+      JSON.stringify({ kind: "finish", finalText: "hello world" }),
+      "",
+    ];
+    const { baseUrl } = await start({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const otherId = await createThread(baseUrl, "agent-one");
+
+    const subscribed = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const unsubscribed = await fetch(`${baseUrl}/api/v1/events`);
+    const subscribedReader = subscribed.body?.getReader();
+    const unsubscribedReader = unsubscribed.body?.getReader();
+    if (subscribedReader === undefined || unsubscribedReader === undefined) {
+      throw new Error("Expected two SSE response bodies.");
+    }
+    const nextSubscribed = sseEventReader(subscribedReader);
+    const nextUnsubscribed = sseEventReader(unsubscribedReader);
+    expect(await nextSubscribed()).toMatchObject({ type: "ready" });
+    expect(await nextUnsubscribed()).toMatchObject({ type: "ready" });
+
+    await settleTurn(baseUrl, threadId, "go");
+    const streamed = await drainTurn(nextSubscribed);
+    const hinted = await drainTurn(nextUnsubscribed);
+
+    // The subscribed console is served what changed, and never a hint about the
+    // conversation it is looking at.
+    const deltas = streamed.filter((event) => event.type === "message.delta");
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    for (const event of deltas) {
+      expect(event.threadId).toBe(threadId);
+      expect(event.payload).toMatchObject({
+        messageId: expect.any(String),
+        baseSeq: expect.any(Number),
+        seq: expect.any(Number),
+        status: expect.any(String),
+        ops: expect.any(Array),
+      });
+    }
+
+    // Every other console keeps the invalidation it already understands, and the
+    // two writes above reach it as ONE hint rather than one per flush.
+    expect(hinted.filter((event) => event.type === "message.delta")).toEqual([]);
+    const hints = hinted.filter((event) => event.type === "message.changed");
+    // Told about it, and never more often than the writes themselves. How many
+    // writes actually land inside one DELTA_HINT_INTERVAL_MS is a property of
+    // the machine, not of this code, so the limit itself is proven against a
+    // fake clock in the `web event dispatch` suite instead.
+    expect(hints.length).toBeGreaterThanOrEqual(1);
+    expect(hints.length).toBeLessThanOrEqual(deltas.length);
+    expect(hints[0]?.payload).toEqual({ messageId: expect.any(String), updatedAt: expect.any(String) });
+
+    // A delta for a conversation this console is NOT in is downgraded too.
+    await settleTurn(baseUrl, otherId, "elsewhere");
+    const elsewhere = await drainTurn(nextSubscribed);
+    expect(elsewhere.filter((event) => event.type === "message.delta")).toEqual([]);
+    const elsewhereHints = elsewhere.filter((event) => event.type === "message.changed");
+    // Same reason: that this collapses to exactly one frame is the fake-clock
+    // suite's assertion, not a race this fixture should be running.
+    expect(elsewhereHints.length).toBeGreaterThanOrEqual(1);
+    expect(elsewhereHints.every((event) => event.threadId === otherId)).toBe(true);
+
+    await Promise.all([subscribedReader.cancel(), unsubscribedReader.cancel()]);
+  });
+
+  it("rejects a conversation subscription that names nothing usable", async () => {
+    const { baseUrl } = await start();
+    // Oversized, empty and blank alike: a console that asked for a conversation
+    // and silently got none would read as a delta stream that had stopped.
+    for (const query of [`thread=${"t".repeat(600)}`, "thread=", "thread=%20%20"]) {
+      const refused = await fetch(`${baseUrl}/api/v1/events?${query}`);
+      expect(refused.status).toBe(400);
+      expect(await json(refused)).toMatchObject({ error: { code: "invalid_subscription" } });
+    }
+  });
+
+  /**
+   * A conversation with a tool-heavy turn already in it, whose NEXT turn streams
+   * a long prose answer -- the shape that made this stream expensive: every
+   * flush invalidated a transcript that had nothing to do with the few
+   * characters that had arrived.
+   */
+  function historyThenStreamedAnswerFetch(): typeof fetch {
+    const answer = `${"word ".repeat(400)}end`;
+    let turn = 0;
+    const heavy = toolHeavyAgentFetch();
+    return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.includes("/v1/turns")) return heavy(input, init);
+      turn += 1;
+      if (turn === 1) return heavy(input, init);
+      return operatorFetch({
+        turns: () => [
+          ...answer.split(" ").map((word) => JSON.stringify({ kind: "append", delta: `${word} ` })),
+          JSON.stringify({ kind: "finish", finalText: answer }),
+          "",
+        ].join("\n"),
+      })(input, init);
+    }) as typeof fetch;
+  }
+
+  it("costs a subscribed console what changed, not the conversation once per write", async () => {
+    const { baseUrl } = await start({ fetchImpl: historyThenStreamedAnswerFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    // One tool-heavy turn of history, so a re-read is nothing like the size of
+    // the write that provokes it.
+    await settleTurn(baseUrl, threadId, "first");
+
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    let streamBytes = 0;
+    const next = sseEventReader(reader, (count) => { streamBytes += count; });
+    expect(await next()).toMatchObject({ type: "ready" });
+    const readyBytes = streamBytes;
+
+    await settleTurn(baseUrl, threadId, "second");
+    const streamed = await drainTurn(next);
+    const deltas = streamed.filter((event) => event.type === "message.delta");
+    const turnBytes = streamBytes - readyBytes;
+
+    // What the same turn costs a console that answers each write by re-reading
+    // the conversation it is looking at.
+    const read = await rawGet(baseUrl, `/api/v1/threads/${threadId}`);
+    expect(read.status).toBe(200);
+    expect(read.body.length).toBeGreaterThan(10 * 1_024);
+    expect(deltas.length).toBeGreaterThanOrEqual(2);
+    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    // The whole turn -- deltas, run state and both conversation summaries --
+    // costs less than ONE of the re-reads it replaces, of which there would
+    // have been one per write.
+    expect(turnBytes).toBeLessThan(read.body.length / 2);
+
+    await reader.cancel();
+  });
+
+  it("answers a message read with the version the delta stream last named", async () => {
+    const { baseUrl } = await start({ fetchImpl: toolHeavyAgentFetch() });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const other = await createThread(baseUrl, "agent-one");
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+
+    const detail = await settleTurn(baseUrl, threadId, "go");
+    const message = wireMessages(detail).at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const streamed = await drainTurn(next);
+    const seq = streamed
+      .filter((event) => event.type === "message.delta")
+      .map((event) => (event.payload as { readonly seq: number }).seq)
+      .at(-1);
+    expect(seq).toBeTypeOf("number");
+
+    // The recovery a console reaches for when a delta no longer chains: the one
+    // message, at the version the stream just named.
+    const found = await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}`);
+    expect(found.status).toBe(200);
+    const shaped = (await json(found)).message as WireMessage & { readonly seq: number };
+    expect(shaped.id).toBe(message.id);
+    expect(shaped.seq).toBe(seq);
+    expect(shaped.parts.filter((part) => part.resultTruncated === true)).toHaveLength(3);
+
+    const whole = (await json(await fetch(
+      `${baseUrl}/api/v1/threads/${threadId}/messages/${message.id}?full=1`,
+    ))).message as WireMessage & { readonly seq: number };
+    expect(whole.seq).toBe(seq);
+    expect(whole.parts.filter((part) => part.resultTruncated === true)).toHaveLength(0);
+    expect(whole.parts.find((part) => part.type === "tool-call")).toMatchObject({
+      result: "R".repeat(20 * 1_024),
+    });
+
+    // A message id is not a capability: it answers only inside its own conversation.
+    for (const path of [
+      `/api/v1/threads/${threadId}/messages/no-such-message`,
+      `/api/v1/threads/${other}/messages/${message.id}`,
+    ]) {
+      const refused = await fetch(`${baseUrl}${path}`);
+      expect(refused.status).toBe(404);
+      expect(await json(refused)).toMatchObject({ error: { code: "message_not_found" } });
+    }
+    await reader.cancel();
+  });
+
+  it("answers a conversation and its message page with one screenful by default", async () => {
+    const { baseUrl } = await start();
+    const threadId = await createThread(baseUrl, "agent-one");
+    for (let index = 0; index < 20; index += 1) {
+      await settleTurn(baseUrl, threadId, `turn ${String(index)}`);
+    }
+
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+    expect(wireMessages(detail)).toHaveLength(30);
+    expect(detail.messagesNextCursor).toBeTypeOf("string");
+
+    const page = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages`));
+    expect(page.messages as unknown[]).toHaveLength(30);
+    expect(page.nextCursor).toBeTypeOf("string");
+    const explicit = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages?limit=100`));
+    expect(explicit.messages as unknown[]).toHaveLength(40);
+    expect((await fetch(`${baseUrl}/api/v1/threads/${threadId}/messages?limit=101`)).status).toBe(400);
+  });
+
+  it("stays silent about what discovery changed", async () => {
+    let discovered = [fakeDiscoveredAgent()];
+    const { baseUrl } = await start({ discoveryIntervalMs: 25, discoverImpl: async () => discovered });
+    const stream = await fetch(`${baseUrl}/api/v1/events`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const nextEvent = sseEventReader(reader);
+    expect(await nextEvent()).toMatchObject({ type: "ready" });
+
+    // An agent that appeared, went away, or advertises something different can
+    // have changed anything at all, so this one still invalidates the snapshot.
+    discovered = [
+      fakeDiscoveredAgent(),
+      fakeDiscoveredAgent({ source: { ...fakeDiscoveredAgent().source, sourceId: "agent-two", label: "Agent Two" } }),
+    ];
+    for (;;) {
       const event = await nextEvent();
-      expect(event).toMatchObject({ type: "agents.changed" });
+      if (event.type !== "agents.changed") continue;
       expect(event).not.toHaveProperty("payload");
+      break;
     }
     await reader.cancel();
   });
@@ -1635,6 +2187,7 @@ describe("web HTTP server", () => {
 
 function sseEventReader(
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  onBytes?: (count: number) => void,
 ): () => Promise<Record<string, unknown>> {
   const decoder = new TextDecoder();
   let buffered = "";
@@ -1650,9 +2203,26 @@ function sseEventReader(
       }
       const chunk = await readSseChunk(reader);
       if (chunk.done) throw new Error("SSE stream ended before the next event.");
+      onBytes?.(chunk.value?.byteLength ?? 0);
       buffered += decoder.decode(chunk.value, { stream: true });
     }
   };
+}
+
+/**
+ * Everything one settling turn put on a stream, up to the conversation summary
+ * the finish emits. `threads.changed` is no boundary: a turn emits one when it
+ * STARTS too.
+ */
+async function drainTurn(
+  next: () => Promise<Record<string, unknown>>,
+): Promise<readonly Record<string, unknown>[]> {
+  const events: Record<string, unknown>[] = [];
+  for (;;) {
+    const event = await next();
+    events.push(event);
+    if (event.type === "thread.changed") return events;
+  }
 }
 
 async function readSseChunk(
@@ -1682,3 +2252,145 @@ async function waitForFreeSseSlot(baseUrl: string, timeoutMs = 5_000): Promise<R
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
 }
+
+/**
+ * The per-connection view of the event stream, exercised without a socket.
+ *
+ * Neither of the two things that matter here is observable through an HTTP
+ * fixture: the rate limit is a clock decision, and a frame a connection cannot
+ * write must close it rather than leave a socket that reads live.
+ */
+describe("web event dispatch", () => {
+  const AT = "2026-09-05T10:00:00.000Z";
+
+  function event(type: WebEvent["type"], threadId: string, payload: unknown): WebEvent {
+    return { id: `${type}:${threadId}`, version: WEB_API_VERSION, type, at: AT, threadId, payload };
+  }
+  function delta(seq: number): Record<string, unknown> {
+    return { messageId: "m1", baseSeq: seq - 1, seq, status: "running", updatedAt: AT, ops: [] };
+  }
+  function changed(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return { messageId: "m1", updatedAt: AT, ...extra };
+  }
+
+  interface Harness {
+    readonly send: (event: WebEvent) => boolean;
+    readonly written: WebEvent[];
+    readonly closes: () => number;
+    advance: (ms: number) => void;
+  }
+
+  function harness(subscribed?: string, write?: (event: WebEvent) => boolean): Harness {
+    const written: WebEvent[] = [];
+    let closes = 0;
+    let clock = 1_000;
+    const send = createWebEventDispatch({
+      ...(subscribed === undefined ? {} : { subscribed }),
+      write: write ?? ((event) => { written.push(event); return true; }),
+      close: () => { closes += 1; },
+      now: () => clock,
+    });
+    return {
+      send,
+      written,
+      closes: () => closes,
+      advance: (ms: number) => { clock += ms; },
+    };
+  }
+
+  it("serves everything about the conversation a console named, unthrottled", async () => {
+    const stream = harness("thread-1");
+    // Content, the delta path declining, and an ordinary reconciliation: all
+    // three are things the console rendering this conversation must act on.
+    expect(stream.send(event("message.delta", "thread-1", delta(1)))).toBe(true);
+    expect(stream.send(event("message.changed", "thread-1", changed({ deltaDeclined: true })))).toBe(true);
+    expect(stream.send(event("message.changed", "thread-1", changed()))).toBe(true);
+    expect(stream.send(event("turn.changed", "thread-1", { turn: { status: "running" } }))).toBe(true);
+
+    expect(stream.written.map((written) => written.type)).toEqual([
+      "message.delta",
+      "message.changed",
+      "message.changed",
+      "turn.changed",
+    ]);
+    expect(stream.written[0]?.payload).toEqual(delta(1));
+    // `deltaDeclined` is the stream layer's own signal and never reaches a browser.
+    expect(stream.written[1]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
+  });
+
+  it("rate-limits a conversation the console did not name to one frame a second", async () => {
+    const stream = harness("thread-1");
+    expect(stream.send(event("message.delta", "other", delta(1)))).toBe(true);
+    expect(stream.send(event("message.delta", "other", delta(2)))).toBe(true);
+    expect(stream.send(event("message.changed", "other", changed()))).toBe(true);
+    // Dropped, not queued.
+    expect(stream.written).toHaveLength(1);
+    expect(stream.written[0]).toMatchObject({
+      type: "message.changed",
+      threadId: "other",
+      payload: { messageId: "m1", updatedAt: AT },
+    });
+
+    stream.advance(1_000);
+    stream.send(event("message.delta", "other", delta(3)));
+    expect(stream.written).toHaveLength(2);
+    // A different conversation has its own budget.
+    stream.send(event("message.delta", "third", delta(1)));
+    expect(stream.written).toHaveLength(3);
+  });
+
+  it("keeps every reconciliation for a console that named no conversation, and bounds only the delta path", async () => {
+    const stream = harness();
+    // This console may well be looking at the conversation, and nothing else
+    // will tell it that a live-input offer or a job card moved.
+    stream.send(event("message.changed", "thread-1", changed()));
+    stream.send(event("message.changed", "thread-1", changed()));
+    expect(stream.written).toHaveLength(2);
+
+    // The write-rate traffic is the whole reason the limit exists, and a
+    // declined delta is exactly that traffic wearing the other event's name.
+    stream.send(event("message.delta", "thread-1", delta(1)));
+    stream.send(event("message.changed", "thread-1", changed({ deltaDeclined: true })));
+    stream.send(event("message.delta", "thread-1", delta(2)));
+    expect(stream.written).toHaveLength(3);
+    expect(stream.written[2]?.type).toBe("message.changed");
+    expect(stream.written[2]?.payload).toEqual({ messageId: "m1", updatedAt: AT });
+  });
+
+  it("bounds what one connection remembers, dropping the conversation it heard about longest ago", async () => {
+    // A burst wider than the bound inside a single tick would otherwise grow
+    // the map faster than the window can retire it, on a server that runs for
+    // weeks. Three hundred conversations at one instant, then the two ends.
+    const stream = harness();
+    for (let index = 0; index < 300; index += 1) {
+      stream.send(event("message.delta", `thread-${String(index)}`, delta(1)));
+    }
+    expect(stream.written).toHaveLength(300);
+
+    // The first 44 were evicted to hold the bound at 256, so the oldest is
+    // hinted about again even though its window has not passed...
+    stream.send(event("message.delta", "thread-0", delta(2)));
+    expect(stream.written).toHaveLength(301);
+    // ...while the most recent is still suppressed.
+    stream.send(event("message.delta", "thread-299", delta(2)));
+    expect(stream.written).toHaveLength(301);
+  });
+
+  it("closes a stream it cannot make sense of rather than dropping the frame", async () => {
+    const malformed = harness("thread-1");
+    expect(malformed.send(event("message.delta", "other", { messageId: "m1" }))).toBe(false);
+    expect(malformed.closes()).toBe(1);
+    expect(malformed.written).toEqual([]);
+
+    const nameless = harness("thread-1");
+    expect(nameless.send(event("message.changed", "thread-1", { updatedAt: AT }))).toBe(false);
+    expect(nameless.closes()).toBe(1);
+
+    // A write that throws is the same problem seen from the socket: the
+    // subscriber is dropped either way, and a stream nobody writes to must not
+    // stay open reading "live".
+    const throwing = harness("thread-1", () => { throw new Error("socket is gone"); });
+    expect(throwing.send(event("message.delta", "thread-1", delta(1)))).toBe(false);
+    expect(throwing.closes()).toBe(1);
+  });
+});

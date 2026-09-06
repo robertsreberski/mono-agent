@@ -109,6 +109,26 @@ export interface WebModelOption {
   readonly contextWindow?: number;
 }
 
+export type WebRunSettingSource = "config" | "override";
+
+/** Config defaults, optional web-console overrides, and the effective values for new conversations. */
+export interface WebAgentRunSettings {
+  readonly config: {
+    readonly model?: string;
+    readonly effort?: string;
+  };
+  readonly override: {
+    readonly model?: string;
+    readonly effort?: string;
+  } | null;
+  readonly effective: {
+    readonly model?: string;
+    readonly modelSource: WebRunSettingSource;
+    readonly effort?: string;
+    readonly effortSource: WebRunSettingSource;
+  };
+}
+
 export interface WebAgentSummary {
   readonly sourceId: string;
   /**
@@ -137,6 +157,8 @@ export interface WebAgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, WebModelOption>>;
+  /** Web-console-owned defaults copied into conversations created after they are saved. */
+  readonly runSettings: WebAgentRunSettings;
   /**
    * Providers this agent supports. `models`/`modelOptions` stay the configured
    * shortlist; this is what the selector groups and filters by, and what tells
@@ -236,6 +258,21 @@ export interface WebToolCall {
   readonly executionMs?: number;
   /** Canonical durable-tool record metadata received on the live event. */
   readonly history?: SessionToolHistoryEventMetadata;
+  /**
+   * Set when the transcript carries only the head of `result`. A 20 KB `Exec`
+   * body is the single largest thing a conversation read transfers and almost
+   * none of it is ever looked at, so a browser read gets a preview and the
+   * whole body stays one request away at
+   * `/threads/:id/messages/:messageId/tool-calls/:toolCallId`. Never set on a
+   * `?full=1` read.
+   */
+  readonly resultTruncated?: boolean;
+  /** Character length of the untruncated `result` text, when it was truncated. */
+  readonly resultBytes?: number;
+  /** As {@link resultTruncated}, for the call's arguments. */
+  readonly argsTruncated?: boolean;
+  /** Character length of the untruncated `args` text, when it was truncated. */
+  readonly argsBytes?: number;
 }
 
 export type WebMessagePart =
@@ -263,6 +300,11 @@ export type WebMessagePart =
       readonly costUsd?: number;
       /** Metadata for the persisted parent `Agent` call; child internals omit it. */
       readonly history?: SessionToolHistoryEventMetadata;
+      /** See {@link WebToolCall.resultTruncated}; the delegation's report is truncated the same way. */
+      readonly resultTruncated?: boolean;
+      readonly resultBytes?: number;
+      readonly argsTruncated?: boolean;
+      readonly argsBytes?: number;
       readonly status: WebToolCallStatus;
       readonly calls: readonly WebToolCall[];
     }
@@ -281,7 +323,19 @@ export type WebMessagePart =
         readonly deliveryKeys: readonly string[];
       }[];
     }
-  | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
+  /**
+   * One runtime/provider diagnostic. `data` is present only for the events the
+   * console actually renders or sums; everything else keeps its identity (and
+   * its position, which the transcript's index-based reads depend on) and drops
+   * the payload. `kind` names a stripped `runtime_telemetry`'s variant so the
+   * part still says what it was.
+   */
+  | {
+      readonly type: "telemetry";
+      readonly event: string;
+      readonly kind?: string;
+      readonly data?: unknown;
+    }
   | { readonly type: "error"; readonly code?: string; readonly message: string }
   | {
       readonly type: "attachment";
@@ -358,6 +412,14 @@ export interface WebMessage {
   readonly finishedAt?: string;
   readonly status: WebMessageStatus;
   readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  /**
+   * How many times this message's parts have been persisted, counted from the
+   * row's creation. It is what makes a {@link WebMessageDelta} safe to apply:
+   * a holder of `seq` can tell the very next write from one that skipped ahead
+   * of it, and re-read the message instead of guessing. Rows written before the
+   * console counted read 0.
+   */
+  readonly seq: number;
 }
 
 export interface WebQuote {
@@ -510,12 +572,33 @@ export interface WebPushSubscriptionStatus {
   readonly lastErrorCode?: string;
 }
 
+/**
+ * What a bootstrap should carry, when the console knows.
+ *
+ * A bootstrap used to carry every discovered agent's conversations -- one
+ * 200-row bucket per agent per archive state -- and the console then re-read
+ * the single bucket its sidebar shows. `sourceId` names the bucket it wants;
+ * an absent or unknown one falls back rather than failing, because the first
+ * request a fresh console makes has no selection to name yet.
+ */
+export interface WebBootstrapScope {
+  readonly sourceId?: string;
+  readonly archived?: boolean;
+  readonly limit?: number;
+}
+
 export interface WebBootstrap {
   readonly version: typeof WEB_API_VERSION;
   readonly console: WebConsoleIdentity;
   readonly push: WebPushBootstrap;
+  /** Every discovered agent, in full: the rail shows all of them at once. */
   readonly agents: readonly WebAgentSummary[];
+  /** One page of ONE (agent, archived) bucket -- the one `threadsSourceId` names. */
   readonly threads: readonly WebThread[];
+  /** The bucket `threads` came from, or `null` when there is no agent to open on. */
+  readonly threadsSourceId: string | null;
+  /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
+  readonly threadsNextCursor: string | null;
   readonly currentThreadId?: string;
   readonly limits: {
     readonly maxFileBytes: number;
@@ -532,9 +615,86 @@ export type WebEventType =
   | "threads.changed"
   | "thread.changed"
   | "message.changed"
+  | "message.delta"
   | "turn.changed"
   | "attachment.changed"
   | "push.pending";
+
+/**
+ * The payload of every `thread.changed`/`threads.changed` that names a
+ * conversation.
+ *
+ * The fresh summary travels WITH the event: one that only named a conversation
+ * cost every connected console a page of its bucket to find out what had
+ * changed about a row it was already holding. A removal has no summary left to
+ * carry, so it says so.
+ */
+export type WebThreadChangedPayload =
+  | { readonly thread: WebThread }
+  | { readonly threadId: string; readonly removed: true };
+
+/**
+ * What an `agents.changed` says about itself.
+ *
+ * A pin is a one-field write the writing tab already applied from the PATCH
+ * response, so it names the agent and the new state rather than telling every
+ * console to re-read the bootstrap, its skills and its cron. Discovery-driven
+ * invalidations carry nothing: an agent that appeared, went away, or advertises
+ * something different can have changed anything at all.
+ */
+export type WebAgentsChangedPayload =
+  | { readonly sourceId: string; readonly pinned: boolean }
+  | undefined;
+
+/**
+ * One edit to a message's part array.
+ *
+ * Ops are ordered so that applying them front to back is always well defined: a
+ * `truncate` comes first when the array shrank, and the rest ascend by index,
+ * which is also why an index never names a slot the shortened array lost.
+ */
+export type WebMessageDeltaOp =
+  /** Text streamed onto the end of the `text`/`reasoning` part at `index`. */
+  | { readonly op: "append"; readonly index: number; readonly delta: string }
+  /** The whole part at `index`, replaced or appended one past the end. */
+  | { readonly op: "set"; readonly index: number; readonly part: WebMessagePart }
+  /** Drop every part from `length` onward. Emitted first when it is emitted. */
+  | { readonly op: "truncate"; readonly length: number };
+
+/**
+ * One persisted parts write, as content rather than an invalidation hint.
+ *
+ * A streaming answer is rewritten every ~50 ms, and a hint made every console
+ * answer each one by re-reading the whole conversation. This says what actually
+ * changed instead. `baseSeq` is the version the ops apply to and `seq` the one
+ * they produce: a client whose message is not at `baseSeq` has missed a write
+ * and must re-read that message rather than apply anything.
+ */
+export interface WebMessageDelta {
+  readonly messageId: string;
+  /** The message's {@link WebMessage.seq} BEFORE this write. */
+  readonly baseSeq: number;
+  /** The message's `seq` after it, always `baseSeq + 1`. */
+  readonly seq: number;
+  readonly status: WebMessageStatus;
+  readonly updatedAt: string;
+  readonly ops: readonly WebMessageDeltaOp[];
+}
+
+/**
+ * The payload of a `message.changed`: the message moved, go and read it.
+ *
+ * `deltaDeclined` is NOT part of the wire contract -- the event stream strips
+ * it, and a browser reads the same two fields either way. It marks the hint the
+ * delta path emits when the delta it built would have cost more than the
+ * message it describes, so the stream layer can tell one write-rate frame from
+ * a reconciliation and rate-limit only the first.
+ */
+export interface WebMessageChangedPayload {
+  readonly messageId: string;
+  readonly updatedAt: string;
+  readonly deltaDeclined?: true;
+}
 
 export interface WebEvent {
   readonly id: string;
@@ -542,12 +702,24 @@ export interface WebEvent {
   readonly type: WebEventType;
   readonly at: string;
   readonly threadId?: string;
-  /** Event-specific detail. `agents.changed` omits this and invalidates the bootstrap snapshot. */
+  /**
+   * Event-specific detail. A payload-less `agents.changed` invalidates the
+   * bootstrap snapshot; see {@link WebAgentsChangedPayload}.
+   */
   readonly payload?: unknown;
 }
 
 export interface CreateWebThreadInput {
   readonly sourceId: string;
+  /** Explicit draft choice; absent inherits the web default and null selects config. */
+  readonly model?: string | null;
+  /** Explicit draft choice; absent inherits the web default and null selects config. */
+  readonly effort?: string | null;
+}
+
+export interface PutWebAgentRunSettingsInput {
+  readonly model: string | null;
+  readonly effort: string | null;
 }
 
 export interface PatchWebAgentInput {

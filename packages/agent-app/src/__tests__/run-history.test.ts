@@ -113,6 +113,7 @@ function structured<T>(result: unknown): T {
 interface InspectOverview {
   readonly trigger?: string;
   readonly finalOutput?: string;
+  readonly signals?: ReadonlyArray<{ readonly type?: string; readonly failureKind?: string }>;
   readonly nextCursor?: string;
   readonly timelineEntryCount: number;
   readonly warnings: readonly string[];
@@ -121,6 +122,11 @@ interface InspectOverview {
   readonly navigation: {
     readonly guidance: string;
     readonly nextActions: ReadonlyArray<{ readonly arguments: Readonly<Record<string, unknown>> }>;
+    readonly relatedTools?: ReadonlyArray<{
+      readonly tool: string;
+      readonly description: string;
+      readonly arguments: Readonly<Record<string, unknown>>;
+    }>;
   };
 }
 
@@ -343,6 +349,134 @@ describe("RunHistory MCP tool", () => {
         runs: [expect.objectContaining({ runId: "prior-failed" })],
         hasMore: true,
       });
+    } finally {
+      await history.close();
+    }
+  });
+
+  it("makes a canonical cancelled run discoverable as incomplete recovery evidence without exposing decoys", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:cancelled-recovery";
+    await writeRun({
+      artifactDir,
+      runId: "cancelled-prior",
+      conversationId,
+      startedAt: "2026-09-05T08:00:00.000Z",
+      userInput: "prepare the interrupted migration checklist",
+      events: [
+        { type: "assistant", message: { content: [{ type: "text", text: "Partial checklist: inspect the schema first." }] } },
+      ],
+      result: { cancelled: true, failureKind: "cancelled_user" },
+    });
+    await writeRun({
+      artifactDir,
+      runId: "running-decoy",
+      conversationId,
+      startedAt: "2026-09-05T09:00:00.000Z",
+      userInput: "newer but still running",
+      running: true,
+    });
+    await writeRun({
+      artifactDir,
+      runId: "foreign-cancelled-decoy",
+      conversationId: "web:foreign",
+      startedAt: "2026-09-05T10:00:00.000Z",
+      userInput: "private foreign interrupted work",
+      result: { cancelled: true, failureKind: "cancelled_user" },
+    });
+    await writeRun({
+      artifactDir,
+      runId: "current-run",
+      conversationId,
+      startedAt: "2026-09-05T11:00:00.000Z",
+      userInput: "current request",
+      result: { cancelled: true, failureKind: "cancelled_user" },
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const tools = await history.client.listTools();
+      expect(tools.tools[0]?.description).toContain("pick up, continue, or recover interrupted work");
+      expect(tools.tools[0]?.description).toContain("call with {} first");
+      expect(tools.tools[0]?.description).toContain("cancelled, or interrupted");
+      expect(tools.tools[0]?.description).toContain("does not resume provider state");
+
+      const listedResult = await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
+      const listed = structured<{
+        readonly runs: ReadonlyArray<{ readonly runId: string; readonly status: string; readonly failureKind?: string }>;
+        readonly navigation: {
+          readonly nextActions: ReadonlyArray<{ readonly description: string; readonly arguments: Readonly<Record<string, unknown>> }>;
+        };
+      }>(listedResult);
+      expect(listed.runs).toEqual([expect.objectContaining({
+        runId: "cancelled-prior",
+        status: "cancelled",
+        failureKind: "cancelled_user",
+      })]);
+      expect(listed.navigation.nextActions[0]).toMatchObject({
+        description: expect.stringContaining("(cancelled)"),
+        arguments: { runId: "cancelled-prior" },
+      });
+
+      const searched = structured<{
+        readonly runs: ReadonlyArray<{ readonly runId: string; readonly status: string }>;
+        readonly overview?: { readonly run: { readonly status: string; readonly failureKind?: string } };
+        readonly navigation: InspectOverview["navigation"];
+      }>(await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { query: "cancelled_user" },
+      }));
+      expect(searched.runs).toEqual([expect.objectContaining({ runId: "cancelled-prior", status: "cancelled" })]);
+      expect(searched.overview?.run).toMatchObject({ status: "cancelled", failureKind: "cancelled_user" });
+      expect(searched.navigation.relatedTools?.[0]?.arguments).toEqual({
+        action: "search",
+        runIds: ["cancelled-prior"],
+        includeIsolated: true,
+      });
+
+      const inspectResult = await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: listed.navigation.nextActions[0]!.arguments,
+      });
+      const inspected = structured<InspectOverview & {
+        readonly run: { readonly runId: string; readonly status: string; readonly failureKind?: string };
+      }>(inspectResult);
+      expect(inspected.run).toMatchObject({
+        runId: "cancelled-prior",
+        status: "cancelled",
+        failureKind: "cancelled_user",
+      });
+      expect(inspected.finalOutput).toContain("Partial checklist");
+      expect(inspected.signals).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "run_failure", failureKind: "cancelled_user" }),
+      ]));
+      expect(inspected.navigation.guidance).toContain("did not complete successfully");
+      expect(inspected.navigation.guidance).toContain("incomplete evidence");
+      expect(inspected.navigation.guidance).toContain("Any continuation is fresh work in the current run");
+      expect(inspected.navigation.relatedTools).toEqual([{
+        tool: "SessionHistory",
+        description: expect.stringContaining("do not add a states filter"),
+        arguments: {
+          action: "search",
+          runIds: ["cancelled-prior"],
+          includeIsolated: true,
+        },
+      }]);
+      expect(JSON.stringify(inspectResult.content)).toContain("resultRecordId");
+      expect(JSON.stringify(inspectResult.content)).toContain("8192-byte get chunks");
+
+      for (const runId of ["running-decoy", "foreign-cancelled-decoy", "current-run"]) {
+        const unavailable = structured<{ readonly error: { readonly code: string } }>(
+          await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: { runId } }),
+        );
+        expect(unavailable.error.code).toMatch(/^(current_run|run_incomplete|run_not_available)$/u);
+      }
+
+      const serialized = JSON.stringify([listedResult, inspectResult]);
+      expect(serialized).not.toContain("running-decoy");
+      expect(serialized).not.toContain("foreign-cancelled-decoy");
+      expect(serialized).not.toContain("private foreign interrupted work");
+      expect(serialized).not.toContain("current-run");
     } finally {
       await history.close();
     }
@@ -636,6 +770,7 @@ describe("RunHistory MCP tool", () => {
         runId: "only-match-run",
         cursor: expect.any(String),
       });
+      expect(body.navigation).not.toHaveProperty("relatedTools");
     } finally {
       await history.close();
     }

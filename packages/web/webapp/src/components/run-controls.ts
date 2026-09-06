@@ -31,11 +31,11 @@ export function useRunControls() {
     catalogByProvider,
     ensureProviderCatalog,
   } = useConsoleStore();
-  // The agent's own advertised defaults. Console-owned per-agent run defaults are
-  // a separate feature with its own server contract; until that exists, "the
-  // agent default" is exactly what the agent advertises.
-  const agentDefaultModel = selectedAgent?.defaultModel ?? "";
-  const agentDefaultEffort = selectedAgent?.defaultEffort ?? "";
+  // A blank selector displays the field's actual inheritance target. For a new
+  // draft that can be the web-owned agent default; an explicit blank or an
+  // existing thread resolves back to the agent's configured default.
+  const agentDefaultModel = model === "" ? effectiveModel : selectedAgent?.defaultModel ?? "";
+  const agentDefaultEffort = effort === "" ? effectiveEffort : selectedAgent?.defaultEffort ?? "";
 
   const usage = useMemo<ConsoleUsage | null>(() => {
     const projected = conversationConsoleUsage(detail, { selectedModel: effectiveModel });
@@ -59,13 +59,15 @@ export function useRunControls() {
       Object.entries(catalogByProvider ?? {}).map(([provider, state]) => [provider, state.models]),
     );
     return buildSelectorModels({
-      agent: selectedAgent,
+      agent: selectedAgent === null
+        ? null
+        : { ...selectedAgent, ...(agentDefaultModel === "" ? {} : { defaultModel: agentDefaultModel }) },
       modelOptions,
       defaultEffort: agentDefaultEffort || selectedAgent?.defaultEffort || "",
       catalogByProvider: catalogModels,
       selectedModel: model,
     });
-  }, [agentDefaultEffort, catalogByProvider, model, modelOptions, selectedAgent]);
+  }, [agentDefaultEffort, agentDefaultModel, catalogByProvider, model, modelOptions, selectedAgent]);
 
   const catalogStatusByProvider = useMemo(
     () => Object.fromEntries(

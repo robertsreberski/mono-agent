@@ -351,7 +351,8 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
     await client.connect(clientTransport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools[0]?.description).toMatch(/Do not use it.*current or last message/iu);
+      expect(tools.tools[0]?.description).toMatch(/Do not use MemoryRecall.*current or last message/iu);
+      expect(tools.tools[0]?.description).toMatch(/pick up, continue, or recover interrupted work.*RunHistory with \{\} first/iu);
       for (const query of [
         "What did you send in the last message?",
         "What was your previous reply?",
@@ -429,9 +430,20 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
       const result = (await client.callTool({
         name: "MemoryRecall",
         arguments: { query: "quantum chromodynamics lattice gauge" },
-      })) as { content: Array<{ type: string; text: string }>; structuredContent?: { hits: unknown[] } };
+      })) as {
+        content: Array<{ type: string; text: string }>;
+        structuredContent?: {
+          hits: unknown[];
+          navigation?: { relatedTools: Array<{ tool: string; arguments: Record<string, unknown> }> };
+        };
+      };
       expect(result.content[0]?.text).toMatch(/No memories matched/u);
+      expect(result.content[0]?.text).toMatch(/RunHistory with \{\} first/u);
       expect(result.structuredContent?.hits).toEqual([]);
+      expect(result.structuredContent?.navigation?.relatedTools).toEqual([expect.objectContaining({
+        tool: "RunHistory",
+        arguments: {},
+      })]);
     } finally {
       await client.close();
       await server.close();

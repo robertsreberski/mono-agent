@@ -401,6 +401,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .sidebar-header h1 { max-width: 205px; margin: 0; overflow: hidden; color: var(--text); font-size: 17px; font-weight: 680; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .new-thread-button { width: 38px; height: 38px; display: grid; place-items: center; flex: none; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-sm); cursor: pointer; }
 .new-thread-button:hover { color: var(--accent); border-color: var(--line-strong); }
+.sidebar-header-actions { display: flex; align-items: center; gap: 7px; }
+.agent-settings-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--text-muted); background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
+.agent-settings-button:hover:not(:disabled) { color: var(--accent); background: var(--surface-hover); }
+.agent-settings-button:disabled, .new-thread-button:disabled { opacity: .45; cursor: default; }
 .thread-search { height: 38px; display: flex; align-items: center; gap: 8px; margin: 0 14px 10px; padding: 0 10px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid transparent; border-radius: 9px; }
 .thread-search:focus-within { color: var(--accent); background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .thread-search input { min-width: 0; height: 100%; flex: 1; padding: 0; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 13px; }
@@ -606,28 +610,12 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .header-notifications.is-enabled { color: var(--accent); background: var(--accent-soft); }
 .header-notifications.is-degraded { color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
 
-.process-job-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--surface-raised, var(--surface)); max-width: 720px; }
-.process-job-header { display: flex; align-items: center; gap: 8px; }
-.process-job-header strong { flex: 1; }
-.process-job-state { font-size: 12px; text-transform: capitalize; color: var(--muted); }
-.process-job-state-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 15%, transparent); }
-.process-job-card.is-succeeded .process-job-state-dot { background: var(--success, #24804a); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success, #24804a) 15%, transparent); }
-.process-job-card:is(.is-failed,.is-timed_out,.is-spawn_failed,.is-interrupted) .process-job-state-dot { background: var(--danger, #b42318); box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger, #b42318) 15%, transparent); }
-.process-job-summary { margin: 10px 0; overflow-wrap: anywhere; }
-.process-job-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0; font-size: 12px; color: var(--muted); }
-.process-job-facts div { display: flex; gap: 5px; }
-.process-job-facts dt { font-weight: 600; }
-.process-job-facts dd { margin: 0; }
-.process-job-output { margin-top: 10px; }
-.process-job-output summary { cursor: pointer; font-size: 13px; }
-.process-job-output pre { max-height: 320px; overflow: auto; padding: 10px; border-radius: 8px; background: var(--surface-sunken, color-mix(in srgb, currentColor 5%, transparent)); white-space: pre-wrap; overflow-wrap: anywhere; }
-.process-job-output ul { margin: 8px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
-.process-job-error { color: var(--danger, #b42318); font-size: 13px; }
-.process-job-response { margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--border); white-space: pre-wrap; }
-.monitor-activity-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 8px 0 0; font-size: 12px; color: var(--muted); }
-.monitor-activity-facts div { display: flex; gap: 5px; }
-.monitor-activity-facts dt { font-weight: 600; }
-.monitor-activity-facts dd { margin: 0; }
+.monitor-activity-facts, .process-job-facts { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 12px; color: var(--muted); }
+.monitor-activity-facts { margin: 8px 0 0; }
+.process-job-facts { margin: 0 0 4px; }
+.monitor-activity-facts div, .process-job-facts div { display: flex; gap: 5px; }
+.monitor-activity-facts dt, .process-job-facts dt { font-weight: 600; }
+.monitor-activity-facts dd, .process-job-facts dd { margin: 0; }
 .monitor-activity-legacy { margin: 8px 14px; color: var(--muted); font-size: 12px; }
 .connection-banner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); font-size: 11px; text-align: center; z-index: 4; }
 .connection-pulse { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; animation: pulse 1.5s ease infinite; }
@@ -741,7 +729,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .mcp-app-confirmation button.is-primary { color: var(--on-accent); background: var(--accent-strong); border-color: transparent; }
 /* Reasoning and tool calls */
 .reasoning-root { margin: 5px 0 11px; }
-.assistant-content > .activity-root:first-child { margin-top: -4px; }
+.assistant-content > :is(.activity-root, .activity-row.is-job):first-child { margin-top: -4px; }
 .reasoning-trigger { min-height: 32px; display: inline-flex; align-items: center; gap: 7px; padding: 0 7px 0 3px; color: var(--text-muted); background: transparent; border-radius: 8px; cursor: pointer; font-size: 11px; }
 .reasoning-trigger:hover { color: var(--text-soft); background: var(--surface-subtle); }
 .reasoning-trigger[data-active="true"] .reasoning-trigger-label { color: var(--accent); }
@@ -914,6 +902,27 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* Command palette and toast */
 .dialog-layer { position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding: min(15vh, 130px) 16px 16px; background: rgba(7, 10, 8, 0.42); backdrop-filter: blur(6px); z-index: 100; }
 .command-palette { width: min(100%, 560px); overflow: hidden; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 16px; box-shadow: var(--shadow-lg); }
+.agent-settings-dialog { width: min(100%, 570px); overflow: visible; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 16px; box-shadow: var(--shadow-lg); }
+.agent-settings-dialog > header, .agent-settings-dialog > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px 17px; }
+.agent-settings-dialog > header { border-bottom: 1px solid var(--line); }
+.agent-settings-dialog > header h2 { margin: 2px 0 0; font-size: 18px; }
+.agent-settings-dialog > footer { justify-content: flex-end; border-top: 1px solid var(--line); }
+.agent-settings-dialog .icon-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--text-muted); background: var(--surface-subtle); border-radius: 9px; cursor: pointer; }
+.agent-settings-body { display: grid; gap: 16px; padding: 18px; }
+.agent-settings-body h3 { margin: 0 0 5px; font-size: 14px; }
+.agent-settings-body p { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.agent-settings-body .model-selector__trigger { width: 100%; max-width: none; min-height: 42px; justify-content: space-between; border: 1px solid var(--line); border-radius: 10px; }
+.agent-settings-effective { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
+.agent-settings-effective > div { min-width: 0; padding: 10px 11px; background: var(--surface-subtle); border-radius: 9px; }
+.agent-settings-effective dt { color: var(--text-muted); font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.agent-settings-effective dd { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 7px; margin: 5px 0 0; }
+.agent-settings-effective dd span { overflow: hidden; font-family: var(--font-mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-settings-effective dd b { padding: 2px 5px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
+.agent-settings-config code { color: var(--text-soft); }
+.agent-settings-warning { color: var(--warning) !important; }
+.agent-settings-error { color: var(--danger) !important; }
+.agent-settings-dialog .secondary-button, .agent-settings-dialog .primary-button { min-height: 38px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; border-radius: 9px; cursor: pointer; font-weight: 650; }
+.agent-settings-dialog .secondary-button { margin-right: auto; color: var(--accent); background: var(--accent-soft); }
 .palette-search { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 14px; color: var(--text-muted); border-bottom: 1px solid var(--line); }
 .palette-search input { min-width: 0; flex: 1; height: 100%; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 14px; }
 kbd { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px; padding: 0 5px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 5px; box-shadow: 0 1px 0 var(--line-strong); font-family: var(--font-mono); font-size: 9px; }
@@ -951,6 +960,26 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-row-chevron { flex: none; color: var(--text-muted); transition: transform 150ms ease; }
 .activity-row[open] > summary .activity-row-chevron { transform: rotate(180deg); }
 .failed-tag { flex: none; padding: 2px 6px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border-radius: 5px; font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
+/* A background job is its own message, so its row never sits inside an Activity
+   band. It borrows the band's chrome instead, and reads as a one-row block
+   between the turn that launched it and the turn its wake produced. */
+.assistant-content > .activity-row.is-job { margin: 5px 0 11px; padding: 3px 4px; background: color-mix(in srgb, var(--panel) 32%, var(--surface)); border: 1px solid var(--line); border-radius: 12px; }
+.activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
+@media (max-width: 560px) {
+  /* A phone's row cannot hold the purpose and the meta side by side: the flex
+     line first squeezed the purpose to nothing and then clipped the meta, so a
+     failed wake read as "wak…". Job rows alone go to two lines here — purpose
+     beside the label, meta underneath and free to wrap — because a job's meta
+     is the only one that carries a token an operator has to act on. */
+  .activity-row.is-job > summary { display: grid; grid-template-columns: 18px auto minmax(0, 1fr) auto; align-items: center; column-gap: 8px; row-gap: 3px; padding-top: 7px; padding-bottom: 7px; }
+  .activity-row.is-job > summary .activity-row-glyph { grid-area: 1 / 1; }
+  .activity-row.is-job > summary .activity-row-label { grid-area: 1 / 2; }
+  .activity-row.is-job > summary .activity-row-summary { grid-area: 1 / 3; }
+  .activity-row.is-job > summary .activity-row-chevron { grid-area: 1 / 4; }
+  .activity-row.is-job > summary .failed-tag { grid-area: 2 / 2; justify-self: start; }
+  .activity-row.is-job > summary .activity-row-time { grid-area: 2 / 2 / 3 / 5; overflow: visible; white-space: normal; text-overflow: clip; line-height: 1.5; }
+  .activity-row.is-job > summary .failed-tag ~ .activity-row-time { grid-column: 3 / 5; }
+}
 
 /* Members of an expanded row, on a rail so a delegation's work is never
    confused with the agent's own. Flatter than the row above them on purpose:
@@ -971,6 +1000,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-payload > span { color: var(--text-muted); font-size: 8.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .activity-payload pre { min-width: 0; max-width: 100%; max-height: 280px; margin: 0; padding: 8px 9px; overflow: auto; overscroll-behavior: contain; color: var(--text-soft); background: color-mix(in srgb, var(--app-bg) 60%, var(--surface)); border: 1px solid var(--line); border-radius: 8px; font-family: var(--font-mono); font-size: 10px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .activity-error { min-width: 0; display: flex; align-items: center; gap: 6px; overflow-wrap: anywhere; margin: 0; padding: 7px 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 8px; font-size: 10.5px; line-height: 1.45; user-select: text; }
+/* A payload the server sent only the head of. Quiet by default -- most rows
+   are whole -- with the one control that fetches the rest sitting inline. */
+.activity-truncated { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -2px 0 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
+.activity-truncated button { padding: 3px 8px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 999px; font: inherit; cursor: pointer; }
+@media (hover: hover) {
+  .activity-truncated button:hover { color: var(--text); background: var(--surface); }
+}
 .activity-thought { padding: 2px 12px 12px 34px; color: var(--text-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 
 @media (hover: hover) {
@@ -1070,7 +1106,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .message-column { --column-padding: 12px; padding-block: 24px 8px; }
   .message { margin-bottom: 23px; }
   .message-user-content { max-width: 88%; padding: 9px 12px; }
-  .assistant-content > .activity-root:first-child { margin-top: -6px; }
+  .assistant-content > :is(.activity-root, .activity-row.is-job):first-child { margin-top: -6px; }
   .reply-attachment { align-items: flex-start; flex-wrap: wrap; }
   .reply-attachment .reply-part-action { min-height: 42px; margin-left: 40px; }
   .mcp-app > header { align-items: flex-start; flex-wrap: wrap; }

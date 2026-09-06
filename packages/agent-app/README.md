@@ -33,7 +33,7 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   copy so cold/stateless provider replay does not lose the out-of-band exchange;
   cancelled asks are not journaled.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
-  search and paged evidence from completed prior runs in the logical
+  recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.
 - Expose the sibling request-scoped read-only `SessionHistory` tool over the
   harness's canonical retained managed-tool lifecycle sidecar.
@@ -462,7 +462,7 @@ route silently drops a required capability.
 allow-all on MCP-capable routes; a restrictive `tools.allowedTools` must name
 `RunHistory` explicitly (`run_history` remains a deprecated policy alias), and
 `disallowedTools` can remove it. Direct OpenCode and other MCP-incompatible
-routes suppress it. The agent-facing shorthand is `{}` to list recent runs,
+routes suppress it. The agent-facing shorthand is `{}` to list recent settled runs,
 `{ "query": "topic terms" }` to search safe trigger and summary metadata,
 `{ "runId": "..." }` for a compact overview, and
 `{ "runId": "...", "cursor": "..." }` for the next timeline page. The
@@ -470,7 +470,11 @@ routes suppress it. The agent-facing shorthand is `{}` to list recent runs,
 compatible. List/search defaults to 5 results (maximum 10); timeline pages hold
 at most 10 entries and about 16 KiB. Each result includes tool-authored
 `navigation.guidance` and exact `navigation.nextActions[].arguments` for
-continuing exploration.
+continuing exploration. For an unhinted request to pick up, continue, or
+recover interrupted work, start with `{}`, select a `cancelled` or
+`interrupted` candidate, and inspect its `runId`. That overview marks output as
+incomplete evidence and returns a conditional exact `navigation.relatedTools`
+handoff to follow only when `SessionHistory` is available.
 List and search read retained summaries once; search never reads event JSONL
 and matches all normalized terms only against sanitized trigger/user input,
 run id, dates, status/failure kind, source/detail, model, and effort. Daily
@@ -529,6 +533,20 @@ root, or private run path. Only regular files beneath the configured run-specifi
 outside or symlinked paths are dropped. Isolated/proactive
 runs persist but search excludes them unless explicitly requested.
 
+For tool evidence from a cancelled or interrupted `RunHistory` candidate, use
+`{ "action": "search", "runIds": ["..."], "includeIsolated": true }` without
+a `states` filter. If it returns no records, do not broaden into another run or
+conversation. Each search result distinguishes the invocation `recordId` from
+the terminal `resultRecordId`; follow its trusted navigation to inspect the
+result first when present and the invocation when its arguments are needed.
+The exact navigation retains `includeIsolated: true`, uses `chunkBytes: 8192`,
+and gives the next exact `get` arguments for every cursor. A bounded search
+preview is not the full record and cannot replace record-level inspection when
+recovering interrupted work. This is read-only evidence recovery: it does not
+resume provider state, replay tools, rerun work, or guarantee continuation from
+the interrupted point. Continue as fresh work in the current run with currently
+available tools and fresh verification.
+
 `{ "action": "search" }` returns at most 10 bounded previews with text,
 tool/state/run/time filters and a query-bound opaque cursor.
 `{ "action": "get", "recordId": "..." }` (or `toolCallId`) returns bounded
@@ -543,6 +561,7 @@ projection capped at 64 KiB including its truncation marker; warm provider resum
 continues natively and receives no replay. A zero-byte fresh sidecar is absent
 for automatic projection; another corrupt/unsafe projection emits a structured
 warning and continues the turn, while explicit SessionHistory reads fail closed.
+Neither history tool resumes provider state or replays/reruns retained work.
 Lazy writer acquisition keeps one at-most-10-second restart-handoff attempt.
 After failure, writes from every already-created turn reuse that rejection and
 new turns fail immediately during an initial 30-second backoff. Each failed
@@ -620,7 +639,8 @@ title remains the fallback.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for intentionally captured durable facts, `RunHistory` for exact
-prior-run evidence, and `SessionHistory` for retained managed-tool calls and
+settled prior-run evidence (including cancelled/interrupted work), and
+`SessionHistory` for retained managed-tool calls and
 results. Answered or expired blocking `AskUser` exchanges
 are written into the assistant history copy before the final response;
 cancelled asks are not journaled. The copy is explicitly labelled as untrusted

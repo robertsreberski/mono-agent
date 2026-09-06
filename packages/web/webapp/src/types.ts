@@ -151,6 +151,19 @@ export interface ModelOption {
   readonly provider?: string;
 }
 
+export type RunSettingSource = "config" | "override";
+
+export interface AgentRunSettings {
+  readonly config: { readonly model?: string; readonly effort?: string };
+  readonly override: { readonly model?: string; readonly effort?: string } | null;
+  readonly effective: {
+    readonly model?: string;
+    readonly modelSource: RunSettingSource;
+    readonly effort?: string;
+    readonly effortSource: RunSettingSource;
+  };
+}
+
 export interface AskOption {
   readonly id: string;
   readonly label: string;
@@ -213,6 +226,7 @@ export interface AgentSummary {
   readonly defaultEffort?: string;
   readonly efforts?: readonly string[];
   readonly modelOptions?: Readonly<Record<string, ModelOption>>;
+  readonly runSettings: AgentRunSettings;
   /**
    * Providers this agent supports, mirrored from `WebAgentSummary`. This is the
    * set the selector groups and filters by; `modelOptions` stays the configured
@@ -315,6 +329,11 @@ export interface ToolCallArtifact {
   readonly history?: unknown;
   readonly structuredResult?: unknown;
   readonly executionMs?: number;
+  /** See {@link ToolCall.resultTruncated}; carried through assistant-ui's one metadata slot. */
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
 }
 
 /** One tool call, whether the agent made it or one of its subagents did. */
@@ -337,6 +356,16 @@ export interface ToolCall {
    */
   readonly executionMs?: number;
   readonly history?: SessionToolHistoryMetadata;
+  /**
+   * Set when the server sent only the head of `result`. The whole body is one
+   * request away at `api.toolCallPart`; a row that shows a preview says so and
+   * offers to fetch the rest.
+   */
+  readonly resultTruncated?: boolean;
+  /** Character length of the untruncated `result` text, when it was truncated. */
+  readonly resultBytes?: number;
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
 }
 
 export type MessagePart =
@@ -355,6 +384,11 @@ export type MessagePart =
       /** What this delegation cost, when the runtime priced its model. */
       readonly costUsd?: number;
       readonly history?: SessionToolHistoryMetadata;
+      /** See {@link ToolCall.resultTruncated}. */
+      readonly resultTruncated?: boolean;
+      readonly resultBytes?: number;
+      readonly argsTruncated?: boolean;
+      readonly argsBytes?: number;
       readonly status: ToolCallStatus;
       readonly calls: readonly ToolCall[];
     }
@@ -370,7 +404,17 @@ export type MessagePart =
         readonly deliveryKeys: readonly string[];
       }[];
     }
-  | { readonly type: "telemetry"; readonly event: string; readonly data?: unknown }
+  /**
+   * `data` is present only for the telemetry the console renders or sums; every
+   * other diagnostic keeps its identity (and its position) and drops the
+   * payload, with `kind` naming a stripped `runtime_telemetry`'s variant.
+   */
+  | {
+      readonly type: "telemetry";
+      readonly event: string;
+      readonly kind?: string;
+      readonly data?: unknown;
+    }
   | { readonly type: "error"; readonly code?: string; readonly message: string }
   | {
       readonly type: "attachment";
@@ -458,6 +502,12 @@ export interface WebMessage {
   readonly finishedAt?: string;
   readonly status: "running" | "complete" | "failed" | "cancelled" | "interrupted";
   readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  /**
+   * How many times the server has persisted this message's parts. It is what a
+   * content delta applies against; absent on a message this console minted
+   * itself, and on one read back from a server that predates the count.
+   */
+  readonly seq?: number;
 }
 
 export interface WebQuote {
@@ -595,8 +645,14 @@ export interface Bootstrap {
   readonly version: typeof API_VERSION;
   readonly console: ConsoleIdentity;
   readonly push: PushBootstrap;
+  /** Every discovered agent: the rail shows all of them at once. */
   readonly agents: readonly AgentSummary[];
+  /** One page of ONE (agent, archived) bucket -- the one `threadsSourceId` names. */
   readonly threads: readonly ThreadSummary[];
+  /** The bucket `threads` came from, or `null` when there is no agent to open on. */
+  readonly threadsSourceId: string | null;
+  /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
+  readonly threadsNextCursor: string | null;
   readonly currentThreadId?: string;
   readonly limits: UploadLimits;
 }
@@ -611,6 +667,7 @@ export interface WebEvent {
     | "threads.changed"
     | "thread.changed"
     | "message.changed"
+    | "message.delta"
     | "turn.changed"
     | "attachment.changed"
     | "push.pending";

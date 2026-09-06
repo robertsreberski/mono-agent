@@ -25,6 +25,11 @@ function agent(sourceId = "agent-one"): WebAgentSummary {
     defaultModel: "provider/default",
     efforts: ["low", "high"],
     modelOptions: { "provider/default": { effortLevels: ["low", "high"] } },
+    runSettings: {
+      config: { model: "provider/default" },
+      override: null,
+      effective: { model: "provider/default", modelSource: "config", effortSource: "config" },
+    },
     updatedAt: "2026-08-14T10:00:00.000Z",
   };
 }
@@ -201,6 +206,49 @@ describe("WebStore first-class cron channels", () => {
     store.close();
   });
 
+  it("gives each cron and notification reconciliation write its own message version", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const threadId = syncCronJob(store).jobs[0]!.threadId;
+    const runId = "cron:daily%3Abrief:2026-08-14T10:00:00.000Z";
+
+    // The insert starts the count, which is exactly what a console that has
+    // never seen a delta for this message holds.
+    const [inserted] = store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "running", text: "Early narration" }),
+    ]);
+    expect(inserted?.seq).toBe(0);
+
+    const [updated] = store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "succeeded", text: "Final narration" }),
+    ]);
+    expect(updated?.seq).toBe(1);
+
+    // A reconciliation that changes nothing writes nothing, so the version a
+    // console holds stays valid.
+    const [unchanged] = store.reconcileCronRuns("agent-one", "daily:brief", [
+      cronRun({ runId, sequence: 1, status: "succeeded", text: "Final narration" }),
+    ]);
+    expect(unchanged?.seq).toBe(1);
+
+    // The delivery folds its text into the same run message.
+    const reservation = store.reserveNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: `${runId}:success`,
+      jobId: "daily:brief",
+      runId,
+      text: "The digest is ready",
+    });
+    store.completeNotification(reservation);
+    const message = store.getThreadDetail(threadId)?.messages.at(-1);
+    expect(message).toMatchObject({ seq: 2 });
+    expect(message?.parts).toContainEqual({ type: "text", text: "The digest is ready" });
+    store.close();
+  });
+
   it("marks an omitted job snapshot removed while retaining its offline channel and run history", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -261,7 +309,8 @@ describe("WebStore first-class cron channels", () => {
       expect(reservation.threadId).toBe(threadId);
       expect(store.completeNotification(reservation)).toMatchObject({ thread: { id: threadId }, duplicate: false });
     }
-    expect(store.listThreads().filter((thread) => thread.trigger?.kind === "cron")).toHaveLength(1);
+    expect(store.listThreadsPage({ sourceId: "agent-one", archived: false }).threads
+      .filter((thread) => thread.trigger?.kind === "cron")).toHaveLength(1);
 
     store.patchThread(threadId, { archived: true });
     await expect(store.deleteArchivedThread(threadId)).rejects.toMatchObject({ code: "cron_channel_configured" });
@@ -847,7 +896,7 @@ describe("WebStore first-class cron channels", () => {
     reopened.close();
   });
 
-  it("keeps bootstrap and keyset pages bounded per source and archive bucket", async () => {
+  it("keeps keyset pages bounded per source and archive bucket", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     let clockMs = Date.parse("2026-08-14T00:00:00.000Z");
@@ -866,10 +915,11 @@ describe("WebStore first-class cron channels", () => {
       advance();
       store.patchThread(thread.id, { archived: true });
     }
-    const bootstrap = store.listThreads();
-    expect(bootstrap.filter((thread) => thread.sourceId === "alpha" && thread.archivedAt === null)).toHaveLength(200);
-    expect(bootstrap.filter((thread) => thread.sourceId === "alpha" && thread.archivedAt !== null)).toHaveLength(200);
-    expect(bootstrap.find((thread) => thread.id === beta.id)).toBeDefined();
+    // 205 rows in each bucket, and no page can reach past the cap.
+    expect(store.listThreadsPage({ sourceId: "alpha", archived: false, limit: 200 }).threads).toHaveLength(200);
+    expect(store.listThreadsPage({ sourceId: "alpha", archived: true, limit: 200 }).threads).toHaveLength(200);
+    expect(() => store.listThreadsPage({ sourceId: "alpha", archived: false, limit: 201 }))
+      .toThrowError(expect.objectContaining({ code: "invalid_page" }));
 
     const first = store.listThreadsPage({ sourceId: "alpha", archived: false, limit: 2 });
     advance();

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { clusterSummary, failedLabel, toolVerb } from "./ActivityRow";
+import { describe, expect, it, vi } from "vitest";
+import { clusterSummary, failedLabel, toolVerb, truncatedLabel, truncationProps } from "./ActivityRow";
 
 describe("toolVerb", () => {
   it("names known tools from the table rather than guessing at them", () => {
@@ -69,5 +69,44 @@ describe("failedLabel", () => {
     expect(failedLabel(0, false)).toBeUndefined();
     expect(failedLabel(3, true)).toBe("3 failed");
     expect(failedLabel(1, false)).toBe("failed");
+  });
+});
+
+describe("truncatedLabel", () => {
+  it("counts in the unit the server actually measured, not in guessed bytes", () => {
+    // `resultBytes`/`argsBytes` are characters of serialized text. Calling
+    // 20,480 of them "20 KB" is an encoding guess, and a wrong one off ASCII.
+    expect(truncatedLabel(420)).toBe("420 chars");
+    expect(truncatedLabel(6_144)).toBe("6,144 chars");
+    expect(truncatedLabel(20 * 1_024)).toBe("20,480 chars");
+  });
+});
+
+describe("truncationProps", () => {
+  it("says nothing at all about a call whose payloads arrived whole", () => {
+    expect(truncationProps(undefined, "t", async () => true)).toEqual({});
+    expect(truncationProps({ resultBytes: 10 }, "t", async () => true)).toEqual({});
+  });
+
+  it("carries both flags and a loader bound to the call", async () => {
+    const repair = vi.fn(async () => true);
+    const props = truncationProps(
+      { resultTruncated: true, resultBytes: 20_480, argsTruncated: true, argsBytes: 5_000 },
+      "tool-big",
+      repair,
+    );
+    expect(props).toMatchObject({
+      resultTruncated: true,
+      resultBytes: 20_480,
+      argsTruncated: true,
+      argsBytes: 5_000,
+    });
+    await props.onLoadFull?.();
+    expect(repair).toHaveBeenCalledWith("tool-big");
+  });
+
+  it("offers no load where nothing can perform one", () => {
+    const props = truncationProps({ resultTruncated: true, resultBytes: 20_480 }, "tool-big", undefined);
+    expect(props).toEqual({ resultTruncated: true, resultBytes: 20_480 });
   });
 });

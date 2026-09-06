@@ -21,7 +21,9 @@ async function setup() {
   let now = new Date("2026-09-05T10:00:00Z");
   const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => now });
   store.replaceAgents([{ sourceId: "agent-one", label: "Agent", status: "online", health: "running",
-    supportsAttachments: true, models: [], efforts: [], modelOptions: {}, updatedAt: now.toISOString() }]);
+    supportsAttachments: true, models: [], efforts: [], modelOptions: {},
+    runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
+    updatedAt: now.toISOString() }]);
   store.registerWebPushSubscription({ endpoint: "https://push.example.test/opaque", p256dh: Buffer.concat([Buffer.from([4]), Buffer.alloc(64)]).toString("base64url"),
     auth: Buffer.alloc(16, 7).toString("base64url"), siteOrigin: "https://console.example.test", keyFingerprint: "test" });
   const thread = store.createThread("agent-one");
@@ -212,6 +214,23 @@ describe("Monitor terminal reply persistence", () => {
       expect((raw.prepare("SELECT parts_json FROM messages WHERE id = ?").get(s.turn.assistantMessageId) as { parts_json: string }).parts_json).toBe(original);
       raw.close();
     } finally { reopened?.close(); s.store.close(); }
+  });
+
+  it("counts the Monitor activity settlement as its own message version", async () => {
+    const s = await setup();
+    try {
+      s.reserve();
+      s.store.applyStreamFrames(s.turn.turnId, [text("Inspecting the worker.")]);
+      const before = s.store.getMessage(s.turn.assistantMessageId)?.seq;
+      expect(before).toBe(1);
+
+      // Settlement writes the activity row onto the same message, so a console
+      // holding version 1 must be told the message moved.
+      s.settle();
+
+      expect(s.store.getMessage(s.turn.assistantMessageId)?.seq).toBe(2);
+      expect(s.parts().some((part) => part.type === "monitor-activity")).toBe(true);
+    } finally { s.store.close(); }
   });
 
   it("isolates provider boundaries, preserves rich output, and uses anchored classification", () => {

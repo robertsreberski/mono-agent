@@ -30,15 +30,24 @@ import {
   type CreateWebUploadInput,
   type PatchWebAgentInput,
   type PatchWebThreadInput,
+  type PutWebAgentRunSettingsInput,
   type StartWebLiveInputInput,
   type StartWebTurnInput,
   type WebEvent,
   type WebConsoleIdentity,
+  type WebMessageChangedPayload,
+  type WebMessageDelta,
   type WebMessagePart,
   type WebTheme,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
-import { WEB_THREAD_SEARCH_MAX } from "./store.js";
+import {
+  WEB_MESSAGE_PAGE_DEFAULT,
+  WEB_MESSAGE_PAGE_MAX,
+  WEB_THREAD_PAGE_DEFAULT,
+  WEB_THREAD_PAGE_MAX,
+  WEB_THREAD_SEARCH_MAX,
+} from "./store.js";
 import {
   MCP_APP_PROXY_CONTENT_SECURITY_POLICY,
   MCP_APP_PROXY_DOCUMENT,
@@ -48,12 +57,34 @@ import {
   startWebNotificationIngress,
   type WebNotificationIngressHandle,
 } from "./notification-ingress.js";
-import { WebService, type CreateWebServiceOptions } from "./service.js";
+import { WebService, type CreateWebServiceOptions, type WebTranscriptShape } from "./service.js";
 
 export const DEFAULT_WEB_HOST = "0.0.0.0";
 export const DEFAULT_WEB_PORT = 5050;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_SSE_CLIENTS = 64;
+/**
+ * How often one connection may be told that one conversation's message moved,
+ * when it is not subscribed to that conversation's content.
+ *
+ * A hint costs its reader a re-read, and a streaming turn produces one write
+ * every 50 ms. A console that is not looking at the conversation has no reason
+ * to follow it at that rate -- it needs the sidebar row to be right, which the
+ * conversation events already carry.
+ */
+const DELTA_HINT_INTERVAL_MS = 1_000;
+/** Bound on `?thread=`, matching the other bounded query strings. */
+const MAX_SUBSCRIPTION_LENGTH = 512;
+/**
+ * How many conversations one connection remembers having hinted about.
+ *
+ * A hard bound, evicting the least recently hinted: a burst wider than this
+ * inside one second would otherwise grow the map faster than the window can
+ * retire it. Evicting an entry that is still inside its window costs one extra
+ * hint for that conversation; an unbounded map on a server that runs for weeks
+ * costs the server.
+ */
+const MAX_THROTTLED_CONVERSATIONS = 256;
 const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
 /**
  * Content-addressed build output and write-once upload bytes never change under
@@ -140,10 +171,25 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     });
   });
 
-  app.get("/api/v1/bootstrap", (_req, res, next) => {
-    void service.bootstrap()
-      .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
-      .catch(next);
+  app.get("/api/v1/bootstrap", (req, res, next) => {
+    try {
+      // One bucket, not every agent's conversations. An unknown or absent
+      // `sourceId` falls back inside the service rather than failing: the
+      // first request a fresh console makes has no selection to name yet.
+      // An empty `sourceId` is a console that has not resolved an agent yet,
+      // which is the same thing as omitting it -- not a malformed request.
+      const requested = req.query.sourceId === "" ? undefined : req.query.sourceId;
+      const sourceId = optionalQueryString(requested, 512);
+      void service.bootstrap({
+        ...(sourceId === undefined ? {} : { sourceId }),
+        archived: optionalArchivedQuery(req.query.archived) ?? false,
+        limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
+      })
+        .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
+        .catch(next);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get(MCP_APP_PROXY_PATH, (_req, res) => {
@@ -162,6 +208,23 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       const input = parsePatchAgent(req.body);
       res.status(200).json({ agent: service.patchAgent(pathParam(req.params.id), input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/v1/agents/:id/run-defaults", (req, res, next) => {
+    try {
+      const input = parsePutAgentRunSettings(req.body);
+      res.status(200).json({ agent: service.setAgentRunDefaults(pathParam(req.params.id), input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/agents/:id/run-defaults", (req, res, next) => {
+    try {
+      res.status(200).json({ agent: service.clearAgentRunDefaults(pathParam(req.params.id)) });
     } catch (error) {
       next(error);
     }
@@ -280,7 +343,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.post("/api/v1/threads", (req, res, next) => {
     try {
       const input = parseCreateThread(req.body);
-      res.status(201).json({ thread: service.createThread(input.sourceId) });
+      res.status(201).json({ thread: service.createThread(input.sourceId, {
+        ...(input.model === undefined ? {} : { model: input.model }),
+        ...(input.effort === undefined ? {} : { effort: input.effort }),
+      }) });
     } catch (error) {
       next(error);
     }
@@ -289,16 +355,17 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.get("/api/v1/threads", (req, res, next) => {
     try {
       const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
-      const archived = req.query.archived === "true"
-        ? true
-        : req.query.archived === "false"
-          ? false
-          : (() => { throw new WebConsoleError("invalid_page", "archived must be true or false.", 400); })();
+      const archived = optionalArchivedQuery(req.query.archived);
+      if (archived === undefined) {
+        throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+      }
       const before = optionalQueryString(req.query.before, 4_096);
       res.status(200).json(service.threadsPage({
         sourceId,
         archived,
-        limit: boundedQueryLimit(req.query.limit, 200, 200),
+        // A sidebar shows a handful of rows and pages from there. This used to
+        // answer with the whole per-bucket cap by default.
+        limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
       }));
     } catch (error) {
@@ -321,9 +388,43 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  // Registered above `/threads/:id` so the conversation reads and the read that
+  // repairs one of their truncated tool calls stay together.
+  app.get("/api/v1/threads/:threadId/messages/:messageId/tool-calls/:toolCallId", (req, res, next) => {
+    try {
+      res.status(200).json({
+        part: service.toolCallPart(
+          pathParam(req.params.threadId),
+          pathParam(req.params.messageId),
+          pathParam(req.params.toolCallId),
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Registered above `/threads/:id` and above the message page for the same
+  // reason the tool-call read is: this is how a console whose delta stream
+  // skipped a version repairs ONE message instead of re-reading the whole
+  // conversation around it.
+  app.get("/api/v1/threads/:threadId/messages/:messageId", (req, res, next) => {
+    try {
+      res.status(200).json({
+        message: service.message(
+          pathParam(req.params.threadId),
+          pathParam(req.params.messageId),
+          fullTranscriptQuery(req.query.full),
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/threads/:id", (req, res, next) => {
     try {
-      res.status(200).json(service.thread(pathParam(req.params.id)));
+      res.status(200).json(service.thread(pathParam(req.params.id), fullTranscriptQuery(req.query.full)));
     } catch (error) {
       next(error);
     }
@@ -333,8 +434,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       const before = optionalQueryString(req.query.before, 4_096);
       res.status(200).json(service.messagePage(pathParam(req.params.id), {
-        limit: boundedQueryLimit(req.query.limit, 100, 100),
+        // A screenful, not the ceiling: the console renders the tail and pages
+        // backwards from the cursor.
+        limit: boundedQueryLimit(req.query.limit, WEB_MESSAGE_PAGE_MAX, WEB_MESSAGE_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
+        ...fullTranscriptQuery(req.query.full),
       }));
     } catch (error) {
       next(error);
@@ -625,7 +729,19 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void trackOperation(handleDownloadContent(pathParam(req.params.id), res, service), activeOperations).catch(next);
   });
 
-  app.get("/api/v1/events", (_req, res) => {
+  /**
+   * The console's live channel. {@link createWebEventDispatch} decides what each
+   * connection is served; this owns the socket, the capacity cap and the
+   * heartbeat.
+   */
+  app.get("/api/v1/events", (req, res, next) => {
+    let subscribed: string | undefined;
+    try {
+      subscribed = optionalThreadSubscription(req.query.thread);
+    } catch (error) {
+      next(error);
+      return;
+    }
     if (activeStreams.size >= MAX_SSE_CLIENTS) {
       res.status(503).json({ error: { code: "sse_capacity", message: "Too many event streams are connected." } });
       return;
@@ -646,17 +762,21 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       activeStreams.delete(closeStream);
       res.end();
     };
-    const send = (event: WebEvent): boolean => {
-      if (closed || res.writableEnded) return false;
-      const writable = res.write(formatSse(event));
-      if (!writable) {
+    const send = createWebEventDispatch({
+      ...(subscribed === undefined ? {} : { subscribed }),
+      write: (event) => {
+        if (closed || res.writableEnded) return false;
+        if (res.write(formatSse(event))) return true;
         // Events are state-invalidation hints, not an unbounded replay log. A
         // client that cannot drain one frame must reconnect and bootstrap.
         closeStream();
         return false;
-      }
-      return true;
-    };
+      },
+      close: closeStream,
+      onFailure: (error) => {
+        logger?.error?.("Web console event stream failed.", { error: errorMessage(error) });
+      },
+    });
     const unsubscribe = service.subscribe(send);
     const heartbeat = setInterval(() => {
       if (!res.write(`: heartbeat ${Date.now()}\n\n`)) closeStream();
@@ -1084,7 +1204,31 @@ function securityHeaders(_req: Request, res: Response, next: NextFunction): void
 
 function parseCreateThread(value: unknown): CreateWebThreadInput {
   const body = requireRecord(value);
-  return { sourceId: requireString(body.sourceId, "sourceId", 256) };
+  const model = optionalNullableString(body.model, "model", 120);
+  const effort = optionalNullableString(body.effort, "effort", 120);
+  return {
+    sourceId: requireString(body.sourceId, "sourceId", 256),
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
+  };
+}
+
+function parsePutAgentRunSettings(value: unknown): PutWebAgentRunSettingsInput {
+  const body = requireRecord(value);
+  if (!("model" in body) || !("effort" in body)) {
+    throw invalidBody("model and effort are required and must be strings or null.");
+  }
+  const unknown = Object.keys(body).filter((key) => key !== "model" && key !== "effort");
+  if (unknown.length > 0) throw invalidBody(`Unknown run-defaults field: ${unknown[0]}.`);
+  const model = optionalNullableString(body.model, "model", 120);
+  const effort = optionalNullableString(body.effort, "effort", 120);
+  if (model === undefined || effort === undefined) {
+    throw invalidBody("model and effort are required and must be strings or null.");
+  }
+  if (model === null && effort === null) {
+    throw invalidBody("Choose a model or effort override, or use Revert to config.");
+  }
+  return { model, effort };
 }
 
 function parsePatchAgent(value: unknown): PatchWebAgentInput {
@@ -1247,6 +1391,123 @@ function requireRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/**
+ * One connection's view of the event stream: which frames it is served, and in
+ * what form.
+ *
+ * A console names the conversation it is looking at with `?thread=`. It is
+ * served EVERYTHING about that conversation unthrottled -- `message.delta`
+ * frames carrying what each write changed, and the `message.changed` hints the
+ * delta path emits when it declines (a delta bigger than the message, a
+ * reconciliation that describes nothing), because both are things it must act
+ * on. Anything about any OTHER conversation is reduced to a
+ * `message.changed { messageId, updatedAt }` and rate-limited to one per
+ * conversation per {@link DELTA_HINT_INTERVAL_MS}, dropped rather than queued:
+ * a console is not rendering it.
+ *
+ * A console that named NO conversation is not telling this stream which
+ * conversation it is looking at, so it keeps every reconciliation hint and is
+ * rate-limited only on what the delta path produces -- downgraded deltas and
+ * the declines above -- which is the write-rate traffic the limit exists for. A
+ * turn's `thread.changed` still follows every finish unthrottled, so a dropped
+ * frame never leaves a settled conversation stale.
+ *
+ * Every other event type passes through untouched. `Last-Event-ID` is ignored
+ * and nothing is replayed: this is state invalidation, not a log. A
+ * reconnecting console bootstraps, and `ready` means resync the conversation it
+ * has open.
+ *
+ * Lives outside the route because neither of the two things that matter is
+ * observable through an HTTP fixture: the rate limit is a clock decision, and a
+ * frame this connection cannot serialize or write must CLOSE it rather than
+ * leave a socket that reads live and receives nothing.
+ */
+export function createWebEventDispatch(options: {
+  /** The conversation this connection named, if it named one. */
+  readonly subscribed?: string;
+  readonly write: (event: WebEvent) => boolean;
+  readonly close: () => void;
+  readonly onFailure?: (error: unknown) => void;
+  readonly now?: () => number;
+}): (event: WebEvent) => boolean {
+  const { subscribed, write, close, onFailure } = options;
+  const now = options.now ?? ((): number => Date.now());
+  // Per connection, and cleared with it: what one console has already been told
+  // about is no reason to keep another quiet.
+  const hintedAt = new Map<string, number>();
+
+  const hint = (event: WebEvent, payload: WebMessageChangedPayload): boolean => write({
+    ...event,
+    type: "message.changed",
+    // `deltaDeclined` is this layer's own signal and stops here.
+    payload: { messageId: payload.messageId, updatedAt: payload.updatedAt },
+  });
+
+  const rateLimited = (event: WebEvent, payload: WebMessageChangedPayload): boolean => {
+    const key = event.threadId ?? "";
+    const at = now();
+    const last = hintedAt.get(key);
+    // Dropped, not queued: a hint says only that the message moved, so the one
+    // that was suppressed is answered by the one that follows it.
+    if (last !== undefined && at - last < DELTA_HINT_INTERVAL_MS) return true;
+    // Delete before set, so insertion order IS recency order and the eviction
+    // below drops the conversation this connection heard about longest ago.
+    hintedAt.delete(key);
+    hintedAt.set(key, at);
+    while (hintedAt.size > MAX_THROTTLED_CONVERSATIONS) {
+      const oldest = hintedAt.keys().next();
+      if (oldest.done === true) break;
+      hintedAt.delete(oldest.value);
+    }
+    return hint(event, payload);
+  };
+
+  return (event: WebEvent): boolean => {
+    try {
+      if (event.type !== "message.delta" && event.type !== "message.changed") return write(event);
+      const own = event.threadId !== undefined && event.threadId === subscribed;
+      if (event.type === "message.delta") {
+        const delta = requireMessageDelta(event.payload);
+        return own ? write(event) : rateLimited(event, delta);
+      }
+      const payload = requireMessageChanged(event.payload);
+      if (own) return hint(event, payload);
+      if (subscribed === undefined && payload.deltaDeclined !== true) return hint(event, payload);
+      return rateLimited(event, payload);
+    } catch (error) {
+      // A frame this connection cannot make sense of is a server bug, and the
+      // honest answer is to end the stream so the console reconnects and
+      // bootstraps -- never to drop the frame and keep a live-looking socket.
+      onFailure?.(error);
+      close();
+      return false;
+    }
+  };
+}
+
+function requireMessageDelta(payload: unknown): WebMessageDelta {
+  const delta = payload as Partial<WebMessageDelta> | null | undefined;
+  if (delta === null || delta === undefined || typeof delta !== "object"
+    || typeof delta.messageId !== "string"
+    || typeof delta.updatedAt !== "string"
+    || typeof delta.baseSeq !== "number"
+    || typeof delta.seq !== "number"
+    || !Array.isArray(delta.ops)) {
+    throw new TypeError("A message.delta event carried no delta.");
+  }
+  return delta as WebMessageDelta;
+}
+
+function requireMessageChanged(payload: unknown): WebMessageChangedPayload {
+  const changed = payload as Partial<WebMessageChangedPayload> | null | undefined;
+  if (changed === null || changed === undefined || typeof changed !== "object"
+    || typeof changed.messageId !== "string"
+    || typeof changed.updatedAt !== "string") {
+    throw new TypeError("A message.changed event named no message.");
+  }
+  return changed as WebMessageChangedPayload;
+}
+
 function requiredQueryString(value: unknown, field: string, max: number): string {
   if (typeof value !== "string" || value.trim().length === 0 || value.length > max) {
     throw new WebConsoleError("invalid_page", `${field} is required.`, 400);
@@ -1271,12 +1532,55 @@ function optionalSearchQuery(value: unknown, max: number): string {
   return value;
 }
 
+/**
+ * The conversation a console subscribes its event stream to.
+ *
+ * Its own code, not the pagination one: an invalid `?thread=` is a bad
+ * subscription, and answering it with "Pagination cursor is invalid." sent a
+ * console looking for a cursor it never sent.
+ */
+function optionalThreadSubscription(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  // Blank is refused rather than read as "no subscription": `?thread=` and
+  // `?thread=%20` are a console asking for a conversation and getting one it
+  // never named, which would look like the delta stream had simply stopped.
+  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_SUBSCRIPTION_LENGTH) {
+    throw new WebConsoleError(
+      "invalid_subscription",
+      `thread must name one conversation, in at most ${String(MAX_SUBSCRIPTION_LENGTH)} characters.`,
+      400,
+    );
+  }
+  return value;
+}
+
 function optionalQueryString(value: unknown, max: number): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.length === 0 || value.length > max) {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return value;
+}
+
+/** `true`/`false`, or `undefined` for a query that said neither. */
+function optionalArchivedQuery(value: unknown): boolean | undefined {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  if (value === undefined) return undefined;
+  throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+}
+
+/**
+ * `?full=1` (or `full=true`) turns the transcript diet off for one read: no
+ * truncated tool payloads, no stripped telemetry. Anything else, including an
+ * absent parameter, keeps the shaped transcript.
+ *
+ * It changes the SHAPE of the messages a read answers with, never how many: a
+ * full conversation read still answers with one page and the rest still comes
+ * from `messagesNextCursor` (or an explicit `limit`).
+ */
+function fullTranscriptQuery(value: unknown): WebTranscriptShape {
+  return value === "1" || value === "true" ? { full: true } : {};
 }
 
 function boundedQueryLimit(value: unknown, maximum: number, fallback: number): number {

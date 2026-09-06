@@ -12,6 +12,8 @@ import {
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
+import type { WebEvent, WebMessageDelta, WebMessagePart } from "../contracts.js";
+import { applyDeltaOps, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -131,6 +133,481 @@ describe("agentGeneration", () => {
 });
 
 describe("WebService", () => {
+  it("saves strict web defaults, snapshots new threads, and reverts without changing existing threads", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ onTurn: (body) => turnBodies.push(body) }) });
+    const events: string[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+
+    expect((await service.bootstrap()).agents[0]?.runSettings).toMatchObject({
+      config: { model: "provider/default", effort: "medium" },
+      override: null,
+      effective: { modelSource: "config", effortSource: "config" },
+    });
+    const saved = service.setAgentRunDefaults("agent-one", { model: "provider/fallback", effort: "high" });
+    expect(saved.runSettings.override).toEqual({ model: "provider/fallback", effort: "high" });
+    expect(events).toContain("agents.changed");
+
+    const inherited = service.createThread("agent-one");
+    expect(inherited).toMatchObject({ runModel: "provider/fallback", runEffort: "high" });
+    await service.startTurn(inherited.id, { text: "use the web default" });
+    await waitFor(() => service.store.getThread(inherited.id)?.runState.status === "complete");
+    expect(turnBodies[0]).toMatchObject({
+      client: "web",
+      metadata: { web: { model: "provider/fallback", effort: "high" } },
+    });
+
+    const explicit = service.createThread("agent-one", { model: null, effort: "low" });
+    expect(explicit).toMatchObject({ runModel: null, runEffort: "low" });
+    const reverted = service.clearAgentRunDefaults("agent-one");
+    expect(reverted.runSettings).toMatchObject({ override: null, effective: { modelSource: "config", effortSource: "config" } });
+    expect(service.createThread("agent-one")).toMatchObject({ runModel: null, runEffort: null });
+    expect(service.store.getThread(inherited.id)).toMatchObject({ runModel: "provider/fallback", runEffort: "high" });
+
+    expect(() => service.setAgentRunDefaults("agent-one", { model: "anthropic:never-advertised", effort: null }))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    expect(() => service.setAgentRunDefaults("agent-one", { model: "provider/default", effort: "ultra" }))
+      .toThrowError(expect.objectContaining({ code: "invalid_effort" }));
+    expect(() => service.setAgentRunDefaults("agent-one", { model: null, effort: null }))
+      .toThrowError(expect.objectContaining({ code: "invalid_request" }));
+
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("pages within the exact provider to restore a persisted catalog default after restart", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const catalogModel = {
+      id: "catalog:model",
+      name: "Catalog Model",
+      provider: "provider",
+      providerLabel: "Provider",
+      reasoning: true,
+      effortLevels: ["low", "high"],
+    };
+    const fuzzyGlobalMatches = Array.from({ length: 100 }, (_, index) => ({
+      id: `catalog:model-${String(index).padStart(3, "0")}`,
+      name: `Fuzzy ${String(index)}`,
+      provider: "aaa",
+      providerLabel: "AAA",
+    }));
+    const earlierProviderModels = Array.from({ length: 100 }, (_, index) => ({
+      id: `earlier-${String(index).padStart(3, "0")}`,
+      name: `Earlier ${String(index)}`,
+      provider: "provider",
+      providerLabel: "Provider",
+    }));
+    const modelRequests: string[] = [];
+    type CatalogState = "seed" | "current" | "effort-drift" | "retired" | "endless" | "failure" | "timeout";
+    const create = async (state: CatalogState, generation = 1) => {
+      const fallbackFetch = operatorFetch();
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (href.endsWith("/v1/info")) {
+          return Response.json({
+            schema: 1,
+            model: "provider/default",
+            effort: "medium",
+            models: ["provider/default"],
+            modelOptions: { "provider/default": { effortLevels: ["low", "medium", "high"] } },
+            providers: [
+              { id: "aaa", label: "AAA", modelCount: 100 },
+              { id: "provider", label: "Provider", modelCount: 101, configured: true },
+            ],
+            capabilities: { attachments: true },
+          });
+        }
+        if (/\/v1\/models(?:\?|$)/u.test(href)) {
+          modelRequests.push(href);
+          const request = new URL(href);
+          if (request.searchParams.has("q")) {
+            // This is the real producer's failure shape: the exact model is
+            // later than 100 fuzzy matches and therefore absent from search.
+            return Response.json({ models: fuzzyGlobalMatches, truncated: false });
+          }
+          if (state === "failure") return new Response("catalog unavailable", { status: 503 });
+          if (state === "timeout") {
+            return new Promise<Response>((_resolvePromise, reject) => {
+              if (init?.signal?.aborted === true) reject(init.signal.reason);
+              else init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+            });
+          }
+          if (state === "seed") return Response.json({ models: [catalogModel], truncated: false });
+          if (request.searchParams.get("cursor") === null) {
+            return Response.json({
+              models: earlierProviderModels,
+              nextCursor: "provider-page-1",
+              truncated: true,
+            });
+          }
+          if (state === "retired") {
+            // A repeated cursor must terminate the bounded walk rather than
+            // refetching this stale page until the outer timeout fires.
+            return Response.json({
+              // Its flattened string equals the persisted reference, but the
+              // provider/id pair does not. Provider ids containing colons are
+              // invalid runtime providers and cannot win by string collision.
+              models: [{
+                id: "model",
+                name: "Colliding malformed provider",
+                provider: "provider:catalog",
+                providerLabel: "Malformed",
+              }],
+              nextCursor: "provider-page-1",
+              truncated: true,
+            });
+          }
+          if (state === "endless") {
+            const cursor = request.searchParams.get("cursor") ?? "page-0";
+            return Response.json({
+              models: earlierProviderModels.slice(0, 1),
+              nextCursor: `${cursor}-next`,
+              truncated: true,
+            });
+          }
+          return Response.json({
+            models: [{
+              ...catalogModel,
+              ...(state === "effort-drift" ? { effortLevels: ["low"] } : {}),
+            }],
+            truncated: false,
+          });
+        }
+        return fallbackFetch(input, init);
+      }) as typeof fetch;
+      return WebService.create({
+        stateDir,
+        discoveryIntervalMs: 0,
+        purgeIntervalMs: 0,
+        discoverImpl: async () => [fakeDiscoveredAgent(generation === 1 ? {} : {
+          source: {
+            ...fakeDiscoveredAgent().source,
+            pid: 123 + generation,
+            startedAt: `2026-07-${16 + generation}T09:00:00.000Z`,
+          },
+        })],
+        fetchImpl,
+      });
+    };
+
+    let service = await create("seed");
+    await service.agentModels("agent-one", { provider: "provider", limit: 50 });
+    service.setAgentRunDefaults("agent-one", { model: "provider:catalog:model", effort: "high" });
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog:model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    let requestStart = modelRequests.length;
+    service = await create("current");
+    let restartRequests = modelRequests.slice(requestStart).map((href) => new URL(href));
+    expect(restartRequests).toHaveLength(2);
+    expect(restartRequests.every((request) => request.searchParams.get("provider") === "provider")).toBe(true);
+    expect(restartRequests.every((request) => !request.searchParams.has("q"))).toBe(true);
+    expect(restartRequests[1]?.searchParams.get("cursor")).toBe("provider-page-1");
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog:model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    service = await create("current", 2);
+    expect(service.createThread("agent-one")).toMatchObject({
+      runModel: "provider:catalog:model",
+      runEffort: "high",
+    });
+    await service.stop();
+
+    service = await create("effort-drift", 3);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_effort" }));
+    await service.stop();
+
+    requestStart = modelRequests.length;
+    service = await create("retired", 4);
+    restartRequests = modelRequests.slice(requestStart).map((href) => new URL(href));
+    expect(restartRequests).toHaveLength(2);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+
+    requestStart = modelRequests.length;
+    service = await create("endless", 5);
+    expect(modelRequests.slice(requestStart)).toHaveLength(5);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+
+    service = await create("failure", 5);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+
+    service = await create("timeout", 6);
+    expect(() => service.createThread("agent-one"))
+      .toThrowError(expect.objectContaining({ code: "invalid_model" }));
+    await service.stop();
+  });
+
+  it("restores a bare persisted model by bounded exact provider traversal when global search is full", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const fuzzy = Array.from({ length: 100 }, (_, index) => ({
+      id: `bare-model-${String(index).padStart(3, "0")}`,
+      name: `Bare fuzzy ${String(index)}`,
+      provider: "aaa",
+      providerLabel: "AAA",
+    }));
+    let seed = true;
+    const requests: URL[] = [];
+    const create = async () => {
+      const fallbackFetch = operatorFetch();
+      const fetchImpl = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (href.endsWith("/v1/info")) {
+          return Response.json({
+            schema: 1,
+            model: "provider/default",
+            models: ["provider/default"],
+            providers: [
+              { id: "aaa", label: "AAA", modelCount: 100 },
+              { id: "target", label: "Target", modelCount: 101, configured: true },
+            ],
+            capabilities: { attachments: true },
+          });
+        }
+        if (/\/v1\/models(?:\?|$)/u.test(href)) {
+          const request = new URL(href);
+          requests.push(request);
+          if (seed) {
+            return Response.json({
+              models: [{ id: "bare-model", name: "Bare Model", provider: "target", providerLabel: "Target" }],
+              truncated: false,
+            });
+          }
+          if (request.searchParams.has("q")) return Response.json({ models: fuzzy, truncated: false });
+          if (request.searchParams.get("provider") === "aaa") return Response.json({ models: fuzzy, truncated: false });
+          if (request.searchParams.get("cursor") === null) {
+            return Response.json({ models: fuzzy, nextCursor: "target-page-1", truncated: true });
+          }
+          return Response.json({
+            models: [{ id: "bare-model", name: "Bare Model", provider: "target", providerLabel: "Target" }],
+            truncated: false,
+          });
+        }
+        return fallbackFetch(input, init);
+      }) as typeof fetch;
+      return WebService.create({
+        stateDir,
+        discoveryIntervalMs: 0,
+        purgeIntervalMs: 0,
+        discoverImpl: async () => [fakeDiscoveredAgent()],
+        fetchImpl,
+      });
+    };
+
+    let service = await create();
+    await service.agentModels("agent-one", { provider: "target", limit: 100 });
+    service.setAgentRunDefaults("agent-one", { model: "bare-model", effort: null });
+    await service.stop();
+
+    seed = false;
+    const requestStart = requests.length;
+    service = await create();
+    const restartRequests = requests.slice(requestStart);
+    expect(restartRequests.map((request) => request.searchParams.get("provider")))
+      .toEqual([null, "aaa", "target", "target"]);
+    expect(restartRequests[0]?.searchParams.get("q")).toBe("bare-model");
+    expect(restartRequests.at(-1)?.searchParams.get("cursor")).toBe("target-page-1");
+    expect(service.createThread("agent-one")).toMatchObject({ runModel: "bare-model", runEffort: null });
+    await service.stop();
+  });
+
+  /**
+   * Every listing event a write emitted, reduced to the conversation its
+   * PAYLOAD names -- `undefined` for one that names none, which is the whole
+   * cost this normalisation removes: a console holding a row it cannot update
+   * has to spend a page of its bucket to find out what changed.
+   */
+  const listingTargets = (events: readonly WebEvent[]): readonly (string | undefined)[] =>
+    events
+      .filter((event) => event.type === "thread.changed" || event.type === "threads.changed")
+      .map((event) => {
+        const payload = event.payload as {
+          readonly thread?: { readonly id: string; readonly revision: number };
+          readonly threadId?: string;
+          readonly removed?: boolean;
+        } | undefined;
+        if (payload?.thread !== undefined) return payload.thread.id;
+        if (payload?.removed === true) return payload.threadId;
+        return undefined;
+      });
+
+  it("scopes the bootstrap listing to one bucket and falls back deterministically", async () => {
+    const online = fakeDiscoveredAgent();
+    const other = fakeDiscoveredAgent({
+      source: { ...online.source, sourceId: "agent-two", label: "Agent Two" },
+    });
+    // No endpoint at all, and sorted ahead of both: "the first agent" and "the
+    // first agent that can answer" are different agents here.
+    const dark = { source: { ...online.source, sourceId: "agent-alpha", label: "Agent Alpha" } };
+    // Two conversations created back to back shared a millisecond, and the
+    // listing tie-breaks on a random UUID, so "newest first" was a coin flip
+    // about one run in three. A monotonic clock makes the order this asserts a
+    // property of the store rather than of the scheduler.
+    let tick = Date.parse("2026-08-14T09:00:00.000Z");
+    const service = await createService({
+      discoverImpl: async () => [dark, online, other],
+      clock: () => new Date((tick += 1)),
+    });
+    expect((await service.bootstrap({})).agents.map((agent) => agent.sourceId))
+      .toEqual(["agent-alpha", "agent-one", "agent-two"]);
+    await expect(service.bootstrap({})).resolves.toMatchObject({
+      threadsSourceId: "agent-one",
+      threads: [],
+      threadsNextCursor: null,
+    });
+
+    const older = service.createThread("agent-one");
+    const newer = service.createThread("agent-one");
+    const elsewhere = service.createThread("agent-two");
+
+    // `createThread` makes it the current conversation, and that is the bucket
+    // a console with nothing of its own to ask for opens on.
+    await expect(service.bootstrap({})).resolves.toMatchObject({
+      currentThreadId: elsewhere.id,
+      threadsSourceId: "agent-two",
+      threads: [expect.objectContaining({ id: elsewhere.id })],
+    });
+    // An id no agent answers to falls back the same way rather than failing the
+    // console's very first request.
+    await expect(service.bootstrap({ sourceId: "ghost" })).resolves.toMatchObject({
+      threadsSourceId: "agent-two",
+    });
+
+    const asked = await service.bootstrap({ sourceId: "agent-one" });
+    expect(asked.threadsSourceId).toBe("agent-one");
+    expect(asked.threads.map((thread) => thread.id)).toEqual([newer.id, older.id]);
+    expect(asked.threadsNextCursor).toBeNull();
+
+    // The exported scope defaults the way the route does, so a caller that
+    // omits `limit` gets a page and not the store's whole 200-row bucket.
+    expect(WEB_THREAD_PAGE_DEFAULT).toBe(50);
+    for (let index = 0; index < 60; index += 1) service.createThread("agent-two");
+    const defaulted = await service.bootstrap({ sourceId: "agent-two" });
+    expect(defaulted.threads).toHaveLength(WEB_THREAD_PAGE_DEFAULT);
+    expect(defaulted.threadsNextCursor).toEqual(expect.any(String));
+
+    const firstPage = await service.bootstrap({ sourceId: "agent-one", limit: 1 });
+    expect(firstPage.threads.map((thread) => thread.id)).toEqual([newer.id]);
+    expect(firstPage.threadsNextCursor).toEqual(expect.any(String));
+    expect(service.threadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      before: String(firstPage.threadsNextCursor),
+    }).threads.map((thread) => thread.id)).toEqual([older.id]);
+
+    service.patchThread(older.id, { archived: true });
+    await expect(service.bootstrap({ sourceId: "agent-one", archived: true })).resolves.toMatchObject({
+      threadsSourceId: "agent-one",
+      threads: [expect.objectContaining({ id: older.id })],
+    });
+
+    const darkOnly = await createService({ discoverImpl: async () => [dark] });
+    expect((await darkOnly.bootstrap({})).threadsSourceId).toBe("agent-alpha");
+    const empty = await createService({ discoverImpl: async () => [] });
+    await expect(empty.bootstrap({})).resolves.toMatchObject({
+      threadsSourceId: null,
+      threads: [],
+      threadsNextCursor: null,
+    });
+
+    await Promise.all([service.stop(), darkOnly.stop(), empty.stop()]);
+  });
+
+  it("carries the conversation on every listing event a write emits", async () => {
+    const service = await createService({});
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    const thread = service.createThread("agent-one");
+    service.patchThread(thread.id, { title: "Renamed" });
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    // Queued rather than delivered -- this agent advertises no live input --
+    // so the drain promotes it to a turn of its own.
+    service.submitLiveInput(thread.id, "and one more thing");
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    service.patchThread(thread.id, { archived: true });
+    await service.deleteThread(thread.id);
+    unsubscribe();
+
+    const targets = listingTargets(events);
+    expect(targets.length).toBeGreaterThanOrEqual(8);
+    expect([...new Set(targets)]).toEqual([thread.id]);
+    // The summary each one carries is the state AFTER the write, so a console
+    // applying them in order never moves a row backwards.
+    const revisions = events.flatMap((event) => {
+      const summary = (event.payload as { readonly thread?: { readonly revision: number } } | undefined)?.thread;
+      return summary === undefined ? [] : [summary.revision];
+    });
+    expect(revisions).toEqual([...revisions].sort((left, right) => left - right));
+    // Unchanged emission order for a finishing turn.
+    const types = events.map((event) => event.type);
+    const finish = types.lastIndexOf("turn.changed");
+    expect(types.slice(finish, finish + 3)).toEqual(["turn.changed", "thread.changed", "threads.changed"]);
+
+    await service.stop();
+  });
+
+  it("carries the conversation on the listing events a cron reconcile and a notification emit", async () => {
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z",
+      orderedAt: "2026-08-14T09:55:00.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      startedAt: "2026-08-14T09:55:01.000Z",
+      completedAt: "2026-08-14T09:55:02.000Z",
+      text: "Digest complete",
+      eventCount: 0,
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsHistoryAppend: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        cronRun: { ...run, projection: "detail", events: [], eventsIncluded: 0 },
+      }),
+    });
+    const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    await service.cronRuns("agent-one", "digest", { limit: 100 });
+    await service.cronRun("agent-one", "digest", run.runId);
+    const delivered = await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: "cron:digest:success",
+      text: "Morning brief",
+    });
+    unsubscribe();
+
+    expect(listingTargets(events).filter((target) => target === undefined)).toEqual([]);
+    expect([...new Set(listingTargets(events))].sort())
+      .toEqual([cronThreadId, delivered.thread?.id].sort());
+
+    await service.stop();
+  });
+
   it("delegates conversation search to the store and emits nothing for it", async () => {
     const service = await createService({});
     const thread = service.createThread("agent-one");
@@ -812,6 +1289,56 @@ describe("WebService", () => {
       parts: [{ ...replyParts[2], message: "A different retry." }],
     })).rejects.toMatchObject({ code: "notification_idempotency_conflict", status: 409 });
     expect(onVerbatim).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
+  it("invalidates a process-job card that has slid past one page of messages", async () => {
+    // The card's message was found by scanning a page of the conversation. Once
+    // that page became a screenful, a job that finished after thirty later
+    // messages silently stopped emitting `message.changed` and its card froze
+    // on screen at "running" until something else forced a re-read.
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: running.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: running,
+    });
+    const cardId = service.thread(thread.id).messages[0]?.id;
+    expect(cardId).toBeTypeOf("string");
+
+    for (let index = 0; index < 20; index += 1) {
+      await service.startTurn(thread.id, { text: `turn ${String(index)}` });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    }
+    // Forty messages later, the card is nowhere near the page a read answers with.
+    expect(service.thread(thread.id).messages.some((message) => message.id === cardId)).toBe(false);
+
+    const invalidations: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.changed") invalidations.push(event.payload);
+    });
+    const terminal = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      wakeState: "delivered",
+    });
+    await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      text: "Completed normally.",
+    });
+
+    expect(invalidations).toEqual([
+      { messageId: cardId, updatedAt: expect.any(String) },
+    ]);
+    unsubscribe();
     await service.stop();
   });
 
@@ -1777,7 +2304,12 @@ describe("WebService", () => {
 
     expect(service.patchAgent("agent-one", { pinned: true })).toMatchObject({ sourceId: "agent-one", pinned: true });
     expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
-    expect(events).toEqual([undefined]);
+    // A pin names itself, so a console can apply it instead of re-reading the
+    // bootstrap plus that agent's skills and cron for one boolean.
+    expect(events).toEqual([{ sourceId: "agent-one", pinned: true }]);
+    service.patchAgent("agent-one", { pinned: false });
+    expect(events.at(-1)).toEqual({ sourceId: "agent-one", pinned: false });
+    service.patchAgent("agent-one", { pinned: true });
     await service.refreshAgents();
     expect((await service.bootstrap()).agents[0]).toMatchObject({ sourceId: "agent-one", pinned: true });
     expect(() => service.patchAgent("missing", { pinned: true })).toThrowError(expect.objectContaining({ code: "agent_not_found" }));
@@ -1803,7 +2335,11 @@ describe("WebService", () => {
     await service.refreshAgents();
     const removed = await service.bootstrap();
     expect(removed.agents.map((entry) => entry.sourceId)).toEqual(["agent-one"]);
-    expect(removed.threads.map((entry) => entry.id)).not.toContain(retained.id);
+    // Asked for BY NAME: a bootstrap answers with one bucket now, so "the
+    // retained conversation is not in the fallback agent's page" is true
+    // however badly hiding an undiscovered agent breaks.
+    expect(() => service.threadsPage({ sourceId: "agent-two", archived: false }))
+      .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
     expect(removed.currentThreadId).toBeUndefined();
     expect(() => service.patchAgent("agent-two", { pinned: false }))
       .toThrowError(expect.objectContaining({ code: "agent_not_found" }));
@@ -1819,9 +2355,10 @@ describe("WebService", () => {
 
     discovered = [first, second];
     await service.refreshAgents();
-    const restored = await service.bootstrap();
+    const restored = await service.bootstrap({ sourceId: "agent-two" });
     expect(restored.agents.find((entry) => entry.sourceId === "agent-two"))
       .toMatchObject({ pinned: true });
+    expect(restored.threadsSourceId).toBe("agent-two");
     expect(restored.threads.map((entry) => entry.id)).toContain(retained.id);
     expect(restored.currentThreadId).toBe(retained.id);
     expect(events).toEqual([undefined, undefined]);
@@ -1871,6 +2408,7 @@ describe("WebService", () => {
     });
     first.store.replaceAgents([{
       sourceId: "agent-one", label: "Agent", status: "online", supportsAttachments: true,
+      runSettings: { config: {}, override: null, effective: { modelSource: "config", effortSource: "config" } },
       updatedAt: new Date().toISOString(),
     }]);
     const thread = first.store.createThread("agent-one");
@@ -1918,18 +2456,43 @@ describe("WebService", () => {
     ];
     const service = await createService({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
     const thread = service.createThread("agent-one");
-    let messageInvalidations = 0;
+    const deltas: WebMessageDelta[] = [];
+    const hints: unknown[] = [];
     const unsubscribe = service.subscribe((event) => {
-      if (event.type === "message.changed") {
-        messageInvalidations += 1;
-        expect(event.payload).not.toHaveProperty("message");
-      }
+      if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
+      if (event.type === "message.changed") hints.push(event.payload);
     });
     await service.startTurn(thread.id, { text: "prompt" });
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
 
     const detail = service.thread(thread.id);
-    expect(messageInvalidations).toBeLessThanOrEqual(2);
+    const assistant = detail.messages.at(-1);
+    // Content, not an invalidation. Every flush used to tell each console that
+    // something about the message had changed, and each of them answered by
+    // re-reading the whole conversation.
+    expect(hints).toEqual([]);
+    expect(deltas.length).toBeLessThanOrEqual(2);
+    expect(deltas.length).toBeGreaterThan(0);
+    for (const [index, delta] of deltas.entries()) {
+      expect(delta).toMatchObject({
+        messageId: assistant?.id,
+        status: expect.any(String),
+        updatedAt: expect.any(String),
+        ops: expect.any(Array),
+      });
+      expect(delta).not.toHaveProperty("message");
+      expect(delta.seq).toBe(delta.baseSeq + 1);
+      // Contiguous: the first names the empty row the turn opened, and each one
+      // after it names the version its predecessor produced. A gap here is what
+      // sends a console back to the message read instead.
+      expect(delta.baseSeq).toBe(index === 0 ? 0 : deltas[index - 1]?.seq);
+    }
+    expect(deltas.at(-1)?.seq).toBe(assistant?.seq);
+    // Replaying every op onto an empty transcript rebuilds exactly what a
+    // reader of the settled conversation is served.
+    let replayed: readonly WebMessagePart[] = [];
+    for (const delta of deltas) replayed = applyDeltaOps(replayed, delta.ops);
+    expect(replayed).toEqual(assistant?.parts);
     expect(detail.thread.runState).toMatchObject({ model: "actual/model", effort: "high" });
     expect(detail.messages.at(-1)?.parts).toEqual([
       { type: "text", text: "a" },
@@ -1938,6 +2501,318 @@ describe("WebService", () => {
       { type: "text", text: `${"x".repeat(1_000)}b` },
     ]);
     unsubscribe();
+    await service.stop();
+  });
+
+  it("puts the write that settled a turn on the wire ahead of the listing events", async () => {
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    const types: string[] = [];
+    const unsubscribe = service.subscribe((event) => { types.push(event.type); });
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    // The settling write comes first so a console applies the answer and then
+    // the run state it belongs to, never the other way round.
+    const finish = types.lastIndexOf("turn.changed");
+    expect(types.slice(finish - 1, finish + 3)).toEqual([
+      "message.delta",
+      "turn.changed",
+      "thread.changed",
+      "threads.changed",
+    ]);
+    await service.stop();
+  });
+
+  it("puts the write that failed a turn on the wire ahead of the listing events", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({ turns: () => { throw new Error("upstream exploded"); } }),
+    });
+    const thread = service.createThread("agent-one");
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "failed");
+    unsubscribe();
+
+    const types = events.map((event) => event.type);
+    const finish = types.lastIndexOf("turn.changed");
+    expect(types.slice(finish - 1, finish + 3)).toEqual([
+      "message.delta",
+      "turn.changed",
+      "thread.changed",
+      "threads.changed",
+    ]);
+    // The error part the failure appended, as content rather than a hint.
+    const delta = events[finish - 1]?.payload as WebMessageDelta;
+    expect(delta.status).toBe("failed");
+    expect(delta.ops).toEqual([
+      {
+        op: "set",
+        index: 0,
+        part: { type: "error", code: "agent_unreachable", message: "Agent is unreachable (upstream exploded)." },
+      },
+    ]);
+    await service.stop();
+  });
+
+  it("hints instead of a delta that would cost more than the message it describes", async () => {
+    // A write whose op envelopes outweigh the whole shaped message is not worth
+    // describing: a finish that absorbs twenty-one streamed text parts re-sets
+    // every part it shifted. Those writes reach the console as the invalidation
+    // every other message writer emits, and it re-reads the row.
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta" || event.type === "message.changed") events.push(event);
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => stream !== undefined);
+    const push = (frame: Record<string, unknown>): void => {
+      stream?.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+    };
+
+    // One small write still travels as content.
+    push({ kind: "append", delta: "a" });
+    await waitFor(() => events.length >= 1);
+    expect(events[0]?.type).toBe("message.delta");
+
+    // Reasoning between two text parts keeps them one answer, so the finish can
+    // absorb every one of them.
+    const texts = Array.from({ length: 20 }, (_unused, index) => `t${String(index)}`);
+    for (const [index, text] of texts.entries()) {
+      push({ kind: "event", event: { type: "assistant_thought", text: `why ${String(index)}` } });
+      push({ kind: "append", delta: text });
+    }
+    push({ kind: "finish", finalText: `Za${texts.join("")}` });
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    const assistant = service.thread(thread.id).messages.at(-1);
+    expect(assistant?.parts).toHaveLength(21);
+    expect(assistant?.parts.at(-1)).toEqual({ type: "text", text: `Za${texts.join("")}` });
+    // The settling write: a truncate plus a `set` for all twenty-one survivors.
+    expect(events.at(-1)).toMatchObject({
+      type: "message.changed",
+      payload: { messageId: assistant?.id, updatedAt: assistant?.updatedAt },
+    });
+    await service.stop();
+  });
+
+  it("shapes the parts a delta carries exactly as a read would serve them", async () => {
+    // The store keeps payloads whole; the console is served a preview. A `set`
+    // op crosses the same boundary a transcript read does, or a console holding
+    // a delta would end up with a tool result no re-read could reproduce.
+    const body = "R".repeat(30 * 1_024);
+    const lines = [
+      JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t", name: "Read", arguments: { path: "big" } } }),
+      JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t", content: body } }),
+      JSON.stringify({ kind: "finish", finalText: "done" }),
+      "",
+    ];
+    const service = await createService({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const thread = service.createThread("agent-one");
+    const deltas: WebMessageDelta[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    const assistant = service.thread(thread.id).messages.at(-1);
+    let replayed: readonly WebMessagePart[] = [];
+    for (const delta of deltas) replayed = applyDeltaOps(replayed, delta.ops);
+    expect(replayed).toEqual(assistant?.parts);
+    expect(replayed[0]).toMatchObject({ type: "tool-call", resultTruncated: true, resultBytes: body.length });
+    // The whole result never reaches the wire, only the read that repairs it.
+    expect(JSON.stringify(deltas)).not.toContain(body);
+    expect(service.toolCallPart(thread.id, assistant?.id ?? "", "t")).toMatchObject({ result: body });
+    await service.stop();
+  });
+
+  it("leaves the next delta chained to the write the cap declined to describe", async () => {
+    // The hint a declined delta emits carries no sequence number, so the delta
+    // AFTER it does not chain onto the last one a console applied. That
+    // mismatch is the console's cue to re-read the message, and it only works
+    // if the declined write really did move the version.
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const deltas: WebMessageDelta[] = [];
+    const declinedSeqs: number[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
+      if (event.type === "message.changed") {
+        // What a console asks the message route for the moment it is told the
+        // message moved and not how.
+        const { messageId } = event.payload as { readonly messageId: string };
+        declinedSeqs.push(service.message(thread.id, messageId).seq);
+      }
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => stream !== undefined);
+    const push = (frame: Record<string, unknown>): void => {
+      stream?.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+    };
+
+    push({ kind: "append", delta: "a" });
+    await waitFor(() => deltas.length === 1);
+    // A burst of forty parts in one flush costs more as ops than as a re-read.
+    for (let index = 0; index < 40; index += 1) push({ kind: "status", text: `step ${String(index)}` });
+    await waitFor(() => declinedSeqs.length === 1);
+    push({ kind: "append", delta: "b" });
+    await waitFor(() => deltas.length === 2);
+    push({ kind: "finish", finalText: "ab" });
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    expect(deltas[0]).toMatchObject({ baseSeq: 0, seq: 1 });
+    // The write nobody described still took a version.
+    expect(declinedSeqs).toEqual([2]);
+    expect(deltas[1]?.baseSeq).toBe(2);
+    expect(deltas[1]?.baseSeq).not.toBe(deltas[0]?.seq);
+    // And the settling write, which changed only the status, still chains.
+    const settled = deltas.at(-1);
+    expect(settled?.ops).toEqual([]);
+    expect(settled?.status).toBe("complete");
+    expect(settled?.baseSeq).toBe(deltas.at(-2)?.seq);
+    expect(settled?.seq).toBe(service.thread(thread.id).messages.at(-1)?.seq);
+    await service.stop();
+  });
+
+  it("compares against the message only when a write could outweigh it", async () => {
+    // The comparison shapes the WHOLE message -- reply capabilities re-minted
+    // and all -- and the streaming path runs it every 50 ms. An `append`
+    // carries strictly less than the part it grew, so it can never win the
+    // comparison and never asks for one.
+    const shapeMessage = vi.spyOn(
+      WebService.prototype as unknown as { shapeMessage: (...args: never[]) => unknown },
+      "shapeMessage",
+    );
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    let writes = 0;
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta" || event.type === "message.changed") writes += 1;
+    });
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => stream !== undefined);
+    const push = (frame: Record<string, unknown>): void => {
+      stream?.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+    };
+
+    // A `set`: this one can outweigh the message, so it asks.
+    push({ kind: "append", delta: "a" });
+    await waitFor(() => writes === 1);
+    const afterSet = shapeMessage.mock.calls.length;
+    expect(afterSet).toBeGreaterThan(0);
+
+    push({ kind: "append", delta: "b" });
+    await waitFor(() => writes === 2);
+    expect(shapeMessage.mock.calls.length).toBe(afterSet);
+
+    push({ kind: "status", text: "and one more part" });
+    await waitFor(() => writes === 3);
+    expect(shapeMessage.mock.calls.length).toBeGreaterThan(afterSet);
+
+    push({ kind: "finish", finalText: "ab" });
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("says nothing about a write that did not happen, and refuses to describe a user row", async () => {
+    // Both states are unreachable through the three callers by construction:
+    // they pass the assistant row of a turn, and a settled turn answers with no
+    // delta at all. This reaches the emitter directly rather than pretending to
+    // provoke a state the service cannot be driven into.
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const messages = service.thread(thread.id).messages;
+    const user = messages.find((message) => message.role === "user");
+    const assistant = messages.find((message) => message.role === "assistant");
+    if (user === undefined || assistant === undefined) throw new Error("Expected both rows of the turn.");
+
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    const emitWrite = (service as unknown as {
+      emitMessageWrite: (threadId: string, write: unknown) => void;
+    }).emitMessageWrite.bind(service);
+
+    // The two shapes that both mean "this call wrote nothing": stream frames
+    // against a settled turn, and a finish that found the turn already settled.
+    emitWrite(thread.id, undefined);
+    emitWrite(thread.id, { message: assistant });
+    expect(events).toEqual([]);
+
+    expect(() => emitWrite(thread.id, {
+      message: user,
+      delta: {
+        messageId: user.id,
+        baseSeq: 0,
+        seq: 1,
+        status: user.status,
+        updatedAt: user.updatedAt,
+        ops: [],
+      },
+    })).toThrow(TypeError);
+    expect(events).toEqual([]);
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("never describes a user row with a delta", async () => {
+    // `mapMessage` filters quote and live-input telemetry off user rows, so a
+    // delta diffed against them would describe parts no reader is ever served.
+    // Only the two assistant writes a console watches live carry content.
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "hello" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const deltaIds = new Set<string>();
+    const hintIds: string[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "message.delta") deltaIds.add((event.payload as WebMessageDelta).messageId);
+      if (event.type === "message.changed") hintIds.push((event.payload as { readonly messageId: string }).messageId);
+    });
+    // This agent advertises no live input, so the offer lands on a user row and
+    // is then promoted to a turn of its own.
+    service.submitLiveInput(thread.id, "and one more thing");
+    await waitFor(() => service.thread(thread.id).messages.length >= 4
+      && service.store.getThread(thread.id)?.runState.status === "complete");
+    unsubscribe();
+
+    const messages = service.thread(thread.id).messages;
+    const roleOf = (id: string): string | undefined => messages.find((message) => message.id === id)?.role;
+    expect(deltaIds.size).toBeGreaterThan(0);
+    expect([...deltaIds].map(roleOf)).toEqual([...deltaIds].map(() => "assistant"));
+    expect(hintIds.map(roleOf)).toContain("user");
     await service.stop();
   });
 
@@ -3295,6 +4170,366 @@ describe("WebService", () => {
     await expect(service.startTurn(invalid.id, { text: "legacy", model: "other/model" })).rejects.toMatchObject({ code: "invalid_model" });
     await expect(service.startTurn(invalid.id, { text: "legacy", effort: "impossible" })).rejects.toMatchObject({ code: "invalid_effort" });
     await waitFor(() => service.store.listActiveTurnIds().length === 0);
+    await service.stop();
+  });
+});
+
+describe("transcript shaping", () => {
+  /**
+   * One turn emitting every telemetry family the runtime produces, in a fixed
+   * order, so a shaping regression shows up as either a lost `data` or a part
+   * that moved.
+   */
+  const telemetryTurn = (): string => [
+    JSON.stringify({ kind: "event", event: { type: "provider_status", provider: "anthropic", detail: "x".repeat(2_000) } }),
+    JSON.stringify({ kind: "event", event: { type: "memory_recalled", entries: ["y".repeat(2_000)] } }),
+    JSON.stringify({ kind: "status", text: "thinking" }),
+    JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "cache_hit", data: { hits: 3 } } }),
+    JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "token_usage", data: { tokens: { input: 4 } } } }),
+    JSON.stringify({ kind: "event", event: { type: "usage_update", data: { tokens: { input: 10, output: 2 }, cost: 0.01 } } }),
+    JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "context_usage", data: { used: 1_000, contextWindow: 200_000 } } }),
+    JSON.stringify({ kind: "finish", finalText: "answer" }),
+    "",
+  ].join("\n");
+
+  const telemetryParts = (
+    parts: readonly WebMessagePart[],
+  ): readonly Extract<WebMessagePart, { type: "telemetry" }>[] =>
+    parts.filter((part): part is Extract<WebMessagePart, { type: "telemetry" }> => part.type === "telemetry");
+
+  it("leaves a tool call that fits exactly as recorded", async () => {
+    // The diet is for oversized payloads only. A call under the budget must
+    // come back byte-identical and unflagged: the console reads
+    // `argsTruncated`/`resultTruncated` to decide whether to offer the repair
+    // read, so a flag on a whole payload is a button that fetches what the
+    // reader already has, and any rewriting at all would put a `set` op on the
+    // delta stream for a part that did not change.
+    const args = { command: "ls -la", cwd: "/tmp" };
+    const result = "total 0\ndrwxr-xr-x  2 robert  staff   64 Sep  6 10:00 .";
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t", name: "Exec", arguments: args } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t", content: result } }),
+          JSON.stringify({ kind: "finish", finalText: "done" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const stored = service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts.find(
+      (part) => part.type === "tool-call",
+    );
+    const served = service.thread(thread.id).messages.at(-1)?.parts.find((part) => part.type === "tool-call");
+    expect(served).toEqual({ type: "tool-call", toolCallId: "t", toolName: "Exec", args, result, status: "complete" });
+    // Byte-identical, not merely equal: nothing was added, removed or reordered.
+    expect(JSON.stringify(served)).toBe(JSON.stringify(stored));
+    for (const flag of ["argsTruncated", "argsBytes", "resultTruncated", "resultBytes"]) {
+      expect(served).not.toHaveProperty(flag);
+    }
+    await service.stop();
+  });
+
+  it("keeps telemetry data only for what the console renders, and moves no part", async () => {
+    const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const stored = service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts ?? [];
+    const served = service.thread(thread.id).messages.at(-1)?.parts ?? [];
+    // Every position survives: Task 6's index-based delta ops depend on it.
+    expect(served.map((part) => part.type)).toEqual(stored.map((part) => part.type));
+
+    expect(telemetryParts(served)).toEqual([
+      { type: "telemetry", event: "provider_status" },
+      { type: "telemetry", event: "memory_recalled" },
+      { type: "telemetry", event: "status" },
+      { type: "telemetry", event: "runtime_telemetry", kind: "cache_hit" },
+      // `usage.ts` matches a NESTED `kind` containing "usage"/"cost" too, so the
+      // substring rule cannot only look at the top-level event name.
+      {
+        type: "telemetry",
+        event: "runtime_telemetry",
+        kind: "token_usage",
+        data: { type: "runtime_telemetry", kind: "token_usage", data: { tokens: { input: 4 } } },
+      },
+      {
+        type: "telemetry",
+        event: "usage_update",
+        data: { type: "usage_update", data: { tokens: { input: 10, output: 2 }, cost: 0.01 } },
+      },
+      // `kind` is set whenever the event has one, kept or stripped, so its
+      // presence never doubles as "the payload was dropped".
+      {
+        type: "telemetry",
+        event: "runtime_telemetry",
+        kind: "context_usage",
+        data: { type: "runtime_telemetry", kind: "context_usage", data: { used: 1_000, contextWindow: 200_000 } },
+      },
+    ]);
+    await service.stop();
+  });
+
+  it("serves the whole transcript when the caller asks for it", async () => {
+    const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const full = service.thread(thread.id, { full: true }).messages.at(-1)?.parts ?? [];
+    expect(full).toEqual(service.store.getThreadDetail(thread.id)?.messages.at(-1)?.parts);
+    expect(telemetryParts(full).every((part) => part.data !== undefined)).toBe(true);
+    await service.stop();
+  });
+
+  /** A tool result the size the fleet actually produces: one Exec/ReadSkill body. */
+  const bigResult = "R".repeat(20 * 1_024);
+  const bigArgs = { command: `echo ${"A".repeat(20 * 1_024)}` };
+
+  it("previews a large tool payload, exempts AskUser, and serves the full body by id", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Exec", arguments: bigArgs } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Exec", content: bigResult } }),
+          // MCP-qualified, exactly as an agent that serves AskUser over MCP
+          // names it. `observeAskUserFrame` already recognises this shape, so
+          // shaping must recognise it by the same rule or the card breaks for
+          // precisely the runs that route the tool through a server.
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "ask-1", name: "mcp__console__ask_user", arguments: { question: "R".repeat(5_000) } } }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_completed",
+              id: "ask-1",
+              name: "mcp__console__ask_user",
+              content: "Q".repeat(5_000),
+              structuredContent: { interactionId: "i-1", answered: true },
+            },
+          }),
+          JSON.stringify({ kind: "finish", finalText: "answer" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const message = service.thread(thread.id).messages.at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const toolCall = (id: string): Extract<WebMessagePart, { type: "tool-call" }> => {
+      const part = message.parts.find(
+        (candidate): candidate is Extract<WebMessagePart, { type: "tool-call" }> =>
+          candidate.type === "tool-call" && candidate.toolCallId === id,
+      );
+      if (part === undefined) throw new Error(`Expected a tool call ${id}.`);
+      return part;
+    };
+
+    expect(toolCall("call-1")).toMatchObject({
+      result: "R".repeat(4_096),
+      resultTruncated: true,
+      resultBytes: 20 * 1_024,
+      argsTruncated: true,
+      argsBytes: JSON.stringify(bigArgs).length,
+    });
+    // An arguments OBJECT stays an object here too: the row's summary reads a
+    // named key out of it (`command`, `file_path`, ...), and the head of a JSON
+    // text is not one. Only the oversized leaf pays.
+    const execArgs = toolCall("call-1").args as { command: string };
+    expect(bigArgs.command.startsWith(execArgs.command)).toBe(true);
+    expect(execArgs.command.length).toBeLessThan(bigArgs.command.length);
+    expect(JSON.stringify(execArgs).length).toBeLessThanOrEqual(4_096);
+
+    // AskUser's question and answer ARE the card; a preview would break it.
+    expect(toolCall("ask-1")).toEqual({
+      type: "tool-call",
+      toolCallId: "ask-1",
+      toolName: "mcp__console__ask_user",
+      args: { question: "R".repeat(5_000) },
+      result: "Q".repeat(5_000),
+      structuredResult: { interactionId: "i-1", answered: true },
+      status: "complete",
+    });
+
+    expect(service.toolCallPart(thread.id, message.id, "call-1")).toEqual({
+      type: "tool-call",
+      toolCallId: "call-1",
+      toolName: "Exec",
+      args: bigArgs,
+      result: bigResult,
+      status: "complete",
+    });
+    await service.stop();
+  });
+
+  it("reaches a subagent's own payload and its nested calls, and refuses everything else", async () => {
+    const subagentMetadata = { subagent: { id: "call-1", name: "researcher", callIndex: 0 }, synthetic: true };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Agent", arguments: { name: "researcher", prompt: "find X" } } }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_started",
+              id: "agent:call-1",
+              name: "Agent(researcher)",
+              metadata: { ...subagentMetadata, subagentLifecycle: true },
+            },
+          }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_started",
+              id: "agent:call-1:t1",
+              name: "researcher▸Read",
+              arguments: { file_path: "/repo/a.ts" },
+              metadata: subagentMetadata,
+            },
+          }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_completed",
+              id: "agent:call-1:t1",
+              name: "researcher▸Read",
+              content: bigResult,
+              metadata: subagentMetadata,
+            },
+          }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_completed",
+              id: "agent:call-1",
+              name: "Agent(researcher)",
+              metadata: { ...subagentMetadata, subagentLifecycle: true },
+            },
+          }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Agent", content: bigResult } }),
+          JSON.stringify({ kind: "finish", finalText: "answer" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const message = service.thread(thread.id).messages.at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const subagent = message.parts.find(
+      (part): part is Extract<WebMessagePart, { type: "subagent" }> => part.type === "subagent",
+    );
+    if (subagent === undefined) throw new Error("Expected a subagent part.");
+    expect(subagent).toMatchObject({
+      result: "R".repeat(4_096),
+      resultTruncated: true,
+      resultBytes: 20 * 1_024,
+    });
+    expect(subagent.calls[0]).toMatchObject({
+      toolCallId: "agent:call-1:t1",
+      result: "R".repeat(4_096),
+      resultTruncated: true,
+      resultBytes: 20 * 1_024,
+    });
+
+    expect(service.toolCallPart(thread.id, message.id, "call-1"))
+      .toMatchObject({ type: "subagent", toolCallId: "call-1", result: bigResult });
+    // A nested call owns no part of its own, so it comes back shaped as one.
+    expect(service.toolCallPart(thread.id, message.id, "agent:call-1:t1"))
+      .toMatchObject({ type: "tool-call", toolCallId: "agent:call-1:t1", result: bigResult });
+
+    const other = service.createThread("agent-one");
+    expect(() => service.toolCallPart(thread.id, message.id, "missing"))
+      .toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+    expect(() => service.toolCallPart(thread.id, "no-such-message", "call-1"))
+      .toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+    // Cross-thread: the message exists, but not in the conversation asked for.
+    expect(() => service.toolCallPart(other.id, message.id, "call-1"))
+      .toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+    await service.stop();
+  });
+
+  it("keeps a delegation's arguments an object so its task still reads", async () => {
+    // A delegation's arguments are not opaque: the console reads `prompt` out of
+    // them for the row's summary and its Task note. Replacing the object with
+    // the head of its JSON text took both away for exactly the delegations that
+    // carry the most instruction.
+    const prompt = "Read the router and report. ".repeat(220);
+    const args = { name: "researcher", prompt, description: "read the router" };
+    const subagentMetadata = { subagent: { id: "call-1", name: "researcher", callIndex: 0 }, synthetic: true };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Agent", arguments: args } }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_started",
+              id: "agent:call-1",
+              name: "Agent(researcher)",
+              metadata: { ...subagentMetadata, subagentLifecycle: true },
+            },
+          }),
+          JSON.stringify({
+            kind: "event",
+            event: {
+              type: "tool_call_completed",
+              id: "agent:call-1",
+              name: "Agent(researcher)",
+              metadata: { ...subagentMetadata, subagentLifecycle: true },
+            },
+          }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Agent", content: "ok" } }),
+          JSON.stringify({ kind: "finish", finalText: "answer" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    const message = service.thread(thread.id).messages.at(-1);
+    if (message === undefined) throw new Error("Expected an assistant message.");
+    const subagent = message.parts.find(
+      (part): part is Extract<WebMessagePart, { type: "subagent" }> => part.type === "subagent",
+    );
+    if (subagent === undefined) throw new Error("Expected a subagent part.");
+    expect(JSON.stringify(args).length).toBeGreaterThan(6_000);
+    const shaped = subagent.args as { name: string; prompt: string; description: string };
+    expect(shaped.name).toBe("researcher");
+    expect(shaped.description).toBe("read the router");
+    // Only the oversized leaf pays, and the whole thing lands inside the budget.
+    expect(prompt.startsWith(shaped.prompt)).toBe(true);
+    expect(shaped.prompt.length).toBeLessThan(prompt.length);
+    expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(4_096);
+    expect(subagent).toMatchObject({ argsTruncated: true, argsBytes: JSON.stringify(args).length });
+
+    expect(service.toolCallPart(thread.id, message.id, "call-1"))
+      .toMatchObject({ type: "subagent", args });
+    await service.stop();
+  });
+
+  it("answers a conversation read with one page of messages and a cursor for the rest", async () => {
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    for (let index = 0; index < 20; index += 1) {
+      await service.startTurn(thread.id, { text: `turn ${String(index)}` });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    }
+    const detail = service.thread(thread.id);
+    expect(WEB_MESSAGE_PAGE_DEFAULT).toBe(30);
+    expect(detail.messages.length).toBe(WEB_MESSAGE_PAGE_DEFAULT);
+    expect(detail.messagesNextCursor).toBeTypeOf("string");
+    expect(service.messagePage(thread.id, { limit: 100 }).messages.length).toBe(40);
     await service.stop();
   });
 });

@@ -4,12 +4,14 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { monitor, processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+import { ToolCallRepairProvider } from "./tool-call-repair";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -114,6 +116,126 @@ describe("AssistantMessage grouped parts", () => {
     uploaded: true,
     createdAt: "2026-07-17T10:00:00.000Z",
     contentUrl: `/api/v1/uploads/${id}/content`,
+  });
+
+  /**
+   * A conversation read is served a preview of a large tool result, so a row
+   * has to say so and be able to fetch the rest -- and the fetched message must
+   * arrive as a NEW object, because assistant-ui caches its part conversions by
+   * object identity.
+   */
+  function RepairableHarness({
+    preview,
+    whole,
+    onRepair,
+  }: {
+    readonly preview: WebMessage;
+    readonly whole: WebMessage;
+    readonly onRepair: (toolCallId: string) => void;
+  }) {
+    const [message, setMessage] = useState(preview);
+    return (
+      <ToolCallRepairProvider
+        repair={async (toolCallId) => {
+          onRepair(toolCallId);
+          setMessage(whole);
+          return true;
+        }}
+      >
+        <MessageHarness message={message} />
+      </ToolCallRepairProvider>
+    );
+  }
+
+  const truncatedToolMessage = (): WebMessage => ({
+    ...assistantMessage("complete"),
+    parts: [
+      {
+        type: "tool-call",
+        toolCallId: "tool-big",
+        toolName: "Exec",
+        args: { command: "run" },
+        result: "HEAD-".repeat(4),
+        resultTruncated: true,
+        resultBytes: 20 * 1_024,
+        status: "complete",
+      },
+      { type: "text", text: "Done." },
+    ],
+  });
+
+  it("says a tool result is a preview and loads the whole body on request", async () => {
+    const repaired = vi.fn();
+    const preview = truncatedToolMessage();
+    const whole: WebMessage = {
+      ...preview,
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          args: { command: "run" },
+          result: "WHOLE-BODY",
+          status: "complete",
+        },
+        { type: "text", text: "Done." },
+      ],
+    };
+    render(<RepairableHarness preview={preview} whole={whole} onRepair={repaired} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Exec").closest("summary")!);
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
+    expect(screen.queryByText('"WHOLE-BODY"')).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load full output" }));
+    expect(repaired).toHaveBeenCalledWith("tool-big");
+    await screen.findByText('"WHOLE-BODY"');
+    expect(screen.queryByText("Preview only, 20,480 chars.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
+  });
+
+  it("gives one control to a tool call whose input and output were both cut", () => {
+    // The route returns the WHOLE part, so one round trip repairs both sides.
+    // Two buttons for it read as two different fetches.
+    const preview: WebMessage = {
+      ...assistantMessage("complete"),
+      parts: [
+        {
+          type: "tool-call",
+          toolCallId: "tool-big",
+          toolName: "Exec",
+          args: { command: "run " },
+          argsTruncated: true,
+          argsBytes: 8_192,
+          result: "HEAD-",
+          resultTruncated: true,
+          resultBytes: 20 * 1_024,
+          status: "complete",
+        },
+        { type: "text", text: "Done." },
+      ],
+    };
+    render(
+      <ToolCallRepairProvider repair={async () => true}>
+        <MessageHarness message={preview} />
+      </ToolCallRepairProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Exec").closest("summary")!);
+    expect(screen.getByText("Preview only, 8,192 chars.")).toBeVisible();
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Load full output" })).toHaveLength(1);
+  });
+
+  it("states the preview without offering a load where there is no way to fetch one", () => {
+    render(<MessageHarness message={truncatedToolMessage()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Exec").closest("summary")!);
+    expect(screen.getByText("Preview only, 20,480 chars.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Load full output" })).toBeNull();
   });
 
   it("shows sent images as a gallery while documents keep their file chip", () => {
@@ -790,7 +912,7 @@ describe("message actions", () => {
     expect(screen.getByText("image/png · 2 KiB")).toBeVisible();
   });
 
-  it("renders one durable process-job card with its rich reply siblings", () => {
+  it("renders one durable process-job row with its rich reply siblings", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [
@@ -820,16 +942,26 @@ describe("message actions", () => {
       ],
     }} />);
 
-    expect(screen.getByRole("region", { name: "Exec background job succeeded" })).toBeVisible();
-    expect(screen.getByText("node worker.js --safe-summary")).toBeVisible();
-    expect(screen.getByText("2 s")).toBeVisible();
+    // The job is a standalone one-row Activity block, not a band: no Activity
+    // header wraps it, and the row itself carries tool, purpose, state and time.
+    expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+    const row = screen.getByRole("group", { name: "Exec background job succeeded" });
+    expect(row).toHaveClass("activity-row", "is-job", "is-complete");
+    expect(within(row).getByText("Exec job")).toBeVisible();
+    expect(within(row).getByText("node worker.js --safe-summary")).toBeVisible();
+    expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
+    expect(row).not.toHaveAttribute("open");
+    expect(screen.getByText("Completed normally.")).not.toBeVisible();
+
+    fireEvent.click(row.querySelector("summary")!);
     expect(screen.getByText("Completed normally.")).toBeVisible();
+    expect(screen.getByText("done")).toBeVisible();
+    expect(screen.getByText(/stdout\.log/u)).toBeVisible();
+
     expect(screen.getByRole("region", { name: "File attachment: report.txt" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Interactive app: Job chart" })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("artifact_missing");
     expect(screen.getByRole("alert")).toHaveTextContent("File expired.");
-    const disclosure = screen.getByText("Output");
-    expect(disclosure.closest("details")).not.toHaveAttribute("open");
   });
 
   it("polls only one job with backoff and stops after the terminal projection", async () => {
@@ -854,6 +986,7 @@ describe("message actions", () => {
     await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(1);
     expect(threadJob).toHaveBeenLastCalledWith("thread", running.jobId, expect.any(AbortSignal));
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     await act(async () => {
       vi.advanceTimersByTime(1_000);
       await Promise.resolve();
@@ -869,13 +1002,39 @@ describe("message actions", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
-    expect(screen.getByRole("region", { name: "Exec background job succeeded" })).toBeVisible();
+    // A closed <details> is "not visible" to jest-dom; its state is in the class and name.
+    expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
 
     await act(async () => {
       vi.advanceTimersByTime(30_000);
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("takes a newer projection from the store without waiting for its own poll", async () => {
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    // The poll never settles; only the store does.
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const { rerender } = render(<MessageHarness message={{
+      ...assistantMessage("running"),
+      parts: [{ type: "process-job", job: running }],
+    }} />);
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
+
+    rerender(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
+    }} />);
+    const settled = await screen.findByRole("group", { name: "Exec background job succeeded" });
+    expect(settled.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
   });
 
   it("keeps the copy action mounted before hover so revealing it cannot shift layout", () => {

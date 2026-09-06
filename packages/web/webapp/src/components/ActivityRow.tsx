@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Icon } from "./Icon";
 import { safeJson } from "./json";
 
@@ -56,9 +56,9 @@ export const failedLabel = (failedCount: number, clustered: boolean): string | u
 
 /**
  * One row for every activity entry. A single call, a `Read ×4` cluster, a
- * thought, and a subagent delegation are the same shape — only the leading
- * glyph and what expanding reveals differ. Keeping them identical is what
- * makes a long Activity log scannable.
+ * thought, a subagent delegation, and a background job are the same shape —
+ * only the leading glyph and what expanding reveals differ. Keeping them
+ * identical is what makes a long Activity log scannable.
  */
 export function ActivityRow({
   variant = "tool",
@@ -68,22 +68,27 @@ export function ActivityRow({
   failed,
   duration,
   open,
+  ariaLabel,
   children,
 }: {
-  readonly variant?: "tool" | "thinking" | "subagent";
+  /** `job` is a tool run detached into the background: same dot as a tool row, its own chrome. */
+  readonly variant?: "tool" | "thinking" | "subagent" | "job";
   readonly status?: ActivityStatus;
   readonly label?: string;
   readonly summary?: string;
   readonly failed?: string;
-  readonly duration?: string;
+  /** A string for a settled figure, or a node such as `ActivityElapsed` that keeps ticking. */
+  readonly duration?: ReactNode;
   readonly open?: boolean;
+  /** Accessible name for the disclosure; rows without one are named by their contents. */
+  readonly ariaLabel?: string;
   readonly children: ReactNode;
 }) {
   return (
-    <details className={`activity-row is-${variant} is-${status}`} open={open}>
+    <details className={`activity-row is-${variant} is-${status}`} open={open} aria-label={ariaLabel}>
       <summary>
         <span className="activity-row-glyph">
-          {variant === "tool" && <i className="activity-dot" />}
+          {(variant === "tool" || variant === "job") && <i className="activity-dot" />}
           {variant === "thinking" && <Icon name="bulb" size={14} />}
           {variant === "subagent" && <Icon name="agent" size={14} />}
         </span>
@@ -98,6 +103,92 @@ export function ActivityRow({
   );
 }
 
+/**
+ * The size of a truncated payload, in the unit it is actually counted in.
+ *
+ * `resultBytes`/`argsBytes` are CHARACTER counts of the serialized text, so the
+ * label says characters. Calling 20,480 characters "20 KB" would be a guess
+ * about the encoding, and a wrong one for anything non-ASCII.
+ */
+export const truncatedLabel = (characters: number): string =>
+  `${characters.toLocaleString("en-US")} chars`;
+
+/**
+ * The head of a payload the server did not send whole, plus the one control
+ * that fetches the rest.
+ *
+ * A collapsed row shows a screenful either way, so the console asks for a
+ * preview and repairs it on demand rather than moving hundreds of kilobytes of
+ * tool output nobody opens.
+ */
+export function TruncationNotice({
+  characters,
+  onLoadFull,
+}: {
+  readonly characters?: number;
+  readonly onLoadFull?: () => Promise<boolean>;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "failed">("idle");
+  const size = characters === undefined ? "" : `, ${truncatedLabel(characters)}`;
+  return (
+    <p className="activity-truncated">
+      <span>{`Preview only${size}.`}</span>
+      {onLoadFull !== undefined && state !== "loading" && (
+        <button
+          type="button"
+          onClick={() => {
+            setState("loading");
+            // A repair that resolves FALSE found nothing to replace -- the
+            // conversation moved on, or the call is no longer in it. Returning
+            // to idle there would present the same preview as a completed load.
+            void onLoadFull().then(
+              (repaired) => setState(repaired ? "idle" : "failed"),
+              () => setState("failed"),
+            );
+          }}
+        >
+          Load full output
+        </button>
+      )}
+      {state === "loading" && <span>Loading…</span>}
+      {state === "failed" && <span role="alert">Could not load the full output.</span>}
+    </p>
+  );
+}
+
+export interface TruncationProps {
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  readonly onLoadFull?: () => Promise<boolean>;
+}
+
+/**
+ * A tool call's truncation metadata as the payload panel's props, including the
+ * control that fetches the whole body and puts it back in the transcript.
+ *
+ * Empty for the overwhelming majority of calls, whose payloads arrived whole.
+ */
+export function truncationProps(
+  envelope: { readonly argsTruncated?: boolean; readonly argsBytes?: number;
+    readonly resultTruncated?: boolean; readonly resultBytes?: number } | undefined,
+  toolCallId: string,
+  repair: ((toolCallId: string) => Promise<boolean>) | undefined,
+): TruncationProps {
+  if (envelope?.argsTruncated !== true && envelope?.resultTruncated !== true) return {};
+  return {
+    ...(envelope.argsTruncated === true ? { argsTruncated: true } : {}),
+    ...(envelope.argsBytes === undefined ? {} : { argsBytes: envelope.argsBytes }),
+    ...(envelope.resultTruncated === true ? { resultTruncated: true } : {}),
+    ...(envelope.resultBytes === undefined ? {} : { resultBytes: envelope.resultBytes }),
+    // No repair path (a transcript rendered outside the console) means the row
+    // states the preview and offers nothing, rather than offering a load it
+    // cannot perform.
+    ...(repair === undefined ? {} : { onLoadFull: async () => repair(toolCallId) }),
+  };
+}
+
 /** Input / Output / Error panels, shared by every expandable activity row. */
 export function ActivityPayload({
   args,
@@ -105,6 +196,11 @@ export function ActivityPayload({
   resultIsError = false,
   error,
   indented = false,
+  argsTruncated = false,
+  argsBytes,
+  resultTruncated = false,
+  resultBytes,
+  onLoadFull,
 }: {
   readonly args?: unknown;
   readonly result?: unknown;
@@ -113,16 +209,39 @@ export function ActivityPayload({
   /** Prose failures — a history-writer error, an aborted fetch — read better tinted. */
   readonly error?: string;
   readonly indented?: boolean;
+  /** The server sent only the head of `args`/`result`; see {@link TruncationNotice}. */
+  readonly argsTruncated?: boolean;
+  readonly argsBytes?: number;
+  readonly resultTruncated?: boolean;
+  readonly resultBytes?: number;
+  /** Fetches this call's whole body and replaces it in the transcript. */
+  readonly onLoadFull?: () => Promise<boolean>;
 }) {
   return (
     <div className={`activity-payload${indented ? " is-indented" : ""}`}>
       <span>Input</span>
       <pre>{safeJson(args)}</pre>
+      {argsTruncated && (
+        <TruncationNotice
+          {...(argsBytes === undefined ? {} : { characters: argsBytes })}
+          {...(onLoadFull === undefined ? {} : { onLoadFull })}
+        />
+      )}
+      {/* One repair fetches the WHOLE part, so one control asks for it. When
+          both sides are previews the first marker an operator meets owns the
+          button, and the second says only that it is a preview -- two buttons
+          read as two different fetches. */}
       {result !== undefined && (
         <>
           <span>{resultIsError ? "Error" : "Output"}</span>
           <pre>{safeJson(result)}</pre>
         </>
+      )}
+      {resultTruncated && (
+        <TruncationNotice
+          {...(resultBytes === undefined ? {} : { characters: resultBytes })}
+          {...(onLoadFull === undefined || argsTruncated ? {} : { onLoadFull })}
+        />
       )}
       {error !== undefined && <p className="activity-error">{error}</p>}
     </div>
