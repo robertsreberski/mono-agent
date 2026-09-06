@@ -5584,42 +5584,131 @@ describe("ConsoleStoreProvider integration", () => {
       };
     };
 
+    it("takes the listing as the server speaking for every conversation it holds", async () => {
+      // A conversation this tab is NOT subscribed to gets no `message.delta`,
+      // and `turn.changed` fires only at the start and the finish of a turn --
+      // so a background conversation restored from the device stayed
+      // unconfirmed for the whole of a turn that had started before the reopen.
+      // The flag read false while the sidebar drew the row as running, and a
+      // staged build could reload over exactly what the guard exists to
+      // protect. The listing is a server summary for every row in it.
+      const runningBeta = { ...beta, runState: { status: "running" as const, id: "turn-b" } };
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningBeta, [kept("b1", "beta", beta.id)], 'W/"beta-1"'),
+        ],
+        listing: [alpha, runningBeta],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningBeta], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+
+      // Beta is not the conversation on screen, nothing read it, and no
+      // `turn.changed` was emitted -- the listing alone is what says so.
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
+      expect(store.current.selectedThreadId).toBe(alpha.id);
+      expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).not.toContain(beta.id);
+    });
+
+    it("takes the listing's word for a turn that finished while the tab was shut", async () => {
+      const finishedBeta = {
+        ...beta,
+        revision: beta.revision + 1,
+        runState: { status: "complete" as const, id: "turn-b" },
+      };
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(
+            { ...beta, runState: { status: "running" as const, id: "turn-b" } },
+            [kept("b1", "beta", beta.id)],
+            'W/"beta-1"',
+          ),
+        ],
+        listing: [alpha, beta],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, finishedBeta], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await quiet();
+
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("never lets the listing roll a cached summary backwards", async () => {
+      // `patchThread` is revision-ordered through `newerProjection`, which is
+      // what makes it safe to replay the whole listing into the cache: a
+      // bootstrap that lost its race with an event must not undo the event.
+      const heldBeta = {
+        ...beta,
+        revision: beta.revision + 5,
+        runState: { status: "running" as const, id: "turn-b" },
+      };
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(heldBeta, [kept("b1", "beta", beta.id)], 'W/"beta-1"'),
+        ],
+        listing: [alpha, heldBeta],
+        openedOn: alpha.id,
+      });
+      // An OLDER revision of the same row, saying the turn is over.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        agents,
+        [alpha, { ...beta, revision: beta.revision + 4, runState: { status: "complete" as const } }],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await quiet();
+
+      // Confirmed by the listing, but with the summary it already had.
+      expect(store.current.hasRunningThread).toBe(true);
+    });
+
     it("does not believe a turn is running because the device kept one that was", async () => {
       // `runState` is stored verbatim. A tab killed mid-turn restores `running`
-      // for a turn that finished while the browser was shut, and nothing will
-      // ever say otherwise -- so the flag latched true for the whole session
-      // and the staged service-worker build was never applied.
+      // for a turn that finished while the browser was shut, and nothing on the
+      // device can say otherwise -- so the flag latched true for the whole
+      // session and the staged service-worker build was never applied.
       const runningAlpha = { ...alpha, runState: { status: "running" as const, id: "turn-1" } };
       await previousVisit({
         entries: [entry(runningAlpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
         listing: [runningAlpha],
         openedOn: alpha.id,
       });
-      vi.mocked(api.bootstrap).mockResolvedValue(
-        bootstrap(agents, [runningAlpha], undefined, { threadsSourceId: "alpha" }),
-      );
       // Held open, so the console is observed in the state that used to latch:
       // the transcript is on screen and nothing has confirmed a word of it.
-      const answers: (() => void)[] = [];
-      vi.mocked(api.threadIfChanged).mockImplementation(async () =>
-        new Promise((resolve) => { answers.push(() => resolve(NOT_MODIFIED)); }));
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(agents, [runningAlpha], undefined, { threadsSourceId: "alpha" }));
+      }));
+      vi.mocked(api.threadIfChanged).mockImplementation(async () => new Promise(() => undefined));
 
       const store = openConsole();
       await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
-      await waitFor(() => expect(answers.length).toBeGreaterThan(0));
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalled());
       // Drawn from the device, and NOT counted: nothing has confirmed it.
       expect(store.current.hasRunningThread).toBe(false);
 
-      // The conditional read says the body -- run state included -- is what the
-      // server has. Now it counts.
-      await act(async () => { for (const answer of answers) answer(); await Promise.resolve(); });
+      // The listing says the same thing the device did -- but the server is
+      // saying it, which is the whole difference.
+      act(() => { release(); });
       await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
-
-      // "Clear cached data" deliberately KEEPS the conversation in front of the
-      // operator, so the answer it is holding is kept with it -- the flag
-      // tracks the held set, whatever emptied the rest of it.
-      await act(async () => { await store.current.clearCachedData(); });
-      expect(store.current.hasRunningThread).toBe(true);
       expect(store.current.detail?.thread.id).toBe(alpha.id);
     });
 
@@ -6047,6 +6136,95 @@ describe("ConsoleStoreProvider integration", () => {
       await written();
 
       expect((await deviceStore.hydrate())?.buckets).toEqual(before);
+    });
+
+    it("forgets a running turn it was holding when the operator clears the cache", async () => {
+      // "Clear cached data" keeps the conversation on screen and empties the
+      // rest, so what the flag says has to be recomputed against what survived
+      // -- `clear` announces no commit, because nothing it changes is stored.
+      const runningBeta = { ...beta, runState: { status: "running" as const, id: "turn-b" } };
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningBeta, [kept("b1", "beta", beta.id)], 'W/"beta-1"'),
+        ],
+        listing: [alpha, runningBeta],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningBeta], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
+      expect(store.current.selectedThreadId).toBe(alpha.id);
+
+      await act(async () => { await store.current.clearCachedData(); });
+
+      // Only alpha survives, and alpha is not running.
+      expect(store.current.hasRunningThread).toBe(false);
+      expect(store.current.detail?.thread.id).toBe(alpha.id);
+    });
+
+    it("forgets a running turn belonging to a console this device is no longer", async () => {
+      // A snapshot from a different host empties everything the other console
+      // left, and an answer derived from it has to go with it.
+      const runningAlpha = { ...alpha, runState: { status: "running" as const, id: "turn-a" } };
+      await previousVisit({
+        entries: [entry(runningAlpha, [kept("m1", "another console")], 'W/"other-1"')],
+        listing: [runningAlpha],
+        openedOn: alpha.id,
+        hostName: "kitchen",
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: alpha,
+        messages: [kept("m2", "this console")],
+        etag: 'W/"alpha-1"',
+      });
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
+
+      // A different console wrote what is on this device; all of it goes.
+      act(() => { release(); });
+      await waitFor(() => expect(store.current.loading).toBe(false));
+
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("does not carry a running answer across into what the device restores", async () => {
+      // Hydration writes the cache through `restore`, which announces no commit
+      // either -- so a console that had already answered "a turn is running"
+      // for something it has just thrown away would have gone on saying so.
+      const runningAlpha = { ...alpha, runState: { status: "running" as const, id: "turn-a" } };
+      await previousVisit({
+        entries: [entry(runningAlpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [runningAlpha],
+        openedOn: alpha.id,
+      });
+      // Held open, so hydration lands while nothing has confirmed anything.
+      const answers: (() => void)[] = [];
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise(() => undefined));
+      vi.mocked(api.threadIfChanged).mockImplementation(async () =>
+        new Promise((resolve) => { answers.push(() => resolve(NOT_MODIFIED)); }));
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await waitFor(() => expect(answers.length).toBeGreaterThan(0));
+
+      // The restore put a `running` row in the cache and the flag was
+      // recomputed over it: unconfirmed, so it counts for nothing.
+      expect(store.current.hasRunningThread).toBe(false);
+
+      // And the read that confirms it is what makes it count.
+      await act(async () => { for (const answer of answers) answer(); await Promise.resolve(); });
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
     });
 
     it("throws away what a different console left on this device", async () => {

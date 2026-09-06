@@ -722,7 +722,11 @@ describe("createThreadCache", () => {
     expect(cache.get("alpha-thread")?.thread.runState.status).toBe("running");
   });
 
-  it("confirms a restored conversation through any answer the server gave", () => {
+  it("confirms a restored conversation through any answer carrying a summary, and nothing else", () => {
+    // The summary is where `runState` lives, and `runState` is the one field a
+    // restored entry cannot be trusted about. A message, a page of older
+    // history or a delta says nothing whatever about whether the turn is still
+    // running, so none of them may stand in for the server saying so.
     const cache = createThreadCache();
     const restore = () => {
       cache.evict("alpha-thread");
@@ -744,7 +748,32 @@ describe("createThreadCache", () => {
     expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
 
     restore();
+    expect(cache.patchThread("alpha-thread", thread("alpha-thread", "alpha", {
+      revision: 2,
+      runState: { status: "complete" },
+    }))).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+
+    // And the three that carry no summary leave it exactly as it was.
+    restore();
     cache.applyDelta("alpha-thread", delta({ ops: [{ op: "append", index: 0, delta: "lo" }] }));
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    cache.upsertMessage("alpha-thread", message("m2", { seq: 1 }));
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    cache.prependOlder("alpha-thread", { messages: [message("m0", { seq: 1 })] });
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+    cache.repairToolCall("alpha-thread", "m1", "t1", {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "whole",
+      status: "complete",
+    });
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(true);
+
+    // The conditional read the first open issues is what settles the selected
+    // conversation, whichever way the server answers it.
+    expect(cache.confirmFresh("alpha-thread", cache.clock())).toBe(true);
     expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
 
     // A markAllStale on a confirmed entry leaves it confirmed.

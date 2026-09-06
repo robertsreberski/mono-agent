@@ -1901,8 +1901,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // write for them: without this every cold start rewrote all eight
       // transcripts a second after restoring them.
       persistence?.markPersisted(cache.snapshot());
-      // What the cache holds has changed, so the flag derived from it is
-      // recomputed -- once, after the whole restore.
+      // The flag is computed over what was just restored. Removing this call
+      // cannot be caught by a test, and that is a fact about the control flow
+      // rather than a gap: the early return above means nothing has confirmed
+      // anything when this runs, so every entry the loop wrote is `fromDevice`
+      // and the answer is false either way. It stays because it is what makes
+      // "false" a statement about the restored set rather than the absence of
+      // one -- and because the early return is the only thing holding that
+      // invariant up. What the sabotage DOES catch is the invariant itself:
+      // drop `fromDevice` and the console reports a turn that ended while the
+      // browser was shut.
       noteHeldRunStateRef.current();
       const agentId = selectedAgentRef.current;
       const bucket = agentId === null
@@ -2017,6 +2025,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setThreadCursorByBucket((current) => ({ ...current, [seeded]: next.threadsNextCursor }));
     }
     setBootstrap(next);
+    // The listing is a SERVER SUMMARY for every conversation in it, so it
+    // confirms the ones this tab is already holding -- `patchThread` inserts
+    // nothing for an id the cache does not have, and `newerProjection` orders
+    // by revision, so a listing cannot roll a fresher cached summary back.
+    //
+    // Without this, a background conversation restored from the device stayed
+    // unconfirmed for the whole of a turn that had started before the tab was
+    // reopened: `message.delta` never reaches a conversation this tab is not
+    // subscribed to, `turn.changed` fires only at the start and the finish, and
+    // nothing else writes the cache. So `hasRunningThread` read false while the
+    // sidebar drew the row as running, and a staged build could reload over it
+    // -- the exact failure the guard exists to prevent. `patchThread` announces
+    // a commit, so the flag is recomputed by the ordinary hook.
+    for (const row of next.threads) threadCacheRef.current.patchThread(row.id, row);
     hasBootstrapRef.current = true;
     // The listing on screen is the SERVER's from here on, whatever the device
     // seeded before it.

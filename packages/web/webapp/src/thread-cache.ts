@@ -68,8 +68,12 @@ export interface ThreadCacheEntry {
    * marks is different and stronger: nothing here has ever been confirmed by
    * anything, so a field like `runState` is only as true as it was when the tab
    * was last closed -- and a tab killed mid-turn stored `running` for a turn
-   * that has long since finished, for which no event will ever arrive. Cleared
-   * by the first server-sourced write for the conversation.
+   * that has long since finished, for which no event will ever arrive.
+   *
+   * Cleared by the first write that carries a thread SUMMARY -- `upsertFull`,
+   * `patchThread`, `patchRunState`, `confirmFresh` -- and by nothing else: the
+   * summary is where `runState` lives, and a message, a page of older history
+   * or a delta says nothing at all about whether the turn is still running.
    */
   readonly fromDevice?: boolean;
   readonly syncedAt: number;
@@ -759,7 +763,7 @@ export interface ThreadCache {
    * does NOT call `onCommit`: that hook means "the device store has to hear
    * about this", and none of the three changes anything the device stores.
    * Anything the CALLER derives from the held set -- see the store's
-   * `hasRunningThread` -- has to be recomputed by the caller after these three.
+   * `hasRunningThread` -- has to be recomputed by the caller after all three.
    */
   readonly clear: (keep?: string) => void;
   /**
@@ -914,14 +918,17 @@ export const createThreadCache = (
   /**
    * The same entry, no longer merely what the device kept.
    *
-   * Applied by every write whose content came from the SERVER -- which is all
-   * of them except `restore` itself and the two that only move suspicion.
+   * Applied by exactly the writes that carry a thread SUMMARY -- `upsertFull`,
+   * `patchThread`, `patchRunState` and `confirmFresh` -- because the summary is
+   * where `runState` lives, and `runState` is the field a restored entry cannot
+   * be trusted about. A message, a page of older history or a delta says
+   * nothing about whether the turn is still running, so none of them confirms.
    */
   const confirmed = <T extends ThreadCacheEntry>(entry: T): T =>
     (entry.fromDevice === true ? { ...entry, fromDevice: false } : entry);
 
-  /** {@link patchEntry} for a write whose input the server produced. */
-  const patchFromServer = (
+  /** {@link patchEntry} for a write that carries a thread summary. See {@link confirmed}. */
+  const patchWithSummary = (
     threadId: string,
     patch: (entry: ThreadCacheEntry) => ThreadCacheEntry,
   ): boolean => patchEntry(threadId, (entry) => confirmed(patch(entry)));
@@ -1013,7 +1020,7 @@ export const createThreadCache = (
       onCommit();
       return entry;
     },
-    upsertMessage: (threadId, message, options = {}) => committed(patchFromServer(threadId, (entry) => {
+    upsertMessage: (threadId, message, options = {}) => committed(patchEntry(threadId, (entry) => {
       const index = entry.messages.findIndex((candidate) => candidate.id === message.id);
       if (index < 0) {
         // A row no answer has positioned: a live-input receipt, or the message
@@ -1035,7 +1042,7 @@ export const createThreadCache = (
       messages[index] = parts === next.parts ? next : { ...next, parts };
       return { ...entry, messages, syncedAt: now() };
     })),
-    prependOlder: (threadId, page) => committed(patchFromServer(threadId, (entry) => {
+    prependOlder: (threadId, page) => committed(patchEntry(threadId, (entry) => {
       const held = new Set(entry.messages.map((message) => message.id));
       const older = page.messages.filter((message) => !held.has(message.id));
       // A keyset page is everything BEFORE what is held, in the server's own
@@ -1055,7 +1062,7 @@ export const createThreadCache = (
         ? entry
         : next;
     })),
-    patchThread: (threadId, thread) => committed(patchFromServer(threadId, (entry) => {
+    patchThread: (threadId, thread) => committed(patchWithSummary(threadId, (entry) => {
       // ORDERED BY THE SERVER'S REVISION, exactly as the listing is. A POST
       // answer that lost its race to the event carrying the same row would
       // otherwise roll the cached summary back while the sidebar kept the newer
@@ -1068,7 +1075,13 @@ export const createThreadCache = (
     // summary comes back by reference and no commit is announced, so the flush
     // this would otherwise schedule -- several a second during a turn -- does
     // not happen.
-    patchRunState: (threadId, runState) => committed(patchFromServer(threadId, (entry) =>
+    //
+    // With ONE exception, and it is the point of `fromDevice`: the first
+    // restatement on an entry the device restored does announce a commit, even
+    // though it moves no run state. The news there is not what the run state is
+    // but that the SERVER said it -- which is exactly what a restored entry was
+    // missing.
+    patchRunState: (threadId, runState) => committed(patchWithSummary(threadId, (entry) =>
       (sameRunState(entry.thread.runState, runState)
         ? entry
         : { ...entry, thread: { ...entry.thread, runState } }))),
@@ -1092,7 +1105,7 @@ export const createThreadCache = (
       }
       const messages = [...entry.messages];
       messages[index] = next;
-      entries.set(threadId, confirmed({ ...entry, messages, syncedAt: now() }));
+      entries.set(threadId, { ...entry, messages, syncedAt: now() });
       onCommit();
       return "applied";
     },
@@ -1106,11 +1119,11 @@ export const createThreadCache = (
       if (parts.every((next, slot) => next === held.parts[slot])) return false;
       const messages = [...entry.messages];
       messages[index] = { ...held, parts };
-      entries.set(threadId, confirmed({
+      entries.set(threadId, {
         ...entry,
         messages,
         repairedToolCallIds: new Set([...entry.repairedToolCallIds, toolCallId]),
-      }));
+      });
       onCommit();
       return true;
     },
@@ -1132,7 +1145,7 @@ export const createThreadCache = (
       // `fromDevice` -- is stored, and a reconnect that answers eight
       // conditional reads must not rewrite eight rows. Like `restore` and
       // `clear`, the caller recomputes whatever it derives from the held set.
-      return patchFromServer(threadId, (entry) => (entry.stale
+      return patchWithSummary(threadId, (entry) => (entry.stale
         ? { ...entry, stale: false, syncedAt: now() }
         : entry));
     },
