@@ -123,7 +123,10 @@ interface ConsoleStoreValue {
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
   readonly unarchiveThread: (threadId: string) => Promise<void>;
-  readonly deleteThread: (threadId: string) => Promise<void>;
+  readonly deleteThread: (
+    threadId: string,
+    options?: { readonly emptyOnly?: boolean },
+  ) => Promise<void>;
   readonly sendTurn: (
     input: StartTurnInput,
     onThreadResolved?: (threadId: string) => void,
@@ -1006,6 +1009,7 @@ export type DeleteFailureVerdict = "refused" | "applied" | "unknown";
  */
 const DELETE_REFUSAL_CODES: ReadonlySet<string> = new Set([
   "turn_active",
+  "thread_not_empty",
   "thread_not_archived",
   "cron_channel_configured",
   "untrusted_host",
@@ -1451,6 +1455,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // tab and was pruned only by a permanent delete.
     (threadId) => { overrideWriteRef.current.delete(threadId); },
   ));
+  const deleteThreadRef = useRef<(
+    threadId: string,
+    options?: { readonly emptyOnly?: boolean },
+  ) => Promise<void>>(async () => undefined);
   // Conversations deleted in this session. A response already in flight when
   // one was deleted must not put it back into the projection.
   const removedThreadsRef = useRef<RemovedThreadRegistry>(createRemovedThreadRegistry());
@@ -4267,6 +4275,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         } else if (readPersistedThreadIds()[thread.sourceId] === target.id) {
           persistThreadId(thread.sourceId, null);
         }
+        if (thread.trigger === undefined && thread.messageCount === 0) {
+          try {
+            await deleteThreadRef.current(thread.id, { emptyOnly: true });
+          } catch (emptyDeleteError) {
+            if (emptyDeleteError instanceof ApiError && emptyDeleteError.code === "thread_not_empty") {
+              // The summary was stale or activity arrived after the archive.
+              // The server kept the conversation, which is the successful
+              // archive outcome the operator was promised for nonempty work.
+              setActionError(null);
+              return;
+            }
+            throw emptyDeleteError;
+          }
+        }
       } catch (archiveError) {
         setActionError(errorMessage(archiveError));
         throw archiveError;
@@ -4282,20 +4304,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const thread = await enqueueThreadWrite(target.id, (signal) =>
         api.patchThread(target.id, { archived: false }, signal));
       applyThreadUpdate(thread, issuedAt);
-      operatorSelectionRef.current += 1;
-      restoredSelectionRef.current = null;
-      selectedThreadRef.current = thread.id;
-      setSelectedThreadId(thread.id);
-      // In the same batch as the selection -- see `selectAgent`.
-      publishDetail(thread.id);
-      persistThreadId(thread.sourceId, thread.id);
-      setShowArchived(false);
-      updateThreadRoute(thread, true);
+      if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
+        operatorSelectionRef.current += 1;
+        restoredSelectionRef.current = null;
+        const replacement = visibleThreads.find((item) => item.id !== target.id);
+        selectedThreadRef.current = replacement?.id ?? null;
+        setSelectedThreadId(replacement?.id ?? null);
+        publishDetail(replacement?.id ?? null);
+        updateThreadRoute(replacement, true);
+      }
     } catch (unarchiveError) {
       setActionError(errorMessage(unarchiveError));
       throw unarchiveError;
     }
-  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, publishDetail]);
+  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, publishDetail, visibleThreads]);
 
   /**
    * Everything a CONFIRMED delete leaves this tab to clean up.
@@ -4356,7 +4378,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const deletesInFlightRef = useRef(new Map<string, Promise<void>>());
 
   /** Everything one delete of one conversation does -- see {@link deleteThread}. */
-  const runThreadDelete = useCallback(async (threadId: string) => {
+  const runThreadDelete = useCallback(async (
+    threadId: string,
+    options: { readonly emptyOnly?: boolean } = {},
+  ) => {
     try {
       const thread = await fetchThreadSummary(threadId);
       // Tombstoned BEFORE the round trip, and reversed if the round trip proves
@@ -4379,7 +4404,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // the request's REAL settlement, not the caller's. See
       // `reconcileFailedDelete` -- a read issued while this DELETE is still on
       // the wire cannot order itself against it.
-      const attempt = startBoundedRequest((signal) => api.deleteThread(thread.id, signal));
+      const attempt = startBoundedRequest((signal) =>
+        api.deleteThread(thread.id, signal, options.emptyOnly === true));
       try {
         await attempt.result;
       } catch (deleteRequestError) {
@@ -4516,11 +4542,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * there and still deletable, and an entry that outlived its request would
    * answer that next ask with a promise for a request that is over.
    */
-  const deleteThread = useCallback((threadId: string): Promise<void> => {
+  const deleteThread = useCallback((
+    threadId: string,
+    options: { readonly emptyOnly?: boolean } = {},
+  ): Promise<void> => {
     const inFlight = deletesInFlightRef.current;
     const running = inFlight.get(threadId);
     if (running !== undefined) return running;
-    const attempt = runThreadDelete(threadId);
+    const attempt = runThreadDelete(threadId, options);
     inFlight.set(threadId, attempt);
     const release = () => {
       // Only its own entry: a later delete of the same conversation owns the
@@ -4533,6 +4562,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     void attempt.then(release, release);
     return attempt;
   }, [runThreadDelete]);
+  deleteThreadRef.current = deleteThread;
 
   const ensureProviderCatalog = useCallback(async (provider: string) => {
     const sourceId = selectedAgentId;

@@ -1240,13 +1240,13 @@ export class WebService {
     return thread;
   }
 
-  async deleteThread(id: string): Promise<void> {
+  async deleteThread(id: string, options: { readonly emptyOnly?: boolean } = {}): Promise<void> {
     const resolved = this.store.getThread(id)?.id;
     if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     if (this.activeTurns.has(resolved)) {
       throw new WebConsoleError("turn_active", "Cancel the active turn before deleting this conversation.", 409);
     }
-    const result = await this.store.deleteArchivedThread(resolved);
+    const result = await this.store.deleteArchivedThread(resolved, options);
     if (result.orphanedFiles > 0) {
       this.options.logger?.warn?.("Deleted a web conversation with attachment files deferred to orphan cleanup.", {
         threadId: resolved,

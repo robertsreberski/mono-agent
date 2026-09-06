@@ -26,6 +26,10 @@ export type ModelSelectorProps = {
   readonly open?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
   readonly badge?: "custom" | "default";
+  /** Keeps the composer trigger to the resolved model and effort labels. */
+  readonly conciseValue?: boolean;
+  readonly side?: "top" | "bottom";
+  readonly align?: "start" | "center" | "end";
   /** Marks the row this agent starts new conversations on. */
   readonly agentDefaultId?: string;
   /** Offered only while a conversation override is in force. */
@@ -64,6 +68,9 @@ export function ModelSelector({
   open: controlledOpen,
   onOpenChange,
   badge,
+  conciseValue = false,
+  side = "bottom",
+  align = "start",
   agentDefaultId,
   onReset,
   onProviderRequest,
@@ -174,10 +181,14 @@ export function ModelSelector({
       >
         <span data-slot="model-selector-value" className="model-selector__value">
           <span className="model-selector__model-name">
-            {selectedModel?.name ?? "Select model"}
+            {conciseValue
+              ? selectedModel?.name.replace(/^Default · /u, "") ?? "Select model"
+              : selectedModel?.name ?? "Select model"}
           </span>
           {activeEffort && (
-            <span className="model-selector__effort-value">{activeEffort.name}</span>
+            <span className="model-selector__effort-value">
+              {conciseValue ? activeEffort.name.replace(/^Default · /u, "") : activeEffort.name}
+            </span>
           )}
           {badge !== undefined && <span className={`model-selector__badge is-${badge}`}>{badge}</span>}
         </span>
@@ -192,8 +203,8 @@ export function ModelSelector({
         <Popover.Positioner
           data-slot="model-selector-positioner"
           className="model-selector__positioner"
-          align="start"
-          side="bottom"
+          align={align}
+          side={side}
           sideOffset={6}
         >
           <Popover.Popup

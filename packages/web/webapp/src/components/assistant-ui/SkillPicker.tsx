@@ -139,7 +139,7 @@ export function SkillAutocomplete({ skills, query, cursor, onSelect }: SkillAuto
                   className="composer-trigger-item skill-result"
                   data-slot="skill-autocomplete-item"
                 >
-                  <span className="composer-trigger-item-icon"><Icon name="spark" size={16} /></span>
+                  <span className="composer-trigger-item-icon"><Icon name="book" size={16} /></span>
                   <span className="composer-trigger-item-copy">
                     <strong>{skill.reference}</strong>
                     <small>{skill.description}</small>
@@ -173,11 +173,7 @@ export function SkillBrowser({
   const canInsert = registry.status === "ready";
 
   useEffect(() => {
-    if (!open) {
-      setQuery("");
-      return;
-    }
-    window.requestAnimationFrame(() => searchRef.current?.focus());
+    if (!open) setQuery("");
   }, [open]);
 
   return (
@@ -190,11 +186,14 @@ export function SkillBrowser({
         disabled={agentLabel === undefined}
         onClick={onBeforeOpen}
       >
-        <Icon name="spark" size={17} />
+        <Icon name="book" size={17} />
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop className="skill-browser-backdrop" />
-        <Dialog.Popup className="skill-browser-popup">
+        <Dialog.Popup
+          className="skill-browser-popup"
+          initialFocus={(interaction) => interaction === "keyboard" ? searchRef.current : null}
+        >
           <header className="skill-browser-header">
             <span>
               <Dialog.Title>Skills</Dialog.Title>
@@ -239,7 +238,7 @@ export function SkillBrowser({
                       onSelect(skill.name);
                     }}
                   >
-                    <span className="skill-browser-item-icon"><Icon name="spark" size={16} /></span>
+                    <span className="skill-browser-item-icon"><Icon name="book" size={16} /></span>
                     <span className="skill-browser-item-copy">
                       <strong>{skill.reference ?? skill.name}</strong>
                       <small>{skill.description}</small>

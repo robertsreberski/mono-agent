@@ -8,6 +8,7 @@ export type IconName =
   | "attach"
   | "bell"
   | "bell-off"
+  | "book"
   | "bulb"
   | "check"
   | "chevron"
@@ -59,6 +60,12 @@ const paths: Record<IconName, React.ReactNode> = {
   "bell-off": (
     <>
       <path d="m3 3 18 18M8.3 5.1A6 6 0 0 1 18 8c0 2.5.4 4.1 1 5.2M6 8c0 7-3 7-3 9h14M10 21h4" />
+    </>
+  ),
+  book: (
+    <>
+      <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11a2 2 0 0 1 2 2v16a3 3 0 0 0-3-3H4z" />
+      <path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v18a3 3 0 0 1 3-3h4z" />
     </>
   ),
   bulb: (

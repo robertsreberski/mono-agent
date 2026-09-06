@@ -193,17 +193,36 @@ describe("App mobile drawer gestures", () => {
       .toHaveAttribute("aria-hidden", "true");
   });
 
-  it("leaves message content and native horizontal scrollers in control", () => {
+  it("opens from ordinary transcript text", () => {
     const { container } = render(<App />);
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
     const message = document.createElement("div");
     const messageContent = document.createElement("p");
+    messageContent.textContent = "Swipe across this response";
     message.className = "message";
     message.append(messageContent);
     shell!.append(message);
     swipe(messageContent, { x: 40, y: 200 }, { x: 130, y: 204 });
+
+    expect(container.querySelector(".mobile-thread-drawer"))
+      .toHaveAttribute("aria-hidden", "false");
+  });
+
+  it("leaves active text selections and native horizontal scrollers in control", () => {
+    const { container } = render(<App />);
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
+
+    const selected = document.createElement("p");
+    selected.textContent = "Selected response text";
+    shell!.append(selected);
+    const range = document.createRange();
+    range.selectNodeContents(selected);
+    window.getSelection()?.addRange(range);
+    swipe(selected, { x: 40, y: 200 }, { x: 130, y: 204 });
+    window.getSelection()?.removeAllRanges();
 
     const scroller = document.createElement("div");
     const scrollContent = document.createElement("span");
