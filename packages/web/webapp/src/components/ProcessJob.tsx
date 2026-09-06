@@ -285,7 +285,9 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
         if (next.state === "running") {
           // A live tail stays at the mode's initial cadence. Queued/starting
           // jobs and failed reads retain the existing exponential backoff.
-          delayMs = initialDelayMs;
+          // Zero, like the read that opens the loop: `schedule` clamps it up
+          // to the initial delay of whichever mode is in force by then.
+          delayMs = 0;
         }
       } catch {
         // The retained card remains authoritative while its owner is offline.
