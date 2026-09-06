@@ -4394,6 +4394,51 @@ describe("transcript shaping", () => {
     await service.stop();
   });
 
+  it("names what a truncated payload was cut from, and names it the same way twice", async () => {
+    // A preview says how long the whole body is and what its first characters
+    // are, and the console used to restore a repaired body on those two facts
+    // alone -- so a rewritten result of exactly the same length with the same
+    // head put the OLD body back under the new preview. The digest is what
+    // makes "this is the body that preview came from" provable rather than
+    // plausible, and the console fails closed without it.
+    const bigArgs = { command: "printf %s ".concat("a".repeat(9_000)), cwd: "/tmp" };
+    const bigResult = "R".repeat(9_000);
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => [
+          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "cut", name: "Exec", arguments: bigArgs } }),
+          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "cut", content: bigResult } }),
+          JSON.stringify({ kind: "finish", finalText: "done" }),
+          "",
+        ].join("\n"),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const sha = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+    const message = service.thread(thread.id).messages.at(-1)!;
+    const shaped = message.parts.find((part) => part.type === "tool-call")!;
+
+    expect(shaped).toMatchObject({
+      argsTruncated: true,
+      argsDigest: sha(JSON.stringify(bigArgs)),
+      resultTruncated: true,
+      resultDigest: sha(bigResult),
+    });
+    // The repair read answers with the SAME names, so the console can compare
+    // the body it is holding with the preview that arrives after it.
+    expect(service.toolCallPart(thread.id, message.id, "cut")).toMatchObject({
+      args: bigArgs,
+      result: bigResult,
+      argsDigest: sha(JSON.stringify(bigArgs)),
+      resultDigest: sha(bigResult),
+    });
+    // A payload under the budget is not truncated, so it names nothing.
+    expect(service.toolCallPart(thread.id, message.id, "cut")).not.toHaveProperty("resultTruncated");
+    await service.stop();
+  });
+
   it("keeps telemetry data only for what the console renders, and moves no part", async () => {
     const service = await createService({ fetchImpl: operatorFetch({ turns: telemetryTurn }) });
     const thread = service.createThread("agent-one");
@@ -4524,6 +4569,10 @@ describe("transcript shaping", () => {
       toolName: "Exec",
       args: bigArgs,
       result: bigResult,
+      // The whole body names itself the way its preview did, so the console can
+      // prove the two describe the same content. See the digest test below.
+      argsDigest: createHash("sha256").update(JSON.stringify(bigArgs), "utf8").digest("hex"),
+      resultDigest: createHash("sha256").update(bigResult, "utf8").digest("hex"),
       status: "complete",
     });
     await service.stop();

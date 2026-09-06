@@ -524,6 +524,7 @@ describe("createThreadCache", () => {
       result: "HEAD",
       resultTruncated: true,
       resultBytes: 16,
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     };
     cache.upsertFull(detail([message("m1", { seq: 1, parts: [truncated] })]));
@@ -532,11 +533,13 @@ describe("createThreadCache", () => {
       toolCallId: "t1",
       toolName: "Read",
       result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     })).toBe(true);
 
     // The server rewrites the same slot -- an execution timing, a status flip --
-    // and sends the DEFAULT shape, which is the preview again.
+    // and sends the DEFAULT shape, which is the preview again. Same digest: the
+    // same body, so the one already loaded goes back under it.
     const outcome = cache.applyDelta("alpha-thread", delta({
       ops: [{
         op: "set",
@@ -565,6 +568,7 @@ describe("createThreadCache", () => {
       result: "HEAD",
       resultTruncated: true,
       resultBytes: 16,
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     };
     cache.upsertFull(detail([message("m1", { seq: 1, parts: [truncated] })]));
@@ -573,12 +577,17 @@ describe("createThreadCache", () => {
       toolCallId: "t1",
       toolName: "Read",
       result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-head-and-the-tail",
       status: "complete",
     });
 
-    // A DIFFERENT body: the preview reports a length the held one does not have.
+    // A DIFFERENT body: the preview names content the held one is not.
     cache.applyDelta("alpha-thread", delta({
-      ops: [{ op: "set", index: 0, part: { ...truncated, result: "NEW ", resultBytes: 4_000 } }],
+      ops: [{
+        op: "set",
+        index: 0,
+        part: { ...truncated, result: "NEW ", resultBytes: 4_000, resultDigest: "digest-of-something-else" },
+      }],
     }));
 
     const part = cache.get("alpha-thread")?.messages[0]?.parts[0] as {
@@ -587,6 +596,72 @@ describe("createThreadCache", () => {
     };
     expect(part.result).toBe("NEW ");
     expect(part.resultTruncated).toBe(true);
+  });
+
+  it("drops a repair the server no longer names, rather than guessing from a length", () => {
+    // The length and the head agreed and the body was still a different one: a
+    // rewritten result of exactly the same size starting with the same
+    // characters used to restore the OLD body under the NEW preview. The digest
+    // is the only evidence that answers the question being asked, and its
+    // absence is not evidence at all -- so a preview that names nothing is
+    // served as the preview it is.
+    const cache = createThreadCache();
+    const truncated: MessagePart = {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "HEAD",
+      resultTruncated: true,
+      resultBytes: 17,
+      resultDigest: "digest-of-the-first-body",
+      status: "complete",
+    };
+    cache.upsertFull(detail([message("m1", { seq: 1, parts: [truncated] })]));
+    cache.repairToolCall("alpha-thread", "m1", "t1", {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-the-first-body",
+      status: "complete",
+    });
+
+    // Same length, same head, different content -- and the server says so.
+    cache.applyDelta("alpha-thread", delta({
+      ops: [{
+        op: "set",
+        index: 0,
+        part: { ...truncated, resultDigest: "digest-of-the-second-body" },
+      }],
+    }));
+    const rewritten = cache.get("alpha-thread")?.messages[0]?.parts[0] as {
+      readonly result?: unknown;
+      readonly resultTruncated?: boolean;
+    };
+    expect(rewritten.result).toBe("HEAD");
+    expect(rewritten.resultTruncated).toBe(true);
+
+    // And a preview carrying no digest at all is not evidence either.
+    cache.repairToolCall("alpha-thread", "m1", "t1", {
+      type: "tool-call",
+      toolCallId: "t1",
+      toolName: "Read",
+      result: "HEAD AND THE TAIL",
+      resultDigest: "digest-of-the-second-body",
+      status: "complete",
+    });
+    const { resultDigest: _dropped, ...unnamed } = truncated as MessagePart & { resultDigest?: string };
+    cache.applyDelta("alpha-thread", delta({
+      baseSeq: 2,
+      seq: 3,
+      ops: [{ op: "set", index: 0, part: unnamed as MessagePart }],
+    }));
+    const unnamedPart = cache.get("alpha-thread")?.messages[0]?.parts[0] as {
+      readonly result?: unknown;
+      readonly resultTruncated?: boolean;
+    };
+    expect(unnamedPart.result).toBe("HEAD");
+    expect(unnamedPart.resultTruncated).toBe(true);
   });
 
   it("patches the summary of a conversation it holds and inserts none it does not", () => {

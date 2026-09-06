@@ -238,14 +238,45 @@ function shapeTelemetryPart(part: WebTelemetryPart): WebTelemetryPart {
 }
 
 /**
+ * What a truncated payload was cut from, so the console can prove a body it is
+ * holding is still that payload.
+ *
+ * The preview says how long the whole body is and what its first characters
+ * are, and a repaired body used to be restored on those two facts alone -- so a
+ * rewritten result of the same length with the same head put the OLD body back
+ * under the NEW preview. The digest closes that: a console restores only what
+ * the server names as the same content, and drops the repair otherwise.
+ *
+ * Over the SERIALIZED text, which is what both sides already have: a string
+ * payload as itself, anything else as its JSON. Nothing here is a secret and
+ * nothing is keyed -- it is an identity, not a signature.
+ */
+function payloadDigest(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
  * The head of an oversized payload, or `undefined` when it is small enough (or
  * cannot be serialized, in which case it is left exactly as stored).
  */
-function payloadPreview(value: unknown): { readonly preview: unknown; readonly length: number } | undefined {
+function payloadPreview(
+  value: unknown,
+): { readonly preview: unknown; readonly length: number; readonly digest: string } | undefined {
   if (value === undefined) return undefined;
   const text = typeof value === "string" ? value : jsonTextOf(value);
   if (text === undefined || text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
-  return { preview: text.slice(0, TOOL_PAYLOAD_PREVIEW_CHARS), length: text.length };
+  return {
+    preview: text.slice(0, TOOL_PAYLOAD_PREVIEW_CHARS),
+    length: text.length,
+    digest: payloadDigest(text),
+  };
+}
+
+/** The same name the shaper gives a payload, for a whole one. See {@link payloadDigest}. */
+function wholePayloadDigest(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const text = typeof value === "string" ? value : jsonTextOf(value);
+  return text === undefined ? undefined : payloadDigest(text);
 }
 
 /** `undefined` for anything JSON cannot express, which is then left as stored. */
@@ -267,8 +298,12 @@ function shapeToolCall(call: WebToolCall): WebToolCall {
   if (args === undefined && result === undefined) return call;
   return {
     ...call,
-    ...(args === undefined ? {} : { args: args.preview, argsTruncated: true, argsBytes: args.length }),
-    ...(result === undefined ? {} : { result: result.preview, resultTruncated: true, resultBytes: result.length }),
+    ...(args === undefined
+      ? {}
+      : { args: args.preview, argsTruncated: true, argsBytes: args.length, argsDigest: args.digest }),
+    ...(result === undefined
+      ? {}
+      : { result: result.preview, resultTruncated: true, resultBytes: result.length, resultDigest: result.digest }),
   };
 }
 
@@ -285,13 +320,16 @@ function shapeToolCallPart(part: WebToolCallPart): WebToolCallPart {
  * question. Every under-budget object args paid for both, on every transcript
  * read and now on every streamed delta.
  */
-function shapedArgs(args: unknown): { readonly preview: unknown; readonly length: number } | undefined {
+function shapedArgs(
+  args: unknown,
+): { readonly preview: unknown; readonly length: number; readonly digest: string } | undefined {
   if (args === undefined) return undefined;
   const text = typeof args === "string" ? args : jsonTextOf(args);
   // Under budget, or nothing JSON can express: left exactly as stored.
   if (text === undefined || text.length <= TOOL_PAYLOAD_PREVIEW_CHARS) return undefined;
-  return shapedArgsObject(args, text)
+  const shaped = shapedArgsObject(args, text)
     ?? { preview: text.slice(0, TOOL_PAYLOAD_PREVIEW_CHARS), length: text.length };
+  return { ...shaped, digest: payloadDigest(text) };
 }
 
 /**
@@ -339,9 +377,32 @@ function shapeSubagentPart(part: WebSubagentPart): WebSubagentPart {
   const result = payloadPreview(part.result);
   return {
     ...part,
-    ...(args === undefined ? {} : { args: args.preview, argsTruncated: true, argsBytes: args.length }),
-    ...(result === undefined ? {} : { result: result.preview, resultTruncated: true, resultBytes: result.length }),
+    ...(args === undefined
+      ? {}
+      : { args: args.preview, argsTruncated: true, argsBytes: args.length, argsDigest: args.digest }),
+    ...(result === undefined
+      ? {}
+      : { result: result.preview, resultTruncated: true, resultBytes: result.length, resultDigest: result.digest }),
     calls: part.calls.map(shapeToolCall),
+  };
+}
+
+/**
+ * The whole payloads, named the way the preview of them was.
+ *
+ * The repair read serves what is stored; without these the console has nothing
+ * to compare a later preview against and, failing closed, would drop every
+ * repair it made. A nested delegation's children are named too, because the
+ * repair is addressed by tool-call id and one of those may be the id asked for.
+ */
+function nameWholePayloads<T extends WebToolCall>(call: T): T {
+  const args = wholePayloadDigest(call.args);
+  const result = wholePayloadDigest(call.result);
+  if (args === undefined && result === undefined) return call;
+  return {
+    ...call,
+    ...(args === undefined ? {} : { argsDigest: args }),
+    ...(result === undefined ? {} : { resultDigest: result }),
   };
 }
 
@@ -838,13 +899,13 @@ export class WebService {
       (part): part is WebToolCallPart | WebSubagentPart =>
         (part.type === "tool-call" || part.type === "subagent") && part.toolCallId === toolCallId,
     );
-    if (owned !== undefined) return owned;
+    if (owned !== undefined) return nameWholePayloads(owned);
     for (const part of message.parts) {
       if (part.type !== "subagent") continue;
       const call = part.calls.find((candidate) => candidate.toolCallId === toolCallId);
       // A subagent's child owns no part of its own, so it answers as the
       // tool-call part it would have been outside the delegation.
-      if (call !== undefined) return { type: "tool-call", ...call };
+      if (call !== undefined) return nameWholePayloads({ type: "tool-call" as const, ...call });
     }
     throw new WebConsoleError("tool_call_not_found", "The tool call is unavailable.", 404);
   }

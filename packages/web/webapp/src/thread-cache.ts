@@ -197,51 +197,46 @@ interface TruncatablePayload {
   readonly result?: unknown;
   readonly resultTruncated?: boolean;
   readonly resultBytes?: number;
+  readonly resultDigest?: string;
   readonly argsTruncated?: boolean;
   readonly argsBytes?: number;
+  readonly argsDigest?: string;
 }
-
-const payloadText = (value: unknown): string | undefined => {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return undefined;
-  }
-};
 
 /**
  * Whether the held payload is provably the SAME body the incoming preview is
  * the head of.
  *
- * Two independent checks, both from the server's own numbers: the preview says
- * how long the whole body is, and it says what its first characters are. A held
- * body that matches on both is the body this preview was cut from, so putting
- * it back is restoring what the server sent -- not inventing content. Anything
- * else fails closed: the preview stands and the row offers to fetch the rest
- * again.
+ * The SERVER decides this, and says so: it names the untruncated payload with a
+ * sha-256 of its serialized text, on the whole body the repair read answers with
+ * and on every preview cut from it. Equal names is the same content.
+ *
+ * It replaced a length-and-prefix comparison, which asked a question those two
+ * facts cannot answer: a rewritten result of exactly the same size beginning
+ * with the same characters -- a directory listing whose last line changed, a
+ * retried command -- restored the OLD body under the NEW preview, and the
+ * operator read stale output with nothing to say it was stale.
+ *
+ * FAIL CLOSED. A name missing on either side is not weak evidence, it is none:
+ * the preview stands as the preview it is and the row offers to fetch the rest
+ * again, which costs one request and cannot be wrong.
  */
 const sameUntruncatedBody = (
   held: unknown,
-  preview: unknown,
-  bytes: number | undefined,
-): boolean => {
-  if (bytes === undefined || held === undefined) return false;
-  const text = payloadText(held);
-  if (text === undefined || text.length !== bytes) return false;
-  const head = typeof preview === "string" ? preview : undefined;
-  // An object preview is a RESHAPED args object, not a prefix of anything, so
-  // the length agreement above is all the evidence there is.
-  return head === undefined || text.startsWith(head);
-};
+  heldDigest: string | undefined,
+  previewDigest: string | undefined,
+): boolean => held !== undefined
+  && heldDigest !== undefined
+  && previewDigest !== undefined
+  && heldDigest === previewDigest;
 
 const restorePayloads = <T extends TruncatablePayload>(held: TruncatablePayload, incoming: T): T => {
   const restoreResult = incoming.resultTruncated === true
     && held.resultTruncated !== true
-    && sameUntruncatedBody(held.result, incoming.result, incoming.resultBytes);
+    && sameUntruncatedBody(held.result, held.resultDigest, incoming.resultDigest);
   const restoreArgs = incoming.argsTruncated === true
     && held.argsTruncated !== true
-    && sameUntruncatedBody(held.args, incoming.args, incoming.argsBytes);
+    && sameUntruncatedBody(held.args, held.argsDigest, incoming.argsDigest);
   if (!restoreResult && !restoreArgs) return incoming;
   const next = { ...incoming } as Record<string, unknown>;
   if (restoreResult) {
