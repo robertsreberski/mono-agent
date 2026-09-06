@@ -106,6 +106,27 @@ Legacy aliases are canonicalized at host ingress when needed. The strict parser
 keeps the package boundary honest by rejecting reserved runtime IDs such as
 `openai:*`, `vercel:*`, and `claude-code:*`.
 
+## Host prompt assembly and replay
+
+The harness's complete `prompt` and typed `sections` describe inspection context.
+Dispatch uses its separate `systemPrompt`: core/SOUL → identity → stable skill
+index/guidance → selected skill bodies → fixed host-envelope instruction. The
+runtime adds its structured-output instruction without moving it into host
+history. Session facts and the conditional warm-skill paragraph live in the
+leading `<host_turn_context>` envelope on every current user message. That
+latest envelope supersedes older copies; quoted surface labels, user/history,
+memory and tool output remain untrusted. Tool enforcement and delivery routes
+do not derive authority from envelope text.
+
+Every cold/stateless/stale-session retry supplies chronological canonical
+messages with deterministic speaker/timestamp labels, then the bounded untrusted
+tool-history projection, then one current user message (envelope, existing
+speaker/preceding-message/user/attachment text, recall suffix). Legacy system/tool
+history is labeled untrusted text, not system authority or native tool calls.
+Inspection, canonical history and provider transcripts remain distinct: the host
+never persists the envelope into canonical user text or memory capture and does
+not use it as a recall query. Configured last-64 retention is unchanged.
+
 ## Run Lifecycle
 
 **Diagram summary:** The host calls `run()`, the runtime lazily loads one bridge,
@@ -306,17 +327,18 @@ positive reduction. Runs report `context_compaction_applied` as `true` (a
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
 
-| Provider | Warm session | Resume across turns | Survives process restart |
+| Active bridge | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|
 | **pi** | Yes (pi `AgentHarness` + JSONL session repo) | session repo | Yes only with `piSessionsRoot` and the durable history/session transaction contract |
-| **claude-sdk** | No persistent process (stream closes at turn end) | `queryOptions.resume` | No (Anthropic-side id) |
-| **claude-cli** | No — respawns `claude --resume` per turn (re-inits MCP) | `--resume` replay | No |
-| **codex-app** | Live subprocess thread (dies with the subprocess) | next turn on the thread, else replay | No |
-| **opencode-app** | No — every run uses an isolated server and private database | Unsupported | No |
 
-Claude CLI and Codex only *approximate* a warm session (resume/replay), so do
-not assume warm-session latency wins there. Direct OpenCode is intentionally
-stateless across runs.
+The current registry contains only Pi. A confirmed warm session omits host replay.
+An unconfirmed durable reopen refreshes the handle and supplies canonical history:
+true native resume skips seeding; missing JSONL creates an empty session and seeds
+once. Native resume preserves assistant blocks, tool ids/arguments/results and
+reasoning signatures. Cold reconstruction has only canonical text, so byte identity
+with the original native transcript is not promised. Compaction replaces an older
+prefix and keeps a tail; it may remove loaded skill bodies. Fallback routes remain
+isolated and stateless, with the same cancellation/reset/failed-commit barriers.
 
 ## Essential Takeaway
 

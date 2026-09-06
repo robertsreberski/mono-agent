@@ -203,14 +203,14 @@ describe("configured durable Pi history", () => {
       expect(firstRuntime.calls[0]?.prompt).not.toContain("seed-user");
       expect(firstRuntime.calls[0]?.prompt).not.toContain("seed-assistant");
       expect(contentMessages(firstRuntime.calls[0]!.options)).toEqual([
-        "user:seed-user",
-        "assistant:seed-assistant",
-        "user:turn-1-user",
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
       ]);
       expect(transcriptOf(createOnMissContext)).toEqual([
-        "user:seed-user",
-        "assistant:seed-assistant",
-        "user:turn-1-user",
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
       ]);
 
       const second = await firstHarness.run({
@@ -219,13 +219,17 @@ describe("configured durable Pi history", () => {
         abortSignal: new AbortController().signal,
       });
       expect(second.text).toBe("turn-2-assistant");
-      expect(contentMessages(firstRuntime.calls[1]!.options)).toEqual(["user:turn-2-user"]);
+      expect(firstRuntime.calls[1]?.prompt).toBe(firstRuntime.calls[0]?.prompt);
+      // Native resume retains the exact earlier provider messages, including
+      // their original envelope, instead of rebuilding canonical text.
+      expect(transcriptOf(warmContext).slice(0, 3)).toEqual(transcriptOf(createOnMissContext));
+      expect(contentMessages(firstRuntime.calls[1]!.options)).toEqual([expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u)]);
       expect(transcriptOf(warmContext)).toEqual([
-        "user:seed-user",
-        "assistant:seed-assistant",
-        "user:turn-1-user",
-        "assistant:turn-1-assistant",
-        "user:turn-2-user",
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
       ]);
 
       const cancelled = await firstHarness.run({
@@ -244,13 +248,13 @@ describe("configured durable Pi history", () => {
         retirementErrors: firstRuntime.retirementErrors,
       }).toEqual({ invalidationErrors: [], retirementErrors: [] });
       expect(transcriptOf(cancelledContext)).toEqual([
-        "user:seed-user",
-        "assistant:seed-assistant",
-        "user:turn-1-user",
-        "assistant:turn-1-assistant",
-        "user:turn-2-user",
-        "assistant:turn-2-assistant",
-        "user:cancelled-turn-user",
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-2-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?cancelled-turn-user$/u),
       ]);
       const historyAfterCancellation = await seedStore.load("durable-conversation");
       expect(historyAfterCancellation.at(-2)).toMatchObject({ role: "user", content: "cancelled-turn-user" });
@@ -285,26 +289,26 @@ describe("configured durable Pi history", () => {
       expect(resumedRuntime.calls[0]?.prompt).not.toContain("seed-user");
       expect(resumedRuntime.calls[0]?.prompt).not.toContain("turn-1-user");
       expect(contentMessages(resumedRuntime.calls[0]!.options)).toEqual([
-        "user:seed-user",
-        "assistant:seed-assistant",
-        "user:turn-1-user",
-        "assistant:turn-1-assistant",
-        "user:turn-2-user",
-        "assistant:turn-2-assistant",
-        "user:cancelled-turn-user",
-        expect.stringContaining("assistant:<cancelled_turn_history version=\"1\">") as unknown as string,
-        "user:turn-3-user",
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-2-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?cancelled-turn-user$/u),
+        expect.stringContaining("<cancelled_turn_history version=\"1\">") as unknown as string,
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-3-user$/u),
       ]);
       expect(transcriptOf(freshAfterCancellationContext)).toEqual([
-        "user:seed-user",
-        "assistant:seed-assistant",
-        "user:turn-1-user",
-        "assistant:turn-1-assistant",
-        "user:turn-2-user",
-        "assistant:turn-2-assistant",
-        "user:cancelled-turn-user",
-        expect.stringContaining("assistant:<cancelled_turn_history version=\"1\">") as unknown as string,
-        "user:turn-3-user",
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
+        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-2-assistant$/u),
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?cancelled-turn-user$/u),
+        expect.stringContaining("<cancelled_turn_history version=\"1\">") as unknown as string,
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-3-user$/u),
       ]);
     } finally {
       await resumedHarness?.dispose?.();

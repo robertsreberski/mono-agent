@@ -1,8 +1,8 @@
-import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import type {
@@ -12,7 +12,8 @@ import type {
   MemoryStore,
 } from "@mono-agent/agent-contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
-import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
+import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
+import type { RunExporter, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 
 import {
@@ -679,13 +680,13 @@ describe("AgentHarness", () => {
     expect(response.metadata.contextSources).toEqual([join(dir, "IDENTITY.md"), join(skillsRoot, "research", "SKILL.md")]);
     expect(fake.calls).toHaveLength(1);
     // Recalled memory is appended to the user message, NOT the system prompt.
-    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toContain("Remember: terse.");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("Remember: terse.");
     expect(fake.calls[0]?.prompt).not.toContain("Remember: terse.");
-    expect(fake.calls[0]?.prompt).toContain("Earlier answer");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("Earlier answer");
     // The deliverable conversation gets host-owned continuation guidance without
     // exposing its physical route to the model.
-    expect(fake.calls[0]?.prompt).toContain("The host owns its exact channel and thread destination");
-    expect(fake.calls[0]?.prompt).toContain("continuation-capable tool explicitly confirms");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("The host owns its exact channel and thread destination");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("continuation-capable tool explicitly confirms");
     expect(fake.calls[0]?.prompt).not.toContain("telegram:1");
     expect(fake.calls[0]?.prompt).toContain("# Skill: research");
     expect(fake.calls[0]?.options).toMatchObject({ allowedTools: ["Read"], disallowedTools: ["Bash"], maxTurns: 3 });
@@ -770,7 +771,7 @@ describe("AgentHarness", () => {
         ...(scenario.replyTo === undefined ? {} : { replyTo: scenario.replyTo }),
         ...(scenario.metadata === undefined ? {} : { metadata: scenario.metadata }),
       });
-      const prompt = fake.calls.at(-1)?.prompt ?? "";
+      const prompt = String(fake.calls.at(-1)?.options.messages?.at(-1)?.content ?? "");
       if (scenario.expected === "interactive") {
         expect(prompt, scenario.name).toContain("You are handling an interactive push conversation");
         expect(prompt, scenario.name).not.toContain("This is a request-driven run");
@@ -887,9 +888,9 @@ describe("AgentHarness", () => {
     });
 
     expect(fake.calls).toHaveLength(2);
-    expect(fake.calls[1]?.prompt).toContain("Send the complete bank details including BIC and email?");
-    expect(fake.calls[1]?.prompt).toContain("Answer: Hold on");
-    expect(fake.calls[1]?.prompt).toContain("Held—nothing was sent.");
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("Send the complete bank details including BIC and email?");
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("Answer: Hold on");
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("Held—nothing was sent.");
   });
 
   it("falls back to original history text when enrichment fails and still releases failed runs", async () => {
@@ -965,7 +966,7 @@ describe("AgentHarness", () => {
       replyTo: { conversationId: "slack:C0123456789:1720000000.000001" },
       metadata: { cron: { jobId: "digest", nativeNotify: { enabled: true } } },
     });
-    const notifyPrompt = fake.calls[0]?.prompt ?? "";
+    const notifyPrompt = String(fake.calls[0]?.options.messages?.at(-1)?.content ?? "");
     expect(notifyPrompt).toContain("your final reply is delivered to the user");
     expect(notifyPrompt).toContain("delivery is automatic and posts your reply verbatim");
     expect(notifyPrompt).toContain("NOTHING_TO_REPORT");
@@ -1121,8 +1122,8 @@ describe("AgentHarness", () => {
     });
 
     // No hits → the user message is sent verbatim, with no memory delimiter.
-    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toBe("What changed?");
-    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).not.toContain("Recalled long-term memory");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toMatch(/<\/host_turn_context>\n\nWhat changed\?$/u);
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).not.toContain("Recalled long-term memory");
   });
 
   it("does not persist the recalled-memory block injected into the user message", async () => {
@@ -1157,7 +1158,7 @@ describe("AgentHarness", () => {
     });
 
     // The recalled memory rode on the provider-facing user message...
-    expect(String(fake.calls[0]?.options.messages?.[0]?.content)).toContain("ship the docs");
+    expect(String(fake.calls[0]?.options.messages?.at(-1)?.content)).toContain("ship the docs");
     // ...but must NOT leak into the persisted host summary or durable history.
     expect(summaries.join("\n")).not.toContain("ship the docs");
     expect(summaries.join("\n")).toContain("User: What changed?");
@@ -1228,9 +1229,9 @@ describe("AgentHarness", () => {
     expect(fake.calls).toHaveLength(1);
     // A non-push turn is described without exposing its internal conversation id
     // or suggesting that the model invent a callback route.
-    expect(fake.calls[0]?.prompt).toContain("request-driven run (scheduled, webhook, or API) with no interactive user");
-    expect(fake.calls[0]?.prompt).toContain("Do not invent or infer a callback destination");
-    expect(fake.calls[0]?.prompt).not.toContain("conversation-extension");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("request-driven run (scheduled, webhook, or API) with no interactive user");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("Do not invent or infer a callback destination");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).not.toContain("conversation-extension");
     expect(fake.calls[0]?.options.allowedTools).toEqual(["Grep", "Read", "AskCollaborator"]);
     expect(fake.calls[0]?.options.disallowedTools).toEqual(["Write"]);
     expect(fake.calls[0]?.options.mcpServers).toEqual({
@@ -1648,8 +1649,8 @@ describe("AgentHarness", () => {
     expect(response.text).toBe("All good.");
     expect(calls).toContain("append:c1");
     expect(calls.some((c) => c.startsWith("schedule:c1"))).toBe(true);
-    expect(fake.calls[0]?.prompt).toContain("Long-term memory state is owned by the host");
-    expect(fake.calls[0]?.prompt).toContain("never edit memory Markdown, SQLite databases, indexes, manifests");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("Long-term memory state is owned by the host");
+    expect(JSON.stringify(fake.calls[0]?.options.messages)).toContain("never edit memory Markdown, SQLite databases, indexes, manifests");
   });
 
   for (const [label, metadata] of [
@@ -2592,10 +2593,10 @@ describe("AgentHarness", () => {
     });
 
     expect(response.text).toBe("synthesized final");
-    expect(fake.calls[2]?.prompt).toContain("origin question");
-    expect(fake.calls[2]?.prompt).toContain("origin answer");
-    expect(fake.calls[2]?.prompt).not.toContain("later question");
-    expect(fake.calls[2]?.prompt).not.toContain("later answer");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("origin question");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("origin answer");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).not.toContain("later question");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).not.toContain("later answer");
     expect(fake.calls[2]?.options.allowedTools).toEqual([]);
     expect(fake.calls[2]?.options.disallowedTools).toEqual(["*"]);
     expect(fake.calls[2]?.options.mcpServers).toEqual({});
@@ -2636,9 +2637,9 @@ describe("AgentHarness", () => {
     });
 
     expect(response.text).toBe("detached final");
-    expect(fake.calls[2]?.prompt).toContain("first answer");
-    expect(fake.calls[2]?.prompt).toContain("latest question");
-    expect(fake.calls[2]?.prompt).toContain("latest answer");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("first answer");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("latest question");
+    expect(JSON.stringify(fake.calls[2]?.options.messages)).toContain("latest answer");
     expect(fake.calls[2]?.options.allowedTools).toEqual([]);
     expect(fake.calls[2]?.options.mcpServers).toEqual({});
     expect(await history.load("slack:C2")).toEqual(before);
@@ -2952,5 +2953,99 @@ describe("AgentHarness", () => {
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
       { append: async () => undefined },
     )).rejects.toBeInstanceOf(AgentHarnessFailureError);
+  });
+});
+
+describe('recorded provider projection', () => {
+  it.each(['success', 'failure-result', 'cancel'] as const)('records dispatched system instructions on %s', async (outcome) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, 'IDENTITY.md');
+    await writeFile(identityPath, 'Recording identity.');
+    const recorder = new FakeRecorder('recorded', 'web:recorded');
+    const fake = createFakeRuntime(async () => {
+      if (outcome === 'failure-result') return { error: 'fixture failure', failureKind: 'provider_unavailable' };
+      if (outcome === 'cancel') return { cancelled: true };
+      return { text: 'answer' };
+    });
+    await createAgentHarness({ identityPath, runtime: fake.runtime, model, recorderFactory: () => recorder })
+      .run({ conversationId: 'web:recorded', userMessage: 'current-question-marker', metadata: { source: 'web' }, abortSignal: new AbortController().signal });
+    expect(recorder.systemPrompt).toBe(fake.calls[0]?.prompt);
+    expect(recorder.systemPrompt).toContain('Recording identity.');
+    expect(recorder.systemPrompt).not.toContain('current-question-marker');
+    expect(recorder.systemPrompt).not.toContain('Conversation id:');
+    expect(recorder.summaryStatus).toBe(outcome === 'success' ? 'succeeded' : outcome === 'cancel' ? 'cancelled' : 'failed');
+  });
+});
+
+// Thrown failures need the real composite lifecycle: a FakeRecorder cannot
+// distinguish exporter.finish from exporter.fail or retain a rejected preflight.
+describe("composite failure recording", () => {
+  it.each(["success", "runtime-throw", "prepare-rejection"] as const)("records %s through its original terminal lifecycle", async (outcome) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "Stable recording identity.");
+    const originalError = new TypeError(`fixture ${outcome}`);
+    const primary = createJsonlRunRecorder({
+      runId: "composite-recording", conversationId: "web:recorded", artifactDir: dir,
+      systemPrompt: "stale constructor prompt",
+    });
+    const primaryFail = vi.spyOn(primary, "fail");
+    const primaryFinish = vi.spyOn(primary, "finish");
+    const prepare = vi.fn(primary.prepareFinish!.bind(primary));
+    primary.prepareFinish = prepare;
+    if (outcome === "prepare-rejection") prepare.mockRejectedValue(originalError);
+    const exporter = {
+      finish: vi.fn<NonNullable<RunExporter["finish"]>>(),
+      fail: vi.fn<NonNullable<RunExporter["fail"]>>(),
+      flush: vi.fn(),
+    };
+    const exportContext = { runId: "composite-recording", conversationId: "web:recorded", includeSensitiveData: false };
+    const recorder = createCompositeRunRecorder({ recorder: primary, exporter, context: exportContext, timeoutMs: 1000 });
+    const fake = createFakeRuntime(async () => {
+      if (outcome === "runtime-throw") throw originalError;
+      return { text: "answer" };
+    });
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 64 });
+    const response = await createAgentHarness({
+      identityPath, runtime: fake.runtime, model, historyStore,
+      createRunId: () => "composite-recording", recorderFactory: () => recorder,
+    }).run({
+      conversationId: "web:recorded", userMessage: "current-question-marker",
+      metadata: { source: "web" }, abortSignal: new AbortController().signal,
+    });
+    expect(fake.calls).toHaveLength(1);
+    const dispatched = fake.calls[0]!.prompt;
+    expect(dispatched).toContain("Stable recording identity.");
+    expect(dispatched).not.toContain("current-question-marker");
+    expect(dispatched).not.toContain("Conversation id:");
+    expect(response.metadata.summary?.status).toBe(outcome === "success" ? "succeeded" : "failed");
+    expect(response.metadata.summary).not.toHaveProperty("systemPrompt");
+    const persisted = JSON.parse(await readFile(response.metadata.summary!.artifactPaths[1]!, "utf8")) as RunSummary;
+    expect(persisted.systemPrompt).toBe(dispatched);
+    expect(primaryFinish).not.toHaveBeenCalled();
+    expect(exporter.flush).toHaveBeenCalledTimes(1);
+    if (outcome === "success") {
+      expect(response.failure).toBeUndefined();
+      expect(primaryFail).not.toHaveBeenCalled();
+      expect(exporter.fail).not.toHaveBeenCalled();
+      expect(exporter.finish).toHaveBeenCalledExactlyOnceWith(persisted, exportContext);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    } else {
+      expect(response.failure).toMatchObject({ kind: "TypeError", message: originalError.message });
+      expect(primaryFail).toHaveBeenCalledTimes(1);
+      expect(primaryFail.mock.calls[0]?.[0]).toBe(originalError);
+      expect(primaryFail.mock.calls[0]?.[1]).toEqual({ systemPrompt: dispatched });
+      expect(exporter.finish).not.toHaveBeenCalled();
+      expect(exporter.fail).toHaveBeenCalledExactlyOnceWith(persisted, originalError, exportContext);
+      expect(exporter.fail.mock.calls[0]?.[1]).toBe(originalError);
+      expect(persisted).toMatchObject({ status: "failed", failureKind: "TypeError", diagnostics: { error: { message: originalError.message } } });
+      expect(prepare).toHaveBeenCalledTimes(outcome === "prepare-rejection" ? 1 : 0);
+      expect(await historyStore.load("web:recorded")).toEqual([]);
+      // Failure bypasses the composite's memoized rejected preparePromise and
+      // remains terminal/idempotent; another fail cannot export a second frame.
+      expect(await recorder.fail(new Error("later"))).toEqual(persisted);
+      expect(exporter.fail).toHaveBeenCalledTimes(1);
+      expect(primaryFail).toHaveBeenCalledTimes(1);
+    }
   });
 });

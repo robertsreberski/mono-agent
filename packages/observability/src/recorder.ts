@@ -153,10 +153,11 @@ class JsonlRunRecorder implements RunRecorder {
     return await this.commitFinish(result);
   }
 
-  async fail(error: unknown): Promise<RunSummary> {
+  async fail(error: unknown, context?: { readonly systemPrompt?: string }): Promise<RunSummary> {
     return await this.commitTerminal(() => {
       const failureKind = errorFailureKind(error);
       return this.buildSummary("failed", failureKind, {
+        ...(context?.systemPrompt === undefined ? {} : { systemPrompt: context.systemPrompt }),
         diagnostics: {
           error: redactArtifactValue(errorToJson(error), this.maxStringBytes),
         },
