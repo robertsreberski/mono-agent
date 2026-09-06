@@ -646,3 +646,23 @@ describe("runReactiveCompaction — overflow recovery", () => {
     expect(harness.compact).not.toHaveBeenCalled();
   });
 });
+
+describe("host envelopes at compaction boundaries", () => {
+  it("keeps the latest envelope in the retained tail and does not assert an older skill body survived", async () => {
+    const latest = '<host_turn_context>Latest Session facts. Skill bodies may remain.</host_turn_context>\n\ncurrent ask';
+    const fixture = hookHarness({ sourceMessages: [
+      userMessage('<host_turn_context>Old Session facts.</host_turn_context>\n' + 'old '.repeat(20_000)),
+      assistantMessage('old skill body '.repeat(5_000)),
+      userMessage('intermediate question '.repeat(2_000)),
+      assistantMessage('intermediate answer '.repeat(2_000)),
+      userMessage(latest),
+    ], summary: 'Earlier work was summarized.' });
+    const result = await tryCompact(fixture.harness, {
+      trigger: 'proactive', onEvent: () => {}, runtimeWarnings: [], session: fixture.session,
+      policy: { keepRecentTokens: 4_000, summaryMaxTokens: 2_000, compactionMinSavingsTokens: 0 },
+    });
+    expect(result.applied).toBe(true);
+    expect(JSON.stringify(fixture.messages)).toContain(latest.replaceAll('\n', '\\n'));
+    expect(JSON.stringify(fixture.messages).includes('old skill body')).toBe(false);
+  });
+});

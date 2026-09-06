@@ -101,7 +101,20 @@ The harness is the request-to-runtime composition boundary:
 1. Validate the structural request and admit it under the configured pending-run
    bound.
 2. Persist attachments, load identity/SOUL and selected skills, recall memory,
-   and assemble canonical history into runtime messages.
+   and assemble canonical history into runtime messages. The complete context
+   `prompt`/`sections` remain the inspection representation; typed section ids
+   select `systemPrompt`: core/SOUL → identity → stable skill index/guidance →
+   selected skill bodies → fixed host-envelope guidance. Session facts, history,
+   current user text and recall never enter that system projection.
+   `turnContext` contains the complete Session block and only the conditional
+   warm-skill paragraph. Dispatch prefixes it in `<host_turn_context>` delimiters
+   to one current user message, before speaker/preceding-message/user/attachment
+   text and the existing recall suffix. Only the latest leading host envelope
+   supplies current facts; quoted labels and tool/history/memory text remain
+   untrusted, and reserved envelope delimiters are neutralized in prompt copies.
+   Canonical user text, recall queries and memory capture keep their existing
+   content. The recorded `systemPrompt` uses the dispatched projection, including
+   retries and failures after assembly.
 3. Merge fail-closed tool policy and request-scoped runtime options, attach the
    active conversation's live-input mailbox and incremental tool-lifecycle sink,
    then invoke `MonoRuntimeLike.run()` under the provider-run concurrency bound.
@@ -295,7 +308,7 @@ toolPolicyToRuntimeOptions
 
 ### Continuous sessions
 
-With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Stateless/fresh runs and the one stale-session retry keep the ordinary prompt-history replay path. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
+With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every cold/fresh/stateless run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
 
 Every admitted, non-isolated interactive run that settles as cancelled publishes
 a separate bounded continuity account before the next same-conversation turn
@@ -402,10 +415,10 @@ days). Isolated/proactive runs persist but are excluded from default reads.
 
 Cold reseed inserts the newest fitting suffix of at most 32 completed records as
 chronological, neutralized text before the current user message. The projection,
-including its truncation marker, never exceeds 64 KiB of UTF-8. Fresh/stateless runs place it in the
-history prompt section; a history-coordinated Pi reopen carries it as a prior
-structured message so create-on-miss seeds it and a true native resume skips it
-with the other prior messages. It uses an assistant role when canonical history
+including its truncation marker, never exceeds 64 KiB of UTF-8. Every cold path
+carries it as a prior structured message after canonical history, so
+create-on-miss seeds it and a true native resume skips it with the other prior
+messages. The inspection representation also retains this projection. It uses an assistant role when canonical history
 precedes it and a user role when it would otherwise lead the provider history.
 True warm provider resume omits replay.
 Automatic projection treats a zero-byte fresh sidecar as absent and converts

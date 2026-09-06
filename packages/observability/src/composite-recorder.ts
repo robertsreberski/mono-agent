@@ -146,11 +146,13 @@ export function createCompositeRunRecorder(options: CompositeRunRecorderOptions)
       await prepareFinish(result);
       return await commitFinish(result);
     },
-    async fail(error: unknown): Promise<RunSummary> {
+    async fail(error: unknown, failureContext?: { readonly systemPrompt?: string }): Promise<RunSummary> {
       if (terminalPromise === undefined) {
         terminalStarted = true;
         terminalPromise = (async () => {
-          const summary = await recorder.fail(error);
+          const summary = failureContext === undefined
+            ? await recorder.fail(error)
+            : await recorder.fail(error, failureContext);
           warnAboutDroppedEvents();
           await bestEffort("fail", async () => {
             await replayEvents();

@@ -688,6 +688,26 @@ describe("JsonlRunRecorder", () => {
     expect(onDisk.failoverHistory).toHaveLength(2);
   });
 
+  it("records late failure instructions with the existing redaction and independent prompt cap", async () => {
+    const dir = await tempDir();
+    const credential = `sk-proj-${"x".repeat(48)}`;
+    const recorder = createJsonlRunRecorder({
+      runId: "failure-context", conversationId: "c", artifactDir: dir,
+      systemPrompt: "stale prompt", maxStringBytes: 64,
+    });
+    const summary = await recorder.fail(new TypeError("Bad runtime"), {
+      systemPrompt: `dispatched ${credential} ${"S".repeat(40_000)}`,
+    });
+    expect(summary).toMatchObject({ status: "failed", failureKind: "TypeError" });
+    expect(summary.systemPrompt).toContain("dispatched [redacted]");
+    expect(summary.systemPrompt!.length).toBeGreaterThan(1_000);
+    expect(summary.systemPrompt!.length).toBeLessThan(40_000);
+    const onDisk = await readFile(summary.artifactPaths[1]!, "utf8");
+    expect(onDisk).not.toContain(credential);
+    expect(JSON.parse(onDisk).systemPrompt).toBe(summary.systemPrompt);
+    expect(onDisk).toContain("Bad runtime");
+  });
+
   it("creates failure summaries from thrown errors", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({ runId: "throw", conversationId: "c", artifactDir: dir });

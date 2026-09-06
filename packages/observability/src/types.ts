@@ -192,7 +192,8 @@ export interface RunRecorder {
    */
   commitFinish?(result: RuntimeResultLike): Promise<RunSummary>;
   finish(result: RuntimeResultLike): Promise<RunSummary>;
-  fail(error: unknown): Promise<RunSummary>;
+  /** Record a thrown failure without successful-result preparation; preserve its original error. */
+  fail(error: unknown, context?: { readonly systemPrompt?: string }): Promise<RunSummary>;
 }
 
 export interface RunExportContext {

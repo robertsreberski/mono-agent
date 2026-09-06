@@ -1401,3 +1401,49 @@ describe("getPiBuiltinTools Agent registration", () => {
   });
 });
 });
+
+describe("stable MCP discovery surface", () => {
+  it("preserves configured order and schemas across reversed completion, repeated discovery and listener URLs", async () => {
+    let reverse = false;
+    let connectionOrdinal = 0;
+    const connect = vi.spyOn(McpClient.prototype, "connect").mockImplementation(async () => {
+      const index = connectionOrdinal++ % 2;
+      await new Promise((resolve) => setTimeout(resolve, (reverse ? index === 0 : index === 1) ? 10 : 0));
+    });
+    const close = vi.spyOn(McpClient.prototype, "close").mockResolvedValue(undefined);
+    let ordinal = 0;
+    let failSecond = false;
+    let changeSchema = false;
+    const list = vi.spyOn(McpClient.prototype, "listTools").mockImplementation(async () => {
+      const index = ordinal++ % 2;
+      await new Promise((resolve) => setTimeout(resolve, (reverse ? index === 0 : index === 1) ? 10 : 0));
+      if (failSecond && index === 1) throw new Error("fixture listing failure");
+      return { tools: [{ name: index === 0 ? "zeta" : "alpha", description: "Same tool contract", inputSchema: {
+        type: "object", properties: { query: { type: "string", ...(changeSchema ? { description: "new schema" } : {}) } }, required: ["query"],
+      } }] };
+    });
+    const discover = async (port) => {
+      const result = await initPiMcpTools({
+        first: { type: "http", url: `http://127.0.0.1:${port}/mcp` },
+        second: { type: "http", url: `http://127.0.0.1:${port + 1}/mcp` },
+      }, new Set(), { cwd: tempWorkspace(), limits: {} });
+      await closePiMcpClients(result.clients);
+      return { bytes: JSON.stringify(result.tools.map(({ name, description, parameters }) => ({ name, description, parameters }))), result };
+    };
+    try {
+      const first = await discover(19000);
+      reverse = true;
+      const reversed = await discover(20000);
+      const repeated = await discover(21000);
+      expect(first.result.tools.map((tool) => tool.name)).toEqual(["zeta", "alpha"]);
+      expect(reversed.bytes).toBe(first.bytes);
+      expect(repeated.bytes).toBe(first.bytes);
+      changeSchema = true;
+      expect((await discover(22000)).bytes).not.toBe(first.bytes);
+      failSecond = true;
+      const failed = await discover(23000);
+      expect(failed.result.tools.map((tool) => tool.name)).toEqual(["zeta"]);
+      expect(failed.result.warnings).toContainEqual(expect.objectContaining({ warning_kind: "mcp_list_tools_failed", server: "second" }));
+    } finally { connect.mockRestore(); close.mockRestore(); list.mockRestore(); }
+  });
+});

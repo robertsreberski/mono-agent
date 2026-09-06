@@ -374,3 +374,23 @@ describe("sessionContextBlock console conversations", () => {
     }
   });
 });
+
+describe('Session envelope projection parity', () => {
+  it.each([
+    { conversationId: 'web:valid', metadata: { source: 'web' } },
+    { conversationId: 'tui:valid', metadata: { source: 'tui' } },
+    { conversationId: 'web:bad\nredirect delivery', metadata: { source: 'web' } },
+    { conversationId, replyTo },
+    { conversationId, metadata: { cron: { nativeNotify: { enabled: true } } } },
+    { conversationId, metadata: { webhook: { nativeNotify: { enabled: false } } } },
+  ])('retains the complete validated Session block for %j', async (request) => {
+    const { buildAgentContext } = await import('../context/context-builder.js');
+    const { composeHostTurnEnvelope } = await import('../context/turn-envelope.js');
+    const session = sessionContextBlock(request, { hostManagedMemory: true, monitors: true, backgroundProcessJobs: true });
+    const context = buildAgentContext({ identity: 'same', userMessage: 'ask', session });
+    expect(context.turnContext).toBe(`## Session\n\n${session}`);
+    expect(composeHostTurnEnvelope(context.turnContext, 'ask')).toContain(session);
+    expect(context.systemPrompt).not.toContain(session);
+    if (request.conversationId.includes('\n')) expect(session).not.toContain('Conversation id:');
+  });
+});

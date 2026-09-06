@@ -94,11 +94,13 @@ export async function safeRecorderCancel(
   recorder: RunRecorder,
   failureKind: "cancelled" | "cancelled_user",
   cancellationReason?: RunCancellationReason,
+  systemPrompt?: string,
 ): Promise<RunSummary | undefined> {
   try {
     return await recorder.finish({
       cancelled: true,
       failureKind,
+      ...(systemPrompt === undefined ? {} : { systemPrompt }),
       ...(cancellationReason === undefined ? {} : { cancellationReason }),
     });
   } catch {
@@ -106,9 +108,12 @@ export async function safeRecorderCancel(
   }
 }
 
-export async function safeRecorderFail(recorder: RunRecorder, error: unknown): Promise<RunSummary | undefined> {
+export async function safeRecorderFail(recorder: RunRecorder, error: unknown, systemPrompt?: string): Promise<RunSummary | undefined> {
   try {
-    return await recorder.fail(error);
+    if (systemPrompt === undefined) return await recorder.fail(error);
+    // Keep thrown failures on the failure lifecycle, including when successful
+    // result preparation rejected. The recorder owns classification/redaction.
+    return await recorder.fail(error, { systemPrompt });
   } catch {
     return undefined;
   }

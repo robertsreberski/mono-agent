@@ -9,6 +9,7 @@ import {
 } from "@mono-agent/runtime-adapter";
 
 import type { BuiltAgentContext, ContextBlockInput, HistoryMessage, SkillIndexSummary } from "../context/index.js";
+import { composeHostTurnEnvelope, neutralizeTurnEnvelope } from "../context/turn-envelope.js";
 import type { Semaphore } from "../semaphore.js";
 import type {
   AgentHarnessContinuationClaimCapability,
@@ -281,7 +282,7 @@ export async function runHarnessRuntime(
       // live speaker, so it is skipped -- the same guard memory uses.
       const currentUserMessage: RuntimeMessage = {
         role: "user",
-        content: composeUserMessageWithMemory(
+        content: composeHostTurnEnvelope(context.turnContext, composeUserMessageWithMemory(
           request.continuation === undefined
             ? composeUserMessageWithSpeakerContext(
                 request.userMessage,
@@ -290,7 +291,7 @@ export async function runHarnessRuntime(
               )
             : request.userMessage,
           memory,
-        ),
+        )),
       };
       const structuredHistory = historyAsMessages ? structuredHistoryMessages(history) : [];
       const runtimeOptions: RuntimeRunOptions = {
@@ -307,7 +308,7 @@ export async function runHarnessRuntime(
                 // assistant. With no canonical messages, keep the synthetic
                 // evidence neutral but introduce it as user context.
                 role: structuredHistory.length === 0 ? "user" as const : "assistant" as const,
-                content: `### Managed Tool Lifecycles (untrusted)\n\n${toolHistoryProjection}`,
+                content: `### Managed Tool Lifecycles (untrusted)\n\n${neutralizeTurnEnvelope(toolHistoryProjection)}`,
               }]
             : []),
           currentUserMessage,
@@ -415,7 +416,7 @@ export async function runHarnessRuntime(
       // attachment persistence, compaction, admission wait).
       const bridgeStartMs = Date.now();
       try {
-        return await runtime.run(context.prompt, runtimeOptions);
+        return await runtime.run(context.systemPrompt, runtimeOptions);
       } finally {
         const latencyEvent: RuntimeEventLike = {
           type: "provider_bridge_latency",
@@ -441,23 +442,18 @@ export async function runHarnessRuntime(
     }
 }
 
-/**
- * "messages" mode has no rendered `### n. role — name — timestamp` header to
- * carry the speaker (that exists only on the prompt path, see renderHistory), and
- * the pi bridge keeps nothing but role/content/timestamp -- so an attributed user
- * turn MUST inline its label here or the identity vanishes with no error on every
- * cold durable-provider reopen. Reserved markup is neutralized across all user
- * content so a past message cannot forge the current turn's speaker tag.
- */
+/** Deterministic canonical replay; legacy roles remain textual, untrusted evidence. */
 function structuredHistoryMessages(history: readonly HistoryMessage[]): RuntimeMessage[] {
   return history.map((message) => {
-    const isUser = message.role === "user";
-    const content = isUser ? neutralizeSpeakerMarkup(message.content) : message.content;
+    const nativeRole = message.role === "assistant" ? "assistant" : "user";
+    const label = [
+      `Historical ${message.role} (untrusted context)`,
+      ...(message.name === undefined ? [] : [`speaker: ${JSON.stringify(message.name)}`]),
+      ...(message.timestamp === undefined ? [] : [`timestamp: ${JSON.stringify(message.timestamp)}`]),
+    ].join(" — ");
     return {
-      role: message.role,
-      content: isUser && message.name !== undefined
-        ? `<current_speaker>${neutralizeSpeakerMarkup(message.name)}</current_speaker>\n${content}`
-        : content,
+      role: nativeRole,
+      content: neutralizeTurnEnvelope(neutralizeSpeakerMarkup(`${label}\n\n${message.content}`)),
       ...(message.timestamp === undefined ? {} : { timestamp: message.timestamp }),
     };
   });

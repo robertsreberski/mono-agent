@@ -22,7 +22,7 @@ export async function prepareHarnessContext(
   skillsCache: SkillsCache,
   request: AgentHarnessRequest,
   contextOptions: {
-    readonly historyMode: "prompt" | "messages" | "omitted";
+    readonly historyMode: "messages" | "omitted";
     readonly turnId: string;
   },
   emit?: (event: RuntimeEventLike) => void,
@@ -38,13 +38,8 @@ export async function prepareHarnessContext(
     const history = contextOptions.historyMode === "omitted"
       ? []
       : await loadHarnessHistory(options, request.conversationId, request.continuation);
-    // Recalled memory deliberately does NOT go into the system prompt. It rides on
-    // the per-turn USER MESSAGE instead (see runRuntime): the user message is the
-    // one field every runtime re-sends verbatim each turn, so memory survives
-    // session resume even on runtimes that drop the system prompt on a resumed
-    // turn (e.g. codex-app sends developerInstructions only on a fresh thread).
-    // Keeping it out of the system prompt also leaves that prompt stable across a
-    // session, which is better for provider prompt caching.
+    // Recall rides on the current user message on every turn. It remains outside
+    // stable system instructions and never enters canonical history replay.
     const memory = request.continuation === undefined
       ? await loadHarnessMemory(options, request.conversationId, request.userMessage, contextOptions.turnId, emit)
       : undefined;
@@ -64,7 +59,7 @@ export async function prepareHarnessContext(
         }) === true,
       }),
       ...(options.soulPath === undefined ? {} : { soulPath: options.soulPath }),
-      ...(history.length === 0 || contextOptions.historyMode !== "prompt" ? {} : { history }),
+      ...(history.length === 0 ? {} : { history }),
       ...(options.skillsRoot !== undefined
         ? { skillsRoot: options.skillsRoot }
         : selectedSkills.index.length > 0
@@ -72,7 +67,7 @@ export async function prepareHarnessContext(
           : {}),
       ...(options.skillDisclosure === undefined ? {} : { skillDisclosure: options.skillDisclosure }),
       // "omitted" is the confirmed-warm case: the provider owns the live
-      // transcript, so an earlier ReadSkill result is genuinely still in context.
+      // transcript, where an earlier ReadSkill result may remain after compaction.
       warmSession: contextOptions.historyMode === "omitted",
       ...(selectedSkills.instructions.length === 0 ? {} : { skillInstructions: selectedSkills.instructions }),
     });
@@ -99,7 +94,7 @@ export async function prepareHarnessContext(
         });
       }
     }
-    const context = toolProjection === undefined || contextOptions.historyMode !== "prompt"
+    const context = toolProjection === undefined
       ? baseContext
       : projectToolHistoryBeforeCurrentTurn(baseContext, toolProjection.text, toolProjection.recordCount);
     // Progressive skill disclosure (index mode, opt-in): the index is in the
