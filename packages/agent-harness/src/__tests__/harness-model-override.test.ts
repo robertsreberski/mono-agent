@@ -451,7 +451,7 @@ describe("AgentHarness per-request override session isolation", () => {
     expect(override.calls).toHaveLength(0);
 
     await harness.run(request("conv", "base again"));
-    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+    expect(base.calls[1]?.options.sessionId).toBeUndefined();
   });
 
   it("a same-model override is NOT isolated — it resumes and persists the shared session", async () => {

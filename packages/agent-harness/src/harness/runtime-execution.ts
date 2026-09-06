@@ -21,7 +21,7 @@ import type {
 import type { LiveInputMailbox } from "../live-input.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../tool-policy/index.js";
 import type { AttachmentRequestContext } from "./attachments.js";
-import type { CancelledTurnCollector } from "./cancelled-turn.js";
+import type { UncommittedTurnCollector } from "./turn-continuity.js";
 import { AgentHarnessError } from "./error.js";
 import { injectMcpContinuationContext, injectMcpRequestContext } from "./mcp-context.js";
 import {
@@ -57,13 +57,13 @@ export async function runHarnessRuntime(
   toolHistoryProjection: string | undefined,
   attachmentContext: AttachmentRequestContext,
   continuationCapabilities: AgentHarnessContinuationClaimCapability[],
-  cancelledTurnCollector: CancelledTurnCollector,
+  turnContinuityCollector: UncommittedTurnCollector,
   liveInputMailbox?: LiveInputMailbox,
   onProviderStart?: () => void,
 ): Promise<RuntimeResult> {
   const hostOnEvent = request.onEvent;
   const emitRuntimeEvent = (event: RuntimeEventLike): void => {
-    if (!cancelledTurnCollector.observeRuntimeEvent(event)) return;
+    if (!turnContinuityCollector.observeRuntimeEvent(event)) return;
     recorder.onEvent(event);
     hostOnEvent?.(event);
   };
@@ -321,7 +321,7 @@ export async function runHarnessRuntime(
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
-        toolLifecycleSink: cancelledTurnCollector.wrapToolLifecycleSink(
+        toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(
           options.toolHistory?.writer.createSink({
               conversationId: request.conversationId,
               logicalConversationId: options.toolHistory?.logicalConversationId(request.conversationId)
