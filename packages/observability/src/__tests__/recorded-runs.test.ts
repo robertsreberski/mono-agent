@@ -32,6 +32,34 @@ afterEach(async () => {
 });
 
 describe("recorded run reader", () => {
+  it("retains runtime cancellation code and detail only in explicitly untrusted fields", async () => {
+    const dir = await tempDir();
+    const cancellationReason = {
+      failureKind: "cancelled",
+      code: "runtime_result",
+      notice: "Run cancelled for a recorded reason.",
+      untrustedCode: "coordinator_shutdown",
+      untrustedDetail: "Web service is stopping.",
+    };
+    await createJsonlRunRecorder({
+      runId: "runtime-cancelled",
+      conversationId: "web:runtime-cancelled",
+      artifactDir: dir,
+    }).finish({ cancelled: true, failureKind: "cancelled", cancellationReason });
+
+    const listed = await listRecordedRuns({ artifactDir: dir });
+    expect(listed.runs).toEqual([
+      expect.objectContaining({
+        runId: "runtime-cancelled",
+        status: "cancelled",
+        cancellationReason,
+      }),
+    ]);
+    await expect(readRecordedRun({ artifactDir: dir }, "runtime-cancelled")).resolves.toMatchObject({
+      summary: { cancellationReason },
+    });
+  });
+
   it("lists summary artifacts newest first with redacted metadata", async () => {
     const dir = await tempDir();
     const first = createJsonlRunRecorder({ runId: "run-one", conversationId: "chat-1", artifactDir: dir });

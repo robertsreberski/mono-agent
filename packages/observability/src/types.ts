@@ -3,8 +3,21 @@ export interface RuntimeEventLike {
   readonly [key: string]: unknown;
 }
 
+/** Host-observed cancellation provenance retained without changing terminal classification. */
+export interface RunCancellationReason {
+  readonly failureKind: string;
+  readonly code: string;
+  readonly notice: string;
+  readonly channel?: string;
+  /** Bounded runtime/provider code. Always treat this field as untrusted data. */
+  readonly untrustedCode?: string;
+  /** Bounded runtime/provider evidence. Always treat this field as untrusted data. */
+  readonly untrustedDetail?: string;
+}
+
 export interface RuntimeResultLike {
   readonly cancelled?: boolean;
+  readonly cancellationReason?: RunCancellationReason;
   readonly error?: string | null;
   readonly failureKind?: string | null;
   /**
@@ -110,6 +123,7 @@ export interface RunSummary {
   readonly conversationId: string;
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
+  readonly cancellationReason?: RunCancellationReason;
   /**
    * Underlying provider/runtime error message for a failed run. Retained free
    * text: bounded at recorder/reader boundaries and content-scanned by the
@@ -296,6 +310,7 @@ export interface RecordedRunListItem {
   readonly conversationId: string;
   readonly status: RunSummaryStatus;
   readonly failureKind?: string;
+  readonly cancellationReason?: RunCancellationReason;
   /**
    * Underlying provider/runtime error message for a failed run. Retained free
    * text: re-bounded by the reader. Current recorder artifacts were content-scanned

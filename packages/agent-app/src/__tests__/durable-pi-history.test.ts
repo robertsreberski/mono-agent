@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import { createDurableHistoryStore, type AgentHarness } from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import {
@@ -43,15 +44,37 @@ interface PiContext {
 function observeRuntime(base: MonoRuntimeLike): {
   readonly runtime: MonoRuntimeLike;
   readonly calls: ObservedRuntimeCall[];
+  readonly invalidationErrors: unknown[];
+  readonly retirementErrors: unknown[];
 } {
   const calls: ObservedRuntimeCall[] = [];
+  const invalidationErrors: unknown[] = [];
+  const retirementErrors: unknown[] = [];
   return {
     calls,
+    invalidationErrors,
+    retirementErrors,
     runtime: {
       ...base,
       async run(prompt, options) {
         calls.push({ prompt, options });
         return await base.run(prompt, options);
+      },
+      async retireDurableSession(providerSessionId, sessionsRoot) {
+        try {
+          await base.retireDurableSession?.(providerSessionId, sessionsRoot);
+        } catch (error) {
+          retirementErrors.push(error);
+          throw error;
+        }
+      },
+      async invalidateSession(providerSessionId) {
+        try {
+          return await base.invalidateSession?.(providerSessionId) ?? false;
+        } catch (error) {
+          invalidationErrors.push(error);
+          throw error;
+        }
       },
     },
   };
@@ -84,7 +107,7 @@ function contentMessages(options: RuntimeRunOptions): string[] {
 }
 
 describe("configured durable Pi history", () => {
-  it("replays canonical history exactly once on create-on-miss, warm follow-up, and true resume", async () => {
+  it("replays canonical history once on warm turns and reseeds a fresh epoch after cancellation", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-app-durable-pi-history-"));
     tempDirs.push(dir);
     const identityPath = join(dir, "IDENTITY.md");
@@ -133,7 +156,9 @@ describe("configured durable Pi history", () => {
 
     let createOnMissContext: PiContext | undefined;
     let warmContext: PiContext | undefined;
-    let trueResumeContext: PiContext | undefined;
+    let cancelledContext: PiContext | undefined;
+    let freshAfterCancellationContext: PiContext | undefined;
+    const cancellation = new AbortController();
     faux.setResponses([
       (context) => {
         createOnMissContext = context as PiContext;
@@ -144,7 +169,12 @@ describe("configured durable Pi history", () => {
         return fauxAssistantMessage([fauxText("turn-2-assistant")]);
       },
       (context) => {
-        trueResumeContext = context as PiContext;
+        cancelledContext = context as PiContext;
+        cancellation.abort(createChannelUserCancelReason("Web"));
+        return fauxAssistantMessage([fauxText("cancelled-provider-tail")]);
+      },
+      (context) => {
+        freshAfterCancellationContext = context as PiContext;
         return fauxAssistantMessage([fauxText("turn-3-assistant")]);
       },
     ]);
@@ -198,8 +228,40 @@ describe("configured durable Pi history", () => {
         "user:turn-2-user",
       ]);
 
-      // Simulate process teardown while preserving the fsynced Pi JSONL. The
-      // next harness has no warm mapping and must open the true durable resume.
+      const cancelled = await firstHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "cancelled-turn-user",
+        abortSignal: cancellation.signal,
+      });
+      expect(cancelled.failure?.kind).toBe("cancelled");
+      expect(cancelled.metadata.summary).toMatchObject({
+        status: "cancelled",
+        failureKind: "cancelled_user",
+        cancellationReason: { code: "operator", channel: "Web" },
+      });
+      expect({
+        invalidationErrors: firstRuntime.invalidationErrors,
+        retirementErrors: firstRuntime.retirementErrors,
+      }).toEqual({ invalidationErrors: [], retirementErrors: [] });
+      expect(transcriptOf(cancelledContext)).toEqual([
+        "user:seed-user",
+        "assistant:seed-assistant",
+        "user:turn-1-user",
+        "assistant:turn-1-assistant",
+        "user:turn-2-user",
+        "assistant:turn-2-assistant",
+        "user:cancelled-turn-user",
+      ]);
+      const historyAfterCancellation = await seedStore.load("durable-conversation");
+      expect(historyAfterCancellation.at(-2)).toMatchObject({ role: "user", content: "cancelled-turn-user" });
+      expect(historyAfterCancellation.at(-1)).toMatchObject({
+        role: "assistant",
+        content: expect.stringContaining("Run stopped by the operator."),
+      });
+
+      // Simulate process teardown. Cancellation rotated the durable provider
+      // epoch, so the next harness must seed a fresh Pi session from canonical
+      // history, including the host-authored stopped-turn account.
       await firstHarness.dispose?.();
       firstHarness = undefined;
 
@@ -229,15 +291,19 @@ describe("configured durable Pi history", () => {
         "assistant:turn-1-assistant",
         "user:turn-2-user",
         "assistant:turn-2-assistant",
+        "user:cancelled-turn-user",
+        expect.stringContaining("assistant:<cancelled_turn_history version=\"1\">") as unknown as string,
         "user:turn-3-user",
       ]);
-      expect(transcriptOf(trueResumeContext)).toEqual([
+      expect(transcriptOf(freshAfterCancellationContext)).toEqual([
         "user:seed-user",
         "assistant:seed-assistant",
         "user:turn-1-user",
         "assistant:turn-1-assistant",
         "user:turn-2-user",
         "assistant:turn-2-assistant",
+        "user:cancelled-turn-user",
+        expect.stringContaining("assistant:<cancelled_turn_history version=\"1\">") as unknown as string,
         "user:turn-3-user",
       ]);
     } finally {

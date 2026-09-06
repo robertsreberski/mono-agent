@@ -1293,7 +1293,7 @@ describe("AgentHarness continuous sessions", () => {
     }));
   });
 
-  it("does not commit a cancelled turn that returns success after a mid-turn abort (F3)", async () => {
+  it("commits only the cancellation account when a mid-turn abort beats a success-shaped result (F3)", async () => {
     const identityPath = await identityFixture();
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
@@ -1322,8 +1322,15 @@ describe("AgentHarness continuous sessions", () => {
     // The response is a cancelled failure, not a committed success.
     expect(response.text).toBeUndefined();
     expect(response.failure?.kind).toBe("cancelled");
-    // No history committed for the cancelled turn.
-    expect(history.appended).toHaveLength(0);
+    expect(history.appended).toHaveLength(2);
+    expect(history.appended[0]).toMatchObject({ role: "user", content: "hello" });
+    expect(history.appended[1]).toMatchObject({
+      role: "assistant",
+      idempotencyKey: expect.stringMatching(/^cancelled-turn:v1:/u),
+    });
+    expect(history.appended[1]?.content).toContain("Run cancelled for a recorded reason.");
+    expect(history.appended[1]?.content).toContain('"untrustedDetail":"cancelled mid-turn"');
+    expect(history.appended[1]?.content).not.toContain("done");
     // No memory written for the cancelled turn.
     expect(memory.hostSummaryCalls()).toBe(0);
     expect(memory.captureCalls()).toBe(0);
@@ -1366,7 +1373,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.calls[2]?.prompt).toContain(HISTORY_MARKER);
   });
 
-  it("does not commit a turn cancelled DURING recorder.prepareFinish() after runRuntime succeeds (R9)", async () => {
+  it("publishes a cancellation account when cancellation lands during recorder.prepareFinish() (R9)", async () => {
     const identityPath = await identityFixture();
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
@@ -1427,8 +1434,11 @@ describe("AgentHarness continuous sessions", () => {
     // The response is a cancelled failure, not a committed success.
     expect(response.text).toBeUndefined();
     expect(response.failure?.kind).toBe("cancelled");
-    // No history committed for the cancelled turn.
-    expect(history.appended).toHaveLength(0);
+    expect(history.appended).toHaveLength(2);
+    expect(history.appended[0]).toMatchObject({ role: "user", content: "hello" });
+    expect(history.appended[1]?.content).toContain("Run cancelled for a recorded reason.");
+    expect(history.appended[1]?.content).toContain('"untrustedDetail":"cancelled during prepare"');
+    expect(history.appended[1]?.content).not.toContain("done");
     // No memory written for the cancelled turn.
     expect(memory.hostSummaryCalls()).toBe(0);
     expect(memory.captureCalls()).toBe(0);
@@ -1444,10 +1454,12 @@ describe("AgentHarness continuous sessions", () => {
     const toolHistoryStatuses: Array<{ readonly status: string; readonly failureKind?: string }> = [];
     let commits = 0;
     let aborts = 0;
+    const preparedMessages: HistoryMessage[][] = [];
     const historyStore: ConversationHistoryStore = {
       async load() { return []; },
       async append() { throw new Error("prepared append should own publication"); },
-      async prepareAppend() {
+      async prepareAppend(_conversationId, messages) {
+        preparedMessages.push([...messages]);
         controller.abort(new Error("cancelled during history preparation"));
         return {
           async commit() { commits += 1; },
@@ -1471,12 +1483,16 @@ describe("AgentHarness continuous sessions", () => {
     });
 
     expect(response.failure?.kind).toBe("cancelled");
-    expect(commits).toBe(0);
+    expect(commits).toBe(1);
     expect(aborts).toBe(1);
+    expect(preparedMessages).toHaveLength(2);
+    expect(preparedMessages[1]?.[1]?.content).toContain("Run cancelled for a recorded reason.");
+    expect(preparedMessages[1]?.[1]?.content)
+      .toContain('"untrustedDetail":"cancelled during history preparation"');
     expect(toolHistoryStatuses).toEqual([{ status: "cancelled", failureKind: "cancelled" }]);
   });
 
-  it("rejects the caller and persists nothing when cancel() lands during prepareFinish() on a continuous harness (R9 e2e)", async () => {
+  it("rejects the caller and publishes continuity when cancel() lands during prepareFinish() (R9 e2e)", async () => {
     const identityPath = await identityFixture();
     const history = createSpyHistoryStore();
     const memory = createSpyMemoryStore();
@@ -1531,9 +1547,11 @@ describe("AgentHarness continuous sessions", () => {
     harness.cancel!("conv-e2e");
     releaseFinish();
 
-    // The caller promise rejects (cancelled), agreeing with the no-persist path.
+    // The caller still rejects immediately; publication completes behind the
+    // next-turn barrier and never qualifies for memory capture.
     await expect(caller).rejects.toMatchObject({ name: "AgentResponseCancelledError" });
-    expect(history.appended).toHaveLength(0);
+    await expect.poll(() => history.appended.length).toBe(2);
+    expect(history.appended[1]?.content).toContain("reason not recorded");
     expect(memory.hostSummaryCalls()).toBe(0);
     expect(memory.captureCalls()).toBe(0);
     expect(fake.invalidatedSessions).toContain("ps-e2e");

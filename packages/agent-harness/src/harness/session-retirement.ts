@@ -31,6 +31,14 @@ export async function retireRunResultSession(
     } catch {
       // Cleanup is best-effort; the host mapping is still evicted below.
     }
+    if (options.piSessionsRoot !== undefined && options.runtime.retireDurableSession !== undefined) {
+      try {
+        await options.runtime.retireDurableSession(id, options.piSessionsRoot);
+      } catch {
+        // An open provider may still be unwinding. The canonical epoch has
+        // already rotated; a returned provider result retries this cleanup.
+      }
+    }
   }
   if (sessionRecord !== undefined) {
     await sessionStore?.evict(conversationId, "stale", sessionRecord.providerSessionId);

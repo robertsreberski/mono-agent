@@ -64,6 +64,7 @@ const MAX_EXTERNAL_SUMMARY_DEPTH = 64;
 const EXTERNAL_SUMMARY_STATUSES = new Set(["running", "succeeded", "failed", "cancelled", "interrupted"]);
 const EXTERNAL_SUMMARY_OPTIONAL_KEYS = [
   "failureKind",
+  "cancellationReason",
   "error",
   "failoverHistory",
   "startedAt",

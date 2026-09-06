@@ -306,8 +306,10 @@ describe("createLiveSessionManager", () => {
 
   it("dispose rejects all in-flight and queued turns and stops accepting new ones", async () => {
     const never = new Promise<void>(() => {});
+    let activeSignal: AbortSignal | undefined;
     const manager = createLiveSessionManager({
-      run: async () => {
+      run: async (request) => {
+        activeSignal = request.abortSignal;
         await never;
         return response("x");
       },
@@ -318,6 +320,10 @@ describe("createLiveSessionManager", () => {
     await manager.dispose();
 
     await expect(queued).rejects.toSatisfy(isAgentResponseCancelledError);
+    expect(activeSignal?.reason).toMatchObject({
+      cancelInitiator: "coordinator_shutdown",
+      message: "Agent is shutting down.",
+    });
     await expect(manager.enqueue("c1", req("c1"))).rejects.toSatisfy(isAgentResponseCancelledError);
   });
 

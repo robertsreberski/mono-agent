@@ -647,7 +647,7 @@ Returns:
 - `configureTools(next)` — update the tool runtime context after construction.
 - `syncSession(id)` — fsync provider-owned durable state before canonical history commits.
 - `refreshSession(id)` — guarantee the next resume cannot reuse process-local state; absence succeeds and cleanup uncertainty rejects.
-- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates.
+- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. If the matching live session is still unwinding after cancellation, refresh it out of the registry and unlink and fsync its current JSONL; a post-runtime retry also removes any headerless exact-name file recreated by a late append.
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`

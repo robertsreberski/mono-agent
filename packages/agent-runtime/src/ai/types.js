@@ -455,7 +455,7 @@
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
- * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Permanently deletes every durable transcript with the exact id; absence is success.
+ * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.
  * @property {(providerSessionId: string) => Promise<boolean>} disposeSession
  * @property {(providerSessionId: string) => Promise<boolean>} invalidateSession
  * @property {() => Promise<void>} disposeAllSessions

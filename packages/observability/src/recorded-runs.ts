@@ -40,6 +40,7 @@ import type {
   RecordedRunEvent,
   RecordedRunListItem,
   RecordedRunListResult,
+  RunCancellationReason,
   RunSummary,
   RunSummaryStatus,
   RuntimeEventLike,
@@ -478,6 +479,7 @@ function coerceRunSummary(
   }
 
   const failureKind = stringField(value, "failureKind");
+  const cancellationReason = coerceCancellationReason(value.cancellationReason, maxStringBytes);
   const error = stringField(value, "error");
   const failoverHistory = normalizeFailoverHistory(value.failoverHistory);
   const startedAt = stringField(value, "startedAt");
@@ -497,6 +499,7 @@ function coerceRunSummary(
     conversationId,
     status,
     ...(failureKind === undefined ? {} : { failureKind }),
+    ...(cancellationReason === undefined ? {} : { cancellationReason }),
     ...(error === undefined ? {} : { error: redactJsonValue(error, maxStringBytes) as string }),
     ...(failoverHistory === undefined ? {} : { failoverHistory }),
     ...(startedAt === undefined ? {} : { startedAt }),
@@ -533,6 +536,7 @@ function summaryToListItem(
     conversationId: summary.conversationId,
     status: summary.status,
     ...(summary.failureKind === undefined ? {} : { failureKind: summary.failureKind }),
+    ...(summary.cancellationReason === undefined ? {} : { cancellationReason: summary.cancellationReason }),
     ...(summary.error === undefined ? {} : { error: summary.error }),
     ...(summary.failoverHistory === undefined ? {} : { failoverHistory: summary.failoverHistory }),
     ...(summary.startedAt === undefined ? {} : { startedAt: summary.startedAt }),
@@ -655,6 +659,27 @@ function providerSessionIdField(value: unknown): string | null | undefined {
     return null;
   }
   return typeof value === "string" ? value : undefined;
+}
+
+function coerceCancellationReason(value: unknown, maxStringBytes: number): RunCancellationReason | undefined {
+  if (!isRecord(value)) return undefined;
+  const redacted = redactJsonValue(value, maxStringBytes, { contentPatternRedaction: true });
+  if (!isRecord(redacted)) return undefined;
+  const failureKind = stringField(redacted, "failureKind");
+  const code = stringField(redacted, "code");
+  const notice = stringField(redacted, "notice");
+  if (failureKind === undefined || code === undefined || notice === undefined) return undefined;
+  const channel = stringField(redacted, "channel");
+  const untrustedCode = stringField(redacted, "untrustedCode");
+  const untrustedDetail = stringField(redacted, "untrustedDetail");
+  return {
+    failureKind,
+    code,
+    notice,
+    ...(channel === undefined ? {} : { channel }),
+    ...(untrustedCode === undefined ? {} : { untrustedCode }),
+    ...(untrustedDetail === undefined ? {} : { untrustedDetail }),
+  };
 }
 
 function booleanField(record: Record<string, unknown>, key: string): boolean | undefined {

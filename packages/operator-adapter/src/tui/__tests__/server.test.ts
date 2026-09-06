@@ -1086,7 +1086,10 @@ describe("startTuiAdapter", () => {
     expect(accepted.status).toBe(202);
     expect(cancelled).toHaveLength(1);
     expect(cancelled[0]?.[0]).toBe("tui:main");
-    expect(isChannelUserCancelReason(cancelled[0]?.[1])).toBe(true);
+    const reason = cancelled[0]?.[1];
+    expect(isChannelUserCancelReason(reason)).toBe(true);
+    if (!isChannelUserCancelReason(reason)) throw new Error("Expected a branded TUI cancellation reason.");
+    expect(reason.channel).toBe("TUI");
 
     await running.stop();
     running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
