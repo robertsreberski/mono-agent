@@ -4,6 +4,7 @@ import { compactString } from "./content.js";
 import { isRecord } from "./guards.js";
 import { deriveRunSource } from "./run-source.js";
 import type { FailoverAttempt, RunSummary, RuntimeEventLike } from "./types.js";
+import { cacheUsageMetrics } from "./cache-usage.js";
 
 /**
  * Pure run -> UI "Session" mapping. Turns a recorded run ({@link RunSummary} plus
@@ -135,6 +136,10 @@ export interface SessionTotals {
   readonly tokIn: number;
   readonly tokOut: number;
   readonly tokCache: number;
+  readonly tokCacheRead?: number;
+  readonly tokCacheWrite?: number;
+  readonly tokInputTotal?: number;
+  readonly cacheHitRatio?: number;
   readonly cost: number;
   readonly steps: number;
 }
@@ -934,12 +939,17 @@ function parseModelRef(ref: string | undefined): { readonly provider?: string } 
  * placeholders (e.g. the string "[redacted]") or null on a partial run, so every
  * field coerces non-finite input to 0. `tokCache` sums cache read + creation.
  */
-function tokenTotals(usage: unknown): { readonly tokIn: number; readonly tokOut: number; readonly tokCache: number } {
+function tokenTotals(usage: unknown): Pick<SessionTotals, "tokIn" | "tokOut" | "tokCache" | "tokCacheRead" | "tokCacheWrite" | "tokInputTotal" | "cacheHitRatio"> {
   const record = isRecord(usage) ? usage : {};
+  const cache = cacheUsageMetrics(record);
   return {
     tokIn: finiteNumber(record.input_tokens) ?? 0,
     tokOut: finiteNumber(record.output_tokens) ?? 0,
     tokCache: (finiteNumber(record.cache_read_tokens) ?? 0) + (finiteNumber(record.cache_creation_tokens) ?? 0),
+    ...(cache.cacheReadTokens === undefined ? {} : { tokCacheRead: cache.cacheReadTokens }),
+    ...(cache.cacheWriteTokens === undefined ? {} : { tokCacheWrite: cache.cacheWriteTokens }),
+    ...(cache.inputTotalTokens === undefined ? {} : { tokInputTotal: cache.inputTotalTokens }),
+    ...(cache.cacheHitRatio === undefined ? {} : { cacheHitRatio: cache.cacheHitRatio }),
   };
 }
 

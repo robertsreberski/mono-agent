@@ -192,6 +192,7 @@ ArtifactAuditFileIssue
 ArtifactAuditReport
 ArtifactFailureKindRate
 AuditRecordedRunsOptions
+CacheUsageMetrics
 CompositeRunRecorderOptions
 DEFAULT_PRUNE_TRACE_SOURCES_OLDER_THAN_MS
 DescribeRunFailureKindInput
@@ -286,6 +287,7 @@ VisibleTextSanitizationOptions
 auditRecordedRuns
 buildEventSpanAttributes
 buildRootSpanAttributes
+cacheUsageMetrics
 combineRecordedRunEvents
 containsVisibleSensitiveText
 countRuntimeWarnings

@@ -11,6 +11,7 @@ export interface ContextDisplayUsage {
   readonly cacheCreation?: number;
   readonly output?: number;
   readonly reasoning?: number;
+  readonly cacheHitRatio?: number;
 }
 
 export interface ContextDisplayProps {
@@ -86,6 +87,7 @@ function Breakdown({
           <dd>{formatTokenCount(segment.tokens)}</dd>
         </div>
       ))}
+      {usage?.cacheHitRatio !== undefined ? <div className="context-display-breakdown-row" data-segment="cacheHitRatio"><dt>Cache hit ratio</dt><dd>{(usage.cacheHitRatio * 100).toFixed(1)}%</dd></div> : null}
       <div className="context-display-breakdown-row context-display-breakdown-total">
         <dt>{totalLabel}</dt>
         <dd>{formatTokenCount(total)}</dd>

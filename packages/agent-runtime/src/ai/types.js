@@ -196,6 +196,7 @@
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, acknowledge?: () => void, reject?: (error?: unknown) => void}>} [liveInput] Stream of in-flight user messages for steering an active run. Providers acknowledge only after accepting a message into the active turn.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
+ * @property {boolean} [promptCacheDiagnostics] Emit metadata-only prompt-cache request fingerprints.
  * @property {RuntimeToolLifecycleSink} [toolLifecycleSink] Awaited host-owned incremental lifecycle persistence boundary.
  * @property {ReadonlyArray<Object>} [messages]
  * @property {string} [effort]

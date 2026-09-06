@@ -100,6 +100,7 @@ describe("conversationConsoleUsage", () => {
           input: 100,
           cachedInput: 900,
           cacheCreation: 5,
+          cacheHitRatio: 900 / 1005,
           output: 20,
           total: 1_025,
           contextWindow: 372_000,
@@ -111,6 +112,7 @@ describe("conversationConsoleUsage", () => {
         input: 1200,
         cachedInput: 800,
         cacheCreation: 12,
+        cacheHitRatio: 800 / 2012,
         output: 345,
         reasoning: 90,
         model: "pi:openai-codex:gpt-5.5",
@@ -335,7 +337,7 @@ describe("conversationConsoleUsage", () => {
         status: "unavailable",
         reason: "Exact context usage has not been reported for this conversation.",
       },
-      processed: { input: 100, cachedInput: 80, cacheCreation: 4, reasoning: 9, model: "fallback/model" },
+      processed: { input: 100, cachedInput: 80, cacheCreation: 4, cacheHitRatio: 80 / 184, reasoning: 9, model: "fallback/model" },
       cost: 0.2,
     });
   });

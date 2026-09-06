@@ -123,6 +123,8 @@ describe("createStreamSubscriber — exact context snapshots", () => {
         model: "faux:m",
         measurementId: "assistant-1",
         contextWindow: 128_000,
+        costUsd: 0,
+        costSource: "pi_usage",
         tokens: { input: 120, output: 15, cacheRead: 30, cacheCreation: 5, total: 170 },
       }),
       expect.objectContaining({

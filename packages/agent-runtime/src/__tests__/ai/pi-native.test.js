@@ -925,7 +925,7 @@ describe("pi-native AgentHarness bridge", () => {
     const model = setup();
     const onEvent = vi.fn();
     faux.setResponses([
-      fauxAssistantMessage([], { stopReason: "error", errorMessage: "boom provider failure" }),
+      () => { throw new Error("boom provider failure"); },
     ]);
 
     const result = await generatePiNativeResponse("system", runOptions(model, {
@@ -936,7 +936,39 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.error).toBe("boom provider failure");
     expect(result.failureKind).toBeTruthy();
     expect(result.cancelled).toBe(false);
+    expect(result.usage).toMatchObject({
+      cache_read_tokens: null,
+      cache_creation_tokens: null,
+      cache_write_tokens: null,
+    });
     expect(onEvent.mock.calls.some(([event]) => event?.type === "context_usage")).toBe(false);
+  });
+
+  it("distinguishes successful measured cache zeros from absent failed usage", async () => {
+    const model = setup();
+    faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hi" }],
+    }));
+    expect(result.usage).toMatchObject({
+      cache_read_tokens: 0,
+    });
+    expect(result.usage.cache_creation_tokens).toBeGreaterThan(0);
+    expect(result.usage.cache_write_tokens).toBe(result.usage.cache_creation_tokens);
+  });
+
+  it("retains partial measured usage from a failed provider response", async () => {
+    const model = setup();
+    const failed = fauxAssistantMessage([], { stopReason: "error", errorMessage: "partial failure" });
+    faux.setResponses([failed]);
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [{ role: "user", content: "hi" }],
+    }));
+    expect(result.error).toBe("partial failure");
+    expect(result.usage.input_tokens).toBeGreaterThan(0);
+    expect(result.usage.cache_read_tokens).toBe(0);
+    expect(result.usage.cache_creation_tokens).toBeGreaterThan(0);
+    expect(result.usage.cache_write_tokens).toBe(result.usage.cache_creation_tokens);
   });
 
   it("resumes a durable session and seeds the next run with the prior transcript", async () => {

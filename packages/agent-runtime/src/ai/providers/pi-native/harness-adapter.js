@@ -9,6 +9,7 @@ import {
   createCompactionSummaryMessage,
   getOrThrow,
 } from "@earendil-works/pi-agent-core";
+import { installPromptCacheDiagnostics } from "./prompt-cache-diagnostics.js";
 
 export const PI_CONTEXT = BACKGROUND_CONTEXT;
 
@@ -201,6 +202,7 @@ export async function createPiHarnessAdapter(session, options) {
   let rawHarness;
   /** @type {any} */
   let lane;
+  let removePromptCacheDiagnostics = () => {};
   try {
     created = await AgentHarness.create({
       ...options,
@@ -231,6 +233,7 @@ export async function createPiHarnessAdapter(session, options) {
     rawHarness.hooks.on("before_compaction", (event) => (
       event.reason === "manual" ? undefined : { decline: true }
     ), { id: "mono-agent-compaction-owner" });
+    removePromptCacheDiagnostics = installPromptCacheDiagnostics(rawHarness, options);
   } catch (error) {
     try { await session.close(); } catch { /* preserve the construction error */ }
     throw error;
@@ -330,6 +333,7 @@ export async function createPiHarnessAdapter(session, options) {
     async close() {
       if (closed) return;
       closed = true;
+      removePromptCacheDiagnostics();
       await session.close();
     },
   };

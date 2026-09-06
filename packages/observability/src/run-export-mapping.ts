@@ -1,4 +1,5 @@
 import { compactString } from "./content.js";
+import { cacheUsageMetrics } from "./cache-usage.js";
 import { buildEventDescriptors } from "./event-classify.js";
 import { DEFAULT_MAX_STRING_BYTES, isRecord, stringField } from "./guards.js";
 import { redactJsonValue } from "./redaction.js";
@@ -245,12 +246,15 @@ function tokenAttributes(usage: unknown): SpanAttributes {
   const output = finiteNumber(usage.output_tokens);
   const cacheRead = finiteNumber(usage.cache_read_tokens);
   const cacheWrite = finiteNumber(usage.cache_creation_tokens);
+  const cache = cacheUsageMetrics(usage);
   return {
     ...(input === undefined ? {} : { "llm.token_count.prompt": input }),
     ...(output === undefined ? {} : { "llm.token_count.completion": output }),
     ...(input === undefined && output === undefined ? {} : { "llm.token_count.total": (input ?? 0) + (output ?? 0) }),
     ...(cacheRead === undefined ? {} : { "llm.token_count.prompt_details.cache_read": cacheRead }),
     ...(cacheWrite === undefined ? {} : { "llm.token_count.prompt_details.cache_write": cacheWrite }),
+    ...(cache.inputTotalTokens === undefined ? {} : { "llm.token_count.prompt_details.input_total": cache.inputTotalTokens }),
+    ...(cache.cacheHitRatio === undefined ? {} : { "llm.prompt_cache.hit_ratio": cache.cacheHitRatio }),
   };
 }
 

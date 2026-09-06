@@ -7,6 +7,7 @@ export interface ConsoleTokenUsage {
   readonly output?: number;
   readonly reasoning?: number;
   readonly model?: string;
+  readonly cacheHitRatio?: number;
 }
 
 export interface ConsoleContextUsage extends ConsoleTokenUsage {
@@ -194,6 +195,8 @@ const normalizeUsage = (data: unknown): NormalizedUsage | null => {
   const contextWindow = numericValue(innerToOuter, CONTEXT_WINDOW_KEYS);
   const cost = numericValue(innerToOuter, COST_KEYS);
   const model = stringValue(innerToOuter, MODEL_KEYS);
+  const inputTotal = input !== undefined && cachedInput !== undefined && cacheCreation !== undefined
+    ? input + cachedInput + cacheCreation : undefined;
   const usage: NormalizedUsage = {
     ...(input === undefined ? {} : { input }),
     ...(cachedInput === undefined ? {} : { cachedInput }),
@@ -204,6 +207,7 @@ const normalizeUsage = (data: unknown): NormalizedUsage | null => {
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(cost === undefined ? {} : { cost }),
     ...(model === undefined ? {} : { model }),
+    ...(inputTotal === undefined || inputTotal === 0 ? {} : { cacheHitRatio: cachedInput! / inputTotal }),
   };
   return Object.keys(usage).length === 0 ? null : usage;
 };
@@ -229,6 +233,7 @@ const contextUsage = (data: unknown): ConsoleContextUsage | undefined => {
     ...(usage?.output === undefined ? {} : { output: usage.output }),
     ...(usage?.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
     ...(usage?.model === undefined ? {} : { model: usage.model }),
+    ...(usage?.cacheHitRatio === undefined ? {} : { cacheHitRatio: usage.cacheHitRatio }),
     ...(contextWindow === undefined ? {} : { contextWindow }),
   };
 };
@@ -257,6 +262,7 @@ const latestMessageProcessed = (
       ...(usage.output === undefined ? {} : { output: usage.output }),
       ...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
       ...(usage.model === undefined ? {} : { model: usage.model }),
+      ...(usage.cacheHitRatio === undefined ? {} : { cacheHitRatio: usage.cacheHitRatio }),
     };
   }
   return null;

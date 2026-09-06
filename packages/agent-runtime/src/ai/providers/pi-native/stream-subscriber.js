@@ -133,6 +133,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
     } else if (event.type === "message_end" && event.message?.role === "assistant") {
       const contextUsage = contextUsageFromAssistantMessage(event.message);
       if (contextUsage) {
+        const { costUsd, ...contextTokens } = contextUsage;
         const contextWindow = Number(harness?.getModel?.()?.contextWindow) || 0;
         const measurementId = typeof event.message?.id === "string" && event.message.id.trim().length > 0
           ? event.message.id
@@ -144,7 +145,9 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           timestamp: Date.now(),
           ...(measurementId === undefined ? {} : { measurementId }),
           ...(contextWindow > 0 ? { contextWindow } : {}),
-          tokens: contextUsage,
+          tokens: contextTokens,
+          costUsd,
+          costSource: "pi_usage",
         });
       }
       const hasVisibleContent = Array.isArray(event.message?.content)
