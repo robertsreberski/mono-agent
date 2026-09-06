@@ -11,6 +11,7 @@ import {
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
   classifyNotifySuppression,
+  NOTHING_TO_REPORT_SENTINEL,
   type AgentReplyPart,
   parseMonitorProjection,
   parseProcessJobProjection,
@@ -148,6 +149,7 @@ interface ProcessJobCardRow {
 
 export interface CronRunReconciliationResult {
   readonly messages: readonly WebMessage[];
+  /** Whether the visible transcript changed and needs a revision/invalidation. */
   readonly changed: boolean;
   /**
    * The messages this reconciliation INSERTED or rewrote, which is a subset of
@@ -155,6 +157,7 @@ export interface CronRunReconciliationResult {
    * nothing and must cost a console nothing.
    */
   readonly writtenMessageIds: readonly string[];
+  readonly suppressedRunIds?: readonly string[];
 }
 
 export interface CronOverviewSyncResult {
@@ -1159,14 +1162,17 @@ export class WebStore {
         turnId = mappedRun.turn_id;
         assistantMessageId = mappedRun.message_id;
         const message = this.database.prepare(`
-          SELECT parts_json FROM messages WHERE id = ? AND thread_id = ? AND turn_id = ?
-        `).get(assistantMessageId, completedThreadId, turnId) as unknown as { parts_json: string } | undefined;
+          SELECT parts_json, cron_suppressed FROM messages WHERE id = ? AND thread_id = ? AND turn_id = ?
+        `).get(assistantMessageId, completedThreadId, turnId) as unknown as { parts_json: string; cron_suppressed: number } | undefined;
         if (message === undefined) {
           throw new WebConsoleError("storage_corrupt", "A cron run mapping is missing its message.", 500);
         }
-        const parts = parseParts(message.parts_json);
-        if (!parts.some((part) => part.type === "text" && part.text === reservation.text)) {
-          parts.push({ type: "text", text: reservation.text });
+        const parts = parseParts(message.parts_json).filter((part) => !(part.type === "text" && isSyntheticCronStateText(part.text)))
+          .map((part): WebMessagePart => part.type === "telemetry" && part.event === "cron_run"
+            ? { ...part, data: withoutCronSilentFlag(part.data) } : part);
+        if (!parts.some((part) => part.type === "text" && part.text === reservation.text)) parts.push({ type: "text", text: reservation.text });
+        if (message.cron_suppressed === 1 || serializeParts(parts) !== message.parts_json) {
+          this.database.prepare("UPDATE messages SET cron_suppressed = 0 WHERE id = ?").run(assistantMessageId);
           this.writeMessageParts(assistantMessageId, parts, now);
           wroteMessage = true;
         }
@@ -1422,11 +1428,17 @@ export class WebStore {
   storedCronRuns(sourceId: string, jobId: string, limit = 100): WebCronRunPage {
     const bounded = boundedPageLimit(limit, 100);
     const rows = this.database.prepare(`
-      SELECT payload_json FROM cron_run_messages
+      SELECT payload_json, message_id FROM cron_run_messages
       WHERE source_id = ? AND job_id = ?
       ORDER BY ordered_at DESC, sequence DESC, run_id DESC LIMIT ?
-    `).all(sourceId, jobId, bounded) as unknown as Array<{ payload_json: string }>;
-    return { runs: rows.map((row) => parseStoredCronRun(row.payload_json)) };
+    `).all(sourceId, jobId, bounded) as unknown as Array<{ payload_json: string; message_id: string }>;
+    return {
+      runs: rows.map((row) => parseStoredCronRun(row.payload_json)),
+      messages: [...rows].reverse().flatMap((row) => {
+        const message = this.getMessage(row.message_id);
+        return message === undefined ? [] : [message];
+      }),
+    };
   }
 
   reconcileCronRuns(sourceId: string, jobId: string, runs: readonly WebCronRun[]): WebMessage[] {
@@ -1456,6 +1468,8 @@ export class WebStore {
     // {@link CronRunReconciliationResult.writtenMessageIds}.
     const written = new Set<string>();
     let changed = false;
+    let storedChanged = false;
+    let visibleActivityAt: string | undefined;
     this.transaction(() => {
       for (const run of ordered) {
         if (run.jobId !== jobId) {
@@ -1480,37 +1494,44 @@ export class WebStore {
             502,
           );
         }
-        const delivered = mapped === undefined
-          ? this.database.prepare(`
+        const delivered = this.database.prepare(`
               SELECT d.message_id, m.turn_id
               FROM notification_deliveries d
               JOIN messages m ON m.id = d.message_id
               WHERE d.source_id = ? AND d.job_id = ? AND d.run_id = ?
                 AND d.thread_id = ? AND d.completed_at IS NOT NULL
+                AND (? IS NULL OR d.message_id = ?)
               ORDER BY d.completed_at DESC LIMIT 1
-            `).get(sourceId, jobId, run.runId, channel.thread_id) as unknown as {
+            `).get(sourceId, jobId, run.runId, channel.thread_id, mapped?.message_id ?? null, mapped?.message_id ?? null) as unknown as {
               message_id: string;
               turn_id: string;
-            } | undefined
-          : undefined;
+            } | undefined;
         const turnId = mapped?.turn_id ?? delivered?.turn_id ?? cronEntityId("turn", sourceId, jobId, run.runId);
         const messageId = mapped?.message_id ?? delivered?.message_id ?? cronEntityId("message", sourceId, jobId, run.runId);
         messageIds.push(messageId);
         const prior = this.database.prepare(`
-          SELECT thread_id, turn_id, parts_json, created_at, status FROM messages WHERE id = ?
+          SELECT thread_id, turn_id, parts_json, created_at, status, cron_suppressed FROM messages WHERE id = ?
         `).get(messageId) as unknown as {
           thread_id: string;
           turn_id: string | null;
           parts_json: string;
           created_at: string;
           status: string;
+          cron_suppressed: number;
         } | undefined;
         const priorParts = prior === undefined ? [] : parseParts(prior.parts_json);
-        const parts = cronRunParts(
-          run,
+        let parts = cronRunParts(
+          prior?.cron_suppressed === 1 && run.status === "succeeded" && run.fieldsTruncated?.includes("text") === true
+            ? { ...run, text: NOTHING_TO_REPORT_SENTINEL } : run,
           priorParts,
           conversationId,
+          delivered !== undefined,
         );
+        const suppressed = delivered === undefined && !hasMeaningfulCronContent(parts)
+          && this.database.prepare("SELECT 1 FROM attachments WHERE message_id = ? LIMIT 1").get(messageId) === undefined
+          && (definitelySilentCronRun(run)
+            || (run.status === "succeeded" && run.fieldsTruncated?.includes("text") === true && prior?.cron_suppressed === 1));
+        if (!suppressed) parts = parts.map(clearSilentCronPart);
         const serializedParts = serializeParts(parts);
         const status = cronMessageStatus(run.status);
         const turnStatus = status === "running" ? "running" : status;
@@ -1565,7 +1586,7 @@ export class WebStore {
             turnErrorCode,
             turnErrorMessage,
           );
-          changed = true;
+          storedChanged = true;
         } else if (
           existingTurn.thread_id !== channel.thread_id
           || existingTurn.status !== turnStatus
@@ -1591,22 +1612,23 @@ export class WebStore {
             turnErrorMessage,
             turnId,
           );
-          changed = true;
+          storedChanged = true;
         }
         if (prior === undefined) {
           this.database.prepare(`
             INSERT INTO messages (
-              id, thread_id, turn_id, role, parts_json, created_at, updated_at, status
-            ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?)
-          `).run(messageId, channel.thread_id, turnId, serializedParts, run.orderedAt, now, status);
+              id, thread_id, turn_id, role, parts_json, created_at, updated_at, status, cron_suppressed
+            ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?)
+          `).run(messageId, channel.thread_id, turnId, serializedParts, run.orderedAt, now, status, suppressed ? 1 : 0);
           written.add(messageId);
-          changed = true;
+          storedChanged = true;
         } else if (
           prior.thread_id !== channel.thread_id
           || prior.turn_id !== turnId
           || prior.parts_json !== serializedParts
           || prior.created_at !== run.orderedAt
           || prior.status !== status
+          || prior.cron_suppressed !== Number(suppressed)
         ) {
           this.writeMessageParts(messageId, parts, now, {
             threadId: channel.thread_id,
@@ -1614,8 +1636,14 @@ export class WebStore {
             createdAt: run.orderedAt,
             status,
           });
+          this.database.prepare("UPDATE messages SET cron_suppressed = ? WHERE id = ?").run(Number(suppressed), messageId);
           written.add(messageId);
-          changed = true;
+          storedChanged = true;
+        }
+        if (written.has(messageId) && (!suppressed || prior?.cron_suppressed === 0)) changed = true;
+        if (written.has(messageId) && !suppressed) {
+          const activityAt = run.completedAt ?? run.startedAt ?? run.orderedAt;
+          if (visibleActivityAt === undefined || activityAt > visibleActivityAt) visibleActivityAt = activityAt;
         }
         // Detail is a message projection, not a replacement for the compact
         // page identity. Keeping the existing summary prevents the next
@@ -1651,22 +1679,22 @@ export class WebStore {
             serializedRun,
             now,
           );
-          changed = true;
+          storedChanged = true;
         }
       }
-      if (changed) {
-        const newest = ordered.at(-1)!;
-        this.database.prepare(`
-          UPDATE threads SET updated_at = MAX(updated_at, ?), revision = revision + 1 WHERE id = ?
-        `).run(newest.completedAt ?? newest.startedAt ?? newest.orderedAt, channel.thread_id);
-        this.recordThreadRevision(channel.thread_id, "cron_runs_reconciled", now);
-
+      if (storedChanged) {
+        if (changed) {
+          this.database.prepare(`
+            UPDATE threads SET updated_at = MAX(updated_at, COALESCE(?, updated_at)), revision = revision + 1 WHERE id = ?
+          `).run(visibleActivityAt ?? null, channel.thread_id);
+          this.recordThreadRevision(channel.thread_id, "cron_runs_reconciled", now);
+        }
         const excess = this.database.prepare(`
           SELECT turn_id FROM (
-            SELECT turn_id, ROW_NUMBER() OVER (
-              PARTITION BY source_id, job_id ORDER BY ordered_at DESC, sequence DESC, run_id DESC
+            SELECT r.turn_id, ROW_NUMBER() OVER (
+              PARTITION BY r.source_id, r.job_id, m.cron_suppressed ORDER BY r.ordered_at DESC, r.sequence DESC, r.run_id DESC
             ) AS retained_row
-            FROM cron_run_messages WHERE source_id = ? AND job_id = ?
+            FROM cron_run_messages r JOIN messages m ON m.id = r.message_id WHERE r.source_id = ? AND r.job_id = ?
           ) WHERE retained_row > 500
         `).all(sourceId, jobId) as unknown as Array<{ turn_id: string }>;
         const remove = this.database.prepare("DELETE FROM turns WHERE id = ?");
@@ -1674,9 +1702,12 @@ export class WebStore {
       }
     });
     return {
-      messages: [...new Set(messageIds)].map((messageId) => this.requireMessage(messageId)),
+      messages: [...new Set(messageIds)].flatMap((id) => { const message = this.getMessage(id); return message === undefined ? [] : [message]; }),
       changed,
-      writtenMessageIds: [...written],
+      writtenMessageIds: [...written].filter((id) => this.getMessage(id) !== undefined),
+      suppressedRunIds: runs.filter((run) => this.database.prepare(`SELECT 1 FROM cron_run_messages r
+        JOIN messages m ON m.id = r.message_id WHERE r.source_id = ? AND r.job_id = ? AND r.run_id = ? AND m.cron_suppressed = 1
+      `).get(sourceId, jobId, run.runId) !== undefined).map((run) => run.runId),
     };
   }
 
@@ -2189,7 +2220,7 @@ export class WebStore {
         FROM message_search
         JOIN messages m ON m.rowid = message_search.rowid
         JOIN threads t ON t.id = m.thread_id
-       WHERE message_search MATCH ? AND t.source_id = ?
+       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")}
        ORDER BY rank
        LIMIT ?
     `).all(
@@ -2311,7 +2342,7 @@ export class WebStore {
   }
 
   getMessage(id: string): WebMessage | undefined {
-    const row = this.database.prepare("SELECT * FROM messages WHERE id = ?")
+    const row = this.database.prepare(`SELECT * FROM messages WHERE id = ? AND ${visibleMessageSql("messages")}`)
       .get(id) as unknown as MessageRow | undefined;
     return row === undefined ? undefined : this.mapMessage(row);
   }
@@ -2355,7 +2386,7 @@ export class WebStore {
         t.finished_at AS turn_finished_at
       FROM messages m
       LEFT JOIN turns t ON t.id = m.turn_id
-      WHERE m.thread_id = ? ${beforeSql}
+      WHERE m.thread_id = ? AND ${visibleMessageSql("m")} ${beforeSql}
       ORDER BY ordered_at DESC, role_rank DESC, m.created_at DESC, storage_rowid DESC
       LIMIT ?
     `).all(...values) as unknown as MessagePageRow[];
@@ -2756,7 +2787,7 @@ export class WebStore {
         throw new WebConsoleError("invalid_quote", "Quoted text and its source message are required.", 400);
       }
       const source = this.database.prepare(
-        "SELECT id FROM messages WHERE id = ? AND thread_id = ?",
+        `SELECT id FROM messages WHERE id = ? AND thread_id = ? AND ${visibleMessageSql("messages")}`,
       ).get(input.quote.messageId, threadId);
       if (source === undefined) {
         throw new WebConsoleError(
@@ -3900,6 +3931,7 @@ export class WebStore {
           originalVersion: versionRow.user_version,
           migrateCronChannels: () => this.migrateCronChannels(),
           migrateMonitorWakeDeliveries: () => this.migrateMonitorWakeDeliveries(),
+          suppressSilentCronHistory: () => this.suppressSilentCronHistory(),
           backfillMessageSearch: () => this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL),
         });
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
@@ -3912,6 +3944,44 @@ export class WebStore {
       if (error instanceof WebConsoleError) throw error;
       throw new WebConsoleError("storage_corrupt", `Unable to initialize web state: ${error instanceof Error ? error.message : String(error)}`, 500);
     }
+  }
+
+  private suppressSilentCronHistory(): void {
+    const affected = new Set<string>();
+    let after = 0;
+    while (true) {
+      const rows = this.database.prepare(`
+        SELECT r.rowid AS cursor, r.*, m.parts_json, m.cron_suppressed
+        FROM cron_run_messages r JOIN messages m ON m.id = r.message_id
+        WHERE r.rowid > ? ORDER BY r.rowid LIMIT 100
+      `).all(after) as unknown as Array<{ cursor: number; source_id: string; job_id: string; run_id: string;
+        thread_id: string; message_id: string; payload_json: string; parts_json: string; cron_suppressed: number }>;
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        const run = parseStoredCronRun(row.payload_json);
+        const parts = parseParts(row.parts_json);
+        if (run.runId !== row.run_id || run.jobId !== row.job_id) throw new Error("Invalid cron mapping identity.");
+        const delivered = this.database.prepare(`SELECT 1 FROM notification_deliveries
+          WHERE source_id = ? AND job_id = ? AND run_id = ? AND message_id = ? AND completed_at IS NOT NULL
+        `).get(row.source_id, row.job_id, row.run_id, row.message_id);
+        const suppressed = definitelySilentCronRun(run) && delivered === undefined && !hasMeaningfulCronContent(parts)
+          && this.database.prepare("SELECT 1 FROM attachments WHERE message_id = ? LIMIT 1").get(row.message_id) === undefined;
+        if (row.cron_suppressed === 0 && suppressed) {
+          this.database.prepare("UPDATE messages SET cron_suppressed = 1 WHERE id = ?").run(row.message_id);
+          affected.add(row.thread_id);
+        } else if (!suppressed) {
+          // Visible ambiguous/delivered rows must not be hidden by old browser
+          // telemetry guards. Keep their content, remove only the stale flag.
+          const visibleParts = parts.map(clearSilentCronPart);
+          if (visibleParts.some((part, index) => part !== parts[index])) {
+            this.database.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(serializeParts(visibleParts), row.message_id);
+            affected.add(row.thread_id);
+          }
+        }
+        after = row.cursor;
+      }
+    }
+    for (const id of affected) this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(id);
   }
 
   /** Preserve Monitor delivery tombstones while making deleted threads threadless. */
@@ -4610,7 +4680,7 @@ export class WebStore {
   }
 
   private lastMessagePreview(threadId: string): string | undefined {
-    const row = this.database.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+    const row = this.database.prepare(`SELECT * FROM messages WHERE thread_id = ? AND ${visibleMessageSql("messages")} ORDER BY created_at DESC, rowid DESC LIMIT 1`)
       .get(threadId) as unknown as MessageRow | undefined;
     if (row === undefined) return undefined;
     const text = this.mapMessage(row).parts
@@ -4899,7 +4969,7 @@ function threadSelectSql(suffix: string): string {
                 WHEN a.status = 'online' OR a.status = 'degraded' THEN 1 ELSE 0 END AS can_send,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
                 WHEN (a.status = 'online' OR a.status = 'degraded') AND a.supports_attachments = 1 THEN 1 ELSE 0 END AS can_upload,
-           (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) AS message_count
+           (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND ${visibleMessageSql("m")}) AS message_count
     FROM threads t JOIN agents a ON a.source_id = t.source_id
     LEFT JOIN cron_channels cc ON cc.thread_id = t.id
     ${suffix}
@@ -5001,12 +5071,38 @@ function cronMessageStatus(status: WebCronRun["status"]): WebMessageStatus {
   return "complete";
 }
 
+/** Presentation queries only; storage validation/recovery and retention stay raw. */
+function visibleMessageSql(alias: "m" | "messages"): string { return `${alias}.cron_suppressed = 0`; }
+
+function withoutCronSilentFlag(data: unknown): Record<string, unknown> {
+  const { silent: _silent, ...rest } = record(data) ?? {};
+  return rest;
+}
+
+function clearSilentCronPart(part: WebMessagePart): WebMessagePart {
+  return part.type === "telemetry" && part.event === "cron_run" && record(part.data)?.silent === true
+    ? { ...part, data: withoutCronSilentFlag(part.data) } : part;
+}
+
+function definitelySilentCronRun(run: WebCronRun): boolean {
+  return run.status === "succeeded" && run.fieldsTruncated?.includes("text") !== true
+    && classifyNotifySuppression(run.text) !== "none";
+}
+
+function hasMeaningfulCronContent(parts: readonly WebMessagePart[]): boolean {
+  return parts.some((part) => part.type === "text"
+    ? !isSyntheticCronStateText(part.text) && classifyNotifySuppression(part.text) === "none"
+    : part.type === "attachment" || part.type === "error" || part.type === "mcp_app"
+      || part.type === "failure" || part.type === "process-job" || part.type === "monitor-activity");
+}
+
 function cronRunParts(
   run: WebCronRun,
   prior: readonly WebMessagePart[],
   conversationId: string,
+  notificationBacked = false,
 ): WebMessagePart[] {
-  const silent = run.status === "succeeded" && classifyNotifySuppression(run.text) !== "none";
+  const silent = definitelySilentCronRun(run);
   const priorCron = prior.find(
     (part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
       part.type === "telemetry" && part.event === "cron_run",
@@ -5032,10 +5128,11 @@ function cronRunParts(
   // notification text that arrived before the operator run projection.
   const retained = prior.filter((part) =>
     !(part.type === "telemetry" && part.event === "cron_run")
-    && !(part.type === "text" && isSyntheticCronStateText(part.text)));
+    && !(part.type === "text" && !notificationBacked && isSyntheticCronStateText(part.text)));
   const parts: WebMessagePart[] = run.projection === "summary"
     ? [...retained]
-    : retained.filter((part) => part.type === "text" || part.type === "error");
+    : retained.filter((part) => part.type === "text" || part.type === "error" || part.type === "attachment"
+      || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job" || part.type === "monitor-activity");
   for (const event of run.projection === "detail" ? run.events : []) applyEvent(parts, event);
   const preserveLoadedText = run.projection === "summary"
     && run.fieldsTruncated?.includes("text") === true
@@ -5044,7 +5141,7 @@ function cronRunParts(
     && priorActivityLoaded
     && (run.fieldsTruncated?.includes("error") === true
       || run.fieldsTruncated?.includes("failureKind") === true);
-  if (!silent && !preserveLoadedText && run.text !== undefined && run.text.length > 0) {
+  if (!notificationBacked && !silent && !preserveLoadedText && run.text !== undefined && run.text.length > 0) {
     reconcileFinalText(parts, run.text);
   }
   const hasText = parts.some((part) => part.type === "text" && part.text.trim().length > 0);
@@ -5088,7 +5185,7 @@ function cronRunParts(
       sequence: run.sequence,
       trigger: run.trigger,
       status: run.status,
-      ...(silent ? { silent: true } : {}),
+      ...(silent && !hasMeaningfulCronContent(parts) ? { silent: true } : {}),
       ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
       ...(run.completedAt === undefined ? {} : { completedAt: run.completedAt }),
       ...(run.artifactRunId === undefined ? {} : { artifactRunId: run.artifactRunId }),
@@ -5176,7 +5273,9 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
         ...(legacyEvents === undefined ? {} : { eventsTruncated: true }),
       }
     : raw) as Partial<WebCronRunSummary>;
-  if (run.projection !== "summary"
+  if ((run.text !== undefined && typeof run.text !== "string")
+    || (run.fieldsTruncated !== undefined && (!Array.isArray(run.fieldsTruncated) || run.fieldsTruncated.some((field) => typeof field !== "string")))
+    || run.projection !== "summary"
     || typeof run.runId !== "string"
     || typeof run.jobId !== "string"
     || typeof run.scheduledAt !== "string"

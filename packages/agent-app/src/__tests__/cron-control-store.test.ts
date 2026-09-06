@@ -1167,3 +1167,19 @@ describe("cron control store", () => {
     expect(reopened.runs("digest", 10).runs).toHaveLength(1);
   });
 });
+
+describe("silent operator text normalization", () => {
+  it.each(["", " nothing_to_report ", "Checked everything\nNOTHING_TO_REPORT", `${"Narration ".repeat(20000)}\nNOTHING_TO_REPORT`])("normalizes full suppressed text before summary/detail byte bounds", async (text) => {
+    const { cwd, store } = await fixture();
+    const at = "2026-08-14T10:00:00.000Z";
+    const firing = store.allocateFiring({ jobId: "digest", scheduledAt: at, observedAt: at, trigger: "scheduled" });
+    store.recordResult(succeeded(firing, text));
+    expect(store.lastRun("digest")!.text).toBe("NOTHING_TO_REPORT");
+    expect(store.getRun(firing.runId)!.text).toBe("NOTHING_TO_REPORT");
+    expect(store.getRun(firing.runId)!.fieldsTruncated ?? []).not.toContain("text");
+    const paths = resolveCronControlPaths(cwd);
+    const db = new DatabaseSync(paths.database, { readOnly: true });
+    try { expect(db.prepare("SELECT text FROM cron_runs WHERE run_id = ?").get(firing.runId)).toMatchObject({ text }); }
+    finally { db.close(); }
+  });
+});

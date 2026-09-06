@@ -1305,12 +1305,15 @@ export class WebService {
     const run = await connection.client.cronRun(jobId, runId, AbortSignal.timeout(INFO_TIMEOUT_MS));
     const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [run]);
     const message = reconciled.messages[0];
-    if (message === undefined) {
-      throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
-    }
     if (reconciled.changed) {
       this.announceReconciledMessages(reconciled);
-      this.emitStoredThread(message.threadId, ["thread.changed", "threads.changed"]);
+      this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
+    }
+    if (message === undefined) {
+      if (reconciled.suppressedRunIds?.includes(runId)) {
+        throw new WebConsoleError("cron_run_not_visible", "This cron run has no visible message.", 404);
+      }
+      throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
     }
     return this.shapeMessage(message);
   }

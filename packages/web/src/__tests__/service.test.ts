@@ -952,6 +952,30 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("invalidates a newly hidden cron detail before returning its specific 404 and keeps run paging", async () => {
+    const run = { projection: "summary", runId: "cron:digest:2026-08-14T09:55:00.000Z", jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z", orderedAt: "2026-08-14T09:55:00.000Z", sequence: 4,
+      trigger: "scheduled", status: "running", eventCount: 0 };
+    const service = await createService({ fetchImpl: operatorFetch({ cronOverview: operatorCronOverview(),
+      cronRuns: { runs: [run], nextCursor: "older-runs" },
+      cronRun: { ...run, projection: "detail", status: "succeeded", text: "NOTHING_TO_REPORT", eventCount: 1,
+        events: [{ type: "tool_call_started", id: "old-tool", name: "Read", arguments: {} }], eventsIncluded: 1 },
+    }) });
+    try {
+      const page = await service.cronRuns("agent-one", "digest", { limit: 100 });
+      expect(page.messages).toHaveLength(1);
+      const events: string[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event.type); });
+      await expect(service.cronRun("agent-one", "digest", run.runId)).rejects.toMatchObject({ code: "cron_run_not_visible", status: 404 });
+      expect(events).toContain("thread.changed");
+      expect(events).toContain("threads.changed");
+      const hiddenMessage = page.messages![0]!;
+      expect(() => service.message(hiddenMessage.threadId, hiddenMessage.id)).toThrowError(expect.objectContaining({ code: "message_not_found" }));
+      expect(() => service.toolCallPart(hiddenMessage.threadId, hiddenMessage.id, "old-tool")).toThrowError(expect.objectContaining({ code: "tool_call_not_found" }));
+      unsubscribe();
+    } finally { await service.stop(); }
+  });
+
   it("does not duplicate overview reads while paging and loads bounded selected-run activity on demand", async () => {
     const run = {
       projection: "summary",

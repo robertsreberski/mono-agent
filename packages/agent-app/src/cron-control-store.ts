@@ -5,6 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
+  classifyNotifySuppression,
+  NOTHING_TO_REPORT_SENTINEL,
   MAX_AGENT_REPLY_PARTS,
   MAX_CRON_OPERATOR_DETAIL_ARTIFACT_ID_BYTES,
   MAX_CRON_OPERATOR_DETAIL_ERROR_BYTES,
@@ -1155,7 +1157,9 @@ function operatorRunBase<P extends "summary" | "detail">(
   },
 ): CronOperatorRunBase & { readonly projection: P } {
   const truncated: CronOperatorRunTruncatedField[] = [];
-  const text = boundedRunField(row.text, limits.textBytes, "text", truncated);
+  const text = row.status === "succeeded" && classifyNotifySuppression(row.text ?? undefined) !== "none"
+    ? NOTHING_TO_REPORT_SENTINEL
+    : boundedRunField(row.text, limits.textBytes, "text", truncated);
   const error = boundedRunField(row.error, limits.errorBytes, "error", truncated);
   const artifactRunId = boundedRunField(
     row.artifact_run_id,
