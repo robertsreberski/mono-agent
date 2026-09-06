@@ -75,6 +75,7 @@ interface AgentRow {
   pinned: number;
   health: string | null;
   supports_attachments: number;
+  supports_provider_auth: number;
   models_json: string | null;
   default_model: string | null;
   default_effort: string | null;
@@ -805,16 +806,17 @@ export class WebStore {
       this.database.prepare("UPDATE agents SET status = 'offline', discovered = 0 WHERE discovered = 1").run();
       const statement = this.database.prepare(`
         INSERT INTO agents (
-          source_id, label, status, discovered, health, supports_attachments, models_json,
+          source_id, label, status, discovered, health, supports_attachments, supports_provider_auth, models_json,
           default_model, default_effort, efforts_json, model_options_json,
           providers_json, cron_read, cron_actions, ask_by_id, updated_at
-        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_id) DO UPDATE SET
           label = excluded.label,
           status = excluded.status,
           discovered = 1,
           health = excluded.health,
           supports_attachments = excluded.supports_attachments,
+          supports_provider_auth = excluded.supports_provider_auth,
           models_json = excluded.models_json,
           default_model = excluded.default_model,
           default_effort = excluded.default_effort,
@@ -833,6 +835,7 @@ export class WebStore {
           agent.status,
           agent.health ?? null,
           agent.supportsAttachments ? 1 : 0,
+          agent.supportsProviderAuth === true ? 1 : 0,
           stringifyOptional(agent.models),
           agent.defaultModel ?? null,
           agent.defaultEffort ?? null,
@@ -3655,6 +3658,7 @@ export class WebStore {
         discovered INTEGER NOT NULL DEFAULT 1 CHECK (discovered IN (0, 1)),
         health TEXT,
         supports_attachments INTEGER NOT NULL DEFAULT 0,
+        supports_provider_auth INTEGER NOT NULL DEFAULT 0 CHECK (supports_provider_auth IN (0, 1)),
         models_json TEXT,
         default_model TEXT,
         default_effort TEXT,
@@ -5364,6 +5368,7 @@ function mapAgent(row: AgentRow): WebAgentSummary {
     pinned: row.pinned === 1,
     ...(row.health === null ? {} : { health: row.health }),
     supportsAttachments: row.supports_attachments === 1,
+    ...(row.supports_provider_auth === 1 ? { supportsProviderAuth: true } : {}),
     ...(models === undefined ? {} : { models }),
     ...(row.default_model === null ? {} : { defaultModel: row.default_model }),
     ...(row.default_effort === null ? {} : { defaultEffort: row.default_effort }),

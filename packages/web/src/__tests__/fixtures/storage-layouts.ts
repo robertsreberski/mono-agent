@@ -10,7 +10,7 @@ import layouts from "./storage-layouts.json" with { type: "json" };
  */
 export function seedLegacyStorage(database: DatabaseSync, version: number, sequenced17 = false): void {
   if (version === 0) return;
-  if (!Number.isInteger(version) || version < 1 || version > 18) throw new Error("Unknown fixture version.");
+  if (!Number.isInteger(version) || version < 1 || version > 19) throw new Error("Unknown fixture version.");
   const tables: Record<string, string> = {};
   for (const layout of layouts) {
     if (layout.version > version) break;
@@ -21,6 +21,9 @@ export function seedLegacyStorage(database: DatabaseSync, version: number, seque
     tables.messages = tables.messages!.replace("status TEXT NOT NULL );", "status TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0 );");
   }
   for (const sql of Object.values(tables)) database.exec(sql);
+  if (version >= 19) {
+    database.exec("ALTER TABLE messages ADD COLUMN cron_suppressed INTEGER NOT NULL DEFAULT 0 CHECK (cron_suppressed IN (0,1))");
+  }
   database.exec(`
     INSERT INTO agents (source_id, label, status, updated_at)
       VALUES ('fixture-agent', 'Fixture agent', 'offline', '2026-08-01T00:00:00.000Z');
