@@ -4875,22 +4875,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // write issued before this send must reach the server before the send
         // asks the server what to run on.
         await settleThreadWrites(thread.id);
+        const issuedAt = removedThreadsRef.current.epoch();
         const result = await api.startTurn(thread.id, {
           ...input,
         });
-        setBootstrap((current) =>
-          current
-            ? {
-                ...current,
-                threads: current.threads.map((item) =>
-                  item.id === result.thread.id ? result.thread : item,
-                ),
-              }
-            : current,
-        );
-        if (threadCacheRef.current.patchThread(result.thread.id, result.thread)) {
-          publishDetail(result.thread.id);
-        }
+        applyThreadUpdate(result.thread, issuedAt);
         setActionError(null);
         // The POST already returned the conversation's new summary, applied
         // above; only its messages have to be read back.
@@ -4900,7 +4889,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw turnError;
       }
     },
-    [createThread, publishDetail, refreshSelectedThread, selectedThread, settleThreadWrites],
+    [applyThreadUpdate, createThread, refreshSelectedThread, selectedThread, settleThreadWrites],
   );
 
   const cancelTurn = useCallback(async () => {
