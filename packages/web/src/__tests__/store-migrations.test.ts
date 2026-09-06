@@ -1,5 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -15,7 +14,7 @@ import {
 import { WebStore } from "../store.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import * as migrationsModule from "../store-migrations.js";
-import { fakeMonitor } from "./helpers.js";
+import { fakeMonitor, temporaryRoot } from "./helpers.js";
 import { seedLegacyStorage } from "./fixtures/storage-layouts.js";
 
 const roots: string[] = [];
@@ -25,7 +24,7 @@ afterEach(async () => {
 });
 
 async function seeded(version: number, sequenced17 = false): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "web-migration-"));
+  const root = await temporaryRoot("web-migration-");
   roots.push(root);
   const stateDir = join(root, "state");
   await prepareWebStatePaths({ stateDir });
