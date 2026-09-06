@@ -71,9 +71,10 @@ export interface ThreadCacheEntry {
    * that has long since finished, for which no event will ever arrive.
    *
    * Cleared by the first write that carries a thread SUMMARY -- `upsertFull`,
-   * `patchThread`, `patchRunState`, `confirmFresh` -- and by nothing else: the
-   * summary is where `runState` lives, and a message, a page of older history
-   * or a delta says nothing at all about whether the turn is still running.
+   * `patchThread`, `patchRunState`, `confirmFresh`, `confirmListed` -- and by
+   * nothing else: the summary is where `runState` lives, and a message, a page
+   * of older history or a delta says nothing at all about whether the turn is
+   * still running.
    */
   readonly fromDevice?: boolean;
   readonly syncedAt: number;
@@ -198,9 +199,16 @@ const isNewerMessage = (incoming: WebMessage, held: WebMessage): boolean => {
  * Ordered by the revision and not by arrival, because two answers about one row
  * are not ordered against each other: the POST that renamed it, the event
  * carrying the same row, and a listing page all describe it, and the last one
- * to reach the tab is not the newest one the server made. An EQUAL revision is
- * the same server state, and the incoming one wins so an optimistic edit made
- * at the revision it patches still lands.
+ * to reach the tab is not the newest one the server made. At an EQUAL revision
+ * the incoming one wins, so an optimistic edit made at the revision it patches
+ * still lands.
+ *
+ * Which is NOT the same as "an equal revision is the same server state":
+ * `patchRunState` moves `runState` without moving `revision`, so a held
+ * summary at R can be fresher than a row at R the server made before the turn
+ * event. A caller that only wants to CONFIRM what is held -- the listing paths,
+ * through `confirmListed` -- does not use this, and takes an incoming row only
+ * when it is strictly newer.
  */
 export const newerProjection = (
   held: ThreadSummary,
@@ -717,6 +725,31 @@ export interface ThreadCache {
   ) => boolean;
   /** The summary only. Never inserts: a conversation not held stays not held. */
   readonly patchThread: (threadId: string, thread: ThreadSummary) => boolean;
+  /**
+   * A LISTING row for a conversation this tab holds: the server speaking
+   * about it, and nothing more.
+   *
+   * What a listing is good for is the confirmation -- see
+   * {@link ThreadCacheEntry.fromDevice} -- and what it must not do is replace
+   * a held summary that is not older than it. Two reasons, both seen:
+   *
+   * - `patchRunState` advances `runState` without advancing `revision`, so a
+   *   held summary at revision R is NEWER than a listing row at R the server
+   *   made before the turn began. Replayed through `patchThread`, that row
+   *   won, and a `turn.changed` that raced the snapshot was undone.
+   * - A listing row is a fresh object per response. Adopting one at an equal
+   *   revision replaced the held summary's identity with a copy of itself,
+   *   which the device store reads as "this transcript moved" -- so every
+   *   bootstrap rewrote every held, listed transcript to say what was there.
+   *
+   * So: never inserts; adopts the row only when its revision is STRICTLY
+   * newer; otherwise keeps the held summary by reference. Either way the entry
+   * is confirmed. Returns -- and announces a commit -- only when something
+   * changed: the row was adopted, or the marker was cleared. A pure
+   * confirmation changes no field the device keeps, so the flush it arms
+   * writes nothing for this conversation.
+   */
+  readonly confirmListed: (threadId: string, thread: ThreadSummary) => boolean;
   readonly patchRunState: (threadId: string, runState: RunState) => boolean;
   readonly applyDelta: (threadId: string, delta: MessageDelta) => DeltaOutcome;
   /** Put one untruncated tool call back, and remember that it was fetched. */
@@ -919,10 +952,11 @@ export const createThreadCache = (
    * The same entry, no longer merely what the device kept.
    *
    * Applied by exactly the writes that carry a thread SUMMARY -- `upsertFull`,
-   * `patchThread`, `patchRunState` and `confirmFresh` -- because the summary is
-   * where `runState` lives, and `runState` is the field a restored entry cannot
-   * be trusted about. A message, a page of older history or a delta says
-   * nothing about whether the turn is still running, so none of them confirms.
+   * `patchThread`, `patchRunState`, `confirmFresh` and `confirmListed` --
+   * because the summary is where `runState` lives, and `runState` is the field
+   * a restored entry cannot be trusted about. A message, a page of older
+   * history or a delta says nothing about whether the turn is still running,
+   * so none of them confirms.
    */
   const confirmed = <T extends ThreadCacheEntry>(entry: T): T =>
     (entry.fromDevice === true ? { ...entry, fromDevice: false } : entry);
@@ -1071,6 +1105,11 @@ export const createThreadCache = (
       const next = newerProjection(entry.thread, thread);
       return next === entry.thread ? entry : { ...entry, thread: next };
     })),
+    // STRICTLY newer, and not `newerProjection`: see the interface. At an equal
+    // or older revision the held summary comes back by reference, and the only
+    // thing that can change is the marker -- which `patchWithSummary` clears.
+    confirmListed: (threadId, thread) => committed(patchWithSummary(threadId, (entry) =>
+      (thread.revision > entry.thread.revision ? { ...entry, thread } : entry))),
     // A run state restated by an event that changed nothing is not news: the
     // summary comes back by reference and no commit is announced, so the flush
     // this would otherwise schedule -- several a second during a turn -- does

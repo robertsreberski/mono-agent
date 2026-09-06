@@ -2026,19 +2026,30 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     setBootstrap(next);
     // The listing is a SERVER SUMMARY for every conversation in it, so it
-    // confirms the ones this tab is already holding -- `patchThread` inserts
-    // nothing for an id the cache does not have, and `newerProjection` orders
-    // by revision, so a listing cannot roll a fresher cached summary back.
+    // CONFIRMS the ones this tab is already holding -- and that is all it is
+    // asked to do. `confirmListed` inserts nothing for an id the cache does not
+    // have, adopts a row only when its revision is strictly newer than the
+    // held summary's, and otherwise keeps the held summary by reference.
     //
-    // Without this, a background conversation restored from the device stayed
-    // unconfirmed for the whole of a turn that had started before the tab was
-    // reopened: `message.delta` never reaches a conversation this tab is not
-    // subscribed to, `turn.changed` fires only at the start and the finish, and
-    // nothing else writes the cache. So `hasRunningThread` read false while the
-    // sidebar drew the row as running, and a staged build could reload over it
-    // -- the exact failure the guard exists to prevent. `patchThread` announces
-    // a commit, so the flag is recomputed by the ordinary hook.
-    for (const row of next.threads) threadCacheRef.current.patchThread(row.id, row);
+    // The confirmation is what a restored entry is missing: a background
+    // conversation restored from the device stayed unconfirmed for the whole
+    // of a turn that had started before the tab was reopened, because
+    // `message.delta` never reaches a conversation this tab is not subscribed
+    // to and `turn.changed` fires only at the start and the finish. So
+    // `hasRunningThread` read false while the sidebar drew the row as running,
+    // and a staged build could reload over it -- the failure the guard exists
+    // to prevent.
+    //
+    // NOT `patchThread`, which adopts at an equal revision. A `turn.changed`
+    // that landed while this snapshot was on the wire moved the held `runState`
+    // without moving its revision, and the snapshot's row undid it; and a
+    // listing row is a fresh object per response, so adopting it at an equal
+    // revision handed the device store a "moved" transcript to rewrite for
+    // every held, listed conversation, on every bootstrap. A commit is
+    // announced only when a marker flipped or a row was adopted, so the flag
+    // is recomputed by the ordinary hook -- and the flush the listing itself
+    // arms below finds every unmoved row exactly as it wrote it.
+    for (const row of next.threads) threadCacheRef.current.confirmListed(row.id, row);
     hasBootstrapRef.current = true;
     // The listing on screen is the SERVER's from here on, whatever the device
     // seeded before it.
@@ -2192,6 +2203,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     );
     const key = threadBucketKey(sourceId, archived);
     const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+    // A page is a server summary for every row in it, exactly as a bootstrap's
+    // listing is -- and a bootstrap carries ONE bucket, so a conversation held
+    // for any other agent is confirmed by nothing until that agent's bucket is
+    // read. Without this a running conversation restored for the agent the
+    // operator was not looking at stayed `fromDevice` for its whole turn, and
+    // switching to that agent did not fix it. The same write as
+    // `applyBootstrap`, under the same rules: never inserts, adopts only a
+    // strictly newer row, confirms either way.
+    for (const row of admitted) threadCacheRef.current.confirmListed(row.id, row);
     // The authoritative fill DELIVERS this bucket, exactly as a bootstrap does,
     // so the sidebar effect must not buy it again -- an agent switch back and
     // forth, or an archive toggle, otherwise re-read the same page every time.

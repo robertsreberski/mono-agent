@@ -754,6 +754,15 @@ describe("createThreadCache", () => {
     }))).toBe(true);
     expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
 
+    // A listing row confirms too -- and at an equal revision it confirms
+    // WITHOUT replacing what is held. See `confirmListed`.
+    restore();
+    expect(cache.confirmListed("alpha-thread", thread("alpha-thread", "alpha", {
+      runState: { status: "complete" },
+    }))).toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+    expect(cache.get("alpha-thread")?.thread.runState.status).toBe("running");
+
     // And the three that carry no summary leave it exactly as it was.
     restore();
     cache.applyDelta("alpha-thread", delta({ ops: [{ op: "append", index: 0, delta: "lo" }] }));
@@ -784,6 +793,70 @@ describe("createThreadCache", () => {
     // derived from it -- "is a turn running" -- goes with it.
     cache.clear();
     expect(cache.snapshot()).toEqual([]);
+  });
+
+  it("confirms a held conversation from a listing row without taking the row's word over its own", () => {
+    // A listing row is a fresh object per response, and `patchRunState` moves
+    // `runState` without moving `revision` -- so a row at an EQUAL revision is
+    // neither news nor safe to adopt. Adopting it replaced the held summary's
+    // identity with a copy of itself, which the device store reads as "this
+    // transcript moved", and undid a `turn.changed` that raced the listing.
+    let commits = 0;
+    const cache = createThreadCache(8, () => 0, () => { commits += 1; });
+
+    // Not held: nothing is inserted, nothing is announced.
+    expect(cache.confirmListed("never-held", thread("never-held", "alpha"))).toBe(false);
+    expect(cache.get("never-held")).toBeUndefined();
+    expect(commits).toBe(0);
+
+    const running = thread("alpha-thread", "alpha", {
+      revision: 3,
+      runState: { status: "running", id: "turn-1" },
+    });
+    cache.restore({ thread: running, messages: [message("m1")] });
+    const restored = cache.get("alpha-thread")!;
+    expect(restored.fromDevice).toBe(true);
+
+    // Equal revision, saying the turn is over: confirmed, kept by reference --
+    // summary AND transcript -- and announced exactly once.
+    const equal = thread("alpha-thread", "alpha", { revision: 3, runState: { status: "complete" } });
+    expect(cache.confirmListed("alpha-thread", equal)).toBe(true);
+    const confirmedEntry = cache.get("alpha-thread")!;
+    expect(confirmedEntry.fromDevice).toBe(false);
+    expect(confirmedEntry.thread).toBe(restored.thread);
+    expect(confirmedEntry.messages).toBe(restored.messages);
+    expect(confirmedEntry.thread.runState.status).toBe("running");
+    expect(commits).toBe(1);
+
+    // Already confirmed, same revision again (a fresh object, as every
+    // response is): nothing changed, nothing announced, the very same entry.
+    expect(cache.confirmListed("alpha-thread", { ...equal })).toBe(false);
+    expect(cache.get("alpha-thread")).toBe(confirmedEntry);
+    expect(commits).toBe(1);
+
+    // Older: the same answer.
+    expect(cache.confirmListed("alpha-thread", thread("alpha-thread", "alpha", { revision: 2 })))
+      .toBe(false);
+    expect(cache.get("alpha-thread")).toBe(confirmedEntry);
+    expect(commits).toBe(1);
+
+    // Strictly newer: adopted, and announced.
+    const newer = thread("alpha-thread", "alpha", { revision: 4, runState: { status: "complete" } });
+    expect(cache.confirmListed("alpha-thread", newer)).toBe(true);
+    expect(cache.get("alpha-thread")?.thread).toBe(newer);
+    expect(cache.get("alpha-thread")?.messages).toBe(restored.messages);
+    expect(commits).toBe(2);
+
+    // An OLDER row still confirms a restored entry -- the server spoke about
+    // this conversation -- and still replaces nothing.
+    cache.evict("alpha-thread");
+    cache.restore({ thread: running, messages: [message("m1")] });
+    const before = commits;
+    expect(cache.confirmListed("alpha-thread", thread("alpha-thread", "alpha", { revision: 1 })))
+      .toBe(true);
+    expect(cache.get("alpha-thread")?.fromDevice).toBe(false);
+    expect(cache.get("alpha-thread")?.thread).toBe(running);
+    expect(commits).toBe(before + 1);
   });
 
   it("patches the summary of a conversation it holds and inserts none it does not", () => {

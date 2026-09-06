@@ -254,6 +254,13 @@ describe("ConsoleStoreProvider integration", () => {
   beforeEach(async () => {
     await deviceStore.clearAll();
     vi.clearAllMocks();
+    // `clearAllMocks` forgets CALLS, not implementations. A `mockImplementation`
+    // one case installs for `api.thread` or `api.threadIfChanged` would answer
+    // every case after it, and a case that passes on the strength of an answer
+    // it never asked for is one that breaks the moment the file is reordered.
+    // Reset both; every case installs what it needs.
+    vi.mocked(api.thread).mockReset();
+    vi.mocked(api.threadIfChanged).mockReset();
     localStorage.clear();
     window.history.replaceState(null, "", "/");
     FakeEventSource.latest = undefined;
@@ -5617,6 +5624,12 @@ describe("ConsoleStoreProvider integration", () => {
     });
 
     it("takes the listing's word for a turn that finished while the tab was shut", async () => {
+      // Confirmed as running FIRST, by a listing that says so -- otherwise
+      // "false" is what an unconfirmed restore reads as anyway and the listing
+      // has proved nothing. Then a listing at a NEWER revision says the turn
+      // is over, and is adopted: the one way a listing may replace what is
+      // held.
+      const runningBeta = { ...beta, runState: { status: "running" as const, id: "turn-b" } };
       const finishedBeta = {
         ...beta,
         revision: beta.revision + 1,
@@ -5625,25 +5638,25 @@ describe("ConsoleStoreProvider integration", () => {
       await previousVisit({
         entries: [
           entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
-          entry(
-            { ...beta, runState: { status: "running" as const, id: "turn-b" } },
-            [kept("b1", "beta", beta.id)],
-            'W/"beta-1"',
-          ),
+          entry(runningBeta, [kept("b1", "beta", beta.id)], 'W/"beta-1"'),
         ],
-        listing: [alpha, beta],
+        listing: [alpha, runningBeta],
         openedOn: alpha.id,
       });
-      vi.mocked(api.bootstrap).mockResolvedValue(
-        bootstrap(agents, [alpha, finishedBeta], undefined, { threadsSourceId: "alpha" }),
-      );
+      let listing: readonly ThreadSummary[] = [alpha, runningBeta];
+      vi.mocked(api.bootstrap).mockImplementation(async () =>
+        bootstrap(agents, listing, undefined, { threadsSourceId: "alpha" }));
       vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
 
       const store = openConsole();
       await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
-      await quiet();
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
 
-      expect(store.current.hasRunningThread).toBe(false);
+      listing = [alpha, finishedBeta];
+      emit("agents.changed");
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(false));
     });
 
     it("never lets the listing roll a cached summary backwards", async () => {
@@ -5678,6 +5691,163 @@ describe("ConsoleStoreProvider integration", () => {
 
       // Confirmed by the listing, but with the summary it already had.
       expect(store.current.hasRunningThread).toBe(true);
+    });
+
+    it("writes nothing to the device for a listing that says what the device already holds", async () => {
+      // A listing row is a fresh object per response. Adopting one at an EQUAL
+      // revision replaced the held summary's identity with a copy of itself,
+      // which the device store reads as "this transcript moved" -- so every
+      // bootstrap (the mount, a payload-less `agents.changed`, a reconnect)
+      // rewrote every held, listed transcript, up to eight of them, to say
+      // what was already there.
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(beta, [kept("b1", "beta", beta.id)], 'W/"beta-1"'),
+        ],
+        listing: [alpha, beta],
+        openedOn: alpha.id,
+      });
+      const savedAtOf = async () => Object.fromEntries(
+        ((await deviceStore.hydrate())?.threads ?? []).map((row) => [row.id, row.savedAt]),
+      );
+      const seeded = await savedAtOf();
+      expect(Object.keys(seeded).sort()).toEqual([alpha.id, beta.id]);
+      // Identical rows, exactly as the wire delivers them: parsed afresh, so
+      // nothing about their identity says "the same row as last time".
+      vi.mocked(api.bootstrap).mockImplementation(async () =>
+        structuredClone(bootstrap(agents, [alpha, beta], undefined, { threadsSourceId: "alpha" })));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await written();
+      expect(await savedAtOf()).toEqual(seeded);
+
+      emit("agents.changed");
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+      await written();
+
+      expect(await savedAtOf()).toEqual(seeded);
+    });
+
+    it("keeps a turn that began while the snapshot was on the wire, whatever the snapshot's row says", async () => {
+      // `patchRunState` moves `runState` without moving `revision`, so the
+      // cached summary is NEWER than a listing row at the same revision that
+      // the server made before the turn began. Replayed as a patch, that row
+      // won: `hasRunningThread` went true, then false, for a turn still
+      // running.
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
+
+      // The turn starts while the snapshot is still out.
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-1", status: "running", startedAt: "2026-08-14T09:00:00.000Z" } },
+      });
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
+
+      // The snapshot lands carrying the row the server made BEFORE the turn:
+      // the same revision, idle.
+      act(() => { release(); });
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await quiet();
+
+      expect(store.current.hasRunningThread).toBe(true);
+      expect(store.current.detail?.thread.runState).toMatchObject({ id: "turn-1", status: "running" });
+    });
+
+    it("does not re-latch a turn that finished while the snapshot was on the wire", async () => {
+      // The mirror. The device says running, the finish lands during the
+      // round trip, and the snapshot's row -- same revision, still running --
+      // must not put the turn back.
+      const runningAlpha = { ...alpha, runState: { status: "running" as const, id: "turn-1" } };
+      await previousVisit({
+        entries: [entry(runningAlpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [runningAlpha],
+        openedOn: alpha.id,
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(agents, [runningAlpha], undefined, { threadsSourceId: "alpha" }));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
+
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-1", status: "complete", finishedAt: "2026-08-14T09:00:00.000Z" } },
+      });
+      await quiet();
+      expect(store.current.hasRunningThread).toBe(false);
+
+      act(() => { release(); });
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await quiet();
+
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("confirms a held conversation of another agent from that agent's page", async () => {
+      // A bootstrap carries ONE bucket. A conversation this device holds for
+      // an agent the operator is not looking at is in no listing the bootstrap
+      // confirms, and the page that fills that agent's bucket used to write
+      // only the projection -- so a running turn there was confirmed by
+      // nothing until it finished, and switching to the agent did not fix it.
+      const runningGamma = thread("gamma-thread", "beta", {
+        runState: { status: "running" as const, id: "turn-g" },
+      });
+      const betaThread = thread("beta-thread", "beta", { updatedAt: "2026-07-17T11:00:00.000Z" });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      // The operator's last conversation with beta is NOT the running one, so
+      // opening beta reads nothing about gamma: only the page speaks for it.
+      localStorage.setItem(
+        SELECTED_THREADS_STORAGE_KEY,
+        JSON.stringify({ alpha: alpha.id, beta: betaThread.id }),
+      );
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread, runningGamma] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: betaThread, messages: [] });
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await quiet();
+      // Held, running, and confirmed by nothing: the snapshot's bucket is alpha's.
+      expect(store.current.hasRunningThread).toBe(false);
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(betaThread.id));
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
+
+      // No `turn.changed`, and nothing read gamma: the page alone said so.
+      expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).not.toContain(runningGamma.id);
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => call[0]))
+        .not.toContain(runningGamma.id);
     });
 
     it("does not believe a turn is running because the device kept one that was", async () => {
@@ -6164,6 +6334,34 @@ describe("ConsoleStoreProvider integration", () => {
 
       // Only alpha survives, and alpha is not running.
       expect(store.current.hasRunningThread).toBe(false);
+      expect(store.current.detail?.thread.id).toBe(alpha.id);
+    });
+
+    it("keeps counting the running turn it was asked to keep when the operator clears the cache", async () => {
+      // The mirror: "Clear cached data" keeps the conversation on screen, so a
+      // running answer it is holding is kept with it, and the recompute must
+      // read what survived rather than assume nothing did.
+      const runningAlpha = { ...alpha, runState: { status: "running" as const, id: "turn-a" } };
+      await previousVisit({
+        entries: [
+          entry(runningAlpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(beta, [kept("b1", "beta", beta.id)], 'W/"beta-1"'),
+        ],
+        listing: [runningAlpha, beta],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [runningAlpha, beta], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasRunningThread).toBe(true));
+      expect(store.current.selectedThreadId).toBe(alpha.id);
+
+      await act(async () => { await store.current.clearCachedData(); });
+
+      expect(store.current.hasRunningThread).toBe(true);
       expect(store.current.detail?.thread.id).toBe(alpha.id);
     });
 
