@@ -152,9 +152,26 @@ export interface WebAgentSummary {
   readonly pinned?: boolean;
   readonly health?: string;
   readonly supportsAttachments: boolean;
-  /** True only when this web host can grant an owner-local SELF-CONFIG capability. */
+  /**
+   * True only when this web host can grant an owner-local SELF-CONFIG capability.
+   *
+   * Projected, never persisted, like `supportsProviderAuth`: the console's own
+   * state database has no column for either, so they are added when a summary
+   * is answered to a client (`decorateProjectedCapabilities`) and must stay off
+   * the summaries discovery hands to `replaceAgents` -- a field the store
+   * cannot store makes every heartbeat look like a fleet change, and is dropped
+   * on write so it never reaches the browser anyway. The other half of that
+   * trade: a field parked at the projection moves without any `agents.changed`,
+   * so its transitions have to be announced explicitly (`refreshAgentsOnce`
+   * tracks both in `projectedCapabilities`).
+   */
   readonly supportsConfiguration?: true;
-  /** Agent operator exposes bearer-protected Pi provider authentication v1. */
+  /**
+   * Agent operator exposes bearer-protected Pi provider authentication v1.
+   *
+   * Projected from the live connection's `/v1/info`, never persisted -- see
+   * `supportsConfiguration` above for why that distinction matters.
+   */
   readonly supportsProviderAuth?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;
