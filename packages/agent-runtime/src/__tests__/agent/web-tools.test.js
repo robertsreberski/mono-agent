@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { passthroughSandbox } from "../../agent/sandbox-seam.js";
@@ -8,6 +8,7 @@ import {
   __resetSharedSearchCacheForTests,
   createWebToolController,
 } from "../../agent/tools/web-controller.js";
+import { markdownToText } from "../../agent/tools/web-document-extractor.js";
 import { performWebFetch } from "../../agent/tools/web-fetch.js";
 import {
   __resetWebSearchThrottleForTests,
@@ -39,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   __resetWebSearchThrottleForTests();
   __resetSharedSearchCacheForTests();
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
@@ -117,6 +119,200 @@ describe("WebSearch", () => {
       expect(body.get("q")).toContain("site:example.com");
       expect(body.get("language")).toBe("nl-NL");
       expect(body.get("time_range")).toBe("month");
+    }
+  });
+
+  it("queries strict local Ollama without credentials and uses only its same-origin compatibility route", async () => {
+    const calls = [];
+    const fetchImpl = vi.fn(async (url, init) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/api/experimental/web_search")) return new Response("missing", { status: 404 });
+      return new Response(JSON.stringify({ results: [{
+        title: "Mono Agent documentation",
+        url: "https://example.com/mono-agent",
+        content: "Mono Agent framework documentation",
+      }] }), { headers: { "content-type": "application/json" } });
+    });
+    const result = await performWebSearch({ query: "mono agent", alternate_queries: ["unused"] }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({ error: false, outcome: { backend: "ollama", attempts: 1 } });
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:11434/api/experimental/web_search",
+      "http://127.0.0.1:11434/api/web_search",
+    ]);
+    expect(calls.every((call) => call.init.headers.Authorization === undefined)).toBe(true);
+    expect(JSON.parse(calls[0].init.body)).toEqual({ query: "mono agent", max_results: 10 });
+  });
+
+  it("host-binds Ollama bearer auth and never silently selects Ollama from auto", async () => {
+    const fetchImpl = vi.fn(async (url, init) => {
+      expect(String(url)).toBe("https://ollama.com/api/web_search");
+      expect(init.headers.Authorization).toBe("Bearer sentinel-hosted-key");
+      return new Response(JSON.stringify({ results: [] }), { headers: { "content-type": "application/json" } });
+    });
+    const hosted = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+    expect(hosted).toMatchObject({ error: false, outcome: { backend: "ollama", code: "no_results" } });
+
+    const ollamaFetch = vi.fn(async () => new Response(""));
+    const automatic = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: {
+        backend: "auto",
+        ollama: { baseUrl: "https://ollama.com", apiKey: "sentinel-hosted-key" },
+      },
+      codexSearch: vi.fn(async () => ({ ok: true, backend: "codex", results: [] })),
+      fetchImpl: ollamaFetch,
+      ctx: runtimeContext(),
+    });
+    expect(automatic.error).toBe(false);
+    expect(ollamaFetch.mock.calls.map(([url]) => String(url)).every((url) => !url.includes("ollama.com"))).toBe(true);
+  });
+
+  it("rejects Ollama credential leaks and reports unsupported local routes honestly", async () => {
+    const credentialFetch = vi.fn();
+    const invalid = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434", apiKey: "sentinel-hosted-key" } },
+      fetchImpl: credentialFetch,
+      ctx: runtimeContext(),
+    });
+    expect(invalid.outcome.code).toBe("invalid_search_config");
+    expect(JSON.stringify(invalid)).not.toContain("sentinel-hosted-key");
+    expect(credentialFetch).not.toHaveBeenCalled();
+
+    const envNameFetch = vi.fn();
+    const invalidEnvName = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "http://127.0.0.1:11434", apiKeyEnv: "OLLAMA_API_KEY" },
+      },
+      fetchImpl: envNameFetch,
+      ctx: runtimeContext(),
+    });
+    expect(invalidEnvName).toMatchObject({
+      error: true,
+      outcome: { code: "invalid_search_config", attempts: 0 },
+    });
+    expect(envNameFetch).not.toHaveBeenCalled();
+
+    const unsupported = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl: vi.fn(async () => new Response("missing", { status: 404 })),
+      ctx: runtimeContext(),
+    });
+    expect(unsupported).toMatchObject({ error: true, outcome: { code: "endpoint_not_supported", attempts: 1 } });
+  });
+
+  it.each([
+    [401, "auth_failed"],
+    [403, "auth_failed"],
+    [408, "timeout"],
+    [429, "rate_limited"],
+    [503, "provider_unavailable"],
+  ])("does not route-fallback after local Ollama HTTP %i", async (status, code) => {
+    const fetchImpl = vi.fn(async () => new Response("failure", {
+      status,
+      headers: status === 429 ? { "retry-after": "1" } : {},
+    }));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({ error: true, outcome: { code, attempts: 1 } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(String(fetchImpl.mock.calls[0][0])).toBe("http://127.0.0.1:11434/api/experimental/web_search");
+  });
+
+  it("reports hosted auth setup and malformed Ollama results without leaking or falling back", async () => {
+    const missingFetch = vi.fn();
+    const missing = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "https://ollama.com" } },
+      fetchImpl: missingFetch,
+      ctx: runtimeContext(),
+    });
+    expect(missing).toMatchObject({ error: true, outcome: { code: "auth_missing", attempts: 0 } });
+    expect(missingFetch).not.toHaveBeenCalled();
+
+    for (const responseBody of ["not json", JSON.stringify({ results: [{ url: "javascript:bad" }] })]) {
+      const fetchImpl = vi.fn(async () => new Response(responseBody));
+      const invalid = await performWebSearch({ query: "mono agent" }, {
+        searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+        fetchImpl,
+        ctx: runtimeContext(),
+      });
+      expect(invalid).toMatchObject({ error: true, outcome: { code: "invalid_response", attempts: 1 } });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each([
+    [Object.assign(new Error("request timed out"), { name: "TimeoutError" }), "timeout", true],
+    [Object.assign(new Error("request aborted"), { name: "AbortError" }), "aborted", false],
+    [Object.assign(new Error("overall deadline"), { code: "deadline_exceeded" }), "deadline_exceeded", true],
+  ])("preserves strict Ollama transport classification for %s", async (transportError, code, retryable) => {
+    const fetchImpl = vi.fn(async () => { throw transportError; });
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: {
+        code,
+        attempts: 1,
+        retryable,
+        attemptedBackends: ["ollama"],
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves strict Ollama response bounds without a compatibility or provider fallback", async () => {
+    const fetchImpl = vi.fn(async () => new Response("x".repeat(2 * 1024 * 1024 + 1)));
+    const result = await performWebSearch({ query: "mono agent" }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    expect(result).toMatchObject({
+      error: true,
+      outcome: {
+        code: "response_too_large",
+        attempts: 1,
+        retryable: false,
+        attemptedBackends: ["ollama"],
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects unsafe custom Ollama origins before network access", async () => {
+    for (const ollama of [
+      { baseUrl: "http://search.example.com" },
+      { baseUrl: "https://search.example.com" },
+      { baseUrl: "https://user:secret@search.example.com" },
+      { baseUrl: "https://search.example.com/api" },
+      { baseUrl: "https://search.example.com?key=value" },
+    ]) {
+      const fetchImpl = vi.fn();
+      const result = await performWebSearch({ query: "mono agent" }, {
+        searchConfig: { backend: "ollama", ollama },
+        fetchImpl,
+        ctx: runtimeContext(),
+      });
+      expect(result).toMatchObject({ error: true, outcome: { code: "invalid_search_config" } });
+      expect(fetchImpl).not.toHaveBeenCalled();
     }
   });
 
@@ -626,6 +822,121 @@ describe("WebSearch", () => {
 });
 
 describe("WebFetch", () => {
+  it("preserves semantic Markdown, resolves safe links, and rejects unsafe link targets", async () => {
+    const fixture = readFileSync(new URL("../fixtures/web/semantic.html", import.meta.url));
+    const result = await performWebFetch({ url: "https://example.com/articles/page" }, {
+      fetchImpl: async () => new Response(fixture, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext(),
+    });
+    expect(result.error).toBe(false);
+    expect(result.text).toContain("[primary source](https://example.com/source)");
+    expect(result.text).toContain("First fact");
+    expect(result.text).toContain("answer | 42");
+    expect(result.text).not.toContain("javascript:");
+    expect(result.outcome).toMatchObject({ contentKind: "html", charset: "utf-8", extractionStage: "defuddle" });
+  });
+
+  it("uses deterministic charset precedence and fails malformed declared documents honestly", async () => {
+    const bomBytes = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("BOM café")]);
+    const bom = await performWebFetch({ url: "https://example.com/bom", format: "text" }, {
+      fetchImpl: async () => new Response(bomBytes, { headers: { "content-type": "text/plain; charset=windows-1252" } }),
+      ctx: runtimeContext(),
+    });
+    expect(bom.text).toContain("BOM café");
+    expect(bom.outcome).toMatchObject({ charset: "utf-8", charsetSource: "bom", hadDecodingReplacement: false });
+
+    const windows = await performWebFetch({ url: "https://example.com/cp1252", format: "text" }, {
+      fetchImpl: async () => new Response(Uint8Array.from([0x93, 0x71, 0x75, 0x6f, 0x74, 0x65, 0x94]), {
+        headers: { "content-type": "text/plain; charset=windows-1252" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(windows.text).toContain("“quote”");
+    expect(windows.outcome).toMatchObject({ charset: "windows-1252", charsetSource: "header" });
+
+    const malformed = await performWebFetch({ url: "https://example.com/data.json" }, {
+      fetchImpl: async () => new Response(readFileSync(new URL("../fixtures/web/malformed.json", import.meta.url)), {
+        headers: { "content-type": "application/json" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(malformed).toMatchObject({ error: true, outcome: { code: "invalid_json", contentKind: "json" } });
+
+    const unsupported = await performWebFetch({ url: "https://example.com/text", format: "text" }, {
+      fetchImpl: async () => new Response("evidence", { headers: { "content-type": "text/plain; charset=x-unknown-charset" } }),
+      ctx: runtimeContext(),
+    });
+    expect(unsupported).toMatchObject({ error: true, outcome: { code: "unsupported_charset" } });
+  });
+
+  it("sniffs only generic structured content and validates XML before tolerant parsing", async () => {
+    const genericJson = await performWebFetch({ url: "https://example.com/generic", format: "text" }, {
+      fetchImpl: async () => new Response('{"answer":42}', { headers: { "content-type": "application/octet-stream" } }),
+      ctx: runtimeContext(),
+    });
+    expect(genericJson).toMatchObject({ error: false, outcome: { contentKind: "json", extractionStage: "json" } });
+    expect(genericJson.text).toContain('"answer": 42');
+
+    const plainJson = await performWebFetch({ url: "https://example.com/plain", format: "text" }, {
+      fetchImpl: async () => new Response('{"answer":42}', { headers: { "content-type": "text/plain" } }),
+      ctx: runtimeContext(),
+    });
+    expect(plainJson).toMatchObject({ error: false, outcome: { contentKind: "text", extractionStage: "text" } });
+
+    const malformedXml = await performWebFetch({ url: "https://example.com/feed", format: "text" }, {
+      fetchImpl: async () => new Response(readFileSync(new URL("../fixtures/web/malformed.xml", import.meta.url)), {
+        headers: { "content-type": "application/xml" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(malformedXml).toMatchObject({ error: true, outcome: { code: "invalid_xml", contentKind: "xml" } });
+  });
+
+  it("honors in-document charsets, records replacement decoding, and bounds structured parsers", async () => {
+    const metaHtml = Buffer.concat([
+      Buffer.from('<html><head><meta charset="windows-1252"></head><body><article><p>'),
+      Uint8Array.from([0x93]),
+      Buffer.from("quoted evidence"),
+      Uint8Array.from([0x94]),
+      Buffer.from("</p></article></body></html>"),
+    ]);
+    const meta = await performWebFetch({ url: "https://example.com/meta", format: "text" }, {
+      fetchImpl: async () => new Response(metaHtml, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext(),
+    });
+    expect(meta.text).toContain("“quoted evidence”");
+    expect(meta.outcome).toMatchObject({ charset: "windows-1252", charsetSource: "html_meta" });
+
+    const replacement = await performWebFetch({ url: "https://example.com/bad-utf8", format: "text" }, {
+      fetchImpl: async () => new Response(Uint8Array.from([0x65, 0x76, 0x69, 0x64, 0x65, 0x6e, 0x63, 0x65, 0xc3, 0x28]), {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(replacement).toMatchObject({ error: false, outcome: { hadDecodingReplacement: true } });
+
+    const oversized = await performWebFetch({ url: "https://example.com/large.html" }, {
+      fetchImpl: async () => new Response(`<html><body>${"x".repeat(8 * 1024 * 1024)}</body></html>`, {
+        headers: { "content-type": "text/html" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(oversized).toMatchObject({ error: true, outcome: { code: "parser_input_too_large", contentKind: "html" } });
+  });
+
+  it("reports every failed HTML extraction stage instead of returning blank success", async () => {
+    const empty = await performWebFetch({ url: "https://example.com/empty" }, {
+      fetchImpl: async () => new Response("<html><head><title></title></head><body><script>noop()</script></body></html>", {
+        headers: { "content-type": "text/html" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(empty).toMatchObject({
+      error: true,
+      outcome: { code: "extraction_failed", parserFailures: ["defuddle", "readability", "body"] },
+    });
+  });
+
   it("extracts HTML as Markdown and returns useful JSON, RSS, and PDF text", async () => {
     const html = await performWebFetch({ url: "https://example.com/article" }, {
       fetchImpl: async () => new Response(
@@ -676,6 +987,200 @@ describe("WebFetch", () => {
     });
     expect(rawPdf.text).toContain("%PDF-");
     expect(rawPdf.text).toContain("Raw PDF marker");
+  });
+
+  it.each([
+    "text/markdown",
+    "text/x-markdown",
+    "text/md",
+    "text/vnd.daringfireball.markdown",
+    "application/markdown",
+    "application/x-markdown",
+  ])("preserves %s as Markdown/raw and removes decoration for text", async (contentType) => {
+    const source = [
+      "# Heading",
+      "",
+      "**Bold** and [linked text](https://example.com/source).",
+      "#include <stdio.h>",
+      "+15551234567",
+      "-42",
+      "snake_case and 2*3 stay literal.",
+      "",
+      "```c",
+      "#include <stdio.h>",
+      "const marker = \"*_`~\";",
+      "-42",
+      "   ```",
+      "",
+      "> ```c",
+      "> #include <quoted.h>",
+      "> const quoted = \"*_`~\";",
+      "> ```",
+      "",
+      "- ```c",
+      "  #include <listed.h>",
+      "  const listed = \"*_`~\";",
+      "  ```",
+      "",
+    ].join("\n");
+    const retrieve = (format) => performWebFetch({
+      url: "https://example.com/readme",
+      format,
+      render: "never",
+    }, {
+      documentOnly: true,
+      fetchImpl: async () => new Response(source, { headers: { "content-type": contentType } }),
+      ctx: runtimeContext(),
+    });
+
+    const markdown = await retrieve("markdown");
+    const raw = await retrieve("raw");
+    const text = await retrieve("text");
+    expect(markdown.document.body).toBe(source);
+    expect(raw.document.body).toBe(source);
+    expect(text.document.body).toBe([
+      "Heading",
+      "",
+      "Bold and linked text.",
+      "#include <stdio.h>",
+      "+15551234567",
+      "-42",
+      "snake_case and 2*3 stay literal.",
+      "",
+      "#include <stdio.h>",
+      "const marker = \"*_`~\";",
+      "-42",
+      "",
+      "#include <quoted.h>",
+      "const quoted = \"*_`~\";",
+      "",
+      "#include <listed.h>",
+      "const listed = \"*_`~\";",
+    ].join("\n"));
+    expect(text.outcome).toMatchObject({ contentKind: "markdown", extractionStage: "markdown" });
+  });
+
+  it.each([
+    {
+      name: "top-level",
+      opening: "   ```js",
+      body: "   inside",
+      validCloser: "   ```",
+      invalidCloser: "      ```",
+      following: "after",
+      invalidMarker: "   ```",
+    },
+    {
+      name: "block-quoted",
+      opening: ">    ```js",
+      body: ">    inside",
+      validCloser: ">    ```",
+      invalidCloser: ">       ```",
+      following: "> after",
+      invalidMarker: "   ```",
+    },
+    {
+      name: "list-nested",
+      opening: "- ```js",
+      body: "  inside",
+      validCloser: "     ```",
+      invalidCloser: "      ```",
+      following: "after",
+      invalidMarker: "    ```",
+    },
+  ])("allows three-space but not over-indented $name fence closers", ({
+    opening,
+    body,
+    validCloser,
+    invalidCloser,
+    following,
+    invalidMarker,
+  }) => {
+    expect(markdownToText([opening, body, validCloser, following].join("\n"))).toBe("inside\nafter");
+    expect(markdownToText([opening, body, invalidCloser, following].join("\n")))
+      .toBe(["inside", invalidMarker, "after"].join("\n"));
+  });
+
+  it("rejects bounded static access/auth interstitials without false-positive evidence", async () => {
+    for (const status of [200, 403]) {
+      const cloudflare = await performWebFetch({ url: "https://example.com/protected" }, {
+        fetchImpl: async () => new Response(`
+          <html><head><title>Just a moment...</title></head><body>
+          <h1>Performing security verification</h1>
+          <p>Enable JavaScript and cookies to continue</p>
+          </body></html>
+        `, { status, headers: { "content-type": "text/html" } }),
+        ctx: runtimeContext(),
+      });
+      expect(cloudflare).toMatchObject({
+        error: true,
+        outcome: { code: "access_challenge", backend: "http", statusCode: status },
+      });
+      expect(cloudflare.text).not.toContain("Performing security verification");
+    }
+
+    const authentication = await performWebFetch({ url: "https://example.com/private" }, {
+      fetchImpl: async () => new Response("Sign in to continue to your account.", {
+        headers: { "content-type": "text/plain" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(authentication).toMatchObject({ error: true, outcome: { code: "authentication_required" } });
+
+    const structuredInterstitials = [
+      {
+        contentType: "application/json",
+        body: JSON.stringify({ message: "Authentication required. Sign in to continue." }),
+        code: "authentication_required",
+      },
+      {
+        contentType: "application/xml",
+        body: "<feed><title>Just a moment...</title><summary>Performing security verification. Enable JavaScript and cookies to continue.</summary></feed>",
+        code: "access_challenge",
+      },
+      {
+        contentType: "application/pdf",
+        body: minimalPdf("Performing security verification. Enable JavaScript and cookies to continue.", { hex: true }),
+        code: "access_challenge",
+      },
+    ];
+    for (const testCase of structuredInterstitials) {
+      const result = await performWebFetch({ url: "https://example.com/protected", format: "text" }, {
+        fetchImpl: async () => new Response(testCase.body, { headers: { "content-type": testCase.contentType } }),
+        ctx: runtimeContext(),
+      });
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: testCase.code, backend: "http" },
+      });
+      expect(result.text).not.toContain("Performing security verification");
+      expect(result.text).not.toContain("Sign in to continue");
+    }
+
+    const ordinary = await performWebFetch({
+      url: "https://example.com/article?next=/login#redirect=/challenge",
+    }, {
+      fetchImpl: async () => new Response(`
+        <html><body><article><h1>Access vocabulary</h1>
+        <p>This article compares CAPTCHA tools, Cloudflare products, login pages,
+        and incidental access denied wording without presenting a security gate.</p>
+        </article></body></html>
+      `, { headers: { "content-type": "text/html" } }),
+      ctx: runtimeContext(),
+    });
+    expect(ordinary).toMatchObject({ error: false, outcome: { code: "ok" } });
+    expect(ordinary.text).toContain("Access vocabulary");
+
+    const pathInterstitial = await performWebFetch({ url: "https://example.com/login" }, {
+      fetchImpl: async () => new Response("Ordinary response body.", {
+        headers: { "content-type": "text/plain" },
+      }),
+      ctx: runtimeContext(),
+    });
+    expect(pathInterstitial).toMatchObject({
+      error: true,
+      outcome: { code: "authentication_required" },
+    });
   });
 
   it("rejects unsafe request headers and revalidates every redirect through the sandbox", async () => {
@@ -785,7 +1290,7 @@ describe("WebFetch", () => {
 
   it("renders only eligible successful HTML and keeps static content if auto rendering fails", async () => {
     const sparseSpa = `
-      <html><body><div id="root"></div>
+      <html><body><div id="root">Loading</div>
       <script src="/one.js"></script><script src="/two.js"></script>
       <script>window.__NEXT_DATA__={}</script></body></html>
     `;
@@ -812,16 +1317,17 @@ describe("WebFetch", () => {
       outcome: { renderFailed: true, code: "unusable_content" },
     });
 
-    const errorRenderer = vi.fn();
-    const httpError = await performWebFetch({ url: "https://example.com/app", render: "always" }, {
-      fetchImpl: async () => new Response("server failure", { status: 500 }),
+    const explicitRenderer = vi.fn(async () => ({ text: "# Rendered first", finalUrl: "https://example.com/app" }));
+    const browserFirst = await performWebFetch({ url: "https://example.com/app", render: "always" }, {
+      fetchImpl: vi.fn(async () => new Response("server failure", { status: 500 })),
       fetchConfig: { render: "auto" },
       retryDelaysMs: [],
-      browserRenderer: errorRenderer,
+      browserRenderer: explicitRenderer,
       ctx: runtimeContext(),
     });
-    expect(httpError).toMatchObject({ error: true, outcome: { code: "http_500" } });
-    expect(errorRenderer).not.toHaveBeenCalled();
+    expect(browserFirst).toMatchObject({ error: false, outcome: { backend: "agent-browser", renderReason: "explicit" } });
+    expect(browserFirst.text).toContain("Rendered first");
+    expect(explicitRenderer).toHaveBeenCalledOnce();
 
     const disabledRenderer = vi.fn(async () => "# should not run");
     const staticallyEnforced = await performWebFetch(
@@ -838,6 +1344,41 @@ describe("WebFetch", () => {
       outcome: { backend: "http", rendered: false },
     });
     expect(disabledRenderer).not.toHaveBeenCalled();
+  });
+
+  it("preserves terminal browser access failures during automatic rendering", async () => {
+    const sparseSpa = `
+      <html><body><div id="root">Loading</div>
+      <script src="/one.js"></script><script src="/two.js"></script>
+      <script>window.__NEXT_DATA__={}</script></body></html>
+    `;
+    const cases = [
+      {
+        code: "access_challenge",
+        renderer: async () => "# Just a moment...\n\nPerforming security verification\n\nEnable JavaScript and cookies to continue",
+      },
+      {
+        code: "authentication_required",
+        renderer: async () => "Authentication required. Sign in to continue.",
+      },
+      {
+        code: "network_denied",
+        renderer: async () => { throw Object.assign(new Error("network blocked"), { code: "network_denied" }); },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = await performWebFetch({ url: "https://example.com/app", render: "auto" }, {
+        fetchImpl: async () => new Response(sparseSpa, { headers: { "content-type": "text/html" } }),
+        fetchConfig: { render: "auto" },
+        browserRenderer: testCase.renderer,
+        ctx: runtimeContext(),
+      });
+      expect(result).toMatchObject({
+        error: true,
+        outcome: { code: testCase.code, backend: "agent-browser" },
+      });
+    }
   });
 });
 
@@ -913,6 +1454,24 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(fetchImpl.mock.calls.length).toBeGreaterThan(callsAfterKeyless);
   });
 
+  it("lets malformed Ollama credentials reach structured validation before cache hashing", async () => {
+    const fetchImpl = vi.fn();
+    const controller = createWebToolController({
+      searchConfig: {
+        backend: "ollama",
+        ollama: { baseUrl: "https://ollama.com", apiKey: { malformed: true } },
+      },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+
+    await expect(controller.search({ query: "mono agent" })).resolves.toMatchObject({
+      error: true,
+      outcome: { code: "auth_missing", attempts: 0 },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("does not serve cached searches to a run whose context denies network", async () => {
     const fetchImpl = vi.fn(async () => new Response(
       '<div class="result"><a class="result__a" href="https://example.com/a">A</a></div>',
@@ -984,7 +1543,7 @@ describe("run-scoped web controller and browser isolation", () => {
         cleanups.push(cleanup);
         const output = command.args.includes("read")
           ? JSON.stringify({ text: "# Rendered\n\nSafe page" })
-          : "";
+          : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
         return {
           command: process.execPath,
           args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
@@ -998,8 +1557,9 @@ describe("run-scoped web controller and browser isolation", () => {
       namespace: "test-web",
       ctx: { workspace, sandbox },
     });
-    expect(text).toContain("Safe page");
-    expect(preparedCommands).toHaveLength(4);
+    expect(text.text).toContain("Safe page");
+    expect(text.finalUrl).toBe("https://example.com/page");
+    expect(preparedCommands).toHaveLength(5);
     const sessions = new Set();
     for (const command of preparedCommands) {
       expect(command.command).toBe("agent-browser");
@@ -1033,6 +1593,86 @@ describe("run-scoped web controller and browser isolation", () => {
     expect(readdirSync(workspace).filter((name) => name.startsWith(".mono-agent-web-"))).toEqual([]);
   });
 
+  it("removes inherited browser routing and security overrides from the effective child environment", async () => {
+    const blockedKeys = [
+      "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+      "all_proxy", "http_proxy", "https_proxy", "no_proxy",
+      "AGENT_BROWSER_PROXY", "AGENT_BROWSER_PROXY_BYPASS",
+      "AGENT_BROWSER_IGNORE_HTTPS_ERRORS", "AGENT_BROWSER_ALLOW_FILE_ACCESS",
+      "AGENT_BROWSER_ARGS", "AGENT_BROWSER_CDP", "AGENT_BROWSER_PROFILE",
+      "AGENT_BROWSER_PROVIDER", "AGENT_BROWSER_STATE", "AGENT_BROWSER_RESTORE",
+      "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE",
+    ];
+    for (const key of blockedKeys) vi.stubEnv(key, `sentinel-${key.toLowerCase()}`);
+    const workspace = tempWorkspace();
+    const sandbox = {
+      mergePolicies: (_configured, request) => request,
+      networkAllowsUrl: () => true,
+      async prepareCommand({ command }) {
+        const output = command.args.includes("read")
+          ? "process.stdout.write(JSON.stringify({text:JSON.stringify(process.env)}))"
+          : command.args.includes("get")
+            ? "process.stdout.write(JSON.stringify({text:'https://example.com/page'}))"
+            : "";
+        return {
+          command: process.execPath,
+          args: ["--eval", output],
+          cwd: workspace,
+          env: command.env,
+          cleanup: async () => {},
+        };
+      },
+    };
+
+    const rendered = await renderWithAgentBrowser("https://example.com/page", {
+      namespace: "effective-env",
+      ctx: { workspace, sandbox },
+    });
+    const effectiveEnv = JSON.parse(rendered.text);
+    for (const key of blockedKeys) expect(effectiveEnv[key]).toBeUndefined();
+    expect(effectiveEnv).toMatchObject({
+      AGENT_BROWSER_AUTO_CONNECT: "false",
+      AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "0",
+      AGENT_BROWSER_RESTORE_SAVE: "never",
+      NO_COLOR: "1",
+    });
+    expect(effectiveEnv.AGENT_BROWSER_CONFIG).toMatch(/\.mono-agent-web-/u);
+    expect(effectiveEnv.PATH).toBe(process.env.PATH);
+  });
+
+  it("rejects a representative rendered Cloudflare interstitial and accepts incidental words", async () => {
+    const workspace = tempWorkspace();
+    const render = async (body) => {
+      const sandbox = {
+        mergePolicies: (_configured, request) => request,
+        networkAllowsUrl: () => true,
+        async prepareCommand({ command }) {
+          const output = command.args.includes("read")
+            ? JSON.stringify({ text: body })
+            : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
+          return {
+            command: process.execPath,
+            args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
+            cwd: workspace,
+            env: command.env,
+            cleanup: async () => {},
+          };
+        },
+      };
+      return renderWithAgentBrowser("https://example.com/page", {
+        namespace: "challenge-test",
+        ctx: { workspace, sandbox },
+      });
+    };
+
+    await expect(render("# Just a moment...\n\nPerforming security verification\n\nEnable JavaScript and cookies to continue"))
+      .rejects.toMatchObject({ code: "access_challenge" });
+    await expect(render("Authentication required. Sign in to continue."))
+      .rejects.toMatchObject({ code: "authentication_required" });
+    await expect(render("# Browser security article\n\nCAPTCHA and access denied are incidental terms in this ordinary article."))
+      .resolves.toMatchObject({ text: expect.stringContaining("ordinary article") });
+  });
+
   it("bounds browser namespace and session ids for macOS Unix socket paths", async () => {
     const workspace = tempWorkspace();
     const preparedCommands = [];
@@ -1043,7 +1683,7 @@ describe("run-scoped web controller and browser isolation", () => {
         preparedCommands.push(command);
         const output = command.args.includes("read")
           ? JSON.stringify({ text: "Rendered from a bounded browser session" })
-          : "";
+          : command.args.includes("get") ? JSON.stringify({ text: "https://example.com/page" }) : "";
         return {
           command: process.execPath,
           args: ["--eval", `process.stdout.write(${JSON.stringify(output)})`],
@@ -1067,9 +1707,10 @@ describe("run-scoped web controller and browser isolation", () => {
   });
 });
 
-function minimalPdf(text) {
+function minimalPdf(text, { hex = false } = {}) {
   const escaped = String(text).replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)");
-  const stream = `BT /F1 12 Tf 72 720 Td (${escaped}) Tj ET`;
+  const encoded = hex ? `<${Buffer.from(String(text), "utf8").toString("hex")}>` : `(${escaped})`;
+  const stream = `BT /F1 12 Tf 72 720 Td ${encoded} Tj ET`;
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",

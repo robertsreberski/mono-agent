@@ -162,6 +162,7 @@ export type DoctorStatusExecFile = (
 
 const DOCTOR_STATUS_TIMEOUT_MS = 5_000;
 const DOCTOR_STATUS_MAX_BUFFER_BYTES = 64 * 1024;
+const OLLAMA_WEB_SEARCH_PROBE_MAX_BYTES = 2 * 1024 * 1024;
 
 const defaultDoctorStatusExecFile: DoctorStatusExecFile = async (file, args, options) => {
   const { stdout } = await execFile(file, [...args], options);
@@ -1829,7 +1830,8 @@ async function webToolsSection(
     }
   }
 
-  if (search.endpoint === undefined) {
+  const searxngEndpoint = search.searxng?.endpoint ?? search.endpoint;
+  if (searxngEndpoint === undefined) {
     details.push(search.backend === "keyless"
       ? "SearXNG is not configured; keyless search is enabled."
       : search.backend === "codex"
@@ -1838,11 +1840,11 @@ async function webToolsSection(
           ? "SearXNG is not configured."
           : "SearXNG is not configured; auto mode starts with Codex subscription search, then keyless search.");
   } else {
-    details.push(`SearXNG endpoint: ${search.endpoint}.`);
+    details.push(`SearXNG endpoint: ${searxngEndpoint}.`);
     if (!liveness) {
       details.push("SearXNG liveness was not probed.");
     } else {
-      const probe = await probeSearxngEndpoint(search.endpoint);
+      const probe = await probeSearxngEndpoint(searxngEndpoint);
       if (probe.ok) {
         details.push("SearXNG JSON search probe succeeded.");
       } else {
@@ -1850,11 +1852,32 @@ async function webToolsSection(
         details.push(
           `[WARN] SearXNG JSON search probe failed (${probe.reason}). ` +
           (search.backend === "auto"
-            ? "Start the local companion or fix tools.web.search.endpoint; auto mode can still fall back to Codex subscription search, then keyless search."
-            : "Start the local companion or fix tools.web.search.endpoint; strict SearXNG mode has no fallback."),
+            ? "Start the local companion or fix tools.web.search.searxng.endpoint; auto mode can still fall back to Codex subscription search, then keyless search."
+            : "Start the local companion or fix tools.web.search.searxng.endpoint; strict SearXNG mode has no fallback."),
         );
       }
     }
+  }
+
+  if (search.backend === "ollama") {
+    const ollama = search.ollama;
+    if (ollama === undefined) {
+      status = "waiting";
+      details.push("[WARN] Ollama Web Search is selected but its resolved configuration is missing.");
+    } else if (!liveness) {
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. Strict Ollama mode has no fallback.`);
+      details.push("Ollama Web Search liveness was not probed.");
+    } else {
+      details.push(`Ollama Web Search origin: ${ollama.baseUrl}. Strict Ollama mode has no fallback.`);
+      const probe = await probeOllamaWebSearch(ollama);
+      if (probe.ok) details.push("Ollama Web Search JSON probe succeeded.");
+      else {
+        status = "waiting";
+        details.push(`[WARN] Ollama Web Search probe failed (${probe.reason}). Strict Ollama mode has no fallback.`);
+      }
+    }
+  } else if (search.ollama !== undefined) {
+    details.push("Ollama Web Search is configured but inactive; select backend ollama explicitly to use it.");
   }
 
   if (search.backend === "auto") {
@@ -1900,6 +1923,90 @@ async function webToolsSection(
   }
 
   return { id: "web-tools", label: "Web search & fetch", status, details };
+}
+
+async function probeOllamaWebSearch(
+  config: NonNullable<NonNullable<MonoAgentConfig["tools"]["web"]>["search"]["ollama"]>,
+): Promise<{ readonly ok: boolean; readonly reason: string }> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => { ctrl.abort(); }, LIVENESS_PROBE_TIMEOUT_MS);
+  const official = config.baseUrl === "https://ollama.com";
+  const paths = official ? ["/api/web_search"] : ["/api/experimental/web_search", "/api/web_search"];
+  try {
+    for (let index = 0; index < paths.length; index += 1) {
+      const response = await fetch(`${config.baseUrl}${paths[index]}`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          ...(official ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ query: "mono-agent doctor", max_results: 1 }),
+        redirect: "error",
+        signal: ctrl.signal,
+      });
+      if (!official && index === 0 && [404, 405].includes(response.status)) {
+        await response.body?.cancel();
+        continue;
+      }
+      if ([401, 403].includes(response.status)) {
+        await response.body?.cancel();
+        return { ok: false, reason: official
+          ? `hosted authentication failed; check ${config.apiKeyEnv}`
+          : "the local proxy requires sign-in; run ollama signin or repair its proxy authentication" };
+      }
+      if (!response.ok) {
+        await response.body?.cancel();
+        return { ok: false, reason: `HTTP ${response.status}` };
+      }
+      const declared = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > OLLAMA_WEB_SEARCH_PROBE_MAX_BYTES) {
+        await response.body?.cancel();
+        return { ok: false, reason: `response exceeded ${OLLAMA_WEB_SEARCH_PROBE_MAX_BYTES} bytes` };
+      }
+      const bytes = await readBoundedProbeResponse(response, OLLAMA_WEB_SEARCH_PROBE_MAX_BYTES);
+      let body: unknown;
+      try { body = JSON.parse(new TextDecoder().decode(bytes)); }
+      catch { return { ok: false, reason: "response was not valid JSON" }; }
+      if (!body || typeof body !== "object" || !Array.isArray((body as { results?: unknown }).results)) {
+        return { ok: false, reason: "response did not contain a results array" };
+      }
+      return { ok: true, reason: "" };
+    }
+    return { ok: false, reason: "this Ollama version supports neither local Web Search endpoint" };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readBoundedProbeResponse(response: Response, maxBytes: number): Promise<Uint8Array> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) throw new Error("response body could not be read safely");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error(`response exceeded ${maxBytes} bytes`);
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return joined;
 }
 
 async function probeSearxngEndpoint(endpoint: string): Promise<{ readonly ok: boolean; readonly reason: string }> {

@@ -36,6 +36,15 @@ describe("local web research operator snippets", () => {
     expect(composeCommands.every((line) =>
       line.includes("docker compose --project-name mono-agent-searxng"))).toBe(true);
   });
+
+  it("makes validation evidence conditional on the selected search backend", () => {
+    const playbook = readFileSync(PLAYBOOK_PATH, "utf8");
+    expect(playbook).toContain("strict SearXNG: **WebSearch backend: searxng.**");
+    expect(playbook).toContain("**SearXNG JSON search probe succeeded.**");
+    expect(playbook).toContain("strict Ollama: **WebSearch backend: ollama.**");
+    expect(playbook).toContain("**Ollama Web Search JSON probe succeeded.**");
+    expect(playbook).toContain("never\nfalls through to another search provider");
+  });
 });
 
 function jsonVerificationSnippets() {

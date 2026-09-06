@@ -83,14 +83,19 @@ the user wants run-scoped JavaScript evaluation. All three execute with the same
 sandbox authority.
 
 If the agent needs public-web research, ask whether it should use automatic
-local SearXNG → ChatGPT-subscription Codex → keyless fallback, strict Codex,
-strict keyless, or strict SearXNG-only discovery. Fill
-`tools.web.search.backend`, optional `tools.web.search.endpoint`, and optional
+local SearXNG → ChatGPT-subscription Codex → keyless fallback, explicit local or
+hosted Ollama, strict Codex, strict keyless, or strict SearXNG-only discovery.
+Fill `tools.web.search.backend`, optional `tools.web.search.searxng.endpoint`,
+optional `tools.web.search.ollama.*`, and optional
 `tools.web.search.codex.model` (default `gpt-5.6-luna`). Keep
 `tools.web.fetch.render: "never"` unless the user explicitly needs
 JavaScript-heavy pages and has `agent-browser` 0.33.1 or newer; then select
-`"auto"` plus the direct `browserCommand`. Explain that SearXNG is local
-infrastructure but both search and fetch still generate public network traffic.
+config-level `"auto"` plus the direct `browserCommand`. Explain that the agent
+can request per-call `WebFetch` `render: "always"` when a known page must be
+browser-first; `"always"` is not a config value. Explain that local
+SearXNG/Ollama are infrastructure, not offline indexes, both search and fetch
+still generate public network traffic, hosted Ollama credentials are accepted
+only at the exact official origin, and rendering does not bypass access controls.
 
 ## 6. Memory Strategy
 

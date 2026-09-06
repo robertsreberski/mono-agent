@@ -129,11 +129,67 @@ describe("loadMonoAgentConfig", () => {
       coordination: "host",
       search: {
         backend: "searxng",
-        endpoint: "http://127.0.0.1:8088",
+        searxng: { endpoint: "http://127.0.0.1:8088" },
         codex: { model: "gpt-5.6-sol" },
       },
       fetch: { render: "auto", browserCommand: "/opt/homebrew/bin/agent-browser" },
     });
+  });
+
+  it("loads local and hosted Ollama Web Search without leaking hosted credentials", () => {
+    const local = loadMonoAgentConfig({ cwd: "/repo", env: {
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
+    } });
+    expect(local.tools.web?.search.ollama).toEqual({
+      baseUrl: "http://127.0.0.1:11434",
+      trustPublicUrl: false,
+    });
+
+    const hosted = loadMonoAgentConfig({ cwd: "/repo", env: {
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://ollama.com",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV: "TEST_OLLAMA_WEB_KEY",
+      TEST_OLLAMA_WEB_KEY: "sentinel-hosted-key",
+    } });
+    expect(hosted.tools.web?.search.ollama?.apiKey).toBe("sentinel-hosted-key");
+    expect(JSON.stringify(redactMonoAgentConfig(hosted))).not.toContain("sentinel-hosted-key");
+    expect(redactMonoAgentConfig(hosted).tools.web?.search.ollama?.apiKey).toEqual({ present: true, redacted: true });
+  });
+
+  it("binds Ollama credentials to the official origin and requires trust for custom public origins", () => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: {
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV: "TEST_OLLAMA_WEB_KEY",
+      TEST_OLLAMA_WEB_KEY: "sentinel-hosted-key",
+    } })).toThrow(/only for the exact https:\/\/ollama\.com origin/u);
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: {
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://search.example.com",
+    } })).toThrow(/TRUST_PUBLIC_URL=true/u);
+    expect(loadMonoAgentConfig({ cwd: "/repo", env: {
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_BACKEND: "ollama",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL: "https://search.example.com",
+      MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL: "true",
+    } }).tools.web?.search.ollama).toMatchObject({ baseUrl: "https://search.example.com", trustPublicUrl: true });
+  });
+
+  it("accepts the legacy SearXNG endpoint alias but rejects conflicting spellings", () => {
+    expect(loadMonoAgentConfig({ cwd: "/repo", env: {
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
+      MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088",
+    } }).tools.web?.search.searxng?.endpoint).toBe("http://127.0.0.1:8088");
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: {
+      ...baseEnv,
+      MONO_AGENT_WEB_SEARCH_BACKEND: "searxng",
+      MONO_AGENT_WEB_SEARCH_ENDPOINT: "http://127.0.0.1:8088",
+      MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT: "http://127.0.0.1:8089",
+    } })).toThrow(/disagree/u);
   });
 
   it("rejects remote or credentialed SearXNG endpoints and strict mode without an endpoint", () => {

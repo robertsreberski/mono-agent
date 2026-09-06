@@ -7,11 +7,37 @@ import { passthroughSandbox } from "../sandbox-seam.js";
 import { runPreparedProcess } from "./shared/process-runner.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
 
 const BROWSER_TIMEOUT_MS = 20_000;
 const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
 const BROWSER_OUTPUT_BYTES = 2 * 1024 * 1024;
 const MAX_BROWSER_NAMESPACE_CHARS = 16;
+const BROWSER_HOST_ENV_KEYS = [
+  "COMSPEC", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PATHEXT",
+  "SHELL", "SystemRoot", "TEMP", "TMP", "TMPDIR", "USER", "WINDIR",
+];
+const BLOCKED_BROWSER_ENV_KEYS = [
+  "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+  "all_proxy", "http_proxy", "https_proxy", "no_proxy",
+  "AGENT_BROWSER_ACTION_POLICY", "AGENT_BROWSER_ALLOWED_DOMAINS", "AGENT_BROWSER_ALLOW_FILE_ACCESS",
+  "AGENT_BROWSER_ANNOTATE", "AGENT_BROWSER_ARGS", "AGENT_BROWSER_CDP", "AGENT_BROWSER_COLOR_SCHEME",
+  "AGENT_BROWSER_CONFIRM_ACTIONS", "AGENT_BROWSER_CONFIRM_INTERACTIVE", "AGENT_BROWSER_CONTENT_BOUNDARIES",
+  "AGENT_BROWSER_DEFAULT_TIMEOUT", "AGENT_BROWSER_DOWNLOAD_PATH", "AGENT_BROWSER_ENABLE",
+  "AGENT_BROWSER_ENCRYPTION_KEY", "AGENT_BROWSER_ENGINE", "AGENT_BROWSER_EXECUTABLE_PATH",
+  "AGENT_BROWSER_EXTENSIONS", "AGENT_BROWSER_HEADED", "AGENT_BROWSER_HIDE_SCROLLBARS",
+  "AGENT_BROWSER_IDLE_TIMEOUT_MS", "AGENT_BROWSER_IGNORE_HTTPS_ERRORS", "AGENT_BROWSER_INIT_SCRIPTS",
+  "AGENT_BROWSER_IOS_DEVICE", "AGENT_BROWSER_IOS_UDID", "AGENT_BROWSER_MAX_OUTPUT",
+  "AGENT_BROWSER_NAMESPACE", "AGENT_BROWSER_NO_AUTO_DIALOG", "AGENT_BROWSER_NO_XVFB",
+  "AGENT_BROWSER_PLUGINS", "AGENT_BROWSER_PROFILE", "AGENT_BROWSER_PROVIDER", "AGENT_BROWSER_PROXY",
+  "AGENT_BROWSER_PROXY_BYPASS", "AGENT_BROWSER_RESTORE", "AGENT_BROWSER_RESTORE_CHECK_FN",
+  "AGENT_BROWSER_RESTORE_CHECK_TEXT", "AGENT_BROWSER_RESTORE_CHECK_URL", "AGENT_BROWSER_SANDBOX_VERSION",
+  "AGENT_BROWSER_SCREENSHOT_DIR", "AGENT_BROWSER_SCREENSHOT_FORMAT", "AGENT_BROWSER_SCREENSHOT_QUALITY",
+  "AGENT_BROWSER_SESSION", "AGENT_BROWSER_SESSION_NAME", "AGENT_BROWSER_SKILLS_DIR",
+  "AGENT_BROWSER_SNAPSHOT_ID", "AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_STATE",
+  "AGENT_BROWSER_STATE_EXPIRE_DAYS", "AGENT_BROWSER_STREAM_PORT", "AGENT_BROWSER_USER_AGENT",
+  "AGENT_BROWSER_WEBGPU",
+];
 
 /**
  * Render one public page in a fresh anonymous agent-browser session.
@@ -42,6 +68,13 @@ export async function renderWithAgentBrowser(
   let tempDir = null;
   let unregister = () => {};
   let closed = false;
+  const renderDeadlineAt = Date.now() + BROWSER_TIMEOUT_MS;
+
+  function remainingRenderMs() {
+    const remaining = renderDeadlineAt - Date.now();
+    if (remaining <= 0) throw Object.assign(new Error(`agent-browser timed out after ${BROWSER_TIMEOUT_MS}ms`), { code: "browser_render_failed" });
+    return remaining;
+  }
 
   async function closeSession() {
     if (closed) return;
@@ -85,59 +118,9 @@ export async function renderWithAgentBrowser(
         args: [...baseArgs, ...commandArgs],
         cwd: workspace,
         env: {
-          // Delete every documented agent-browser behavior/auth/persistence
-          // override inherited from the host. Empty strings are not safe here:
-          // agent-browser treats some of them (notably SESSION_NAME) as
-          // configured-but-invalid values.
-          AGENT_BROWSER_ACTION_POLICY: undefined,
-          AGENT_BROWSER_ALLOWED_DOMAINS: undefined,
-          AGENT_BROWSER_ANNOTATE: undefined,
-          AGENT_BROWSER_ARGS: undefined,
-          AGENT_BROWSER_COLOR_SCHEME: undefined,
-          AGENT_BROWSER_CONFIRM_ACTIONS: undefined,
-          AGENT_BROWSER_CONFIRM_INTERACTIVE: undefined,
-          AGENT_BROWSER_CONTENT_BOUNDARIES: undefined,
-          AGENT_BROWSER_DEFAULT_TIMEOUT: undefined,
-          AGENT_BROWSER_DOWNLOAD_PATH: undefined,
-          AGENT_BROWSER_ENABLE: undefined,
-          AGENT_BROWSER_ENCRYPTION_KEY: undefined,
-          AGENT_BROWSER_ENGINE: undefined,
-          AGENT_BROWSER_EXECUTABLE_PATH: undefined,
-          AGENT_BROWSER_EXTENSIONS: undefined,
-          AGENT_BROWSER_HEADED: undefined,
-          AGENT_BROWSER_HIDE_SCROLLBARS: undefined,
-          AGENT_BROWSER_IDLE_TIMEOUT_MS: undefined,
-          AGENT_BROWSER_INIT_SCRIPTS: undefined,
-          AGENT_BROWSER_IOS_DEVICE: undefined,
-          AGENT_BROWSER_IOS_UDID: undefined,
-          AGENT_BROWSER_MAX_OUTPUT: undefined,
-          AGENT_BROWSER_NAMESPACE: undefined,
-          AGENT_BROWSER_NO_AUTO_DIALOG: undefined,
-          AGENT_BROWSER_NO_XVFB: undefined,
-          AGENT_BROWSER_PLUGINS: undefined,
-          AGENT_BROWSER_PROFILE: undefined,
-          AGENT_BROWSER_PROVIDER: undefined,
-          AGENT_BROWSER_PROXY: undefined,
-          AGENT_BROWSER_PROXY_BYPASS: undefined,
-          AGENT_BROWSER_RESTORE: undefined,
-          AGENT_BROWSER_RESTORE_CHECK_FN: undefined,
-          AGENT_BROWSER_RESTORE_CHECK_TEXT: undefined,
-          AGENT_BROWSER_RESTORE_CHECK_URL: undefined,
-          AGENT_BROWSER_SCREENSHOT_DIR: undefined,
-          AGENT_BROWSER_SCREENSHOT_FORMAT: undefined,
-          AGENT_BROWSER_SCREENSHOT_QUALITY: undefined,
-          AGENT_BROWSER_SESSION: undefined,
-          AGENT_BROWSER_SESSION_NAME: undefined,
-          AGENT_BROWSER_SKILLS_DIR: undefined,
-          AGENT_BROWSER_SOCKET_DIR: undefined,
-          AGENT_BROWSER_STATE: undefined,
-          AGENT_BROWSER_STATE_EXPIRE_DAYS: undefined,
-          AGENT_BROWSER_STREAM_PORT: undefined,
-          AGENT_BROWSER_USER_AGENT: undefined,
-          AGENT_BROWSER_WEBGPU: undefined,
+          ...isolatedBrowserEnvironment(),
           AGENT_BROWSER_AUTO_CONNECT: "false",
           AGENT_BROWSER_AUTOSAVE_INTERVAL_MS: "0",
-          AGENT_BROWSER_CDP: undefined,
           AGENT_BROWSER_CONFIG: configPath,
           AGENT_BROWSER_RESTORE_SAVE: "never",
           NO_COLOR: "1",
@@ -145,10 +128,14 @@ export async function renderWithAgentBrowser(
       },
     });
     try {
-      const result = await runPreparedProcess(prepared, {
+      const result = await runPreparedProcess({
+        ...prepared,
+        env: isolatedBrowserEnvironment(prepared.env, configPath),
+      }, {
         timeoutMs,
         signal: abortSignal,
         maxBufferBytes: BROWSER_OUTPUT_BYTES,
+        exactEnvironment: true,
       });
       if (result.timedOut) throw new Error(`agent-browser timed out after ${timeoutMs}ms`);
       if (result.aborted) throw new Error("agent-browser was aborted");
@@ -156,7 +143,7 @@ export async function renderWithAgentBrowser(
       if (result.spawnError) throw result.spawnError;
       if (result.signal) throw new Error(`agent-browser terminated by ${result.signal}`);
       if (result.code !== 0) {
-        throw new Error(`agent-browser exited ${result.code}: ${String(result.stderr || result.stdout).trim()}`);
+        throw new Error(`agent-browser exited ${result.code}`);
       }
       return String(result.stdout || "").trim();
     } finally {
@@ -168,15 +155,53 @@ export async function renderWithAgentBrowser(
     tempDir = await mkdtemp(join(workspace, ".mono-agent-web-"));
     await writeFile(join(tempDir, "agent-browser.json"), "{}\n", { encoding: "utf8", mode: 0o600 });
     unregister = registerCleanup?.(closeSession) ?? (() => {});
-    await run(["open", parsed.href]);
-    await run(["wait", "--load", "domcontentloaded"]);
-    const output = await run(["read"]);
+    await run(["open", parsed.href], remainingRenderMs());
+    await run(["wait", "--load", "domcontentloaded"], remainingRenderMs());
+    const finalUrlOutput = await run(["get", "url"], remainingRenderMs());
+    const finalUrl = validateFinalUrl(extractBrowserText(finalUrlOutput), parsed, sandbox, policy);
+    const output = await run(["read"], remainingRenderMs());
     const text = extractBrowserText(output);
     if (!text) throw new Error("agent-browser returned no readable rendered content");
-    return text;
+    assertNoWebAccessInterstitial({ url: finalUrl, text });
+    return { text, finalUrl };
   } finally {
     await closeSession();
   }
+}
+
+function validateFinalUrl(value, requested, sandbox, policy) {
+  let finalUrl;
+  try { finalUrl = new URL(String(value || "").trim()); }
+  catch { throw Object.assign(new Error("agent-browser returned an invalid final URL"), { code: "browser_render_failed" }); }
+  if (!["http:", "https:"].includes(finalUrl.protocol) || finalUrl.username || finalUrl.password) {
+    throw Object.assign(new Error("agent-browser navigated to an unsupported final URL"), { code: "network_denied" });
+  }
+  const requestedHost = requested.hostname.toLowerCase();
+  const finalHost = finalUrl.hostname.toLowerCase();
+  if (!(finalHost === requestedHost || finalHost.endsWith(`.${requestedHost}`))
+    || !sandbox.networkAllowsUrl(policy, finalUrl.href)) {
+    throw Object.assign(new Error("agent-browser final URL is outside the allowed domain policy"), { code: "network_denied" });
+  }
+  return finalUrl.href;
+}
+
+function isolatedBrowserEnvironment(source = process.env, configPath) {
+  /** @type {Record<string, string|undefined>} */
+  const env = {};
+  for (const key of BROWSER_HOST_ENV_KEYS) {
+    const value = source?.[key];
+    if (value !== undefined) env[key] = value;
+  }
+  // Undefined means deletion to the sandbox seam. runPreparedProcess then
+  // receives this map as an exact environment, so omitted host variables
+  // cannot reappear during its ordinary process.env merge.
+  for (const key of BLOCKED_BROWSER_ENV_KEYS) env[key] = undefined;
+  env.AGENT_BROWSER_AUTO_CONNECT = "false";
+  env.AGENT_BROWSER_AUTOSAVE_INTERVAL_MS = "0";
+  if (configPath !== undefined) env.AGENT_BROWSER_CONFIG = configPath;
+  env.AGENT_BROWSER_RESTORE_SAVE = "never";
+  env.NO_COLOR = "1";
+  return env;
 }
 
 function compactBrowserNamespace(value) {
@@ -206,7 +231,7 @@ function findText(value, depth = 0) {
     return value.map((entry) => findText(entry, depth + 1)).filter(Boolean).join("\n").trim();
   }
   if (typeof value !== "object") return "";
-  for (const key of ["markdown", "content", "text", "result", "output", "data"]) {
+  for (const key of ["markdown", "content", "text", "url", "result", "output", "data"]) {
     if (!(key in value)) continue;
     const text = findText(value[key], depth + 1);
     if (text) return text;

@@ -124,8 +124,8 @@ These tools need no extra capability config (coverage: `config` — they exist b
 | `Bash` | Run a command string through a clean non-interactive Bash. |
 | `Exec` | Run one executable directly with an argv array and no shell parsing. |
 | `NodeRepl` | Evaluate JavaScript in a run-scoped Node.js REPL. |
-| `WebFetch` | Fetch and locally extract one public URL, with opt-in browser rendering. |
-| `WebSearch` | Search via local SearXNG, ChatGPT-subscription Codex app-server, or keyless public fallbacks. |
+| `WebFetch` | Deterministically decode and locally extract one public URL, with explicit opt-in browser rendering. |
+| `WebSearch` | Search via explicit Ollama or SearXNG, ChatGPT-subscription Codex app-server, or keyless public fallbacks. |
 
 These are gated by `tools.allowedTools` / `tools.disallowedTools`. Deny always wins, and listing the same tool in both is rejected at validation time. Mono-agent-managed built-ins are provided by the Pi runtime's managed tool seam on every route. See [Tool Policy](/tools/policy/) for the full allow/deny semantics, plus [MCP tools](/tools/mcp/) and the [sandbox](/tools/sandbox/) for process and network confinement.
 
@@ -274,17 +274,22 @@ See [Sessions & concurrency](/runtime/sessions-concurrency/) for how sessions pe
 
 ## Web research and WebFetch retry
 
-`WebSearch` supports a loopback SearXNG companion, structured
+`WebSearch` supports explicit Ollama Web Search, a loopback SearXNG companion, structured
 ChatGPT-subscription Codex app-server search, and deterministic keyless
-fallbacks. `WebFetch` performs local Defuddle/Readability extraction for HTML,
+fallbacks. Ollama and SearXNG strict modes never fall back; `auto` retains
+SearXNG → Codex → keyless and never silently selects Ollama. `WebFetch` performs
+local Defuddle/Readability/Turndown extraction for HTML,
 plus JSON, feed, PDF, and text handling. Optional `agent-browser` rendering is
 off by default and is a config-level capability ceiling.
 
 `WebFetch` retries transient network failures and HTTP 408/425/429/5xx in-tool
 with bounded backoff and `Retry-After` handling. This keeps the model from
 burning reasoning rounds re-issuing a fetch that failed for a momentary network
-reason. Browser rendering is never attempted for HTTP errors or non-HTML
-content.
+reason. Explicit `render: "always"` is browser-first; automatic rendering is
+limited to sparse successful HTML. Browser failures and access challenges are
+reported honestly and never used to bypass authentication, CAPTCHA, Cloudflare,
+robots/access controls, or site policy. Automatic rendering is never attempted
+for HTTP failures or non-HTML content.
 
 See [Local-first web research](/tools/web-research/) for the backend, extraction,
 isolation, and config contract.

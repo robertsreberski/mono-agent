@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 
 import {
   isAutodiscoverableProviderId,
+  isPrivateBaseUrl,
   isPiBuiltinProvider,
   localProviderDefinitionFor,
   MODEL_REFERENCE_ECHO_MAX_BYTES,
@@ -230,17 +231,37 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
   const webSearchBackend = readChoice<WebSearchBackend>(
     input.env.MONO_AGENT_WEB_SEARCH_BACKEND,
     "MONO_AGENT_WEB_SEARCH_BACKEND",
-    ["auto", "searxng", "codex", "keyless"],
+    ["auto", "searxng", "ollama", "codex", "keyless"],
     "auto",
     invalidEnv,
   );
-  const webSearchEndpoint = readWebSearchEndpoint(input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT);
+  const legacyWebSearchEndpoint = readWebSearchEndpoint(
+    input.env.MONO_AGENT_WEB_SEARCH_ENDPOINT,
+    "MONO_AGENT_WEB_SEARCH_ENDPOINT",
+  );
+  const canonicalWebSearchEndpoint = readWebSearchEndpoint(
+    input.env.MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT,
+    "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT",
+  );
+  if (
+    legacyWebSearchEndpoint !== undefined
+    && canonicalWebSearchEndpoint !== undefined
+    && legacyWebSearchEndpoint !== canonicalWebSearchEndpoint
+  ) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_ENDPOINT and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT disagree; keep only the canonical SearXNG variable.",
+      { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT" },
+    );
+  }
+  const webSearchEndpoint = canonicalWebSearchEndpoint ?? legacyWebSearchEndpoint;
+  const webSearchOllama = readOllamaWebSearchConfig(input.env, webSearchBackend);
   const webSearchCodexModel = readWebSearchCodexModel(input.env.MONO_AGENT_WEB_SEARCH_CODEX_MODEL);
   if (webSearchBackend === "searxng" && webSearchEndpoint === undefined) {
     throw new MonoAgentConfigError(
       "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_ENDPOINT is required when MONO_AGENT_WEB_SEARCH_BACKEND=searxng.",
-      { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT" },
+      "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT (or legacy MONO_AGENT_WEB_SEARCH_ENDPOINT) is required when MONO_AGENT_WEB_SEARCH_BACKEND=searxng.",
+      { env: "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT" },
     );
   }
   const webFetchRender = readChoice<WebFetchRenderMode>(
@@ -286,7 +307,8 @@ export function loadMonoAgentConfig(input: LoadMonoAgentConfigInput): MonoAgentC
       coordination: readChoice(input.env.MONO_AGENT_WEB_COORDINATION, "MONO_AGENT_WEB_COORDINATION", ["process", "host"] as const, "process", invalidEnv),
       search: {
         backend: webSearchBackend,
-        ...(webSearchEndpoint === undefined ? {} : { endpoint: webSearchEndpoint }),
+        ...(webSearchEndpoint === undefined ? {} : { searxng: { endpoint: webSearchEndpoint } }),
+        ...(webSearchOllama === undefined ? {} : { ollama: webSearchOllama }),
         codex: { model: webSearchCodexModel },
       },
       fetch: {
@@ -456,13 +478,20 @@ function assertNoRetiredConfigEnv(env: Record<string, string | undefined>): void
 }
 
 export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgentConfig {
+  const { web: configuredWeb, ...toolsWithoutWeb } = config.tools;
+  const configuredSearch = configuredWeb?.search;
+  const {
+    ollama: configuredOllamaSearch,
+    codex: configuredCodexSearch,
+    ...searchWithoutSecrets
+  } = configuredSearch ?? { backend: "auto" as const };
   const redacted: RedactedMonoAgentConfig = {
     ...(config.agent === undefined ? {} : { agent: { ...config.agent } }),
     runtime: { ...config.runtime },
     ...(config.concurrency === undefined ? {} : { concurrency: { ...config.concurrency } }),
     context: { ...config.context, selectedSkills: [...config.context.selectedSkills] },
     tools: {
-      ...config.tools,
+      ...toolsWithoutWeb,
       allowedTools: [...config.tools.allowedTools],
       disallowedTools: [...config.tools.disallowedTools],
       ...(config.tools.filesystem === undefined ? {} : {
@@ -471,16 +500,19 @@ export function redactMonoAgentConfig(config: MonoAgentConfig): RedactedMonoAgen
           writableRoots: [...config.tools.filesystem.writableRoots],
         },
       }),
-      ...(config.tools.web === undefined ? {} : {
+      ...(configuredWeb === undefined ? {} : {
         web: {
-          coordination: config.tools.web.coordination ?? "process",
+          coordination: configuredWeb.coordination ?? "process",
           search: {
-            ...config.tools.web.search,
-            ...(config.tools.web.search.codex === undefined
+            ...searchWithoutSecrets,
+            ...(configuredOllamaSearch === undefined
               ? {}
-              : { codex: { ...config.tools.web.search.codex } }),
+              : { ollama: redactApiKeyBlock(configuredOllamaSearch) }),
+            ...(configuredCodexSearch === undefined
+              ? {}
+              : { codex: { ...configuredCodexSearch } }),
           },
-          fetch: { ...config.tools.web.fetch },
+          fetch: { ...configuredWeb.fetch },
         },
       }),
     },
@@ -916,7 +948,7 @@ function readOptionalTimeoutMs(raw: string | undefined, name: string): number | 
   return readInteger(raw, name, 0, invalidEnv, { min: 1000, max: 86_400_000 });
 }
 
-function readWebSearchEndpoint(raw: string | undefined): string | undefined {
+function readWebSearchEndpoint(raw: string | undefined, source: string): string | undefined {
   const normalized = normalizeOptionalString(raw);
   if (normalized === undefined) return undefined;
   try {
@@ -937,10 +969,99 @@ function readWebSearchEndpoint(raw: string | undefined): string | undefined {
   } catch {
     throw new MonoAgentConfigError(
       "invalid_env",
-      "MONO_AGENT_WEB_SEARCH_ENDPOINT must be an unauthenticated loopback HTTP URL.",
-      { env: "MONO_AGENT_WEB_SEARCH_ENDPOINT" },
+      `${source} must be an unauthenticated loopback HTTP URL.`,
+      { env: source },
     );
   }
+}
+
+const DEFAULT_OLLAMA_WEB_SEARCH_BASE_URL = "http://127.0.0.1:11434";
+const OFFICIAL_OLLAMA_ORIGIN = "https://ollama.com";
+
+function readOllamaWebSearchConfig(
+  env: Record<string, string | undefined>,
+  backend: WebSearchBackend,
+): NonNullable<NonNullable<MonoAgentConfig["tools"]["web"]>["search"]["ollama"]> | undefined {
+  const baseUrlRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL);
+  const apiKeyEnv = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV);
+  const trustRaw = normalizeOptionalString(env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL);
+  if (backend !== "ollama" && baseUrlRaw === undefined && apiKeyEnv === undefined && trustRaw === undefined) {
+    return undefined;
+  }
+
+  const source = "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL";
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrlRaw ?? DEFAULT_OLLAMA_WEB_SEARCH_BASE_URL);
+  } catch {
+    throw new MonoAgentConfigError("invalid_env", `${source} must be a valid HTTP(S) origin URL.`, { env: source });
+  }
+  if (
+    !["http:", "https:"].includes(parsed.protocol)
+    || parsed.username !== ""
+    || parsed.password !== ""
+    || parsed.search !== ""
+    || parsed.hash !== ""
+    || !["", "/"].includes(parsed.pathname)
+  ) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      `${source} must be an HTTP(S) origin without credentials, path, query, or fragment.`,
+      { env: source },
+    );
+  }
+  const baseUrl = parsed.origin;
+  const official = baseUrl === OFFICIAL_OLLAMA_ORIGIN;
+  const trustPublicUrl = readBoolean(
+    env.MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL,
+    "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL",
+    false,
+    invalidEnv,
+  );
+  if (!official && !isPrivateBaseUrl(baseUrl)) {
+    if (parsed.protocol !== "https:" || !trustPublicUrl) {
+      throw new MonoAgentConfigError(
+        "invalid_env",
+        `${source} points to a public custom origin; use HTTPS and set MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL=true after reviewing it.`,
+        { env: source },
+      );
+    }
+  }
+  if (!official && apiKeyEnv !== undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV is allowed only for the exact https://ollama.com origin.",
+      { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
+    );
+  }
+  if (apiKeyEnv !== undefined && !/^[A-Za-z_][A-Za-z0-9_]*$/u.test(apiKeyEnv)) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV must name an environment variable.",
+      { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
+    );
+  }
+  if (official && apiKeyEnv === undefined) {
+    throw new MonoAgentConfigError(
+      "invalid_env",
+      "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV is required for hosted Ollama Web Search.",
+      { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
+    );
+  }
+  const apiKey = apiKeyEnv === undefined ? undefined : normalizeOptionalString(env[apiKeyEnv]);
+  if (official && apiKey === undefined) {
+    throw new MonoAgentConfigError(
+      "missing_required_env",
+      `${apiKeyEnv} is required by MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV.`,
+      { env: apiKeyEnv ?? "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV" },
+    );
+  }
+  return {
+    baseUrl,
+    trustPublicUrl,
+    ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
+    ...(apiKey === undefined ? {} : { apiKey }),
+  };
 }
 
 function readWebSearchCodexModel(raw: string | undefined): string {

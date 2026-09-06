@@ -1117,7 +1117,7 @@
               "additionalProperties": false,
               "properties": {
                 "backend": {
-                  "description": "WebSearch backend: auto tries configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks; searxng, codex, and keyless are strict.",
+                  "description": "WebSearch backend: auto preserves configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict; Ollama is never silently selected by auto.",
                   "examples": [
                     "auto"
                   ],
@@ -1126,16 +1126,59 @@
                   "enum": [
                     "auto",
                     "searxng",
+                    "ollama",
                     "codex",
                     "keyless"
                   ]
                 },
                 "endpoint": {
-                  "description": "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.",
+                  "description": "Compatibility alias for tools.web.search.searxng.endpoint and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT. Existing configurations remain valid; new configurations should use the provider-specific block.",
                   "examples": [
-                    "http://127.0.0.1:8088"
+                    "example"
                   ],
                   "type": "string"
+                },
+                "searxng": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "endpoint": {
+                      "description": "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.",
+                      "examples": [
+                        "http://127.0.0.1:8088"
+                      ],
+                      "type": "string"
+                    }
+                  }
+                },
+                "ollama": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "baseUrl": {
+                      "description": "Ollama origin. Defaults to local http://127.0.0.1:11434 in strict Ollama mode. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.",
+                      "examples": [
+                        "https://ollama.com"
+                      ],
+                      "type": "string",
+                      "default": "http://127.0.0.1:11434"
+                    },
+                    "apiKeyEnv": {
+                      "description": "Environment variable containing the hosted Ollama API key. Required only for exact https://ollama.com and rejected for every other origin; the key value is never stored in JSON.",
+                      "examples": [
+                        "OLLAMA_API_KEY"
+                      ],
+                      "type": "string"
+                    },
+                    "trustPublicUrl": {
+                      "description": "Explicit acknowledgement for an HTTPS custom public Ollama origin. It never permits sending hosted credentials to that origin.",
+                      "examples": [
+                        true
+                      ],
+                      "type": "boolean",
+                      "default": false
+                    }
+                  }
                 },
                 "codex": {
                   "type": "object",

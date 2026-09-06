@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add explicit Ollama Web Search alongside the existing SearXNG, Codex, and
+  keyless routes. Preserve `auto` as SearXNG → Codex → keyless, repair the
+  canonical nested SearXNG config while retaining its legacy endpoint alias,
+  bind hosted Ollama bearer credentials to the exact official origin, and keep
+  strict-provider failures visible. WebFetch now adds deterministic charset and
+  parser handling, safer HTML-to-Markdown conversion, structured failures, and
+  explicit browser-first rendering through an isolated `agent-browser` session
+  without treating authentication or access challenges as bypassable.
 - Add per-agent web-console defaults for the model and effort of new
   conversations, with SQLite persistence, config/override source labels, and a
   one-click revert to resolved config. Existing threads and non-web channels

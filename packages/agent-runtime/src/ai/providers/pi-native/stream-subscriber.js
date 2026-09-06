@@ -32,6 +32,11 @@ function toolResultOutcome(result) {
     code: "code",
     backend: "backend",
     signal: "signal",
+    contentKind: "content_kind",
+    charset: "charset",
+    charsetSource: "charset_source",
+    extractionStage: "extraction_stage",
+    renderReason: "render_reason",
   };
   const numbers = {
     attempts: "attempts",
@@ -43,6 +48,8 @@ function toolResultOutcome(result) {
     bytes: "bytes",
     exitCode: "exit_code",
     statusCode: "status_code",
+    redirectCount: "redirect_count",
+    parserFailureCount: "parser_failure_count",
   };
   const booleans = {
     retryable: "retryable",
@@ -50,6 +57,9 @@ function toolResultOutcome(result) {
     truncated: "truncated",
     timedOut: "timed_out",
     rendered: "rendered",
+    renderFailed: "render_failed",
+    browserRecommended: "browser_recommended",
+    hadDecodingReplacement: "had_decoding_replacement",
   };
   for (const [input, output] of Object.entries(strings)) {
     if (typeof source[input] === "string") bounded[output] = source[input].slice(0, 120);

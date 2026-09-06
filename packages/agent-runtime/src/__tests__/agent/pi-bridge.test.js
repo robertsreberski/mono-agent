@@ -1238,6 +1238,19 @@ function toolNames(tools) {
 }
 
 describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", () => {
+  it("teaches explicit search routing and transparent static-to-browser escalation", () => {
+    const tools = getPiBuiltinTools(["WebFetch", "WebSearch"], {});
+    const fetch = tools.find((tool) => tool.name === "WebFetch");
+    const search = tools.find((tool) => tool.name === "WebSearch");
+
+    expect(search.description).toContain("never silently selects Ollama");
+    expect(search.description).toContain("snippets as leads");
+    expect(fetch.description).toContain("Prefer static markdown");
+    expect(fetch.description).toContain("does not bypass login, CAPTCHA, Cloudflare");
+    expect(fetch.parameters.properties.format.description).toContain("raw returns decoded source");
+    expect(fetch.parameters.properties.render.description).toContain("always explicitly uses the isolated browser first");
+  });
+
   it('treats the "*" sentinel as all built-in tools', () => {
     const tools = getPiBuiltinTools(["*"], {});
     expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());

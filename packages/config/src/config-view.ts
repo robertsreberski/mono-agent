@@ -137,6 +137,10 @@ export const CONFIG_ENV_KEYS = {
   "tools.web.coordination": "MONO_AGENT_WEB_COORDINATION",
   "tools.web.search.backend": "MONO_AGENT_WEB_SEARCH_BACKEND",
   "tools.web.search.endpoint": "MONO_AGENT_WEB_SEARCH_ENDPOINT",
+  "tools.web.search.searxng.endpoint": "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT",
+  "tools.web.search.ollama.baseUrl": "MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL",
+  "tools.web.search.ollama.apiKeyEnv": "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV",
+  "tools.web.search.ollama.trustPublicUrl": "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL",
   "tools.web.search.codex.model": "MONO_AGENT_WEB_SEARCH_CODEX_MODEL",
   "tools.web.fetch.render": "MONO_AGENT_WEB_FETCH_RENDER",
   "tools.web.fetch.browserCommand": "MONO_AGENT_WEB_BROWSER_COMMAND",
@@ -824,10 +828,49 @@ function buildToolsSection(input: BuildMonoAgentConfigViewInput): ConfigViewSect
         defaultValue: "auto",
       }),
       toField(env, {
-        id: "tools.web.search.endpoint",
+        id: "tools.web.search.searxng.endpoint",
         label: "SearXNG endpoint",
-        value: tools.web?.search.endpoint ?? "not configured",
+        value: tools.web?.search.searxng?.endpoint ?? "not configured",
+        jsonPresent: json.tools?.web?.search?.searxng?.endpoint !== undefined
+          || json.tools?.web?.search?.endpoint !== undefined,
+        source: envHas(env, "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT")
+          || envHas(env, "MONO_AGENT_WEB_SEARCH_ENDPOINT")
+          ? "env"
+          : json.tools?.web?.search?.searxng?.endpoint !== undefined
+              || json.tools?.web?.search?.endpoint !== undefined
+            ? "json"
+            : "default",
+      }),
+      toField(env, {
+        id: "tools.web.search.endpoint",
+        label: "Legacy SearXNG endpoint alias",
+        value: tools.web?.search.searxng?.endpoint ?? "not configured",
         jsonPresent: json.tools?.web?.search?.endpoint !== undefined,
+        source: envHas(env, "MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT")
+          || envHas(env, "MONO_AGENT_WEB_SEARCH_ENDPOINT")
+          ? "env"
+          : json.tools?.web?.search?.searxng?.endpoint !== undefined
+              || json.tools?.web?.search?.endpoint !== undefined
+            ? "json"
+            : "default",
+      }),
+      toField(env, {
+        id: "tools.web.search.ollama.baseUrl",
+        label: "Ollama web search base URL",
+        value: tools.web?.search.ollama?.baseUrl ?? "not configured",
+        jsonPresent: json.tools?.web?.search?.ollama?.baseUrl !== undefined,
+      }),
+      toField(env, {
+        id: "tools.web.search.ollama.apiKeyEnv",
+        label: "Ollama web search API key env",
+        value: tools.web?.search.ollama?.apiKeyEnv ?? PLACEHOLDER,
+        jsonPresent: json.tools?.web?.search?.ollama?.apiKeyEnv !== undefined,
+      }),
+      toField(env, {
+        id: "tools.web.search.ollama.trustPublicUrl",
+        label: "Trust custom public Ollama origin",
+        value: tools.web?.search.ollama?.trustPublicUrl === true ? "on" : "off",
+        jsonPresent: json.tools?.web?.search?.ollama?.trustPublicUrl !== undefined,
       }),
       toField(env, {
         id: "tools.web.search.codex.model",

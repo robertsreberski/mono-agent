@@ -19,6 +19,21 @@ function worker(directory: string) {
 function message(child: ChildProcess): Promise<unknown> { return new Promise((resolve, reject) => { child.once("message", resolve); child.once("error", reject); child.once("exit", (code) => { if (code) reject(new Error(`Worker exited ${code}`)); }); }); }
 
 describe("host web request coordinator", () => {
+  it("admits SearXNG and Ollama as first-class buckets without persisting request material", async () => {
+    const { directory, coordinator } = await setup();
+    for (const kind of ["searxng", "ollama"] as const) {
+      const permit = await coordinator.acquire({
+        kind,
+        key: `${kind}:query-and-credential-sentinel`,
+        deadlineMs: Date.now() + 10000,
+      });
+      await permit.complete({ status: "ok" });
+    }
+    const state = await readFile(join(directory, "state.json"), "utf8");
+    expect(state).not.toContain("query-and-credential-sentinel");
+    const inspection = (await coordinator.inspect()) as { buckets: { backend: string }[] };
+    expect(inspection.buckets.map((bucket) => bucket.backend)).toEqual(["searxng", "ollama"]);
+  });
   it("shares cooldowns and quota without persisting request content", async () => {
     const { directory, coordinator } = await setup();
     const permit = await coordinator.acquire(request());

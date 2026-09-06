@@ -188,7 +188,8 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
     "web": {
       "search": {
         "backend": "auto",
-        "endpoint": "http://127.0.0.1:8088",
+        "searxng": { "endpoint": "http://127.0.0.1:8088" },
+        "ollama": { "baseUrl": "http://127.0.0.1:11434" },
         "codex": { "model": "gpt-5.6-luna" }
       },
       "fetch": {
@@ -200,16 +201,27 @@ The resolved `tools.web` block configures the managed Pi `WebSearch` and
 }
 ```
 
-Search backend values are `auto`, strict `searxng`, strict `codex`, and
-`keyless`. Auto tries local SearXNG, ChatGPT-subscription Codex search, then the
-keyless chain. SearXNG endpoints are deliberately limited to unauthenticated
-loopback HTTP URLs.
-Fetch rendering is `never` by default (browser capability disabled) or `auto`
-for static-first isolated `agent-browser` fallback.
+Search backend values are `auto`, strict `searxng`, strict `ollama`, strict
+`codex`, and `keyless`. Auto preserves local SearXNG, ChatGPT-subscription Codex
+search, then the keyless chain; it never silently selects Ollama. SearXNG
+endpoints are deliberately limited to unauthenticated loopback HTTP URLs. The
+legacy `search.endpoint` spelling remains a compatibility alias for
+`search.searxng.endpoint`. Ollama defaults to the loopback host; the exact
+official `https://ollama.com` origin requires an API key named by `apiKeyEnv`,
+while other public origins require HTTPS plus `trustPublicUrl` and cannot
+receive that credential.
+Fetch rendering config is `never` by default (browser capability disabled) or
+`auto` to authorize isolated `agent-browser` use. With config `auto`, an
+individual WebFetch call may use `render: "always"` for a strict browser-first
+request.
 
 Environment overrides are
 `MONO_AGENT_WEB_SEARCH_BACKEND`,
-`MONO_AGENT_WEB_SEARCH_ENDPOINT`,
+`MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT` (with
+`MONO_AGENT_WEB_SEARCH_ENDPOINT` retained as an alias),
+`MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL`,
+`MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV`,
+`MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL`,
 `MONO_AGENT_WEB_SEARCH_CODEX_MODEL`,
 `MONO_AGENT_WEB_FETCH_RENDER`, and
 `MONO_AGENT_WEB_BROWSER_COMMAND`.

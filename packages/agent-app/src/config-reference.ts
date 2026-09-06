@@ -1247,7 +1247,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
   } else if (field.jsonPath === "tools.web.coordination") {
     schema.enum = ["process", "host"];
   } else if (field.jsonPath === "tools.web.search.backend") {
-    schema.enum = ["auto", "searxng", "codex", "keyless"];
+    schema.enum = ["auto", "searxng", "ollama", "codex", "keyless"];
   } else if (field.jsonPath === "tools.web.fetch.render") {
     schema.enum = ["never", "auto"];
   } else if (field.jsonPath === "telegram.groupMode") {
@@ -1378,7 +1378,7 @@ function inferType(id: string): ConfigReferenceType {
   if (id.endsWith("Models") || id.endsWith("Tools") || id.endsWith("Servers") || id.endsWith("Roots") || id.endsWith("allowlist") || id.endsWith("denyWrite") || id.endsWith("selectedSkills") || id.endsWith("Ids") || id.endsWith("Aliases")) {
     return "string[]";
   }
-  if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace") || id.endsWith("exposeMcpServer")) {
+  if (id.endsWith("enabled") || id.endsWith("allowAllChats") || id.endsWith("allowAllChannels") || id.endsWith("allowNonLoopback") || id.endsWith("trustPublicUrl") || id.endsWith("dryRun") || id.endsWith("globalDiscovery") || id.endsWith("rolloverNotice") || id.endsWith("isolateProactive") || id.endsWith("unsafeAllowHostProcess") || id.endsWith("trace") || id.endsWith("exposeMcpServer")) {
     return "boolean";
   }
   if (/(Ms|Bytes|Count|Days|Turns|Retries|Attempts|Delay|port|dim|threshold|Hours|Runs)$/iu.test(id) || id.endsWith(".port")) {
@@ -1462,6 +1462,8 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "tools.mcpCallMaxTotalTimeoutMs": 2_700_000,
     "tools.web.coordination": "process",
     "tools.web.search.backend": "auto",
+    "tools.web.search.ollama.baseUrl": "http://127.0.0.1:11434",
+    "tools.web.search.ollama.trustPublicUrl": false,
     "tools.web.search.codex.model": "gpt-5.6-luna",
     "tools.web.fetch.render": "never",
     "tools.web.fetch.browserCommand": "agent-browser",
@@ -1560,7 +1562,9 @@ function exampleFor(id: string): SettingsJsonValue {
     "tools.mcpRequestContextServers": ["transcribe"],
     "tools.filesystem.readableRoots": ["/srv/shared/reference"],
     "tools.filesystem.writableRoots": ["/srv/shared/output"],
-    "tools.web.search.endpoint": "http://127.0.0.1:8088",
+    "tools.web.search.searxng.endpoint": "http://127.0.0.1:8088",
+    "tools.web.search.ollama.baseUrl": "https://ollama.com",
+    "tools.web.search.ollama.apiKeyEnv": "OLLAMA_API_KEY",
     providers: {
       "openai-codex": {},
       ollama: { baseUrl: "http://localhost:11434" },
@@ -1679,6 +1683,9 @@ function descriptionFor(id: string): string {
   if (id === "memory.embeddings.apiKeyEnv") {
     return "Environment-variable name containing an optional provider bearer token; an explicitly declared name must resolve before memory starts.";
   }
+  if (id === "tools.web.search.ollama.apiKeyEnv") {
+    return "Environment variable containing the hosted Ollama API key. Required only for exact https://ollama.com and rejected for every other origin; the key value is never stored in JSON.";
+  }
   if (id.includes("apiKey") || id.includes("Token")) {
     return `Secret value for ${id}; prefer the env override.`;
   }
@@ -1711,10 +1718,19 @@ function descriptionFor(id: string): string {
   }
   if (id === "tools.web.coordination") return "Host mode shares web request budgets and cooldowns across participating local mono-agent processes; process preserves isolated coordination.";
   if (id === "tools.web.search.backend") {
-    return "WebSearch backend: auto tries configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks; searxng, codex, and keyless are strict.";
+    return "WebSearch backend: auto preserves configured local SearXNG, then ChatGPT-subscription Codex search, then keyless fallbacks. searxng, ollama, codex, and keyless are strict; Ollama is never silently selected by auto.";
+  }
+  if (id === "tools.web.search.searxng.endpoint") {
+    return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";
+  }
+  if (id === "tools.web.search.ollama.baseUrl") {
+    return "Ollama origin. Defaults to local http://127.0.0.1:11434 in strict Ollama mode. Hosted search is exactly https://ollama.com; custom public origins require HTTPS and trustPublicUrl=true.";
+  }
+  if (id === "tools.web.search.ollama.trustPublicUrl") {
+    return "Explicit acknowledgement for an HTTPS custom public Ollama origin. It never permits sending hosted credentials to that origin.";
   }
   if (id === "tools.web.search.endpoint") {
-    return "Optional unauthenticated loopback HTTP SearXNG base URL. Remote HTTPS, credentials, query strings, and fragments are rejected.";
+    return "Compatibility alias for tools.web.search.searxng.endpoint and MONO_AGENT_WEB_SEARCH_SEARXNG_ENDPOINT. Existing configurations remain valid; new configurations should use the provider-specific block.";
   }
   if (id === "tools.web.search.codex.model") {
     return "Codex app-server model used for ChatGPT-subscription web search. The signed-in account must expose both this model and web search; default gpt-5.6-luna.";
