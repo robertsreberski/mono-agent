@@ -515,6 +515,52 @@ export interface WebQuote {
   readonly messageId: string;
 }
 
+/**
+ * One edit to a message's part array, mirrored from the server's
+ * `WebMessageDeltaOp`.
+ *
+ * Ops are ordered so that applying them front to back is always well defined: a
+ * `truncate` comes first when the array shrank, and the rest ascend by index,
+ * so an index never names a slot the shortened array lost. What each one MEANS
+ * is fixed by `src/test/message-delta-vectors.ts`, which both sides replay.
+ */
+export type MessageDeltaOp =
+  /** Text streamed onto the end of the `text`/`reasoning` part at `index`. */
+  | { readonly op: "append"; readonly index: number; readonly delta: string }
+  /** The whole part at `index`, replaced or appended one past the end. */
+  | { readonly op: "set"; readonly index: number; readonly part: MessagePart }
+  /** Drop every part from `length` onward. Emitted first when it is emitted. */
+  | { readonly op: "truncate"; readonly length: number };
+
+/**
+ * One persisted parts write, as content rather than an invalidation hint.
+ *
+ * `baseSeq` is the version the ops apply to and `seq` the one they produce, so
+ * a console whose copy is not at `baseSeq` has missed a write and must re-read
+ * that message rather than apply anything. An EMPTY `ops` is real -- a
+ * status-only finish emits one -- and still has to be consumed, because it is
+ * what advances `seq` to the version the next delta will name.
+ */
+export interface MessageDelta {
+  readonly messageId: string;
+  /** The message's {@link WebMessage.seq} BEFORE this write. */
+  readonly baseSeq: number;
+  /** The message's `seq` after it, always `baseSeq + 1`. */
+  readonly seq: number;
+  readonly status: WebMessage["status"];
+  readonly updatedAt: string;
+  /**
+   * {@link WebMessage.finishedAt}, carried by the write that SETS it.
+   *
+   * The Activity header draws the turn's window from `createdAt` to this, and a
+   * console holding only the first half re-read the whole conversation at every
+   * turn finish to learn the other. Absent on every write that leaves the turn
+   * running, and never a clearing signal.
+   */
+  readonly finishedAt?: string;
+  readonly ops: readonly MessageDeltaOp[];
+}
+
 export interface ThreadDetail {
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];

@@ -334,7 +334,13 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
   // Keep the existing page-derived response path only as a compatibility
   // fallback for browsers that do not yet have a confirmed server subscription.
   useEffect(() => {
-    if (!store.bootstrap) return;
+    // Only a listing the SERVER answered with is a baseline, and PROVENANCE is
+    // the question -- not `loading`, which a failed bootstrap also clears while
+    // leaving the device's listing on screen. Treated as a baseline, every turn
+    // that finished while the tab was closed reads as an arrival the moment the
+    // server's first answer lands: an OS notification for each, and an
+    // unconditional whole-conversation read behind it.
+    if (!store.bootstrap || !store.hasServerSnapshot) return;
     const nextRuns = runSnapshots(store.bootstrap.threads);
     const previous = previousRuns.current;
     previousRuns.current = nextRuns;

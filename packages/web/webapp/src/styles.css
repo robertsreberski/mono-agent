@@ -934,6 +934,12 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .palette-results p { margin: 30px; color: var(--text-muted); text-align: center; font-size: 12px; }
 .command-palette footer { min-height: 40px; display: flex; align-items: center; justify-content: flex-end; gap: 14px; padding: 0 13px; color: var(--text-muted); background: var(--surface-subtle); border-top: 1px solid var(--line); font-size: 9px; }
 .command-palette footer span { display: inline-flex; align-items: center; gap: 4px; }
+.console-error { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); max-width: min(560px, calc(100vw - 24px)); display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 13px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); border-radius: 11px; box-shadow: var(--shadow-lg); font-size: 12px; line-height: 1.4; z-index: 130; }
+.console-error span { min-width: 0; flex: 1; }
+.console-error button { flex: none; display: grid; place-items: center; color: inherit; background: transparent; border-radius: 7px; cursor: pointer; }
+.console-error button:hover { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.console-error-retry { padding: 4px 9px; border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line)); font-size: 11px; font-weight: 600; }
+.console-error button[aria-label="Dismiss error"] { width: 28px; height: 28px; }
 .toast { position: fixed; right: max(18px, env(safe-area-inset-right)); bottom: max(18px, env(safe-area-inset-bottom)); max-width: min(420px, calc(100vw - 36px)); min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 9px 9px 9px 14px; color: #f8faf6; background: #242a26; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 11px; box-shadow: var(--shadow-lg); font-size: 12px; line-height: 1.4; z-index: 120; }
 .toast span { min-width: 0; flex: 1; }
 .toast button { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: #b8c0b9; background: transparent; border-radius: 7px; cursor: pointer; }

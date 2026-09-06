@@ -512,6 +512,39 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [attachmentAdapter, queueRecovery, store],
   );
 
+  /**
+   * The store as it is RIGHT NOW, for handlers that must not be rebuilt.
+   *
+   * The sidebar adapter below is memoized on the listing it renders rather than
+   * on the whole store, so its callbacks outlive the store value they were
+   * created under. Reading through this ref is what keeps them calling the
+   * current `createThread`, `selectThread` and the rest instead of a closure
+   * from whichever commit last changed the listing.
+   */
+  const storeRef = useRef(store);
+  storeRef.current = store;
+  // Deliberately stable: the adapter is rebuilt only when the listing it shows
+  // moves, and these never change.
+  const threadListActions = useMemo(() => ({
+    onSwitchToNewThread: async () => {
+      if (!storeRef.current.selectedAgent) return;
+      await storeRef.current.createThread().catch(() => undefined);
+    },
+    onSwitchToThread: (threadId: string) => storeRef.current.selectThread(threadId),
+    onRename: async (threadId: string, title: string) => {
+      await storeRef.current.renameThread(threadId, title).catch(() => undefined);
+    },
+    onArchive: async (threadId: string) => {
+      await storeRef.current.archiveThread(threadId).catch(() => undefined);
+    },
+    onUnarchive: async (threadId: string) => {
+      await storeRef.current.unarchiveThread(threadId).catch(() => undefined);
+    },
+  }), []);
+  // Memoized on what it actually renders, NOT on the store. The store value
+  // changes on every streamed token -- a new `detail`, a new run state -- and
+  // rebuilding both sidebar arrays for each of them re-rendered every row in
+  // the list for the whole of a running turn.
   const threadList = useMemo(
     () => ({
       threadId: store.selectedThreadId ?? undefined,
@@ -538,22 +571,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           title: thread.title,
           custom: { runStatus: thread.runState.status, updatedAt: thread.updatedAt },
         })),
-      onSwitchToNewThread: async () => {
-        if (!store.selectedAgent) return;
-        await store.createThread().catch(() => undefined);
-      },
-      onSwitchToThread: (threadId: string) => store.selectThread(threadId),
-      onRename: async (threadId: string, title: string) => {
-        await store.renameThread(threadId, title).catch(() => undefined);
-      },
-      onArchive: async (threadId: string) => {
-        await store.archiveThread(threadId).catch(() => undefined);
-      },
-      onUnarchive: async (threadId: string) => {
-        await store.unarchiveThread(threadId).catch(() => undefined);
-      },
+      ...threadListActions,
     }),
-    [store],
+    [store.loading, store.selectedAgentId, store.selectedThreadId, store.threads, threadListActions],
   );
 
   const selectedCanSend = canSendInConsole(

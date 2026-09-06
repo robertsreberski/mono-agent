@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import {
   agentVisibility,
   boundedRequest,
+  HYDRATION_DEADLINE_MS,
   classifyDeleteFailure,
   createRemovedThreadRegistry,
   createThreadWriteChain,
@@ -15,6 +16,7 @@ import {
   RUN_PREFERENCES_STORAGE_KEY,
   sortAgentsPinnedFirst,
   startBoundedRequest,
+  withHydrationDeadline,
   THREAD_READ_TIMEOUT_MS,
   THREAD_WRITE_TIMEOUT_MS,
   validateRunPreference,
@@ -788,5 +790,30 @@ describe("tool-call repair", () => {
     // The route answers with a tool-call part; the group holds bare calls.
     expect(merged).not.toHaveProperty("calls.0.type");
     expect(mergeToolCallPart(group, call("stranger", "WHOLE"))).toBe(group);
+  });
+});
+
+describe("withHydrationDeadline", () => {
+  it("says which of the two answered", async () => {
+    await expect(withHydrationDeadline(Promise.resolve())).resolves.toBe("hydrated");
+    await expect(withHydrationDeadline(new Promise<void>(() => undefined)))
+      .resolves.toBe("deadline");
+  }, HYDRATION_DEADLINE_MS + 2_000);
+
+  it("never rejects, whatever the device read does", async () => {
+    // A hang is not the only way the device can hold the boot: a rejection
+    // reaches the caller's own catch, and the snapshot request is then never
+    // issued at all -- permanently, because the hydration promise is memoised
+    // and a retry re-awaits the same rejection.
+    const said = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+
+    await expect(withHydrationDeadline(Promise.reject(new Error("boom"))))
+      .resolves.toBe("hydrated");
+
+    // Not swallowed either: a device read that throws is a defect, and one line
+    // is what makes it findable.
+    expect(said).toHaveBeenCalledTimes(1);
+    expect(said.mock.calls[0]?.[0]).toContain("restoring from the device failed");
+    said.mockRestore();
   });
 });
