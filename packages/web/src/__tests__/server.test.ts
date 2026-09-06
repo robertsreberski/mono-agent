@@ -232,7 +232,7 @@ describe("web HTTP server", () => {
     expect(bootstrap.headers.get("cache-control")).toBe("private, no-cache");
     expect(bootstrap.headers.get("access-control-allow-origin")).toBeNull();
     const body = await bootstrap.json() as { console: unknown; agents: unknown[] };
-    expect(body.console).toEqual({ hostName: hostname(), theme: "evergreen" });
+    expect(body.console).toEqual({ hostName: hostname(), displayName: hostname(), theme: "evergreen" });
     expect(body.agents[0]).toMatchObject({ sourceId: "agent-one", status: "online", supportsAttachments: true });
     expect(body).toMatchObject({
       push: {
@@ -658,7 +658,7 @@ describe("web HTTP server", () => {
 
     expect(await json(await fetch(`${baseUrl}/api/v1/bootstrap`))).toMatchObject({
       version: 1,
-      console: { hostName: hostname(), theme: "plum" },
+      console: { hostName: hostname(), displayName: hostname(), theme: "plum" },
     });
     const response = await fetch(`${baseUrl}/manifest.webmanifest`);
     expect(response.status).toBe(200);
@@ -673,6 +673,26 @@ describe("web HTTP server", () => {
       background_color: "#120f14",
       icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml" }],
     }));
+  });
+
+  it("labels the install manifest and bootstrap with an operator-chosen name", async () => {
+    const { baseUrl } = await start({ name: "  Flockbox  " });
+
+    expect(await json(await fetch(`${baseUrl}/api/v1/bootstrap`))).toMatchObject({
+      console: { hostName: hostname(), displayName: "Flockbox", theme: "evergreen" },
+    });
+    expect(await (await fetch(`${baseUrl}/manifest.webmanifest`)).json()).toEqual(
+      expect.objectContaining({
+        name: "Flockbox · mono-agent Console",
+        short_name: "Flockbox",
+      }),
+    );
+  });
+
+  it("rejects console names the launcher and manifest cannot carry", async () => {
+    for (const name of ["   ", "bad\u0007name", "x".repeat(81)]) {
+      await expect(start({ name })).rejects.toThrow(/console name/iu);
+    }
   });
 
   it("serves live agent-scoped skills without persisting them in bootstrap", async () => {

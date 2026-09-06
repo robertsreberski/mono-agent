@@ -115,6 +115,30 @@ describe("Linux web command composition", () => {
     expect(mocks.health).toHaveBeenCalledWith("http://127.0.0.1:6060/healthz");
   });
 
+  it("persists an operator-chosen console name into the unit argv", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand(
+      { positionals: ["restart"], env: {}, name: "Flockbox" },
+      output(),
+    )).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--name", "Flockbox"]));
+  });
+
+  it("preserves the installed console name when restart does not override it", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum", "--name", "Flockbox"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).toEqual(expect.arrayContaining(["--name", "Flockbox"]));
+  });
+
+  it("leaves the console name out of the unit argv when none was chosen", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "127.0.0.1", "--port", "5050", "--theme", "plum"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
+    expect(mocks.start.mock.calls[0]![0].argv).not.toContain("--name");
+  });
+
   it("probes the IPv6 loopback address for a bracketed wildcard listener", async () => {
     mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "[::]", "--port", "5050", "--theme", "plum"] });
     mocks.health.mockResolvedValue(true);

@@ -99,9 +99,11 @@ when its staged service worker is applied.
 Bare `mono-agent web` reports status and usable URLs; it does not implicitly
 start or mutate the service. Use `mono-agent web run` for a foreground process
 or `--loopback` to bind only `127.0.0.1`. The curated `--theme` values are
-`evergreen` (default), `ocean`, `plum`, and `terracotta`. Managed starts persist
-the selection, restarts retain it unless explicitly replaced, and `web status`
-reports the effective theme.
+`evergreen` (default), `ocean`, `plum`, and `terracotta`. `--name <label>` sets
+the console label used for the installed PWA name/short name, browser title, and
+rail brand, defaulting to the machine hostname. Managed starts persist both
+selections, restarts retain them unless explicitly replaced, and `web status`
+reports the effective values.
 
 Install this package directly only when embedding the server in another host:
 
@@ -559,6 +561,7 @@ StartWebLiveInputInput
 StartWebServerOptions
 StartWebTurnInput
 WEB_API_VERSION
+WEB_CONSOLE_NAME_MAX_CHARACTERS
 WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES
 WEB_MAX_CONCURRENT_UPLOADS
 WEB_MAX_FILES_PER_TURN

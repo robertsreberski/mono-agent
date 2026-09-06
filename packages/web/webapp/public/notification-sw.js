@@ -28,7 +28,9 @@ self.addEventListener("push", (event) => {
       tag: boundedText(notification.tag, `mono-agent-${Date.now()}`),
       silent: notification.silent === true,
       icon: "/icon-192.png",
-      badge: "/icon-192.png",
+      // Android renders `badge` from the alpha channel alone, so it must be a
+      // transparent-background silhouette; the opaque icon flattens to a white square.
+      badge: "/badge-96.png",
       data: {
         schema: "mono-agent.web-push.v1",
         ...(typeof data.eventId === "string" ? { eventId: data.eventId } : {}),
