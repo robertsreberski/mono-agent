@@ -4809,6 +4809,53 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.skillRegistry.status).toBe("ready");
     });
 
+    it("never quotes a validator for a registry it could not hold as ready", async () => {
+      // The server answers 200 with `unsupported` and `offline` payloads too,
+      // and Express mints an ETag for those. Stored, that validator later
+      // answered 304 for a registry `retainAsStale` cannot lift back to
+      // "ready" -- the console sat at "Loading skills…" for the rest of the
+      // session and re-quoted the poisoned validator on every reconnect.
+      seedTwo();
+      vi.mocked(api.agentSkills).mockResolvedValue({
+        status: "unsupported", items: [], etag: 'W/"unsupported-1"',
+      });
+      const store = await openedOnAlpha();
+      await waitFor(() => expect(store.current.skillRegistry.status).toBe("unsupported"));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.agentSkills).mockClear();
+
+      dropAndReopen();
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+
+      // Unconditional: there is no READY answer this tab is holding for that
+      // validator to describe.
+      expect(vi.mocked(api.agentSkills).mock.calls.map((call) => call[2])).toEqual([undefined]);
+      expect(store.current.skillRegistry.status).toBe("unsupported");
+    });
+
+    it("re-reads unconditionally when a 304 answers a registry it cannot lift", async () => {
+      // A bug guard, not a path the store can reach on its own: a 304 is only
+      // ever the answer to a validator a READY registry left behind, so one
+      // arriving when there is no stale copy to lift means the two have come
+      // apart. Answered by dropping the validator and reading once more, never
+      // by leaving the operator at "Loading skills…" for the session.
+      seedTwo();
+      let answers = 0;
+      vi.mocked(api.agentSkills).mockImplementation(async () => {
+        answers += 1;
+        return answers === 1 ? NOT_MODIFIED : { status: "unsupported", items: [] };
+      });
+      const store = await openedOnAlpha();
+
+      await waitFor(() => expect(store.current.skillRegistry.status).toBe("unsupported"));
+      expect(vi.mocked(api.agentSkills).mock.calls.map((call) => call[2]))
+        .toEqual([undefined, undefined]);
+      // And exactly once: a guard that kept reading would be its own outage.
+      await quiet();
+      expect(vi.mocked(api.agentSkills).mock.calls.length).toBe(2);
+    });
+
     it("comes back online without re-reading the skill registry twice", async () => {
       seedTwo();
       vi.mocked(api.agentSkills).mockResolvedValue({ status: "ready", items: [], total: 0 });
@@ -5024,6 +5071,35 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => call[0])).toEqual([alpha.id]);
     });
 
+    it("does not tear down the socket a resume just built", async () => {
+      // `online` can land between the rebuild and the new socket's first byte,
+      // when `readyState` and `errored` still describe the socket that was
+      // closed. Forcing a second resume there closed the replacement before it
+      // had a chance to open.
+      seedTwo();
+      const store = await openedOnAlpha();
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      const opened = streamCount();
+
+      const killed = FakeEventSource.latest;
+      if (killed !== undefined) killed.readyState = 2;
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      expect(streamCount()).toBe(opened + 1);
+      const rebuilt = FakeEventSource.latest;
+
+      // Still CONNECTING: nothing has opened, nothing has failed.
+      act(() => { window.dispatchEvent(new Event("online")); });
+      expect(streamCount()).toBe(opened + 1);
+      expect(rebuilt?.closed).toBe(false);
+
+      // Once it has answered, a later `online` is judged on it rather than on
+      // the socket it replaced.
+      act(() => { rebuilt?.onopen?.(new Event("open")); });
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+      act(() => { window.dispatchEvent(new Event("online")); });
+      expect(streamCount()).toBe(opened + 1);
+    });
+
     it("never rebuilds the stream while the tab is in the background", async () => {
       seedTwo();
       const store = await openedOnAlpha();
@@ -5080,15 +5156,63 @@ describe("ConsoleStoreProvider integration", () => {
 
       // The 304 answered the state at the moment it was ISSUED, so it cannot
       // speak for an observation made after that: one more read settles it --
-      // and exactly one.
+      // and exactly one, CONDITIONAL like every other conversation read. The
+      // follow-up used to go out through the debounced refresh with no
+      // validator at all, putting a whole transcript back on the wire for a
+      // conversation that had usually not moved.
       await waitFor(
-        () => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1),
+        () => expect(api.threadIfChanged).toHaveBeenCalledTimes(2),
         { timeout: 3_000 },
       );
       await quiet();
-      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1);
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => [call[0], call[1]]))
+        .toEqual([[alpha.id, 'W/"alpha-1"'], [alpha.id, 'W/"alpha-1"']]);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
       expect(store.current.detail?.thread.id).toBe(alpha.id);
     });
+
+    it("keeps an ordinary switch conditional when the re-point overtakes its read", async () => {
+      // The overlap a switch produces after a gap: the selection issues a
+      // conditional read of the conversation being opened, and ~250 ms later
+      // the subscription re-points, whose `ready` stales everything held --
+      // including the read still on the wire. That read then lands overtaken
+      // and buys another. Every one of them has to quote a validator; the
+      // follow-up used to go out through the debounced refresh with none.
+      seedTwo();
+      const store = await openedOnAlpha();
+      // Beta was opened once, so it is held with a validator.
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      // A gap: everything held is suspect.
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      dropAndReopen();
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+      vi.mocked(api.threadIfChanged).mockClear();
+
+      // Open beta and hold its read open, so the re-point's `ready` lands
+      // while it is still on the wire.
+      const pending: ((answer: typeof NOT_MODIFIED) => void)[] = [];
+      vi.mocked(api.threadIfChanged).mockImplementation(async () =>
+        new Promise((resolve) => { pending.push(() => resolve(NOT_MODIFIED)); }));
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(pending.length).toBe(1));
+      await quiet();
+      emit("ready", { payload: { version: 1 } });
+      await act(async () => { for (const answer of pending) answer(NOT_MODIFIED); await Promise.resolve(); });
+      await quiet();
+
+      // Not one unconditional conversation read between them.
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(vi.mocked(api.threadIfChanged).mock.calls.every((call) => call[1] === 'W/"beta-1"'))
+        .toBe(true);
+      expect(store.current.detail?.thread.id).toBe(beta.id);
+    }, 15_000);
 
     it("treats a switch to another conversation as the gap it is", async () => {
       // Re-pointing the subscription closes one socket and opens another, and

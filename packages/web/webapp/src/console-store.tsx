@@ -8,7 +8,15 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, ApiError, NOT_MODIFIED, THREAD_PAGE_LIMIT, type BootstrapScope } from "./api";
+import {
+  api,
+  ApiError,
+  NOT_MODIFIED,
+  THREAD_PAGE_LIMIT,
+  type BootstrapScope,
+  type NotModified,
+  type ReadThreadDetail,
+} from "./api";
 import { recordServerTime } from "./server-clock";
 import {
   createThreadCache,
@@ -507,6 +515,22 @@ const anySignal = (first: AbortSignal, second: AbortSignal): AbortSignal => {
 };
 
 /** {@link startBoundedRequest} for callers with no queue to advance. */
+/**
+ * ONE conversation read, conditional whenever a validator is held.
+ *
+ * Every path that re-reads the open conversation goes through this -- the
+ * selection effect, the debounced refresh and the gap resync -- so a console
+ * that has already been served this transcript never asks for it again
+ * unconditionally. A cold read holds no validator and quotes none.
+ */
+export const readConversation = (
+  threadId: string,
+  etag: string | undefined,
+  signal: AbortSignal,
+): Promise<ReadThreadDetail | NotModified> => (etag === undefined
+  ? api.thread(threadId, signal)
+  : api.threadIfChanged(threadId, etag, signal));
+
 export const boundedRequest = <T,>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number = THREAD_WRITE_TIMEOUT_MS,
@@ -1391,6 +1415,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    */
   const resumeOwedRef = useRef(false);
   /**
+   * A socket a resume built that has neither opened nor failed yet.
+   *
+   * `online` can land inside that window, when `readyState` and `errored` still
+   * describe the socket that was closed -- and forcing a second resume there
+   * tore down the replacement before it had a chance to open.
+   */
+  const resumeInFlightRef = useRef(false);
+  /**
    * Whether this tab has opened a stream before.
    *
    * Every stream after the first is a REBUILD, and a rebuild loses whatever the
@@ -1769,6 +1801,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * selected, and a revalidation behind it is not something to show a spinner
    * for -- that spinner replaced a transcript the tab already had.
    */
+  /**
+   * Apply a 304 to the conversation it was asked about.
+   *
+   * Nothing is replaced -- every message comes back by reference -- and only
+   * the suspicion is answered, and only when nothing was observed while the
+   * read was on the wire. When something WAS, `confirmFresh` refuses and this
+   * buys exactly one more read: the 304 described a state the console already
+   * knows it has moved past, and nothing else is going to answer for it.
+   */
+  const confirmConversation = useCallback((threadId: string, issuedAt: number) => {
+    const cache = threadCacheRef.current;
+    cache.confirmFresh(threadId, issuedAt);
+    if (cache.get(threadId)?.stale === true && selectedThreadRef.current === threadId) {
+      scheduleRefreshRef.current({ detail: true });
+    }
+  }, []);
+
   const loadThread = useCallback(async (
     threadId: string,
     signal: AbortSignal,
@@ -1791,20 +1840,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         ? undefined
         : threadCacheRef.current.get(threadId)?.etag;
       const next = await boundedRequest(
-        (deadline) => (held === undefined
-          ? api.thread(threadId, anySignal(signal, deadline))
-          : api.threadIfChanged(threadId, held, anySignal(signal, deadline))),
+        (deadline) => readConversation(threadId, held, anySignal(signal, deadline)),
         THREAD_READ_TIMEOUT_MS,
       );
       if (next === NOT_MODIFIED) {
-        // What is on screen IS the server's. Only the suspicion is answered --
-        // and only when nothing was observed while this was on the wire, which
-        // is what `confirmFresh` refuses to overlook.
-        threadCacheRef.current.confirmFresh(threadId, observedAt);
-        if (threadCacheRef.current.get(threadId)?.stale === true
-          && selectedThreadRef.current === threadId) {
-          scheduleRefreshRef.current({ detail: true });
-        }
+        // What is on screen IS the server's, and nothing is replaced.
+        confirmConversation(threadId, observedAt);
         return;
       }
       // Admitted like any other projection, so a tombstone RECORDS it rather
@@ -1852,7 +1893,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       if (selectedThreadRef.current === threadId) setDetailLoading(false);
     }
-  }, [closeMissingThread, leaveRestoredArchivedThread, publishDetail]);
+  }, [closeMissingThread, confirmConversation, leaveRestoredArchivedThread, publishDetail]);
 
   useEffect(() => {
     const cache = threadCacheRef.current;
@@ -1910,19 +1951,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const observedAt = threadCacheRef.current.clock();
       const selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
       const bucket = bootstrapScope();
+      // CONDITIONAL, exactly as `loadThread` and the gap resync are: this is
+      // the path a beaten 304 schedules its follow-up on, and an ordinary
+      // switch to a conversation kept across a gap reaches it, so an
+      // unconditional read here put a whole transcript back on the wire for a
+      // conversation that had usually not moved at all.
+      const heldEtag = selectedForRefresh === null
+        ? undefined
+        : threadCacheRef.current.get(selectedForRefresh)?.etag;
       const [nextBootstrap, nextDetail] = await Promise.all([
         scope.bootstrap
           ? boundedRequest((signal) => api.bootstrap(signal, bucket), THREAD_READ_TIMEOUT_MS)
           : Promise.resolve(null),
         selectedForRefresh
           ? boundedRequest(
-              (signal) => api.thread(selectedForRefresh, signal),
+              (signal) => readConversation(selectedForRefresh, heldEtag, signal),
               THREAD_READ_TIMEOUT_MS,
             )
           : Promise.resolve(null),
       ]);
       if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
-      if (
+      if (nextDetail === NOT_MODIFIED) {
+        if (selectedForRefresh !== null) confirmConversation(selectedForRefresh, observedAt);
+      } else if (
         nextDetail
         && admitThread(removedThreadsRef.current, nextDetail.thread, issuedAt)
         && selectedThreadRef.current === nextDetail.thread.id
@@ -2079,24 +2130,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const observedAt = cache.clock();
     try {
       const answer = await boundedRequest(
-        (signal) => (etag === undefined
-          ? api.thread(threadId, signal)
-          : api.threadIfChanged(threadId, etag, signal)),
+        (signal) => readConversation(threadId, etag, signal),
         THREAD_READ_TIMEOUT_MS,
       );
       if (answer === NOT_MODIFIED) {
-        // Only the suspicion is answered. A write observed while this was on
-        // the wire is one the 304 cannot speak for, and `confirmFresh` leaves
-        // the entry stale for it -- so this is read back rather than taken from
-        // the return value, which is `false` for three different reasons (no
-        // entry, already fresh, or overtaken) and only one of them wants a
-        // follow-up. The whole `"unheld"` delta arm depends on this: its
-        // observation is only worth leaving behind if a read lands stale AND
-        // something goes round again for it.
-        cache.confirmFresh(threadId, observedAt);
-        if (cache.get(threadId)?.stale === true && selectedThreadRef.current === threadId) {
-          scheduleRefreshRef.current({ detail: true });
-        }
+        confirmConversation(threadId, observedAt);
         return;
       }
       if (!admitThread(removedThreadsRef.current, answer.thread, issuedAt)) return;
@@ -2121,7 +2159,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       cache.markStale(threadId);
       if (selectedThreadRef.current === threadId) refreshSelectedThread();
     }
-  }, [closeMissingThread, publishDetail, refreshSelectedThread]);
+  }, [closeMissingThread, confirmConversation, publishDetail, refreshSelectedThread]);
 
   /**
    * A `ready` with a gap behind it.
@@ -2416,6 +2454,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       }
       // A frame is proof this socket is alive, whatever it last reported.
       errored = false;
+      resumeInFlightRef.current = false;
       lastEventAtRef.current = Date.now();
       applyConnection("live");
       if (webEvent === undefined) return;
@@ -2444,8 +2483,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // only what the gap could have invalidated. It used to cost a full
           // bootstrap AND a full read of the open conversation, every time.
           //
-          // A `ready` on a stream this console re-pointed itself carries no
-          // gap and costs nothing, and neither does the FIRST one: it arrives
+          // EVERY stream after the first has a gap behind it, a re-point
+          // included: closing one socket and registering the next loses a round
+          // trip of events, and `thread.changed` is broadcast to every
+          // connection. Only the FIRST `ready` costs nothing -- it arrives
           // beside the snapshot this component already asked for on mount, so
           // answering it with another bootstrap doubled every page load. Only a
           // mount load that answered with NOTHING is worth asking again for.
@@ -2677,6 +2718,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ];
     events.onopen = () => {
       errored = false;
+      resumeInFlightRef.current = false;
       // Same as `ready`: this transition back to "live" IS what refetches the
       // registry, through the skills effect's own dependency on `connection`.
       applyConnection("live");
@@ -2685,8 +2727,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     for (const type of eventTypes) events.addEventListener(type, handleEvent);
     events.onerror = () => {
       errored = true;
+      // This socket answered -- with a failure. A resume may build another.
+      resumeInFlightRef.current = false;
       // Whatever the browser's own retry does next, this stream has a gap in
       // it, and the `ready` that ends the gap is what pays for it.
+      //
+      // The listing is invalidated HERE and in `resume`, and deliberately not
+      // by a re-point: a drop or a suspension can be arbitrarily long and the
+      // sidebar it left behind is worth one merge page, while a re-point's gap
+      // is a single round trip and a page per conversation switch would be
+      // waste. The transcripts are handled the same way either way -- every
+      // `ready` with a gap stales all of them, and each pays a conditional read
+      // when it is opened.
       resyncOnReadyRef.current = true;
       staleBucketRef.current = true;
       applyConnection(navigator.onLine ? "reconnecting" : "offline");
@@ -2743,6 +2795,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       }
       hiddenSinceRef.current = null;
       resumeOwedRef.current = false;
+      // The socket this is about to build has not opened or failed yet, so
+      // nothing else may decide it is dead and build another over it.
+      resumeInFlightRef.current = true;
       resyncOnReadyRef.current = true;
       // ANY gap, proven or inferred. A socket the system suspended lost exactly
       // the same events a socket that errored did, and the sidebar is one merge
@@ -2783,6 +2838,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // "healthy" and declaring it live left the banner hidden and the composer
       // enabled over a dead stream. One conditional read (usually a 304) is
       // what that costs instead.
+      // A resume is already building one. `online` can land between the bump
+      // and the new socket's first byte, when every signal still describes the
+      // socket that was closed -- and forcing there tore down the replacement
+      // before it had a chance to open.
+      if (resumeInFlightRef.current) return;
       if (connectionRef.current === "live" && !streamIsDown(hiddenSinceRef.current)) return;
       resume(true);
     };
@@ -3075,27 +3135,51 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         : { status: "loading", items: [] },
       ...retained,
     });
+    // Only ever one, and only after a 304 this tab could not act on.
+    let retried = false;
     // CONDITIONAL when this tab holds a validator for this agent's registry.
     // The registry changes when the agent's advertisement does, which is rare;
     // the reads are not, because every transition back to "live" buys one.
-    void api.agentSkills(sourceId, controller.signal, held).then((answer) => {
+    const readRegistry = async (quoted: string | undefined): Promise<void> => {
+      const answer = await api.agentSkills(sourceId, controller.signal, quoted);
       if (controller.signal.aborted || generation !== skillRequestGenerationRef.current) return;
-      if (answer === NOT_MODIFIED) {
-        // What this tab holds IS the agent's registry: the "stale" the
-        // disconnect marked it with is simply lifted.
-        setSkillRegistryState((current) => (current.sourceId === sourceId
-          && current.registry.status === "stale"
-          ? { ...current, registry: { ...current.registry, status: "ready" } }
-          : current));
+      if (answer !== NOT_MODIFIED) {
+        const { etag, ...rest } = answer;
+        const next = rest as SkillRegistryState;
+        setSkillRegistryState({
+          sourceId,
+          registry: next,
+          // ONLY a READY answer's validator, which is the invariant the field
+          // is declared with. The server answers 200 with `unsupported` and
+          // `offline` payloads too and Express mints an ETag for those; stored,
+          // one of those validators later answered 304 for a registry
+          // `retainAsStale` cannot lift back to "ready", and the console sat at
+          // "Loading skills…" for the rest of the session -- re-quoting the
+          // same poisoned validator on every reconnect. A 200 that carries no
+          // ETag DROPS the one held, rather than keeping a validator that
+          // describes an older answer.
+          ...(next.status === "ready" && etag !== undefined ? { etag } : {}),
+        });
         return;
       }
-      const { etag, ...registry } = answer;
-      setSkillRegistryState({
-        sourceId,
-        registry: registry as SkillRegistryState,
-        ...(etag === undefined ? retained : { etag }),
-      });
-    }).catch(() => {
+      // What this tab holds IS the agent's registry: the "stale" a disconnect
+      // marked it with is simply lifted.
+      const current = skillRegistryStateRef.current;
+      if (current.sourceId === sourceId && current.registry.status === "stale") {
+        setSkillRegistryState({
+          ...current,
+          registry: { ...current.registry, status: "ready" },
+        });
+        return;
+      }
+      // A 304 for a registry there is no stale copy of: the validator and what
+      // this tab holds have come apart. Read once more without one rather than
+      // leave the operator looking at a registry that will never resolve.
+      if (retried) return;
+      retried = true;
+      await readRegistry(undefined);
+    };
+    void readRegistry(held).catch(() => {
       if (controller.signal.aborted || generation !== skillRequestGenerationRef.current) return;
       setSkillRegistryState({
         sourceId,

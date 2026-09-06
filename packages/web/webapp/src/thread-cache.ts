@@ -191,7 +191,6 @@ export const newerProjection = (
   fetched: ThreadSummary | undefined,
 ): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
 
-
 /** Everything a truncated payload and its untruncated original have in common. */
 interface TruncatablePayload {
   readonly args?: unknown;
