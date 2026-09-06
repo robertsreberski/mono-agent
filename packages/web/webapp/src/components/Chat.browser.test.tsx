@@ -8,7 +8,7 @@ import type { ThreadDetail, ThreadSummary, WebMessage } from "../types";
 import "../styles.css";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
-const layoutMock = vi.hoisted(() => ({ messageHeight: 96 }));
+const layoutMock = vi.hoisted(() => ({ messageHeight: 96, composerHeight: 90 }));
 
 vi.mock("../console-store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../console-store")>();
@@ -34,7 +34,9 @@ vi.mock("./assistant-ui/Quote", () => ({
   SelectionToolbar: () => null,
 }));
 vi.mock("./Composer", () => ({
-  Composer: () => null,
+  Composer: () => (
+    <div data-testid="thread-composer" style={{ height: layoutMock.composerHeight }} />
+  ),
 }));
 vi.mock("./Messages", () => ({
   AskReconciliationProvider: ({ children }: { readonly children: ReactNode }) => <>{children}</>,
@@ -127,6 +129,12 @@ const getMessageColumn = (container: ParentNode): HTMLElement => {
   return column;
 };
 
+const getFooter = (container: ParentNode): HTMLElement => {
+  const footer = container.querySelector<HTMLElement>(".thread-footer");
+  if (!footer) throw new Error("Expected a thread footer");
+  return footer;
+};
+
 const gapFromBottom = (viewport: HTMLElement): number =>
   viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
 
@@ -161,12 +169,28 @@ const waitForBottom = async (viewport: HTMLElement): Promise<void> => {
 
 beforeEach(() => {
   layoutMock.messageHeight = 96;
+  layoutMock.composerHeight = 90;
   document.documentElement.style.height = "100%";
   document.body.style.height = "100%";
   document.body.style.margin = "0";
 });
 
 describe("Chat conversation viewport in Chromium", () => {
+  it("pins a short ordinary conversation's composer footer to the viewport bottom", async () => {
+    const selectedThread = thread("thread-a", "agent");
+    storeMock.current = chatStore(selectedThread, chatDetail(selectedThread, messageIds(1)));
+
+    const { container } = render(chatTree());
+    await waitForMessages(container, 1);
+    const viewport = getViewport(container);
+    const footer = getFooter(container);
+
+    await waitFor(() => {
+      expect(Math.abs(viewport.getBoundingClientRect().bottom - footer.getBoundingClientRect().bottom))
+        .toBeLessThanOrEqual(1);
+    });
+  });
+
   it("follows a staged detail commit after the replacement viewport initialized empty", async () => {
     const firstThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
     const secondThread = thread("thread-b", "agent", { trigger: { kind: "cron" } });
