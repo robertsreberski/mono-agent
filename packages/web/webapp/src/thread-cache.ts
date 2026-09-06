@@ -523,10 +523,10 @@ export interface MergeMessagesOptions {
  *
  * Nothing is re-sorted -- see {@link insertionIndexFor} for why a client cannot
  * reproduce the server's ordering from what is on the wire. Which is also why a
- * POSITION alone may never decide that history was deleted: the boundary a
- * bounded answer implies is checked against `createdAt` as well, so a row that
- * ended up in the wrong slot cannot take the operator's paged-back history with
- * it.
+ * POSITION never decides that history was deleted: what a bounded answer's
+ * silence may mean is settled by the stamp of the oldest row it carries and by
+ * the ids this tab paged in, both of which are things the SERVER said. See
+ * `outsideAnswer` below.
  *
  * The other contract is IDENTITY: a message the answer did not move comes back
  * as the very object that was held, and the array comes back as the very array
@@ -565,14 +565,35 @@ export const mergeMessages = (
     return settle([...kept, ...incoming.map(chosen)]);
   }
 
-  // What an authoritative answer's silence CANNOT mean. A bounded answer has
-  // more transcript before it, and the rows this tab paged back to are exactly
-  // that transcript; everything else it does not carry, it deleted. An
-  // UNBOUNDED answer is the whole conversation, so its silence is a deletion
-  // at any age -- which is what makes a compaction visible.
+  // What an authoritative answer's silence CANNOT mean.
+  //
+  // An UNBOUNDED answer is the whole conversation, so its silence is a deletion
+  // at any age -- which is what makes a compaction visible. A BOUNDED one has
+  // more transcript before it and can only speak for its own range, and TWO
+  // things put a held row outside that range:
+  //
+  // - It is OLDER than the oldest row the answer carries. This is the window
+  //   contract itself, and it is what a turn makes ordinary: the window is the
+  //   newest rows, so it walks forward as messages are appended and a refresh
+  //   stops carrying the row it used to start at. Without this, that row is
+  //   read as deleted and leaves a hole in the MIDDLE of the transcript that
+  //   paging can never fill, because the older cursor is kept.
+  // - This tab PAGED IT IN. `insertionIndexFor` places a recovered row by
+  //   `createdAt` alone, so one can land in front of history whose stamp says
+  //   it is newer; the ids `prependOlder` actually brought in are what keeps
+  //   the stamp comparison from taking that history with it.
+  //
+  // Neither guard implies the other, so both stand.
   const pagedIn = options.pagedIn ?? new Set<string>();
+  const answerStartsAt = incoming.reduce<string | undefined>(
+    (oldest, message) =>
+      (oldest === undefined || message.createdAt < oldest ? message.createdAt : oldest),
+    undefined,
+  );
   const outsideAnswer = (message: WebMessage): boolean =>
-    options.bounded === true && pagedIn.has(message.id);
+    options.bounded === true
+    && (pagedIn.has(message.id)
+      || (answerStartsAt !== undefined && message.createdAt < answerStartsAt));
 
   // Held rows the answer did not carry, banked until the next row it did --
   // which is the position they must keep.

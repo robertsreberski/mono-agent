@@ -4041,6 +4041,80 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.length).toBe(2);
     });
 
+    it("follows up on a deep-link read a write overtook", async () => {
+      // A push notification or a search hit opens a conversation this tab holds
+      // no row for, and THAT read goes out from `selectThread` rather than from
+      // the selection effect. It is the same race, and it was the one read that
+      // did not quote the clock: a write landing while it was on the wire left
+      // it looking like the newest thing the server had said.
+      //
+      // Staged so the deep-link read is the one that settles the entry: the
+      // delta arrives after it was issued and before the selection effect
+      // commits, so the effect's own read quotes a LATER clock and is not
+      // overtaken by it.
+      seedTwo();
+      const store = await openedOnAlpha();
+      const deepLinked = thread("deep-linked", "alpha");
+      const stale = (): ThreadDetail => ({
+        thread: deepLinked,
+        messages: [streamed("d1", "Hel", { threadId: deepLinked.id, seq: 1 })],
+      });
+      const opens: ((detail: ThreadDetail) => void)[] = [];
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== deepLinked.id) return { thread: alpha, messages: [streamed("m1", "Hel")] };
+        // The FIRST open -- `selectThread`'s own -- is held; every later one
+        // answers at once.
+        if (opens.length === 0) {
+          return new Promise<ThreadDetail>((resolve) => { opens.push(resolve); });
+        }
+        opens.push(() => undefined);
+        return opens.length === 2
+          ? stale()
+          : {
+              thread: deepLinked,
+              messages: [streamed("d1", "Hello", {
+                threadId: deepLinked.id, seq: 2, status: "complete",
+              })],
+            };
+      });
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      act(() => {
+        store.current.selectThread(deepLinked.id);
+        // Between the deep-link request and the selection effect's commit.
+        FakeEventSource.latest?.emit("message.delta", {
+          id: "deep-link-delta",
+          version: 1,
+          type: "message.delta",
+          at: "2026-08-14T09:00:00.000Z",
+          threadId: deepLinked.id,
+          payload: {
+            messageId: "d1",
+            baseSeq: 1,
+            seq: 2,
+            status: "complete",
+            updatedAt: "2026-08-14T09:00:00.000Z",
+            ops: [{ op: "append", index: 0, delta: "lo" }],
+          },
+        });
+      });
+      await waitFor(() => expect(opens.length).toBeGreaterThanOrEqual(2));
+      // Nothing was spent on a conversation there was nowhere to land it in.
+      expect(api.message).not.toHaveBeenCalled();
+
+      await act(async () => {
+        opens[0]?.(stale());
+        await new Promise((resolve) => { setTimeout(resolve, 0); });
+      });
+
+      // The deep-link answer predates the write, so it costs one follow-up.
+      await waitFor(async () =>
+        expect(await screen.findByTestId("message-d1")).toHaveTextContent("Hello"));
+      await quiet();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 3);
+      expect(api.message).not.toHaveBeenCalled();
+    });
+
     it("reads again for a version that became known while the repair was out", async () => {
       // The join is what keeps a copy that fell behind from buying a request
       // per streamed frame. It must not also swallow the frames: the read on
@@ -4225,6 +4299,68 @@ describe("ConsoleStoreProvider integration", () => {
 
       paints = [];
       act(() => { store.current.selectAgent("alpha"); });
+
+      expect(mispaints()).toEqual([]);
+    });
+
+    it("never paints the old transcript when unarchiving or restoring a conversation", async () => {
+      // The same one-frame flash, on the two selection moves that were missed:
+      // unarchiving a conversation, and the selection a failed delete owes back.
+      const archived = thread("archived-thread", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alpha, archived],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alpha, archived] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === archived.id
+        ? { thread: archived, messages: [streamed("a1", "archived", { threadId: archived.id })] }
+        : { thread: alpha, messages: [streamed("m1", "Hel")] });
+      vi.mocked(api.patchThread).mockResolvedValue({ ...archived, archivedAt: null, revision: 2 });
+      const store = await openedOnAlpha();
+
+      paints = [];
+      await act(async () => { await store.current.unarchiveThread(archived.id); });
+
+      expect(store.current.selectedThreadId).toBe(archived.id);
+      expect(mispaints()).toEqual([]);
+    });
+
+    it("never paints the old transcript when a failed delete gives the selection back", async () => {
+      // A bootstrap that answered while the conversation was tombstoned moves
+      // the selection to a survivor; the refusal then gives it back. Both are
+      // selection moves, and the second one used to leave the survivor's
+      // transcript under the restored conversation's header.
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alpha, beta],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alpha, beta] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === beta.id
+        ? { thread: beta, messages: [streamed("b1", "beta", { threadId: beta.id })] }
+        : { thread: alpha, messages: [streamed("m1", "Hel")] });
+      let failDelete!: (error: unknown) => void;
+      vi.mocked(api.deleteThread).mockImplementation(async () =>
+        new Promise<void>((_resolve, reject) => { failDelete = reject; }));
+      const store = await openedOnAlpha();
+
+      const deleted = store.current.deleteThread(alpha.id);
+      await waitFor(() => expect(failDelete).toBeDefined());
+      // The bootstrap answers while the tombstone stands and re-resolves the
+      // selection onto the survivor.
+      emit("agents.changed");
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(beta.id));
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+
+      paints = [];
+      await act(async () => {
+        failDelete(new ApiError("Cancel the active turn first.", 409, "turn_active"));
+        await expect(deleted).rejects.toBeInstanceOf(ApiError);
+      });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(alpha.id));
+      await quiet();
 
       expect(mispaints()).toEqual([]);
     });

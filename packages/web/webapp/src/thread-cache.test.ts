@@ -260,6 +260,47 @@ describe("mergeMessages", () => {
     expect(mergeMessages(messages, moved)[2]).toBe(m3);
   });
 
+  it("keeps every held row older than a window that has moved on", () => {
+    // The window is the NEWEST rows, so it walks forward as a turn appends to
+    // the conversation: a refresh a few messages later no longer carries the
+    // row it used to start at. Reading that absence as a deletion punched a
+    // hole in the MIDDLE of the transcript -- and the older cursor is kept, so
+    // paging could never bring it back.
+    const at = (minute: string) => `2026-08-14T0${minute}:00:00.000Z`;
+    const p1 = message("p1", { createdAt: at("5") });
+    const p2 = message("p2", { createdAt: at("6") });
+    const m1 = message("m1", { createdAt: at("7") });
+    const m2 = message("m2", { createdAt: at("8") });
+    const m3 = message("m3", { createdAt: at("9") });
+    const m4 = message("m4", { createdAt: "2026-08-14T10:00:00.000Z" });
+
+    const merged = mergeMessages(
+      [p1, p2, m1, m2, m3],
+      [m2, m3, m4],
+      { resetWindow: true, bounded: true, pagedIn: new Set(["p1", "p2"]) },
+    );
+
+    expect(merged.map((item) => item.id)).toEqual(["p1", "p2", "m1", "m2", "m3", "m4"]);
+    // Untouched, so still the very objects assistant-ui converted.
+    expect(merged[0]).toBe(p1);
+    expect(merged[2]).toBe(m1);
+  });
+
+  it("still reads an absence INSIDE the window as a deletion", () => {
+    // The other half of the same rule: a row the answer's own range covers and
+    // does not carry is gone, and keeping it would show the operator content
+    // the server no longer has.
+    const kept = message("kept", { createdAt: "2026-08-14T08:00:00.000Z" });
+    const deleted = message("deleted", { createdAt: "2026-08-14T08:30:00.000Z" });
+    const newest = message("newest", { createdAt: "2026-08-14T09:00:00.000Z" });
+
+    expect(mergeMessages(
+      [kept, deleted, newest],
+      [kept, newest],
+      { resetWindow: true, bounded: true },
+    ).map((item) => item.id)).toEqual(["kept", "newest"]);
+  });
+
   it("keeps paged history a bounded answer cannot speak for, wherever it sits", () => {
     // `insertionIndexFor` places a recovered message by `createdAt` alone, so a
     // row the answer DOES carry can end up in front of history the answer's
@@ -606,6 +647,31 @@ describe("createThreadCache", () => {
 
     cache.upsertFull(detail([]), { reset: true });
     expect(cache.get("alpha-thread")?.stale).toBe(false);
+  });
+
+  it("keeps a walked-back transcript whole as the window moves past it", () => {
+    // The sequence the console actually performs: open the conversation, page
+    // back once, then let a turn finish and re-read. Nothing may disappear from
+    // the middle, and the cursor must still reach what is older.
+    const at = (hour: string) => `2026-08-14T${hour}:00:00.000Z`;
+    const cache = createThreadCache();
+    const m1 = message("m1", { createdAt: at("07") });
+    const m2 = message("m2", { createdAt: at("08") });
+    cache.upsertFull(detail([m1, m2], "cursor-window"), { reset: true });
+    cache.prependOlder("alpha-thread", {
+      messages: [message("p1", { createdAt: at("05") }), message("p2", { createdAt: at("06") })],
+      nextCursor: "cursor-older",
+    });
+
+    // The window has moved on: it no longer starts at `m1`.
+    cache.upsertFull(
+      detail([m2, message("m3", { createdAt: at("09") })], "cursor-window-2"),
+      { reset: true },
+    );
+
+    const entry = cache.get("alpha-thread");
+    expect(entry?.messages.map((item) => item.id)).toEqual(["p1", "p2", "m1", "m2", "m3"]);
+    expect(entry?.messagesNextCursor).toBe("cursor-older");
   });
 
   it("forgets a conversation on request", () => {

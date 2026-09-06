@@ -1971,9 +1971,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           const cache = threadCacheRef.current;
           if (cache.get(threadId) === undefined) {
             // The conversation was evicted or removed while this was out, so
-            // there is nowhere for the answer to land. Never spend a request
-            // and drop what it said: leave the observation behind so whatever
-            // read opens this conversation next lands stale.
+            // there is nowhere for the answer to land -- `upsertMessage` would
+            // return false and the request would have been spent for nothing.
+            //
+            // The observation is recorded for the reads that CANNOT see it any
+            // other way: one already on the wire for this conversation quotes a
+            // clock from before it and so lands stale. It does nothing for a
+            // read issued afterwards, which quotes a later clock and lands
+            // fresh -- and needs to, because opening a conversation this tab no
+            // longer holds is a cold read either way.
             cache.markStale(threadId);
             return;
           }
@@ -2733,6 +2739,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(null);
       if (thread === undefined) {
         const issuedAt = removedThreadsRef.current.epoch();
+        // The cache's clock, quoted the way `loadThread` quotes it. A push deep
+        // link and a search hit both open a conversation this tab holds no row
+        // for, and that read goes out from HERE rather than from the selection
+        // effect -- so without this it was the one read a write landing during
+        // it could overtake silently.
+        const observedAt = threadCacheRef.current.clock();
         void boundedRequest(
           (signal) => api.thread(threadId, signal),
           THREAD_READ_TIMEOUT_MS,
@@ -2744,13 +2756,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           setBootstrap((current) => current === null
             ? current
             : { ...current, threads: mergeThreads(current.threads, [canonical]) });
-          threadCacheRef.current.upsertFull(next, { reset: true });
+          const entry = threadCacheRef.current.upsertFull(
+            next,
+            { reset: true, issuedAt: observedAt },
+          );
           selectedAgentRef.current = canonical.sourceId;
           selectedThreadRef.current = canonical.id;
           setSelectedAgentId(canonical.sourceId);
           setSelectedThreadId(canonical.id);
           localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
           publishDetail(canonical.id);
+          // Overtaken while it was on the wire: one more read, exactly as
+          // `loadThread` does, rather than a transcript that looks settled.
+          if (entry?.stale === true) scheduleRefreshRef.current({ detail: true });
           if (!canonical.archivedAt) persistThreadId(canonical.sourceId, canonical.id);
           updateThreadRoute(canonical, true);
         }).catch((selectionError: unknown) => setActionError(errorMessage(selectionError)));
@@ -2949,6 +2967,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       restoredSelectionRef.current = null;
       selectedThreadRef.current = thread.id;
       setSelectedThreadId(thread.id);
+      // In the same batch as the selection -- see `selectAgent`.
+      publishDetail(thread.id);
       persistThreadId(thread.sourceId, thread.id);
       setShowArchived(false);
       updateThreadRoute(thread, true);
@@ -2956,7 +2976,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(unarchiveError));
       throw unarchiveError;
     }
-  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary]);
+  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, publishDetail]);
 
   /**
    * Everything a CONFIRMED delete leaves this tab to clean up.
@@ -3127,6 +3147,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, restored.sourceId);
           selectedThreadRef.current = restored.id;
           setSelectedThreadId(restored.id);
+          // In the same batch as the selection -- see `selectAgent`. A bootstrap
+          // that answered while this was tombstoned moved the selection to a
+          // survivor, so without this the survivor's transcript sat under the
+          // restored conversation's header for a frame.
+          publishDetail(restored.id);
           persistThreadId(restored.sourceId, restored.archivedAt ? null : restored.id);
           updateThreadRoute(restored, true);
         }
@@ -3137,7 +3162,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(deleteError));
       throw deleteError;
     }
-  }, [applyThreadUpdate, completeThreadRemoval, fetchThreadSummary, queueRefresh]);
+  }, [
+    applyThreadUpdate,
+    completeThreadRemoval,
+    fetchThreadSummary,
+    publishDetail,
+    queueRefresh,
+  ]);
 
   /**
    * One conversation, one delete.
