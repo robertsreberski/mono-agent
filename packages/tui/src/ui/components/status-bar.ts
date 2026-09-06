@@ -120,7 +120,10 @@ export class StatusBar implements Component {
       segments.push(styles.muted(this.effortOverridden ? `effort:${this.effort} (override)` : `effort:${this.effort}`));
     }
     if (this.usage !== undefined) {
-      const cache = this.usage.cacheRead > 0 ? ` (cache ${formatTokens(this.usage.cacheRead)})` : "";
+      const inputTotal = this.usage.input + this.usage.cacheRead + this.usage.cacheCreation;
+      const ratio = inputTotal > 0 ? ` ${((this.usage.cacheRead / inputTotal) * 100).toFixed(1)}%` : "";
+      const write = this.usage.cacheCreation > 0 ? ` write ${formatTokens(this.usage.cacheCreation)}` : "";
+      const cache = this.usage.cacheRead > 0 || write.length > 0 ? ` (cache read ${formatTokens(this.usage.cacheRead)}${write}${ratio})` : "";
       segments.push(styles.muted(`↑${formatTokens(this.usage.input)} ↓${formatTokens(this.usage.output)}${cache}`));
     }
     if (this.cumulativeUsd !== undefined && this.cumulativeUsd > 0) {
