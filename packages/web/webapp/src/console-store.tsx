@@ -23,10 +23,17 @@ import {
   holdsToolCall,
   newerProjection,
   readMessageDelta,
+  THREAD_CACHE_ENTRIES,
   type ThreadCache,
   type ThreadCacheEntry,
 } from "./thread-cache";
-import { DEFAULT_UPLOAD_LIMITS } from "./types";
+import {
+  createThreadPersistence,
+  type HydratedConsole,
+  type PersistableState,
+  type ThreadPersistence,
+} from "./thread-persistence";
+import { API_VERSION, DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
   Bootstrap,
@@ -119,13 +126,19 @@ interface ConsoleStoreValue {
    * body. Resolves to `true` when the transcript changed.
    */
   readonly loadFullToolCall: (toolCallId: string) => Promise<boolean>;
+  /**
+   * Forget everything this browser is keeping on the device, and everything it
+   * is keeping in memory except the conversation on screen.
+   */
+  readonly clearCachedData: () => Promise<void>;
 }
 
 const ConsoleStore = createContext<ConsoleStoreValue | null>(null);
 
 const byMostRecent = (a: ThreadSummary, b: ThreadSummary) =>
   Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
-const threadBucketKey = (sourceId: string, archived: boolean): string =>
+/** How the console names one (agent, archived) listing, on the wire and on the device. */
+export const threadBucketKey = (sourceId: string, archived: boolean): string =>
   `${sourceId}\0${archived ? "archived" : "active"}`;
 const cronChannelKey = (sourceId: string, jobId: string): string => `${sourceId}\0${jobId}`;
 /**
@@ -557,6 +570,19 @@ export const THREAD_READ_TIMEOUT_MS = 60_000;
  * a burst cost one request rather than one per event.
  */
 export const REFRESH_DEBOUNCE_MS = 300;
+
+/**
+ * How long changes are collected before one transaction writes them to the
+ * device.
+ *
+ * A streaming turn commits a delta about once a second, and each of those is a
+ * transcript this browser would otherwise rewrite. One second is short enough
+ * that closing the tab mid-turn loses at most the last second of it -- which a
+ * restored entry's conditional read pays for anyway -- and long enough that a
+ * burst of deltas, a repair and a summary patch cost one transaction between
+ * them.
+ */
+export const PERSIST_DEBOUNCE_MS = 1_000;
 
 /**
  * How long a selection has to settle before the stream re-points at it.
@@ -1330,6 +1356,38 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   /** The open conversation's own summary, which outlives its row in the listing. */
   const detailThreadRef = useRef<ThreadSummary | null>(null);
   /**
+   * What this browser keeps between visits -- see `thread-persistence.ts`.
+   *
+   * Created on first render rather than per render: the module opens nothing
+   * until it is asked to, but there is exactly one owner of the device store.
+   */
+  const persistenceRef = useRef<ThreadPersistence | null>(null);
+  persistenceRef.current ??= createThreadPersistence();
+  /**
+   * Whether hydration has settled.
+   *
+   * Nothing may be WRITTEN before it has: the first flush deletes every stored
+   * row this tab is not holding, and before hydration it is holding none of
+   * them.
+   */
+  const persistReadyRef = useRef(false);
+  const persistTimerRef = useRef<number | null>(null);
+  const schedulePersistRef = useRef<() => void>(() => undefined);
+  /** The listing and the snapshot as of this render, for the flush to write. */
+  const persistedBucketRef = useRef<PersistableState["bucket"]>(undefined);
+  const persistedSnapshotRef = useRef<PersistableState["snapshot"]>(undefined);
+  /**
+   * The console that wrote what was restored, until the live one is known.
+   *
+   * Checked exactly once, against the first snapshot that answers: a different
+   * host is a different console's conversations, and none of it is this one's
+   * to show.
+   */
+  const hydratedHostRef = useRef<string | null>(null);
+  /** The one hydration, so every caller awaits the same read. */
+  const hydrationRef = useRef<Promise<void> | null>(null);
+
+  /**
    * Every conversation this tab is keeping, not just the one on screen.
    *
    * A ref rather than state on purpose: it is the console's copy of the SERVER,
@@ -1339,7 +1397,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * pre-commit snapshot is exactly the defect the previous round had to guard
    * against with a decision made outside the state updater.
    */
-  const threadCacheRef = useRef<ThreadCache>(createThreadCache());
+  const threadCacheRef = useRef<ThreadCache>(createThreadCache(
+    THREAD_CACHE_ENTRIES,
+    undefined,
+    // Off the render path by construction: the cache is written from event
+    // handlers and from responses, and this only arms a timer.
+    () => schedulePersistRef.current(),
+  ));
   /**
    * The message repairs on the wire, by (conversation, message).
    *
@@ -1495,6 +1559,42 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
 
   /**
+   * Write what this tab holds to the device, at most once every
+   * {@link PERSIST_DEBOUNCE_MS}.
+   *
+   * Armed by the cache's own commit hook and by the effect that watches the
+   * listing, so nothing here runs during a render. The flush is a full
+   * statement of what is held -- every conversation, the active listing, the
+   * snapshot -- which is what makes an eviction, a removal and a tombstone all
+   * reach the device without any of them having to say so; the module writes
+   * only the transcripts whose objects actually moved.
+   */
+  const schedulePersist = useCallback(() => {
+    // An empty flush before hydration has read would delete the very rows the
+    // cold start is about to draw. A torn-down console has nothing to say
+    // either.
+    if (!persistReadyRef.current || !mountedRef.current) return;
+    if (persistTimerRef.current !== null) return;
+    persistTimerRef.current = window.setTimeout(() => {
+      persistTimerRef.current = null;
+      const persistence = persistenceRef.current;
+      if (persistence === null) return;
+      void persistence.save({
+        entries: threadCacheRef.current.snapshot(),
+        ...(persistedSnapshotRef.current === undefined
+          ? {}
+          : { snapshot: persistedSnapshotRef.current }),
+        ...(persistedBucketRef.current === undefined
+          ? {}
+          : { bucket: persistedBucketRef.current }),
+      });
+    }, PERSIST_DEBOUNCE_MS);
+  }, []);
+  // Assigned during render, like `scheduleRefreshRef`: the cache's commit hook
+  // is created once, and an effect would leave it a commit behind.
+  schedulePersistRef.current = schedulePersist;
+
+  /**
    * Show what the cache holds for one conversation -- and nothing else.
    *
    * The ONE place `detail` is written. Every path that used to build a
@@ -1527,7 +1627,125 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       : projectDetail(entry));
   }, []);
 
+  /**
+   * Put what this device kept back on screen, before anything is asked for.
+   *
+   * The console used to open on an empty shell and a spinner: nothing could be
+   * drawn until the snapshot answered, and nothing of the conversation until
+   * its own read did. This draws the agents, the listing and the transcript the
+   * operator was last in from the device, and marks every one of them suspect
+   * -- so the reads that follow are the ordinary conditional ones, and a
+   * console that has been away for ten seconds pays a status line rather than a
+   * transcript.
+   *
+   * Everything restored is STALE by construction (see `ThreadCache.restore`).
+   * Nothing here claims to be current; it claims to be worth drawing.
+   */
+  const hydrateFromDevice = useCallback((): Promise<void> => {
+    const running = hydrationRef.current;
+    if (running !== null) return running;
+    const started = (async () => {
+      const persistence = persistenceRef.current;
+      const restored: HydratedConsole | null = persistence === null
+        ? null
+        : await persistence.hydrate();
+      // Whatever came back, the device store may now be written: a flush from
+      // here on can only delete rows this tab genuinely stopped holding.
+      persistReadyRef.current = true;
+      if (restored === null) return;
+      hydratedHostRef.current = restored.host;
+      const cache = threadCacheRef.current;
+      for (const stored of restored.threads) {
+        cache.restore({
+          thread: stored.thread,
+          messages: stored.messages,
+          ...(stored.messagesNextCursor === undefined
+            ? {}
+            : { messagesNextCursor: stored.messagesNextCursor }),
+          ...(stored.etag === undefined ? {} : { etag: stored.etag }),
+          repairedToolCallIds: new Set(stored.repairedToolCallIds),
+          pagedInIds: new Set(stored.pagedInIds),
+        });
+      }
+      const agentId = selectedAgentRef.current;
+      const bucket = agentId === null
+        ? undefined
+        : restored.buckets.find(
+            (candidate) => candidate.key === threadBucketKey(agentId, showArchivedRef.current),
+          );
+      const snapshot = restored.snapshot;
+      if (snapshot !== null) {
+        setBootstrap({
+          version: API_VERSION,
+          console: snapshot.console,
+          push: snapshot.push,
+          agents: snapshot.agents,
+          // One bucket, exactly as a real snapshot carries one. Deliberately
+          // NOT recorded in `seededBucketsRef`: this listing is as old as the
+          // last visit, and the mount snapshot is what delivers the bucket.
+          threads: bucket?.threads ?? [],
+          threadsSourceId: agentId,
+          threadsNextCursor: bucket?.nextCursor ?? null,
+          limits: snapshot.limits,
+        });
+        // Honest about what this is: content on screen that no live connection
+        // stands behind yet. The stream's first `ready` clears it.
+        applyConnection("reconnecting");
+      }
+      // A cron URL is the operator's own instruction about what to open, and
+      // the cron effect resolves it once the overview lands.
+      if (selectedThreadRef.current !== null || cronRouteSelection() !== undefined) return;
+      const storedThreadId = agentId === null ? undefined : readPersistedThreadIds()[agentId];
+      if (storedThreadId === undefined || cache.get(storedThreadId) === undefined) return;
+      // The same rule a snapshot applies: a selection the listing carries has
+      // been confirmed by something, and one it does not is opened on trust --
+      // which only a whole answer can settle. See `restoredSelectionRef`.
+      const listed = (bucket?.threads ?? []).some(
+        (candidate) => candidate.id === storedThreadId && candidate.archivedAt === null,
+      );
+      restoredSelectionRef.current = listed ? null : storedThreadId;
+      selectedThreadRef.current = storedThreadId;
+      cache.setSelected(storedThreadId);
+      setSelectedThreadId(storedThreadId);
+      // In the SAME batch as the selection, so no commit ever draws the shell
+      // with a header and no transcript under it.
+      publishDetail(storedThreadId);
+    })();
+    hydrationRef.current = started;
+    return started;
+  }, [applyConnection, publishDetail]);
+
+  /**
+   * The console answering is not the console that wrote what was restored.
+   *
+   * Same origin, different machine behind it -- a laptop reached at the same
+   * name as the one before, a service moved. None of the restored
+   * conversations, and none of the restored listing, belongs to this console,
+   * so all of it goes: from memory, from the device, and from the selection.
+   * Checked exactly once, against the first snapshot to answer.
+   */
+  const discardOtherHostData = useCallback((hostName: string) => {
+    const wrote = hydratedHostRef.current;
+    if (wrote === null) return;
+    hydratedHostRef.current = null;
+    if (wrote === hostName) return;
+    threadCacheRef.current.clear();
+    selectedThreadRef.current = null;
+    setDetail(null);
+    // A read for the other console's copy may already be on the wire, and it
+    // cannot fill what this just emptied: the snapshot is about to re-resolve
+    // the selection to the SAME id, so the effect that would re-read never
+    // re-runs. One debounced detail refresh is what puts this console's
+    // transcript on screen -- and it quotes nothing, because there is nothing
+    // left to quote.
+    scheduleRefreshRef.current({ detail: true });
+    void persistenceRef.current?.clearAll();
+  }, []);
+
   const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
+    // BEFORE anything is read off the current selection: what a different
+    // console left behind is not a selection to keep.
+    discardOtherHostData(rawNext.console.hostName);
     const previouslySelected = selectedThreadRef.current;
     // A bootstrap is a wholesale replacement, so a deleted conversation it
     // still lists is re-added, selected, and routed to. It is also the single
@@ -1609,7 +1827,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         persistThreadId(selection.agentId, selected.archivedAt ? null : selected.id);
       }
     }
-  }, []);
+  }, [discardOtherHostData]);
 
   /**
    * The bucket a bootstrap should carry: the one this tab is showing.
@@ -1627,6 +1845,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const loadBootstrap = useCallback(async () => {
     try {
+      // BEFORE the first request goes out. What this device kept is on screen
+      // while this read is on the wire, and the entries it restored are what
+      // make the conversation read that follows a conditional one.
+      await hydrateFromDevice();
       // Bounded like every other read. See `THREAD_READ_TIMEOUT_MS`: the
       // tombstone's lifetime is only an upper bound on late responses while
       // the responses themselves have one.
@@ -1642,7 +1864,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       initialBootstrapRef.current = "answered";
     }
-  }, [applyBootstrap, bootstrapScope]);
+  }, [applyBootstrap, bootstrapScope, hydrateFromDevice]);
 
   useEffect(() => {
     void loadBootstrap();
@@ -2404,8 +2626,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => () => {
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
     if (threadListTimerRef.current !== null) window.clearTimeout(threadListTimerRef.current);
+    if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current);
     refreshTimerRef.current = null;
     threadListTimerRef.current = null;
+    persistTimerRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -2923,8 +3147,33 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const activeBucketKey = selectedAgentId === null
     ? undefined
     : threadBucketKey(selectedAgentId, showArchived);
-  const hasMoreThreads = activeBucketKey !== undefined
-    && typeof threadCursorByBucket[activeBucketKey] === "string";
+  const activeBucketCursor = activeBucketKey === undefined
+    ? undefined
+    : threadCursorByBucket[activeBucketKey];
+  const hasMoreThreads = typeof activeBucketCursor === "string";
+  // Assigned during render, like `threadsRef`: the flush runs between commits
+  // and has to write the listing and the snapshot the operator is looking at.
+  persistedSnapshotRef.current = bootstrap === null
+    ? undefined
+    : {
+        agents: bootstrap.agents,
+        console: bootstrap.console,
+        limits: bootstrap.limits,
+        push: bootstrap.push,
+      };
+  persistedBucketRef.current = activeBucketKey === undefined
+    ? undefined
+    : {
+        key: activeBucketKey,
+        threads: visibleThreads,
+        nextCursor: typeof activeBucketCursor === "string" ? activeBucketCursor : null,
+      };
+  // The listing and the snapshot move through state rather than through the
+  // cache, so they arm the same throttle themselves and land in the same
+  // transaction as whatever the cache changed.
+  useEffect(() => {
+    schedulePersist();
+  }, [activeBucketKey, bootstrap, schedulePersist, threadCursorByBucket]);
   const selectedCronJobId = selectedThread?.trigger?.kind === "cron"
     ? selectedThread.trigger.jobId
     : undefined;
@@ -3087,6 +3336,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     publishDetail(threadId);
     return true;
   }, [publishDetail]);
+
+  /**
+   * "Clear cached data": forget what this browser is keeping, everywhere.
+   *
+   * The device store is emptied, and so is the cache -- except the conversation
+   * on screen, because the operator asked for what is KEPT to go, not for the
+   * transcript in front of them to be replaced by a spinner and bought again.
+   * `clear` is deliberately not a content change, so nothing is written back
+   * the moment this returns; ordinary use fills the device again from here.
+   */
+  const clearCachedData = useCallback(async () => {
+    await persistenceRef.current?.clearAll();
+    threadCacheRef.current.clear(selectedThreadRef.current ?? undefined);
+  }, []);
 
   useEffect(() => {
     void refreshCron();
@@ -4295,11 +4558,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       refreshCron,
       loadCronRunActivity,
       loadFullToolCall,
+      clearCachedData,
     }),
     [
       actionError,
       agents,
       archiveThread,
+      clearCachedData,
       bootstrap,
       cancelTurn,
       clearAgentRunDefaults,

@@ -744,4 +744,76 @@ describe("createThreadCache", () => {
 
     expect(cache.get("alpha-thread")).toBeUndefined();
   });
+
+  it("hands out everything it holds, least recently used first", () => {
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("m1")]));
+    cache.upsertFull({ thread: thread("beta-thread", "alpha"), messages: [message("m2")] });
+    cache.touch("alpha-thread");
+
+    expect(cache.snapshot().map((entry) => entry.thread.id)).toEqual([
+      "beta-thread",
+      "alpha-thread",
+    ]);
+    expect(cache.snapshot()[1]).toBe(cache.get("alpha-thread"));
+  });
+
+  it("restores a stored conversation, and never as one that can be trusted", () => {
+    const cache = createThreadCache();
+
+    cache.restore({
+      thread: thread("alpha-thread", "alpha"),
+      messages: [message("m1")],
+      messagesNextCursor: "cursor-older",
+      etag: 'W/"alpha-1"',
+      repairedToolCallIds: new Set(["call-1"]),
+      pagedInIds: new Set(["m1"]),
+    });
+
+    const entry = cache.get("alpha-thread");
+    expect(entry?.messages.map((item) => item.id)).toEqual(["m1"]);
+    expect(entry?.messagesNextCursor).toBe("cursor-older");
+    expect(entry?.etag).toBe('W/"alpha-1"');
+    expect(entry?.repairedToolCallIds.has("call-1")).toBe(true);
+    expect(entry?.pagedInIds.has("m1")).toBe(true);
+    // The whole point: a transcript from a previous visit has missed an
+    // unbounded window, so it is on screen but never current.
+    expect(entry?.stale).toBe(true);
+  });
+
+  it("keeps the conversation on screen when the operator clears what is kept", () => {
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("m1")]));
+    cache.upsertFull({ thread: thread("beta-thread", "alpha"), messages: [message("m2")] });
+
+    cache.clear("alpha-thread");
+
+    expect(cache.get("alpha-thread")?.messages.map((item) => item.id)).toEqual(["m1"]);
+    expect(cache.get("beta-thread")).toBeUndefined();
+    cache.clear();
+    expect(cache.snapshot()).toEqual([]);
+  });
+
+  it("tells its owner about every change to a transcript, and about nothing else", () => {
+    const commits: number[] = [];
+    let commitCount = 0;
+    const cache = createThreadCache(8, () => 0, () => { commits.push(++commitCount); });
+
+    cache.upsertFull(detail([message("m1")]));
+    const afterRead = commitCount;
+    cache.applyDelta("alpha-thread", delta({ ops: [] }));
+    const afterDelta = commitCount;
+    cache.markStale("alpha-thread");
+    cache.markAllStale();
+    cache.confirmFresh("alpha-thread", cache.clock());
+    const afterSuspicion = commitCount;
+    cache.evict("alpha-thread");
+
+    expect(afterRead).toBe(1);
+    expect(afterDelta).toBe(2);
+    // Staleness is not content and is never restored from the device, so a
+    // reconnect that stales all eight must not rewrite all eight.
+    expect(afterSuspicion).toBe(2);
+    expect(commitCount).toBe(3);
+  });
 });

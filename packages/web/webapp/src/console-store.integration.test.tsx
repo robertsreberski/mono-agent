@@ -1,3 +1,8 @@
+// The console keeps recent conversations on the device now, so every test in
+// this file runs the persistence path as well: hydration before the first read,
+// and the debounced write-through behind it. The store is emptied before each
+// test, so what any one of them restores is exactly what it seeded.
+import "fake-indexeddb/auto";
 import { act, cleanup as cleanupDom, render, screen, waitFor } from "@testing-library/react";
 import { StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +11,7 @@ import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
   ConsoleStoreProvider,
+  PERSIST_DEBOUNCE_MS,
   cronChannelPath,
   preferenceKeyForThread,
   reconcileFailedDelete,
@@ -17,10 +23,13 @@ import {
   THREAD_LIST_REVALIDATE_DEBOUNCE_MS,
   THREAD_READ_TIMEOUT_MS,
   THREAD_WRITE_TIMEOUT_MS,
+  threadBucketKey,
   useConsoleStore,
 } from "./console-store";
 import type { RequestLanding } from "./console-store";
-import { agent, bootstrap, thread } from "./test/fixtures";
+import { agent, bootstrap, thread, uploadLimits } from "./test/fixtures";
+import type { ThreadCacheEntry } from "./thread-cache";
+import { createThreadPersistence } from "./thread-persistence";
 import type {
   AgentSkillRegistry,
   AgentSummary,
@@ -166,8 +175,15 @@ const detail = (threadSummary = cronThread, text = "first"): ThreadDetail => ({
   }],
 });
 
+/**
+ * Another owner of the same device store -- which is what a second tab is, and
+ * what these tests use to seed a visit and to read back what one wrote.
+ */
+const deviceStore = createThreadPersistence();
+
 describe("ConsoleStoreProvider integration", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await deviceStore.clearAll();
     vi.clearAllMocks();
     localStorage.clear();
     window.history.replaceState(null, "", "/");
@@ -5289,6 +5305,318 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.slice(reads).map((call) => call[0]))
         .toEqual([gamma.id]);
       expect(store.current.detailLoading).toBe(false);
+    });
+  });
+
+  describe("a console that opens on what this browser kept", () => {
+    const alpha = thread("alpha-thread", "alpha");
+    const beta = thread("beta-thread", "alpha", { updatedAt: "2026-07-17T09:00:00.000Z" });
+    const agents = [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })];
+    let eventSequence = 0;
+
+    const kept = (id: string, text: string, threadId = alpha.id): WebMessage => ({
+      id,
+      threadId,
+      role: "assistant",
+      parts: [{ type: "text", text }],
+      attachments: [],
+      createdAt: "2026-08-14T08:00:00.000Z",
+      updatedAt: "2026-08-14T08:00:00.000Z",
+      status: "complete",
+      seq: 1,
+    });
+
+    const entry = (
+      summary: ThreadSummary,
+      messages: readonly WebMessage[],
+      etag?: string,
+    ): ThreadCacheEntry => ({
+      thread: summary,
+      messages,
+      stale: false,
+      syncedAt: 0,
+      repairedToolCallIds: new Set<string>(),
+      pagedInIds: new Set<string>(),
+      ...(etag === undefined ? {} : { etag }),
+    });
+
+    /** A previous visit: what that visit left on this device, and where it was. */
+    const previousVisit = async (options: {
+      readonly entries: readonly ThreadCacheEntry[];
+      readonly listing: readonly ThreadSummary[];
+      readonly openedOn?: string;
+      readonly hostName?: string;
+    }) => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      if (options.openedOn !== undefined) {
+        localStorage.setItem(
+          SELECTED_THREADS_STORAGE_KEY,
+          JSON.stringify({ alpha: options.openedOn }),
+        );
+      }
+      await deviceStore.save({
+        entries: options.entries,
+        snapshot: {
+          agents,
+          console: { hostName: options.hostName ?? "test-host", theme: "evergreen" },
+          limits: uploadLimits,
+          push: {
+            applicationServerKey: "B".repeat(87),
+            keyFingerprint: "test-fingerprint",
+            serviceWorkerVersion: 2,
+          },
+        },
+        bucket: {
+          key: threadBucketKey("alpha", false),
+          threads: options.listing,
+          nextCursor: null,
+        },
+      });
+    };
+
+    const emit = (
+      type: WebEvent["type"],
+      extra: { readonly threadId?: string; readonly payload?: unknown } = {},
+    ) => {
+      eventSequence += 1;
+      act(() => FakeEventSource.latest?.emit(type, {
+        id: `device-event-${String(eventSequence)}`,
+        version: 1,
+        type,
+        at: "2026-08-14T09:00:00.000Z",
+        ...extra,
+      }));
+    };
+
+    const quiet = async (ms = 400) => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, ms); }); });
+    };
+
+    /** Long enough for one debounced write-through to have landed. */
+    const written = async () => { await quiet(PERSIST_DEBOUNCE_MS + 400); };
+
+    function Transcript() {
+      const store = useConsoleStore();
+      return (
+        <ol>
+          {(store.detail?.messages ?? []).map((message) => (
+            <li key={message.id} data-testid={`kept-${message.id}`}>
+              {message.parts.map((part) => (part.type === "text" ? part.text : "")).join("")}
+            </li>
+          ))}
+        </ol>
+      );
+    }
+
+    /** Rendered WITHOUT waiting for a snapshot: what the cold start draws is the point. */
+    const openConsole = () => {
+      let current: Store | undefined;
+      const onChange = (store: Store) => { current = store; };
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={onChange} />
+          <Transcript />
+        </ConsoleStoreProvider>,
+      );
+      return {
+        get current() {
+          if (!current) throw new Error("Store did not initialize.");
+          return current;
+        },
+      };
+    };
+
+    it("draws what it kept before anything answers, and confirms it with one conditional read", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+
+      // The whole point: the transcript, the rail and the sidebar are on screen
+      // while the snapshot is still on the wire.
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      expect(store.current.loading).toBe(true);
+      expect(vi.mocked(api.bootstrap)).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("kept-m1")).toHaveTextContent("kept transcript");
+      expect(store.current.agents.map((item) => item.sourceId)).toEqual(["alpha", "beta"]);
+      expect(store.current.visibleThreads.map((item) => item.id)).toEqual([alpha.id]);
+      // Nothing live stands behind any of it yet, and the console says so.
+      expect(store.current.connection).toBe("reconnecting");
+      expect(store.current.detailLoading).toBe(false);
+
+      // ONE read, and it quotes what the transcript was served with.
+      await waitFor(() => expect(vi.mocked(api.threadIfChanged)).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => [call[0], call[1]]))
+        .toEqual([[alpha.id, 'W/"alpha-1"']]);
+      expect(vi.mocked(api.thread)).not.toHaveBeenCalled();
+      const held = store.current.detail?.messages;
+
+      act(() => { release(); });
+      await waitFor(() => expect(store.current.loading).toBe(false));
+      await quiet();
+
+      // A 304 replaced nothing, and the snapshot bought no second read.
+      expect(vi.mocked(api.threadIfChanged)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.thread)).not.toHaveBeenCalled();
+      expect(store.current.detail?.messages).toBe(held);
+      expect(store.current.selectedThreadId).toBe(alpha.id);
+    });
+
+    it("keeps the transcript a turn streamed, with the validator it was served with", async () => {
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: alpha,
+        messages: [{ ...kept("m1", "Hel"), status: "running" }],
+        etag: 'W/"alpha-1"',
+      });
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+
+      emit("message.delta", {
+        threadId: alpha.id,
+        payload: {
+          messageId: "m1",
+          baseSeq: 1,
+          seq: 2,
+          status: "running",
+          updatedAt: "2026-08-14T09:00:01.000Z",
+          ops: [{ op: "append", index: 0, delta: "lo" }],
+        },
+      });
+      await waitFor(() => expect(screen.getByTestId("kept-m1")).toHaveTextContent("Hello"));
+      await written();
+
+      const stored = await deviceStore.hydrate();
+      const alphaRow = stored?.threads.find((item) => item.id === alpha.id);
+      expect(alphaRow?.messages[0]?.parts).toEqual([{ type: "text", text: "Hello" }]);
+      // The validator the entry was served with, carried with that entry and no
+      // other. It describes an older version than the delta produced, which is
+      // exactly why the read that quotes it is answered with a transcript.
+      expect(alphaRow?.etag).toBe('W/"alpha-1"');
+      expect(stored?.host).toBe("test-host");
+      expect(stored?.buckets.map((item) => item.key)).toEqual([threadBucketKey("alpha", false)]);
+    });
+
+    it("forgets a kept conversation the server no longer has, on the device too", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [beta], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockRejectedValue(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: beta,
+        messages: [kept("b1", "beta", beta.id)],
+        etag: 'W/"beta-1"',
+      });
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+      await written();
+
+      expect(store.current.selectedThreadId).not.toBe(alpha.id);
+      const stored = await deviceStore.hydrate();
+      expect(stored?.threads.map((item) => item.id)).not.toContain(alpha.id);
+      expect(JSON.parse(localStorage.getItem(SELECTED_THREADS_STORAGE_KEY) ?? "{}").alpha)
+        .not.toBe(alpha.id);
+    });
+
+    it("empties the device when the operator asks, and keeps what is on screen", async () => {
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(beta, [kept("b1", "beta transcript", beta.id)], 'W/"beta-1"'),
+        ],
+        listing: [alpha, beta],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, beta], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: beta,
+        messages: [kept("b1", "beta transcript", beta.id)],
+        etag: 'W/"beta-2"',
+      });
+      const store = openConsole();
+      await waitFor(() => expect(store.current.loading).toBe(false));
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      const held = store.current.detail?.messages;
+
+      await act(async () => { await store.current.clearCachedData(); });
+
+      expect(await deviceStore.hydrate())
+        .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+      // The conversation in front of the operator is not what they asked to
+      // lose: it is still on screen, as the very transcript it was.
+      expect(store.current.detail?.messages).toBe(held);
+      expect(screen.getByTestId("kept-m1")).toHaveTextContent("kept transcript");
+
+      // Everything else is gone from memory as well, so opening one costs a read.
+      const reads = vi.mocked(api.thread).mock.calls.length;
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      expect(vi.mocked(api.thread).mock.calls.slice(reads).map((call) => call[0]))
+        .toEqual([beta.id]);
+    });
+
+    it("throws away what a different console left on this device", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "another console")], 'W/"other-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+        hostName: "kitchen",
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }));
+      }));
+      // The read the restored copy provokes quotes the OTHER console's
+      // validator, and it is on the wire before the snapshot that exposes the
+      // host. A 304 to it is the pathological answer -- today's validator comes
+      // from the body, but one derived from a revision could collide -- and the
+      // console still owes the operator THIS console's conversation.
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: alpha,
+        messages: [kept("m2", "this console")],
+        etag: 'W/"alpha-1"',
+      });
+
+      const store = openConsole();
+      await waitFor(() => expect(screen.queryByTestId("kept-m1")).not.toBeNull());
+      await waitFor(() => expect(vi.mocked(api.threadIfChanged)).toHaveBeenCalledTimes(1));
+
+      act(() => { release(); });
+      await waitFor(() => expect(store.current.loading).toBe(false));
+      await waitFor(() => expect(screen.queryByTestId("kept-m2")).not.toBeNull());
+      await written();
+
+      // Not one byte of the other console's copy survived, in memory or on the
+      // device, and what replaced it was read without a validator.
+      expect(screen.queryByTestId("kept-m1")).toBeNull();
+      expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).toEqual([alpha.id]);
+      const stored = await deviceStore.hydrate();
+      expect(stored?.host).toBe("test-host");
+      expect(stored?.threads.flatMap((item) => item.messages.map((message) => message.id)))
+        .toEqual(["m2"]);
     });
   });
 });

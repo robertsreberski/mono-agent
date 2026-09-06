@@ -722,7 +722,40 @@ export interface ThreadCache {
    */
   readonly markAllStale: () => void;
   readonly evict: (threadId: string) => void;
-  readonly clear: () => void;
+  /**
+   * Forget everything, except optionally the conversation on screen.
+   *
+   * `keep` is what "Clear cached data" needs: the operator asked for what this
+   * browser is holding to go, not for the transcript in front of them to be
+   * replaced by a spinner and bought again.
+   */
+  readonly clear: (keep?: string) => void;
+  /**
+   * Every conversation held, least recently used first -- which is eviction
+   * order, so a reader that has to bound itself drops from the front.
+   *
+   * The entries come back BY REFERENCE, which is what lets the device store
+   * tell "this transcript moved" from "this is the same object I already
+   * wrote" without comparing any content.
+   */
+  readonly snapshot: () => readonly ThreadCacheEntry[];
+  /**
+   * Put a conversation back from wherever it was kept between visits.
+   *
+   * ALWAYS STALE, whatever was stored: a restored transcript has missed an
+   * unbounded window -- every event since the tab was last open -- so it is
+   * something to draw immediately and nothing to answer with. The conditional
+   * read the first open issues is what makes it current, at the cost of a
+   * status line when nothing changed.
+   */
+  readonly restore: (entry: {
+    readonly thread: ThreadSummary;
+    readonly messages: readonly WebMessage[];
+    readonly messagesNextCursor?: string;
+    readonly etag?: string;
+    readonly repairedToolCallIds?: ReadonlySet<string>;
+    readonly pagedInIds?: ReadonlySet<string>;
+  }) => void;
 }
 
 /**
@@ -766,6 +799,13 @@ export const mergeToolCallPart = (existing: MessagePart, full: MessagePart): Mes
 export const createThreadCache = (
   maxEntries: number = THREAD_CACHE_ENTRIES,
   now: () => number = () => Date.now(),
+  /**
+   * Something a conversation's CONTENT changed -- a read, a delta, a repair, an
+   * eviction. Called after the write, never during a render, and deliberately
+   * not for staleness: what a device store keeps is transcripts, and a
+   * reconnect that suspects all eight has moved none of them.
+   */
+  onCommit: () => void = () => undefined,
 ): ThreadCache => {
   // Insertion order IS recency order: every touch deletes before it sets, so
   // the first key is always the least recently used.
@@ -835,6 +875,12 @@ export const createThreadCache = (
     return true;
   };
 
+  /** A write the device store has to hear about. See {@link onCommit}. */
+  const committed = (changed: boolean): boolean => {
+    if (changed) onCommit();
+    return changed;
+  };
+
   const withCursor = (
     entry: Omit<ThreadCacheEntry, "messagesNextCursor">,
     cursor: string | undefined,
@@ -871,6 +917,7 @@ export const createThreadCache = (
           detail.messagesNextCursor,
         );
         write(threadId, entry);
+        onCommit();
         return entry;
       }
       const messages = mergeMessages(held.messages, detail.messages, {
@@ -907,9 +954,10 @@ export const createThreadCache = (
         cursor,
       );
       write(threadId, entry);
+      onCommit();
       return entry;
     },
-    upsertMessage: (threadId, message, options = {}) => patchEntry(threadId, (entry) => {
+    upsertMessage: (threadId, message, options = {}) => committed(patchEntry(threadId, (entry) => {
       const index = entry.messages.findIndex((candidate) => candidate.id === message.id);
       if (index < 0) {
         // A row no answer has positioned: a live-input receipt, or the message
@@ -930,8 +978,8 @@ export const createThreadCache = (
       // position this row already has is the only authority for where it goes.
       messages[index] = parts === next.parts ? next : { ...next, parts };
       return { ...entry, messages, syncedAt: now() };
-    }),
-    prependOlder: (threadId, page) => patchEntry(threadId, (entry) => {
+    })),
+    prependOlder: (threadId, page) => committed(patchEntry(threadId, (entry) => {
       const held = new Set(entry.messages.map((message) => message.id));
       const older = page.messages.filter((message) => !held.has(message.id));
       // A keyset page is everything BEFORE what is held, in the server's own
@@ -950,8 +998,8 @@ export const createThreadCache = (
       return messages === entry.messages && next.messagesNextCursor === entry.messagesNextCursor
         ? entry
         : next;
-    }),
-    patchThread: (threadId, thread) => patchEntry(threadId, (entry) => {
+    })),
+    patchThread: (threadId, thread) => committed(patchEntry(threadId, (entry) => {
       // ORDERED BY THE SERVER'S REVISION, exactly as the listing is. A POST
       // answer that lost its race to the event carrying the same row would
       // otherwise roll the cached summary back while the sidebar kept the newer
@@ -959,9 +1007,9 @@ export const createThreadCache = (
       // conversation the sidebar does not list at all.
       const next = newerProjection(entry.thread, thread);
       return next === entry.thread ? entry : { ...entry, thread: next };
-    }),
-    patchRunState: (threadId, runState) => patchEntry(threadId, (entry) =>
-      ({ ...entry, thread: { ...entry.thread, runState } })),
+    })),
+    patchRunState: (threadId, runState) => committed(patchEntry(threadId, (entry) =>
+      ({ ...entry, thread: { ...entry.thread, runState } }))),
     applyDelta: (threadId, delta) => {
       const entry = entries.get(threadId);
       if (entry === undefined) return "unheld";
@@ -983,6 +1031,7 @@ export const createThreadCache = (
       const messages = [...entry.messages];
       messages[index] = next;
       entries.set(threadId, { ...entry, messages, syncedAt: now() });
+      onCommit();
       return "applied";
     },
     repairToolCall: (threadId, messageId, toolCallId, part) => {
@@ -1000,6 +1049,7 @@ export const createThreadCache = (
         messages,
         repairedToolCallIds: new Set([...entry.repairedToolCallIds, toolCallId]),
       });
+      onCommit();
       return true;
     },
     markStale: (threadId) => {
@@ -1022,7 +1072,29 @@ export const createThreadCache = (
         if (!entry.stale) entries.set(threadId, { ...entry, stale: true });
       }
     },
-    evict: (threadId) => { entries.delete(threadId); },
-    clear: () => { entries.clear(); },
+    evict: (threadId) => { committed(entries.delete(threadId)); },
+    clear: (keep) => {
+      const kept = keep === undefined ? undefined : entries.get(keep);
+      entries.clear();
+      if (keep !== undefined && kept !== undefined) entries.set(keep, kept);
+    },
+    snapshot: () => [...entries.values()],
+    restore: (stored) => {
+      const threadId = stored.thread.id;
+      write(threadId, withCursor(
+        {
+          thread: stored.thread,
+          messages: stored.messages,
+          // NOT NEGOTIABLE. Everything that happened while this tab was closed
+          // is exactly what is missing here.
+          stale: true,
+          syncedAt: now(),
+          repairedToolCallIds: stored.repairedToolCallIds ?? new Set<string>(),
+          pagedInIds: stored.pagedInIds ?? new Set<string>(),
+          ...(stored.etag === undefined ? {} : { etag: stored.etag }),
+        },
+        stored.messagesNextCursor,
+      ));
+    },
   };
 };

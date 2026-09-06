@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
 import "./styles.css";
@@ -26,6 +26,7 @@ const storeMock = vi.hoisted(() => ({
   setShowArchived: vi.fn(),
   setShowOfflineAgents: vi.fn(),
   selectAgent: vi.fn(),
+  clearCachedData: vi.fn(async () => undefined),
 }));
 
 vi.mock("./console-store", () => ({
@@ -100,5 +101,20 @@ describe("App viewport layout", () => {
 
     expect(document.title).toBe("console-host · mono-agent");
     expect(document.documentElement).toHaveAttribute("data-console-theme", "ocean");
+  });
+});
+
+describe("App command palette", () => {
+  it("gives the operator a way to clear what this browser has stored", async () => {
+    // The console keeps recent conversations on the device now, so there has to
+    // be one action that takes them off it -- and it has to say that it did.
+    render(<App />);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    fireEvent.click(screen.getByRole("option", { name: "Clear cached data" }));
+
+    await waitFor(() => expect(storeMock.clearCachedData).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent("Cleared the conversations this browser had stored.");
   });
 });

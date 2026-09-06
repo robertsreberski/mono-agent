@@ -165,6 +165,18 @@ function CommandPalette({ open, onClose }: { readonly open: boolean; readonly on
           void store.setAgentPinned(agent.sourceId, !agent.pinned).catch(() => undefined);
         },
       },
+      {
+        id: "clear-cache",
+        label: "Clear cached data",
+        icon: "trash",
+        run: () => {
+          void store.clearCachedData().then(() => {
+            window.dispatchEvent(new CustomEvent("mono-agent:notice", {
+              detail: { message: "Cleared the conversations this browser had stored." },
+            }));
+          });
+        },
+      },
       ...(store.hiddenOfflineAgentCount > 0
         ? [{
             id: "offline-agents",

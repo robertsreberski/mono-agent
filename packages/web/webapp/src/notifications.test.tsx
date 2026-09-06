@@ -374,6 +374,31 @@ describe("response notifications", () => {
     expect(showNotification).toHaveBeenCalledTimes(1);
   });
 
+  it("does not notify for a turn that finished while this browser was closed", async () => {
+    // A cold start now draws the listing this browser kept on the device, and
+    // that listing is not a baseline: read as one, every turn that finished
+    // while the tab was closed would be announced the moment the server's own
+    // snapshot replaced it. `loading` is what says no snapshot has landed yet.
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
+    storeMock.current = { ...createStore(running), loading: true };
+    const notificationTree = () => (
+      <NotificationsProvider>
+        <NotificationBell />
+      </NotificationsProvider>
+    );
+    const view = render(notificationTree());
+    await waitFor(() => expect(serviceWorker.addEventListener).toHaveBeenCalled());
+
+    // The first thing the SERVER answered with, and the turn it carries ran
+    // while this console was not there to watch it.
+    storeMock.current = createStore(complete);
+    view.rerender(notificationTree());
+    await waitFor(() => expect(screen.getByRole("button")).toBeInTheDocument());
+
+    expect(api.thread).not.toHaveBeenCalled();
+    expect(showNotification).not.toHaveBeenCalled();
+  });
+
   it("does not notify for a response that arrives in the focused console", async () => {
     localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, "1");
     Object.defineProperty(document, "visibilityState", {
