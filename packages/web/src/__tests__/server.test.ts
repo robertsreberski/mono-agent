@@ -1994,11 +1994,14 @@ describe("web HTTP server", () => {
     const streamed = await drainTurn(nextSubscribed);
     const hinted = await drainTurn(nextUnsubscribed);
 
-    // The subscribed console is served what changed, and never a hint about the
-    // conversation it is looking at.
+    // The subscribed console is served what changed. The one hint it gets is
+    // the turn's own start naming the operator's row, which nothing else
+    // announces -- every write after it travels as content.
     const deltas = streamed.filter((event) => event.type === "message.delta");
     expect(deltas.length).toBeGreaterThanOrEqual(2);
-    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    const startHint = streamed.filter((event) => event.type === "message.changed");
+    expect(startHint).toHaveLength(1);
+    expect(streamed.indexOf(startHint[0]!)).toBeLessThan(streamed.indexOf(deltas[0]!));
     for (const event of deltas) {
       expect(event.threadId).toBe(threadId);
       expect(event.payload).toMatchObject({
@@ -2039,11 +2042,23 @@ describe("web HTTP server", () => {
     const { baseUrl } = await start();
     // Oversized, empty and blank alike: a console that asked for a conversation
     // and silently got none would read as a delta stream that had stopped.
-    for (const query of [`thread=${"t".repeat(600)}`, "thread=", "thread=%20%20"]) {
+    for (const query of [
+      `thread=${"t".repeat(600)}`,
+      "thread=",
+      "thread=%20%20",
+      // Padding around an id that is over the cap on its own.
+      `thread=%20${"t".repeat(600)}%20`,
+    ]) {
       const refused = await fetch(`${baseUrl}/api/v1/events?${query}`);
       expect(refused.status).toBe(400);
       expect(await json(refused)).toMatchObject({ error: { code: "invalid_subscription" } });
     }
+
+    // The TRIMMED id is what the subscription becomes, so it is what the bound
+    // is about: an id exactly at the cap is admissible however it was padded.
+    const padded = await fetch(`${baseUrl}/api/v1/events?thread=%20${"t".repeat(512)}%20`);
+    expect(padded.status).toBe(200);
+    await padded.body?.cancel();
   });
 
   it("subscribes a console that padded its conversation id, and one that named a superseded one", async () => {
@@ -2084,7 +2099,10 @@ describe("web HTTP server", () => {
       const deltas = streamed.filter((event) => event.type === "message.delta");
       expect(deltas.length).toBeGreaterThanOrEqual(2);
       expect(deltas.every((event) => event.threadId === threadId)).toBe(true);
-      expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+      // The turn's start names the operator's row; nothing here is a downgrade.
+      const hints = streamed.filter((event) => event.type === "message.changed");
+      expect(hints).toHaveLength(1);
+      expect(hints.every((event) => event.threadId === threadId)).toBe(true);
     }
 
     await Promise.all([paddedReader.cancel(), supersededReader.cancel()]);
@@ -2177,7 +2195,8 @@ describe("web HTTP server", () => {
     expect(read.status).toBe(200);
     expect(read.body.length).toBeGreaterThan(10 * 1_024);
     expect(deltas.length).toBeGreaterThanOrEqual(2);
-    expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    // One frame, naming the operator's own row at the turn's start.
+    expect(streamed.filter((event) => event.type === "message.changed")).toHaveLength(1);
     // The whole turn -- deltas, run state and both conversation summaries --
     // costs less than ONE of the re-reads it replaces, of which there would
     // have been one per write.

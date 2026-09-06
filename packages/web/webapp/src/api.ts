@@ -65,9 +65,11 @@ const readError = async (response: Response): Promise<ApiError> => {
 /**
  * One request, and the response it is worth reading.
  *
- * `304` is let through because it is an ANSWER to a conditional read -- see
- * {@link NOT_MODIFIED} -- and `readError` would turn the cheapest response the
- * server can give into a thrown "304 Not Modified".
+ * `304` is let through, but only for a READ: it is the answer to a conditional
+ * GET -- see {@link NOT_MODIFIED} -- and `readError` would turn the cheapest
+ * response the server can give into a thrown "304 Not Modified". A write that
+ * came back 304 is not an answer to anything this console asked, so it stays a
+ * reported failure rather than a silent success.
  */
 const send = async (path: string, init?: RequestInit): Promise<Response> => {
   const response = await fetch(path, {
@@ -78,7 +80,8 @@ const send = async (path: string, init?: RequestInit): Promise<Response> => {
       ...init?.headers,
     },
   });
-  if (!response.ok && response.status !== 304) throw await readError(response);
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (!response.ok && !(response.status === 304 && method === "GET")) throw await readError(response);
   return response;
 };
 

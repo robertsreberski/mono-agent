@@ -148,6 +148,12 @@ interface ProcessJobCardRow {
 export interface CronRunReconciliationResult {
   readonly messages: readonly WebMessage[];
   readonly changed: boolean;
+  /**
+   * The messages this reconciliation INSERTED or rewrote, which is a subset of
+   * `messages`: a poll that reconciles to the rows already stored writes
+   * nothing and must cost a console nothing.
+   */
+  readonly writtenMessageIds: readonly string[];
 }
 
 export interface CronOverviewSyncResult {
@@ -612,6 +618,15 @@ export interface CompleteWebNotificationResult {
   readonly thread?: WebThread;
   readonly duplicate: boolean;
   readonly tombstoned?: true;
+  /**
+   * The assistant row this completion wrote, when it wrote one.
+   *
+   * The service invalidates on it. The store is the only thing that knows the
+   * id -- the row is either inserted here or found through the cron-run
+   * mapping -- and a console that is told only the conversation summary has no
+   * way to learn that a message moved.
+   */
+  readonly messageId?: string;
 }
 
 /**
@@ -1166,7 +1181,11 @@ export class WebStore {
         notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
       });
     });
-    return { thread: this.requireThread(completedThreadId), duplicate: false };
+    return {
+      thread: this.requireThread(completedThreadId),
+      duplicate: false,
+      messageId: assistantMessageId,
+    };
   }
 
   /** Persist an agent-authoritative overview without deriving scheduler facts in the console. */
@@ -1419,9 +1438,12 @@ export class WebStore {
       ? `cron:${jobId}`
       : parseStoredCronJob(jobRow.payload_json).conversationId;
     const ordered = [...runs].sort(compareCronRuns);
-    if (ordered.length === 0) return { messages: [], changed: false };
+    if (ordered.length === 0) return { messages: [], changed: false, writtenMessageIds: [] };
     const now = this.now();
     const messageIds: string[] = [];
+    // Only the rows whose parts this run actually moved -- see
+    // {@link CronRunReconciliationResult.writtenMessageIds}.
+    const written = new Set<string>();
     let changed = false;
     this.transaction(() => {
       for (const run of ordered) {
@@ -1566,6 +1588,7 @@ export class WebStore {
               id, thread_id, turn_id, role, parts_json, created_at, updated_at, status
             ) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?)
           `).run(messageId, channel.thread_id, turnId, serializedParts, run.orderedAt, now, status);
+          written.add(messageId);
           changed = true;
         } else if (
           prior.thread_id !== channel.thread_id
@@ -1580,6 +1603,7 @@ export class WebStore {
             createdAt: run.orderedAt,
             status,
           });
+          written.add(messageId);
           changed = true;
         }
         // Detail is a message projection, not a replacement for the compact
@@ -1641,6 +1665,7 @@ export class WebStore {
     return {
       messages: [...new Set(messageIds)].map((messageId) => this.requireMessage(messageId)),
       changed,
+      writtenMessageIds: [...written],
     };
   }
 
@@ -4509,6 +4534,12 @@ export class WebStore {
    * version without describing the change: those writes reach the browser as an
    * invalidation it answers by re-reading the message, and the new `seq` is what
    * tells it the re-read is newer than the delta stream it was applying.
+   *
+   * EVERY caller here owes its console a message event -- a delta, or the
+   * `message.changed` naming this row. A subscribed console no longer answers a
+   * conversation summary by re-reading the transcript, so a write announced
+   * only as a summary is one it never sees. `recoverLiveInputs` is the single
+   * exception, and only because it runs at open with no subscriber to tell.
    */
   private writeMessageParts(
     id: string,

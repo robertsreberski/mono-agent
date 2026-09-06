@@ -735,6 +735,17 @@ describe("conditional conversation reads", () => {
     expect(answer).toMatchObject({ thread: { id: "thread-one" }, etag: 'W/"def"' });
   });
 
+  it("keeps a 304 an answer only for a read", async () => {
+    // A write is never conditional here, so a 304 on one is a server that did
+    // something else -- reported, never read as a silent success.
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 304 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.patchThread("thread/one", { title: "renamed" })).rejects.toMatchObject({
+      status: 304,
+    });
+  });
+
   it("still reports a refusal a conditional read provoked", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({ error: { code: "thread_not_found", message: "Gone." } }, { status: 404 }),

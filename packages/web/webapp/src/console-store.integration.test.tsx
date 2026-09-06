@@ -3038,10 +3038,12 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
     });
 
-    it("re-reads the open conversation when an event says its transcript moved", async () => {
-      // The summary an event carries is the sidebar row. The MESSAGES are not
-      // in it, and a finished turn, a reconciled cron run and an appended
-      // notification all end in this event and say nothing else.
+    it("applies the summary an event carries and reads nothing for it", async () => {
+      // The summary IS the sidebar row, and applying it is the whole of what
+      // this event means. It used to re-read the entire conversation for the
+      // transcript, because a finished turn, a reconciled cron run and an
+      // appended notification all ended here and nothing else said the
+      // transcript had moved. Every one of those writes now names its message.
       const store = await openOnAlpha();
       await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
       const detailReads = vi.mocked(api.thread).mock.calls.length;
@@ -3050,13 +3052,21 @@ describe("ConsoleStoreProvider integration", () => {
         threadId: "alpha-thread",
         payload: { thread: { ...alphaThread, title: "Named by the agent", revision: 3 } },
       });
-      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1));
       await quiet();
 
       expect(store.current.threads.find((item) => item.id === "alpha-thread")?.title)
         .toBe("Named by the agent");
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+
+      // A transcript move DOES still cost a read -- through the event built for
+      // it. A hint naming a row this tab does not hold is a new message, and
+      // only the conversation read can place it.
+      emit("message.changed", {
+        threadId: "alpha-thread",
+        payload: { messageId: "appended", updatedAt: "2026-08-14T09:00:00.000Z" },
+      });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1));
     });
   });
 
@@ -3488,20 +3498,30 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
     });
 
-    it("spends the first ready on nothing and a reconnect on the open conversation", async () => {
+    it("spends a ready with a gap behind it on the open conversation, and every other one on nothing", async () => {
       seedTwoThreads();
       vi.mocked(api.agentSkills).mockResolvedValue({ status: "ready", items: [], total: 0 });
       const store = await openedOnAlpha();
       await waitFor(() => expect(store.current.skillRegistry.status).toBe("ready"));
       const detailReads = vi.mocked(api.thread).mock.calls.length;
-      const skillReads = vi.mocked(api.agentSkills).mock.calls.length;
 
-      // The stream's first `ready` arrives beside the snapshot the mount
-      // already asked for.
+      // A fresh browser has no stored selection to seed the subscription from,
+      // so the stream this tab opened before the snapshot resolved one is
+      // re-pointed at it -- and the round trip between those two sockets is a
+      // gap like any other. It costs ONE conditional read of the open
+      // conversation, and no snapshot.
       emit("ready", { payload: { version: 1 } });
       await quiet();
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
+      const skillReads = vi.mocked(api.agentSkills).mock.calls.length;
+
+      // A `ready` with nothing behind it -- the same socket, still open --
+      // costs nothing at all.
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
       expect(vi.mocked(api.agentSkills).mock.calls.length).toBe(skillReads);
 
       // A REAL reconnect, in the order a browser produces it: the stream
@@ -3519,7 +3539,7 @@ describe("ConsoleStoreProvider integration", () => {
       // screen and the listing, and each is answered on its own -- the
       // conversation with one read, the listing with one merge page.
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
-      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 1);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads + 2);
       // Exactly one registry read for the reconnect, from the connection
       // transition alone.
       expect(vi.mocked(api.agentSkills).mock.calls.length).toBe(skillReads + 1);
@@ -4429,14 +4449,15 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.at(-1)?.[0]).toBe(beta.id);
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
 
+      // The bucket page the gap buys is what speaks for the conversation this
+      // tab is KEEPING -- see "a gap re-reads a kept conversation…" below --
+      // and this fixture's page carries it unmoved, so nothing invalidated it.
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 400);
       act(() => { store.current.selectThread(alpha.id); });
       await quiet();
-      // Nothing invalidated it, so going back to it still costs nothing. The
-      // server says `thread.changed` when it has something to report, and that
-      // is what marks a background conversation stale.
       expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1);
       expect(store.current.detail?.thread.id).toBe(alpha.id);
-    });
+    }, 15_000);
 
     it("hands a transcript nothing touched back as the very array it held", async () => {
       seedTwo();
@@ -4812,6 +4833,218 @@ describe("ConsoleStoreProvider integration", () => {
       expect(await screen.findByTestId("message-m1")).toHaveTextContent("Hello");
       expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
       expect(api.message).not.toHaveBeenCalled();
+    });
+
+    it("re-reads a kept conversation the bucket page says moved, and no other", async () => {
+      // The events that mark a cached transcript stale -- `thread.changed` and
+      // `threads.changed` -- are exactly the ones a gap loses, so after one the
+      // bucket page is the only evidence there is about the conversations that
+      // are NOT on screen. Without this they render as current forever: the
+      // selection effect skips a fresh entry and `detail` is a projection of it.
+      const gamma2 = thread("gamma-thread", "alpha", { updatedAt: "2026-07-17T08:00:00.000Z" });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alpha, beta, gamma2],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alpha, beta, gamma2] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === beta.id) {
+          return { thread: beta, messages: [held("b1", "beta", { threadId: beta.id })], etag: 'W/"beta-1"' };
+        }
+        if (threadId === gamma2.id) {
+          return { thread: gamma2, messages: [held("g1", "gamma", { threadId: gamma2.id })], etag: 'W/"gamma-1"' };
+        }
+        return { thread: alpha, messages: [held("m1", "Hel")], etag: 'W/"alpha-1"' };
+      });
+      const store = await openedOnAlpha();
+      // Hold three: two in the background, one on screen.
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      act(() => { store.current.selectThread(gamma2.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma2.id));
+      act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      // The page the gap buys: BETA moved while this tab was off the stream,
+      // gamma did not.
+      vi.mocked(api.threads).mockResolvedValue({
+        threads: [alpha, { ...beta, revision: beta.revision + 1, messageCount: 4 }, gamma2],
+      });
+
+      dropAndReopen();
+      emit("ready", { payload: { version: 1 } });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 400);
+
+      // The conversation on screen was answered by the conditional read.
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => call[0])).toEqual([alpha.id]);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+
+      // Beta moved, so opening it pays for one read.
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1));
+      expect(vi.mocked(api.thread).mock.calls.at(-1)?.[0]).toBe(beta.id);
+      await quiet();
+
+      // Gamma did not, so opening it costs nothing.
+      act(() => { store.current.selectThread(gamma2.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma2.id));
+      await quiet();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1);
+    }, 15_000);
+
+    it("comes back from a suspension that never errored, even after an offline resume", async () => {
+      // The worst iOS case: the system suspended the socket, no `onerror` ever
+      // fired, and `readyState` still reads OPEN -- so every signal available
+      // says "healthy". Declaring the console live on that left the banner
+      // hidden and the composer enabled over a dead stream.
+      seedTwo();
+      const store = await openedOnAlpha();
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      const opened = streamCount();
+
+      act(() => { window.dispatchEvent(new Event("offline")); });
+      await waitFor(() => expect(store.current.connection).toBe("offline"));
+      // A resume while the link is down cannot rebuild anything, and must not
+      // spend the evidence the next one is judged on either.
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      expect(streamCount()).toBe(opened);
+      expect(store.current.connection).toBe("offline");
+
+      act(() => { window.dispatchEvent(new Event("online")); });
+
+      expect(FakeEventSource.instances[opened - 1]?.readyState).toBe(2);
+      expect(streamCount()).toBe(opened + 1);
+      expect(liveUrl()).toBe(`/api/v1/events?thread=${encodeURIComponent(alpha.id)}`);
+      expect(store.current.connection).toBe("reconnecting");
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => call[0])).toEqual([alpha.id]);
+    });
+
+    it("never rebuilds the stream while the tab is in the background", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      const opened = streamCount();
+      let visibility = "hidden";
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => visibility,
+      });
+      try {
+        act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+        const killed = FakeEventSource.latest;
+        if (killed !== undefined) killed.readyState = 2;
+
+        // A socket rebuilt in the background is one more thing the system is
+        // about to suspend again.
+        act(() => { window.dispatchEvent(new Event("online")); });
+        expect(streamCount()).toBe(opened);
+
+        visibility = "visible";
+        act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+        expect(streamCount()).toBe(opened + 1);
+        expect(store.current.connection).toBe("reconnecting");
+      } finally {
+        Reflect.deleteProperty(document, "visibilityState");
+      }
+    });
+
+    it("reads once more when the conditional read that answered 304 was overtaken", async () => {
+      // `confirmFresh` deliberately refuses to clear the suspicion when
+      // something was observed while the read was on the wire, and NOTHING
+      // else answers that: the resync's own `ready` has already been spent.
+      // Staged as the sequence that actually produces it -- the app is
+      // suspended AGAIN while the resync is in flight, so the second resume
+      // marks the open conversation stale before the first one's 304 lands.
+      seedTwo();
+      const store = await openedOnAlpha();
+      let answer304!: () => void;
+      vi.mocked(api.threadIfChanged).mockImplementation(async () =>
+        new Promise((resolve) => { answer304 = () => resolve(NOT_MODIFIED); }));
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      dropAndReopen();
+      emit("ready", { payload: { version: 1 } });
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(1));
+
+      // Suspended again. No `ready` follows, so the stream this rebuilds is
+      // not what settles the conversation either.
+      const killed = FakeEventSource.latest;
+      if (killed !== undefined) killed.readyState = 2;
+      act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      await act(async () => { answer304(); await Promise.resolve(); });
+
+      // The 304 answered the state at the moment it was ISSUED, so it cannot
+      // speak for an observation made after that: one more read settles it --
+      // and exactly one.
+      await waitFor(
+        () => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1),
+        { timeout: 3_000 },
+      );
+      await quiet();
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1);
+      expect(store.current.detail?.thread.id).toBe(alpha.id);
+    });
+
+    it("treats a switch to another conversation as the gap it is", async () => {
+      // Re-pointing the subscription closes one socket and opens another, and
+      // `thread.changed` is broadcast to every connection -- so a write that
+      // lands in that round trip reaches neither.
+      seedTwo();
+      const store = await openedOnAlpha();
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      await quiet();
+      expect(liveUrl()).toBe(`/api/v1/events?thread=${encodeURIComponent(beta.id)}`);
+
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => [call[0], call[1]]))
+        .toEqual([[beta.id, 'W/"beta-1"']]);
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("finishes a turn without reading the conversation", async () => {
+      // The real finish sequence a subscribed console receives, in order. It
+      // used to cost one whole-conversation read every single turn, because
+      // `thread.changed` was the only thing that said the transcript had moved.
+      seedTwo([held("m1", "Hel", { status: "running" })]);
+      const store = await openedOnAlpha();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+
+      emit("message.delta", {
+        threadId: alpha.id,
+        payload: {
+          messageId: "m1", baseSeq: 1, seq: 2, status: "complete",
+          updatedAt: "2026-08-14T09:00:00.000Z",
+          finishedAt: "2026-08-14T09:00:00.000Z",
+          ops: [{ op: "append", index: 0, delta: "lo" }],
+        },
+      });
+      emit("turn.changed", { threadId: alpha.id, payload: { turn: { status: "complete" } } });
+      emit("thread.changed", {
+        threadId: alpha.id,
+        payload: { thread: { ...alpha, revision: alpha.revision + 1, messageCount: 2 } },
+      });
+      emit("threads.changed", {
+        threadId: alpha.id,
+        payload: { thread: { ...alpha, revision: alpha.revision + 1, messageCount: 2 } },
+      });
+      await quiet();
+
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(api.message).not.toHaveBeenCalled();
+      expect(store.current.detail?.messages[0]).toMatchObject({
+        status: "complete",
+        finishedAt: "2026-08-14T09:00:00.000Z",
+      });
+      expect(await screen.findByTestId("message-m1")).toHaveTextContent("Hello");
+      expect(store.current.selectedThread?.revision).toBe(alpha.revision + 1);
     });
 
     it("opens a conversation the sidebar does not list with one read", async () => {
