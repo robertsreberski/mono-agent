@@ -38,6 +38,22 @@ async function createService(options: Partial<Parameters<typeof WebService.creat
   });
 }
 
+/**
+ * Whether a message event is about the turn's ANSWER.
+ *
+ * A turn's start now names the operator's own row -- nothing else announces
+ * the two messages `beginTurn` inserts, and a subscribed console no longer
+ * answers a conversation summary by re-reading the transcript. The delta-path
+ * suites below are about the assistant row that follows it.
+ */
+function isAssistantWrite(service: WebService, _threadId: string, event: WebEvent): boolean {
+  const { messageId } = (event.payload ?? {}) as { readonly messageId?: string };
+  if (messageId === undefined) return false;
+  // Read from the STORE, not through `service.message`: one suite counts
+  // `shapeMessage` calls, and a test helper must not be one of them.
+  return service.store.getMessage(messageId)?.role === "assistant";
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -2459,6 +2475,7 @@ describe("WebService", () => {
     const deltas: WebMessageDelta[] = [];
     const hints: unknown[] = [];
     const unsubscribe = service.subscribe((event) => {
+      if (!isAssistantWrite(service, thread.id, event)) return;
       if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
       if (event.type === "message.changed") hints.push(event.payload);
     });
@@ -2572,6 +2589,7 @@ describe("WebService", () => {
     const thread = service.createThread("agent-one");
     const events: WebEvent[] = [];
     const unsubscribe = service.subscribe((event) => {
+      if (!isAssistantWrite(service, thread.id, event)) return;
       if (event.type === "message.delta" || event.type === "message.changed") events.push(event);
     });
     await service.startTurn(thread.id, { text: "prompt" });
@@ -2656,6 +2674,7 @@ describe("WebService", () => {
     const deltas: WebMessageDelta[] = [];
     const declinedSeqs: number[] = [];
     const unsubscribe = service.subscribe((event) => {
+      if (!isAssistantWrite(service, thread.id, event)) return;
       if (event.type === "message.delta") deltas.push(event.payload as WebMessageDelta);
       if (event.type === "message.changed") {
         // What a console asks the message route for the moment it is told the
@@ -2715,6 +2734,7 @@ describe("WebService", () => {
     const thread = service.createThread("agent-one");
     let writes = 0;
     const unsubscribe = service.subscribe((event) => {
+      if (!isAssistantWrite(service, thread.id, event)) return;
       if (event.type === "message.delta" || event.type === "message.changed") writes += 1;
     });
     await service.startTurn(thread.id, { text: "prompt" });
@@ -4550,5 +4570,200 @@ describe("WeightedTurnBudget", () => {
     const releaseSecond = await second;
     expect(secondGranted).toBe(true);
     releaseSecond();
+  });
+});
+
+/**
+ * Every write that MOVES a transcript has to say which message moved.
+ *
+ * A subscribed console applies `message.delta` and repairs on
+ * `message.changed`; it no longer answers a conversation summary by re-reading
+ * the whole transcript. A write that bumps a message and announces only the
+ * summary is therefore invisible to it, which is what these cover.
+ */
+describe("every transcript-moving write names its message", () => {
+  const messageEvents = (events: readonly WebEvent[]) =>
+    events.filter((event) => event.type === "message.changed" || event.type === "message.delta");
+
+  it("names the operator's message when a turn starts", async () => {
+    const service = await createService();
+    const thread = service.createThread("agent-one");
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    await service.startTurn(thread.id, { text: "hello" });
+
+    // A console that did not issue this turn holds neither of the two rows
+    // `beginTurn` inserted, and nothing else announces them: the operator's own
+    // message used to appear only when something forced a whole read.
+    expect(messageEvents(events).map((event) => event.type)).toContain("message.changed");
+    expect(messageEvents(events)[0]).toMatchObject({
+      type: "message.changed",
+      threadId: thread.id,
+      payload: { messageId: expect.any(String), updatedAt: expect.any(String) },
+    });
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("names the message a completed notification wrote", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({ supportsHistoryAppend: true }),
+    });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    const delivered = await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "webhook",
+      deliveryKey: "hook-1",
+      text: "Something happened",
+    });
+
+    expect(delivered.duplicate).toBe(false);
+    const named = messageEvents(events);
+    expect(named).toHaveLength(1);
+    expect(named[0]).toMatchObject({
+      type: "message.changed",
+      threadId: delivered.thread?.id,
+      payload: { messageId: expect.any(String), updatedAt: expect.any(String) },
+    });
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("names both rows a promoted live input rewrote", async () => {
+    // Promoting a queued steer opens the assistant row AND rewrites the
+    // operator's own message: the live-input telemetry is stripped and the row
+    // is reparented onto the turn it just started. A console told only about
+    // the second was left showing a steer that still reads "queued", because a
+    // conversation summary no longer sends it to the transcript.
+    const encoder = new TextEncoder();
+    let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let turnCount = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: false,
+        turns: () => {
+          turnCount += 1;
+          if (turnCount === 1) {
+            return new ReadableStream<Uint8Array>({
+              start(controller) { firstStream = controller; },
+            });
+          }
+          return `${JSON.stringify({ kind: "finish", finalText: "Follow-up done" })}\n`;
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const receipt = service.submitLiveInput(thread.id, "Run this next");
+    await waitFor(() => firstStream !== undefined);
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    firstStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Initial done" })}\n`));
+    firstStream?.close();
+    await waitFor(() => service.thread(thread.id).messages
+      .filter((message) => message.role === "assistant").length === 2);
+
+    const named = new Set(messageEvents(events)
+      .map((event) => (event.payload as { readonly messageId: string }).messageId));
+    expect(named.has(receipt.message.id)).toBe(true);
+    const promoted = service.thread(thread.id).messages
+      .find((message) => message.id === receipt.message.id);
+    expect(promoted?.liveInputStatus).toBeUndefined();
+    expect(promoted?.turnId).toEqual(expect.any(String));
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("names nothing when a completed notification had nothing left to write", async () => {
+    // The cron page reconciled this run's message first, text and all. The
+    // notification that follows maps onto the SAME row, finds the text already
+    // there and writes nothing -- and naming it anyway costs every subscribed
+    // console one message read for a transcript that did not move.
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z",
+      orderedAt: "2026-08-14T09:55:00.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      startedAt: "2026-08-14T09:55:01.000Z",
+      completedAt: "2026-08-14T09:55:02.000Z",
+      text: "Digest complete",
+      eventCount: 0,
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsHistoryAppend: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+      }),
+    });
+    await service.cronRuns("agent-one", "digest", { limit: 100 });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    const delivered = await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "cron",
+      deliveryKey: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      text: "Digest complete",
+    });
+
+    expect(delivered.duplicate).toBe(false);
+    expect(messageEvents(events)).toEqual([]);
+    unsubscribe();
+    await service.stop();
+  });
+
+  it("names every message a cron reconciliation wrote, and none it left alone", async () => {
+    const run = {
+      projection: "summary",
+      runId: "cron:digest:2026-08-14T09:55:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-08-14T09:55:00.000Z",
+      orderedAt: "2026-08-14T09:55:00.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      startedAt: "2026-08-14T09:55:01.000Z",
+      completedAt: "2026-08-14T09:55:02.000Z",
+      text: "Digest complete",
+      eventCount: 0,
+    };
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+      }),
+    });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    const page = await service.cronRuns("agent-one", "digest", { limit: 100 });
+    const written = page.messages?.[0];
+    expect(written).toBeDefined();
+    expect(messageEvents(events)).toEqual([
+      expect.objectContaining({
+        type: "message.changed",
+        threadId: written?.threadId,
+        payload: { messageId: written?.id, updatedAt: expect.any(String) },
+      }),
+    ]);
+
+    // The same page again reconciles to the same rows, so there is nothing to
+    // announce: a poll that changed nothing must cost a console nothing.
+    events.length = 0;
+    await service.cronRuns("agent-one", "digest", { limit: 100 });
+    expect(messageEvents(events)).toEqual([]);
+    unsubscribe();
+    await service.stop();
   });
 });

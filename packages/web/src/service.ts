@@ -100,6 +100,7 @@ import {
   notificationPushLogicalKey,
   type StoredAttachment,
   type StoredMessageWrite,
+  type CronRunReconciliationResult,
   type StoredTurnExecution,
   type StoredWebPushEvent,
   type WebPushIdentity,
@@ -1151,6 +1152,7 @@ export class WebService {
     });
     const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, page.runs);
     if (reconciled.changed) {
+      this.announceReconciledMessages(reconciled);
       this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
     }
     return { ...page, messages: reconciled.messages.map((message) => this.shapeMessage(message)) };
@@ -1165,6 +1167,7 @@ export class WebService {
       throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
     }
     if (reconciled.changed) {
+      this.announceReconciledMessages(reconciled);
       this.emitStoredThread(message.threadId, ["thread.changed", "threads.changed"]);
     }
     return this.shapeMessage(message);
@@ -1219,6 +1222,7 @@ export class WebService {
     if (result.kind === "completed") {
       const reconciled = this.store.reconcileCronRunsResult(sourceId, jobId, [result.value.run]);
       if (reconciled.changed) {
+        this.announceReconciledMessages(reconciled);
         this.emitStoredThread(this.store.cronThread(sourceId, jobId)?.id, ["thread.changed", "threads.changed"]);
       }
     }
@@ -1380,6 +1384,14 @@ export class WebService {
     this.validateModelAndEffort(thread.sourceId, agent, model, effort);
     const started = this.store.beginTurn({ threadId, text, attachmentIds, ...(input.quote === undefined ? {} : { quote: input.quote }), ...(model === undefined ? {} : { model }), ...(effort === undefined ? {} : { effort }) });
     this.launchTurn(started, connection.client, operatorText);
+    // The operator's own row, inserted by `beginTurn` and announced by nothing
+    // else. A console that did not issue this turn holds neither it nor the
+    // assistant row the deltas are about to describe, and it no longer answers
+    // a conversation summary by re-reading the transcript.
+    this.emit("message.changed", threadId, {
+      messageId: started.userMessageId,
+      updatedAt: started.thread.updatedAt,
+    });
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emitThread("threads.changed", { thread: started.thread });
     return { thread: started.thread, turn: started.thread.runState };
@@ -1533,6 +1545,18 @@ export class WebService {
 
   readyEvent(): WebEvent {
     return this.createEvent("ready", undefined, { version: WEB_API_VERSION });
+  }
+
+  /**
+   * The id a conversation is known by NOW, following whatever superseded it.
+   *
+   * Every read resolves redirects on its way through the store; the event
+   * stream matches its subscription by string equality against the id events
+   * carry, so it has to ask for the same resolution explicitly. An id nothing
+   * superseded resolves to itself, so this is safe for any string.
+   */
+  resolveThreadId(id: string): string {
+    return this.store.resolveThreadId(id);
   }
 
   refreshAgents(): Promise<void> {
@@ -1759,6 +1783,14 @@ export class WebService {
       const started = this.store.promoteNextQueuedLiveInput(threadId);
       if (started === undefined) return;
       this.launchTurn(started, connection.client, started.text);
+      // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
+      // message (its live-input status becomes "applied") as well as opening
+      // the assistant row, and a console that heard only about the second was
+      // left showing a steer that still reads "queued".
+      this.emit("message.changed", threadId, {
+        messageId: started.userMessageId,
+        updatedAt: started.thread.updatedAt,
+      });
       this.emit("message.changed", threadId, {
         messageId: started.assistantMessageId,
         updatedAt: started.thread.updatedAt,
@@ -2145,6 +2177,17 @@ export class WebService {
       if (completed.tombstoned === true) return completed;
       throw new WebConsoleError("storage_corrupt", "A new notification completed without a conversation.", 500);
     }
+    // Before the summaries, so a console applies the transcript move it can act
+    // on rather than being told only that the conversation's revision moved.
+    if (!completed.duplicate && completed.messageId !== undefined) {
+      const written = this.store.getMessage(completed.messageId);
+      if (written !== undefined) {
+        this.emit("message.changed", completed.thread.id, {
+          messageId: written.id,
+          updatedAt: written.updatedAt,
+        });
+      }
+    }
     this.emitThread("threads.changed", { thread: completed.thread });
     this.emitThread("thread.changed", { thread: completed.thread });
     if (!completed.duplicate) {
@@ -2320,9 +2363,28 @@ export class WebService {
   }
 
   /**
-   * The same, for a write whose caller kept no snapshot of what it produced --
-   * a cron reconcile, a live-input hand-off -- so the store is the only place
-   * the fresh summary can come from.
+   * Name every row a cron reconciliation actually wrote.
+   *
+   * A reconciliation moves a transcript and has no delta to describe it, so
+   * each written row reaches a console as the invalidation it answers with one
+   * message read. Rows the poll left alone are not announced: an unchanged page
+   * must cost a console nothing.
+   */
+  private announceReconciledMessages(reconciled: CronRunReconciliationResult): void {
+    const written = new Set(reconciled.writtenMessageIds);
+    for (const message of reconciled.messages) {
+      if (!written.has(message.id)) continue;
+      this.emit("message.changed", message.threadId, {
+        messageId: message.id,
+        updatedAt: message.updatedAt,
+      });
+    }
+  }
+
+  /**
+   * The same as {@link emitThread}, for a write whose caller kept no snapshot of
+   * what it produced -- a cron reconcile, a live-input hand-off -- so the store
+   * is the only place the fresh summary can come from.
    *
    * A conversation that is no longer there leaves nothing to describe, and the
    * bulk form is the only honest scope left for a listing that did change.
@@ -2375,6 +2437,10 @@ export class WebService {
     }
     const shaped: WebMessageDelta = {
       ...delta,
+      // Set only once a turn, by the write that ends it. Without it a
+      // subscribed console still bought one whole-conversation read per turn
+      // finish, purely to draw the Activity header's window.
+      ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
       ops: delta.ops.map((op) => (op.op === "set" ? { ...op, part: this.shapePart(message, op.part, {}) } : op)),
     };
     // Only a write that REWRITES parts can outweigh the message it describes: an

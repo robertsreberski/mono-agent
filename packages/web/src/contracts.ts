@@ -678,6 +678,14 @@ export interface WebMessageDelta {
   readonly seq: number;
   readonly status: WebMessageStatus;
   readonly updatedAt: string;
+  /**
+   * {@link WebMessage.finishedAt}, carried by the write that SETS it.
+   *
+   * The turn's wall-clock window is `createdAt` to this, and a console holding
+   * only the first half had to re-read the whole conversation at every turn
+   * finish to draw it. Absent on every write that leaves the turn running.
+   */
+  readonly finishedAt?: string;
   readonly ops: readonly WebMessageDeltaOp[];
 }
 

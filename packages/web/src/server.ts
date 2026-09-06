@@ -735,15 +735,30 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
    * heartbeat.
    */
   app.get("/api/v1/events", (req, res, next) => {
-    let subscribed: string | undefined;
+    let named: string | undefined;
     try {
-      subscribed = optionalThreadSubscription(req.query.thread);
+      named = optionalThreadSubscription(req.query.thread);
     } catch (error) {
       next(error);
       return;
     }
     if (activeStreams.size >= MAX_SSE_CLIENTS) {
       res.status(503).json({ error: { code: "sse_capacity", message: "Too many event streams are connected." } });
+      return;
+    }
+    let subscribed: string | undefined;
+    try {
+      // The CANONICAL id, because that is what every event carries. A console
+      // restores a selection it stored before a cron-channel adoption merged
+      // that conversation away, or opens a push link minted against the old id;
+      // matched by string equality, both subscribed to nothing and were served
+      // throttled hints for the conversation they had open.
+      //
+      // AFTER the capacity check: this reads the database, and a console the
+      // server is about to refuse must not be able to make it work.
+      subscribed = named === undefined ? undefined : service.resolveThreadId(named);
+    } catch (error) {
+      next(error);
       return;
     }
     let closed = false;
@@ -1541,17 +1556,27 @@ function optionalSearchQuery(value: unknown, max: number): string {
  */
 function optionalThreadSubscription(value: unknown): string | undefined {
   if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw invalidSubscription();
+  }
+  // The TRIMMED id is the subject of every rule here: it is what the dispatch
+  // compares against `event.threadId`, so it is what the length must bound and
+  // what is returned. Returning the padded string matched nothing and served
+  // hints for the conversation on screen.
+  const named = value.trim();
   // Blank is refused rather than read as "no subscription": `?thread=` and
   // `?thread=%20` are a console asking for a conversation and getting one it
   // never named, which would look like the delta stream had simply stopped.
-  if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_SUBSCRIPTION_LENGTH) {
-    throw new WebConsoleError(
-      "invalid_subscription",
-      `thread must name one conversation, in at most ${String(MAX_SUBSCRIPTION_LENGTH)} characters.`,
-      400,
-    );
-  }
-  return value;
+  if (named.length === 0 || named.length > MAX_SUBSCRIPTION_LENGTH) throw invalidSubscription();
+  return named;
+}
+
+function invalidSubscription(): WebConsoleError {
+  return new WebConsoleError(
+    "invalid_subscription",
+    `thread must name one conversation, in at most ${String(MAX_SUBSCRIPTION_LENGTH)} characters.`,
+    400,
+  );
 }
 
 function optionalQueryString(value: unknown, max: number): string | undefined {
