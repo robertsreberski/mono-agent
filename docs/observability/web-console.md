@@ -80,15 +80,97 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 | Service | Agent discovery, thread/turn lifecycle, attachment admission, notification ingestion, and the upstream operator connection. |
 | Managed lifecycle | Paired macOS worker and one-shot maintenance LaunchAgents; the foreground worker only requests a wake, while the helper alone owns stopped-writer log rotation and durable recovery. |
 | SQLite store | Authoritative agents, pins, threads, messages, structured parts, revisions, turns, live-input fallback state, uploads, and notification idempotency. |
-| `/api/v1` HTTP/SSE | Browser commands and projections. Mutations publish invalidations; browsers refetch current state instead of owning the turn. |
+| `/api/v1` HTTP/SSE | Browser commands and projections, compressed and ETag-revalidated. A browser subscribes the conversation it has open to that conversation's message deltas; everything else arrives as a hint it revalidates conditionally, instead of owning the turn. |
 | Assistant-ui PWA | Responsive thread/message/composer presentation, upload progress, response notifications, and browser-origin preferences. |
 | Notification ingress | Owner-private loopback endpoint recorded under `~/.mono-agent/web/`; `deliverWebNotification` uses its bearer for one bounded cron/webhook delivery. |
 
 The browser never talks directly to a running agent. It talks to this persistent
 service, which keeps the operator stream alive through page reloads and maps
-agent events into durable message parts. The PWA consumes service invalidations
-and reloads authoritative projections, so multiple tabs converge on the same
-SQLite-backed state.
+agent events into durable message parts. The PWA refreshes only what an event
+actually invalidates: the conversation it has open is subscribed to that
+conversation's own message deltas and applied in place, while every other change
+arrives as a hint it answers with a conditional read. Multiple tabs still
+converge on the same SQLite-backed state, but by asking what changed rather than
+by reloading a projection each time anything did.
+
+Server and webapp ship as one artifact. `packages/web` serves the bundle built
+beside it, and `mono-agent web restart` re-stages both together, so the two
+always upgrade in lockstep — a console build older than the bootstrap and delta
+protocol described here cannot read this server. An installed PWA is the one
+copy that can lag: its service worker stages a new build and takes it over only
+at a moment that costs nothing (see [What the browser fetches](#what-the-browser-fetches)).
+
+## What the browser fetches
+
+This console is installed on phones and reached over cellular, so what it costs
+to keep open is part of its contract.
+
+**On the wire.** Every response over a kilobyte is brotli- or gzip-compressed by
+negotiation, except the event stream and byte-exact binary bodies, which are
+marked `no-transform`. Hashed `assets/*` bundles are
+`public, max-age=31536000, immutable`. `index.html`, the service workers, and the
+icons keep their names across builds, so they are `no-cache` and revalidate
+cheaply against their ETag on every load. `/api` reads default to
+`private, no-cache`, which makes an unchanged read a `304` rather than a second
+copy of the same transcript. Upload and stored-image content, whose URLs are
+content-addressed and can never change meaning, is
+`private, max-age=31536000, immutable, no-transform`.
+
+**Deltas rather than reloads.** `GET /api/v1/events?thread=<id>` subscribes that
+SSE connection to one conversation, resolving a redirected thread id to the
+canonical one every event carries. Its assistant messages then arrive as
+`message.delta` frames — `append`, `set`, and `truncate` operations against a
+per-message sequence number — so a streaming turn costs what it produced instead
+of the whole message every time it grows. Other conversations on the same
+connection, and connections that named none, get a `message.changed` hint at most
+once per conversation per second; the subscribed conversation's own hints and
+reconciliation hints are never throttled. `Last-Event-ID` is
+deliberately ignored: a reconnect's `ready` event means resync, not replay. Any
+sequence gap is repaired with `GET /api/v1/threads/:id/messages/:messageId`, and
+after a gap the browser revalidates what it holds with `If-None-Match`, marks
+kept conversations stale, refreshes the sidebar only after a real drop, and never
+reloads the bootstrap. Coming back from an iOS suspend — `visibilitychange`,
+`pageshow`, or `online` — takes the same path. Up to eight conversations are held
+in memory and merged by identity rather than replaced, so leaving one and coming
+back keeps the history already paged in instead of buying it again.
+
+**Shaped transcripts, full bodies on demand.** Transcripts are shaped where the
+service projects them, not in the browser. Telemetry parts outside the console's
+allowlist keep their position but lose their `data`. A tool call's arguments or
+result, and a subagent's report, longer than 4,096 characters ship as a preview
+marked truncated, with the full byte count and a digest of the body it was cut
+from. Expanding the row fetches the whole part from
+`GET /api/v1/threads/:id/messages/:messageId/tool-calls/:toolCallId`; a restored
+body is kept only when it matches that digest, so a repair can never re-attach
+the wrong bytes to a device-restored transcript. `structuredResult` and `AskUser`
+payloads are never shaped, and `?full=1` on a transcript read turns the whole
+diet off for that one request.
+
+**Data mode.** The command palette's **Data: Auto / Lean / Full** action and the
+sidebar-footer indicator are the same control: it shows the mode, the bytes this
+session has cost, and the rate over the last minute, prefixed `~` (and spoken as
+"estimated") whenever any part of that total is the console's own body-length
+estimate rather than a browser measurement. The meter is per session and is
+neither persisted nor sent anywhere. `Auto` reads the browser's Network
+Information API and resolves to Lean on a metered or save-data link; where there
+is no such API — Safari, and therefore every iPhone — it resolves to `Full`, and
+a home-screen install is offered Lean once. In Lean, pictures and MCP App
+documents load when you ask for them, delta paint is batched to one second, pages
+are 25 conversations and 15 messages instead of 50 and 30, polls run at half
+rate, and images are retained less aggressively (8 pictures, 8 MiB, 20 seconds
+against Full's 24, 32 MiB, and 60 seconds). Polling pauses whenever the tab is
+hidden and reads immediately when it returns. Both preferences are browser-local
+(`mono-agent.web.data-mode` and `mono-agent.web.data-mode-suggested`), not
+configuration.
+
+**Staged updates.** The service worker precaches the console shell and is
+registered in `prompt` mode, so a new build is downloaded and held rather than
+applied on arrival. It takes over when the tab becomes visible with nothing
+running in any conversation this tab holds and no unsent draft in the composer,
+or immediately when you choose **Reload now** on the notice. That notice stays on
+screen until the build is applied or dismissed. Applying it reloads the page,
+which is why neither a streaming turn nor an unsent draft can be interrupted by
+one.
 
 ## Agents, threads, and turns
 
@@ -357,6 +439,15 @@ bytes stream. No host path or agent capability URL enters the browser DTO.
 
 In an assistant reply, generated images are gathered below the answer, so a set of them reads as a set regardless of how the agent interleaved them with its prose.
 
+A picture's bytes are bought once, whatever the transcript does around it. The
+same image identity is fetched a single time and shared from one in-memory blob
+cache rather than re-downloaded each time the message is re-projected, and a
+picture starts loading as it comes within about a screen of the viewport instead
+of on render. In Lean data mode nothing is bought until you tap the tile — for
+the console's own stored copies as well — and the tile says what asking will
+cost. A device-restored transcript holds no capability URLs, so its pictures
+re-request access before they can be shown.
+
 Generated images are kept. A reply artifact is otherwise proxied from the agent
 and never stored, so a `png`, `jpeg`, `gif`, or `webp` reply would stop resolving
 at the agent's retention deadline and show as broken whenever that agent is
@@ -372,6 +463,13 @@ kept, and other file types are not either — they keep the capability path.
 
 Each browser capability is projected for an exact thread/message/part with a
 ten-minute access window that never extends the reply part's retention deadline.
+Its expiry is quantised down to a five-minute bucket, so a key lives between five
+and ten minutes and the same picture asked for twice inside one bucket is the
+same URL — which is what lets a running turn's transcript still answer `304`
+instead of moving its ETag once a second. The bytes come back
+`private, max-age=<what is left of the key>, no-transform` with
+`Accept-Ranges: none`, so a second read inside that window is answered by the
+browser itself.
 An authentic capability used after that window returns `reply_access_expired`;
 forged, cross-thread, unknown, and otherwise invalid references retain the
 generic not-found response. On `reply_access_expired`, the PWA automatically
@@ -424,18 +522,25 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 10. Schema 9 added the `message_search` FTS5
+The web state database is at schema 18. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
-first open. Schema 10 adds an `origin` column to `attachments`, distinguishing a
+first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
-agent generated. Both migrations are additive and transactional. An older
+agent generated. Schemas 11 through 17 carried per-conversation run overrides,
+the provider summary an agent advertises, Monitor wake delivery receipts, and
+discovery presence. Schema 18 adds `messages.seq`, the per-message write counter
+a console compares against to tell the next delta from one it missed; existing
+rows start at 0, which is exactly what a browser that has never seen a delta
+holds. An earlier build numbered that column 17, so 18 also repairs that shape
+without resetting sequence values already assigned. These migrations are
+additive and transactional. An older
 `@mono-agent/web` binary refuses to open a newer database rather than reading it
 incorrectly, so downgrading means restoring a pre-upgrade copy of
 `~/.mono-agent/web/state.sqlite`.
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, durable copies of generated images, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer and independent from the agents' provider-side sessions. The browser also keeps a copy of its own in IndexedDB on that origin: the last eight conversations' transcripts, one listing row per agent view it has opened, and a snapshot of the agent list with the console's host identity, upload limits and push application key. That is what lets a cold start draw before the first request answers. **Clear cached data** in the command palette (⌘K) removes all of it, and so does clearing that origin's site data — the listing rows in particular are removed by nothing else, because ordinary use only ever adds to them. The service's own store is unaffected either way. The desktop agent-rail expansion state, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
+The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, durable copies of generated images, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer and independent from the agents' provider-side sessions. The browser also keeps a copy of its own in IndexedDB on that origin: the last eight conversations' transcripts, one listing row per agent view it has opened, and a snapshot of the agent list with the console's host identity, upload limits and push application key. That is what lets a cold start draw before the first request answers. **Clear cached data** in the command palette (⌘K) removes all of it, and so does clearing that origin's site data — the listing rows in particular are removed by nothing else, because ordinary use only ever adds to them. The service's own store is unaffected either way. That store is versioned (`mono-agent-web`, version 2) and every row records which tab wrote it, so a tab sweeps only its own rows and two open tabs cannot delete the conversation the other one is live in. It is bounded once per page load, as it is read: rows more than thirty days older than the newest row are dropped, conversations beyond the newest 24 are dropped oldest first, and listing rows belonging to agents no longer in the discovered fleet go with them. Nothing restored from the device is treated as current — a restored transcript draws immediately and stays marked stale until an ordinary conditional read confirms it — and a database written under a different console host identity is cleared rather than read. No capability URL is ever written to it, which is why a restored picture asks for access again before it can be shown. One thing **Clear cached data** cannot reach: reply-attachment bytes are served with a short private `max-age`, so the browser's own HTTP cache may still hold a copy on disk after the capability that fetched it has expired. That is the browser's private cache rather than console state, and clearing that origin's site data removes it. The desktop agent-rail expansion state, the selected data mode, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
 
 Durable copies of generated images are retained for as long as their conversation
 is, with no size ceiling and no expiry — that is what makes an image you generated

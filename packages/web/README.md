@@ -33,7 +33,12 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   opaque-artifact metadata carried by structured agent stream events; web
   SQLite remains a client cache, not the canonical lifecycle store.
 - Keep an upstream turn running when a browser reloads or disconnects, and expose
-  state invalidations over SSE so any connected browser can catch up.
+  content deltas plus rate-limited change hints over SSE so any connected browser
+  can catch up without reloading what it already holds.
+- Shape projected transcripts at the service boundary — drop non-allowlisted
+  telemetry payloads, and preview oversized tool arguments/results with their
+  byte count and a digest — while serving the whole part from message-bound
+  routes and honoring `?full=1` as the unshaped escape hatch.
 - Offer plain-text follow-ups to a capable active provider run, persist their
   pending/applied/queued state, and promote safe fallbacks into normal turns.
 - Render a running agent's structured `AskUser` interaction by exact
@@ -78,6 +83,12 @@ mono-agent web start --theme ocean
 mono-agent web status
 mono-agent web
 ```
+
+The server and the webapp ship as one artifact — this package serves the bundle
+built beside it — so `mono-agent web restart` re-stages both and they always
+upgrade together. A console build older than the bootstrap and delta protocol
+below cannot read this server, and an installed PWA picks up a new build only
+when its staged service worker is applied.
 
 Bare `mono-agent web` reports status and usable URLs; it does not implicitly
 start or mutate the service. Use `mono-agent web run` for a foreground process
@@ -294,7 +305,21 @@ artifact availability, and explicit persistence failure. The browser never
 reconstructs those outcomes from display text, run JSONL, or its own SQLite.
 Historical content and artifact references remain untrusted; references expose
 no host path and may later become unavailable when their independently retained
-artifact is removed.
+artifact is removed. An oversized argument or result reaches the card as a
+preview carrying its full byte count and a digest of the body it was cut from;
+expanding fetches the whole part from the message-bound tool-call route, and a
+device-restored repair is accepted only when that digest still matches.
+
+The console runs in a browser-local data mode — Auto, Lean, or Full — cycled
+from the sidebar-footer indicator or the command palette, alongside a session
+byte total and per-minute rate marked estimated whenever any component is not a
+browser measurement. `Auto` reads the Network Information API and resolves to
+Full where there is none (Safari, and so iOS), which is why an installed PWA is
+offered Lean once. Lean loads pictures and MCP App documents on request, batches
+delta paint to one second, halves page sizes and poll rates, and retains fewer
+image blobs; polling pauses while the document is hidden. The preference keys
+`mono-agent.web.data-mode` and `mono-agent.web.data-mode-suggested` are browser
+storage, not configuration.
 ### Reply files and MCP Apps
 
 Agents that advertise reply attachments expose message-bound downloads in the
@@ -312,7 +337,11 @@ message write and rejected if found in durable rich-part records.
 
 The service mints exact-thread/message/part capabilities only while projecting
 a browser DTO, with the existing ten-minute access TTL bounded by the part's
-retention deadline. An authentic expired capability returns
+retention deadline and quantised down to a five-minute bucket, so a repeated
+projection of the same message yields the same URL and its transcript stays
+conditionally revalidatable. Content is served
+`private, max-age=<remaining key life>, no-transform`; those bytes may therefore
+survive in the browser's own private disk cache after the key expires. An authentic expired capability returns
 `reply_access_expired`; forged, cross-thread, and unknown references keep the
 generic not-found response. The PWA then asks the exact-origin access route to
 re-project the authoritative retained part and retries an attachment, app
@@ -364,14 +393,26 @@ ledger; postconditions check the required effects.
    Web Push subscription/event/delivery, notification, and cron projection
    records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
-3. Service mutations publish invalidations. Browsers consume `/api/v1/events`
-   and refetch authoritative projections, including the selected agent's
-   memory-only live skill registry, so reloads and concurrent tabs do not own or
-   interrupt upstream turns.
+3. Service mutations publish content deltas and change hints. A browser names
+   one conversation on `/api/v1/events` and receives that conversation's
+   `message.delta` frames in full; every other change arrives as a hint,
+   rate-limited to one per conversation per second, that it answers with an
+   `If-None-Match` read of exactly the projection it names — including the
+   selected agent's memory-only live skill registry. Responses are compressed
+   and carry per-route cache policy: immutable hashed assets, revalidated shell
+   and worker scripts, `private, no-cache` API reads, and immutable
+   content-addressed upload bytes. Reloads and concurrent tabs still do not own
+   or interrupt upstream turns.
 4. The bundled assistant-ui webapp maps those DTOs—including canonical
    lifecycle metadata—into its external store, thread list, messages, compact
    Monitor activity, tool cards, composer, attachments, and push-subscription
-   UI; its service worker handles background delivery and same-origin clicks.
+   UI, keeping a per-conversation cache that is also written to the device
+   (IndexedDB `mono-agent-web`, version 2, swept per writer on hydration) so a
+   cold start draws before the first response. Its service worker precaches the
+   shell, handles background push delivery and same-origin clicks, and is
+   registered in `prompt` mode: a new build is staged and applied on the next
+   idle foreground moment or an explicit reload, never over a running turn or an
+   unsent draft.
 5. `deliverWebNotification` reads the owner-private live ingress record and
    performs one bearer-authenticated loopback delivery. Cron/webhook delivery
    first appends the result to agent history, then atomically exposes an
@@ -535,9 +576,14 @@ the actual bound address/port plus idempotent `stop()` and `close()` methods.
 
 The browser API is rooted at `/api/v1`:
 
-- `GET /bootstrap`, `PATCH /agents/:id`, and `GET/PATCH/DELETE /threads/:id`
+- `GET /bootstrap` (one `?sourceId`/`?archived` thread bucket, `?limit` capped),
+  `PATCH /agents/:id`, and `GET/PATCH/DELETE /threads/:id`
 - `POST /threads`, `/threads/:id/turns`, `/threads/:id/live-input`, and
   `/threads/:id/cancel`
+- `GET /threads/:id/messages/:messageId` for one message (delta gap recovery)
+  and `GET /threads/:id/messages/:messageId/tool-calls/:toolCallId` for the
+  unshaped body behind a truncated tool-call preview; `?full=1` on a transcript
+  read returns it unshaped
 - `GET /threads/:id/ask` and `POST /threads/:id/ask` for the current structured
   `AskUser` snapshot and atomic answer submission
 - `POST /uploads`, `PUT/GET /uploads/:id/content`, and `DELETE /uploads/:id`
@@ -550,7 +596,9 @@ The browser API is rooted at `/api/v1`:
   and `POST /push/events/:eventId/ack`; the status read carries the exact
   `X-Mono-Agent-Web-Origin` browser-origin claim and returns no endpoint or key
   material
-- `GET /events` (SSE)
+- `GET /events` (SSE); the optional `?thread=<id>` subscribes that connection to
+  one conversation's `message.delta` frames, resolving a redirected id to the
+  canonical one. `Last-Event-ID` is ignored — `ready` means resync
 
 `GET /healthz` is intentionally outside the versioned API for service probes.
 Its compatibility-stable `status` remains `ok` while the additive `push` field
