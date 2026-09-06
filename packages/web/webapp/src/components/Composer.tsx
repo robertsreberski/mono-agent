@@ -136,11 +136,12 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
     savedBrowseSelection.current = next;
   }, []);
 
-  const restoreSelection = useCallback((start: number, end: number) => {
+  const restoreSelection = useCallback((start: number, end: number, revealInput = false) => {
     window.requestAnimationFrame(() => {
       const input = inputRef.current;
       if (input === null) return;
-      input.focus({ preventScroll: true });
+      if (revealInput) input.focus();
+      else input.focus({ preventScroll: true });
       input.setSelectionRange(start, end);
       setSelection({ start, end });
       savedBrowseSelection.current = { start, end };
@@ -174,7 +175,11 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
       skill.reference,
     );
     composer.setText(inserted.text);
-    restoreSelection(inserted.selectionStart, inserted.selectionEnd);
+    // Browse opens a modal above the composer. Once it closes, let the native
+    // focus scroll reveal the input as the software keyboard resizes the visual
+    // viewport. Autocomplete is already adjacent to a focused input and should
+    // keep its current scroll position.
+    restoreSelection(inserted.selectionStart, inserted.selectionEnd, source === "browse");
   }, [composer, restoreSelection, selection.end, selection.start, store.skillRegistry]);
 
   return (
