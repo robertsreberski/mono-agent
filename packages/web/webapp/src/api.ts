@@ -62,7 +62,14 @@ const readError = async (response: Response): Promise<ApiError> => {
   return new ApiError(message, response.status, code);
 };
 
-const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+/**
+ * One request, and the response it is worth reading.
+ *
+ * `304` is let through because it is an ANSWER to a conditional read -- see
+ * {@link NOT_MODIFIED} -- and `readError` would turn the cheapest response the
+ * server can give into a thrown "304 Not Modified".
+ */
+const send = async (path: string, init?: RequestInit): Promise<Response> => {
   const response = await fetch(path, {
     ...init,
     headers: {
@@ -71,8 +78,53 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
       ...init?.headers,
     },
   });
-  if (!response.ok) throw await readError(response);
+  if (!response.ok && response.status !== 304) throw await readError(response);
+  return response;
+};
+
+const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  const response = await send(path, init);
+  // Only a conditional read can be answered this way, and this one quoted no
+  // validator: there is no held copy for the status line to confirm, so there
+  // is nothing to return. Reported rather than papered over with an empty body.
+  if (response.status === 304) {
+    throw new ApiError("The server answered a read that quoted no validator with 304.", 304);
+  }
   return (await response.json()) as T;
+};
+
+/**
+ * The server's answer to a conditional read: what this console holds is still
+ * current.
+ *
+ * A distinct value rather than `undefined`, so a caller that forgets to handle
+ * it fails a type check instead of quietly reading it as "nothing there".
+ */
+export const NOT_MODIFIED = Symbol("not modified");
+export type NotModified = typeof NOT_MODIFIED;
+
+/** A response body, plus the validator a later read of it may quote. */
+type Validated<T> = T & { readonly etag?: string };
+
+/** A conversation read, carrying the validator its response was served with. */
+export type ReadThreadDetail = Validated<ThreadDetail>;
+
+const validatedRequest = async <T>(
+  path: string,
+  etag: string | undefined,
+  init?: RequestInit,
+): Promise<Validated<T> | NotModified> => {
+  const response = await send(path, {
+    ...init,
+    headers: {
+      ...init?.headers,
+      ...(etag === undefined ? {} : { "If-None-Match": etag }),
+    },
+  });
+  if (response.status === 304) return NOT_MODIFIED;
+  const value = (await response.json()) as T;
+  const served = response.headers.get("ETag");
+  return { ...value, ...(served === null ? {} : { etag: served }) };
 };
 
 /** Reject a compromised/stale DTO that tries to move a private rich-part request off origin. */
@@ -272,10 +324,42 @@ export const api = {
     );
   },
 
-  thread: (threadId: string, signal?: AbortSignal) =>
-    request<ThreadDetail>(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
-      signal,
-    }),
+  /**
+   * One whole conversation, with the validator the response carried.
+   *
+   * The `etag` rides along on every read so a later one can quote it. It is an
+   * ADDITION to {@link ThreadDetail}, so nothing that only wants the transcript
+   * has to know about it.
+   */
+  thread: async (threadId: string, signal?: AbortSignal): Promise<ReadThreadDetail> => {
+    const read = await validatedRequest<ThreadDetail>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}`,
+      undefined,
+      { signal },
+    );
+    // Unreachable: `validatedRequest` only answers this way to a request that
+    // quoted a validator, and this one quoted none.
+    if (read === NOT_MODIFIED) {
+      throw new ApiError("The server answered a read that quoted no validator with 304.", 304);
+    }
+    return read;
+  },
+
+  /**
+   * The same conversation, read CONDITIONALLY.
+   *
+   * {@link NOT_MODIFIED} is the server confirming what this console already
+   * holds, for the cost of a status line instead of a transcript -- which is
+   * what makes a reconnect or an app-switch resume nearly free. Never `?full=1`
+   * for the same reason {@link api.message} is not: the console's held copy is
+   * the DEFAULT shape, and deltas chain onto it.
+   */
+  threadIfChanged: (threadId: string, etag: string, signal?: AbortSignal) =>
+    validatedRequest<ThreadDetail>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}`,
+      etag,
+      { signal },
+    ),
 
   threads: (
     sourceId: string,

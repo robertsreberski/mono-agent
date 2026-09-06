@@ -1535,6 +1535,18 @@ export class WebService {
     return this.createEvent("ready", undefined, { version: WEB_API_VERSION });
   }
 
+  /**
+   * The id a conversation is known by NOW, following whatever superseded it.
+   *
+   * Every read resolves redirects on its way through the store; the event
+   * stream matches its subscription by string equality against the id events
+   * carry, so it has to ask for the same resolution explicitly. An id nothing
+   * superseded resolves to itself, so this is safe for any string.
+   */
+  resolveThreadId(id: string): string {
+    return this.store.resolveThreadId(id);
+  }
+
   refreshAgents(): Promise<void> {
     if (this.stopped) return Promise.resolve();
     if (this.refreshPromise !== undefined) return this.refreshPromise;
@@ -2375,6 +2387,10 @@ export class WebService {
     }
     const shaped: WebMessageDelta = {
       ...delta,
+      // Set only once a turn, by the write that ends it. Without it a
+      // subscribed console still bought one whole-conversation read per turn
+      // finish, purely to draw the Activity header's window.
+      ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
       ops: delta.ops.map((op) => (op.op === "set" ? { ...op, part: this.shapePart(message, op.part, {}) } : op)),
     };
     // Only a write that REWRITES parts can outweigh the message it describes: an

@@ -637,6 +637,35 @@ describe("createThreadCache", () => {
     expect(cache.get("alpha-thread")?.stale).toBe(true);
   });
 
+  it("takes the finish stamp a delta carries onto the message it finishes", () => {
+    // The turn's wall-clock window is `createdAt` to `finishedAt`, and the
+    // second half used to arrive only in a whole-conversation read.
+    const finished = applyMessageDelta(
+      message("m1", { status: "running" }),
+      delta({ status: "complete", finishedAt: "2026-08-14T08:00:05.000Z" }),
+    );
+
+    expect(finished.finishedAt).toBe("2026-08-14T08:00:05.000Z");
+    expect(finished.status).toBe("complete");
+  });
+
+  it("keeps a finish stamp a later delta says nothing about", () => {
+    // Only the write that SETS it carries one, so a delta without one is silent
+    // about the stamp rather than clearing it.
+    const finished = applyMessageDelta(
+      message("m1", { finishedAt: "2026-08-14T08:00:05.000Z", seq: 2 }),
+      delta({ baseSeq: 2, seq: 3 }),
+    );
+
+    expect(finished.finishedAt).toBe("2026-08-14T08:00:05.000Z");
+  });
+
+  it("refuses a frame whose finish stamp is not a stamp", () => {
+    expect(readMessageDelta({ ...delta(), finishedAt: 5 })).toBeUndefined();
+    expect(readMessageDelta({ ...delta(), finishedAt: "2026-08-14T08:00:05.000Z" }))
+      .toMatchObject({ finishedAt: "2026-08-14T08:00:05.000Z" });
+  });
+
   it("marks an entry stale and clears that only when a read lands", () => {
     const cache = createThreadCache();
     cache.upsertFull(detail([]));
@@ -647,6 +676,39 @@ describe("createThreadCache", () => {
 
     cache.upsertFull(detail([]), { reset: true });
     expect(cache.get("alpha-thread")?.stale).toBe(false);
+  });
+
+  it("lets a conditional read confirm what it holds without replacing it", () => {
+    // A 304 says the transcript on screen IS current: the entry stands, every
+    // object in it keeps its identity, and the suspicion is answered.
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("m1")]), { reset: true });
+    const held = cache.get("alpha-thread");
+    cache.markStale("alpha-thread");
+    const issuedAt = cache.clock();
+
+    expect(cache.confirmFresh("alpha-thread", issuedAt)).toBe(true);
+    expect(cache.get("alpha-thread")?.stale).toBe(false);
+    expect(cache.get("alpha-thread")?.messages).toBe(held?.messages);
+    expect(cache.get("alpha-thread")?.thread).toBe(held?.thread);
+  });
+
+  it("leaves a conditional read stale when something changed while it was out", () => {
+    // The 304 answered the state at the moment it was ISSUED. A write observed
+    // after that is one it cannot speak for, so the suspicion stands and the
+    // caller reads again.
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("m1")]), { reset: true });
+    const issuedAt = cache.clock();
+    cache.markStale("alpha-thread");
+
+    expect(cache.confirmFresh("alpha-thread", issuedAt)).toBe(false);
+    expect(cache.get("alpha-thread")?.stale).toBe(true);
+  });
+
+  it("confirms nothing about a conversation it is not holding", () => {
+    const cache = createThreadCache();
+    expect(cache.confirmFresh("alpha-thread", 0)).toBe(false);
   });
 
   it("keeps a walked-back transcript whole as the window moves past it", () => {

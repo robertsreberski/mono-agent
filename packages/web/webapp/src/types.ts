@@ -549,6 +549,15 @@ export interface MessageDelta {
   readonly seq: number;
   readonly status: WebMessage["status"];
   readonly updatedAt: string;
+  /**
+   * {@link WebMessage.finishedAt}, carried by the write that SETS it.
+   *
+   * The Activity header draws the turn's window from `createdAt` to this, and a
+   * console holding only the first half re-read the whole conversation at every
+   * turn finish to learn the other. Absent on every write that leaves the turn
+   * running, and never a clearing signal.
+   */
+  readonly finishedAt?: string;
   readonly ops: readonly MessageDeltaOp[];
 }
 

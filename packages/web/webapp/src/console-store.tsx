@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, ApiError, THREAD_PAGE_LIMIT, type BootstrapScope } from "./api";
+import { api, ApiError, NOT_MODIFIED, THREAD_PAGE_LIMIT, type BootstrapScope } from "./api";
 import { recordServerTime } from "./server-clock";
 import {
   createThreadCache,
@@ -533,6 +533,34 @@ export const THREAD_READ_TIMEOUT_MS = 60_000;
  * a burst cost one request rather than one per event.
  */
 export const REFRESH_DEBOUNCE_MS = 300;
+
+/**
+ * How long a selection has to settle before the stream re-points at it.
+ *
+ * A `?thread=` subscription is fixed at connect time, so following the
+ * selection means closing one socket and opening another. Walking the sidebar
+ * with the arrow keys would otherwise open one per row, and the server caps a
+ * console at {@link MAX_SSE_CLIENTS} on its side. A conversation the operator
+ * lands back on inside this window costs nothing at all: the subscription never
+ * moved.
+ */
+export const STREAM_SUBSCRIPTION_DEBOUNCE_MS = 250;
+
+/**
+ * How long a BACKGROUNDED console may go without a frame before its stream is
+ * presumed dead.
+ *
+ * iOS suspends a tab's connections without closing them: `readyState` still
+ * reads OPEN when the app comes back, and a read-only stream never writes, so
+ * the browser may never find out. Counted only ACROSS a hidden period -- a
+ * console in the foreground is quiet because nothing is happening, not because
+ * its stream died -- and the heartbeat is an SSE comment, invisible to
+ * JavaScript, so silence is measured from the last real frame.
+ */
+export const STREAM_SILENCE_LIMIT_MS = 30_000;
+
+/** `EventSource.CLOSED`, by value: the constructor is replaced under test. */
+const STREAM_CLOSED = 2;
 
 /**
  * How long an event that names NO conversation is held before the selected
@@ -1157,6 +1185,27 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
   );
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  /**
+   * The conversation the OPEN stream names, which lags the selection by
+   * {@link STREAM_SUBSCRIPTION_DEBOUNCE_MS}.
+   *
+   * Seeded from the selection this browser stored, so the ordinary page load
+   * opens its one stream already pointed at the conversation the snapshot is
+   * about to resolve to. A guess that turns out wrong costs one reconnect; not
+   * guessing cost one on every single load.
+   */
+  const [subscribedThreadId, setSubscribedThreadId] = useState<string | null>(() => {
+    const sourceId = cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY);
+    if (sourceId === null) return null;
+    return readPersistedThreadIds()[sourceId] || null;
+  });
+  /**
+   * Bumped to rebuild the stream in place -- same subscription, new socket.
+   *
+   * What a resume needs and what an `EventSource` the operating system killed
+   * will not do for itself.
+   */
+  const [streamGeneration, setStreamGeneration] = useState(0);
   const [detail, setDetail] = useState<ThreadDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -1298,9 +1347,37 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * deep link, a sidebar row -- is their choice and is never second-guessed.
    */
   const restoredSelectionRef = useRef<string | null>(null);
-  /** Set true by the first `ready`, so the next one is known to be a RECONNECT. */
-  const streamOpenedRef = useRef(false);
   const hasBootstrapRef = useRef(false);
+  /**
+   * The next `ready` has a GAP behind it: the stream dropped, the app was
+   * suspended, or the link went away, and this console cannot say what it
+   * missed. It answers with the conditional resync below.
+   *
+   * A `ready` on a stream this console re-pointed ITSELF -- the operator opened
+   * another conversation -- carries no such gap and costs nothing.
+   */
+  const resyncOnReadyRef = useRef(false);
+  /**
+   * The listing missed the same window the stream did.
+   *
+   * Set by a drop, answered by ONE merge page of the active bucket rather than
+   * the whole snapshot a reconnect used to buy.
+   */
+  const staleBucketRef = useRef(false);
+  /** When the last frame arrived, so a resume can tell a quiet stream from a dead one. */
+  const lastEventAtRef = useRef(0);
+  /** When the document went to the background, or `null` while it is on screen. */
+  const hiddenSinceRef = useRef<number | null>(null);
+  /**
+   * The conversation `selectThread` is reading itself.
+   *
+   * Opening a conversation the sidebar does not list -- a push deep link, a
+   * search hit -- reads it from there, because only that path can name the
+   * agent, merge the row into the listing and follow a redirect to the
+   * canonical id. The selection effect would otherwise read the very same
+   * conversation a second time on every deep link.
+   */
+  const selectionReadRef = useRef<string | null>(null);
 
   useEffect(() => {
     const keys = new Set([...Object.keys(modelByContext), ...Object.keys(effortByContext)]);
@@ -1676,7 +1753,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // A WINDOW read: it carries the newest page of the transcript, so the
       // pages this tab walked back to survive it and anything inside the window
       // it no longer carries was deleted. See `mergeMessages`.
-      const entry = threadCacheRef.current.upsertFull(next, { reset: true, issuedAt: observedAt });
+      const entry = threadCacheRef.current.upsertFull(next, {
+        reset: true,
+        issuedAt: observedAt,
+        // The validator this response was served with, so a reconnect can quote
+        // it and be answered with a status line instead of a transcript.
+        ...(next.etag === undefined ? {} : { etag: next.etag }),
+      });
       publishDetail(threadId);
       // Something moved while this read was out -- a delta that arrived before
       // there was anything to apply it to, above all. The answer is already
@@ -1727,6 +1810,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (entry !== undefined
       && !entry.stale
       && restoredSelectionRef.current !== selectedThreadId) return;
+    // `selectThread` opened a conversation the sidebar does not list and is
+    // reading it itself -- see `selectionReadRef`. Only that read can name the
+    // agent, merge the row into the listing and follow a redirect, so this one
+    // would be the second copy of the same transcript.
+    if (selectionReadRef.current === selectedThreadId) return;
     const controller = new AbortController();
     void loadThread(selectedThreadId, controller.signal, entry === undefined);
     return () => controller.abort();
@@ -1778,7 +1866,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ) {
         const entry = threadCacheRef.current.upsertFull(
           nextDetail,
-          { reset: true, issuedAt: observedAt },
+          {
+            reset: true,
+            issuedAt: observedAt,
+            ...(nextDetail.etag === undefined ? {} : { etag: nextDetail.etag }),
+          },
         );
         publishDetail(nextDetail.thread.id);
         // See `loadThread`: an answer overtaken by an observation is already
@@ -1897,6 +1989,94 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         });
     }, THREAD_LIST_REVALIDATE_DEBOUNCE_MS);
   }, [loadThreadBucket, rememberUnlistedThread]);
+
+  /**
+   * Re-read the open conversation CONDITIONALLY, quoting what it was last
+   * served with.
+   *
+   * The answer to a gap in the stream. `304` is the server saying the
+   * transcript on screen IS the current one: nothing is replaced, no message
+   * object loses its identity, and the read costs a status line rather than the
+   * whole conversation -- which is what makes an app-switch resume free. A
+   * conversation with no validator yet (nothing has read it since this tab
+   * loaded) falls back to the ordinary read, and stores one for next time.
+   */
+  const revalidateSelectedThread = useCallback(async (
+    threadId: string,
+    etag: string | undefined,
+  ) => {
+    const cache = threadCacheRef.current;
+    const issuedAt = removedThreadsRef.current.epoch();
+    const observedAt = cache.clock();
+    try {
+      const answer = await boundedRequest(
+        (signal) => (etag === undefined
+          ? api.thread(threadId, signal)
+          : api.threadIfChanged(threadId, etag, signal)),
+        THREAD_READ_TIMEOUT_MS,
+      );
+      if (answer === NOT_MODIFIED) {
+        // Only the suspicion is answered. A write observed while this was on
+        // the wire is one the 304 cannot speak for, and `confirmFresh` leaves
+        // the entry stale for it.
+        cache.confirmFresh(threadId, observedAt);
+        return;
+      }
+      if (!admitThread(removedThreadsRef.current, answer.thread, issuedAt)) return;
+      if (selectedThreadRef.current !== answer.thread.id) return;
+      const entry = cache.upsertFull(answer, {
+        reset: true,
+        issuedAt: observedAt,
+        ...(answer.etag === undefined ? {} : { etag: answer.etag }),
+      });
+      publishDetail(answer.thread.id);
+      if (entry?.stale === true) scheduleRefreshRef.current({ detail: true });
+    } catch (resyncError) {
+      if (resyncError instanceof ApiError
+        && resyncError.status === 404
+        && selectedThreadRef.current === threadId) {
+        restoredSelectionRef.current = null;
+        closeMissingThread(threadId);
+        return;
+      }
+      // The resync could not answer, so what is held cannot claim to be
+      // current: the ordinary refresh is the fallback, and it is debounced.
+      cache.markStale(threadId);
+      if (selectedThreadRef.current === threadId) refreshSelectedThread();
+    }
+  }, [closeMissingThread, publishDetail, refreshSelectedThread]);
+
+  /**
+   * A `ready` with a gap behind it: fetch what the gap could have invalidated,
+   * and nothing else.
+   *
+   * This replaces the full bootstrap and full conversation read a reconnect
+   * used to cost. Each of the three is bought only on its own evidence -- no
+   * snapshot at all, a listing the drop was told nothing about, and the open
+   * conversation, whose read is conditional. Every conversation this tab is
+   * merely KEEPING is left exactly as it is: `thread.changed` marks one stale
+   * when the server has something to say about it, and opening one pays then.
+   */
+  const resyncAfterGap = useCallback(() => {
+    // The mount load failed or was never made, so there is no projection for
+    // anything else here to refine.
+    if (!hasBootstrapRef.current) {
+      loadAgents();
+      return;
+    }
+    if (staleBucketRef.current) {
+      staleBucketRef.current = false;
+      revalidateBucket();
+    }
+    const threadId = selectedThreadRef.current;
+    if (threadId === null) return;
+    const entry = threadCacheRef.current.get(threadId);
+    // Not held: the selection effect owns the cold read of this conversation
+    // and has one out, or is about to. A second one here would buy the same
+    // transcript twice.
+    if (entry === undefined) return;
+    void revalidateSelectedThread(threadId, entry.etag);
+  }, [loadAgents, revalidateBucket, revalidateSelectedThread]);
 
   /**
    * Apply the run state a `turn.changed` already carries.
@@ -2064,8 +2244,58 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [publishDetail]);
 
+  /**
+   * Follow the selection with the stream's subscription.
+   *
+   * The server fixes a `?thread=` subscription at connect time, so this is a
+   * new socket -- hence {@link STREAM_SUBSCRIPTION_DEBOUNCE_MS}. A conversation
+   * the operator opens and leaves inside that window never moves the
+   * subscription at all, and the FIRST subscription is made immediately
+   * because there is no live one being torn down.
+   */
   useEffect(() => {
-    const events = new EventSource("/api/v1/events");
+    // The seeded guess stands until the first snapshot resolves a selection:
+    // re-pointing at nothing in between would spend two sockets on every load.
+    if (!hasBootstrap && selectedThreadId === null) return;
+    if (selectedThreadId === subscribedThreadId) return;
+    if (subscribedThreadId === null) {
+      setSubscribedThreadId(selectedThreadId);
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setSubscribedThreadId(selectedThreadId),
+      STREAM_SUBSCRIPTION_DEBOUNCE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [hasBootstrap, selectedThreadId, subscribedThreadId]);
+
+  // The debounce and the resume both re-run the stream effect, and its cleanup
+  // used to clear these two timers -- which turned every conversation switch
+  // into a dropped refresh, because the refs stayed set and `scheduleRefresh`
+  // then believed a timer was still armed. They belong to the tab, not to one
+  // socket, so they are cleared once, at teardown.
+  useEffect(() => () => {
+    if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+    if (threadListTimerRef.current !== null) window.clearTimeout(threadListTimerRef.current);
+    refreshTimerRef.current = null;
+    threadListTimerRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    // Never blank: an empty `?thread=` is a console asking for a conversation
+    // and being given none, which the server refuses with a 400.
+    const events = new EventSource(subscribedThreadId === null
+      ? "/api/v1/events"
+      : `/api/v1/events?thread=${encodeURIComponent(subscribedThreadId)}`);
+    /**
+     * Whether THIS stream has reported an error the browser has not recovered
+     * from.
+     *
+     * `readyState` alone is not enough: an automatic retry leaves an
+     * `EventSource` CONNECTING for as long as it keeps failing, and a suspended
+     * one can read OPEN with nothing behind it.
+     */
+    let errored = false;
     /**
      * One event, one decision.
      *
@@ -2088,6 +2318,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       } catch {
         // A ready ping without JSON still proves the stream is alive.
       }
+      // A frame is proof this socket is alive, whatever it last reported.
+      errored = false;
+      lastEventAtRef.current = Date.now();
       setConnection("live");
       if (webEvent === undefined) return;
       const payload = (webEvent.payload ?? {}) as {
@@ -2110,21 +2343,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         case "ready": {
           // Sent once per connection, and never as a keepalive.
           //
-          // A RECONNECT may have missed anything at all, so it is the one event
-          // that still costs a full bootstrap and a read of the open
-          // conversation -- correctness over bytes, until a conditional GET
-          // makes both nearly free.
+          // A `ready` with a GAP behind it -- the link dropped, the app was
+          // suspended -- may have missed anything, and `resyncAfterGap` buys
+          // only what the gap could have invalidated. It used to cost a full
+          // bootstrap AND a full read of the open conversation, every time.
           //
-          // The FIRST one is not that. It arrives beside the snapshot this
-          // component already asked for on mount, so answering it with another
-          // bootstrap doubled the cost of every page load. Only a mount load
-          // that answered with nothing is worth asking again for.
-          const reconnected = streamOpenedRef.current;
-          streamOpenedRef.current = true;
-          if (
-            reconnected
-            || (initialBootstrapRef.current === "answered" && !hasBootstrapRef.current)
-          ) queueRefresh();
+          // A `ready` on a stream this console re-pointed itself carries no
+          // gap and costs nothing, and neither does the FIRST one: it arrives
+          // beside the snapshot this component already asked for on mount, so
+          // answering it with another bootstrap doubled every page load. Only a
+          // mount load that answered with NOTHING is worth asking again for.
+          const gapped = resyncOnReadyRef.current;
+          resyncOnReadyRef.current = false;
+          if (gapped) resyncAfterGap();
+          else if (initialBootstrapRef.current === "answered" && !hasBootstrapRef.current) {
+            queueRefresh();
+          }
           // No skills bump. A dropped stream takes `connection` off "live",
           // which is a dependency of the skills effect, so coming back to
           // "live" refetches the registry on its own -- and a registry marked
@@ -2342,36 +2576,89 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       "push.pending",
     ];
     events.onopen = () => {
+      errored = false;
       // Same as `ready`: this transition back to "live" IS what refetches the
       // registry, through the skills effect's own dependency on `connection`.
       setConnection("live");
     };
     events.onmessage = handleEvent;
     for (const type of eventTypes) events.addEventListener(type, handleEvent);
-    events.onerror = () => setConnection(navigator.onLine ? "reconnecting" : "offline");
-    const onOnline = () => {
-      // Nothing was observed while the link was down, so this is the other case
-      // where the console cannot say what changed.
+    events.onerror = () => {
+      errored = true;
+      // Whatever the browser's own retry does next, this stream has a gap in
+      // it, and the `ready` that ends the gap is what pays for it.
+      resyncOnReadyRef.current = true;
+      staleBucketRef.current = true;
+      setConnection(navigator.onLine ? "reconnecting" : "offline");
+    };
+
+    /** Whether this stream is dead, or merely quiet because nothing happened. */
+    const streamIsDown = (hiddenSince: number | null): boolean => {
+      if (events.readyState === STREAM_CLOSED || errored) return true;
+      // A tab the operating system suspended comes back with a socket that
+      // reads OPEN and carries nothing. Only ever judged across a HIDDEN
+      // period -- see {@link STREAM_SILENCE_LIMIT_MS}.
+      return hiddenSince !== null
+        && Date.now() - hiddenSince >= STREAM_SILENCE_LIMIT_MS
+        && lastEventAtRef.current < hiddenSince;
+    };
+
+    /**
+     * The app came back. Rebuild the stream if it did not come back with it.
+     *
+     * `force` is for a page restored from the back-forward cache: its
+     * connections are gone whatever `readyState` still says.
+     */
+    const resume = (force = false): void => {
+      const hiddenSince = hiddenSinceRef.current;
+      hiddenSinceRef.current = null;
+      if (!force && !streamIsDown(hiddenSince)) return;
+      if (!navigator.onLine) {
+        setConnection("offline");
+        return;
+      }
+      resyncOnReadyRef.current = true;
+      staleBucketRef.current = true;
+      // The transcript keeps rendering: the operator watched a turn stream and
+      // then switched apps, and blanking it would be the one thing worse than
+      // showing a version that is a few frames behind. It simply cannot claim
+      // to be current until the conditional read answers -- and a 304 is what
+      // answers it, at the cost of a status line.
+      const threadId = selectedThreadRef.current;
+      if (threadId !== null) threadCacheRef.current.markStale(threadId);
       setConnection("reconnecting");
-      setSkillRefreshToken((value) => value + 1);
-      queueRefresh();
+      setStreamGeneration((value) => value + 1);
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        // Left alone deliberately: iOS kills it anyway, and closing it here
+        // would forfeit the events a briefly-backgrounded tab still receives.
+        hiddenSinceRef.current = Date.now();
+        return;
+      }
+      resume();
+    };
+    const onPageShow = (event: PageTransitionEvent) => { if (event.persisted) resume(true); };
+    const onOnline = () => {
+      // No skills bump and no `queueRefresh`. The reconnect's `ready` resyncs
+      // the open conversation conditionally, and the transition back to "live"
+      // is what refetches the registry -- once.
+      if (streamIsDown(hiddenSinceRef.current)) resume();
+      else setConnection("live");
     };
     const onOffline = () => setConnection("offline");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pageshow", onPageShow);
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
     return () => {
       events.close();
       for (const type of eventTypes) events.removeEventListener(type, handleEvent);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pageshow", onPageShow);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
-      if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
-      if (threadListTimerRef.current !== null) window.clearTimeout(threadListTimerRef.current);
-      // "This stream has already delivered its `ready`" is a fact about the
-      // stream being closed here, not about the tab. Left set, a re-run of this
-      // effect -- a StrictMode double mount, a future dependency change -- would
-      // read the NEW stream's first `ready` as a reconnect and spend a bootstrap
-      // answering the snapshot the previous mount had already read.
-      streamOpenedRef.current = false;
     };
   }, [
     applyMessageDeltaEvent,
@@ -2381,7 +2668,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     queueRefresh,
     refreshSelectedThread,
     repairMessage,
+    resyncAfterGap,
     revalidateBucket,
+    streamGeneration,
+    subscribedThreadId,
   ]);
 
   const agents = useMemo(
@@ -2745,10 +3035,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // effect -- so without this it was the one read a write landing during
         // it could overtake silently.
         const observedAt = threadCacheRef.current.clock();
+        // Claimed BEFORE the request, so the selection effect this commit is
+        // about to run sees it: the two used to read the same conversation
+        // twice on every deep link and every search hit.
+        selectionReadRef.current = threadId;
+        setDetailLoading(true);
         void boundedRequest(
           (signal) => api.thread(threadId, signal),
           THREAD_READ_TIMEOUT_MS,
         ).then((next) => {
+          selectionReadRef.current = null;
           const canonical = next.thread;
           // Deleted while this fetch was outstanding: selecting it now would
           // re-add it, route to it, and persist it as this agent's selection.
@@ -2758,7 +3054,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             : { ...current, threads: mergeThreads(current.threads, [canonical]) });
           const entry = threadCacheRef.current.upsertFull(
             next,
-            { reset: true, issuedAt: observedAt },
+            {
+              reset: true,
+              issuedAt: observedAt,
+              ...(next.etag === undefined ? {} : { etag: next.etag }),
+            },
           );
           selectedAgentRef.current = canonical.sourceId;
           selectedThreadRef.current = canonical.id;
@@ -2771,10 +3071,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           if (entry?.stale === true) scheduleRefreshRef.current({ detail: true });
           if (!canonical.archivedAt) persistThreadId(canonical.sourceId, canonical.id);
           updateThreadRoute(canonical, true);
-        }).catch((selectionError: unknown) => setActionError(errorMessage(selectionError)));
+        }).catch((selectionError: unknown) => {
+          // The read this selection owns did not answer, so nothing else will:
+          // the effect stood aside for it. Reported, and the spinner cleared.
+          selectionReadRef.current = null;
+          if (selectionError instanceof ApiError
+            && selectionError.status === 404
+            && selectedThreadRef.current === threadId) {
+            closeMissingThread(threadId);
+            return;
+          }
+          setActionError(errorMessage(selectionError));
+        }).finally(() => {
+          if (selectedThreadRef.current === threadId) setDetailLoading(false);
+        });
       }
     },
-    [publishDetail, threads],
+    [closeMissingThread, publishDetail, threads],
   );
 
   useEffect(() => {

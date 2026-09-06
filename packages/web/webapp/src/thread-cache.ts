@@ -73,10 +73,12 @@ export interface ThreadCacheEntry {
   /**
    * The messages this tab reached by paging BACKWARDS.
    *
-   * See {@link MergeMessagesOptions.pagedIn}: it is the only reliable evidence
-   * that a row sits outside the range a windowed answer can speak for, so it is
-   * what keeps a refresh from reading the operator's scrolled-back history as a
-   * deletion.
+   * One of the two things that put a held row outside what a windowed answer
+   * can speak for -- see {@link MergeMessagesOptions.pagedIn} and
+   * `outsideAnswer` in {@link mergeMessages}. The other is the answer's own
+   * oldest stamp, and neither implies the other: this set is what keeps a
+   * recovered row that landed in FRONT of paged history from taking that
+   * history with it.
    */
   readonly pagedInIds: ReadonlySet<string>;
 }
@@ -385,6 +387,9 @@ export const applyMessageDelta = (
     parts: restoreRepairs(message.parts, replayed, repaired),
     status: delta.status,
     updatedAt: delta.updatedAt,
+    // Only the write that finishes the turn carries one, so a delta without it
+    // is SILENT about the stamp rather than clearing a stamp already held.
+    ...(delta.finishedAt === undefined ? {} : { finishedAt: delta.finishedAt }),
     seq: delta.seq,
   };
 };
@@ -472,6 +477,7 @@ export const readMessageDelta = (payload: unknown): MessageDelta | undefined => 
     || typeof candidate.seq !== "number"
     || !MESSAGE_STATUSES.has(candidate.status as string)
     || typeof candidate.updatedAt !== "string"
+    || (candidate.finishedAt !== undefined && typeof candidate.finishedAt !== "string")
     || ops === undefined) return undefined;
   return { ...(candidate as MessageDelta), ops };
 };
@@ -498,14 +504,19 @@ export interface MergeMessagesOptions {
    */
   readonly bounded?: boolean;
   /**
-   * The messages this tab reached by paging BACKWARDS, which is the only thing
-   * that is reliably outside a bounded answer's range.
+   * The messages this tab reached by paging BACKWARDS.
+   *
+   * The BACKSTOP half of `outsideAnswer` (see {@link mergeMessages}), not the
+   * whole of it. A bounded answer cannot speak for anything older than the
+   * oldest row it carries, and that stamp boundary is the primary guard; this
+   * set covers the case the stamp cannot, because `insertionIndexFor` places a
+   * recovered row by `createdAt` alone and can land it in FRONT of paged
+   * history whose stamp says it is newer.
    *
    * Read from what `prependOlder` actually brought in rather than inferred from
-   * a position or a stamp: `insertionIndexFor` can put a recovered row in front
-   * of paged history, and a client cannot reproduce the server's ordering from
-   * the wire, so neither a position nor a `createdAt` may be what decides that
-   * the operator's scrolled-back history was deleted.
+   * a position: a client cannot reproduce the server's ordering from the wire,
+   * so a position may never be what decides that the operator's scrolled-back
+   * history was deleted.
    */
   readonly pagedIn?: ReadonlySet<string>;
   /** See {@link ThreadCacheEntry.repairedToolCallIds}. */
@@ -693,6 +704,18 @@ export interface ThreadCache {
    * stale rather than looking like the newest thing the server said.
    */
   readonly markStale: (threadId: string) => void;
+  /**
+   * A conditional read the server answered "unchanged": what is held IS the
+   * current transcript.
+   *
+   * The entry is kept exactly as it is -- the summary, the transcript and every
+   * message in it come back by reference -- and only the suspicion is answered,
+   * which is the whole point of a read that cost a status line. `issuedAt` is
+   * {@link ThreadCache.clock} read before the request: anything observed after
+   * that is something the 304 cannot speak for, so the entry STAYS stale and
+   * the caller reads again. Returns whether the entry moved.
+   */
+  readonly confirmFresh: (threadId: string, issuedAt: number) => boolean;
   /**
    * Everything held is suspect: a reconnect, or coming back online. Nothing
    * was observed while the link was down, so no entry can say it is current.
@@ -982,6 +1005,16 @@ export const createThreadCache = (
     markStale: (threadId) => {
       observe(threadId);
       patchEntry(threadId, (entry) => (entry.stale ? entry : { ...entry, stale: true }));
+    },
+    confirmFresh: (threadId, issuedAt) => {
+      // Nothing to confirm, and nothing observed here is worth forgetting: an
+      // entry that was evicted while the conditional read was out is a cold
+      // read either way.
+      if (entries.get(threadId) === undefined) return false;
+      if (overtaken(threadId, issuedAt)) return false;
+      return patchEntry(threadId, (entry) => (entry.stale
+        ? { ...entry, stale: false, syncedAt: now() }
+        : entry));
     },
     markAllStale: () => {
       for (const [threadId, entry] of entries) {

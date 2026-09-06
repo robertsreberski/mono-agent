@@ -737,7 +737,13 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   app.get("/api/v1/events", (req, res, next) => {
     let subscribed: string | undefined;
     try {
-      subscribed = optionalThreadSubscription(req.query.thread);
+      const named = optionalThreadSubscription(req.query.thread);
+      // The CANONICAL id, because that is what every event carries. A console
+      // restores a selection it stored before a cron-channel adoption merged
+      // that conversation away, or opens a push link minted against the old id;
+      // matched by string equality, both subscribed to nothing and were served
+      // throttled hints for the conversation they had open.
+      subscribed = named === undefined ? undefined : service.resolveThreadId(named);
     } catch (error) {
       next(error);
       return;
@@ -1551,7 +1557,10 @@ function optionalThreadSubscription(value: unknown): string | undefined {
       400,
     );
   }
-  return value;
+  // The TRIMMED id, because that is the one that was validated and the one the
+  // dispatch compares against `event.threadId`. Returning the padded string
+  // matched nothing and served hints for the conversation on screen.
+  return value.trim();
 }
 
 function optionalQueryString(value: unknown, max: number): string | undefined {

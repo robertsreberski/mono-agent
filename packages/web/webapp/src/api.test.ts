@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, uploadContent, type ReplyAccessRefreshHandler } from "./api";
+import { api, NOT_MODIFIED, uploadContent, type ReplyAccessRefreshHandler } from "./api";
 import { agent, attachment, processJob } from "./test/fixtures";
 
 class FakeXMLHttpRequest {
@@ -687,5 +687,63 @@ describe("listing requests", () => {
     await api.bootstrap(undefined, { sourceId: "agent/one", archived: false, limit: 50 });
     expect(fetchMock.mock.calls[1]?.[0])
       .toBe("/api/v1/bootstrap?sourceId=agent%2Fone&archived=false&limit=50");
+  });
+});
+
+describe("conditional conversation reads", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("carries the validator a read answered with, so the next one can quote it", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(
+      { thread: { id: "thread-one" }, messages: [] },
+      { headers: { ETag: 'W/"abc"' } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const read = await api.thread("thread/one");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/thread%2Fone");
+    expect(new Headers((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).has("If-None-Match"))
+      .toBe(false);
+    expect(read).toMatchObject({ thread: { id: "thread-one" }, etag: 'W/"abc"' });
+  });
+
+  it("quotes a held validator and reads a 304 as an answer, not a failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 304 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const answer = await api.threadIfChanged("thread/one", 'W/"abc"');
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/thread%2Fone");
+    expect(new Headers((fetchMock.mock.calls[0]?.[1] as RequestInit).headers).get("If-None-Match"))
+      .toBe('W/"abc"');
+    expect(answer).toBe(NOT_MODIFIED);
+  });
+
+  it("takes the new validator when a conditional read answers with a transcript", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(
+      { thread: { id: "thread-one" }, messages: [{ id: "m1" }] },
+      { headers: { ETag: 'W/"def"' } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const answer = await api.threadIfChanged("thread/one", 'W/"abc"');
+
+    expect(answer).not.toBe(NOT_MODIFIED);
+    expect(answer).toMatchObject({ thread: { id: "thread-one" }, etag: 'W/"def"' });
+  });
+
+  it("still reports a refusal a conditional read provoked", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({ error: { code: "thread_not_found", message: "Gone." } }, { status: 404 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.threadIfChanged("thread/one", 'W/"abc"')).rejects.toMatchObject({
+      status: 404,
+      code: "thread_not_found",
+    });
   });
 });

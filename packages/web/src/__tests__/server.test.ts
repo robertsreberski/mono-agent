@@ -2,6 +2,7 @@ import { lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -282,6 +283,20 @@ describe("web HTTP server", () => {
     const revalidated = await rawGet(baseUrl, "/api/v1/bootstrap", { "if-none-match": String(etag) });
     expect(revalidated.status).toBe(304);
     expect(revalidated.body.byteLength).toBe(0);
+
+    // The conversation read too, because that is the one a reconnecting console
+    // repeats: its resync quotes this validator and pays a status line for a
+    // transcript that has not moved.
+    const threadId = await createThread(baseUrl, "agent-one");
+    const read = await rawGet(baseUrl, `/api/v1/threads/${threadId}`);
+    expect(read.status).toBe(200);
+    const threadEtag = read.headers.etag;
+    expect(threadEtag).toEqual(expect.any(String));
+    const unchanged = await rawGet(baseUrl, `/api/v1/threads/${threadId}`, {
+      "if-none-match": String(threadEtag),
+    });
+    expect(unchanged.status).toBe(304);
+    expect(unchanged.body.byteLength).toBe(0);
   });
 
   it("answers a bootstrap with one agent's bucket and a cursor for the rest of it", async () => {
@@ -2029,6 +2044,86 @@ describe("web HTTP server", () => {
       expect(refused.status).toBe(400);
       expect(await json(refused)).toMatchObject({ error: { code: "invalid_subscription" } });
     }
+  });
+
+  it("subscribes a console that padded its conversation id, and one that named a superseded one", async () => {
+    const lines = [
+      JSON.stringify({ kind: "append", delta: "hello " }),
+      JSON.stringify({ kind: "append", delta: "world" }),
+      JSON.stringify({ kind: "finish", finalText: "hello world" }),
+      "",
+    ];
+    const { baseUrl, root } = await start({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    // The row the cron-channel adoption writes when it merges legacy
+    // notification conversations into one: the old id still reaches the
+    // conversation, and a console that stored it subscribes with it.
+    const database = new DatabaseSync(join(root, "state", "state.sqlite"));
+    database.prepare(
+      "INSERT INTO thread_redirects (old_thread_id, new_thread_id, created_at) VALUES (?, ?, ?)",
+    ).run("legacy-thread", threadId, new Date().toISOString());
+    database.close();
+
+    // Padded, and superseded: both name this conversation, and a subscription
+    // that silently matched neither would read as a delta stream that stopped.
+    const padded = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(`  ${threadId}  `)}`);
+    const superseded = await fetch(`${baseUrl}/api/v1/events?thread=legacy-thread`);
+    const paddedReader = padded.body?.getReader();
+    const supersededReader = superseded.body?.getReader();
+    if (paddedReader === undefined || supersededReader === undefined) {
+      throw new Error("Expected two SSE response bodies.");
+    }
+    const nextPadded = sseEventReader(paddedReader);
+    const nextSuperseded = sseEventReader(supersededReader);
+    expect(await nextPadded()).toMatchObject({ type: "ready" });
+    expect(await nextSuperseded()).toMatchObject({ type: "ready" });
+
+    await settleTurn(baseUrl, threadId, "go");
+    for (const next of [nextPadded, nextSuperseded]) {
+      const streamed = await drainTurn(next);
+      const deltas = streamed.filter((event) => event.type === "message.delta");
+      expect(deltas.length).toBeGreaterThanOrEqual(2);
+      expect(deltas.every((event) => event.threadId === threadId)).toBe(true);
+      expect(streamed.filter((event) => event.type === "message.changed")).toEqual([]);
+    }
+
+    await Promise.all([paddedReader.cancel(), supersededReader.cancel()]);
+  });
+
+  it("says when the turn finished on the delta that finishes it", async () => {
+    const lines = [
+      JSON.stringify({ kind: "append", delta: "hello " }),
+      JSON.stringify({ kind: "append", delta: "world" }),
+      JSON.stringify({ kind: "finish", finalText: "hello world" }),
+      "",
+    ];
+    const { baseUrl } = await start({ fetchImpl: operatorFetch({ turns: () => lines.join("\n") }) });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const stream = await fetch(`${baseUrl}/api/v1/events?thread=${encodeURIComponent(threadId)}`);
+    const reader = stream.body?.getReader();
+    if (reader === undefined) throw new Error("Expected an SSE response body.");
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+
+    const detail = await settleTurn(baseUrl, threadId, "go");
+    const streamed = await drainTurn(next);
+    const deltas = streamed.filter((event) => event.type === "message.delta");
+    const message = wireMessages(detail).at(-1) as (WireMessage & { readonly finishedAt?: string }) | undefined;
+    expect(message?.finishedAt).toBeTypeOf("string");
+
+    // The turn's wall-clock window is what the Activity header draws, and
+    // `createdAt` is only half of it. Carried here, a subscribed console no
+    // longer buys a whole-conversation read at every turn finish to learn the
+    // other half.
+    const finish = deltas.at(-1);
+    expect(finish?.payload).toMatchObject({ status: "complete", finishedAt: message?.finishedAt });
+    // And only there: a delta written while the turn is still running has no
+    // finish to report.
+    for (const delta of deltas.slice(0, -1)) {
+      expect(delta.payload).not.toHaveProperty("finishedAt");
+    }
+
+    await reader.cancel();
   });
 
   /**
