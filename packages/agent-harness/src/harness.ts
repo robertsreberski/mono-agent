@@ -33,6 +33,10 @@ import type { AgentHarnessContinuationClaimCapability } from "./types.js";
 import { createSkillsCache } from "./skills/index.js";
 import type { SkillsCache } from "./skills/index.js";
 import { applyHarnessAttachments } from "./harness/attachments.js";
+import {
+  CancelledTurnCollector,
+  cancelledTurnReason,
+} from "./harness/cancelled-turn.js";
 import { loadHarnessHistory, prepareHarnessContext } from "./harness/context-preparation.js";
 import { AgentHarnessError } from "./harness/error.js";
 import {
@@ -72,6 +76,7 @@ export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
 
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
+const CANCELLATION_PUBLICATION_WAIT_MS = 5_000;
 const SHUTDOWN_DRAIN_WARNING =
   "Agent shutdown timed out while draining active runs; provider sessions and tool-history persistence were forcibly released.";
 
@@ -100,6 +105,7 @@ export class MonoAgentHarness implements AgentHarness {
   private activeRuns = 0;
   private readonly activeRunWaiters = new Set<() => void>();
   private readonly activeRunWarningSinks = new Set<(event: RuntimeEventLike) => void>();
+  private readonly cancellationPublicationBarriers = new Map<string, Promise<void>>();
   private readonly shutdownDrainTimeoutMs: number;
   private disposed = false;
   private disposePromise: Promise<void> | undefined;
@@ -163,6 +169,7 @@ export class MonoAgentHarness implements AgentHarness {
       throw new TypeError("conversationId must be a non-empty string.");
     }
     const normalized = conversationId.trim();
+    await this.waitForCancellationPublication(normalized);
     const historyStore = this.options.historyStore;
     const logicalConversationId = this.options.toolHistory?.logicalConversationId(normalized) ?? normalized;
     if (
@@ -240,6 +247,7 @@ export class MonoAgentHarness implements AgentHarness {
     const modelOverrideIsolated = requestOverridesModel(request, this.options.model);
     const continuationIsolated = request.continuation !== undefined;
     const isolated = proactiveIsolated || modelOverrideIsolated || continuationIsolated;
+    const cancelledTurnCollector = new CancelledTurnCollector();
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
     let toolHistoryStatus: "succeeded" | "failed" | "cancelled" = "failed";
@@ -253,10 +261,20 @@ export class MonoAgentHarness implements AgentHarness {
     }) ?? new NoopRunRecorder({ runId, conversationId: request.conversationId, isolated });
     await recorder.start?.();
 
+    try {
+      await this.waitForCancellationPublication(request.conversationId);
+    } catch (error) {
+      const failure = failureFromThrownError(error, false);
+      const summary = await safeRecorderFail(recorder, error);
+      return { metadata: responseMetadata(runId, request, undefined, summary), failure };
+    }
+
     if (request.abortSignal.aborted) {
+      const failureKind = cancellationFailureKind(request.abortSignal);
       const summary = await recorder.finish({
         cancelled: true,
-        failureKind: cancellationFailureKind(request.abortSignal),
+        failureKind,
+        cancellationReason: cancelledTurnReason(request.abortSignal.reason, failureKind),
       });
       return failureResponse({ runId, request, summary, kind: "cancelled", message: "Agent request was cancelled before runtime execution." });
     }
@@ -293,6 +311,7 @@ export class MonoAgentHarness implements AgentHarness {
     const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
+      if (!cancelledTurnCollector.observeRuntimeEvent(event)) return;
       recorder.onEvent(event);
       request.onEvent?.(event);
     };
@@ -320,6 +339,17 @@ export class MonoAgentHarness implements AgentHarness {
     let providerAttemptStarted = false;
     const providerAttemptSessionIds = new Set<string>();
     let runtimeResult: RuntimeResult | undefined;
+    let persistText = request.userMessage;
+    let terminalOwner: "running" | "success" | "cancelled" = "running";
+    let toolHistoryFinished = false;
+    let cancellationSummary: Awaited<ReturnType<typeof safeRecorderCancel>> = undefined;
+    let cancellationPromise: Promise<void> | undefined;
+    let historyMutation = Promise.resolve();
+    let sealedPersistText = persistText;
+    let sealedLiveInputs: ReturnType<LiveInputMailbox["applied"]> = [];
+    let cancelledAt = "";
+    let cancellationReason: unknown;
+    let cancellationAccountReason: ReturnType<typeof cancelledTurnReason> | undefined;
     const leavePending = (): void => {
       if (!left) {
         left = true;
@@ -336,6 +366,134 @@ export class MonoAgentHarness implements AgentHarness {
         providerAttemptSessionIds.add(providerSessionId);
       }
     };
+    const throwIfCancellationOwned = (): void => {
+      if (terminalOwner === "cancelled") {
+        throw request.abortSignal.reason ?? new Error("Agent request was cancelled.");
+      }
+    };
+    const publishCancellation = async (): Promise<void> => {
+      await historyMutation;
+      await cancelledTurnCollector.settleAcceptedLifecycleWrites();
+      let toolHistoryError: unknown;
+      if (!toolHistoryFinished) {
+        try {
+          await this.options.toolHistory?.writer.finishRun({
+            conversationId: request.conversationId,
+            logicalConversationId: this.options.toolHistory.logicalConversationId(request.conversationId),
+            runId,
+            isolated,
+          }, "cancelled", cancellationFailureKind(request.abortSignal), cancellationAccountReason?.code);
+        } catch (error) {
+          toolHistoryError = error;
+        } finally {
+          toolHistoryFinished = true;
+        }
+      }
+
+      await preparedHistoryAppend?.abort().catch(() => undefined);
+      preparedHistoryAppend = undefined;
+
+      const messages = cancelledTurnCollector.buildMessages({
+        runId,
+        userMessage: sealedPersistText,
+        liveInputs: sealedLiveInputs,
+        ...(request.sender === undefined ? {} : { sender: request.sender }),
+        reason: cancellationAccountReason
+          ?? cancelledTurnReason(cancellationReason, cancellationFailureKind(request.abortSignal)),
+        cancelledAt,
+      });
+      let cancellationAppend: PreparedHistoryAppend | undefined;
+      const providerHistoryOwnsCancellation = providerHistoryTurn !== undefined;
+      try {
+        if (providerHistoryTurn !== undefined) {
+          cancellationAppend = await providerHistoryTurn.prepareCommit(messages, { providerSessionSynced: false });
+          providerHistoryTurn = undefined;
+        } else {
+          cancellationAppend = await this.options.historyStore?.prepareAppend?.(
+            request.conversationId,
+            messages,
+          );
+        }
+        if (cancellationAppend !== undefined) await cancellationAppend.commit();
+        else await this.options.historyStore?.append(request.conversationId, messages);
+      } catch (error) {
+        await cancellationAppend?.abort().catch(() => undefined);
+        throw error;
+      }
+      if (providerHistoryOwnsCancellation) {
+        if (sessionRecord !== undefined) {
+          await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
+        }
+      } else {
+        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
+          request.conversationId,
+          sessionRecord,
+          ...providerAttemptSessionIds,
+          coordinatedProviderSessionId,
+          runtimeResult?.providerSessionId,
+        );
+      }
+      if (toolHistoryError !== undefined) {
+        try {
+          await recorder.onEvent({
+            type: "runtime_warning",
+            warning_kind: "cancelled_turn_tool_history_finalize_failed",
+            message: "Cancelled-turn tool history could not be finalized; the continuity account was still published.",
+          });
+        } catch {
+          // The durable conversation account is the cancellation continuity
+          // boundary. Tool-history observability remains fail-soft.
+        }
+      }
+    };
+    const finalizeCancellation = async (): Promise<void> => {
+      try {
+        await publishCancellation();
+      } finally {
+        cancellationSummary = await safeRecorderCancel(
+          recorder,
+          cancellationFailureKind(request.abortSignal),
+          cancellationAccountReason,
+        );
+      }
+    };
+    const onCancellation = (reason: unknown): void => {
+      if (isolated || terminalOwner !== "running") return;
+      terminalOwner = "cancelled";
+      toolHistoryStatus = "cancelled";
+      cancelledAt = this.nowIso();
+      cancellationReason = reason;
+      cancellationAccountReason = cancelledTurnReason(reason, cancellationFailureKind(request.abortSignal));
+      sealedPersistText = persistText;
+      sealedLiveInputs = liveInputMailbox?.applied() ?? [];
+      liveInputMailbox?.cancel();
+      if (liveInputMailbox !== undefined && this.activeLiveInputs.get(request.conversationId) === liveInputMailbox) {
+        this.activeLiveInputs.delete(request.conversationId);
+      }
+      leavePending();
+      cancelledTurnCollector.seal();
+      cancellationPromise = finalizeCancellation();
+      this.registerCancellationPublication(request.conversationId, cancellationPromise);
+    };
+    const cancellationResponse = async (): Promise<AgentHarnessResponse> => {
+      try {
+        await cancellationPromise;
+      } catch {
+        // The failed publication remains installed as a fail-closed barrier for
+        // later turns. The request that caused it still settled as cancelled.
+      }
+      return {
+        metadata: responseMetadata(runId, request, context, cancellationSummary, runtimeResult),
+        failure: {
+          kind: "cancelled",
+          message: "Agent request was cancelled during the turn.",
+          ...(runtimeResult === undefined ? {} : { details: runtimeResult }),
+        },
+      };
+    };
+    const onAbort = (): void => { onCancellation(request.abortSignal.reason); };
+    request.abortSignal.addEventListener("abort", onAbort, { once: true });
+    if (request.abortSignal.aborted) onAbort();
     try {
       if (request.sessionBoundary !== undefined) {
         emit(withSessionBoundaryTimestamp(request.sessionBoundary, this.nowIso()));
@@ -378,9 +536,11 @@ export class MonoAgentHarness implements AgentHarness {
       // document body never leaks into future prompts or memory recall.
       const {
         request: activeRequest,
-        persistUserMessage: persistText,
+        persistUserMessage,
         attachmentContext,
       } = await applyHarnessAttachments(this.options, request, runId, emit);
+      persistText = persistUserMessage;
+      throwIfCancellationOwned();
       // Durable Pi transcripts are safe to resume across a restart only when the
       // canonical history store owns their epoch and dirty/clean transaction.
       // Merely hashing a conversation id is insufficient: a crash can persist Pi
@@ -395,9 +555,18 @@ export class MonoAgentHarness implements AgentHarness {
         && historyStore?.providerSessionRetirement === "fail-closed"
         && beginProviderSessionTurn !== undefined;
       if (durableProviderSessionsEnabled) {
-        providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId);
-        coordinatedProviderSessionId = providerHistoryTurn.providerSessionId;
-        coordinatedProviderSessionRevision = providerHistoryTurn.providerSessionRevision;
+        const beginMutation = (async () => {
+          providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId);
+        })();
+        historyMutation = beginMutation.then(() => undefined, () => undefined);
+        await beginMutation;
+        throwIfCancellationOwned();
+        const begunProviderHistoryTurn = providerHistoryTurn;
+        if (begunProviderHistoryTurn === undefined) {
+          throw new Error("Provider history turn did not initialize.");
+        }
+        coordinatedProviderSessionId = begunProviderHistoryTurn.providerSessionId;
+        coordinatedProviderSessionRevision = begunProviderHistoryTurn.providerSessionRevision;
       }
 
       let resumeSessionId = providerHistoryTurn?.providerSessionId ?? sessionRecord?.providerSessionId;
@@ -433,6 +602,7 @@ export class MonoAgentHarness implements AgentHarness {
           }
           throw error;
         }
+        throwIfCancellationOwned();
         if (sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId) {
           this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
         }
@@ -470,6 +640,7 @@ export class MonoAgentHarness implements AgentHarness {
         turnId: runId,
       }, emit);
       context = prepared.context;
+      throwIfCancellationOwned();
 
       let resumeError: unknown;
       try {
@@ -495,6 +666,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.toolHistoryProjection,
           attachmentContext,
           continuationCapabilities,
+          cancelledTurnCollector,
           liveInputMailbox,
           () => noteProviderStart(resumeSessionId),
         );
@@ -536,6 +708,7 @@ export class MonoAgentHarness implements AgentHarness {
           turnId: runId,
         }, emit);
         context = prepared.context;
+        throwIfCancellationOwned();
         runtimeResult = await runHarnessRuntime(
           this.options,
           this.runLimiter,
@@ -556,6 +729,7 @@ export class MonoAgentHarness implements AgentHarness {
           prepared.toolHistoryProjection,
           attachmentContext,
           continuationCapabilities,
+          cancelledTurnCollector,
           liveInputMailbox,
           () => noteProviderStart(undefined),
         );
@@ -574,32 +748,36 @@ export class MonoAgentHarness implements AgentHarness {
       // evict/dispose any returned provider session (mirrors the empty-turn
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
-        toolHistoryStatus = "cancelled";
+        onAbort();
         await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
           request.conversationId,
           sessionRecord,
-          ...providerAttemptSessionIds,
-          runtimeResult?.providerSessionId,
+          runtimeResult.providerSessionId,
         );
-        const summary = await recorder.finish({
+        if (!isolated) return await cancellationResponse();
+        toolHistoryStatus = "cancelled";
+        const failureKind = cancellationFailureKind(request.abortSignal);
+        const cancellationReason = cancelledTurnReason(request.abortSignal.reason, failureKind);
+        const summary = await commitRecorderFinish(recorder, {
           ...runtimeResult,
           systemPrompt: context.prompt,
           isolated,
           cancelled: true,
-          failureKind: cancellationFailureKind(request.abortSignal),
+          failureKind,
+          cancellationReason,
         });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
-          failure: {
-            kind: "cancelled",
-            message: "Agent request was cancelled during the turn.",
-            details: runtimeResult,
-          },
+          failure: { kind: "cancelled", message: "Agent request was cancelled during the turn.", details: runtimeResult },
         };
       }
 
       const failure = failureFromRuntimeResult(runtimeResult);
       if (failure !== undefined) {
+        if (failure.kind === "cancelled" && !isolated) {
+          onCancellation(runtimeResult.errorDetails ?? runtimeResult.error ?? runtimeResult.failureKind);
+          return await cancellationResponse();
+        }
         // Failure-shaped results may still have appended provider transcript
         // state. Canonical history rejects the turn, so retire every attempted
         // identity and leave a durable coordinator turn dirty for epoch rotation.
@@ -646,6 +824,7 @@ export class MonoAgentHarness implements AgentHarness {
       // non-terminal. It gives cancellation one final window before any durable
       // conversation state is committed and before `run_finished` is visible.
       await recorder.prepareFinish?.(successResult);
+      throwIfCancellationOwned();
 
       if (isolated) {
         // An isolated proactive turn must not warm the shared conversation's
@@ -664,27 +843,21 @@ export class MonoAgentHarness implements AgentHarness {
       // history/memory persistence starts, because those durable writes cannot be
       // rolled back safely.
       if (request.abortSignal.aborted) {
+        onAbort();
+        if (!isolated) return await cancellationResponse();
         toolHistoryStatus = "cancelled";
-        if (!isolated) {
-          await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-            request.conversationId,
-            sessionRecord,
-            ...providerAttemptSessionIds,
-            runtimeResult.providerSessionId,
-          );
-        }
         const summary = await commitRecorderFinish(recorder, {
           ...successResult,
           cancelled: true,
           failureKind: cancellationFailureKind(request.abortSignal),
+          cancellationReason: cancelledTurnReason(
+            request.abortSignal.reason,
+            cancellationFailureKind(request.abortSignal),
+          ),
         });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
-          failure: {
-            kind: "cancelled",
-            message: "Agent request was cancelled during the turn.",
-            details: runtimeResult,
-          },
+          failure: { kind: "cancelled", message: "Agent request was cancelled during the turn.", details: runtimeResult },
         };
       }
 
@@ -704,8 +877,10 @@ export class MonoAgentHarness implements AgentHarness {
           runId,
           request.sender,
         );
+        throwIfCancellationOwned();
         try {
-          if (providerHistoryTurn !== undefined) {
+          const historyPreparation = (async () => {
+            if (providerHistoryTurn !== undefined) {
             const providerSessionId = typeof runtimeResult.providerSessionId === "string"
               ? runtimeResult.providerSessionId.trim()
               : "";
@@ -739,27 +914,30 @@ export class MonoAgentHarness implements AgentHarness {
             );
             providerHistoryOwnershipTransferred = true;
             providerHistoryTurn = undefined;
-          } else {
-            preparedHistoryAppend = await this.options.historyStore?.prepareAppend?.(
-              request.conversationId,
-              completedTurn.messages,
-            );
-          }
-          if (claimedContinuationCapabilities.length > 0) {
-            const priorHistory = prepared.historyOmitted
-              ? await loadHarnessHistory(this.options, request.conversationId)
-              : prepared.history;
-            await finalizeContinuationOriginContexts(
-              claimedContinuationCapabilities,
-              buildContinuationOriginContext({
-                conversationId: request.conversationId,
-                runId,
-                capturedAt: completedTurn.capturedAt,
-                priorHistory,
-                completedTurn: completedTurn.messages,
-              }),
-            );
-          }
+            } else {
+              preparedHistoryAppend = await this.options.historyStore?.prepareAppend?.(
+                request.conversationId,
+                completedTurn.messages,
+              );
+            }
+            if (claimedContinuationCapabilities.length > 0) {
+              const priorHistory = prepared.historyOmitted
+                ? await loadHarnessHistory(this.options, request.conversationId)
+                : prepared.history;
+              await finalizeContinuationOriginContexts(
+                claimedContinuationCapabilities,
+                buildContinuationOriginContext({
+                  conversationId: request.conversationId,
+                  runId,
+                  capturedAt: completedTurn.capturedAt,
+                  priorHistory,
+                  completedTurn: completedTurn.messages,
+                }),
+              );
+            }
+          })();
+          historyMutation = historyPreparation.then(() => undefined, () => undefined);
+          await historyPreparation;
         } catch (error) {
           await preparedHistoryAppend?.abort().catch(() => undefined);
           preparedHistoryAppend = undefined;
@@ -778,30 +956,25 @@ export class MonoAgentHarness implements AgentHarness {
       // Preparation above can perform bounded durable I/O. Cancellation still
       // wins until the synchronous commit marker below.
       if (request.abortSignal.aborted) {
+        onAbort();
+        if (!isolated) return await cancellationResponse();
         toolHistoryStatus = "cancelled";
-        if (!isolated) {
-          await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-            request.conversationId,
-            sessionRecord,
-            ...providerAttemptSessionIds,
-            runtimeResult.providerSessionId,
-          );
-        }
         const summary = await commitRecorderFinish(recorder, {
           ...successResult,
           cancelled: true,
           failureKind: cancellationFailureKind(request.abortSignal),
+          cancellationReason: cancelledTurnReason(
+            request.abortSignal.reason,
+            cancellationFailureKind(request.abortSignal),
+          ),
         });
         return {
           metadata: responseMetadata(runId, request, context, summary, runtimeResult),
-          failure: {
-            kind: "cancelled",
-            message: "Agent request was cancelled during the turn.",
-            details: runtimeResult,
-          },
+          failure: { kind: "cancelled", message: "Agent request was cancelled during the turn.", details: runtimeResult },
         };
       }
 
+      terminalOwner = "success";
       conversationCommitStarted = true;
       lifecycle?.markCommitted();
       if (completedTurn !== undefined) {
@@ -880,6 +1053,9 @@ export class MonoAgentHarness implements AgentHarness {
         metadata: responseMetadata(runId, request, context, summary, runtimeResult),
       };
     } catch (error) {
+      if (cancellationPromise !== undefined) {
+        return await cancellationResponse();
+      }
       toolHistoryStatus = request.abortSignal.aborted ? "cancelled" : "failed";
       // A provider may already have persisted its transcript before any of the
       // host's pre-commit stages (recorder preparation, continuation binding,
@@ -898,7 +1074,11 @@ export class MonoAgentHarness implements AgentHarness {
       const cancelledBeforeCommit = request.abortSignal.aborted && !conversationCommitStarted;
       const failure = failureFromThrownError(error, cancelledBeforeCommit);
       const summary = cancelledBeforeCommit
-        ? await safeRecorderCancel(recorder, cancellationFailureKind(request.abortSignal))
+        ? await safeRecorderCancel(
+          recorder,
+          cancellationFailureKind(request.abortSignal),
+          cancelledTurnReason(request.abortSignal.reason, cancellationFailureKind(request.abortSignal)),
+        )
         : await safeRecorderFail(recorder, error);
       return {
         metadata: responseMetadata(runId, request, context, summary),
@@ -906,12 +1086,21 @@ export class MonoAgentHarness implements AgentHarness {
       };
     } finally {
       try {
-        await this.options.toolHistory?.writer.finishRun({
-          conversationId: request.conversationId,
-          logicalConversationId: this.options.toolHistory.logicalConversationId(request.conversationId),
-          runId,
-          isolated,
-        }, toolHistoryStatus, toolHistoryStatus === "cancelled" ? cancellationFailureKind(request.abortSignal) : undefined);
+        if (!toolHistoryFinished) {
+          await this.options.toolHistory?.writer.finishRun({
+            conversationId: request.conversationId,
+            logicalConversationId: this.options.toolHistory.logicalConversationId(request.conversationId),
+            runId,
+            isolated,
+          },
+          toolHistoryStatus,
+          toolHistoryStatus === "cancelled" ? cancellationFailureKind(request.abortSignal) : undefined,
+          toolHistoryStatus === "cancelled"
+            ? cancelledTurnReason(request.abortSignal.reason, cancellationFailureKind(request.abortSignal)).code
+            : undefined,
+          );
+          toolHistoryFinished = true;
+        }
       } finally {
         // A custom injected lifecycle writer may throw. It can retain its
         // failure semantics, but must never strand mailbox/session cleanup.
@@ -962,7 +1151,41 @@ export class MonoAgentHarness implements AgentHarness {
           }
         }
         this.activeRunWarningSinks.delete(emitShutdownWarning);
+        request.abortSignal.removeEventListener("abort", onAbort);
       }
+    }
+  }
+
+  private registerCancellationPublication(conversationId: string, publication: Promise<void>): void {
+    this.cancellationPublicationBarriers.set(conversationId, publication);
+    void publication.then(() => {
+      if (this.cancellationPublicationBarriers.get(conversationId) === publication) {
+        this.cancellationPublicationBarriers.delete(conversationId);
+      }
+    }, () => {
+      // Retain the rejected barrier. Later turns fail closed until the owning
+      // history/storage problem is repaired or the harness is replaced.
+    });
+  }
+
+  private async waitForCancellationPublication(conversationId: string): Promise<void> {
+    const publication = this.cancellationPublicationBarriers.get(conversationId);
+    if (publication === undefined) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        publication,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("cancellation publication wait elapsed")), CANCELLATION_PUBLICATION_WAIT_MS);
+        }),
+      ]);
+    } catch {
+      throw new AgentHarnessError(
+        "cancellation_continuity_unavailable",
+        "The previous cancelled turn could not be published safely; retry after the conversation store recovers.",
+      );
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Preserve natural conversation continuity after any admitted interactive run
+  is cancelled. The next turn receives a 48 KiB redacted account of the request,
+  partial assistant output, completed tool pairs, in-flight work, omissions, and
+  typed cancellation provenance; durable Pi epochs rotate so provider state and
+  canonical history stay aligned. Cancelled turns remain excluded from memory
+  capture, while `RunHistory` and `SessionHistory` keep the deeper evidence.
 - Add explicit Ollama Web Search alongside the existing SearXNG, Codex, and
   keyless routes. Preserve `auto` as SearXNG → Codex → keyless, repair the
   canonical nested SearXNG config while retaining its legacy endpoint alias,

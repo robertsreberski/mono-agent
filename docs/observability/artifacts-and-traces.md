@@ -83,7 +83,7 @@ A run summary's `status` is one of:
 | `running` | The run is in flight (not yet settled). |
 | `succeeded` | The turn completed normally. |
 | `failed` | The turn ended with an error. |
-| `cancelled` | The turn was aborted by a caller (e.g. a newer follow-up cancelled it). |
+| `cancelled` | The turn was aborted after admission. Its `cancellationReason` preserves the host-observed provenance without changing this terminal status. |
 | `interrupted` | The run never settled on its own — the process died mid-run, or a watchdog (e.g. the [cron run watchdog](/channels/cron/#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve)) aborted a wedged run. |
 
 A crashed process can leave the most recent incrementally checkpointed summary at `running`. To self-heal that, the host runs `reconcileStaleRunArtifacts()` **once at startup**: it scans the artifacts directory and rewrites any summary left at `running` by a *previous* process to `interrupted` (failure kind `process_death`) while preserving the checkpointed event trail. It is fire-and-forget — best-effort, runs in the background, and never gates readiness — so a large artifacts directory can never delay start. In the [Phoenix export](/observability/phoenix-and-backfill/), `interrupted` maps to an ERROR span, alongside `failed` and `cancelled`.
@@ -91,6 +91,8 @@ A crashed process can leave the most recent incrementally checkpointed summary a
 Reconciliation repairs status only and can report only data that reached a recorder write boundary. It can preserve the last completed checkpointed prefix; a death before the first incremental checkpoint or after a failed write can still reconcile as `process_death` with `eventCount: 0` even though events occurred. A death between the two file renames can also leave a newer events file beside the prior summary. The live broadcast may show connected TUI/web clients a newer best-effort tail, but it is not recovery for data absent from disk.
 
 Failure kinds are an open string set because provider/runtime adapters can surface new values. The display taxonomy currently explains the common operator-facing kinds including `context_limit`, `usage_limit`, `process_death`, `cancelled` and its cancellation variants, `provider_unavailable`, `provider_unavailable_exhausted`, `runtime_error`, `session_not_found`, and `session_busy`; unknown values stay visible and get a generic artifact/log inspection hint. `context_limit` specifically means request input still exceeded the selected model's usable window after bridge recovery; unlike quota/output/max-turn `usage_limit`, it is eligible for configured route fallback.
+
+Cancelled summaries also carry a structured `cancellationReason` with `failureKind`, normalized `code`, honest host `notice`, and optional `channel` and sanitized `detail`. The recorder and recorded-run reader bound and redact the structure before it reaches artifacts or `RunHistory`. The reason distinguishes `cancelled_user` from generic `cancelled` and can further identify shutdown, stale-session eviction, signal, timeout, another recorded abort reason, or an abort whose reason was not recorded. This field describes provenance; it does not introduce another terminal status.
 
 For a read-only inventory, run `mono-agent runs audit`. It scans every `*.summary.json` file in the artifact directory, reports malformed summaries, status and failure-kind histograms, unrecognized values, stale `running` summaries, and failure-kind rates. Unlike startup reconciliation, the audit never rewrites `running` summaries; it only flags what the startup reconciler would consider stale.
 
@@ -162,6 +164,8 @@ The boundary is deliberately narrower than direct artifact access. `RunHistory` 
 
 Start with active conversation history for the current exchange. Use `MemoryRecall` for intentionally captured durable facts. Use `RunHistory` when exact settled prior-run evidence or interrupted-work recovery context is needed.
 
+For an admitted, non-isolated cancelled interactive turn, active conversation history already includes a 48 KiB redacted continuity account: the request, partial assistant output, retained whole completed tool pairs, in-flight/omission markers, and the same typed cancellation reason. That automatic account gives the next turn immediate continuity. `RunHistory` remains the deliberate deeper evidence path for the run overview and omitted details; it does not synthesize or duplicate the history messages.
+
 ## Canonical tool lifecycle evidence (`SessionHistory`)
 
 Managed-tool invocation/result history does **not** use run JSONL, web SQLite,
@@ -173,6 +177,14 @@ cancelled, timed-out, signalled, or interrupted tool can remain discoverable
 even when the turn produced no canonical message-history entry. Recovery closes
 a dangling invocation as `interrupted`; it never reruns the tool or duplicates
 an already persisted phase.
+
+When a run is finalized as cancelled, a dangling invocation is closed as
+`cancelled` with its terminal `failure_kind` unchanged and the normalized
+cancellation reason code in `detail_code`; the synthetic result payload carries
+the same reason. Completed invocation/result rows remain intact. If a retained
+pair is already represented in the automatic continuity account, cold
+projection skips those exact record ids, while `SessionHistory` still returns
+the canonical row on explicit request.
 
 The protected tool-history directory fails closed on every unsupported entry,
 including stray files such as `.DS_Store`. The synchronous main-thread reader

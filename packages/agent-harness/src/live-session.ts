@@ -47,6 +47,12 @@ export interface LiveSessionRunLifecycle {
 
 const DEFAULT_MAX_PENDING_PER_CONVERSATION = 100;
 
+function agentShutdownCancelReason(): Error & { readonly cancelInitiator: "coordinator_shutdown" } {
+  return Object.assign(new Error("Agent is shutting down."), {
+    cancelInitiator: "coordinator_shutdown" as const,
+  });
+}
+
 interface QueuedTurn {
   readonly request: AgentHarnessRequest;
   readonly resolve: (response: AgentHarnessResponse) => void;
@@ -243,9 +249,10 @@ export function createLiveSessionManager(options: LiveSessionManagerOptions): Li
       for (const [conversationId, queue] of conversations) {
         const activeCommitted = queue.activeCommitted;
         if (!activeCommitted) {
-          queue.activeController?.abort();
+          const reason = agentShutdownCancelReason();
+          queue.activeController?.abort(reason);
           // Shutdown does not wait for an uncommitted runner to honor the abort.
-          queue.activeTurn?.reject(new AgentResponseCancelledError("Live session manager has been disposed."));
+          queue.activeTurn?.reject(new AgentResponseCancelledError("Live session manager has been disposed.", { reason }));
         } else if (queue.drainPromise !== undefined) {
           // Once markCommitted() has fired, cancellation is deliberately too
           // late. Keep the continuation store alive until that turn finishes

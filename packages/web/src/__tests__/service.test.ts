@@ -3459,6 +3459,8 @@ describe("WebService", () => {
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "cancelled");
     expect(service.thread(thread.id).messages.at(-1)?.status).toBe("cancelled");
     expect(isChannelUserCancelReason(turnAbortReason)).toBe(true);
+    if (!isChannelUserCancelReason(turnAbortReason)) throw new Error("Expected a branded Web cancellation reason.");
+    expect(turnAbortReason.channel).toBe("Web");
     expect(turnAbortedAfterCancel).toBe(true);
     await service.stop();
   });

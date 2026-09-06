@@ -1,6 +1,7 @@
 import { isChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import type {
   RunRecorder,
+  RunCancellationReason,
   RunSummary,
   RuntimeResultLike,
 } from "@mono-agent/observability";
@@ -92,9 +93,14 @@ export function cancellationFailureKind(signal: AbortSignal): "cancelled" | "can
 export async function safeRecorderCancel(
   recorder: RunRecorder,
   failureKind: "cancelled" | "cancelled_user",
+  cancellationReason?: RunCancellationReason,
 ): Promise<RunSummary | undefined> {
   try {
-    return await recorder.finish({ cancelled: true, failureKind });
+    return await recorder.finish({
+      cancelled: true,
+      failureKind,
+      ...(cancellationReason === undefined ? {} : { cancellationReason }),
+    });
   } catch {
     return undefined;
   }

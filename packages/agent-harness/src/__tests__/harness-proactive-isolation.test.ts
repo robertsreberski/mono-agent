@@ -62,6 +62,40 @@ function request(conversationId: string, userMessage = "hello") {
 }
 
 describe("AgentHarness proactive session isolation", () => {
+  it("keeps a cancelled isolated cron turn out of canonical continuity history", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const controller = new AbortController();
+    const fake = createSessionFakeRuntime(async () => {
+      controller.abort(new Error("Cron job exceeded maxRunMs (1000ms)."));
+      return { text: "late cron answer", providerSessionId: "ps-cancelled-cron" };
+    });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore,
+      session: isolatingSession,
+    });
+
+    const response = await harness.run({
+      ...cronRequest("cron:cancelled", "isolated work"),
+      abortSignal: controller.signal,
+    });
+
+    expect(response.failure?.kind).toBe("cancelled");
+    expect(response.metadata.summary).toMatchObject({
+      status: "cancelled",
+      isolated: true,
+      cancellationReason: {
+        code: "reason",
+        notice: "Run cancelled: Cron job exceeded maxRunMs (1000ms).",
+      },
+    });
+    expect(await historyStore.load("cron:cancelled")).toEqual([]);
+    expect(fake.disposedSessions).toContain("ps-cancelled-cron");
+  });
+
   it("an isolated cron run neither resumes nor persists the shared session", async () => {
     const identityPath = await identityFixture();
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-cron" }));

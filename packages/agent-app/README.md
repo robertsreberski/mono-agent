@@ -32,6 +32,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Preserve bounded answered/expired `AskUser` evidence in the assistant history
   copy so cold/stateless provider replay does not lose the out-of-band exchange;
   cancelled asks are not journaled.
+- Publish the harness's bounded, redacted cancellation account for every
+  admitted non-isolated interactive turn that settles as cancelled, including
+  operator stop, shutdown, stale-session, signal, timeout, generic, and
+  unrecorded-reason provenance. The next turn sees that account automatically;
+  `RunHistory` and `SessionHistory` remain the deeper evidence paths.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
   conversation, independent of daily rollover buckets.

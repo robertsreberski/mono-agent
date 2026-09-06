@@ -104,6 +104,34 @@ describe("JsonlRunRecorder", () => {
     expect(onDisk.userInput).toBe("What is the capital of France?");
   });
 
+  it("persists typed cancellation provenance without changing the terminal failure kind", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "cancelled-run",
+      conversationId: "web:cancelled",
+      artifactDir: dir,
+    });
+    const cancellationReason = {
+      failureKind: "cancelled_user",
+      code: "operator",
+      notice: "Run stopped by the operator.",
+      channel: "Web",
+    };
+
+    const summary = await recorder.finish({
+      cancelled: true,
+      failureKind: "cancelled_user",
+      cancellationReason,
+    });
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
+      readonly failureKind?: string;
+      readonly cancellationReason?: unknown;
+    };
+
+    expect(summary).toMatchObject({ status: "cancelled", failureKind: "cancelled_user", cancellationReason });
+    expect(onDisk).toMatchObject({ failureKind: "cancelled_user", cancellationReason });
+  });
+
   it("persists the model (from the result) and system prompt (from the recorder option)", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({

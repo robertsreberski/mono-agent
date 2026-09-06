@@ -141,7 +141,16 @@ describe("cancelled run recovery contract", () => {
       startedAt: "2026-09-05T08:00:00.000Z",
       userInput: "continue the interrupted migration work",
       events: timelineEvents,
-      result: { cancelled: true, failureKind: "cancelled_user" },
+      result: {
+        cancelled: true,
+        failureKind: "cancelled_user",
+        cancellationReason: {
+          failureKind: "cancelled_user",
+          code: "operator",
+          notice: "Run stopped by the operator.",
+          channel: "Web",
+        },
+      },
     });
     await writeRecordedRun({
       artifactDir,
@@ -194,7 +203,13 @@ describe("cancelled run recovery contract", () => {
       "cancelled",
       `checksum was interrupted; ${instructionText}`,
     );
-    await writer.finishRun(runBinding, "cancelled", "cancelled_user");
+    const pendingInvocation = await writer.persist(runBinding, {
+      phase: "invocation",
+      toolCallId: "slow-validation",
+      toolName: "Validate",
+      arguments: { stage: "migration", path: "/private/work/pending-schema.json" },
+    });
+    await writer.finishRun(runBinding, "cancelled", "cancelled_user", "operator");
     await writeToolCall(writer, {
       conversationId: "web:foreign#2026-09-05",
       logicalConversationId: "web:foreign",
@@ -254,7 +269,11 @@ describe("cancelled run recovery contract", () => {
         arguments: listed.navigation.nextActions[candidateIndex]!.arguments,
       });
       const overview = structured<{
-        readonly run: { readonly status: string; readonly failureKind?: string };
+        readonly run: {
+          readonly status: string;
+          readonly failureKind?: string;
+          readonly cancellationReason?: { readonly code: string; readonly notice: string };
+        };
         readonly finalOutput?: string;
         readonly nextCursor?: string;
         readonly navigation: {
@@ -266,7 +285,11 @@ describe("cancelled run recovery contract", () => {
           }>;
         };
       }>(overviewResult);
-      expect(overview.run).toMatchObject({ status: "cancelled", failureKind: "cancelled_user" });
+      expect(overview.run).toMatchObject({
+        status: "cancelled",
+        failureKind: "cancelled_user",
+        cancellationReason: { code: "operator", notice: "Run stopped by the operator." },
+      });
       expect(overview).not.toHaveProperty("finalOutput");
       expect(overview.navigation.relatedTools[0]).toMatchObject({
         tool: "SessionHistory",
@@ -312,6 +335,7 @@ describe("cancelled run recovery contract", () => {
           readonly recordId: string;
           readonly resultRecordId?: string;
           readonly runId: string;
+          readonly toolCallId: string;
           readonly state: string;
           readonly preview: string;
         }>;
@@ -327,13 +351,29 @@ describe("cancelled run recovery contract", () => {
       }>(sessionSearchResult);
       expect(new Set(sessionSearch.items.map((item) => item.state))).toEqual(new Set(["success", "cancelled"]));
       expect(new Set(sessionSearch.items.map((item) => item.recordId)))
-        .toEqual(new Set([successRecords.invocationId, cancelledRecords.invocationId]));
-      expect(new Set(sessionSearch.items.map((item) => item.resultRecordId)))
-        .toEqual(new Set([successRecords.resultId, cancelledRecords.resultId]));
+        .toEqual(new Set([successRecords.invocationId, cancelledRecords.invocationId, pendingInvocation.recordId]));
+      expect([...new Set(sessionSearch.items.map((item) => item.resultRecordId).filter(Boolean))])
+        .toEqual(expect.arrayContaining([successRecords.resultId, cancelledRecords.resultId]));
+      expect(sessionSearch.items).toHaveLength(3);
       expect(sessionSearch.items.every((item) => item.runId === cancelledRunId)).toBe(true);
       expect(sessionSearch.items.map((item) => item.preview).join("\n")).not.toContain(largeResultEnd);
       expect(sessionSearch.navigation.guidance).toContain("not the full record");
       expect(sessionSearch.navigation.guidance).toContain("do not resume provider state");
+
+      const pendingItem = sessionSearch.items.find((item) => item.toolCallId === "slow-validation");
+      const pendingResultAction = sessionSearch.navigation.nextActions.find((action) =>
+        action.kind === "get_result" && action.arguments.recordId === pendingItem?.resultRecordId);
+      const pendingResult = structured<{
+        readonly record: { readonly failureKind?: string; readonly detailCode?: string; readonly chunk: string };
+      }>(await sessionClient.callTool({
+        name: SESSION_HISTORY_TOOL_NAME,
+        arguments: pendingResultAction!.arguments,
+      }));
+      expect(pendingResult.record).toMatchObject({
+        failureKind: "cancelled_user",
+        detailCode: "operator",
+      });
+      expect(pendingResult.record.chunk).toContain('"reason":"operator"');
 
       for (const item of sessionSearch.items) {
         const resultAction = sessionSearch.navigation.nextActions.find((action) =>
@@ -413,6 +453,8 @@ describe("cancelled run recovery contract", () => {
         if (item.resultRecordId === successRecords.resultId) {
           expect(resultPages).toBeGreaterThan(1);
           expect(resultPayload).toContain(largeResultEnd);
+        } else if (item.toolCallId === "slow-validation") {
+          expect(resultPayload).toContain('"reason":"operator"');
         } else {
           expect(resultPayload).toContain("checksum was interrupted");
         }
