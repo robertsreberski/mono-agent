@@ -253,6 +253,102 @@ describe("web SELF-CONFIG sessions", () => {
       await service.stop();
     }
   });
+
+  it("announces a configuration capability that turns on after discovery", async () => {
+    // The real host's `supports()` also reads managed-startup completion, which
+    // finishes AFTER the channels that serve `/v1/info` and can be revoked
+    // later. So the console can already hold a live connection and a complete
+    // summary while the capability is still off, and when it turns on nothing
+    // on the summary moves. With the field off the summary, only the projection
+    // knows -- so the projection's own transitions have to be announced, or an
+    // open console never learns it can configure the agent.
+    let supported = false;
+    const host = {
+      supports: () => supported,
+      create: async (): Promise<never> => { throw new Error("configuration session not used by this test"); },
+    };
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({ discoverImpl: async () => discovered, configurationHost: host });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      expect(events).toHaveLength(1);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+
+      // The capability turns on. Only the heartbeat moves with it.
+      supported = true;
+      await poll("2026-07-17T09:00:05.000Z");
+      expect(events).toHaveLength(2);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // Still on, so still nothing to say.
+      await poll("2026-07-17T09:00:10.000Z");
+      expect(events).toHaveLength(2);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBe(true);
+
+      // And revoking it is a transition too -- otherwise the console keeps
+      // offering a button whose session now 409s.
+      supported = false;
+      await poll("2026-07-17T09:00:15.000Z");
+      expect(events).toHaveLength(3);
+      expect((await service.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("withholds the capability without a host, without its consent, and without a live connection", async () => {
+    const stub = (supports: () => boolean) => ({
+      supports,
+      create: async (): Promise<never> => { throw new Error("configuration session not used by this test"); },
+    });
+
+    // The host answers no.
+    const refused = await createService({ configurationHost: stub(() => false) });
+    try {
+      expect((await refused.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+    } finally {
+      await refused.stop();
+    }
+
+    // The host would answer yes, but the operator probe failed, so there is no
+    // connection to configure THROUGH. The projection is the only guard left
+    // for that, and offering the button here would hand the browser a session
+    // the service cannot open.
+    const upstream = operatorFetch();
+    const unreachable = await createService({
+      configurationHost: stub(() => true),
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/v1/info")) throw new Error("operator probe failed");
+        return upstream(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      const agent = (await unreachable.bootstrap()).agents[0];
+      expect(agent).toMatchObject({ sourceId: "agent-one", status: "offline" });
+      expect(agent?.supportsConfiguration).toBeUndefined();
+    } finally {
+      await unreachable.stop();
+    }
+
+    // No host at all.
+    const bare = await createService();
+    try {
+      expect((await bare.bootstrap()).agents[0]?.supportsConfiguration).toBeUndefined();
+    } finally {
+      await bare.stop();
+    }
+  });
 });
 
 describe("WebService", () => {

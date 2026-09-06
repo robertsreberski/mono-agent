@@ -656,6 +656,13 @@ export class WebService {
   private readonly askWatches = new Map<string, AskWatch>();
   private connections = new Map<string, AgentConnection>();
   private discoveredAgents = new Map<string, DiscoveredOperatorAgent>();
+  /**
+   * The source ids the configuration capability was projected for on the last
+   * discovery pass. `supportsConfiguration` is not on the summary and not in
+   * the store, so this is the only record of it that survives a poll -- and the
+   * only way `refreshAgentsOnce` can tell that the capability itself moved.
+   */
+  private configurableSources = new Set<string>();
   private readonly configurationSessions = new Map<string, ActiveConfigurationSession>();
   private readonly configuringSources = new Set<string>();
   /** Bounded catalog-admitted model refs per agent, seeded from `modelOptions`
@@ -819,6 +826,11 @@ export class WebService {
    * re-fetched its bootstrap, skills registry and cron overview for a
    * heartbeat. Anything else that is projected rather than persisted belongs
    * here too, not in `refreshAgentsOnce`.
+   *
+   * The cost of parking a field here is that it changes without any
+   * `agents.changed`, so an open console never learns: if its transitions have
+   * to reach the browser, announce them explicitly in `refreshAgentsOnce`, the
+   * way `configurableSources` does for this one.
    */
   private decorateConfigurationCapability(agent: WebAgentSummary): WebAgentSummary {
     const host = this.options.configurationHost;
@@ -2586,6 +2598,10 @@ export class WebService {
       const changed = this.store.markDiscoveredAgentsOffline();
       this.connections = new Map();
       this.discoveredAgents = new Map();
+      // Both inputs the projection reads are gone, so nothing is configurable
+      // now. Clearing it here is what makes the recovery a transition worth
+      // announcing rather than a no-op against a stale set.
+      this.configurableSources = new Set();
       if (changed) this.emit("agents.changed");
       return;
     }
@@ -2652,6 +2668,23 @@ export class WebService {
     this.connections = nextConnections;
     this.discoveredAgents = new Map(discovered.map((agent) => [agent.source.sourceId, agent]));
     const agentsChanged = this.store.replaceAgents(summaries);
+    // The capability is projected, never stored, so when a host starts (or
+    // stops) answering for an agent NOTHING on the summary moves and
+    // `replaceAgents` is right to say so. The real host's `supports()` reads
+    // managed-startup completion, which finishes after the channels that serve
+    // `/v1/info` and can be revoked later -- so this flips under an open
+    // console, which would otherwise keep the Configure action hidden until an
+    // unrelated change, or keep offering one whose session now 409s. Computed
+    // here, off the connections and discovery records just assigned, and before
+    // the cron refresh awaits on the network.
+    const configurable = new Set(
+      summaries
+        .filter((summary) => this.decorateConfigurationCapability(summary).supportsConfiguration === true)
+        .map((summary) => summary.sourceId),
+    );
+    const capabilityChanged = configurable.size !== this.configurableSources.size
+      || [...configurable].some((sourceId) => !this.configurableSources.has(sourceId));
+    this.configurableSources = configurable;
     const cronChangedSources = new Set<string>();
     await Promise.all([...nextConnections.entries()].map(async ([sourceId, connection]) => {
       if (connection.info.cron?.read !== true) return;
@@ -2668,7 +2701,7 @@ export class WebService {
         });
       }
     }));
-    if (agentsChanged) this.emit("agents.changed");
+    if (agentsChanged || capabilityChanged) this.emit("agents.changed");
     for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
     if (cronChangedSources.size > 0) this.emit("threads.changed");
     for (const threadId of this.store.queuedLiveInputThreadIds()) {

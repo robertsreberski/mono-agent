@@ -158,7 +158,10 @@ export interface WebAgentSummary {
    * Projected, never persisted: the console's own state database has no column
    * for it, so it is added when a summary is answered to a client and must
    * stay off the summaries discovery hands to `replaceAgents` -- a field the
-   * store cannot store makes every heartbeat look like a fleet change.
+   * store cannot store makes every heartbeat look like a fleet change. The
+   * other half of that trade: a field parked at the projection moves without
+   * any `agents.changed`, so its transitions have to be announced explicitly
+   * (`refreshAgentsOnce` tracks this one in `configurableSources`).
    */
   readonly supportsConfiguration?: true;
   /** Agent operator exposes bearer-protected Pi provider authentication v1. */
