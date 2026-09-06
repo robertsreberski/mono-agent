@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import { useConsoleStore } from "../console-store";
 import { MIN_SEARCH_QUERY, useThreadSearch } from "../thread-search";
 import type { ThreadSummary } from "../types";
+import { DataModeIndicator } from "./DataModeIndicator";
 import { Icon } from "./Icon";
 import { ThreadSearchResults } from "./ThreadSearchResults";
 import { relativeTime } from "./time";
@@ -178,6 +179,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           )}
         </div>
       </ThreadListPrimitive.Root>
+      <div className="sidebar-footer">
       <button
         type="button"
         className={`archive-toggle${showArchived ? " is-active" : ""}`}
@@ -191,6 +193,10 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           ).length || ""}
         </span>
       </button>
+      {/* The one place the operator can see what this session has cost and
+          change what it is allowed to spend. */}
+      <DataModeIndicator />
+      </div>
     </aside>
   );
 }

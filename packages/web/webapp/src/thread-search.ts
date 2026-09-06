@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
+import { currentDataMode } from "./data-mode";
 import type { ThreadSearchHit } from "./types";
 
 /**
@@ -13,7 +14,18 @@ export const SEARCH_HIGHLIGHT_CLOSE = "\u0003";
 
 /** Below this a query matches almost everything; mirrors the server's floor. */
 export const MIN_SEARCH_QUERY = 2;
-const SEARCH_DEBOUNCE_MS = 200;
+/**
+ * How long the console waits for the operator to stop typing.
+ *
+ * Every settled query is a server-side search across the whole conversation
+ * history, so the debounce is the difference between paying for one word and
+ * paying for every prefix on the way to it. A lean link waits longer.
+ */
+export const SEARCH_DEBOUNCE_MS = 200;
+export const LEAN_SEARCH_DEBOUNCE_MS = 350;
+
+export const searchDebounceMs = (): number =>
+  currentDataMode() === "lean" ? LEAN_SEARCH_DEBOUNCE_MS : SEARCH_DEBOUNCE_MS;
 
 export interface HighlightSegment {
   readonly text: string;
@@ -113,7 +125,7 @@ export function useThreadSearch(
           if (error instanceof DOMException && error.name === "AbortError") return;
           setState({ hits: [], status: "error", truncated: false });
         });
-    }, SEARCH_DEBOUNCE_MS);
+    }, searchDebounceMs());
     return () => {
       clearTimeout(timer);
       controller.abort();

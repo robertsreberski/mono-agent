@@ -11,12 +11,17 @@ import {
 import {
   api,
   ApiError,
+  LEAN_MESSAGE_PAGE_LIMIT,
+  LEAN_THREAD_PAGE_LIMIT,
+  MESSAGE_PAGE_LIMIT,
   NOT_MODIFIED,
   THREAD_PAGE_LIMIT,
   type BootstrapScope,
   type NotModified,
   type ReadThreadDetail,
 } from "./api";
+import { currentDataMode } from "./data-mode";
+import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
 import {
   createThreadCache,
@@ -40,6 +45,7 @@ import type {
   CatalogModel,
   CronOverview,
   MessageDelta,
+  MessagePart,
   RunState,
   SkillRegistryState,
   StartTurnInput,
@@ -57,6 +63,9 @@ import {
 export { holdsToolCall, mergeToolCallPart } from "./thread-cache";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
+
+/** One reply attachment, as the store hands it back after minting access. */
+type ReplyAttachmentMessagePart = Extract<MessagePart, { readonly type: "attachment" }>;
 
 interface ConsoleStoreValue {
   readonly bootstrap: Bootstrap | null;
@@ -126,6 +135,15 @@ interface ConsoleStoreValue {
    * body. Resolves to `true` when the transcript changed.
    */
   readonly loadFullToolCall: (toolCallId: string) => Promise<boolean>;
+  /**
+   * Mint a fresh capability for one reply attachment of the open conversation.
+   *
+   * What this device keeps carries no capability URLs -- they are short-lived
+   * credentials and persistence strips them -- so a picture or a file restored
+   * from the device arrives with an identity and no way to read its bytes. It is
+   * not gone, and this is how the transcript asks for the key again.
+   */
+  readonly refreshReplyAttachmentAccess: (partId: string) => Promise<ReplyAttachmentMessagePart>;
   /**
    * Forget everything this browser is keeping on the device, and everything it
    * is keeping in memory except the conversation on screen.
@@ -581,6 +599,30 @@ export const THREAD_READ_TIMEOUT_MS = 60_000;
  * a burst cost one request rather than one per event.
  */
 export const REFRESH_DEBOUNCE_MS = 300;
+
+/**
+ * The same window, widened on a lean link.
+ *
+ * A hint-driven refresh is a whole conditional read of the open conversation.
+ * Waiting a second before answering a burst of them turns a running turn's
+ * worth of hints into one request instead of three.
+ */
+export const LEAN_REFRESH_DEBOUNCE_MS = 1_000;
+
+/**
+ * How long applied writes are collected before the transcript is re-published.
+ *
+ * The bytes are already spent by the time a delta arrives -- what this saves is
+ * the work of drawing every frame of a streamed answer, which on a phone is
+ * battery and heat. The cache is written the moment each delta lands, in order,
+ * so nothing about correctness depends on this: it is only when the operator's
+ * screen is redrawn. A write that ENDS a turn is never held back.
+ */
+export const LEAN_DELTA_BATCH_MS = 1_000;
+
+/** Read at the moment of the request, so a mode change needs no re-render. */
+const threadPageLimit = (): number =>
+  currentDataMode() === "lean" ? LEAN_THREAD_PAGE_LIMIT : THREAD_PAGE_LIMIT;
 
 /**
  * How long changes are collected before one transaction writes them to the
@@ -1408,6 +1450,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef(false);
   const refreshScopeRef = useRef<RefreshScope>(NOTHING_TO_REFRESH);
+  /** Conversations whose applied deltas are waiting for the lean paint tick. */
+  const deltaPublishRef = useRef<{ timer: number | null; threads: Set<string> }>({
+    timer: null,
+    threads: new Set(),
+  });
   const scheduleRefreshRef = useRef<(scope: Partial<RefreshScope>) => void>(() => undefined);
   const threadListTimerRef = useRef<number | null>(null);
   /**
@@ -1984,7 +2031,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const bootstrapScope = useCallback((): BootstrapScope => ({
     ...(selectedAgentRef.current === null ? {} : { sourceId: selectedAgentRef.current }),
     archived: showArchivedRef.current,
-    limit: THREAD_PAGE_LIMIT,
+    limit: threadPageLimit(),
   }), []);
 
   const loadBootstrap = useCallback(async () => {
@@ -2054,7 +2101,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   ): Promise<readonly ThreadSummary[]> => {
     const issuedAt = removedThreadsRef.current.epoch();
     const page = await boundedRequest(
-      (signal) => api.threads(sourceId, archived, before, signal),
+      (signal) => api.threads(sourceId, archived, before, signal, threadPageLimit()),
       THREAD_READ_TIMEOUT_MS,
     );
     const key = threadBucketKey(sourceId, archived);
@@ -2401,7 +2448,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     refreshTimerRef.current = window.setTimeout(() => {
       refreshTimerRef.current = null;
       void refreshNow();
-    }, REFRESH_DEBOUNCE_MS);
+    }, currentDataMode() === "lean" ? LEAN_REFRESH_DEBOUNCE_MS : REFRESH_DEBOUNCE_MS);
   }, [refreshNow]);
   // Assigned during render: `refreshNow` re-queues through this ref, and an
   // effect would leave it pointing at the previous commit's closure.
@@ -2690,6 +2737,24 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [publishDetail, refreshSelectedThread]);
 
   /**
+   * Publishes what the batched deltas have already written into the cache.
+   *
+   * Idempotent and safe to call from either end -- the tick, or the write that
+   * ends a turn -- so a finish can never be drawn behind a pending tick.
+   */
+  const flushDeltaPublishes = useCallback(() => {
+    const pending = deltaPublishRef.current;
+    if (pending.timer !== null) {
+      window.clearTimeout(pending.timer);
+      pending.timer = null;
+    }
+    if (pending.threads.size === 0) return;
+    const threads = [...pending.threads];
+    pending.threads.clear();
+    for (const id of threads) publishDetail(id);
+  }, [publishDetail]);
+
+  /**
    * One persisted parts write, applied rather than asked about.
    *
    * The whole point of the delta stream: a streamed answer costs its own text
@@ -2707,9 +2772,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       return;
     }
     switch (cache.applyDelta(threadId, delta)) {
-      case "applied":
-        publishDetail(threadId);
+      case "applied": {
+        // The cache is already written, in order. What is batched is only when
+        // the operator's screen is redrawn -- and only for a turn still running,
+        // because a turn that has FINISHED must read as finished at once.
+        if (currentDataMode() !== "lean" || delta.status !== "running") {
+          flushDeltaPublishes();
+          publishDetail(threadId);
+          return;
+        }
+        const pending = deltaPublishRef.current;
+        pending.threads.add(threadId);
+        pending.timer ??= window.setTimeout(() => {
+          pending.timer = null;
+          flushDeltaPublishes();
+        }, LEAN_DELTA_BATCH_MS);
         return;
+      }
       // Already at or past the version this produces: applying it again would
       // walk the transcript backwards, and reading for it would buy a request
       // for a write this tab already has.
@@ -2726,7 +2805,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       default:
         void repairMessage(threadId, delta.messageId, delta.seq);
     }
-  }, [publishDetail, repairMessage]);
+  }, [flushDeltaPublishes, publishDetail, repairMessage]);
 
   const applyThreadUpdate = useCallback((nextThread: ThreadSummary, issuedAt: number) => {
     // A response can outlive the conversation it describes: the migration's
@@ -2780,6 +2859,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
     if (threadListTimerRef.current !== null) window.clearTimeout(threadListTimerRef.current);
     if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current);
+    const pendingDeltas = deltaPublishRef.current;
+    if (pendingDeltas.timer !== null) window.clearTimeout(pendingDeltas.timer);
+    pendingDeltas.timer = null;
+    pendingDeltas.threads.clear();
     refreshTimerRef.current = null;
     threadListTimerRef.current = null;
     persistTimerRef.current = null;
@@ -2824,6 +2907,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
      * Anything the payload already carries is applied locally.
      */
     const handleEvent = (event: Event) => {
+      const frame = (event as MessageEvent<unknown>).data;
+      // The delta stream is a real cost on a metered link -- the whole reason
+      // the deltas exist is that they are cheaper than re-reading -- so it is
+      // counted where the frames land, and nowhere else.
+      if (typeof frame === "string") recordDataUsage(new TextEncoder().encode(frame).byteLength);
       let webEvent: WebEvent | undefined;
       try {
         const parsed = JSON.parse((event as MessageEvent<string>).data) as WebEvent;
@@ -3355,7 +3443,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const current = detail;
     if (current === null) return;
     if (current.messagesNextCursor !== undefined) {
-      const page = await api.messages(current.thread.id, current.messagesNextCursor);
+      const page = await api.messages(
+        current.thread.id,
+        current.messagesNextCursor,
+        undefined,
+        currentDataMode() === "lean" ? LEAN_MESSAGE_PAGE_LIMIT : MESSAGE_PAGE_LIMIT,
+      );
       // Into the CACHE, which is what makes a walked-back transcript survive
       // the next refresh: a window read keeps everything older than its own
       // window rather than dropping the pages the operator scrolled to.
@@ -3455,6 +3548,25 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setCronLoading(false);
     }
   }, [publishDetail, selectedAgentId, selectedCronJobId, selectedCronThreadId]);
+
+  const refreshReplyAttachmentAccess = useCallback(
+    async (partId: string): Promise<ReplyAttachmentMessagePart> => {
+      const threadId = selectedThreadRef.current;
+      if (threadId === null) throw new Error("No conversation is open.");
+      const message = threadCacheRef.current.get(threadId)?.messages.find((candidate) =>
+        candidate.parts.some((part) => part.type === "attachment" && part.id === partId));
+      if (message === undefined) throw new Error("This conversation no longer holds that file.");
+      // Bounded like every other read: a wedged transport must not leave a tile
+      // waiting on a promise that never settles. The answer is NOT written into
+      // the cache -- the capability expires, and the part that asked for it is
+      // the only thing that should hold one.
+      return await boundedRequest(
+        (signal) => api.replyAttachmentAccess(threadId, message.id, partId, signal),
+        THREAD_READ_TIMEOUT_MS,
+      );
+    },
+    [],
+  );
 
   // Deliberately stable: this is handed to the transcript through a context, and
   // a new identity on every streamed token would re-render every tool row for
@@ -4727,6 +4839,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       refreshCron,
       loadCronRunActivity,
       loadFullToolCall,
+      refreshReplyAttachmentAccess,
       clearCachedData,
       hasServerSnapshot,
       clearError: () => setError(null),
@@ -4763,6 +4876,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadOlderMessages,
       loadCronRunActivity,
       loadFullToolCall,
+      refreshReplyAttachmentAccess,
       loading,
       hasRunOverride,
       model,

@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { dataUsage, resetDataUsage } from "../data-usage";
+import { writeDataModeSetting } from "../data-mode";
 import {
+  LEAN_REPLY_IMAGE_RETENTION_BYTES,
+  LEAN_REPLY_IMAGE_RETENTION_LIMIT,
+  LEAN_REPLY_IMAGE_RETENTION_MS,
   REPLY_IMAGE_REQUEST_TIMEOUT_MS,
   REPLY_IMAGE_RETENTION_BYTES,
   REPLY_IMAGE_RETENTION_LIMIT,
@@ -12,6 +17,9 @@ import {
   publishReplyImageBlob,
   releaseReplyImageBlob,
   replyImageKey,
+  replyImageRetentionBytes,
+  replyImageRetentionLimit,
+  replyImageRetentionMs,
   retainedReplyImageBytes,
 } from "./reply-image-cache";
 
@@ -301,5 +309,56 @@ describe("shared reply image requests", () => {
     await expect(first).resolves.toBe(blob);
     await expect(second).resolves.toBe(blob);
     expect(start).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("what a picture costs", () => {
+  afterEach(() => {
+    resetDataUsage();
+    localStorage.clear();
+  });
+
+  it("charges the session for the bytes of a picture, exactly once", () => {
+    stubObjectUrls();
+    resetDataUsage();
+    const key = replyImageKey("sha256:abc", 4);
+
+    publishReplyImageBlob(key, new Blob(["abcd"]));
+    // A second viewer of the same picture joins the bytes already here; it did
+    // not fetch them, so it must not be charged for them.
+    publishReplyImageBlob(key, new Blob(["abcd"]));
+
+    expect(dataUsage().bytes).toBe(4);
+  });
+
+  it("keeps far less on a lean device, because a phone runs out of memory first", () => {
+    writeDataModeSetting("lean");
+
+    expect(replyImageRetentionMs()).toBe(LEAN_REPLY_IMAGE_RETENTION_MS);
+    expect(replyImageRetentionLimit()).toBe(LEAN_REPLY_IMAGE_RETENTION_LIMIT);
+    expect(replyImageRetentionBytes()).toBe(LEAN_REPLY_IMAGE_RETENTION_BYTES);
+    expect(LEAN_REPLY_IMAGE_RETENTION_MS).toBeLessThan(REPLY_IMAGE_RETENTION_MS);
+    expect(LEAN_REPLY_IMAGE_RETENTION_LIMIT).toBeLessThan(REPLY_IMAGE_RETENTION_LIMIT);
+    expect(LEAN_REPLY_IMAGE_RETENTION_BYTES).toBeLessThan(REPLY_IMAGE_RETENTION_BYTES);
+
+    writeDataModeSetting("full");
+    expect(replyImageRetentionMs()).toBe(REPLY_IMAGE_RETENTION_MS);
+  });
+
+  it("frees a lean device's oldest pictures at the lean ceiling", () => {
+    vi.useFakeTimers();
+    writeDataModeSetting("lean");
+    const { revokeObjectURL } = stubObjectUrls();
+
+    for (let index = 0; index <= LEAN_REPLY_IMAGE_RETENTION_LIMIT; index += 1) {
+      const key = replyImageKey(`sha256:${String(index)}`, 4);
+      publishReplyImageBlob(key, new Blob(["abcd"]));
+      releaseReplyImageBlob(key);
+    }
+
+    // One past the lean bound: the least recently released is gone already,
+    // where a full-mode console would still be holding all of them.
+    expect(revokeObjectURL).toHaveBeenCalledTimes(1);
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:image-1");
   });
 });

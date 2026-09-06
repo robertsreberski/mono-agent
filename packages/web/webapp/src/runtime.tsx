@@ -9,6 +9,7 @@ import {
 } from "@assistant-ui/react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
+import { ReplyAccessProvider } from "./components/reply-access";
 import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
@@ -685,7 +686,11 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ToolCallRepairProvider repair={store.loadFullToolCall}>{children}</ToolCallRepairProvider>
+      <ToolCallRepairProvider repair={store.loadFullToolCall}>
+        <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
+          {children}
+        </ReplyAccessProvider>
+      </ToolCallRepairProvider>
     </AssistantRuntimeProvider>
   );
 }

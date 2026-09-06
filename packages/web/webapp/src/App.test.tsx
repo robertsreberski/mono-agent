@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
+import { readDataModeSetting, writeDataModeSetting } from "./data-mode";
+import { recordDataUsage, resetDataUsage } from "./data-usage";
 import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -144,5 +146,63 @@ describe("App command palette", () => {
     await waitFor(() => expect(storeMock.clearCachedData).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole("alert"))
       .toHaveTextContent("Cleared the conversations this browser had stored.");
+  });
+});
+
+describe("App data mode", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, "matchMedia");
+    resetDataUsage();
+    localStorage.clear();
+  });
+
+  const standalone = (matches: boolean): void => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({
+        matches: matches && query.includes("standalone"),
+        media: query,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      }),
+    });
+  };
+
+  it("cycles the mode from the palette and says what the session has cost", async () => {
+    recordDataUsage(2_048);
+    render(<App />);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    const action = screen.getByRole("option", { name: /^Data: Auto · Full/u });
+    expect(action).toHaveTextContent("2 KiB");
+    fireEvent.click(action);
+
+    await waitFor(() => { expect(readDataModeSetting()).toBe("lean"); });
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.getByRole("option", { name: /^Data: Lean/u })).toBeVisible();
+  });
+
+  it("offers Lean once to a home-screen install that cannot read the network", async () => {
+    // iOS Safari reports no connection at all, so Auto can never resolve to
+    // Lean there. Rather than guessing, the console says so once.
+    standalone(true);
+    const first = render(<App />);
+
+    const offer = await screen.findByRole("status");
+    expect(offer).toHaveTextContent("Auto stays on Full");
+    fireEvent.click(screen.getByRole("button", { name: "Use Lean" }));
+    expect(readDataModeSetting()).toBe("lean");
+    first.unmount();
+
+    // Offered once, and never again — including on the next visit.
+    writeDataModeSetting("auto");
+    render(<App />);
+    expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
+  });
+
+  it("never offers Lean to a browser that can answer for itself", () => {
+    standalone(false);
+    render(<App />);
+    expect(screen.queryByRole("button", { name: "Use Lean" })).toBeNull();
   });
 });

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
+import { writeDataModeSetting } from "../data-mode";
 import type { AskSnapshot } from "../types";
 import { AskReconciliationProvider, ToolFallback } from "./Messages";
 
@@ -549,5 +550,70 @@ describe("AskUser web form", () => {
 
     rendered.unmount();
     expect(outstandingListeners()).toEqual([]);
+  });
+});
+
+describe("AskUser polling hygiene", () => {
+  const settledCall = () => (
+    <AskReconciliationProvider>
+      <ToolFallback
+        type="tool-call"
+        toolName="AskUser"
+        toolCallId="tool-settled"
+        args={toolArgs}
+        argsText={JSON.stringify(toolArgs)}
+        result={{ interactionId: "ask-test", answered: true }}
+        isError={false}
+        status={{ type: "complete" }}
+        addResult={vi.fn()}
+        resume={vi.fn()}
+        respondToApproval={vi.fn()}
+      />
+    </AskReconciliationProvider>
+  );
+
+  const setVisibility = (state: "hidden" | "visible"): void => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+  };
+
+  afterEach(() => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    localStorage.clear();
+  });
+
+  it("asks nothing while the tab is in the background and picks up when it returns", async () => {
+    // A backgrounded console on a phone is the console most of the time. It
+    // must not keep a question poll running there -- and it must not decide the
+    // question is unavailable either, because it did not ask.
+    const pendingAsk = vi.spyOn(api, "pendingAsk").mockResolvedValue(snapshot);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    render(askUserTool());
+
+    await act(async () => { await Promise.resolve(); });
+    expect(pendingAsk).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Question unavailable/u)).not.toBeInTheDocument();
+
+    setVisibility("visible");
+
+    await waitFor(() => { expect(pendingAsk).toHaveBeenCalledTimes(1); });
+  });
+
+  it("re-reads a question whose answer is already recorded, but not on a lean link", async () => {
+    const ask = vi.spyOn(api, "ask").mockResolvedValue({ ...snapshot, status: "answered" });
+    const { unmount } = render(settledCall());
+    await waitFor(() => { expect(ask).toHaveBeenCalled(); });
+    unmount();
+
+    ask.mockClear();
+    writeDataModeSetting("lean");
+    render(settledCall());
+    await act(async () => { await Promise.resolve(); });
+
+    // The tool result durably records the outcome, so the card can say what
+    // happened without buying the interaction again. What it loses is the
+    // per-question summary, which is why this is lean-only.
+    expect(ask).not.toHaveBeenCalled();
+    expect(screen.getByText("Answers submitted.")).toBeVisible();
   });
 });

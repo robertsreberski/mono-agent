@@ -1,3 +1,6 @@
+import { currentDataMode } from "../data-mode";
+import { recordTransferredBody } from "../data-usage";
+
 /**
  * One object URL per picture, and one request for it, shared by every view.
  *
@@ -23,6 +26,33 @@ export const REPLY_IMAGE_RETENTION_LIMIT = 24;
 
 /** And how many of their bytes, which is the bound that actually binds. */
 export const REPLY_IMAGE_RETENTION_BYTES = 32 * 1024 * 1024;
+
+/**
+ * The same three bounds for a device on a data diet.
+ *
+ * Retention trades memory for network, and a lean console is being run on the
+ * phone where memory is the scarcer of the two -- so it keeps a third as long, a
+ * third as many, and a quarter of the bytes. A picture evicted early costs one
+ * fetch if the operator scrolls back to it; a phone out of memory costs the tab.
+ */
+export const LEAN_REPLY_IMAGE_RETENTION_MS = 20_000;
+export const LEAN_REPLY_IMAGE_RETENTION_LIMIT = 8;
+export const LEAN_REPLY_IMAGE_RETENTION_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Read at the moment of the decision, never captured: the operator can change
+ * the mode between one picture arriving and the next being released.
+ */
+const lean = (): boolean => currentDataMode() === "lean";
+
+export const replyImageRetentionMs = (): number =>
+  lean() ? LEAN_REPLY_IMAGE_RETENTION_MS : REPLY_IMAGE_RETENTION_MS;
+
+export const replyImageRetentionLimit = (): number =>
+  lean() ? LEAN_REPLY_IMAGE_RETENTION_LIMIT : REPLY_IMAGE_RETENTION_LIMIT;
+
+export const replyImageRetentionBytes = (): number =>
+  lean() ? LEAN_REPLY_IMAGE_RETENTION_BYTES : REPLY_IMAGE_RETENTION_BYTES;
 
 /**
  * How long one picture's request may take before it is abandoned.
@@ -88,10 +118,17 @@ const revokeShared = (key: string): void => {
  * progress on every pass whatever the entry turns out to be.
  */
 const evictRetained = (): void => {
-  while (retained.length > REPLY_IMAGE_RETENTION_LIMIT || retainedBytes > REPLY_IMAGE_RETENTION_BYTES) {
+  const countBound = replyImageRetentionLimit();
+  const byteBound = replyImageRetentionBytes();
+  while (retained.length > countBound || retainedBytes > byteBound) {
     const oldest = retained.shift();
     if (oldest === undefined) break;
-    retainedBytes -= sharedImages.get(oldest)?.size ?? 0;
+    // The entry is read ONCE and the decrement comes off it, exactly as
+    // `forgetRetained` takes the size from the caller's entry: nothing here
+    // depends on whether the map still holds the key by the time it runs.
+    const image = sharedImages.get(oldest);
+    if (image === undefined) continue;
+    retainedBytes -= image.size;
     revokeShared(oldest);
   }
 };
@@ -128,6 +165,11 @@ export const acquireReplyImageBlob = (key: string): string | undefined => {
 export const publishReplyImageBlob = (key: string, blob: Blob): string => {
   const existing = sharedImages.get(key);
   if (existing !== undefined) return hold(existing, key);
+  // This is the one call that sees a picture's bytes arrive: a second viewer of
+  // the same content joins above and is charged nothing, and a picture resolved
+  // out of retention never reaches here at all. An estimate only -- silent
+  // wherever the browser is measuring the transfer itself.
+  recordTransferredBody(blob.size);
   const objectUrl = URL.createObjectURL(blob);
   sharedImages.set(key, { objectUrl, size: blob.size, refs: 1, timer: undefined });
   return objectUrl;
@@ -141,7 +183,7 @@ export const releaseReplyImageBlob = (key: string): void => {
   if (image.refs > 0) return;
   retained.push(key);
   retainedBytes += image.size;
-  image.timer = window.setTimeout(() => revokeShared(key), REPLY_IMAGE_RETENTION_MS);
+  image.timer = window.setTimeout(() => revokeShared(key), replyImageRetentionMs());
   evictRetained();
 };
 

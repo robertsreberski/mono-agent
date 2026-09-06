@@ -49,6 +49,8 @@ vi.mock("@modelcontextprotocol/ext-apps/app-bridge", async (importOriginal) => {
 });
 
 import { ApiError, api, type ReplyAccessRefreshHandler } from "../api";
+import { writeDataModeSetting } from "../data-mode";
+import { ReplyAccessProvider } from "./reply-access";
 import type { McpAppPart as McpAppPartValue } from "../types";
 import { REPLY_IMAGE_REQUEST_TIMEOUT_MS, clearReplyImageBlobs } from "./reply-image-cache";
 import {
@@ -2061,5 +2063,112 @@ describe("MCP App sandbox", () => {
 
     expect(await screen.findByTitle("Quarterly report interactive app")).toBeInTheDocument();
     await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("a lean link, and a device that kept the picture but not the key", () => {
+  afterEach(() => {
+    localStorage.clear();
+    clearReplyImageBlobs();
+  });
+
+  it("spends nothing on a picture until the operator asks for it", async () => {
+    writeDataModeSetting("lean");
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+
+    render(attachment(imagePart));
+
+    // Nothing has been asked for, and the tile says what asking will cost.
+    expect(fetchContent).not.toHaveBeenCalled();
+    const tile = screen.getByRole("button", { name: "Load cover.png, 4 B" });
+    expect(tile).toBeVisible();
+    expect(screen.queryByRole("img", { name: "cover.png" })).toBeNull();
+
+    fireEvent.click(tile);
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an app closed on a lean link however far up the transcript it is", async () => {
+    writeDataModeSetting("lean");
+    const load = vi.spyOn(api, "mcpAppResource").mockResolvedValue({
+      app: appPart,
+      html: "<!doctype html><p>gallery</p>",
+      connected: true,
+    });
+
+    render(app(appPart));
+
+    // No IntersectionObserver here, so in full mode this card would have opened
+    // itself and bought its document on arrival.
+    expect(load).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent("Tap Show to load the app");
+
+    fireEvent.click(screen.getByRole("button", { name: "Show Quarterly report" }));
+
+    await waitFor(() => { expect(load).toHaveBeenCalledTimes(1); });
+  });
+
+  it("asks for a fresh key for a picture the device restored without one", async () => {
+    // What PR 5 persists deliberately carries no capability URL, so a restored
+    // picture used to render as a dead file card. It is not dead: the console
+    // can mint a new capability for exactly this part.
+    const { contentUrl: _dropped, ...restored } = imagePart;
+    const access = vi.fn().mockResolvedValue(imagePart);
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent").mockImplementation(async () => imageResponse());
+    stubImageObjectUrls();
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(restored)}
+      </ReplyAccessProvider>,
+    );
+
+    expect(await screen.findByRole("img", { name: "cover.png" })).toHaveAttribute("src", "blob:cover-image");
+    expect(access).toHaveBeenCalledTimes(1);
+    expect(access).toHaveBeenCalledWith("cover-part");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a restored file its download rather than calling it gone", async () => {
+    const { contentUrl: _dropped, ...restored } = attachmentPart;
+    const access = vi.fn().mockResolvedValue(attachmentPart);
+    const fetchContent = vi.spyOn(api, "replyAttachmentContent")
+      .mockImplementation(async () => attachmentResponse());
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(restored)}
+      </ReplyAccessProvider>,
+    );
+
+    expect(screen.queryByText("This file is no longer available.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+
+    await waitFor(() => { expect(fetchContent).toHaveBeenCalledTimes(1); });
+    expect(access).toHaveBeenCalledWith("file-1");
+  });
+
+  it("says so, once, when a restored file really cannot be reached again", async () => {
+    const { contentUrl: _dropped, ...restored } = attachmentPart;
+    const access = vi.fn().mockRejectedValue(
+      new ApiError("The reply part is unavailable.", 404, "reply_part_not_found"),
+    );
+
+    render(
+      <ReplyAccessProvider refreshAttachment={access}>
+        {attachment(restored)}
+      </ReplyAccessProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Download report.txt" }));
+
+    // The refusal is reported as the refusal it was, and the offer is withdrawn
+    // because there is nothing left to offer.
+    expect(await screen.findByText("The reply part is unavailable. (reply_part_not_found)")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Download report.txt" })).toBeNull();
+    expect(access).toHaveBeenCalledTimes(1);
   });
 });
