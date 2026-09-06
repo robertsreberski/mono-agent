@@ -77,7 +77,8 @@ const JSON_RUNTIME_SOURCES: readonly {
   {
     env: "MONO_AGENT_WEB_SEARCH_OLLAMA_API_KEY_ENV",
     path: "tools.web.search.ollama.apiKeyEnv",
-    read: (json) => json.tools?.web?.search?.ollama?.baseUrl,
+    read: (json) => json.tools?.web?.search?.ollama?.apiKeyEnv
+      ?? json.tools?.web?.search?.ollama?.baseUrl,
     overriddenByEnv: ["MONO_AGENT_WEB_SEARCH_OLLAMA_BASE_URL"],
   },
   { env: "MONO_AGENT_WEB_SEARCH_OLLAMA_TRUST_PUBLIC_URL", path: "tools.web.search.ollama.trustPublicUrl", read: (json) => json.tools?.web?.search?.ollama?.trustPublicUrl },
