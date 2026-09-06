@@ -522,7 +522,10 @@ describe("ConsoleStoreProvider integration", () => {
       };
     });
     const store = await renderStore();
-    await waitFor(() => expect(api.agentSkills).toHaveBeenCalledWith("alpha", expect.any(AbortSignal)));
+    // The third argument is the validator a conditional re-read quotes; there
+    // is none to quote on a first read of this agent.
+    await waitFor(() => expect(api.agentSkills)
+      .toHaveBeenCalledWith("alpha", expect.any(AbortSignal), undefined));
 
     act(() => store.current.selectAgent("beta"));
     await waitFor(() => expect(store.current.skillRegistry).toMatchObject({
@@ -4426,7 +4429,7 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1));
     });
 
-    it("re-reads only the conversation on screen across a reconnect", async () => {
+    it("re-reads the conversation on screen at once, and each kept one when it is opened", async () => {
       seedTwo();
       const store = await openedOnAlpha();
       // The stream's own first `ready`, so the one below is known to have a
@@ -4442,20 +4445,21 @@ describe("ConsoleStoreProvider integration", () => {
       emit("ready", { payload: { version: 1 } });
       await quiet();
 
-      // ONE read -- the conversation on screen, and unconditional only because
-      // this fixture serves no validator. A reconnect used to buy the whole
-      // snapshot on top of it and to stale every conversation this tab kept.
+      // ONE read now -- the conversation on screen. A reconnect used to buy the
+      // whole snapshot on top of it.
       expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1);
       expect(vi.mocked(api.thread).mock.calls.at(-1)?.[0]).toBe(beta.id);
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
 
-      // The bucket page the gap buys is what speaks for the conversation this
-      // tab is KEEPING -- see "a gap re-reads a kept conversation…" below --
-      // and this fixture's page carries it unmoved, so nothing invalidated it.
+      // And ONE for the conversation it kept, deferred to the moment it is
+      // opened. Both are unconditional only because this fixture serves no
+      // validator -- see "re-reads every conversation it kept across a gap,
+      // conditionally".
       await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 400);
       act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 2));
       await quiet();
-      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 2);
       expect(store.current.detail?.thread.id).toBe(alpha.id);
     }, 15_000);
 
@@ -4782,6 +4786,29 @@ describe("ConsoleStoreProvider integration", () => {
       expect(liveUrl()).toBe(`/api/v1/events?thread=${encodeURIComponent(alpha.id)}`);
     });
 
+    it("revalidates the skill registry rather than re-reading it", async () => {
+      // Every transition back to "live" buys a registry read, and an app switch
+      // on a phone is one of those. The registry changes when the agent's
+      // advertisement does, which is rare -- so the read quotes what it was
+      // served with, and a 304 simply lifts the "stale" the disconnect marked.
+      seedTwo();
+      vi.mocked(api.agentSkills).mockResolvedValue({
+        status: "ready", items: [], total: 0, etag: 'W/"skills-1"',
+      });
+      const store = await openedOnAlpha();
+      await waitFor(() => expect(store.current.skillRegistry.status).toBe("ready"));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.agentSkills).mockResolvedValue(NOT_MODIFIED);
+
+      dropAndReopen();
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+
+      expect(vi.mocked(api.agentSkills).mock.calls.at(-1)?.[2]).toBe('W/"skills-1"');
+      // The registry the 304 spoke for is on screen, ready, not stale.
+      expect(store.current.skillRegistry.status).toBe("ready");
+    });
+
     it("comes back online without re-reading the skill registry twice", async () => {
       seedTwo();
       vi.mocked(api.agentSkills).mockResolvedValue({ status: "ready", items: [], total: 0 });
@@ -4835,64 +4862,138 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.message).not.toHaveBeenCalled();
     });
 
-    it("re-reads a kept conversation the bucket page says moved, and no other", async () => {
-      // The events that mark a cached transcript stale -- `thread.changed` and
-      // `threads.changed` -- are exactly the ones a gap loses, so after one the
-      // bucket page is the only evidence there is about the conversations that
-      // are NOT on screen. Without this they render as current forever: the
-      // selection effect skips a fresh entry and `detail` is a projection of it.
-      const gamma2 = thread("gamma-thread", "alpha", { updatedAt: "2026-07-17T08:00:00.000Z" });
-      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
-        [agent("alpha", { label: "Alpha" })],
-        [alpha, beta, gamma2],
-      ));
-      vi.mocked(api.threads).mockResolvedValue({ threads: [alpha, beta, gamma2] });
-      vi.mocked(api.thread).mockImplementation(async (threadId) => {
-        if (threadId === beta.id) {
-          return { thread: beta, messages: [held("b1", "beta", { threadId: beta.id })], etag: 'W/"beta-1"' };
-        }
-        if (threadId === gamma2.id) {
-          return { thread: gamma2, messages: [held("g1", "gamma", { threadId: gamma2.id })], etag: 'W/"gamma-1"' };
-        }
-        return { thread: alpha, messages: [held("m1", "Hel")], etag: 'W/"alpha-1"' };
-      });
+    it("re-reads every conversation it kept across a gap, conditionally", async () => {
+      // The events that would have said what changed are exactly the ones a gap
+      // loses, and no listing summary can stand in for them: `writeMessageParts`
+      // moves a transcript without touching the conversation row at all -- a
+      // Monitor wake, every mid-turn flush -- so a page reporting an unchanged
+      // summary is silent about writes this console actually missed. Everything
+      // held is suspect, and each conversation pays a CONDITIONAL read when it
+      // is opened.
+      seedTwo();
       const store = await openedOnAlpha();
-      // Hold three: two in the background, one on screen.
       act(() => { store.current.selectThread(beta.id); });
       await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
-      act(() => { store.current.selectThread(gamma2.id); });
-      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma2.id));
       act(() => { store.current.selectThread(alpha.id); });
       await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
       await quiet();
       const reads = vi.mocked(api.thread).mock.calls.length;
       vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
-      // The page the gap buys: BETA moved while this tab was off the stream,
-      // gamma did not.
-      vi.mocked(api.threads).mockResolvedValue({
-        threads: [alpha, { ...beta, revision: beta.revision + 1, messageCount: 4 }, gamma2],
-      });
 
       dropAndReopen();
       emit("ready", { payload: { version: 1 } });
+      await quiet();
+
+      // The one on screen is revalidated at once.
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => call[0])).toEqual([alpha.id]);
+
+      // The one in the background pays when it is opened -- and quotes the
+      // validator it holds, so nothing that did not move costs a transcript.
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(2));
+      await quiet();
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => [call[0], call[1]]))
+        .toEqual([[alpha.id, 'W/"alpha-1"'], [beta.id, 'W/"beta-1"']]);
+      // Not one whole-conversation read between them.
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      expect(store.current.detail?.thread.id).toBe(beta.id);
+    });
+
+    it("re-reads what it kept when the gap was a suspension the socket never reported", async () => {
+      // The case this task exists for: the tab was hidden, iOS suspended the
+      // socket, `readyState` still reads OPEN and `onerror` never fired. It
+      // loses exactly the same events a socket that errored does.
+      seedTwo();
+      const store = await openedOnAlpha();
+      act(() => { store.current.selectThread(beta.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      act(() => { store.current.selectThread(alpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+      const reads = vi.mocked(api.thread).mock.calls.length;
+      const pages = vi.mocked(api.threads).mock.calls.length;
+      // Conversation beta moved while the tab was away.
+      vi.mocked(api.threadIfChanged).mockImplementation(async (threadId) => (threadId === beta.id
+        ? {
+            thread: { ...beta, revision: beta.revision + 1 },
+            messages: [held("b1", "beta moved on", { threadId: beta.id, seq: 2 })],
+            etag: 'W/"beta-2"',
+          }
+        : NOT_MODIFIED));
+
+      const realNow = Date.now.bind(Date);
+      let offset = 0;
+      const dateNow = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+      let visibility = "hidden";
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => visibility,
+      });
+      try {
+        act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+        offset = STREAM_SILENCE_LIMIT_MS + 1_000;
+        visibility = "visible";
+        // Never errored, and still OPEN.
+        expect(FakeEventSource.latest?.readyState).toBe(1);
+        act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      } finally {
+        dateNow.mockRestore();
+        Reflect.deleteProperty(document, "visibilityState");
+      }
+      emit("ready", { payload: { version: 1 } });
       await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 400);
 
-      // The conversation on screen was answered by the conditional read.
-      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => call[0])).toEqual([alpha.id]);
-      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
+      // The sidebar is refreshed too: a silence-detected gap missed the same
+      // listing events a proven drop did.
+      expect(vi.mocked(api.threads).mock.calls.length).toBe(pages + 1);
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
 
-      // Beta moved, so opening it pays for one read.
       act(() => { store.current.selectThread(beta.id); });
-      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1));
-      expect(vi.mocked(api.thread).mock.calls.at(-1)?.[0]).toBe(beta.id);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(beta.id));
+      await waitFor(async () =>
+        expect(await screen.findByTestId("message-b1")).toHaveTextContent("beta moved on"));
       await quiet();
-
-      // Gamma did not, so opening it costs nothing.
-      act(() => { store.current.selectThread(gamma2.id); });
-      await waitFor(() => expect(store.current.detail?.thread.id).toBe(gamma2.id));
-      await quiet();
-      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads + 1);
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => [call[0], call[1]]))
+        .toEqual([[alpha.id, 'W/"alpha-1"'], [beta.id, 'W/"beta-1"']]);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(reads);
     }, 15_000);
+
+    it("owes a resume asked for while the tab was in the background", async () => {
+      // `online` fires while the app is backgrounded: nothing may be rebuilt
+      // there, and the evidence for rebuilding it -- that very event -- is gone
+      // by the time the tab comes back. Without recording it, the console sat
+      // "offline" behind a banner it could not clear.
+      seedTwo();
+      const store = await openedOnAlpha();
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      const opened = streamCount();
+      let visibility = "hidden";
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => visibility,
+      });
+      try {
+        act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+        act(() => { window.dispatchEvent(new Event("offline")); });
+        await waitFor(() => expect(store.current.connection).toBe("offline"));
+        // The link is back, but the tab is not.
+        act(() => { window.dispatchEvent(new Event("online")); });
+        expect(streamCount()).toBe(opened);
+        expect(store.current.connection).toBe("offline");
+
+        visibility = "visible";
+        act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+      } finally {
+        Reflect.deleteProperty(document, "visibilityState");
+      }
+
+      expect(streamCount()).toBe(opened + 1);
+      expect(store.current.connection).toBe("reconnecting");
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+      expect(vi.mocked(api.threadIfChanged).mock.calls.map((call) => call[0])).toEqual([alpha.id]);
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+    });
 
     it("comes back from a suspension that never errored, even after an offline resume", async () => {
       // The worst iOS case: the system suspended the socket, no `onerror` ever

@@ -496,9 +496,22 @@ export const api = {
     return result.agent;
   },
 
-  agentSkills: (sourceId: string, signal?: AbortSignal) =>
-    request<AgentSkillRegistry>(
+  /**
+   * One agent's skill registry, with the validator the response carried.
+   *
+   * `etag` lets a reconnect ask again for a status line instead of the whole
+   * registry: this is re-read on every transition back to "live" -- an app
+   * switch on a phone is one of those -- and the registry only changes when the
+   * agent's advertisement does.
+   */
+  agentSkills: async (
+    sourceId: string,
+    signal?: AbortSignal,
+    etag?: string,
+  ): Promise<Validated<AgentSkillRegistry> | NotModified> =>
+    validatedRequest<AgentSkillRegistry>(
       `/api/v1/agents/${encodeURIComponent(sourceId)}/skills`,
+      etag,
       { signal },
     ),
 

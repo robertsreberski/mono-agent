@@ -4632,6 +4632,52 @@ describe("every transcript-moving write names its message", () => {
     await service.stop();
   });
 
+  it("names both rows a promoted live input rewrote", async () => {
+    // Promoting a queued steer opens the assistant row AND rewrites the
+    // operator's own message: the live-input telemetry is stripped and the row
+    // is reparented onto the turn it just started. A console told only about
+    // the second was left showing a steer that still reads "queued", because a
+    // conversation summary no longer sends it to the transcript.
+    const encoder = new TextEncoder();
+    let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let turnCount = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: false,
+        turns: () => {
+          turnCount += 1;
+          if (turnCount === 1) {
+            return new ReadableStream<Uint8Array>({
+              start(controller) { firstStream = controller; },
+            });
+          }
+          return `${JSON.stringify({ kind: "finish", finalText: "Follow-up done" })}\n`;
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const receipt = service.submitLiveInput(thread.id, "Run this next");
+    await waitFor(() => firstStream !== undefined);
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    firstStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Initial done" })}\n`));
+    firstStream?.close();
+    await waitFor(() => service.thread(thread.id).messages
+      .filter((message) => message.role === "assistant").length === 2);
+
+    const named = new Set(messageEvents(events)
+      .map((event) => (event.payload as { readonly messageId: string }).messageId));
+    expect(named.has(receipt.message.id)).toBe(true);
+    const promoted = service.thread(thread.id).messages
+      .find((message) => message.id === receipt.message.id);
+    expect(promoted?.liveInputStatus).toBeUndefined();
+    expect(promoted?.turnId).toEqual(expect.any(String));
+    unsubscribe();
+    await service.stop();
+  });
+
   it("names every message a cron reconciliation wrote, and none it left alone", async () => {
     const run = {
       projection: "summary",

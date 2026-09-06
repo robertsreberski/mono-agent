@@ -1783,6 +1783,14 @@ export class WebService {
       const started = this.store.promoteNextQueuedLiveInput(threadId);
       if (started === undefined) return;
       this.launchTurn(started, connection.client, started.text);
+      // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
+      // message (its live-input status becomes "applied") as well as opening
+      // the assistant row, and a console that heard only about the second was
+      // left showing a steer that still reads "queued".
+      this.emit("message.changed", threadId, {
+        messageId: started.userMessageId,
+        updatedAt: started.thread.updatedAt,
+      });
       this.emit("message.changed", threadId, {
         messageId: started.assistantMessageId,
         updatedAt: started.thread.updatedAt,

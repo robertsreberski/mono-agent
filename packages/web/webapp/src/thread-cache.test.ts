@@ -6,7 +6,6 @@ import {
   mergeMessages,
   newerProjection,
   readMessageDelta,
-  summaryMoved,
 } from "./thread-cache";
 import { thread } from "./test/fixtures";
 import { MESSAGE_DELTA_VECTORS } from "./test/message-delta-vectors";
@@ -636,36 +635,6 @@ describe("createThreadCache", () => {
     cache.upsertFull(detail([message("m1")]), { reset: true, issuedAt });
 
     expect(cache.get("alpha-thread")?.stale).toBe(true);
-  });
-
-  it("reads a summary as moved on a revision, a stamp or a message count", () => {
-    // What a bucket page is read against after a gap. Deliberately NOT
-    // `newerProjection`, which takes an equal revision so an optimistic edit
-    // lands: here an equal revision is the server saying nothing moved.
-    const held = thread("alpha-thread", "alpha", {
-      revision: 3,
-      updatedAt: "2026-08-14T08:00:00.000Z",
-      messageCount: 4,
-    });
-
-    expect(summaryMoved(held, held)).toBe(false);
-    expect(summaryMoved(held, { ...held, revision: 4 })).toBe(true);
-    expect(summaryMoved(held, { ...held, updatedAt: "2026-08-14T09:00:00.000Z" })).toBe(true);
-    // Either direction: a compaction moves a transcript too.
-    expect(summaryMoved(held, { ...held, messageCount: 5 })).toBe(true);
-    expect(summaryMoved(held, { ...held, messageCount: 3 })).toBe(true);
-    // An OLDER page is not evidence that anything moved.
-    expect(summaryMoved(held, { ...held, revision: 2 })).toBe(false);
-  });
-
-  it("lists what it is holding, least recently touched first", () => {
-    const cache = createThreadCache();
-    cache.upsertFull(detail([]));
-    cache.upsertFull({ ...detail([]), thread: thread("beta-thread", "alpha") });
-    expect(cache.ids()).toEqual(["alpha-thread", "beta-thread"]);
-
-    cache.touch("alpha-thread");
-    expect(cache.ids()).toEqual(["beta-thread", "alpha-thread"]);
   });
 
   it("takes the finish stamp a delta carries onto the message it finishes", () => {

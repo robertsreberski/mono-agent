@@ -191,25 +191,6 @@ export const newerProjection = (
   fetched: ThreadSummary | undefined,
 ): ThreadSummary => (fetched === undefined || fetched.revision < held.revision ? held : fetched);
 
-/**
- * Whether a listing summary describes a conversation that MOVED since the copy
- * held here.
- *
- * What a console reads a bucket page for after a gap in its event stream: the
- * events that would have marked a cached transcript stale are exactly the ones
- * it missed, so the page is the only evidence left about the conversations it
- * is keeping. Deliberately not {@link newerProjection}, which takes an EQUAL
- * revision so an optimistic edit lands -- an equal revision here is the server
- * saying nothing moved, and re-reading for it would undo the whole point.
- *
- * `messageCount` is in because a compaction can move a transcript in either
- * direction, and `updatedAt` because a summary can be rewritten without the
- * revision this tab holds having been the one before it.
- */
-export const summaryMoved = (held: ThreadSummary, listed: ThreadSummary): boolean =>
-  listed.revision > held.revision
-  || listed.updatedAt > held.updatedAt
-  || listed.messageCount !== held.messageCount;
 
 /** Everything a truncated payload and its untruncated original have in common. */
 interface TruncatablePayload {
@@ -656,13 +637,6 @@ export const mergeMessages = (
 
 export interface ThreadCache {
   readonly get: (threadId: string) => ThreadCacheEntry | undefined;
-  /**
-   * Every conversation held right now, least recently touched first.
-   *
-   * What a caller needs to reconcile the whole cache against one answer -- a
-   * bucket page after a gap -- rather than only the conversation on screen.
-   */
-  readonly ids: () => readonly string[];
   /** Whether this conversation holds a projection of that message. */
   readonly holdsMessage: (threadId: string, messageId: string) => boolean;
   /**
@@ -869,7 +843,6 @@ export const createThreadCache = (
 
   return {
     get: (threadId) => entries.get(threadId),
-    ids: () => [...entries.keys()],
     holdsMessage: (threadId, messageId) =>
       entries.get(threadId)?.messages.some((message) => message.id === messageId) === true,
     clock: () => clock,
