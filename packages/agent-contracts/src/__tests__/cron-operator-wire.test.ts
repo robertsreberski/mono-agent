@@ -74,7 +74,12 @@ describe("cron operator wire contract", () => {
       untrusted: true,
     } as const;
     const events = [
-      { type: "tool_call_started", id: "call-1", name: "Read", history: { ...history, sequence: 1 } },
+      {
+        type: "tool_call_started",
+        id: "call-1",
+        name: "Read",
+        history: { persistence: "deferred", untrusted: true },
+      },
       { type: "tool_call_completed", id: "call-1", name: "Read", content: "ok", history },
       // An MCP tool's structuredContent must survive this wire, not be rejected by it.
       // The key list is exhaustive — an unlisted field fails the whole frame rather than

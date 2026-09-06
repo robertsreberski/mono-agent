@@ -1106,7 +1106,7 @@ describe("WebStore", () => {
     reopened.close();
   });
 
-  it("round-trips the canonical durable-history metadata on the same rendered tool record", async () => {
+  it("round-trips persisted and deferred canonical history metadata on the same rendered tool record", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const stateDir = join(base, "state");
@@ -1141,9 +1141,7 @@ describe("WebStore", () => {
           content: "exit 1",
           isError: true,
           history: {
-            recordId: "sth1_result",
-            sequence: 2,
-            persistence: "persisted",
+            persistence: "deferred",
             terminalState: "exit_nonzero",
             artifactReferences: [{ id: "stha1_output", available: false }],
             untrusted: true,
@@ -1163,9 +1161,7 @@ describe("WebStore", () => {
       result: "exit 1",
       status: "failed",
       history: {
-        recordId: "sth1_result",
-        sequence: 2,
-        persistence: "persisted",
+        persistence: "deferred",
         terminalState: "exit_nonzero",
         artifactReferences: [{ id: "stha1_output", available: false }],
         untrusted: true,

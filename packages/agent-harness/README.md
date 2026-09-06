@@ -119,8 +119,10 @@ The harness is the request-to-runtime composition boundary:
    active conversation's live-input mailbox and incremental tool-lifecycle sink,
    then invoke `MonoRuntimeLike.run()` under the provider-run concurrency bound.
 4. Await each redacted/bounded lifecycle write before publishing its enriched
-   tool block to the client, while a 250 ms host wait ceiling converts storage
-   delay/failure into explicit fail-soft metadata instead of stalling streaming.
+   tool block to the client. A 250 ms foreground ceiling releases a healthy but
+   still-pending write as `persistence: "deferred"`; the accepted request keeps
+   running and is reconciled before bounded run finalization. A definitive
+   writer rejection remains explicit `failed` metadata.
 5. Normalize runtime results into explicit success/failure responses. A
    successful turn keeps the existing atomic history-and-memory commit boundary;
    a cancelled admitted interactive turn seals its accepted prefix, closes
@@ -373,9 +375,19 @@ may bypass only the cooldown, never the full handoff window. Recovery resets the
 backoff. A successful handle remains process-shared, and a closed or dead worker
 is retired before its replacement is shared.
 
-Incremental lifecycle writes retain their 250 ms streaming ceiling. Reset,
-statistics, and close are bounded maintenance operations with a separate 10 s
-deadline; reset still fails closed on a real worker error. Writer-health
+Incremental lifecycle writes retain their 250 ms streaming ceiling. A write
+that has not answered by then returns immutable `deferred` event metadata while
+its real worker promise remains live. Run finalization snapshots and drains the
+accepted requests for that run within one 10-second reconciliation budget;
+shutdown drains all accepted requests within its bounded graceful-close budget.
+`persisted` still means the transaction committed before publication, while
+`failed` is reserved for a definitive rejection known at publication. A
+deferred artifact is not proof of either final success or loss; after the run,
+`ToolHistoryReader`/`SessionHistory` is authoritative for committed rows. The
+writer's 200 ms SQLite busy timeout leaves margin inside the foreground ceiling;
+the bounded synchronous reader keeps its separate 250 ms timeout. Reset,
+statistics, and close remain bounded maintenance operations; reset still fails
+closed on a real worker error. Writer-health
 counters describe distinct unresolved incidents. Identical failed retries do
 not increment them, and unrelated lifecycle success or run finalization does
 not clear them. Only the matching tool phase, its durable synthetic terminal

@@ -178,6 +178,16 @@ even when the turn produced no canonical message-history entry. Recovery closes
 a dangling invocation as `interrupted`; it never reruns the tool or duplicates
 an already persisted phase.
 
+Client events wait at most 250 ms for foreground confirmation. A write that is
+still queued or syncing then carries immutable `persistence: "deferred"`
+metadata without an error code; the real worker request continues and the run
+finalizer drains accepted requests within one bounded 10-second reconciliation
+budget. `persisted` means the transaction committed before publication, while
+`failed` is reserved for a definitive writer rejection. Because run JSONL is an
+emission-time artifact, a deferred marker never changes in place after a late
+commit. After the run, `SessionHistory` is the authority for whether the row was
+retained. All lifecycle metadata and returned history remain `untrusted: true`.
+
 When a run is finalized as cancelled, a dangling invocation is closed as
 `cancelled` with its terminal `failure_kind` unchanged and the normalized
 cancellation reason code in `detail_code`; the synthetic result payload carries
@@ -189,7 +199,9 @@ the canonical row on explicit request.
 The protected tool-history directory fails closed on every unsupported entry,
 including stray files such as `.DS_Store`. The synchronous main-thread reader
 is intentional: fixed query, result, record, and projection caps bound its work,
-while SQLite lock waits have a 250 ms busy timeout.
+while reader lock waits have a 250 ms busy timeout. The writer uses 200 ms so a
+normal `SQLITE_BUSY` rejection has margin to reach the foreground caller before
+its 250 ms deferral boundary.
 
 Configured hosts acquire the single writer lazily and allow one bounded
 restart-handoff wait of at most 10 seconds. After an acquisition failure, new

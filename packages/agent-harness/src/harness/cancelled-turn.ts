@@ -110,8 +110,8 @@ interface CancelledToolPair {
     readonly result?: string;
   };
   readonly persistence: {
-    readonly invocation: "persisted" | "failed" | "unavailable";
-    readonly result: "persisted" | "failed" | "unavailable";
+    readonly invocation: "persisted" | "deferred" | "failed" | "unavailable";
+    readonly result: "persisted" | "deferred" | "failed" | "unavailable";
   };
   readonly truncated: boolean;
 }

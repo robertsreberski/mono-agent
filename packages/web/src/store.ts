@@ -6376,7 +6376,11 @@ const SESSION_TOOL_HISTORY_TERMINAL_STATES = new Set<
 function canonicalSessionToolHistoryMetadata(value: unknown): SessionToolHistoryMetadata | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const history = value as Record<string, unknown>;
-  const valid = (history.persistence === "persisted" || history.persistence === "failed")
+  const valid = (
+    history.persistence === "persisted"
+    || history.persistence === "deferred"
+    || history.persistence === "failed"
+  )
     && history.untrusted === true
     && (history.recordId === undefined || boundedHistoryString(history.recordId, 4_096))
     && (history.sequence === undefined || positiveSafeInteger(history.sequence))

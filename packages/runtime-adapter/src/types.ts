@@ -135,11 +135,12 @@ export type RuntimeToolLifecycleEvent =
       }[];
     };
 
-/** Metadata returned by the host after one lifecycle half becomes durable. */
+/** Host acknowledgement for one accepted lifecycle half. */
 export interface RuntimeToolLifecyclePersistence {
   readonly recordId?: string;
   readonly sequence?: number;
-  readonly persistence: "persisted" | "failed";
+  /** Persisted now, accepted for bounded reconciliation, or definitively failed. */
+  readonly persistence: "persisted" | "deferred" | "failed";
   readonly truncated?: boolean;
   readonly originalBytes?: number;
   readonly retainedBytes?: number;

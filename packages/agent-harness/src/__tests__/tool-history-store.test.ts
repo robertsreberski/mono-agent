@@ -73,6 +73,7 @@ beforeAll(async () => {
   const sourceNames = [
     "history-process-liveness",
     "tool-history-artifacts",
+    "tool-history-persistence-coordinator",
     "tool-history-store",
     "tool-history-payload",
     "tool-history-worker-queue",
@@ -2695,9 +2696,9 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ recovered: 1, dangling: 0 });
   }, 10_000);
 
-  it("keeps message append, retention, and stats green while the sidecar directory, owner DB, and DELETE journal coexist, and recognizes a late-committed timed-out write", async () => {
+  it("keeps message append, retention, and stats green while a deferred write commits and reconciles before run finalization", async () => {
     const root = await tempRoot();
-    const writer = await ToolHistoryWriter.open({ root });
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 50 });
     const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
     const journalPath = `${contentPath}-journal`;
     const blocker = new DatabaseSync(contentPath);
@@ -2717,16 +2718,34 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
           phase: "invocation", toolCallId: "slow-call", toolName: "Read", arguments: {},
         });
         const elapsed = performance.now() - started;
-        expect(persisted).toEqual({ persistence: "failed", errorCode: "history_persistence_timeout" });
-        expect(elapsed).toBeGreaterThanOrEqual(200);
+        expect(persisted).toEqual({ persistence: "deferred" });
+        expect(elapsed).toBeGreaterThanOrEqual(25);
         expect(elapsed).toBeLessThan(750);
       } finally {
         blocker.exec("ROLLBACK");
         blocker.close();
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 350));
       }
 
-      await expect(writer.stats()).resolves.toMatchObject({ calls: 1, records: 1, writeFailures: 0 });
+      await writer.finishRun(binding("slow-run"), "succeeded");
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 1, records: 2, writeFailures: 0 });
+      const reader = new ToolHistoryReader(root);
+      const page = reader.search({
+        logicalConversationId: "slack:C1",
+        currentConversationId: "slack:C1#2026-08-14",
+        currentRunId: "later-run",
+        runIds: ["slow-run"],
+      });
+      expect(page.items).toMatchObject([{
+        toolCallId: "slow-call",
+        state: "interrupted",
+        untrusted: true,
+      }]);
+      expect(reader.get({
+        logicalConversationId: "slack:C1",
+        currentConversationId: "slack:C1#2026-08-14",
+        currentRunId: "later-run",
+        recordId: page.items[0]!.recordId,
+      })).toMatchObject({ record: { toolCallId: "slow-call", untrusted: true }, untrusted: true });
     } finally {
       await writer.close();
     }
@@ -2744,6 +2763,142 @@ describe("tool-history ownership, recovery, and scanner coexistence", () => {
       await recoveryWriter.close();
     }
     expect(new ToolHistoryReader(root).stats()).toMatchObject({ writeFailures: 0 });
+  }, 10_000);
+
+  it.skipIf(process.platform === "win32")("drains a deferred accepted write before graceful close terminates the worker", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 50 });
+    const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const blocker = new DatabaseSync(contentPath);
+    blocker.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE");
+    blocker.prepare("INSERT OR REPLACE INTO writer_stats(key,value,updated_at_ms) VALUES('test_blocker',0,?)").run(Date.now());
+    try {
+      await expect(writer.persist(binding("deferred-close-run"), {
+        phase: "invocation", toolCallId: "deferred-close-call", toolName: "Read", arguments: {},
+      })).resolves.toEqual({ persistence: "deferred" });
+      blocker.exec("ROLLBACK");
+      blocker.close();
+      await expect(writer.close()).resolves.toBeUndefined();
+    } finally {
+      if (blocker.isOpen) {
+        blocker.exec("ROLLBACK");
+        blocker.close();
+      }
+      await writer.close();
+    }
+
+    const reader = new ToolHistoryReader(root);
+    expect(reader.search({
+      logicalConversationId: "slack:C1",
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "later-run",
+    }).items).toMatchObject([{
+      toolCallId: "deferred-close-call",
+      state: "interrupted",
+      recovered: false,
+    }]);
+    expect(reader.stats()).toMatchObject({ calls: 1, records: 2, dangling: 0, recovered: 0 });
+  }, 10_000);
+
+  it.skipIf(process.platform === "win32")("preserves FIFO pairs across runs while finalizing a run with deferred writes", async () => {
+    const root = await tempRoot();
+    const writer = await ToolHistoryWriter.open({ root, persistenceCeilingMs: 50 });
+    const firstRun = binding("deferred-fifo-first");
+    const secondRun = binding("deferred-fifo-second");
+    const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const blocker = new DatabaseSync(contentPath);
+    blocker.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE");
+    blocker.prepare("INSERT OR REPLACE INTO writer_stats(key,value,updated_at_ms) VALUES('test_blocker',0,?)").run(Date.now());
+    try {
+      await expect(writer.persist(firstRun, {
+        phase: "invocation", toolCallId: "first-call", toolName: "Read", arguments: { order: 1 },
+      })).resolves.toEqual({ persistence: "deferred" });
+      await expect(writer.persist(firstRun, {
+        phase: "result", toolCallId: "first-call", state: "success", content: { order: 2 },
+      })).resolves.toEqual({ persistence: "deferred" });
+      await expect(writer.persist(secondRun, {
+        phase: "invocation", toolCallId: "second-call", toolName: "Read", arguments: { order: 3 },
+      })).resolves.toEqual({ persistence: "deferred" });
+
+      const firstFinalization = writer.finishRun(firstRun, "succeeded");
+      const secondResult = writer.persist(secondRun, {
+        phase: "result", toolCallId: "second-call", state: "success", content: { order: 4 },
+      });
+      blocker.exec("ROLLBACK");
+      blocker.close();
+
+      const secondResultReceipt = await secondResult;
+      expect(["persisted", "deferred"]).toContain(secondResultReceipt.persistence);
+      await expect(firstFinalization).resolves.toBeUndefined();
+      await writer.finishRun(secondRun, "succeeded");
+      await expect(writer.stats()).resolves.toMatchObject({ calls: 2, records: 4, dangling: 0, writeFailures: 0 });
+    } finally {
+      if (blocker.isOpen) {
+        blocker.exec("ROLLBACK");
+        blocker.close();
+      }
+      await writer.close();
+    }
+
+    const reader = new ToolHistoryReader(root);
+    const items = reader.search({
+      logicalConversationId: firstRun.logicalConversationId,
+      currentConversationId: "slack:C1#2026-08-15",
+      currentRunId: "later-run",
+      runIds: [firstRun.runId, secondRun.runId],
+    }).items;
+    expect(items).toMatchObject([
+      {
+        runId: secondRun.runId,
+        toolCallId: "second-call",
+        startSequence: 1,
+        endSequence: 2,
+        state: "success",
+        recovered: false,
+      },
+      {
+        runId: firstRun.runId,
+        toolCallId: "first-call",
+        startSequence: 1,
+        endSequence: 2,
+        state: "success",
+        recovered: false,
+      },
+    ]);
+  }, 10_000);
+
+  it.skipIf(process.platform === "win32")("reports a definitive writer lock failure before a longer foreground ceiling", async () => {
+    const root = await tempRoot();
+    const warnings: string[] = [];
+    const writer = await ToolHistoryWriter.open({
+      root,
+      persistenceCeilingMs: 1_000,
+      onWarning: (message) => warnings.push(message),
+    });
+    const contentPath = join(root, TOOL_HISTORY_DIRECTORY, TOOL_HISTORY_DATABASE);
+    const blocker = new DatabaseSync(contentPath);
+    blocker.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE");
+    blocker.prepare("INSERT OR REPLACE INTO writer_stats(key,value,updated_at_ms) VALUES('test_blocker',0,?)").run(Date.now());
+    try {
+      const started = performance.now();
+      await expect(writer.persist(binding("busy-failure-run"), {
+        phase: "invocation", toolCallId: "busy-failure-call", toolName: "Read", arguments: {},
+      })).resolves.toEqual({ persistence: "failed", errorCode: "history_write_failed" });
+      const elapsed = performance.now() - started;
+      expect(elapsed).toBeGreaterThanOrEqual(150);
+      expect(elapsed).toBeLessThan(750);
+      expect(warnings).toEqual([
+        "Tool lifecycle persistence failed (history_write_failed); streaming continues with an explicit failure marker.",
+      ]);
+    } finally {
+      blocker.exec("ROLLBACK");
+      blocker.close();
+    }
+    // The failure counter is best-effort on the same contended database; the
+    // definitive receipt and warning remain available even when SQLite cannot
+    // persist its own diagnostic while the competing transaction is live.
+    await expect(writer.stats()).resolves.toMatchObject({ calls: 0, records: 0 });
+    await writer.close();
   }, 10_000);
 });
 

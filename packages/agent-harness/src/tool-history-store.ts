@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { lstat, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { DatabaseSync } from "node:sqlite";
@@ -18,6 +19,10 @@ import {
   canonicalToolArtifactRoot,
   toolHistoryArtifactAvailable,
 } from "./tool-history-artifacts.js";
+import {
+  ToolHistoryPersistenceCoordinator,
+  type ToolHistoryRequestSettlement,
+} from "./tool-history-persistence-coordinator.js";
 
 export const TOOL_HISTORY_DIRECTORY = "tool-history";
 export const TOOL_HISTORY_DATABASE = "tool-lifecycles.sqlite";
@@ -27,6 +32,7 @@ export const TOOL_HISTORY_APPLICATION_ID = 0x4d415448;
 export const TOOL_HISTORY_USER_VERSION = 2;
 export const TOOL_HISTORY_PERSISTENCE_CEILING_MS = 250;
 export const TOOL_HISTORY_OWNER_ACQUIRE_CEILING_MS = 10_000;
+const TOOL_HISTORY_RECONCILIATION_CEILING_MS = 10_000;
 const TOOL_HISTORY_MAINTENANCE_CEILING_MS = 10_000;
 
 export interface ToolHistoryRetentionOptions {
@@ -275,6 +281,7 @@ export class ToolHistoryWriter {
   private readonly worker: Worker;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly persistenceCeilingMs: number;
+  private readonly persistenceCoordinator: ToolHistoryPersistenceCoordinator;
   private readonly onWarning: ((message: string) => void) | undefined;
   private requestId = 0;
   private closed = false;
@@ -291,6 +298,7 @@ export class ToolHistoryWriter {
       options.persistenceCeilingMs ?? TOOL_HISTORY_PERSISTENCE_CEILING_MS,
       "persistenceCeilingMs",
     );
+    this.persistenceCoordinator = new ToolHistoryPersistenceCoordinator(this.persistenceCeilingMs);
     this.onWarning = options.onWarning;
     worker.on("message", (response: WorkerResponse) => this.handleResponse(response));
     worker.on("error", (error) => {
@@ -361,27 +369,21 @@ export class ToolHistoryWriter {
     binding: ToolHistoryRunBinding,
     event: RuntimeToolLifecycleEvent,
   ): Promise<RuntimeToolLifecyclePersistence> {
-    try {
-      const value = await this.request(
+    const foreground = await this.persistenceCoordinator.track(
+      toolHistoryRunKey(binding),
+      this.request(
         event.phase === "invocation" ? "invocation" : "result",
         { binding, event },
-        this.persistenceCeilingMs,
-      ) as RuntimeToolLifecyclePersistence;
-      return value;
-    } catch (error) {
-      const code = error instanceof ToolHistoryWriterError ? error.code : "history_write_failed";
-      this.warnOnce(code, `Tool lifecycle persistence failed (${code}); streaming continues with an explicit failure marker.`);
-      if (code !== "history_idempotency_conflict") {
-        this.postBestEffort("write_failure", {
-          binding,
-          phase: event.phase,
-          toolCallId: event.toolCallId,
-          code,
-          message: reasonOf(error),
-        });
-      }
-      return { persistence: "failed", errorCode: code };
-    }
+        Math.max(this.persistenceCeilingMs, TOOL_HISTORY_RECONCILIATION_CEILING_MS),
+      ) as Promise<RuntimeToolLifecyclePersistence>,
+      (settlement) => this.reportLifecycleSettlement(binding, event, settlement),
+    );
+    if (foreground.status === "deferred") return { persistence: "deferred" };
+    if (foreground.settlement.status === "fulfilled") return foreground.settlement.value;
+    return {
+      persistence: "failed",
+      errorCode: toolHistoryPersistenceErrorCode(foreground.settlement.error),
+    };
   }
 
   async finishRun(
@@ -390,19 +392,28 @@ export class ToolHistoryWriter {
     failureKind?: string,
     cancellationReasonCode?: string,
   ): Promise<void> {
-    await this.request(
-      "finish_run",
-      { binding, status, failureKind, cancellationReasonCode },
-      this.persistenceCeilingMs,
-    ).catch((error) => {
-      this.warnOnce("run_finalize_failed", `Tool history run finalization failed: ${reasonOf(error)}`);
-      this.postBestEffort("write_failure", {
+    const payload = { binding, status, failureKind, cancellationReasonCode };
+    const startedAt = performance.now();
+    const boundary = this.persistenceCoordinator.boundaryForRun(toolHistoryRunKey(binding));
+    const drained = await this.persistenceCoordinator.waitForBoundary(
+      boundary,
+      TOOL_HISTORY_RECONCILIATION_CEILING_MS,
+    );
+    const remainingMs = remainingCeilingMs(startedAt, TOOL_HISTORY_RECONCILIATION_CEILING_MS);
+    if (!drained || remainingMs === 0) {
+      this.postBestEffort("finish_run", payload);
+      this.reportRunFinalizationFailure(
         binding,
-        phase: "finish_run",
         status,
-        code: "run_finalize_failed",
-        message: reasonOf(error),
-      });
+        new ToolHistoryWriterError(
+          "history_persistence_timeout",
+          `Tool history run reconciliation exceeded the ${String(TOOL_HISTORY_RECONCILIATION_CEILING_MS)} ms host wait ceiling.`,
+        ),
+      );
+      return;
+    }
+    await this.request("finish_run", payload, remainingMs).catch((error) => {
+      this.reportRunFinalizationFailure(binding, status, error);
     });
   }
 
@@ -421,8 +432,49 @@ export class ToolHistoryWriter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    await this.request("close", undefined, TOOL_HISTORY_MAINTENANCE_CEILING_MS).catch(() => undefined);
+    const startedAt = performance.now();
+    const drained = await this.persistenceCoordinator.waitForBoundary(
+      this.persistenceCoordinator.boundaryForAll(),
+      TOOL_HISTORY_MAINTENANCE_CEILING_MS,
+    );
+    const remainingMs = remainingCeilingMs(startedAt, TOOL_HISTORY_MAINTENANCE_CEILING_MS);
+    if (drained && remainingMs > 0) {
+      await this.request("close", undefined, remainingMs).catch(() => undefined);
+    }
     await this.worker.terminate().catch(() => undefined);
+  }
+
+  private reportLifecycleSettlement(
+    binding: ToolHistoryRunBinding,
+    event: RuntimeToolLifecycleEvent,
+    settlement: ToolHistoryRequestSettlement<RuntimeToolLifecyclePersistence>,
+  ): void {
+    if (settlement.status === "fulfilled") return;
+    const code = toolHistoryPersistenceErrorCode(settlement.error);
+    this.warnOnce(code, `Tool lifecycle persistence failed (${code}); streaming continues with an explicit failure marker.`);
+    if (code === "history_idempotency_conflict") return;
+    this.postBestEffort("write_failure", {
+      binding,
+      phase: event.phase,
+      toolCallId: event.toolCallId,
+      code,
+      message: reasonOf(settlement.error),
+    });
+  }
+
+  private reportRunFinalizationFailure(
+    binding: ToolHistoryRunBinding,
+    status: string,
+    error: unknown,
+  ): void {
+    this.warnOnce("run_finalize_failed", `Tool history run finalization failed: ${reasonOf(error)}`);
+    this.postBestEffort("write_failure", {
+      binding,
+      phase: "finish_run",
+      status,
+      code: "run_finalize_failed",
+      message: reasonOf(error),
+    });
   }
 
   private async request(operation: string, payload: unknown, timeoutMs: number): Promise<unknown> {
@@ -1090,6 +1142,18 @@ function numberField(record: Record<string, unknown> | undefined, key: string, f
     throw new Error(`Tool history row is missing ${key}.`);
   }
   return value;
+}
+
+function toolHistoryRunKey(binding: ToolHistoryRunBinding): string {
+  return JSON.stringify([binding.conversationId, binding.runId]);
+}
+
+function toolHistoryPersistenceErrorCode(error: unknown): string {
+  return error instanceof ToolHistoryWriterError ? error.code : "history_write_failed";
+}
+
+function remainingCeilingMs(startedAt: number, ceilingMs: number): number {
+  return Math.max(0, ceilingMs - Math.ceil(performance.now() - startedAt));
 }
 
 function positiveInteger(value: number, name: string): number {

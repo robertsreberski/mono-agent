@@ -703,11 +703,12 @@ export type SessionToolHistoryTerminalState =
   | "cancelled"
   | "interrupted";
 
-/** Same persisted record metadata used by model history and client rendering. */
+/** Host lifecycle acknowledgement used by model history and client rendering. */
 export interface SessionToolHistoryEventMetadata {
   readonly recordId?: string;
   readonly sequence?: number;
-  readonly persistence: "persisted" | "failed";
+  /** Persisted before publication, deferred for reconciliation, or definitively failed. */
+  readonly persistence: "persisted" | "deferred" | "failed";
   readonly terminalState?: SessionToolHistoryTerminalState;
   readonly truncated?: boolean;
   readonly originalBytes?: number;

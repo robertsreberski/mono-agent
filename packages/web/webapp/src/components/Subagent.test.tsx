@@ -319,6 +319,17 @@ describe("SubagentPart", () => {
     expect(screen.queryByText(/20,480 chars/u)).toBeNull();
   });
 
+  it("keeps deferred parent history quiet while reconciliation continues", () => {
+    render(part({
+      ...delegation,
+      history: { persistence: "deferred", untrusted: true },
+    }));
+
+    expect(screen.queryByText(/history not saved/iu)).toBeNull();
+    expect(screen.queryByText("History")).toBeNull();
+    expect(screen.queryByText(/Tool history for this call was not saved/iu)).toBeNull();
+  });
+
   it("shows durable history only for the parent delegation record", () => {
     const { container } = render(part({
       ...delegation,
