@@ -599,9 +599,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .connection-banner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); font-size: 11px; text-align: center; z-index: 4; }
 .connection-pulse { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; animation: pulse 1.5s ease infinite; }
 .thread-root { position: relative; min-height: 0; display: flex; flex: 1 1 0; flex-direction: column; overflow: hidden; }
-.thread-viewport { width: 100%; min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.message-column { --column-padding: 32px; width: min(100%, 880px); min-height: calc(100% - 160px); margin: 0 auto; padding: 38px var(--column-padding) 20px; }
-.thread-footer { position: sticky; bottom: 0; width: 100%; padding: 28px max(24px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); background: linear-gradient(to bottom, transparent 0, color-mix(in srgb, var(--surface) 94%, transparent) 28px, var(--surface) 70%); z-index: 3; }
+.thread-viewport { width: 100%; min-height: 0; display: flex; flex: 1; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+/* Let the real footer height place short transcripts. A fixed composer reserve
+   leaves a content-dependent gap whenever the composer is shorter than it. */
+.message-column { --column-padding: 32px; width: min(100%, 880px); flex: 1 0 auto; margin: 0 auto; padding: 38px var(--column-padding) 20px; }
+.thread-footer { position: sticky; bottom: 0; width: 100%; flex: none; padding: 28px max(24px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); background: linear-gradient(to bottom, transparent 0, color-mix(in srgb, var(--surface) 94%, transparent) 28px, var(--surface) 70%); z-index: 3; }
 .scroll-bottom { position: sticky; bottom: 143px; width: 36px; height: 36px; display: grid; place-items: center; margin: 0 auto; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 50%; box-shadow: var(--shadow-sm); cursor: pointer; z-index: 4; }
 .scroll-bottom:disabled { display: none; }
 .detail-loading { position: absolute; inset: 64px 0 0; display: grid; place-items: center; pointer-events: none; background: color-mix(in srgb, var(--surface) 74%, transparent); z-index: 4; }
