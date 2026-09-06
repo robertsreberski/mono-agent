@@ -54,6 +54,7 @@ import {
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import { WebConsoleError } from "./errors.js";
+import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
 
@@ -471,7 +472,6 @@ export function escapeLikeTerm(raw: string): string {
   return raw.replaceAll(/[\\%_]/gu, (character) => `\\${character}`);
 }
 
-const WEB_STORAGE_SCHEMA_VERSION = 18;
 const MAX_REVISIONS_PER_THREAD = 1_000;
 export const WEB_THREAD_PAGE_MAX = 200;
 /**
@@ -3616,6 +3616,7 @@ export class WebStore {
       if (versionRow.user_version < 0) {
         throw new WebConsoleError("storage_corrupt", "Web state schema version is invalid.", 500);
       }
+      validateWebStorageMigrationRegistry();
       const migrating = versionRow.user_version < WEB_STORAGE_SCHEMA_VERSION;
       if (migrating) this.database.exec("BEGIN IMMEDIATE");
       try {
@@ -3898,103 +3899,13 @@ export class WebStore {
         ON push_deliveries(status, next_attempt_at, created_at);
       ${MESSAGE_SEARCH_SCHEMA_SQL}
       `);
-        if (versionRow.user_version === 1) {
-          const columns = this.database.prepare("PRAGMA table_info(threads)").all() as unknown as Array<{ name: string }>;
-          if (!columns.some((column) => column.name === "trigger_kind")) {
-            this.database.exec(
-              "ALTER TABLE threads ADD COLUMN trigger_kind TEXT CHECK (trigger_kind IN ('cron', 'webhook'))",
-            );
-          }
-        }
-        if (versionRow.user_version < 5) this.migrateCronChannels();
-        if (versionRow.user_version < 6) {
-          const columns = new Set((this.database.prepare("PRAGMA table_info(cron_overviews)").all() as Array<{ name: string }>)
-            .map((column) => column.name));
-          if (!columns.has("jobs_truncated")) {
-            this.database.exec(
-              "ALTER TABLE cron_overviews ADD COLUMN jobs_truncated INTEGER NOT NULL DEFAULT 0 CHECK (jobs_truncated IN (0, 1))",
-            );
-          }
-        }
-        // The search index derives from parts_json, so an existing database has
-        // to be swept once. Migration writes no message, so the triggers above
-        // cannot have fired yet; the clear-then-insert is a no-op on a fresh
-        // database and idempotent if the sweep is ever re-run.
-        if (versionRow.user_version < 9) this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL);
-        // Durable copies of agent-published images share the upload table so that
-        // thread deletion, archival file cleanup, and every existing purge surface
-        // reach them without a second store to keep in sync.
-        if (versionRow.user_version < 10) {
-          const columns = new Set((this.database.prepare("PRAGMA table_info(attachments)").all() as Array<{ name: string }>)
-            .map((column) => column.name));
-          if (!columns.has("origin")) {
-            this.database.exec(
-              "ALTER TABLE attachments ADD COLUMN origin TEXT NOT NULL DEFAULT 'upload' CHECK (origin IN ('upload', 'reply'))",
-            );
-          }
-        }
-        // Per-conversation model/effort overrides are server-persisted columns.
-        // Guard on PRAGMA table_info so the ALTER is skipped when the columns
-        // already exist, keeping the migration re-runnable.
-        if (versionRow.user_version < 11) {
-          const columns = new Set((this.database.prepare("PRAGMA table_info(threads)").all() as Array<{ name: string }>)
-            .map((column) => column.name));
-          if (!columns.has("run_model")) {
-            this.database.exec("ALTER TABLE threads ADD COLUMN run_model TEXT");
-          }
-          if (!columns.has("run_effort")) {
-            this.database.exec("ALTER TABLE threads ADD COLUMN run_effort TEXT");
-          }
-        }
-        // The provider summary an agent advertises. Guarded on PRAGMA
-        // table_info so the ALTER is skipped when the column already exists,
-        // keeping the migration re-runnable after an interrupted upgrade.
-        if (versionRow.user_version < 12) {
-          const columns = new Set((this.database.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
-            .map((column) => column.name));
-          if (!columns.has("providers_json")) {
-            this.database.exec("ALTER TABLE agents ADD COLUMN providers_json TEXT");
-          }
-        }
-        // Schema v13 tied the Monitor idempotency ledger to the conversation
-        // with ON DELETE CASCADE. That erased the tombstone and allowed a
-        // delivery key to name different content after thread deletion.
-        if (versionRow.user_version === 13) this.migrateMonitorWakeDeliveries();
-        if (versionRow.user_version < 15) {
-          const columns = new Set((this.database.prepare("PRAGMA table_info(monitor_wake_deliveries)").all() as Array<{ name: string }>)
-            .map((column) => column.name));
-          if (!columns.has("projection_json")) {
-            this.database.exec("ALTER TABLE monitor_wake_deliveries ADD COLUMN projection_json TEXT");
-          }
-        }
-        // Discovery presence is not reachability: retained rows may own
-        // history after their source leaves the registry, while a present
-        // source can still be temporarily offline. Legacy rows start present;
-        // WebService.create awaits one authoritative refresh before listening.
-        if (versionRow.user_version < 16) {
-          const columns = new Set((this.database.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
-            .map((column) => column.name));
-          if (!columns.has("discovered")) {
-            this.database.exec(
-              "ALTER TABLE agents ADD COLUMN discovered INTEGER NOT NULL DEFAULT 1 CHECK (discovered IN (0, 1))",
-            );
-          }
-        }
-        // Content deltas count a message's parts writes so a console can tell
-        // the next one from one it missed. Existing rows start the count at 0,
-        // which is exactly what a client that has never seen a delta holds.
-        // Guarded on PRAGMA table_info so the ALTER is skipped when the column
-        // already exists, keeping the migration re-runnable.
-        // Schema 17 was already used by agent run overrides before message
-        // sequencing landed. Both shapes exist, so schema 18 repairs the
-        // earlier shape without resetting existing sequence values.
-        if (versionRow.user_version < 18) {
-          const columns = new Set((this.database.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>)
-            .map((column) => column.name));
-          if (!columns.has("seq")) {
-            this.database.exec("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0");
-          }
-        }
+        runWebStorageMigrations({
+          database: this.database,
+          originalVersion: versionRow.user_version,
+          migrateCronChannels: () => this.migrateCronChannels(),
+          migrateMonitorWakeDeliveries: () => this.migrateMonitorWakeDeliveries(),
+          backfillMessageSearch: () => this.database.exec(MESSAGE_SEARCH_BACKFILL_SQL),
+        });
         if (migrating) this.database.exec(`PRAGMA user_version = ${WEB_STORAGE_SCHEMA_VERSION}; COMMIT`);
       } catch (error) {
         if (this.database.isTransaction) this.database.exec("ROLLBACK");
@@ -4009,6 +3920,12 @@ export class WebStore {
 
   /** Preserve Monitor delivery tombstones while making deleted threads threadless. */
   private migrateMonitorWakeDeliveries(): void {
+    const foreignKeys = this.database.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)")
+      .all() as Array<{ from: string; on_delete: string }>;
+    if (!foreignKeys.some((key) => key.from === "thread_id" && key.on_delete === "CASCADE")) return;
+    const columns = this.database.prepare("PRAGMA table_info(monitor_wake_deliveries)")
+      .all() as Array<{ name: string }>;
+    const projection = columns.some((column) => column.name === "projection_json") ? "projection_json" : "NULL";
     this.database.exec(`
       CREATE TABLE monitor_wake_deliveries_v14 (
         source_id TEXT NOT NULL REFERENCES agents(source_id),
@@ -4028,7 +3945,7 @@ export class WebStore {
         source_id, monitor_id, delivery_key, thread_id, payload_sha256, projection_json,
         state, disposition, turn_id, created_at, completed_at
       ) SELECT
-        source_id, monitor_id, delivery_key, thread_id, payload_sha256, NULL,
+        source_id, monitor_id, delivery_key, thread_id, payload_sha256, ${projection},
         state, disposition, turn_id, created_at, completed_at
       FROM monitor_wake_deliveries;
       DROP TABLE monitor_wake_deliveries;

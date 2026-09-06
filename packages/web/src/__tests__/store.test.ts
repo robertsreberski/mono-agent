@@ -29,6 +29,7 @@ import {
   type StoredTurnFinish,
 } from "../store.js";
 import { WebConsoleError } from "../errors.js";
+import { WEB_STORAGE_SCHEMA_VERSION } from "../store-migrations.js";
 import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
 // The console replays these same vectors, so they live where both suites can
 // take them verbatim rather than each inventing its own reading of an op.
@@ -2219,7 +2220,7 @@ describe("WebStore", () => {
     const agentColumns = new Set((inspected.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>)
       .map((column) => column.name));
     inspected.close();
-    expect(version.user_version).toBe(18);
+    expect(version.user_version).toBe(WEB_STORAGE_SCHEMA_VERSION);
     expect(agentColumns.has("providers_json")).toBe(true);
     expect(agentColumns.has("discovered")).toBe(true);
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining(["run_model", "run_effort"]));
@@ -2246,7 +2247,7 @@ describe("WebStore", () => {
     reopened.close();
     expect(
       new DatabaseSync(databasePath, { readOnly: true }).prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 18 });
+    ).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
   });
 
   it("migrates schema v15 agents as discovered without losing their threads", async () => {
@@ -2273,7 +2274,7 @@ describe("WebStore", () => {
     migrated.close();
 
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
     expect(inspected.prepare(
       "SELECT discovered FROM agents WHERE source_id = 'agent-one'",
     ).get()).toMatchObject({ discovered: 1 });
@@ -2295,7 +2296,7 @@ describe("WebStore", () => {
     const migrated = await WebStore.open({ stateDir });
     migrated.close();
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
     expect(inspected.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'monitor_wake_deliveries'",
     ).get()).toBeDefined();
@@ -2359,7 +2360,7 @@ describe("WebStore", () => {
 
     const migrated = await WebStore.open({ stateDir });
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
     const threadForeignKey = (inspected.prepare("PRAGMA foreign_key_list(monitor_wake_deliveries)").all() as Array<{
       from: string;
       on_delete: string;
@@ -2482,7 +2483,7 @@ describe("WebStore", () => {
     migrated.close();
 
     const inspected = new DatabaseSync(databasePath, { readOnly: true });
-    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+    expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
     expect(inspected.prepare("SELECT model, effort FROM agent_run_overrides WHERE source_id = ?")
       .get("agent-one")).toEqual({ model: "provider/default", effort: null });
     inspected.close();
@@ -2568,7 +2569,7 @@ describe("WebStore", () => {
     const liveInputs = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'live_inputs'").get();
     const processJobCards = inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'").get();
     inspected.close();
-    expect(version.user_version).toBe(18);
+    expect(version.user_version).toBe(WEB_STORAGE_SCHEMA_VERSION);
     expect(columns.map((column) => column.name)).toContain("trigger_kind");
     expect(ledger).toBeDefined();
     expect(liveInputs).toBeDefined();
@@ -2595,7 +2596,7 @@ describe("WebStore", () => {
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'process_job_cards'",
     ).get();
     inspected.close();
-    expect(version.user_version).toBe(18);
+    expect(version.user_version).toBe(WEB_STORAGE_SCHEMA_VERSION);
     expect(processJobCards).toBeDefined();
   });
 
@@ -3663,7 +3664,7 @@ describe("WebStore conversation search", () => {
     expect(
       new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 18 });
+    ).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
     reopened.close();
   });
 });
@@ -4180,7 +4181,7 @@ describe("WebStore message sequence and part deltas", () => {
     expect(
       new DatabaseSync(join(context.stateDir, "state.sqlite"), { readOnly: true })
         .prepare("PRAGMA user_version").get(),
-    ).toMatchObject({ user_version: 18 });
+    ).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
     reopened.close();
   });
 
@@ -4202,7 +4203,7 @@ describe("WebStore message sequence and part deltas", () => {
       reopened.close();
     }
     const migrated = new DatabaseSync(join(context.stateDir, "state.sqlite"), { readOnly: true });
-    expect(migrated.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 18 });
+    expect(migrated.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
     expect(migrated.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
     expect(migrated.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     migrated.close();
