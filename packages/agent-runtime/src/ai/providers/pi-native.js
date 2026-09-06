@@ -853,6 +853,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       runtimeWarnings,
       capabilitiesUsed,
+      usageMeasured: runAssistantCount > 0,
       structuredResult: runState.structuredResult,
     });
   } catch (err) {

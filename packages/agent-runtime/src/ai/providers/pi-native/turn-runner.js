@@ -281,6 +281,8 @@ export async function buildTurnHarness(runState, {
     streamOptions: { transport, maxRetries, maxRetryDelayMs },
     steeringMode,
     followUpMode: steeringMode,
+    promptCacheDiagnostics: options.promptCacheDiagnostics,
+    onEvent: options.onEvent,
   });
   // MCP `CallToolResult.isError` is a successful protocol response, so pi's
   // execute() promise resolves. The bridge records that bit in result details;

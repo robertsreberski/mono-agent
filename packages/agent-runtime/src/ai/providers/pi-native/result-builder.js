@@ -211,6 +211,7 @@ export function buildSuccessResult(params) {
     runtimeWarnings,
     capabilitiesUsed,
     structuredResult,
+    usageMeasured = true,
   } = params;
   return {
     text: finalText,
@@ -219,9 +220,9 @@ export function buildSuccessResult(params) {
     usage: {
       input_tokens: usage.input || null,
       output_tokens: usage.output || null,
-      cache_read_tokens: usage.cacheRead || null,
-      cache_creation_tokens: usage.cacheWrite || null,
-      cache_write_tokens: usage.cacheWrite || null,
+      cache_read_tokens: usageMeasured ? usage.cacheRead : null,
+      cache_creation_tokens: usageMeasured ? usage.cacheWrite : null,
+      cache_write_tokens: usageMeasured ? usage.cacheWrite : null,
       cost_usd: usage.cost || estimatedCost,
     },
     durationMs: Date.now() - start,
