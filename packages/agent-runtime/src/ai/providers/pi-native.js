@@ -58,6 +58,7 @@ import {
   emitCapabilitiesResolved,
   emitUsageCostEvents,
   usageFromMessages,
+  hasMeasuredUsage,
   withSubagentUsage,
 } from "./pi-native/result-builder.js";
 import {
@@ -853,7 +854,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       providerSessionId,
       runtimeWarnings,
       capabilitiesUsed,
-      usageMeasured: runAssistantCount > 0,
+      usageMeasured: hasMeasuredUsage(runTranscript),
       structuredResult: runState.structuredResult,
     });
   } catch (err) {

@@ -33,6 +33,24 @@ export function usageFromMessages(messages = []) {
 }
 
 /**
+ * Pi initializes failed assistant messages with an all-zero usage object before
+ * any provider telemetry arrives. A successful response makes those zeros
+ * measured; a failed response is measured only when real usage is non-zero.
+ * @param {Array<any>} [messages]
+ */
+export function hasMeasuredUsage(messages = []) {
+  return messages.some((message) => {
+    if (message?.role !== "assistant" || !message.usage) return false;
+    if (message.stopReason !== "error" && message.stopReason !== "aborted") return true;
+    const usage = message.usage;
+    return [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.totalTokens,
+      usage.cost?.input, usage.cost?.output, usage.cost?.cacheRead,
+      usage.cost?.cacheWrite, usage.cost?.total]
+      .some((value) => Number.isFinite(Number(value)) && Number(value) > 0);
+  });
+}
+
+/**
  * Add what this run's subagents spent to the run's own usage.
  *
  * A delegation is work the run asked for and is billed to the same account, but
@@ -70,7 +88,7 @@ export function withSubagentUsage(usage, delegated, estimatedCost) {
  * requests in the run: the last assistant usage is the same provider-counted
  * value Pi's compaction logic trusts, so it can decrease after compaction.
  * @param {any} assistantMessage
- * @returns {{input: number, output: number, cacheRead: number, cacheCreation: number, total: number}|null}
+ * @returns {{input: number, output: number, cacheRead: number, cacheCreation: number, total: number, costUsd: number}|null}
  */
 export function contextUsageFromAssistantMessage(assistantMessage) {
   if (assistantMessage?.role !== "assistant" || !assistantMessage.usage) return null;
@@ -83,6 +101,7 @@ export function contextUsageFromAssistantMessage(assistantMessage) {
     cacheRead: Number(assistantMessage.usage.cacheRead) || 0,
     cacheCreation: Number(assistantMessage.usage.cacheWrite) || 0,
     total,
+    costUsd: Number(assistantMessage.usage.cost?.total) || 0,
   };
 }
 
