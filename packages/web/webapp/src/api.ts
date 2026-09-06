@@ -717,8 +717,9 @@ export const api = {
    * write queue -- see `deleteThread` in the console store -- so it does not
    * wait out a stalled write before removing what the operator asked to remove.
    */
-  deleteThread: async (threadId: string, signal?: AbortSignal) => {
-    const response = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}`, {
+  deleteThread: async (threadId: string, signal?: AbortSignal, emptyOnly = false) => {
+    const query = emptyOnly ? "?emptyOnly=true" : "";
+    const response = await fetch(`/api/v1/threads/${encodeURIComponent(threadId)}${query}`, {
       method: "DELETE",
       headers: { Accept: "application/json" },
       ...(signal === undefined ? {} : { signal }),

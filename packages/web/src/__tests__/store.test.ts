@@ -1028,6 +1028,28 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("conditionally deletes only conversations with no authoritative activity", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const empty = store.createThread("agent-one");
+    store.patchThread(empty.id, { archived: true });
+
+    await expect(store.deleteArchivedThread(empty.id, { emptyOnly: true }))
+      .resolves.toEqual({ orphanedFiles: 0 });
+
+    const used = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: used.id, text: "hello", attachmentIds: [] });
+    store.completeTurn(turn.turnId, "world");
+    store.patchThread(used.id, { archived: true });
+
+    await expect(store.deleteArchivedThread(used.id, { emptyOnly: true }))
+      .rejects.toMatchObject({ code: "thread_not_empty" });
+    expect(store.getThread(used.id)).toBeDefined();
+    store.close();
+  });
+
   it("enforces one active turn per thread while allowing parallel threads", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

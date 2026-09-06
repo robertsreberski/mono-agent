@@ -2546,7 +2546,10 @@ export class WebStore {
     return changed ? this.requireThread(id) : undefined;
   }
 
-  async deleteArchivedThread(id: string): Promise<{ readonly orphanedFiles: number }> {
+  async deleteArchivedThread(
+    id: string,
+    options: { readonly emptyOnly?: boolean } = {},
+  ): Promise<{ readonly orphanedFiles: number }> {
     id = this.resolveThreadId(id);
     const thread = this.requireThread(id);
     if (thread.archivedAt === null) {
@@ -2564,6 +2567,26 @@ export class WebStore {
     const attachments = this.database.prepare("SELECT * FROM attachments WHERE thread_id = ?")
       .all(id) as unknown as AttachmentRow[];
     this.transaction(() => {
+      if (options.emptyOnly === true) {
+        const hasContent = thread.trigger !== undefined || this.database.prepare(`
+          SELECT 1 FROM messages WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM turns WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM attachments WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM live_inputs WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM process_job_wake_deliveries WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM monitor_wake_deliveries WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM notification_deliveries WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM push_events WHERE thread_id = ?
+          LIMIT 1
+        `).get(id, id, id, id, id, id, id, id) !== undefined;
+        if (hasContent) {
+          throw new WebConsoleError(
+            "thread_not_empty",
+            "The conversation now contains activity and was kept in Archived.",
+            409,
+          );
+        }
+      }
       const now = this.now();
       this.database.prepare(`
         UPDATE push_deliveries SET status = 'dropped', updated_at = ?, finished_at = ?, last_error_code = 'thread_deleted'
