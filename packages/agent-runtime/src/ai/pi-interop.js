@@ -3,6 +3,7 @@
 // directly so the runtime's known-good Pi version remains authoritative.
 
 import {
+  builtinModels,
   builtinProviders,
   getBuiltinModel,
   getBuiltinModels,
@@ -71,6 +72,37 @@ import { reasoningLevelsForPiModel as resolveReasoningLevels } from "./providers
  * @property {() => Promise<string>} [onManualCodeInput]
  * @property {(prompt: {message: string, options: Array<{id: string, label: string}>}) => Promise<string|undefined>} onSelect
  * @property {AbortSignal} [signal]
+ */
+
+/**
+ * @typedef {{
+ *   providerId: string,
+ *   label: string,
+ *   methods: Array<{type: "oauth"|"api_key", label: string, interactive: boolean}>
+ * }} PiProviderAuthDescription
+ */
+
+/**
+ * @typedef {{source: "stored"|"environment"|"ambient", type: "oauth"|"api_key"}} PiProviderAuthCheck
+ */
+
+/**
+ * @typedef {{
+ *   type: "text"|"secret"|"select"|"manual_code",
+ *   message: string,
+ *   placeholder?: string,
+ *   allowEmpty?: boolean,
+ *   options?: ReadonlyArray<{id: string, label: string, description?: string}>,
+ *   signal?: AbortSignal
+ * }} PiProviderAuthPrompt
+ */
+
+/**
+ * @typedef {{
+ *   signal?: AbortSignal,
+ *   prompt: (prompt: PiProviderAuthPrompt) => Promise<string>,
+ *   notify: (event: *) => void
+ * }} PiProviderAuthInteraction
  */
 
 /**
@@ -164,6 +196,130 @@ export function describePiBuiltinProvider(providerId) {
   return {
     id,
     label: builtinProviderLabelMap().get(id) ?? id,
+  };
+}
+
+/**
+ * Describe one provider's supported authentication methods without exposing
+ * Pi provider objects across the runtime boundary.
+ *
+ * @param {string} providerId
+ * @returns {PiProviderAuthDescription|undefined}
+ */
+export function describePiProviderAuth(providerId) {
+  let provider;
+  try {
+    provider = builtinProviders().find((candidate) => candidate.id === providerId);
+  } catch {
+    return undefined;
+  }
+  if (provider === undefined) return undefined;
+  const methods = [];
+  if (provider.auth.oauth !== undefined) {
+    methods.push({
+      type: /** @type {const} */ ("oauth"),
+      label: provider.auth.oauth.loginLabel ?? provider.auth.oauth.name,
+      interactive: true,
+    });
+  }
+  if (provider.auth.apiKey !== undefined) {
+    methods.push({
+      type: /** @type {const} */ ("api_key"),
+      label: provider.auth.apiKey.name,
+      interactive: typeof provider.auth.apiKey.login === "function",
+    });
+  }
+  return cloneInteropValue({ providerId: provider.id, label: provider.name, methods });
+}
+
+/**
+ * Run Pi's side-effect-free `Models.checkAuth()` against a caller-provided
+ * credential/environment snapshot. OAuth refresh and live provider requests do
+ * not occur. Only the non-secret source/type result crosses this facade.
+ *
+ * @param {string} providerId
+ * @param {*} credential
+ * @param {Readonly<Record<string, string|undefined>>} [environment]
+ * @param {AbortSignal} [signal]
+ * @returns {Promise<PiProviderAuthCheck|undefined>}
+ */
+export async function checkPiProviderAuth(providerId, credential, environment = {}, signal) {
+  const credentials = memoryCredentialStore(credential === undefined ? {} : { [providerId]: credential });
+  const models = builtinModels({
+    credentials,
+    authContext: {
+      async env(name) { return environment[name]; },
+      async fileExists(path) {
+        try {
+          const fs = await import("node:fs/promises");
+          let resolved = path;
+          if (resolved.startsWith("~")) {
+            const os = await import("node:os");
+            resolved = os.homedir() + resolved.slice(1);
+          }
+          await fs.access(resolved);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+    },
+  });
+  const result = await models.checkAuth(providerId, signal === undefined ? undefined : { signal });
+  if (result === undefined) return undefined;
+  const source = result.type === "oauth" || result.source === "stored credential"
+    ? "stored"
+    : typeof result.source === "string"
+      && typeof environment[result.source] === "string"
+      && environment[result.source].trim().length > 0
+      ? "environment"
+      : "ambient";
+  return cloneInteropValue({ source, type: result.type });
+}
+
+/**
+ * Run a provider-owned Pi login into a process-local store. The returned
+ * credential is a defensive snapshot; the caller remains responsible for its
+ * hardened durable transaction.
+ *
+ * @param {string} providerId
+ * @param {"oauth"|"api_key"} type
+ * @param {PiProviderAuthInteraction} interaction
+ * @returns {Promise<*>}
+ */
+export async function loginPiProviderAuth(providerId, type, interaction) {
+  if (type !== "oauth" && type !== "api_key") {
+    throw new TypeError("Pi provider auth type must be oauth or api_key");
+  }
+  if (typeof interaction?.prompt !== "function" || typeof interaction?.notify !== "function") {
+    throw new TypeError("Pi provider auth interaction requires prompt() and notify()");
+  }
+  const models = builtinModels({ credentials: memoryCredentialStore({}) });
+  const credential = await models.login(providerId, type, {
+    signal: interaction.signal,
+    prompt: async (prompt) => await interaction.prompt(prompt),
+    notify: (event) => interaction.notify(cloneInteropValue(event)),
+  });
+  return cloneInteropValue(credential);
+}
+
+/** @param {Record<string, *>} initial */
+function memoryCredentialStore(initial) {
+  const held = new Map(Object.entries(initial));
+  return {
+    async read(providerId) { return held.get(providerId); },
+    async list() {
+      return [...held.entries()].flatMap(([providerId, credential]) =>
+        credential?.type === "oauth" || credential?.type === "api_key"
+          ? [{ providerId, type: credential.type }]
+          : []);
+    },
+    async modify(providerId, fn) {
+      const next = await fn(held.get(providerId));
+      if (next !== undefined) held.set(providerId, next);
+      return held.get(providerId);
+    },
+    async delete(providerId) { held.delete(providerId); },
   };
 }
 

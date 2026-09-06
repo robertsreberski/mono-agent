@@ -19,6 +19,9 @@ import type {
   MessagePart,
   ModelCatalogPage,
   ProcessJobProjection,
+  ProviderAuthMethod,
+  ProviderAuthSessionSnapshot,
+  ProviderAuthStatusSnapshot,
   PushSubscriptionStatus,
   StartTurnInput,
   ThreadDetail,
@@ -583,6 +586,70 @@ export const api = {
       { method: "DELETE" },
     );
     return result.agent;
+  },
+
+  providerAuthStatus: (
+    sourceId: string,
+    signal?: AbortSignal,
+  ) => request<ProviderAuthStatusSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth`,
+    {
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
+
+  beginProviderAuth: (
+    sourceId: string,
+    providerId: string,
+    method: ProviderAuthMethod,
+    signal?: AbortSignal,
+  ) => request<ProviderAuthSessionSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/sessions`,
+    {
+      method: "POST",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ providerId, authType: method.authType, strategy: method.strategy }),
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
+
+  providerAuthSession: (
+    sourceId: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ) => request<ProviderAuthSessionSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/sessions/${encodeURIComponent(sessionId)}`,
+    {
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
+
+  submitProviderAuth: (
+    sourceId: string,
+    sessionId: string,
+    input: { readonly promptId: string; readonly value: string },
+    signal?: AbortSignal,
+  ) => request<ProviderAuthSessionSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/sessions/${encodeURIComponent(sessionId)}/input`,
+    {
+      method: "POST",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify(input),
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
+
+  cancelProviderAuth: async (sourceId: string, sessionId: string, signal?: AbortSignal) => {
+    await send(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "DELETE",
+        headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
   },
 
   /**

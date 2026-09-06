@@ -164,6 +164,7 @@ provider-supplied known kind when available and otherwise `runtime_error`.
 | `createPiOAuthApiKeyResolver()` | Bind a host-owned Pi auth file with refresh-safe writes |
 | `listPiBuiltinModels()` / `getPiBuiltinModel()` | Read cloned snapshots from the runtime-owned, exact-pinned Pi model catalog without importing Pi directly |
 | `resolvePiOAuthApiKey()` / `loginPiOAuth()` | Use the runtime-owned Pi OAuth implementation without importing Pi's mutable provider registry |
+| `describePiProviderAuth()` / `checkPiProviderAuth()` / `loginPiProviderAuth()` | Bridge Pi's provider-owned auth descriptions, detection, prompts, device events, and returned credential without exposing its mutable registry |
 | `createMetricsObserver()` | Aggregate normalized event, token, cache, cost, tool, error, turn, and approval metrics |
 
 Most hosts should use `@mono-agent/runtime-adapter` instead of importing deep
@@ -190,6 +191,10 @@ PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
 PiOAuthLoginCallbacks
+PiProviderAuthCheck
+PiProviderAuthDescription
+PiProviderAuthInteraction
+PiProviderAuthPrompt
 PiReasoningLevel
 RISK_TIERS
 RUNTIME_CAPABILITIES
@@ -200,6 +205,7 @@ RuntimeModelRef
 UNKNOWN_CAPABILITY
 buildCapabilitiesUsed
 buildTranscriptTailSnapshot
+checkPiProviderAuth
 configureToolRuntime
 createApprovalManager
 createMetricsObserver
@@ -209,6 +215,7 @@ createRouterRuntime
 createRuntime
 createSessionRegistry
 describePiBuiltinProvider
+describePiProviderAuth
 disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
@@ -220,6 +227,7 @@ listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
 loginPiOAuth
+loginPiProviderAuth
 normalizeAllowlistMode
 normalizeList
 normalizeRuntimeModelReference
@@ -381,6 +389,10 @@ PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
 PiOAuthLoginCallbacks
+PiProviderAuthCheck
+PiProviderAuthDescription
+PiProviderAuthInteraction
+PiProviderAuthPrompt
 PiReasoningLevel
 RUNTIME_CAPABILITIES
 RuntimeBridge
@@ -389,10 +401,12 @@ RuntimeBridgeId
 RuntimeModelRef
 UNKNOWN_CAPABILITY
 buildCapabilitiesUsed
+checkPiProviderAuth
 createMetricsObserver
 createObserverHub
 createSessionRegistry
 describePiBuiltinProvider
+describePiProviderAuth
 disposeAllProviderSessions
 disposeProviderSession
 generatePiNativeResponse
@@ -402,6 +416,7 @@ listPiBuiltinModels
 listPiBuiltinProviders
 listRuntimeBridges
 loginPiOAuth
+loginPiProviderAuth
 normalizeRuntimeModelReference
 parseRuntimeModelReference
 piNativeRuntimeBridge
@@ -640,6 +655,14 @@ Login callers must implement Pi's four required interaction callbacks:
 manual-code, and abort callbacks pass through unchanged.
 These functions deliberately do not expose Pi's mutable model collections or
 OAuth-provider registry.
+
+Headless hosts can instead use `describePiProviderAuth()` to enumerate a
+provider's OAuth/API-key methods, `checkPiProviderAuth()` to distinguish stored
+or ambient credential detection without refreshing or making a model request,
+and `loginPiProviderAuth()` to relay Pi's typed prompts and events. The last
+function returns a credential to its caller but does not persist it; the owning
+application must apply its own safe-store transaction and must never serialize
+prompt answers into an operator projection.
 
 Returns:
 

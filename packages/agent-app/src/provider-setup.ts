@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { modelReferenceKey, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
-import { inspectPiAuthStore } from "./pi-auth-store-inspection.js";
+import { inspectPiAuthStore, MAX_PI_AUTH_STORE_BYTES } from "./pi-auth-store-inspection.js";
 
 export type ProviderSetupKind = "auth" | "preflight";
 
@@ -171,6 +171,19 @@ type PiAuthPromotionHooks = Pick<
   | "beforePiAuthBackupCleanup"
   | "beforePiAuthPostMutationSync"
 >;
+
+export interface PersistPiProviderCredentialOptions extends PiAuthPromotionHooks {
+  readonly authPath: string;
+  readonly provider: string;
+  readonly platform?: NodeJS.Platform;
+  /**
+   * Called only while the cross-process auth-store lock is held. The returned
+   * credential is validated, merged into the latest store snapshot, and never
+   * included in an error message.
+   */
+  readonly resolveCredential: (signal?: AbortSignal) => Promise<unknown>;
+  readonly abortSignal?: AbortSignal;
+}
 
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
 const PI_API_KEY_PROVIDERS: Readonly<Record<string, string>> = {
@@ -638,15 +651,13 @@ async function runPiApiKeyAction(
   }
 
   try {
-    assertOwnerOnlyPersistenceSupported(platform);
-    await withPiAuthFileLock(action.piAuthPath, async (authPath, ownerUid, assertLockHeld) => {
-      const original = await readPiAuthStore(authPath, piAuthSingleLinkPolicy(ownerUid));
-      const next = {
-        ...original.auth,
-        [action.provider]: { type: "api_key", key },
-      };
-      await writePiAuthStoreAtomically(authPath, next, original, ownerUid, assertLockHeld, hooks);
-    }, hooks);
+    await persistPiProviderCredential({
+      authPath: action.piAuthPath,
+      provider: action.provider,
+      platform,
+      resolveCredential: async () => ({ type: "api_key", key }),
+      ...hooks,
+    });
     return {
       action,
       status: "ok",
@@ -662,6 +673,33 @@ async function runPiApiKeyAction(
   }
 }
 
+/**
+ * The single mutation path for Pi provider credentials. Login remains inside
+ * the lock so two processes cannot both authenticate from the same snapshot
+ * and silently clobber each other's successful result.
+ */
+export async function persistPiProviderCredential(
+  options: PersistPiProviderCredentialOptions,
+): Promise<void> {
+  assertOwnerOnlyPersistenceSupported(options.platform ?? process.platform);
+  const hooks: PiAuthPromotionHooks = options;
+  await withPiAuthFileLock(options.authPath, async (authPath, ownerUid, assertLockHeld) => {
+    const original = await readPiAuthStore(authPath, piAuthSingleLinkPolicy(ownerUid));
+    if (options.abortSignal?.aborted === true) {
+      throw options.abortSignal.reason ?? new Error("Provider authentication was cancelled.");
+    }
+    const credential = await options.resolveCredential(options.abortSignal);
+    if (!isUsableStoredPiCredential(options.provider, credential)) {
+      throw new Error(`Provider authentication returned an invalid credential for ${options.provider}.`);
+    }
+    const next = { ...original.auth, [options.provider]: credential };
+    if (!isBoundedCredentialValue(next)) {
+      throw new Error(`Provider authentication would exceed the Pi credential store safety limit for ${options.provider}.`);
+    }
+    await writePiAuthStoreAtomically(authPath, next, original, ownerUid, assertLockHeld, hooks);
+  }, hooks);
+}
+
 function isBoundedCredentialString(value: unknown): value is string {
   return typeof value === "string"
     && value.trim().length > 0
@@ -671,10 +709,27 @@ function isBoundedCredentialString(value: unknown): value is string {
 
 function isUsableStoredPiCredential(_provider: string, value: unknown): boolean {
   if (!isRecord(value)) return false;
+  if (!isBoundedCredentialValue(value)) return false;
   if (value.type === "oauth") {
-    return isBoundedCredentialString(value.access) || isBoundedCredentialString(value.refresh);
+    return (isBoundedCredentialString(value.access) || isBoundedCredentialString(value.refresh))
+      && (value.expires === undefined || (typeof value.expires === "number" && Number.isFinite(value.expires)));
   }
-  return value.type === "api_key" && isBoundedCredentialString(value.key);
+  if (value.type !== "api_key") return false;
+  if (Object.keys(value).some((key) => key !== "type" && key !== "key" && key !== "env")) return false;
+  if (isBoundedCredentialString(value.key)) return true;
+  if (value.env === undefined) return Object.keys(value).length === 1;
+  if (!isRecord(value.env)) return false;
+  const entries = Object.entries(value.env);
+  return entries.length > 0 && entries.length <= 64 && entries.every(([key, entry]) =>
+    /^[A-Z][A-Z0-9_]{0,127}$/u.test(key) && isBoundedCredentialString(entry));
+}
+
+function isBoundedCredentialValue(value: unknown): boolean {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), "utf8") <= MAX_PI_AUTH_STORE_BYTES;
+  } catch {
+    return false;
+  }
 }
 
 async function runCommandAction(

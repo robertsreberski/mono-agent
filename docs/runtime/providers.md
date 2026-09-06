@@ -81,6 +81,37 @@ A route that names a provider in none of `providers`, Pi's built-in catalog, nor
 - **Pi-level auth** (OAuth/account providers such as Anthropic, GitHub Copilot, OpenAI Codex; API-key providers such as OpenCode-Go) resolves through `providers.piAuthPath`. Set it up with `mono-agent auth login <provider> [--pi-auth-path ...]`.
 - **Provider-level keys** resolve through the definition's `apiKeyEnv`: keep the value in `.env` and reference only its variable name in config, so the committed file carries no secret.
 
+### Provider authentication in Agent Settings
+
+When a running agent advertises the protected provider-auth capability, the web
+console's **Agent settings** dialog lists only providers used by its effective
+primary/fallback routes, agent-host memory LLM, and enabled static cron/webhook
+overrides. Each row distinguishes credential detection (`present`, `expired`,
+`missing`, or keyless `not applicable`) from proof by a successful live model
+request. A completed login is therefore detected but remains unverified until a
+real turn succeeds. Recent process-local provider-auth and provider-unavailable
+failures are warnings alongside that state; they are not durable history.
+
+The headless login flow is provider-owned by Pi 0.85.1:
+
+- GitHub Copilot and OpenAI Codex use native device authorization: open the
+  displayed URL on any browser, enter the displayed code, and leave the dialog
+  open while the agent host polls.
+- Anthropic has no device-code flow in this Pi release. Open its authorization
+  URL and, when the browser cannot reach the callback on the remote host, paste
+  the complete final localhost redirect URL into the dialog. Pi validates the
+  callback state before exchange.
+- OpenCode-Go and other Pi API-key providers render their provider-owned prompts
+  in the dialog. Secret prompts are masked and cleared as they are submitted.
+
+There is no `--device-auth` CLI flag. Browser login uses Pi's real device-code or
+manual-code interaction contract; CLI syntax remains `mono-agent auth login`.
+The agent host alone reads and writes `providers.piAuthPath`, using the same
+owner-only, locked, no-clobber promotion path as `auth login --api-key-stdin`.
+The web service only proxies short-lived, no-store session projections and never
+persists submitted values. This feature does not inspect or modify Codex CLI
+credentials such as `~/.codex/auth.json`.
+
 ## OpenCode request attribution
 
 Requests whose Pi provider id is `opencode` or `opencode-go`, or whose custom

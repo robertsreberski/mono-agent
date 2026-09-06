@@ -26,6 +26,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   `~/.mono-agent/web`.
 - Persist optional per-agent model/effort defaults for new interactive web
   threads, copied at creation and clearable back to resolved config.
+- Proxy ephemeral, exact-origin provider-auth status and login sessions to the
+  currently connected bearer-protected agent without storing credentials,
+  prompt input, or session projections.
 - Let an MCP-capable agent replace the interim first-message title with a short
   semantic title and evolve it after a material topic shift, while treating any
   user rename as a permanent lock.
@@ -183,6 +186,18 @@ each effective value as Config or Override. These settings live in the web
 service's SQLite database, survive restart, and do not edit
 `mono-agent.config.json`; existing conversations and Telegram, Slack, cron,
 webhook, API, and TUI requests remain unchanged.
+
+The same dialog shows **Provider authentication** when the current agent
+advertises provider-auth v1. It renders only the host-returned providers used by
+effective routes, distinguishing detected credentials from live-request
+verification. GitHub Copilot and OpenAI Codex expose Pi device-code flows;
+Anthropic accepts the final redirect URL/code; API-key providers use masked
+provider-owned prompts. Secret input is cleared before submission. The web
+server requires exact origin, proxies through the agent's ordinary operator
+bearer, marks responses no-store, and never reads the Pi auth path. Auth state
+is component/agent memory only—not SQLite, thread history, browser storage, or
+run artifacts. The console remains a trusted-network single-user surface, not a
+per-human authenticated application.
 
 New interactive threads initially use the first user message as their fallback
 title. On compatible routes, an allowlisted app-owned `SetConversationTitle`
@@ -428,10 +443,10 @@ ledger; postconditions check the required effects.
 
 | Source area | Responsibility |
 | --- | --- |
-| [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, host/theme bootstrap identity, per-host PWA manifest, uploads, SSE invalidations, host/origin checks, and static webapp serving. |
-| [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, cancellation, notifications, and invalidation. |
+| [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, host/theme bootstrap identity, per-host PWA manifest, uploads, SSE invalidations, host/origin checks, provider-auth no-store proxy routes, and static webapp serving. |
+| [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, provider-auth connection-generation guarding, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
-| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and owner-authenticated process-job reads/cancel over the operator protocol. |
+| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and bearer-authenticated provider-auth/process-job requests over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, process-job live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
