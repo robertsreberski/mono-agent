@@ -106,7 +106,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `mono-agent web-control status|reset` inspects or clears idle operational state.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and a console label
-  that defaults to the hostname; on macOS pair its worker with one helper-only,
+  that defaults to the hostname and can be restored with `--name -`; on macOS
+  pair its worker with one helper-only,
   stopped-writer log controller while the worker remains wake-only; publish a
   bounded, refreshable skill registry through each running operator endpoint so
   the web composer can discover valid `$skill-name` references; use

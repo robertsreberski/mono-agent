@@ -92,7 +92,7 @@ const WEB_THEMES = ["evergreen", "ocean", "plum", "terracotta"] as const satisfi
 const DEFAULT_WEB_THEME: WebTheme = "evergreen";
 // Mirrors WEB_CONSOLE_NAME_MAX_CHARACTERS in @mono-agent/web; declared locally so this
 // command keeps its type-only dependency on the lazily loaded web package.
-const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80;
+const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80 satisfies typeof import("@mono-agent/web").WEB_CONSOLE_NAME_MAX_CHARACTERS;
 
 interface WebServerHandle {
   readonly url: string;
@@ -282,7 +282,7 @@ export function renderWebHelp(): string {
     "",
     `Default bind: ${DEFAULT_WEB_HOST}:${String(DEFAULT_WEB_PORT)} (LAN/Tailnet reachable; no app login).`,
     `Themes: ${WEB_THEMES.join(", ")} (default: ${DEFAULT_WEB_THEME}).`,
-    "--name sets the installed PWA label, browser tab title, and rail brand (default: this machine's hostname).",
+    "--name sets the installed PWA label, browser tab title, and rail brand; --name - restores the hostname default.",
     "--loopback narrows the bind to 127.0.0.1. macOS start/restart claim a free Tailscale Serve HTTPS port; Linux HTTPS routes are externally managed.",
     "",
   ].join("\n");
@@ -376,8 +376,9 @@ function validateWebFlags(action: string | undefined, options: RunWebCommandOpti
   if (options.theme !== undefined && !isWebTheme(options.theme)) {
     return `--theme must be one of: ${WEB_THEMES.join(", ")}.`;
   }
-  if (options.name !== undefined && invalidWebConsoleName(options.name) !== undefined) {
-    return invalidWebConsoleName(options.name);
+  if (options.name !== undefined) {
+    const nameError = invalidWebConsoleName(options.name);
+    if (nameError !== undefined) return nameError;
   }
   if ((options.host !== undefined || options.port !== undefined || options.theme !== undefined
     || options.name !== undefined || options.loopback === true)
@@ -1220,19 +1221,21 @@ function selectedWebTheme(value?: string, priorTheme?: WebTheme): WebTheme {
 
 /**
  * Console label precedence: this invocation's flag, then the persisted record, then
- * undefined so the worker falls back to the machine hostname.
+ * undefined so the worker falls back to the machine hostname. A single hyphen resets
+ * the persisted choice to that fallback.
  */
 function selectedWebConsoleName(value?: string, priorName?: string): string | undefined {
   if (value === undefined) return priorName;
-  return value.trim();
+  const name = value.trim();
+  return name === "-" ? undefined : name;
 }
 
 /** Reject labels the manifest, launchd argv, or launcher cannot carry faithfully. */
 function invalidWebConsoleName(value: string): string | undefined {
   const name = value.trim();
   if (name.length === 0) return "--name must not be empty.";
-  if (/[\u0000-\u001f\u007f-\u009f]/u.test(name)) {
-    return "--name must not contain control characters.";
+  if (/[\u0000-\u001f\u007f-\u009f\u2028-\u202e]/u.test(name)) {
+    return "--name must not contain control characters, line separators, or bidirectional overrides.";
   }
   if ([...name].length > WEB_CONSOLE_NAME_MAX_CHARACTERS) {
     return `--name must be at most ${String(WEB_CONSOLE_NAME_MAX_CHARACTERS)} characters.`;

@@ -222,7 +222,7 @@ export const HELP_COMMANDS: readonly HelpEntry[] = [
       "the access boundary. start/restart claim a conflict-free Tailscale Serve",
       "HTTPS port without replacing existing handlers; run stays in the foreground.",
       "Themes: evergreen (default), ocean, plum, and terracotta. --name sets",
-      "the PWA, tab, and rail label (default: hostname). A managed start/restart",
+      "the PWA, tab, and rail label; --name - restores the hostname default. A managed start/restart",
       "persists both selections and status reports their effective values.",
     ],
   },

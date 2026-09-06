@@ -1053,8 +1053,12 @@ function resolveWebConsoleName(value: unknown): string | undefined {
   if (name.length === 0) {
     throw new WebConsoleError("invalid_console_name", "Web console name must not be empty.", 400);
   }
-  if (/[\u0000-\u001f\u007f-\u009f]/u.test(name)) {
-    throw new WebConsoleError("invalid_console_name", "Web console name must not contain control characters.", 400);
+  if (/[\u0000-\u001f\u007f-\u009f\u2028-\u202e]/u.test(name)) {
+    throw new WebConsoleError(
+      "invalid_console_name",
+      "Web console name must not contain control characters, line separators, or bidirectional overrides.",
+      400,
+    );
   }
   if ([...name].length > WEB_CONSOLE_NAME_MAX_CHARACTERS) {
     throw new WebConsoleError(
