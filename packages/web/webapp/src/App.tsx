@@ -31,8 +31,8 @@ import {
 import { hasUnsentComposerDraft } from "./composer-draft";
 import { formatDataBytes, useDataUsage } from "./data-usage";
 import {
+  hasHorizontalScrollAncestor,
   isMobileDrawerSwipe,
-  startsAtMobileDrawerEdge,
   type DrawerGesturePoint,
 } from "./mobile-drawer-gesture";
 import {
@@ -59,7 +59,7 @@ const FOCUSABLE = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
-const EDGE_SWIPE_EXCLUDED = [
+const DRAWER_SWIPE_EXCLUDED = [
   "button",
   "a",
   "input",
@@ -70,6 +70,7 @@ const EDGE_SWIPE_EXCLUDED = [
   "[data-slot='composer-trigger-popover']",
   "[data-slot='model-selector-content']",
   ".context-display-popover",
+  ".message",
   ".image-row",
   ".markdown-table",
   ".markdown pre",
@@ -411,10 +412,13 @@ export function App() {
     if (!touch) return;
     const drawerOpen = agentDrawer || threadDrawer;
     const target = event.target instanceof Element ? event.target : null;
-    if (!drawerOpen && (
-      !startsAtMobileDrawerEdge({ x: touch.clientX, y: touch.clientY })
-      || target?.closest(EDGE_SWIPE_EXCLUDED)
-    )) return;
+    if (
+      !drawerOpen
+      && (
+        target?.closest(DRAWER_SWIPE_EXCLUDED)
+        || hasHorizontalScrollAncestor(target, event.currentTarget)
+      )
+    ) return;
 
     drawerGestureRef.current = {
       x: touch.clientX,

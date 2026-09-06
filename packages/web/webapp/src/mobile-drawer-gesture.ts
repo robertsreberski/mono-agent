@@ -5,13 +5,27 @@ export interface DrawerGesturePoint {
 
 export type DrawerGestureDirection = "left" | "right";
 
-export const MOBILE_DRAWER_EDGE_WIDTH = 32;
-
 const MINIMUM_SWIPE_DISTANCE = 64;
 const HORIZONTAL_DOMINANCE_RATIO = 1.25;
+const NATIVE_HORIZONTAL_OVERFLOW = new Set(["auto", "scroll", "overlay"]);
 
-export function startsAtMobileDrawerEdge(point: DrawerGesturePoint): boolean {
-  return point.x >= 0 && point.x <= MOBILE_DRAWER_EDGE_WIDTH;
+export function hasHorizontalScrollAncestor(
+  target: Element | null,
+  boundary: Element,
+): boolean {
+  let current = target;
+  while (current) {
+    if (current instanceof HTMLElement) {
+      const overflowX = window.getComputedStyle(current).overflowX;
+      if (
+        NATIVE_HORIZONTAL_OVERFLOW.has(overflowX)
+        && current.scrollWidth > current.clientWidth
+      ) return true;
+    }
+    if (current === boundary) break;
+    current = current.parentElement;
+  }
+  return false;
 }
 
 export function isMobileDrawerSwipe(

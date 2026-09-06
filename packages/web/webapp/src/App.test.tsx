@@ -158,12 +158,12 @@ describe("App mobile drawer gestures", () => {
     });
   };
 
-  it("opens conversations after a deliberate right swipe from the left edge", () => {
+  it("opens conversations after a deliberate right swipe across the chat surface", () => {
     const { container } = render(<App />);
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
-    swipe(shell!, { x: 12, y: 240 }, { x: 88, y: 250 });
+    swipe(shell!, { x: 180, y: 240 }, { x: 256, y: 250 });
 
     expect(container.querySelector(".mobile-thread-drawer"))
       .toHaveAttribute("aria-hidden", "false");
@@ -171,13 +171,50 @@ describe("App mobile drawer gestures", () => {
       .toHaveAttribute("aria-hidden", "true");
   });
 
-  it("does not open for an interior drag or a vertical scroll", () => {
+  it("does not open for a short drag or a vertical scroll", () => {
     const { container } = render(<App />);
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
-    swipe(shell!, { x: 60, y: 240 }, { x: 150, y: 245 });
-    swipe(shell!, { x: 12, y: 240 }, { x: 82, y: 320 });
+    swipe(shell!, { x: 180, y: 240 }, { x: 243, y: 245 });
+    swipe(shell!, { x: 180, y: 240 }, { x: 250, y: 320 });
+
+    expect(container.querySelector(".mobile-thread-drawer"))
+      .toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("does not compete with interactive controls", () => {
+    const { container } = render(<App />);
+    const chooseAgent = screen.getByRole("button", { name: "Choose agent" });
+
+    swipe(chooseAgent, { x: 12, y: 30 }, { x: 100, y: 32 });
+
+    expect(container.querySelector(".mobile-thread-drawer"))
+      .toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("leaves message content and native horizontal scrollers in control", () => {
+    const { container } = render(<App />);
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
+
+    const message = document.createElement("div");
+    const messageContent = document.createElement("p");
+    message.className = "message";
+    message.append(messageContent);
+    shell!.append(message);
+    swipe(messageContent, { x: 40, y: 200 }, { x: 130, y: 204 });
+
+    const scroller = document.createElement("div");
+    const scrollContent = document.createElement("span");
+    scroller.style.overflowX = "auto";
+    Object.defineProperties(scroller, {
+      clientWidth: { configurable: true, value: 120 },
+      scrollWidth: { configurable: true, value: 240 },
+    });
+    scroller.append(scrollContent);
+    shell!.append(scroller);
+    swipe(scrollContent, { x: 40, y: 240 }, { x: 130, y: 244 });
 
     expect(container.querySelector(".mobile-thread-drawer"))
       .toHaveAttribute("aria-hidden", "true");
