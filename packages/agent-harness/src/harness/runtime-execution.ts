@@ -20,6 +20,7 @@ import type {
 import type { LiveInputMailbox } from "../live-input.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../tool-policy/index.js";
 import type { AttachmentRequestContext } from "./attachments.js";
+import type { CancelledTurnCollector } from "./cancelled-turn.js";
 import { AgentHarnessError } from "./error.js";
 import { injectMcpContinuationContext, injectMcpRequestContext } from "./mcp-context.js";
 import {
@@ -55,10 +56,16 @@ export async function runHarnessRuntime(
   toolHistoryProjection: string | undefined,
   attachmentContext: AttachmentRequestContext,
   continuationCapabilities: AgentHarnessContinuationClaimCapability[],
+  cancelledTurnCollector: CancelledTurnCollector,
   liveInputMailbox?: LiveInputMailbox,
   onProviderStart?: () => void,
 ): Promise<RuntimeResult> {
-    const hostOnEvent = request.onEvent;
+  const hostOnEvent = request.onEvent;
+  const emitRuntimeEvent = (event: RuntimeEventLike): void => {
+    if (!cancelledTurnCollector.observeRuntimeEvent(event)) return;
+    recorder.onEvent(event);
+    hostOnEvent?.(event);
+  };
     let requestExtension: AgentHarnessRuntimeOptionsExtension | undefined;
     let requestExtensionCleanup: Promise<void> | undefined;
     let mcpProgressCapability: AgentHarnessProgressCapability | undefined;
@@ -313,16 +320,15 @@ export async function runHarnessRuntime(
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
-        ...(options.toolHistory === undefined
-          ? {}
-          : {
-            toolLifecycleSink: options.toolHistory.writer.createSink({
+        toolLifecycleSink: cancelledTurnCollector.wrapToolLifecycleSink(
+          options.toolHistory?.writer.createSink({
               conversationId: request.conversationId,
-              logicalConversationId: options.toolHistory.logicalConversationId(request.conversationId),
+              logicalConversationId: options.toolHistory?.logicalConversationId(request.conversationId)
+                ?? request.conversationId,
               runId,
               isolated: sessionIsolated,
-            }),
           }),
+        ),
         // Durable provider-session root is forwarded only for a host-history
         // coordinated turn. Custom stores and isolated runs cannot safely make
         // provider JSONL authoritative across a crash, so they stay in-memory.
@@ -364,8 +370,7 @@ export async function runHarnessRuntime(
           }
           : {}),
         onEvent: (event: RuntimeEventLike) => {
-          recorder.onEvent(event);
-          hostOnEvent?.(event);
+          emitRuntimeEvent(event);
         },
       };
       // The provider call is starting: this run has left the admission-pending
@@ -385,8 +390,7 @@ export async function runHarnessRuntime(
         overridden: overrideModel !== undefined || overrideEffort !== undefined,
         timestamp: new Date().toISOString(),
       };
-      recorder.onEvent(runConfigEvent);
-      hostOnEvent?.(runConfigEvent);
+      emitRuntimeEvent(runConfigEvent);
       // Synthetic turn_context event: describes the context this specific turn was
       // driven with — the loaded conversation history (or the fact it was omitted
       // because the provider session carries the transcript) and the recalled
@@ -405,8 +409,7 @@ export async function runHarnessRuntime(
         memory,
         speakerTurnContextFields(request.sender, request.precedingMessages),
       );
-      recorder.onEvent(turnContextEvent);
-      hostOnEvent?.(turnContextEvent);
+      emitRuntimeEvent(turnContextEvent);
       // Bracket the provider call so observability can separate provider+tool+IO
       // time (this event's durationMs) from harness overhead (context build,
       // attachment persistence, compaction, admission wait).
@@ -419,8 +422,7 @@ export async function runHarnessRuntime(
           durationMs: Date.now() - bridgeStartMs,
           timestamp: new Date(bridgeStartMs).toISOString(),
         };
-        recorder.onEvent(latencyEvent);
-        hostOnEvent?.(latencyEvent);
+        emitRuntimeEvent(latencyEvent);
       }
     } finally {
       // Remove the abort listener to avoid leaking it on the signal, then run

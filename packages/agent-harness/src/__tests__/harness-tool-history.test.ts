@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { createChannelUserCancelReason } from "@mono-agent/agent-contracts";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -19,6 +20,8 @@ import {
   type ToolHistoryRunBinding,
 } from "../index.js";
 import { MonoAgentHarness } from "../harness.js";
+import { representedCancellationToolRecordIds } from "../harness/cancelled-turn.js";
+import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -171,7 +174,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     await harness.dispose?.();
   });
 
-  it("keeps a cancelled dangling tool pair even though the surrounding turn has no canonical history entry", async () => {
+  it("keeps cancelled dangling tool evidence while the canonical account prevents duplicate projection", async () => {
     const { identityPath, root } = await fixture();
     const writer = await ToolHistoryWriter.open({ root });
     const reader = new ToolHistoryReader(root);
@@ -185,7 +188,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
           toolName: "Bash",
           arguments: { command: "long-running" },
         });
-        abort.abort();
+        abort.abort(createChannelUserCancelReason("Web"));
         throw new Error("provider interrupted after tool start");
       },
     };
@@ -205,13 +208,23 @@ describe("AgentHarness durable tool lifecycle integration", () => {
 
     const response = await harness.run(request("chat:42#2026-08-14", abort.signal));
     expect(response.failure?.kind).toBe("cancelled");
-    expect(await historyStore.load("chat:42#2026-08-14")).toEqual([]);
+    const history = await historyStore.load("chat:42#2026-08-14");
+    expect(history).toHaveLength(2);
+    expect(history[1]?.content).toContain('"toolCallId":"cancelled-call"');
+    expect(history[1]?.content).toContain('"outcome":"unconfirmed"');
     await harness.dispose?.();
     expect(reader.search({ logicalConversationId: "chat:42", currentConversationId: "chat:42#2026-08-14", currentRunId: "later-run" }).items).toMatchObject([{
       runId: "cancelled-run",
       toolCallId: "cancelled-call",
       state: "cancelled",
     }]);
+    expect(buildToolHistoryProjection(
+      reader,
+      "chat:42",
+      "chat:42#2026-08-14",
+      "later-run",
+      representedCancellationToolRecordIds(history),
+    )).toBeUndefined();
   });
 
   it("persists cancelled terminal metadata when a success-shaped provider return loses the cancellation race", async () => {
@@ -227,7 +240,7 @@ describe("AgentHarness durable tool lifecycle integration", () => {
           toolName: "Bash",
           arguments: { command: "long-running" },
         });
-        abort.abort();
+        abort.abort(createChannelUserCancelReason("Web"));
         return { text: "must not commit", providerSessionId: "provider-cancelled-race" };
       },
     };
@@ -269,9 +282,9 @@ describe("AgentHarness durable tool lifecycle integration", () => {
     expect(result.record).toMatchObject({
       phase: "result",
       state: "cancelled",
-      failureKind: "cancelled",
-      detailCode: "run_cancelled",
-      payload: { state: "cancelled", reason: "run_cancelled" },
+      failureKind: "cancelled_user",
+      detailCode: "operator",
+      payload: { state: "cancelled", reason: "operator" },
     });
   });
 

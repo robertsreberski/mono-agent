@@ -24,13 +24,16 @@ export function buildToolHistoryProjection(
   logicalConversationId: string,
   currentConversationId: string,
   currentRunId: string,
+  excludedRecordIds: ReadonlySet<string> = new Set(),
 ): ToolHistoryProjection | undefined {
   const records = reader.latestProjection(
     logicalConversationId,
     currentConversationId,
     currentRunId,
     32,
-  );
+  ).filter(({ call }) =>
+    !excludedRecordIds.has(call.recordId)
+    && (call.resultRecordId === undefined || !excludedRecordIds.has(call.resultRecordId)));
   if (records.length === 0) return undefined;
   // Reader order is newest first. Render the complete chronological form when
   // it fits; otherwise retain a contiguous newest suffix and reverse only that

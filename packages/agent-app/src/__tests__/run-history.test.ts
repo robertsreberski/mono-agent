@@ -354,6 +354,45 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("projects runtime cancellation evidence as untrusted without promoting its provenance", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:runtime-cancellation";
+    const cancellationReason = {
+      failureKind: "cancelled",
+      code: "runtime_result",
+      notice: "Run cancelled for a recorded reason.",
+      untrustedCode: "coordinator_shutdown",
+      untrustedDetail: "Web service is stopping.",
+    };
+    await writeRun({
+      artifactDir,
+      runId: "runtime-cancelled-prior",
+      conversationId,
+      startedAt: "2026-09-05T08:00:00.000Z",
+      result: { cancelled: true, failureKind: "cancelled", cancellationReason },
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const listed = structured<{
+        readonly runs: ReadonlyArray<{ readonly cancellationReason?: unknown }>;
+      }>(await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} }));
+      expect(listed.runs[0]?.cancellationReason).toEqual(cancellationReason);
+
+      const searched = structured<{ readonly runs: ReadonlyArray<{ readonly runId: string }> }>(
+        await history.client.callTool({
+          name: RUN_HISTORY_TOOL_NAME,
+          arguments: { query: "coordinator_shutdown" },
+        }),
+      );
+      expect(searched.runs).toEqual([
+        expect.objectContaining({ runId: "runtime-cancelled-prior" }),
+      ]);
+    } finally {
+      await history.close();
+    }
+  });
+
   it("makes a canonical cancelled run discoverable as incomplete recovery evidence without exposing decoys", async () => {
     const artifactDir = await tempDir();
     const conversationId = "web:cancelled-recovery";
@@ -366,7 +405,16 @@ describe("RunHistory MCP tool", () => {
       events: [
         { type: "assistant", message: { content: [{ type: "text", text: "Partial checklist: inspect the schema first." }] } },
       ],
-      result: { cancelled: true, failureKind: "cancelled_user" },
+      result: {
+        cancelled: true,
+        failureKind: "cancelled_user",
+        cancellationReason: {
+          failureKind: "cancelled_user",
+          code: "operator",
+          notice: "Run stopped by the operator.",
+          channel: "Web",
+        },
+      },
     });
     await writeRun({
       artifactDir,
@@ -403,7 +451,12 @@ describe("RunHistory MCP tool", () => {
 
       const listedResult = await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} });
       const listed = structured<{
-        readonly runs: ReadonlyArray<{ readonly runId: string; readonly status: string; readonly failureKind?: string }>;
+        readonly runs: ReadonlyArray<{
+          readonly runId: string;
+          readonly status: string;
+          readonly failureKind?: string;
+          readonly cancellationReason?: { readonly code: string; readonly notice: string };
+        }>;
         readonly navigation: {
           readonly nextActions: ReadonlyArray<{ readonly description: string; readonly arguments: Readonly<Record<string, unknown>> }>;
         };
@@ -412,6 +465,10 @@ describe("RunHistory MCP tool", () => {
         runId: "cancelled-prior",
         status: "cancelled",
         failureKind: "cancelled_user",
+        cancellationReason: expect.objectContaining({
+          code: "operator",
+          notice: "Run stopped by the operator.",
+        }),
       })]);
       expect(listed.navigation.nextActions[0]).toMatchObject({
         description: expect.stringContaining("(cancelled)"),
@@ -420,14 +477,24 @@ describe("RunHistory MCP tool", () => {
 
       const searched = structured<{
         readonly runs: ReadonlyArray<{ readonly runId: string; readonly status: string }>;
-        readonly overview?: { readonly run: { readonly status: string; readonly failureKind?: string } };
+        readonly overview?: {
+          readonly run: {
+            readonly status: string;
+            readonly failureKind?: string;
+            readonly cancellationReason?: { readonly code: string; readonly notice: string };
+          };
+        };
         readonly navigation: InspectOverview["navigation"];
       }>(await history.client.callTool({
         name: RUN_HISTORY_TOOL_NAME,
         arguments: { query: "cancelled_user" },
       }));
       expect(searched.runs).toEqual([expect.objectContaining({ runId: "cancelled-prior", status: "cancelled" })]);
-      expect(searched.overview?.run).toMatchObject({ status: "cancelled", failureKind: "cancelled_user" });
+      expect(searched.overview?.run).toMatchObject({
+        status: "cancelled",
+        failureKind: "cancelled_user",
+        cancellationReason: { code: "operator", notice: "Run stopped by the operator." },
+      });
       expect(searched.navigation.relatedTools?.[0]?.arguments).toEqual({
         action: "search",
         runIds: ["cancelled-prior"],
@@ -439,16 +506,29 @@ describe("RunHistory MCP tool", () => {
         arguments: listed.navigation.nextActions[0]!.arguments,
       });
       const inspected = structured<InspectOverview & {
-        readonly run: { readonly runId: string; readonly status: string; readonly failureKind?: string };
+        readonly run: {
+          readonly runId: string;
+          readonly status: string;
+          readonly failureKind?: string;
+          readonly cancellationReason?: { readonly code: string; readonly notice: string };
+        };
       }>(inspectResult);
       expect(inspected.run).toMatchObject({
         runId: "cancelled-prior",
         status: "cancelled",
         failureKind: "cancelled_user",
+        cancellationReason: { code: "operator", notice: "Run stopped by the operator." },
       });
       expect(inspected.finalOutput).toContain("Partial checklist");
       expect(inspected.signals).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: "run_failure", failureKind: "cancelled_user" }),
+        expect.objectContaining({
+          type: "run_failure",
+          failureKind: "cancelled_user",
+          cancellationReason: expect.objectContaining({
+            code: "operator",
+            notice: "Run stopped by the operator.",
+          }),
+        }),
       ]));
       expect(inspected.navigation.guidance).toContain("did not complete successfully");
       expect(inspected.navigation.guidance).toContain("incomplete evidence");

@@ -12,8 +12,8 @@
 
 import { JsonlSessionRepo, MemorySessionRepo } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { access, open } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { access, open, readdir, unlink } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { createSessionRegistry } from "../../runtime/sessions.js";
 import { createSessionLiveness } from "../../runtime/session-liveness.js";
 import { createPiSessionAdapter, PI_CONTEXT } from "./harness-adapter.js";
@@ -128,11 +128,13 @@ export function resolveDurableNativeSessionRepo(piSessionsRoot) {
 }
 
 /**
- * Permanently retire every durable Pi transcript with this exact logical id.
- * This is intentionally stronger than live-session invalidation: history
- * rotation and retention can retire an epoch after its registry entry was
- * already evicted or after a process restart. Absence is success; any cleanup
- * or verification uncertainty rejects so canonical history remains reachable.
+ * Retire every currently materialized durable Pi transcript with this exact
+ * logical id. This is intentionally stronger than live-session invalidation:
+ * history rotation and retention can retire an epoch after its registry entry
+ * was already evicted or after a process restart. When an active old run later
+ * recreates its pathname, its post-runtime caller retries this operation. The
+ * canonical epoch has already rotated, so that old id is never resumable in the
+ * interim. Absence is success; cleanup or verification uncertainty rejects.
  */
 export async function retireDurableNativeSession(providerSessionId, piSessionsRoot) {
   if (!isSafeSessionId(providerSessionId)) {
@@ -142,7 +144,15 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
     throw new TypeError("piSessionsRoot must be a non-empty path");
   }
 
-  // First guarantee this process cannot keep writing through a stale handle.
+  // First guarantee this process cannot resume through a stale registry entry.
+  // A host cancellation can rotate canonical history while the provider is
+  // still unwinding an open Pi session. The Pi repo deliberately refuses to
+  // delete an open session, so detach the registry and unlink its current file.
+  // Pi appends by pathname and can recreate a headerless orphan if the old run
+  // writes later; the raw exact-name sweep below removes those files on the
+  // post-runtime retry. The rotated canonical epoch never refers to this id.
+  const liveEntry = nativeSessions.get(providerSessionId);
+  const providerStillUnwinding = liveEntry?.busy === true;
   // Other processes are serialized by the history coordinator and must pass
   // the same cold-refresh barrier before their next turn.
   await nativeSessions.refresh(providerSessionId);
@@ -155,16 +165,66 @@ export async function retireDurableNativeSession(providerSessionId, piSessionsRo
     if (typeof metadata?.path !== "string" || !metadata.path) {
       throw new Error(`Durable Pi session ${providerSessionId} has invalid metadata`);
     }
-    await repo.delete(metadata, PI_CONTEXT);
+    if (providerStillUnwinding) {
+      try {
+        await unlink(metadata.path);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+    } else {
+      await repo.delete(metadata, PI_CONTEXT);
+    }
     changedDirectories.add(dirname(metadata.path));
+  }
+  // A prior active-session unlink can be followed by Pi recreating the same
+  // pathname with a transaction line but no header. JsonlSessionRepo.list()
+  // intentionally ignores that invalid file, so scan only Pi's fixed
+  // root/directory/filename layout to make the later retirement retry reclaim
+  // it. Safe ids are single filename components and symlink directories/files
+  // are ignored.
+  for (const path of await exactDurableSessionFiles(piSessionsRoot, providerSessionId)) {
+    try {
+      await unlink(path);
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    changedDirectories.add(dirname(path));
   }
   for (const directory of changedDirectories) await syncPath(directory);
   if (changedDirectories.size > 0) await syncPath(resolve(piSessionsRoot));
 
   const remaining = (await repo.list(undefined, PI_CONTEXT)).filter((entry) => entry?.id === providerSessionId);
-  if (remaining.length > 0) {
+  const remainingPaths = await exactDurableSessionFiles(piSessionsRoot, providerSessionId);
+  if (!providerStillUnwinding && (remaining.length > 0 || remainingPaths.length > 0)) {
     throw new Error(`Durable Pi session ${providerSessionId} could not be retired completely`);
   }
+  // An active Pi write can race the final exact-name check after the sweep.
+  // Canonical history is already preparing a fresh epoch, so the retired id is
+  // unreachable; the harness retries retirement when that old run returns.
+}
+
+async function exactDurableSessionFiles(piSessionsRoot, providerSessionId) {
+  const root = resolve(piSessionsRoot);
+  const suffix = `_${encodeURIComponent(providerSessionId)}.jsonl`;
+  let rootEntries;
+  try {
+    rootEntries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  const paths = [];
+  for (const directory of rootEntries) {
+    if (!directory.isDirectory()) continue;
+    const directoryPath = join(root, directory.name);
+    const entries = await readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(suffix)) {
+        paths.push(join(directoryPath, entry.name));
+      }
+    }
+  }
+  return paths;
 }
 
 // Defense in depth (R4): create-on-miss passes the caller-controlled session id

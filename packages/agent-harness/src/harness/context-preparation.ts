@@ -12,6 +12,7 @@ import type {
 import type { AgentHarnessOptions, AgentHarnessRequest } from "../types.js";
 import type { SkillsCache } from "../skills/index.js";
 import { AgentHarnessError } from "./error.js";
+import { representedCancellationToolRecordIds } from "./cancelled-turn.js";
 import { sessionContextBlock } from "./session-context.js";
 import { errorMessageText } from "./value-utils.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
@@ -86,6 +87,7 @@ export async function prepareHarnessContext(
           options.toolHistory.logicalConversationId(request.conversationId),
           request.conversationId,
           contextOptions.turnId,
+          representedCancellationToolRecordIds(history),
         );
       } catch (error) {
         const errorCode = toolHistoryProjectionErrorCode(error);

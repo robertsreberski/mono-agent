@@ -232,6 +232,54 @@ describe("pi-native sessions", () => {
     }
   });
 
+  it("reclaims an exact-id JSONL recreated by a provider that was still unwinding", async () => {
+    const model = setup();
+    const root = mkdtempSync(join(tmpdir(), "pi-native-retire-active-"));
+    const id = "c".repeat(64);
+    let release;
+    let markStarted;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const started = new Promise((resolve) => { markStarted = resolve; });
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("seed")])]);
+      const seeded = await generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "seed" }],
+        sessionKeepAlive: true,
+        sessionId: id,
+        piSessionsRoot: root,
+      }));
+      expect(seeded.error).toBeNull();
+
+      faux.setResponses([
+        async () => {
+          markStarted();
+          await gate;
+          return fauxAssistantMessage([fauxText("late answer")]);
+        },
+      ]);
+      const unwinding = generatePiNativeResponse("system", runOptions(model, {
+        messages: [{ role: "user", content: "cancelled turn" }],
+        sessionKeepAlive: true,
+        sessionId: id,
+        piSessionsRoot: root,
+      }));
+      await started;
+
+      await expect(retireDurableNativeSession(id, root)).resolves.toBeUndefined();
+      expect(countJsonlFiles(root)).toBe(0);
+      release();
+      await expect(unwinding).resolves.toMatchObject({ text: "late answer" });
+      expect(countJsonlFiles(root)).toBe(1);
+
+      await expect(retireDurableNativeSession(id, root)).resolves.toBeUndefined();
+      expect(countJsonlFiles(root)).toBe(0);
+    } finally {
+      release?.();
+      await retireDurableNativeSession(id, root).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("propagates durable retirement failures instead of acknowledging partial cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-retire-failure-"));
     const id = "b".repeat(64);
@@ -304,6 +352,36 @@ describe("pi-native sessions", () => {
       "user:turn-1",
       "assistant:reply-1",
       "user:turn-2",
+    ]);
+  });
+
+  it("seeds a fresh Pi epoch with an inert cancelled-turn account", async () => {
+    const model = setup();
+    let providerContext = null;
+    faux.setResponses([
+      (context) => { providerContext = context; return fauxAssistantMessage([fauxText("continued")]); },
+    ]);
+    const account = [
+      '<cancelled_turn_history version="1">',
+      "Host notice: Run stopped by the operator. The following assistant output is partial.",
+      '<cancelled_turn_data>{"version":1,"type":"cancelled_turn","reason":{"failureKind":"cancelled_user","code":"operator"}}</cancelled_turn_data>',
+      "</cancelled_turn_history>",
+    ].join("\n");
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [
+        { role: "user", content: "inspect the migration" },
+        { role: "assistant", content: account },
+        { role: "user", content: "continue from the stop point" },
+      ],
+      sessionKeepAlive: true,
+    }));
+
+    expect(result.text).toBe("continued");
+    expect(transcriptOf(providerContext)).toEqual([
+      "user:inspect the migration",
+      `assistant:${account}`,
+      "user:continue from the stop point",
     ]);
   });
 

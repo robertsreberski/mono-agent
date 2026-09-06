@@ -283,11 +283,15 @@ class JsonlRunRecorder implements RunRecorder {
       ? undefined
       : redactArtifactValue(normalizedFailoverHistory, this.maxStringBytes);
     const isolated = typeof result.isolated === "boolean" ? result.isolated : this.isolated;
+    const cancellationReason = result.cancellationReason === undefined
+      ? undefined
+      : redactArtifactValue(result.cancellationReason, this.maxStringBytes);
     const summary: RunSummary = {
       runId: this.runId,
       conversationId: this.conversationId,
       status,
       ...(failureKind === undefined ? {} : { failureKind: redactArtifactValue(failureKind, this.maxStringBytes) }),
+      ...(cancellationReason === undefined ? {} : { cancellationReason }),
       ...(error === undefined ? {} : { error }),
       ...(failoverHistory === undefined ? {} : { failoverHistory }),
       startedAt: this.startedAtIso,

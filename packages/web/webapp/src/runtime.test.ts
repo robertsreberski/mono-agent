@@ -400,6 +400,7 @@ describe("convertWebMessage", () => {
 
     if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
     expect(converted.content.map((part) => part.type)).toEqual(["reasoning", "tool-call"]);
+    expect(converted.status).toEqual({ type: "incomplete", reason: "cancelled" });
   });
 
   it.each(["cancelled", "failed", "interrupted"] as const)(

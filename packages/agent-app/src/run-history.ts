@@ -550,7 +550,30 @@ function projectRunMetadata(run: RecordedRunListItem, artifactDir: string) {
     ...(run.failureKind === undefined
       ? {}
       : { failureKind: sanitizeVisibleText(run.failureKind, artifactDir, 128) }),
+    ...(run.cancellationReason === undefined
+      ? {}
+      : { cancellationReason: projectCancellationReason(run.cancellationReason, artifactDir) }),
     ...(trigger === undefined ? {} : { trigger }),
+  };
+}
+
+function projectCancellationReason(
+  reason: NonNullable<RecordedRunListItem["cancellationReason"]>,
+  artifactDir: string,
+) {
+  return {
+    failureKind: sanitizeVisibleText(reason.failureKind, artifactDir, 128),
+    code: sanitizeVisibleText(reason.code, artifactDir, 128),
+    notice: sanitizeDiagnosticText(reason.notice, artifactDir),
+    ...(reason.channel === undefined
+      ? {}
+      : { channel: sanitizeVisibleText(reason.channel, artifactDir, 128) }),
+    ...(reason.untrustedCode === undefined
+      ? {}
+      : { untrustedCode: sanitizeVisibleText(reason.untrustedCode, artifactDir, 128) }),
+    ...(reason.untrustedDetail === undefined
+      ? {}
+      : { untrustedDetail: sanitizeDiagnosticText(reason.untrustedDetail, artifactDir) }),
   };
 }
 
@@ -658,6 +681,10 @@ function searchHaystack(run: RecordedRunListItem, artifactDir: string): string {
     metadata.source,
     metadata.sourceDetail,
     metadata.failureKind,
+    metadata.cancellationReason?.code,
+    metadata.cancellationReason?.channel,
+    metadata.cancellationReason?.untrustedCode,
+    metadata.cancellationReason?.untrustedDetail,
     metadata.trigger,
   ].filter((value): value is string => typeof value === "string").join("\n"));
 }
@@ -867,6 +894,7 @@ type ProjectedTimelineEntry =
       readonly type: string;
       readonly warningKind?: string;
       readonly failureKind?: string;
+      readonly cancellationReason?: ReturnType<typeof projectCancellationReason>;
       readonly model?: string;
       readonly subkind?: string;
       readonly message?: string;
@@ -927,6 +955,7 @@ function compactOverviewSignal(
     type: signal.type,
     ...(signal.warningKind === undefined ? {} : { warningKind: signal.warningKind }),
     ...(signal.failureKind === undefined ? {} : { failureKind: signal.failureKind }),
+    ...(signal.cancellationReason === undefined ? {} : { cancellationReason: signal.cancellationReason }),
     ...(signal.model === undefined ? {} : { model: signal.model }),
     ...(signal.subkind === undefined ? {} : { subkind: signal.subkind }),
     ...(signal.message === undefined ? {} : { message: boundedString(signal.message, 512) }),
@@ -1154,6 +1183,9 @@ function projectRun(
       ...(endedAt === undefined ? {} : { timestamp: endedAt }),
       type: "run_failure",
       failureKind: sanitizeVisibleText(summary.failureKind ?? summary.status, artifactDir, 128),
+      ...(summary.cancellationReason === undefined
+        ? {}
+        : { cancellationReason: projectCancellationReason(summary.cancellationReason, artifactDir) }),
       ...(summary.error === undefined ? {} : { message: sanitizeDiagnosticText(summary.error, artifactDir) }),
     });
   }

@@ -1542,14 +1542,14 @@ export function lazyConfiguredToolHistory(
         }
       };
     },
-    async finishRun(binding, status, failureKind) {
+    async finishRun(binding, status, failureKind, cancellationReasonCode) {
       const key = turnKey(binding.conversationId, binding.runId);
       const state = turnStates.get(key);
       try {
         if (state?.attempt === undefined || state.failure !== undefined) return;
         const handle = await state.attempt.promise.catch(() => undefined);
         try {
-          await handle?.writer.finishRun(binding, status, failureKind);
+          await handle?.writer.finishRun(binding, status, failureKind, cancellationReasonCode);
         } catch (error) {
           if (handle === undefined) return;
           const terminalCode = terminalToolHistoryWriterFailureCode(error, handle);

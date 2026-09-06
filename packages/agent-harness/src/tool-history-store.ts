@@ -384,8 +384,17 @@ export class ToolHistoryWriter {
     }
   }
 
-  async finishRun(binding: ToolHistoryRunBinding, status: string, failureKind?: string): Promise<void> {
-    await this.request("finish_run", { binding, status, failureKind }, this.persistenceCeilingMs).catch((error) => {
+  async finishRun(
+    binding: ToolHistoryRunBinding,
+    status: string,
+    failureKind?: string,
+    cancellationReasonCode?: string,
+  ): Promise<void> {
+    await this.request(
+      "finish_run",
+      { binding, status, failureKind, cancellationReasonCode },
+      this.persistenceCeilingMs,
+    ).catch((error) => {
       this.warnOnce("run_finalize_failed", `Tool history run finalization failed: ${reasonOf(error)}`);
       this.postBestEffort("write_failure", {
         binding,

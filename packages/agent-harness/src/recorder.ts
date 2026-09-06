@@ -50,6 +50,7 @@ export class NoopRunRecorder implements RunRecorder {
       conversationId: this.conversationId,
       status,
       ...(failureKind === undefined || failureKind === null || failureKind === "" ? {} : { failureKind }),
+      ...(result.cancellationReason === undefined ? {} : { cancellationReason: result.cancellationReason }),
       durationMs: Math.max(0, Date.now() - this.startedAt),
       ...(result.usage === undefined ? {} : { usage: result.usage }),
       ...(result.cost === undefined ? {} : { cost: result.cost }),

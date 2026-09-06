@@ -104,6 +104,35 @@ describe("JsonlRunRecorder", () => {
     expect(onDisk.userInput).toBe("What is the capital of France?");
   });
 
+  it("persists typed cancellation provenance without changing the terminal failure kind", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "cancelled-run",
+      conversationId: "web:cancelled",
+      artifactDir: dir,
+    });
+    const cancellationReason = {
+      failureKind: "cancelled",
+      code: "runtime_result",
+      notice: "Run cancelled for a recorded reason.",
+      untrustedCode: "coordinator_shutdown",
+      untrustedDetail: "Web service is stopping.",
+    };
+
+    const summary = await recorder.finish({
+      cancelled: true,
+      failureKind: "cancelled",
+      cancellationReason,
+    });
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
+      readonly failureKind?: string;
+      readonly cancellationReason?: unknown;
+    };
+
+    expect(summary).toMatchObject({ status: "cancelled", failureKind: "cancelled", cancellationReason });
+    expect(onDisk).toMatchObject({ failureKind: "cancelled", cancellationReason });
+  });
+
   it("persists the model (from the result) and system prompt (from the recorder option)", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({

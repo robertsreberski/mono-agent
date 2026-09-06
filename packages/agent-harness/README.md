@@ -108,10 +108,14 @@ The harness is the request-to-runtime composition boundary:
 4. Await each redacted/bounded lifecycle write before publishing its enriched
    tool block to the client, while a 250 ms host wait ceiling converts storage
    delay/failure into explicit fail-soft metadata instead of stalling streaming.
-5. Normalize runtime results into explicit success/failure responses, close any
-   dangling starts for that run, then commit message history and optional memory
-   independently of the already-persisted tool records.
-6. Record the run and clean up request-scoped resources.
+5. Normalize runtime results into explicit success/failure responses. A
+   successful turn keeps the existing atomic history-and-memory commit boundary;
+   a cancelled admitted interactive turn seals its accepted prefix, closes
+   dangling tool starts with the real reason, publishes its bounded continuity
+   account, and retires the provider epoch.
+6. Serialize cancellation publication ahead of the next same-conversation
+   context build without waiting for an abort-ignoring provider to unwind.
+7. Record the run and clean up request-scoped resources.
 
 ### Package structure
 
@@ -292,6 +296,26 @@ toolPolicyToRuntimeOptions
 ### Continuous sessions
 
 With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Stateless/fresh runs and the one stale-session retry keep the ordinary prompt-history replay path. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
+
+Every admitted, non-isolated interactive run that settles as cancelled publishes
+a separate bounded continuity account before the next same-conversation turn
+assembles context. The account retains the request, at most 8 KiB of partial
+assistant text, newest whole completed tool call/result pairs that fit, work
+still in flight, explicit omission counts, and the typed host-observed
+cancellation reason, all within 48 KiB and under the tool-history redaction
+policy. Partial assistant collection is incrementally bounded to an 8 KiB UTF-8
+prefix even on successful runs. Its omission bytes and assistant-runtime-event
+counts remain explicit. Host notice text is selected from fixed
+framework-authored sentences using independently known host abort provenance.
+Cancellation-shaped runtime results always use the generic host notice and keep
+their bounded code/detail only as `untrustedCode` / `untrustedDetail` inside
+tag-safe JSON that is explicitly framed as untrusted evidence. The collector
+seals at cancellation and rejects late runtime events.
+Provider epochs are retired and rotated even when an abort-ignoring provider is
+still unwinding, so the next turn seeds a consistent canonical transcript.
+Cancelled accounts never qualify for memory capture. Isolated proactive or
+continuation runs, failed/interrupted turns, and queued requests that never
+started do not publish one.
 
 Daily-rollover reset claims its normalized logical id as a namespaced opaque
 digest in a fixed 16-file, cross-process owner registry from bucket discovery

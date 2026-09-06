@@ -233,6 +233,7 @@ RedactJsonValueOptions
 RegisterTraceSourceOptions
 RunArtifactKind
 RunArtifactScope
+RunCancellationReason
 RunExportContext
 RunExportEventContext
 RunExporter

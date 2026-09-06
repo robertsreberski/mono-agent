@@ -74,6 +74,7 @@ beforeAll(async () => {
     "history-process-liveness",
     "tool-history-artifacts",
     "tool-history-store",
+    "tool-history-payload",
     "tool-history-worker-queue",
     "tool-history-writer-worker",
   ] as const;

@@ -147,6 +147,7 @@ export type {
   RecordedRunListResult,
   RecordedRunTimelineItem,
   RunRecorder,
+  RunCancellationReason,
   RunSummary,
   RunSummaryStatus,
   RuntimeEventLike,
