@@ -1328,7 +1328,8 @@ describe("AgentHarness continuous sessions", () => {
       role: "assistant",
       idempotencyKey: expect.stringMatching(/^cancelled-turn:v1:/u),
     });
-    expect(history.appended[1]?.content).toContain("Run cancelled: cancelled mid-turn");
+    expect(history.appended[1]?.content).toContain("Run cancelled for a recorded reason.");
+    expect(history.appended[1]?.content).toContain('"untrustedDetail":"cancelled mid-turn"');
     expect(history.appended[1]?.content).not.toContain("done");
     // No memory written for the cancelled turn.
     expect(memory.hostSummaryCalls()).toBe(0);
@@ -1435,7 +1436,8 @@ describe("AgentHarness continuous sessions", () => {
     expect(response.failure?.kind).toBe("cancelled");
     expect(history.appended).toHaveLength(2);
     expect(history.appended[0]).toMatchObject({ role: "user", content: "hello" });
-    expect(history.appended[1]?.content).toContain("Run cancelled: cancelled during prepare");
+    expect(history.appended[1]?.content).toContain("Run cancelled for a recorded reason.");
+    expect(history.appended[1]?.content).toContain('"untrustedDetail":"cancelled during prepare"');
     expect(history.appended[1]?.content).not.toContain("done");
     // No memory written for the cancelled turn.
     expect(memory.hostSummaryCalls()).toBe(0);
@@ -1484,7 +1486,9 @@ describe("AgentHarness continuous sessions", () => {
     expect(commits).toBe(1);
     expect(aborts).toBe(1);
     expect(preparedMessages).toHaveLength(2);
-    expect(preparedMessages[1]?.[1]?.content).toContain("Run cancelled: cancelled during history preparation");
+    expect(preparedMessages[1]?.[1]?.content).toContain("Run cancelled for a recorded reason.");
+    expect(preparedMessages[1]?.[1]?.content)
+      .toContain('"untrustedDetail":"cancelled during history preparation"');
     expect(toolHistoryStatuses).toEqual([{ status: "cancelled", failureKind: "cancelled" }]);
   });
 

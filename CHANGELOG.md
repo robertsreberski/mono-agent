@@ -8,6 +8,9 @@
   typed cancellation provenance; durable Pi epochs rotate so provider state and
   canonical history stay aligned. Cancelled turns remain excluded from memory
   capture, while `RunHistory` and `SessionHistory` keep the deeper evidence.
+  Partial assistant collection stays incrementally bounded to an 8 KiB UTF-8
+  prefix on every run, and runtime/provider cancellation detail remains only in
+  tag-safe JSON explicitly framed as untrusted evidence behind a fixed host notice.
 - Add explicit Ollama Web Search alongside the existing SearXNG, Codex, and
   keyless routes. Preserve `auto` as SearXNG → Codex → keyless, repair the
   canonical nested SearXNG config while retaining its legacy endpoint alias,

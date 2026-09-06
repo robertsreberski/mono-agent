@@ -89,7 +89,8 @@ describe("AgentHarness proactive session isolation", () => {
       isolated: true,
       cancellationReason: {
         code: "reason",
-        notice: "Run cancelled: Cron job exceeded maxRunMs (1000ms).",
+        notice: "Run cancelled for a recorded reason.",
+        untrustedDetail: "Cron job exceeded maxRunMs (1000ms).",
       },
     });
     expect(await historyStore.load("cron:cancelled")).toEqual([]);

@@ -568,9 +568,9 @@ function projectCancellationReason(
     ...(reason.channel === undefined
       ? {}
       : { channel: sanitizeVisibleText(reason.channel, artifactDir, 128) }),
-    ...(reason.detail === undefined
+    ...(reason.untrustedDetail === undefined
       ? {}
-      : { detail: sanitizeDiagnosticText(reason.detail, artifactDir) }),
+      : { untrustedDetail: sanitizeDiagnosticText(reason.untrustedDetail, artifactDir) }),
   };
 }
 
@@ -680,7 +680,7 @@ function searchHaystack(run: RecordedRunListItem, artifactDir: string): string {
     metadata.failureKind,
     metadata.cancellationReason?.code,
     metadata.cancellationReason?.channel,
-    metadata.cancellationReason?.detail,
+    metadata.cancellationReason?.untrustedDetail,
     metadata.trigger,
   ].filter((value): value is string => typeof value === "string").join("\n"));
 }

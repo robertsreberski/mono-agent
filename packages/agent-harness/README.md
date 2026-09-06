@@ -303,7 +303,12 @@ assembles context. The account retains the request, at most 8 KiB of partial
 assistant text, newest whole completed tool call/result pairs that fit, work
 still in flight, explicit omission counts, and the typed host-observed
 cancellation reason, all within 48 KiB and under the tool-history redaction
-policy. The collector seals at cancellation and rejects late runtime events.
+policy. Partial assistant collection is incrementally bounded to an 8 KiB UTF-8
+prefix even on successful runs. Its omission bytes/events remain explicit. Host
+notice text is selected from fixed framework-authored sentences; bounded
+runtime/provider detail appears only as `untrustedDetail` inside tag-safe JSON
+that is explicitly framed as untrusted evidence. The collector seals at
+cancellation and rejects late runtime events.
 Provider epochs are retired and rotated even when an abort-ignoring provider is
 still unwinding, so the next turn seeds a consistent canonical transcript.
 Cancelled accounts never qualify for memory capture. Isolated proactive or
