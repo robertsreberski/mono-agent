@@ -139,7 +139,7 @@ export async function runSystemdWebCommand(options: RunWebCommandOptions, deps: 
     const host = options.loopback ? "127.0.0.1" : options.host ?? previousOption("--host") ?? "0.0.0.0";
     const port = options.port ?? Number(previousOption("--port") ?? 5050);
     const theme = options.theme ?? previousOption("--theme") ?? "evergreen";
-    const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "[::1]" : host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+    const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" || host === "[::]" ? "[::1]" : host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
     const url = `http://${probeHost}:${port}/`;
     const { webHealthcheck } = await import("./web-command.js");
     const ready = async () => await webHealthcheck(`${url}healthz`);

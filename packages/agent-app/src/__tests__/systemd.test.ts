@@ -55,6 +55,19 @@ describe("systemd user lifecycle", () => {
     expect(unit).toContain("StandardOutput=journal");
     expect(unit).not.toContain("launchd");
     expect(() => renderSystemdUnit({ identity: "a", cwd: "/a", argv: ["/node", "\nExecStart=/bad"], environment: {} })).toThrow("control characters");
+    expect(() => renderSystemdUnit({ identity: "a", cwd: '/a/"quote"', argv: ["/node"], environment: {} })).toThrow("quotes, backslashes");
+    expect(() => renderSystemdUnit({ identity: "a", cwd: "/a/back\\slash", argv: ["/node"], environment: {} })).toThrow("quotes, backslashes");
+  });
+
+  it("does not let an abandoned PID-named temporary block publication", async () => {
+    const { definition, deps } = await fixture();
+    const path = systemdUnitPath(definition.identity, deps);
+    await mkdir(join(deps.homeDir!, ".config"), { mode: 0o700 });
+    await mkdir(join(deps.homeDir!, ".config", "systemd"), { mode: 0o700 });
+    await mkdir(dirname(path), { mode: 0o700 });
+    await writeFile(`${path}.${process.pid}.tmp`, "abandoned", { mode: 0o600 });
+    await startSystemd(definition, false, async () => true, deps);
+    expect(await readSystemdDefinition(definition.identity, deps)).toEqual(definition);
   });
 
   it("installs, proves readiness, preserves an active start, and removes only its unit", async () => {

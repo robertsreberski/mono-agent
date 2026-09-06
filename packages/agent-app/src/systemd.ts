@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
@@ -61,8 +61,8 @@ export function renderSystemdUnit(definition: SystemdDefinition): string {
   if (!isAbsolute(definition.cwd) || !isAbsolute(definition.argv[0] ?? "")) {
     throw new Error("Service working directory and executable must be absolute.");
   }
-  if (definition.cwd.trim() !== definition.cwd || /[\x00-\x1f\x7f]/u.test(definition.cwd)) {
-    throw new Error("Service working directory must not contain control characters or edge whitespace.");
+  if (definition.cwd.trim() !== definition.cwd || /[\x00-\x1f\x7f"\\]/u.test(definition.cwd)) {
+    throw new Error("Service working directory must not contain quotes, backslashes, control characters, or edge whitespace.");
   }
   return [
     MARKER + Buffer.from(JSON.stringify(definition)).toString("base64"),
@@ -153,9 +153,13 @@ async function ensureDirectory(path: string): Promise<void> {
 async function publish(path: string, contents: string): Promise<void> {
   const root = dirname(dirname(dirname(path)));
   for (const dir of [root, dirname(dirname(path)), dirname(path)]) await ensureDirectory(dir);
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, contents, { mode: 0o600, flag: "wx" });
-  try { await rename(temporary, path); } finally { await unlink(temporary).catch((error) => { if (error.code !== "ENOENT") throw error; }); }
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, contents, { mode: 0o600, flag: "wx" });
+    await rename(temporary, path);
+  } finally {
+    await unlink(temporary).catch((error) => { if (error.code !== "ENOENT") throw error; });
+  }
 }
 
 export async function withSystemdLock<T>(identity: string, deps: SystemdDeps, action: () => Promise<T>): Promise<T> {

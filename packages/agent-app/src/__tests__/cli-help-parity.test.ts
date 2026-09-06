@@ -42,4 +42,10 @@ describe("PUBLIC_COMMANDS / HELP_COMMANDS parity", () => {
       expect(jsonCapable.has(command), `\`${command}\` has json: true but is not in JSON_CAPABLE_COMMANDS`).toBe(true);
     }
   });
+
+  it("describes the platform-specific status scope consistently", () => {
+    const status = HELP_COMMANDS.find((entry) => entry.command === "status");
+    expect(status?.summary).toContain("macOS also lists other running instances");
+    expect(status?.lines.join("\n")).toContain("macOS also lists other running instances");
+  });
 });

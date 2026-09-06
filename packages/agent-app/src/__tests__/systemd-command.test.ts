@@ -98,6 +98,13 @@ describe("Linux web command composition", () => {
     expect(mocks.health).toHaveBeenCalledWith("http://127.0.0.1:6060/healthz");
   });
 
+  it("probes the IPv6 loopback address for a bracketed wildcard listener", async () => {
+    mocks.read.mockResolvedValue({ argv: ["web", "run", "--host", "[::]", "--port", "5050", "--theme", "plum"] });
+    mocks.health.mockResolvedValue(true);
+    expect(await runSystemdWebCommand({ positionals: ["restart"], env: {} }, output())).toBe(0);
+    expect(mocks.health).toHaveBeenCalledWith("http://[::1]:5050/healthz");
+  });
+
   it("refuses a new address that already serves another console", async () => {
     mocks.inspect.mockResolvedValue({ ...service, pid: 0 });
     mocks.health.mockResolvedValue(true);
