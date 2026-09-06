@@ -94,13 +94,147 @@ const CREDENTIAL_SHAPES: readonly (readonly [RegExp, string])[] = [
   [/(^|\s)(?!\[REDACTED\])([A-Za-z0-9+/=_-]{40,})(?=\s|$)/gu, "$1[REDACTED]"],
 ];
 
+/** Avoid holding ordinary lines for one-character coincidences with ambient secrets. */
+const MIN_CROSS_LINE_SECRET_PREFIX = 4;
+
+export interface StreamingProcessOutputLine<T> {
+  readonly text: string;
+  readonly value: T;
+}
+
+interface QueuedProcessOutputLine<T> extends StreamingProcessOutputLine<T> {
+  redact: boolean;
+}
+
+/**
+ * Stateful line redaction for output whose secrets may cross physical lines.
+ *
+ * The queue retains only the suffix that could still become a known secret.
+ * Callers may clone it for a non-mutating, fail-closed partial snapshot.
+ */
+export class StreamingProcessOutputRedactor<T> {
+  private readonly queue: Array<QueuedProcessOutputLine<T>> = [];
+  private privateKeyOpen = false;
+
+  constructor(
+    private readonly secrets: readonly string[],
+    private readonly minimumSecretPrefix = MIN_CROSS_LINE_SECRET_PREFIX,
+    private readonly holdCredentialPrefixes = false,
+  ) {}
+
+  get pendingCount(): number {
+    return this.queue.length;
+  }
+
+  push(line: string, value: T, truncatedAtEnd = false): readonly StreamingProcessOutputLine<T>[] {
+    const redacted = this.privateKeyOpen || isPrivateKeyBegin(line) || isPrivateKeyEnd(line)
+      ? line
+      : redactProcessOutputLine(line, this.secrets, truncatedAtEnd);
+    this.queue.push({ text: redacted, value, redact: false });
+    return this.drain(false);
+  }
+
+  finalize(redactIncompletePrefixes = true): readonly StreamingProcessOutputLine<T>[] {
+    return this.drain(true, redactIncompletePrefixes);
+  }
+
+  clear(): void {
+    this.queue.length = 0;
+    this.privateKeyOpen = false;
+  }
+
+  clone(): StreamingProcessOutputRedactor<T> {
+    const clone = new StreamingProcessOutputRedactor<T>(
+      this.secrets,
+      this.minimumSecretPrefix,
+      this.holdCredentialPrefixes,
+    );
+    clone.privateKeyOpen = this.privateKeyOpen;
+    clone.queue.push(...this.queue.map((entry) => ({ ...entry })));
+    return clone;
+  }
+
+  private drain(final: boolean, redactIncompletePrefixes = true): readonly StreamingProcessOutputLine<T>[] {
+    if (this.queue.length === 0) return [];
+    let joined = "";
+    const spans = this.queue.map((entry) => {
+      const start = joined.length;
+      joined += entry.text;
+      return { start, end: joined.length };
+    });
+    const markRange = (start: number, end: number): void => {
+      spans.forEach((span, index) => {
+        if (span.start < end && span.end > start) this.queue[index]!.redact = true;
+      });
+    };
+
+    for (const secret of this.secrets) {
+      if (secret.length === 0) continue;
+      let at = joined.indexOf(secret);
+      while (at >= 0) {
+        markRange(at, at + secret.length);
+        at = joined.indexOf(secret, at + Math.max(1, secret.length));
+      }
+    }
+    for (const [pattern] of CREDENTIAL_SHAPES) {
+      for (const match of joined.matchAll(new RegExp(pattern.source, pattern.flags))) {
+        const start = match.index;
+        markRange(start, start + match[0].length);
+      }
+    }
+
+    let holdStart = joined.length;
+    for (const secret of this.secrets) {
+      const maximumPrefix = Math.min(secret.length - 1, joined.length);
+      for (let length = maximumPrefix; length >= this.minimumSecretPrefix; length -= 1) {
+        if (!joined.endsWith(secret.slice(0, length))) continue;
+        const start = joined.length - length;
+        if (final) {
+          if (redactIncompletePrefixes) markRange(start, joined.length);
+        } else holdStart = Math.min(holdStart, start);
+        break;
+      }
+    }
+    if (this.holdCredentialPrefixes) {
+      const credentialPrefix = /(?:^|\s)(?:gh[pousr]_|sk-(?:(?:ant|proj)-)?|xox[baprs]-|A(?:KIA|SIA)|eyJ)[A-Za-z0-9_+./=-]*$/u.exec(joined);
+      if (credentialPrefix !== null) {
+        const leadingWhitespace = /^\s/u.test(credentialPrefix[0]) ? 1 : 0;
+        const start = credentialPrefix.index + leadingWhitespace;
+        if (final) {
+          if (redactIncompletePrefixes) markRange(start, joined.length);
+        } else holdStart = Math.min(holdStart, start);
+      }
+    }
+
+    const flushCount = final
+      ? this.queue.length
+      : spans.findIndex((span) => span.end > holdStart);
+    const count = flushCount < 0 ? this.queue.length : flushCount;
+    return this.queue.splice(0, count).map((entry) => {
+      const beginsPrivateKey = isPrivateKeyBegin(entry.text);
+      const endsPrivateKey = isPrivateKeyEnd(entry.text);
+      const redactWholeLine = entry.redact || this.privateKeyOpen || beginsPrivateKey || endsPrivateKey;
+      if (beginsPrivateKey) this.privateKeyOpen = true;
+      if (endsPrivateKey) this.privateKeyOpen = false;
+      return {
+        text: redactWholeLine ? "[REDACTED]" : redactProcessOutputLine(entry.text, this.secrets),
+        value: entry.value,
+      };
+    });
+  }
+}
+
 /**
  * Redaction for output consumed LINE BY LINE, where whole-literal matching
  * against known environment values cannot fire because no single line contains
  * the complete secret.
  */
-export function redactProcessOutputLine(line: string, secrets: readonly string[]): string {
-  let redacted = redactProcessOutput(line, secrets);
+export function redactProcessOutputLine(
+  line: string,
+  secrets: readonly string[],
+  truncatedAtEnd = false,
+): string {
+  let redacted = redactProcessOutput(line, secrets, truncatedAtEnd);
   for (const [pattern, replacement] of CREDENTIAL_SHAPES) {
     redacted = redacted.replace(pattern, replacement);
   }

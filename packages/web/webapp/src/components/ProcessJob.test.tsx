@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api";
+import { DATA_MODE_STORAGE_KEY } from "../data-mode";
 import { processJob } from "../test/fixtures";
 import type { ProcessJobState } from "../types";
 import {
@@ -25,6 +26,8 @@ const part = (data: unknown) =>
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  localStorage.removeItem(DATA_MODE_STORAGE_KEY);
+  Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
 });
 
 describe("processJobStatus", () => {
@@ -152,6 +155,25 @@ describe("processJobSupersedes", () => {
     )).toBe(false);
     expect(processJobSupersedes(at("running", "2026-07-17T10:00:01.000Z"), at("running", "2026-07-17T10:00:01.000Z"))).toBe(false);
     expect(processJobSupersedes(at("queued", null), at("queued", null))).toBe(false);
+  });
+
+  it("accepts monotonic same-state output and cancellation enrichment without allowing regression", () => {
+    const running = at("running", "2026-07-17T10:00:01.000Z");
+    const withTail = processJob({
+      ...running,
+      output: { ...running.output, stdoutBytes: 12, preview: "STDOUT:\nworking" },
+    });
+    const cancelling = processJob({ ...withTail, cancelRequested: true });
+    expect(processJobSupersedes(running, withTail)).toBe(true);
+    expect(processJobSupersedes(withTail, cancelling)).toBe(true);
+    expect(processJobSupersedes(withTail, running)).toBe(false);
+    expect(processJobSupersedes(cancelling, withTail)).toBe(false);
+  });
+
+  it("accepts same-terminal wake enrichment but not a different terminal outcome", () => {
+    const pending = processJob({ wake: { ...processJob().wake, state: "pending", attempts: 0 } });
+    expect(processJobSupersedes(pending, processJob())).toBe(true);
+    expect(processJobSupersedes(processJob(), processJob({ state: "failed" }))).toBe(false);
   });
 });
 
@@ -444,6 +466,238 @@ describe("ProcessJobPart", () => {
       await Promise.resolve();
     });
 
+    expect(threadJob).toHaveBeenCalledTimes(2);
+  });
+
+  it("auto-opens on first live output, keeps one-second polling, and respects a manual collapse", async () => {
+    vi.useFakeTimers();
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      output: { ...complete.output, stdoutBytes: 0, stderrBytes: 0, preview: "" },
+      exitCode: null,
+      durationMs: null,
+    });
+    const firstTail = processJob({
+      ...running,
+      output: { ...running.output, stdoutBytes: 4, preview: "STDOUT:\none" },
+    });
+    const secondTail = processJob({
+      ...running,
+      output: { ...running.output, stdoutBytes: 8, preview: "STDOUT:\none\ntwo" },
+    });
+    const threadJob = vi.spyOn(api, "threadJob")
+      .mockResolvedValueOnce(firstTail)
+      .mockResolvedValueOnce(secondTail)
+      .mockResolvedValue(complete);
+    const { rerender } = render(part({ type: "process-job", job: running }));
+
+    await act(async () => { await Promise.resolve(); });
+    const row = screen.getByRole("group", { name: "Exec background job running" });
+    expect(row).toHaveAttribute("open");
+    expect(row.querySelector(".process-job-output")).toHaveTextContent("STDOUT: one");
+
+    fireEvent.click(row.querySelector("summary")!);
+    expect(row).not.toHaveAttribute("open");
+    await act(async () => {
+      vi.advanceTimersByTime(999);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+    expect(row).not.toHaveAttribute("open");
+
+    // A delayed same-state card repair with empty output cannot erase the poll.
+    rerender(part({ type: "process-job", job: running }));
+    expect(row.querySelector(".process-job-output")).toHaveTextContent("STDOUT: one two");
+    expect(row).not.toHaveAttribute("open");
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("group", { name: "Exec background job succeeded" })).not.toHaveAttribute("open");
+  });
+
+  it("backs off queued and failed reads while preserving the retained row", async () => {
+    vi.useFakeTimers();
+    const complete = processJob();
+    const queued = processJob({
+      state: "queued",
+      timestamps: { ...complete.timestamps, startedAt: null, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      output: { ...complete.output, stdoutBytes: 0, stderrBytes: 0, preview: "" },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob").mockRejectedValue(new Error("offline"));
+    render(part({ type: "process-job", job: queued }));
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      vi.advanceTimersByTime(1_999);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole("group", { name: "Exec background job queued" })).toBeInTheDocument();
+  });
+
+  it("follows a growing tail only while the operator remains near its bottom", async () => {
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      output: { ...complete.output, stdoutBytes: 4, preview: "STDOUT:\none" },
+      exitCode: null,
+      durationMs: null,
+    });
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const { rerender } = render(part({ type: "process-job", job: running }));
+    const output = screen.getByRole("group", { name: "Exec background job running" })
+      .querySelector<HTMLPreElement>(".process-job-output")!;
+    Object.defineProperties(output, {
+      scrollHeight: { configurable: true, value: 200 },
+      clientHeight: { configurable: true, value: 100 },
+      scrollTop: { configurable: true, value: 0, writable: true },
+    });
+    fireEvent.scroll(output);
+    rerender(part({
+      type: "process-job",
+      job: processJob({
+        ...running,
+        output: { ...running.output, stdoutBytes: 8, preview: "STDOUT:\none\ntwo" },
+      }),
+    }));
+    expect(output.scrollTop).toBe(0);
+
+    output.scrollTop = 100;
+    fireEvent.scroll(output);
+    rerender(part({
+      type: "process-job",
+      job: processJob({
+        ...running,
+        output: { ...running.output, stdoutBytes: 12, preview: "STDOUT:\none\ntwo\nthree" },
+      }),
+    }));
+    expect(output.scrollTop).toBe(200);
+  });
+
+  it("uses the lean running cadence instead of polling again after one second", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(DATA_MODE_STORAGE_KEY, "lean");
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob").mockResolvedValue(running);
+    render(part({ type: "process-job", job: running }));
+
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a store projection with more output bytes as fresh before re-arming the poll", async () => {
+    vi.useFakeTimers();
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      output: { ...complete.output, stdoutBytes: 0, stderrBytes: 0, preview: "" },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob").mockResolvedValue(running);
+    const { rerender } = render(part({ type: "process-job", job: running }));
+
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    await act(async () => { vi.advanceTimersByTime(600); });
+    rerender(part({
+      type: "process-job",
+      job: processJob({
+        ...running,
+        output: { ...running.output, stdoutBytes: 4, preview: "STDOUT:\none" },
+      }),
+    }));
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+      await Promise.resolve();
+    });
+
+    expect(threadJob).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(2);
+  });
+
+  it("polls nothing while hidden and reads immediately whenever the document returns", async () => {
+    vi.useFakeTimers();
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob").mockResolvedValue(running);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    render(part({ type: "process-job", job: running }));
+
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).not.toHaveBeenCalled();
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { await Promise.resolve(); });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+      await Promise.resolve();
+    });
+    expect(threadJob).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { await Promise.resolve(); });
     expect(threadJob).toHaveBeenCalledTimes(2);
   });
 

@@ -1206,6 +1206,22 @@ describe("monitors service", () => {
     expect(events).toEqual(["[REDACTED]", "[REDACTED]", "[REDACTED]"]);
   });
 
+  it("redacts a held known-secret prefix when the shared streaming redactor finalizes", async () => {
+    const secret = "alpha-bravo-charlie";
+    const handle = await open();
+    const fake = fakeRequest({ env: { APP_TOKEN: secret } });
+    await handle.controller(origin(), 0).start(fake.request);
+    fake.process().emit("prefix alpha-bravo-\n");
+    await settle();
+    expect(wakes).toHaveLength(0);
+
+    await fake.process().finish({ code: 0 });
+    await waitForTerminal("mon-1", "exited");
+    const body = JSON.parse(fenced(wakes.at(-1)!.prompt));
+    expect(body.events).toEqual(["[REDACTED]"]);
+    expect(wakes.at(-1)!.prompt).not.toContain("alpha-bravo-");
+  });
+
   it("redacts a multi-word secret a label rule would otherwise bisect", async () => {
     const secret = "correct horse battery staple";
     const handle = await open();
