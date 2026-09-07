@@ -668,7 +668,7 @@ the same bootstrap projection as the rest of the agent summary. Schema 21 adds
 the requested model and effort plus bounded runtime routing evidence to each
 turn, so fallback attribution remains visible after reload. These migrations are
 additive and transactional. Schema 22 adds the nullable
-`pending_live_inputs.dispatch_started_at` marker. The service commits that
+`live_inputs.dispatch_started_at` marker. The service commits that
 marker before crossing the operator dispatch boundary: unmarked offers recover
 as queued, while marked offers recover as terminal uncertainty and cannot be
 promoted into an automatic next turn. Existing offered rows migrate with a NULL
