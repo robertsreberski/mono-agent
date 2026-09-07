@@ -2,7 +2,7 @@ import { classifyNotifySuppression } from "@mono-agent/agent-contracts";
 import type { WebMessagePart } from "./contracts.js";
 
 /** Call only after the store verifies a host-owned Monitor delivery association. */
-export function normalizeMonitorTerminalReply(parts: readonly WebMessagePart[]): {
+export function normalizeMonitorTerminalReply(parts: readonly WebMessagePart[], exactOnly = false): {
   parts: WebMessagePart[];
   changed: boolean;
 } {
@@ -25,6 +25,10 @@ export function normalizeMonitorTerminalReply(parts: readonly WebMessagePart[]):
   if ((boundaries.length === 0 || start === 0) && textParts.length > 1) return { parts: [...parts], changed: false };
   const text = textParts.map((part) => part.text).join("");
   const suppression = classifyNotifySuppression(text);
+  if (exactOnly && (suppression !== "sentinel"
+    || parts.some((part) => part.type === "attachment" || part.type === "mcp_app" || part.type === "failure"))) {
+    return { parts: [...parts], changed: false };
+  }
   if (suppression !== "sentinel" && suppression !== "narrated-sentinel") {
     return { parts: [...parts], changed: false };
   }

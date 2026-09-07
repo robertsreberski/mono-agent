@@ -451,11 +451,12 @@ describe("process-job request availability", () => {
     releaseActive();
     await Promise.all([active, parentPlusOne, atMaximum]);
     expect(outcomes.get("parent-plus-one")).toMatchObject({
-      runtimeOptions: { processJobs: expect.any(Object) },
+      runtimeOptions: { processJobs: expect.any(Object), processJobsAvailability: { chainDepth: 3, maxChainDepth: 4, remainingStarts: 1 } },
     });
     expect(outcomes.get("at-maximum")).toMatchObject({
       runtimeOptions: {
         sandboxPolicy: { protectedRoots: ["/agent/.mono-agent/process-jobs"] },
+        processJobsAvailability: { chainDepth: 4, maxChainDepth: 4, remainingStarts: 0, unavailableReason: "chain_depth_exhausted" },
       },
       cleanup: expect.any(Function),
     });

@@ -474,7 +474,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, monitorsController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, subagentContext?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, processJobsAvailability?: any, monitorsController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, subagentContext?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -497,6 +497,7 @@ export function getPiBuiltinTools(allowedTools, {
   nodeReplController = null,
   webController = null,
   processJobsController = null,
+  processJobsAvailability,
   monitorsController = null,
   subagents = null,
   subagentContext = null,
@@ -511,6 +512,8 @@ export function getPiBuiltinTools(allowedTools, {
   };
   const foregroundTimeoutLimitMs = toolLimits?.bashTimeoutMs || DEFAULT_BASH_TIMEOUT_MS;
   const backgroundLimitMs = processJobsController?.limits?.maxRuntimeMs;
+  const processJobsDiagnostic = processJobsAvailability === undefined ? ""
+    : ` Background process-job request budget: chainDepth=${processJobsAvailability.chainDepth}, maxChainDepth=${processJobsAvailability.maxChainDepth}, remainingStarts=${processJobsAvailability.remainingStarts}${processJobsAvailability.unavailableReason === undefined ? "" : `, unavailableReason=${processJobsAvailability.unavailableReason}`}. This is a lineage budget, not approval; never reset or bypass it.`;
   const processTimeoutSchema = {
     type: "integer",
     minimum: 1,
@@ -598,20 +601,20 @@ export function getPiBuiltinTools(allowedTools, {
     Bash: createBuiltinTool("Bash", "Bash", "Execute a shell command for pipelines, redirection, conditionals, or other shell syntax. Prefer Exec for one executable with an argv array. This is macOS: do not assume GNU-only commands or flags.", objectSchema({
       command: { type: "string" },
       workdir: { type: "string" },
-      description: processDescriptionSchema,
+      description: { ...processDescriptionSchema, description: processDescriptionSchema.description + processJobsDiagnostic },
       timeout_ms: processTimeoutSchema,
       timeout: legacyBashTimeoutSchema,
       max_output_chars: bashLimitSchema,
-      ...(processJobsController ? { background: backgroundSchema } : {}),
+      ...(processJobsController ? { background: backgroundSchema, wake_on_completion: { type: "boolean", description: "Only with background=true. Defaults to true. Set false explicitly to update the terminal lifecycle card without waking this conversation." } } : {}),
     }, ["command"]), bashToolRun, toolContext),
     Exec: createBuiltinTool("Exec", "Exec", "Execute one program directly from an argv array without shell parsing. Prefer this for ordinary commands; use Bash only when shell syntax is required.", objectSchema({
       executable: { type: "string", minLength: 1 },
       args: { type: "array", items: { type: "string" }, maxItems: 256 },
       workdir: { type: "string" },
-      description: processDescriptionSchema,
+      description: { ...processDescriptionSchema, description: processDescriptionSchema.description + processJobsDiagnostic },
       timeout_ms: processTimeoutSchema,
       max_output_chars: bashLimitSchema,
-      ...(processJobsController ? { background: backgroundSchema } : {}),
+      ...(processJobsController ? { background: backgroundSchema, wake_on_completion: { type: "boolean", description: "Only with background=true. Defaults to true. Set false explicitly to update the terminal lifecycle card without waking this conversation." } } : {}),
     }, ["executable"]), execToolRun, toolContext),
     NodeRepl: nodeReplController
       ? createBuiltinTool(

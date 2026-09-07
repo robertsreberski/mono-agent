@@ -386,6 +386,13 @@ export interface RuntimeRunOptions {
   readonly toolEnvironment?: AgentToolEnvironment;
   /** Host-only Pi-native process-job controller; never model/provider visible. */
   readonly processJobs?: ProcessJobsController;
+  /** Request lineage diagnostics, including when no start controller is available. */
+  readonly processJobsAvailability?: {
+    readonly chainDepth: number;
+    readonly maxChainDepth: number;
+    readonly remainingStarts: number;
+    readonly unavailableReason?: "chain_depth_exhausted" | "origin_unavailable" | "wake_context_unavailable" | "tool_unavailable";
+  };
   /** Host-only Pi-native monitor controller; never model/provider visible. */
   readonly monitors?: MonitorsController;
   readonly onEvent?: (event: RuntimeEventLike) => void;

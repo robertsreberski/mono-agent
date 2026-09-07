@@ -38,6 +38,7 @@ import {
 } from "../process-jobs-store.js";
 import type { ProcessIncarnation } from "../process-incarnation.js";
 import { routeProactiveNotification } from "../proactive-notify.js";
+import { bindProcessJobWakeContextToResponder, runWithProcessJobWakeContext } from "../process-jobs-context.js";
 
 const INCARNATION: ProcessIncarnation = {
   schema: "mono-agent.process-incarnation.v1",
@@ -62,6 +63,62 @@ afterEach(async () => {
 });
 
 describe("process job service", () => {
+  it("settles an exact silent wake as suppressed even when the adapter reports no answer", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const responder = bindProcessJobWakeContextToResponder({ respond: async () => ({ text: "NOTHING_TO_REPORT" }) });
+    const wake = vi.fn(async (input: ProcessJobWakeInput) => await runWithProcessJobWakeContext(
+      { jobId: input.projection.jobId, chainDepth: input.chainDepth }, async () => {
+        expect(await responder.respond({ conversationId: ORIGIN.conversationId, text: input.prompt,
+          abortSignal: new AbortController().signal, metadata: {} }, {} as never)).toEqual({ text: "" });
+        return { delivered: false as const, code: "agent_produced_no_answer", retryable: false };
+      }, input.deliveryKey));
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "suppressed");
+    expect(await service.get(started.jobId)).toMatchObject({ state: "succeeded", wake: { state: "suppressed", attempts: 1 }, lastError: null });
+    expect(wake).toHaveBeenCalledOnce();
+  });
+  it("keeps an opted-out terminal card across restart without a wake", async () => {
+    const fixture = await createFixture();
+    const completion = deferred<ProcessJobProcessResult>();
+    const wake = vi.fn(async () => ({ delivered: true as const }));
+    const surfaceUpdate = vi.fn(async (_projection: ProcessJobProjection) => undefined);
+    const service = await startService(fixture, { wake, surfaceUpdate });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(completion)), wakeOnCompletion: false });
+    completion.resolve(processResult());
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "suppressed");
+    await waitFor(() => surfaceUpdate.mock.calls.some(([projection]) => projection.state === "succeeded"));
+    await service.stop();
+    const restarted = await startService(fixture, { wake });
+    await restarted.activateWakes();
+    expect(await restarted.get(started.jobId)).toMatchObject({ state: "succeeded", wake: { state: "suppressed", attempts: 0 } });
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("retains a delayed ambiguous wake as unknown and never replays it after restart", async () => {
+    const fixture = await createFixture({ maxChainDepth: 32 });
+    const completion = deferred<ProcessJobProcessResult>();
+    const receipt = deferred<{ delivered: false; ambiguous: true; retryable: false }>();
+    const wake = vi.fn(async () => await receipt.promise);
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+    const started = await service.controller(ORIGIN, 31).start(requestOf(handleOf(completion)));
+    completion.resolve(processResult());
+    await waitFor(() => wake.mock.calls.length === 1);
+    receipt.resolve({ delivered: false, ambiguous: true, retryable: false });
+    await waitFor(async () => (await service.get(started.jobId))?.wake.state === "unknown");
+    expect(await service.get(started.jobId)).toMatchObject({ state: "succeeded", wake: { state: "unknown", attempts: 1 }, lastError: processJobPublicError("process_job_wake_unknown") });
+    await service.stop();
+    const restarted = await startService(fixture, { wake });
+    await restarted.activateWakes();
+    expect(wake).toHaveBeenCalledOnce();
+    expect(await restarted.get(started.jobId)).toMatchObject({ wake: { state: "unknown", attempts: 1 } });
+    await expect(restarted.controller(ORIGIN, 32).start(requestOf(handleOf(deferred<ProcessJobProcessResult>())))).rejects.toMatchObject({ code: "process_job_chain_depth_exceeded" });
+  });
   it("publishes throttled live output from synchronous launch callbacks without durable chunk writes", async () => {
     const fixture = await createFixture({ previewChars: 2_000 });
     const completion = deferred<ProcessJobProcessResult>();
@@ -2312,7 +2369,7 @@ describe("process job service", () => {
 
       expect(wake).toHaveBeenCalledOnce();
       expect(activationSettled).toBe(false);
-      expect((await service.get(exhaustedJobId))?.wake.state).toBe("failed");
+      expect((await service.get(exhaustedJobId))?.wake.state).toBe("unknown");
     } finally {
       releaseSurface.resolve();
     }
@@ -2391,8 +2448,8 @@ describe("process job service", () => {
     expect(wake.mock.calls[0]?.[0].projection.jobId).toBe(retryId);
     expect(await service.get(retryId)).toMatchObject({ wake: { state: "delivered", attempts: 2 } });
     expect(await service.get(ambiguousId)).toMatchObject({
-      wake: { state: "failed", attempts: 1 },
-      lastError: processJobPublicError("process_job_wake_failed"),
+      wake: { state: "unknown", attempts: 1 },
+      lastError: processJobPublicError("process_job_wake_unknown"),
     });
   });
 

@@ -72,7 +72,7 @@ export function normalizeBackgroundBashTimeoutMs(value) {
 /**
  * Compatibility wrapper retained for direct callers and tests.
  *
- * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
+ * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolImpl(params, options = {}) {
@@ -82,7 +82,7 @@ export async function bashToolImpl(params, options = {}) {
 /**
  * Structured Bash execution used by the Pi bridge.
  *
- * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean}} params
+ * @param {{command: string, description?: string, timeout?: number, timeout_ms?: number, max_output_chars?: number, workdir?: string, background?: boolean, wake_on_completion?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: import("./shared/process-jobs.js").ProcessJobsController}} [options]
  */
 export async function bashToolRun(
@@ -94,6 +94,7 @@ export async function bashToolRun(
     max_output_chars,
     workdir,
     background,
+    wake_on_completion,
   },
   {
     signal,
@@ -104,6 +105,12 @@ export async function bashToolRun(
   } = {},
 ) {
   const startedAt = Date.now();
+  if (wake_on_completion !== undefined && (background !== true || typeof wake_on_completion !== "boolean")) {
+    return failed("Error: wake_on_completion requires background=true and a boolean value.", "process_job_invalid", startedAt);
+  }
+  if (background === true && !processJobsController) {
+    return failed("Error: Background process jobs are unavailable for this request.", "background_unsupported", startedAt);
+  }
   if (typeof command !== "string") {
     return failed("Error: Bash command must be a string.", "invalid_command", startedAt);
   }
@@ -158,6 +165,7 @@ export async function bashToolRun(
       prepared,
       summary: `Bash command (${command.length} characters; content redacted)`,
       description,
+      wakeOnCompletion: wake_on_completion,
       timeoutMs: requestedTimeoutMs,
       maxOutputChars: max_output_chars === undefined ? undefined : maxChars,
       startedAt,

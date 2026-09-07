@@ -1549,10 +1549,12 @@ describe("WebService", () => {
     await service.stop();
   });
 
-  it("suppresses fallback when an active-turn steering acknowledgement is lost", async () => {
+  it.each(["TimeoutError", "Error"])("suppresses replay but releases ordinary response pushes after steering %s", async (errorName) => {
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const turnBodies: Record<string, unknown>[] = [];
+    let now = new Date("2026-09-07T10:00:00.000Z");
     const service = await createService({
+      clock: () => now,
       fetchImpl: operatorFetch({
         supportsLiveInput: true,
         turns: () => new ReadableStream<Uint8Array>({
@@ -1560,9 +1562,15 @@ describe("WebService", () => {
         }),
         onTurn(body) { turnBodies.push(body); },
         async onLiveInput() {
-          throw new Error("connection dropped after delivery");
+          throw new DOMException("Steering receipt was lost after delivery", errorName);
         },
       }),
+    });
+    service.store.registerWebPushSubscription({
+      endpoint: "https://push.example.test/process-job",
+      p256dh: Buffer.concat([Buffer.from([4]), Buffer.alloc(64)]).toString("base64url"),
+      auth: Buffer.alloc(16, 7).toString("base64url"),
+      siteOrigin: "https://console.example.test", keyFingerprint: "test",
     });
     const thread = service.createThread("agent-one");
     await service.startTurn(thread.id, { text: "Initial task" });
@@ -1602,8 +1610,17 @@ describe("WebService", () => {
     expect(service.thread(thread.id).messages.filter((message) => message.role === "user"))
       .toHaveLength(1);
 
+    stream?.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "The ordinary answer remains useful." })}\n`));
     stream?.close();
-    await waitFor(() => service.store.getThread(thread.id)?.runState.status !== "running");
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.thread(thread.id).messages.some((message) => message.parts.some(
+      (part) => part.type === "text" && part.text === "The ordinary answer remains useful.",
+    ))).toBe(true);
+    now = new Date(now.getTime() + 10_000);
+    expect(service.store.claimDueWebPushDeliveries(10)).toHaveLength(1);
+    expect(service.store.reserveProcessJobWake({
+      sourceId: input.sourceId, threadId: thread.id, jobId: terminal.jobId, deliveryKey: input.deliveryKey,
+    })).toEqual({ kind: "uncertain" });
     await service.stop();
   });
 

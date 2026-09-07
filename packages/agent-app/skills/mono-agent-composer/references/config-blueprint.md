@@ -189,7 +189,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "maxQueueAgeMs": 300000,              // 5 min; cap 1 h
     "maxOutputBytes": 1048576,            // 1 MiB; cap 8 MiB
     "previewChars": 2000,                 // cap 8000
-    "maxChainDepth": 4,                   // host-owned; cap 8
+    "maxChainDepth": 4,                   // host-owned; cap 64
     "retention": {
       "maxRecords": 1000,                 // cap 10000
       "maxAgeMs": 604800000,              // 7 d; cap 30 d

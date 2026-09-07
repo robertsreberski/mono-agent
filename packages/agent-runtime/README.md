@@ -27,6 +27,12 @@ pnpm add @mono-agent/agent-runtime
 Node.js 22.19 or newer is required. Pi is the only runtime, and it talks to
 providers over their SDKs, so no provider CLI has to be on `PATH`.
 
+When a host enables background Exec/Bash, `wake_on_completion` defaults to true;
+explicit false retains terminal lifecycle updates without a completion turn.
+Using that field without `background: true` is invalid. Host-provided
+`processJobsAvailability` exposes lineage and exhaustion diagnostics even
+when a request has no start controller.
+
 Create one runtime for a host, parse a model reference, and run a turn:
 
 ```js
@@ -751,8 +757,9 @@ by one lazily started Node.js REPL child per run. You select them via
 - Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
 
 The Pi-native tool context may structurally receive a host process-job
-controller. Only then do Exec and Bash add optional `background`; with no
-controller their schemas and foreground path are unchanged. A background call
+controller. Only then do Exec and Bash add optional `background` and
+`wake_on_completion`. A host can disclose lineage diagnostics independently
+of that controller; a background request without one is rejected. A background call
 hands the exact prepared command to the controller and stops awaiting it. The
 kernel first creates a command-agnostic detached POSIX group leader; only after
 the host durably records its PID, equal PGID, and process incarnation does the

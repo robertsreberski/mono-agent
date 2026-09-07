@@ -29,6 +29,30 @@ afterEach(() => {
 });
 
 describe("Exec", () => {
+  it("reports the exhausted request budget even without a background controller", () => {
+    for (const tool of getPiBuiltinTools(["Exec", "Bash"], {
+      processJobsAvailability: { chainDepth: 32, maxChainDepth: 32, remainingStarts: 0, unavailableReason: "chain_depth_exhausted" },
+    })) {
+      expect(tool.parameters.properties).not.toHaveProperty("background");
+      expect(tool.parameters.properties.description.description).toContain("chainDepth=32, maxChainDepth=32, remainingStarts=0, unavailableReason=chain_depth_exhausted");
+    }
+  });
+
+  it.each([["Exec", execToolRun, { executable: process.execPath }], ["Bash", bashToolRun, { command: "true" }]])(
+    "propagates explicit %s completion optout and rejects foreground use",
+    async (_name, run, params) => {
+      const workspace = tempWorkspace();
+      const start = vi.fn(async (request) => {
+        await request.prepared.cleanup?.();
+        return { jobId: "optout", state: "queued", startedAt: null };
+      });
+      const result = await run({ ...params, background: true, wake_on_completion: false }, { ...options(workspace), processJobsController: { start } });
+      expect(start.mock.calls[0][0].wakeOnCompletion).toBe(false);
+      expect(result.text).toContain("will not receive a completion turn");
+      expect((await run({ ...params, wake_on_completion: false }, options(workspace))).outcome.code).toBe("process_job_invalid");
+      expect((await run({ ...params, background: true }, options(workspace))).outcome.code).toBe("background_unsupported");
+    },
+  );
   it("keeps the disabled schema byte-identical and injects background only with a controller", () => {
     const withoutController = getPiBuiltinTools(["Exec", "Bash"]);
     const baseline = Object.fromEntries(withoutController.map((tool) => [tool.name, JSON.stringify(tool.parameters)]));

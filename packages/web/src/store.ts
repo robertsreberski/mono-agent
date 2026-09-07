@@ -1906,7 +1906,7 @@ export class WebStore {
     readonly deliveryKey: string;
     readonly disposition: "steered" | "follow_up";
     readonly turnId?: string;
-  }): void {
+  }): WebMessage | undefined {
     const result = this.database.prepare(`
       UPDATE process_job_wake_deliveries
       SET state = 'completed', disposition = ?, turn_id = ?, completed_at = ?
@@ -1922,6 +1922,48 @@ export class WebStore {
     if (result.changes !== 1) {
       throw new WebConsoleError("notification_reservation_lost", "The process-job wake reservation was lost.", 409);
     }
+    if (input.turnId !== undefined) {
+      const turn = this.requireTurn(input.turnId);
+      if (turn.status === "complete" && this.hasProcessJobTurnAssociation(input.turnId)) {
+        const message = this.requireMessage(turn.assistant_message_id);
+        const normalized = normalizeMonitorTerminalReply(message.parts, true);
+        if (normalized.changed) this.writeMessageParts(message.id, normalized.parts, this.now());
+        this.repairMonitorResponsePush(input.turnId, normalized.parts);
+        return normalized.changed ? this.requireMessage(message.id) : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  /** Bind an accepted host wake to its exact follow-up before crossing the turn boundary. */
+  associateProcessJobWakeTurn(deliveryKey: string, turnId: string, pending = true): void {
+    const result = this.database.prepare(`
+      UPDATE process_job_wake_deliveries SET turn_id = ?
+      WHERE delivery_key = ? AND state = 'accepted'
+        AND thread_id = (SELECT turns.thread_id FROM turns JOIN threads ON threads.id = turns.thread_id
+          WHERE turns.id = ? AND threads.source_id = process_job_wake_deliveries.source_id)
+    `).run(pending ? turnId : null, deliveryKey, turnId);
+    if (result.changes !== 1) {
+      throw new WebConsoleError("notification_reservation_lost", "The process-job wake turn association was lost.", 409);
+    }
+  }
+
+  private hasProcessJobTurnAssociation(turnId: string, deliveryKey?: string): boolean {
+    return this.database.prepare(`
+      SELECT 1 FROM process_job_wake_deliveries AS deliveries
+      JOIN turns ON turns.id = ? AND turns.thread_id = deliveries.thread_id
+      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
+      WHERE deliveries.turn_id = turns.id AND
+        (deliveries.state = 'completed' OR (deliveries.state = 'accepted' AND deliveries.delivery_key = ?))
+    `).get(turnId, deliveryKey ?? null) !== undefined;
+  }
+
+  /** Release only a pending notification hold; the ambiguous delivery reservation remains durable. */
+  releaseProcessJobWakeTurn(deliveryKey: string, turnId: string): void {
+    this.database.prepare(`
+      UPDATE process_job_wake_deliveries SET turn_id = NULL
+      WHERE delivery_key = ? AND turn_id = ? AND state = 'accepted'
+    `).run(deliveryKey, turnId);
   }
 
   /** Release a reservation only while no operator delivery has begun. */
@@ -3633,6 +3675,11 @@ export class WebStore {
             WHERE e.kind = 'response.ready' AND m.state = 'accepted' AND m.turn_id IS NOT NULL
               AND e.logical_key = 'turn:' || m.turn_id || ':terminal'
           )
+          AND NOT EXISTS (
+            SELECT 1 FROM process_job_wake_deliveries j
+            WHERE e.kind = 'response.ready' AND j.state = 'accepted' AND j.turn_id IS NOT NULL
+              AND e.logical_key = 'turn:' || j.turn_id || ':terminal'
+          )
         ORDER BY d.next_attempt_at, d.created_at, d.rowid
         LIMIT ?
       `).all(now, now, limit) as unknown as Array<Record<string, unknown>>;
@@ -4557,6 +4604,11 @@ export class WebStore {
       parts.push({ type: "error", ...(errorCode === undefined ? {} : { code: errorCode }), message: errorMessage });
     }
     const monitorAssociated = status === "complete" && this.hasMonitorTurnAssociation(turnId, monitorWakeDeliveryKey);
+    const processJobAssociated = status === "complete" && this.hasProcessJobTurnAssociation(turnId, monitorWakeDeliveryKey);
+    if (processJobAssociated) {
+      parts = normalizeMonitorTerminalReply(parts, true).parts;
+      suppressResponsePush = !hasMonitorReplyContent(parts);
+    }
     if (monitorAssociated) {
       const normalized = normalizeMonitorTerminalReply(parts);
       parts = normalized.parts;

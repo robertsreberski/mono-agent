@@ -30,6 +30,11 @@ unknown wake dispositions. New v2 records are validated strictly.
 
 ## Install / Usage
 
+Process-job projections distinguish terminal wake outcomes: `delivered`,
+`failed`, `unknown` (receipt uncertainty, never auto-replayed), and
+`suppressed` (explicit completion optout or exact sentinel-only reply).
+Older projection fields remain compatible; chain depths accept up to 64.
+
 ```bash
 npm install @mono-agent/agent-contracts
 ```
