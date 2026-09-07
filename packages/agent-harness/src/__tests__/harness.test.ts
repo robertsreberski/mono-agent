@@ -14,7 +14,7 @@ import type {
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { createCompositeRunRecorder, createJsonlRunRecorder } from "@mono-agent/observability";
 import type { RunExporter, RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
-import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
+import { createSandboxPolicy, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import {
   AgentHarnessFailureError,
@@ -167,6 +167,147 @@ describe("AgentHarness", () => {
       { role: "user", content: "Initial request", runId: "run-live" },
       { role: "user", content: "Use the new constraint", timestamp: "2026-07-21T09:00:00.000Z", runId: "run-live" },
       { role: "assistant", content: "Updated answer", runId: "run-live" },
+    ]);
+  });
+
+  it("keeps a concurrent non-owner abort or failure from removing an isolated interactive mailbox", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const overrideModel = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
+    let ownerStarted!: () => void;
+    let abortStarted!: () => void;
+    let failureStarted!: () => void;
+    let laterStarted!: () => void;
+    let releaseOwner!: () => void;
+    const ownerReady = new Promise<void>((resolve) => { ownerStarted = resolve; });
+    const abortReady = new Promise<void>((resolve) => { abortStarted = resolve; });
+    const failureReady = new Promise<void>((resolve) => { failureStarted = resolve; });
+    const laterReady = new Promise<void>((resolve) => { laterStarted = resolve; });
+    const ownerRelease = new Promise<void>((resolve) => { releaseOwner = resolve; });
+    const consumed: Array<{ readonly run: string; readonly id: string | undefined }> = [];
+    let runtimeCall = 0;
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        runtimeCall += 1;
+        if (runtimeCall === 1) {
+          ownerStarted();
+          const iterator = options.liveInput?.[Symbol.asyncIterator]();
+          if (iterator === undefined) throw new Error("Owner mailbox was not attached.");
+          const next = await iterator.next();
+          if (next.done) throw new Error("Owner mailbox closed before delivery.");
+          consumed.push({ run: "run-owner", id: next.value.id });
+          next.value.acknowledge?.();
+          await ownerRelease;
+          return { text: "owner complete" };
+        }
+        if (runtimeCall === 2) {
+          abortStarted();
+          if (options.liveInput !== undefined) throw new Error("Concurrent aborting run stole the mailbox.");
+          await new Promise<void>((resolve) => {
+            if (options.abortSignal.aborted) resolve();
+            else options.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          return { text: "aborted run returned" };
+        }
+        if (runtimeCall === 3) {
+          failureStarted();
+          if (options.liveInput !== undefined) throw new Error("Concurrent failing run stole the mailbox.");
+          throw new Error("non-owner failure");
+        }
+        laterStarted();
+        const iterator = options.liveInput?.[Symbol.asyncIterator]();
+        if (iterator === undefined) throw new Error("Later run could not claim a mailbox.");
+        const next = await iterator.next();
+        if (next.done) throw new Error("Later mailbox closed before delivery.");
+        consumed.push({ run: "run-later", id: next.value.id });
+        next.value.acknowledge?.();
+        return { text: "later complete" };
+      },
+    };
+    const runIds = ["run-owner", "run-abort", "run-failure", "run-later"];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      runtimeForModel: () => runtime,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { model: overrideModel } }),
+      createRunId: () => runIds.shift() ?? "unexpected-run",
+    });
+    const differentModelRequest = (userMessage: string, abortSignal: AbortSignal) => ({
+      conversationId: "web:owner-test",
+      userMessage,
+      abortSignal,
+      metadata: { source: "web", web: { model: overrideModel.reference } },
+    });
+
+    const ownerController = new AbortController();
+    const owner = harness.run(differentModelRequest("owner", ownerController.signal));
+    await ownerReady;
+
+    const nonOwnerAbortController = new AbortController();
+    const aborting = harness.run(differentModelRequest("abort", nonOwnerAbortController.signal));
+    await abortReady;
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-abort",
+      id: "wrong-target-abort",
+      text: "must not reach aborting run",
+      receivedAt: "2026-09-07T14:32:00.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+    nonOwnerAbortController.abort(new Error("run-local abort"));
+    await expect(aborting).resolves.toMatchObject({ failure: { kind: "cancelled" } });
+
+    const failing = harness.run(differentModelRequest("failure", new AbortController().signal));
+    await failureReady;
+    await expect(failing).resolves.toMatchObject({ failure: expect.any(Object) });
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-failure",
+      id: "wrong-target-failure",
+      text: "must not reach failing run",
+      receivedAt: "2026-09-07T14:32:01.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+
+    const ownerOffer = harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-owner",
+      id: "input-owner",
+      text: "owner input",
+      receivedAt: "2026-09-07T14:32:02.000Z",
+    });
+    expect(ownerOffer?.status).toBe("accepted");
+    if (ownerOffer?.status === "accepted") {
+      await expect(ownerOffer.settled).resolves.toEqual({ status: "applied", runId: "run-owner" });
+    }
+    releaseOwner();
+    await expect(owner).resolves.toMatchObject({ text: "owner complete" });
+
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-owner",
+      id: "after-owner",
+      text: "closed owner input",
+      receivedAt: "2026-09-07T14:32:03.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+
+    const later = harness.run(differentModelRequest("later", new AbortController().signal));
+    await laterReady;
+    const laterOffer = harness.offerLiveInput?.({
+      conversationId: "web:owner-test",
+      targetRunId: "run-later",
+      id: "input-later",
+      text: "later input",
+      receivedAt: "2026-09-07T14:32:04.000Z",
+    });
+    expect(laterOffer?.status).toBe("accepted");
+    await expect(later).resolves.toMatchObject({ text: "later complete" });
+    if (laterOffer?.status === "accepted") {
+      await expect(laterOffer.settled).resolves.toEqual({ status: "applied", runId: "run-later" });
+    }
+    expect(consumed).toEqual([
+      { run: "run-owner", id: "input-owner" },
+      { run: "run-later", id: "input-later" },
     ]);
   });
 
