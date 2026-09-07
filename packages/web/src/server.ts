@@ -95,11 +95,13 @@ const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
  * their URL, so the browser may hold them for a year and skip the request.
  */
 const IMMUTABLE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
-const WEB_THEME_CHROME: Readonly<Record<WebTheme, { readonly light: string; readonly dark: string }>> = {
-  evergreen: { light: "#eeefeb", dark: "#0f1110" },
-  ocean: { light: "#edf1f4", dark: "#0d1115" },
-  plum: { light: "#f2eef3", dark: "#120f14" },
-  terracotta: { light: "#f4efec", dark: "#130f0d" },
+const WEB_THEME_MANIFEST_COLORS: Readonly<
+  Record<WebTheme, { readonly themeColor: string; readonly backgroundColor: string }>
+> = {
+  evergreen: { themeColor: "#191c1a", backgroundColor: "#0f1110" },
+  ocean: { themeColor: "#191c1a", backgroundColor: "#0d1115" },
+  plum: { themeColor: "#191c1a", backgroundColor: "#120f14" },
+  terracotta: { themeColor: "#191c1a", backgroundColor: "#130f0d" },
 };
 
 export interface StartWebServerOptions extends CreateWebServiceOptions {
@@ -1046,13 +1048,13 @@ async function loadWebManifest(
   if (template === null || typeof template !== "object" || Array.isArray(template)) {
     throw new WebConsoleError("invalid_static_manifest", "The web console manifest must be a JSON object.", 500);
   }
-  const chrome = WEB_THEME_CHROME[identity.theme];
+  const colors = WEB_THEME_MANIFEST_COLORS[identity.theme];
   return {
     ...(template as Readonly<Record<string, unknown>>),
     name: `${identity.displayName} · mono-agent Console`,
     short_name: identity.displayName,
-    theme_color: chrome.dark,
-    background_color: chrome.dark,
+    theme_color: colors.themeColor,
+    background_color: colors.backgroundColor,
   };
 }
 

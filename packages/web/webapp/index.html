@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#eeefeb" />
-    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f1110" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#fdfdfb" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#191c1a" />
     <meta name="description" content="Always-on local console for your mono-agent fleet." />
     <!--
       Home-screen install: no browser chrome.
@@ -16,13 +16,12 @@
       distinguishable on the same home screen. A constant here would name them
       both "mono-agent". iOS 16.4+ takes the name from the manifest.
 
-      The status bar stays `default` rather than `black-translucent` on purpose.
-      `black-translucent` draws WHITE status-bar glyphs whatever is behind them,
-      and this console's light theme paints `#eeefeb` up there -- an invisible
-      clock and battery. `default` lets iOS take the status bar's appearance from
-      the `theme-color` pair above, so it is legible in both themes. The layout
-      is already ready for the other choice: `viewport-fit=cover` is set and every
-      top edge pads by `env(safe-area-inset-top)`.
+      The status bar stays `default` rather than `black-translucent` on purpose:
+      content remains below the system-owned strip while the light/dark
+      `theme-color` pair requests the same color as the header. The layout keeps
+      `viewport-fit=cover` and protects each top edge with
+      `env(safe-area-inset-top)`; native glyph contrast and final strip painting
+      still depend on the installed iOS version and require device verification.
     -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

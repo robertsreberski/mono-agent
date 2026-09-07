@@ -3,10 +3,10 @@ import type { ConsoleIdentity, WebTheme } from "./types";
 export const THEME_CHROME_COLORS: Readonly<
   Record<WebTheme, { readonly light: string; readonly dark: string }>
 > = {
-  evergreen: { light: "#eeefeb", dark: "#0f1110" },
-  ocean: { light: "#edf1f4", dark: "#0d1115" },
-  plum: { light: "#f2eef3", dark: "#120f14" },
-  terracotta: { light: "#f4efec", dark: "#130f0d" },
+  evergreen: { light: "#fdfdfb", dark: "#191c1a" },
+  ocean: { light: "#fdfdfb", dark: "#191c1a" },
+  plum: { light: "#fdfdfb", dark: "#191c1a" },
+  terracotta: { light: "#fdfdfb", dark: "#191c1a" },
 };
 
 const THEME_COLOR_MEDIA = [
