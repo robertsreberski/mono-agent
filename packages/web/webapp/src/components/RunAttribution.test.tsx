@@ -1,8 +1,13 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import styles from "../styles.css?raw";
 
-import { RunAttribution, runAttributionSummary } from "./RunAttribution";
+import {
+  RunAttribution,
+  runAttributionSummary,
+  shouldShowMessageRunAttribution,
+} from "./RunAttribution";
 
 const fallback = {
   requested: { model: "provider:primary", effort: "high" },
@@ -35,20 +40,36 @@ describe("RunAttribution", () => {
       .toContain("reason not reported");
   });
 
-  it("keeps the compact header distinct from the next-turn selector", () => {
-    const { rerender } = render(<RunAttribution attribution={fallback} status="running" compact />);
-    expect(screen.getByText("provider:primary → provider:fallback")).toBeVisible();
-    expect(screen.queryByText(/overloaded/u)).toBeNull();
-
-    rerender(<RunAttribution attribution={{
-      requested: { model: "provider:primary", effort: "high" },
-      attempted: { model: "provider:primary", effort: "high", effectiveEffort: "high" },
-      executed: { model: "provider:primary", effort: "high", effectiveEffort: "high" },
-      disposition: "requested",
+  it("shows normal message attribution only for a known model mismatch", () => {
+    const requested = {
+      requested: { model: "provider:requested" },
+      attempted: { model: "provider:attempted" },
+      executed: { model: "provider:executed" },
+      disposition: "requested" as const,
       transitions: [],
       retries: [],
-    }} status="complete" compact />);
-    expect(screen.getByText("Last run · provider:primary · High")).toBeVisible();
+    };
+
+    expect(shouldShowMessageRunAttribution(requested, "provider:selected")).toBe(true);
+    expect(shouldShowMessageRunAttribution(requested, "provider:executed")).toBe(false);
+    expect(shouldShowMessageRunAttribution(requested, "")).toBe(false);
+    expect(shouldShowMessageRunAttribution({ ...requested, executed: { model: undefined } }, "provider:selected")).toBe(false);
+    expect(shouldShowMessageRunAttribution({
+      ...requested,
+      requested: {},
+      attempted: undefined,
+      executed: undefined,
+    }, "provider:selected")).toBe(false);
+  });
+
+  it("always shows fallback attribution, including equal or unknown models", () => {
+    expect(shouldShowMessageRunAttribution(fallback, "provider:fallback")).toBe(true);
+    expect(shouldShowMessageRunAttribution({ ...fallback, executed: undefined, attempted: undefined }, undefined)).toBe(true);
+  });
+
+  it("keeps the message marker content-width without compact header styles", () => {
+    expect(styles).toMatch(/\.run-attribution \{ width: fit-content; max-width: 100%;/u);
+    expect(styles).not.toContain(".run-attribution.is-compact");
   });
 
   it("reports a provider-selected effective effort when no effort was requested", () => {

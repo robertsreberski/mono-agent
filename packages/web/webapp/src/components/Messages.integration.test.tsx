@@ -14,12 +14,28 @@ import { monitor, processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 import { ToolCallRepairProvider } from "./tool-call-repair";
 
+const consoleStoreMock = vi.hoisted(() => ({
+  current: {
+    connection: "live",
+    effectiveModel: "provider:primary",
+    loadCronRunActivity: vi.fn(),
+    selectedAgent: null,
+    selectedThread: null,
+    transcriptMovedAt: 0,
+  },
+}));
+
+vi.mock("../console-store", () => ({
+  useConsoleStore: () => consoleStoreMock.current,
+}));
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   // A case that stubs this and then fails would otherwise leave every later
   // test in this file rendering into a tab the console believes is hidden.
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+  consoleStoreMock.current.effectiveModel = "provider:primary";
 });
 
 function MessagesHarness({ messages }: { readonly messages: readonly WebMessage[] }) {
@@ -186,7 +202,8 @@ describe("AssistantMessage grouped parts", () => {
     ],
   });
 
-  it("keeps completed fallback attribution visible outside the folded activity log", () => {
+  it("keeps completed fallback attribution visible when it equals the selected model", () => {
+    consoleStoreMock.current.effectiveModel = "provider:fallback";
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
       attribution: {
@@ -205,6 +222,30 @@ describe("AssistantMessage grouped parts", () => {
     expect(summary.closest("details")).toBeNull();
     expect(screen.getByText("Requested High → effective Max")).toBeVisible();
     expect(screen.getByText("Older routing entries were omitted.")).toBeInTheDocument();
+  });
+
+  it("shows normal attribution only when the executed model differs from the selected model", () => {
+    const attribution = {
+      requested: { model: "provider:primary", effort: "high" },
+      attempted: { model: "provider:other", effort: "high", effectiveEffort: "max" },
+      executed: { model: "provider:other", effort: "high", effectiveEffort: "max" },
+      disposition: "requested" as const,
+      transitions: [],
+      retries: [],
+    };
+    const message = { ...assistantMessage("complete"), attribution };
+
+    const view = render(<MessageHarness message={message} />);
+    expect(screen.getByText("Ran with provider:other · High")).toBeVisible();
+    expect(screen.getByText("Requested High → effective Max")).toBeVisible();
+    expect(screen.getByText("Routing details")).toBeVisible();
+
+    view.unmount();
+    consoleStoreMock.current.effectiveModel = "provider:other";
+    render(<MessageHarness message={message} />);
+    expect(screen.queryByText("Ran with provider:other · High")).toBeNull();
+    expect(screen.queryByText("Requested High → effective Max")).toBeNull();
+    expect(screen.queryByText("Routing details")).toBeNull();
   });
 
   it("never claims an exhausted fallback run answered", () => {

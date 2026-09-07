@@ -17,7 +17,6 @@ import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
 import { useRunControls } from "./run-controls";
-import { RunAttribution } from "./RunAttribution";
 
 const runLabel: Record<string, string> = {
   idle: "Ready",
@@ -432,13 +431,6 @@ export function Chat({
             <i />
             {status}
           </span>
-          {selectedThread?.runState.attribution && (
-            <RunAttribution
-              attribution={selectedThread.runState.attribution}
-              status={selectedThread.runState.status}
-              compact
-            />
-          )}
         </div>
         <div className="chat-header-actions">
           <NotificationBell />

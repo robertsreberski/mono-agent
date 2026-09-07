@@ -191,22 +191,22 @@ Structured reasoning, routine tools, and one update-in-place row per compaction
 share the stream-aware Activity disclosure, which collapses at every terminal
 message state without reordering answer parts.
 
-The picker is labelled **Next turn**. The current or last assistant run has a
-separate route marker in the header and below its message. A normal run names
-the route that answered; a fallback names requested and answering models plus
-the classified reason when the runtime supplied one. Expanding the marker shows
-the bounded route chain, same-model retries, route-level effort, and Pi's actual
-effective thinking level. Configured subagents keep independent attribution in
-their own Activity row. The browser never infers a fallback from selector state,
-and the route-attribution payload never carries raw provider errors or request
-identifiers.
+The picker is labelled **Next turn**. The conversation header carries no run
+attribution. Below an assistant message, a normal route marker appears only when
+the model that ran differs from the conversation's current selection. A fallback
+warning always appears there, even when its answering model matches the current
+selection, and names requested and answering models plus the classified reason
+when the runtime supplied one. Expanding the marker shows the bounded route
+chain, same-model retries, route-level effort, and Pi's actual effective thinking
+level. Configured subagents keep independent attribution in their own Activity
+row. The browser never infers a fallback from selector state, and the
+route-attribution payload never carries raw provider errors or request identifiers.
 
 The agent rail's settings action opens a separate **Agent settings** dialog.
 Its model and effort choices become the defaults for subsequently created web
 console conversations for that agent. Either field may inherit resolved config,
-and **Revert to config** clears both overrides in one action. The dialog labels
-each effective value as Config or Override. These settings live in the web
-service's SQLite database, survive restart, and do not edit
+and **Revert to config** clears both overrides in one action. These settings live
+in the web service's SQLite database, survive restart, and do not edit
 `mono-agent.config.json`; existing conversations and Telegram, Slack, cron,
 webhook, API, and TUI requests remain unchanged.
 

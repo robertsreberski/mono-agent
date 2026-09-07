@@ -26,29 +26,29 @@ export function runAttributionSummary(
   return `${verb} ${routeLabel(target.model, target.effort)}`;
 }
 
-const headerAttributionSummary = (
-  attribution: RunAttributionValue,
-  status: RunStatus | WebMessageStatus,
-): string => {
-  const target = attribution.executed ?? attribution.attempted ?? attribution.requested;
-  if (attribution.disposition === "fallback") {
-    const from = attribution.requested.model ?? attribution.transitions[0]?.from ?? "requested route";
-    const to = target.model ?? attribution.transitions.at(-1)?.to ?? "fallback route";
-    return `${from} → ${to}`;
-  }
-  return `${status === "running" ? "Running" : "Last run"} · ${routeLabel(target.model, target.effort)}`;
-};
-
 type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
+
+export function shouldShowMessageRunAttribution(
+  attribution: RunAttributionValue | undefined,
+  selectedModel: string | null | undefined,
+): boolean {
+  if (attribution === undefined) return false;
+  if (attribution.disposition === "fallback") return true;
+  const runModel = (attribution.executed ?? attribution.attempted ?? attribution.requested).model;
+  return runModel !== undefined
+    && runModel.length > 0
+    && selectedModel !== undefined
+    && selectedModel !== null
+    && selectedModel.length > 0
+    && runModel !== selectedModel;
+}
 
 export function RunAttribution({
   attribution,
   status,
-  compact = false,
 }: {
   readonly attribution?: RunAttributionValue;
   readonly status: RunStatus | WebMessageStatus;
-  readonly compact?: boolean;
 }) {
   if (attribution === undefined) return null;
   const fallback = attribution.disposition === "fallback";
@@ -63,20 +63,20 @@ export function RunAttribution({
 
   return (
     <div
-      className={`run-attribution${compact ? " is-compact" : ""}${fallback ? " is-fallback" : ""}`}
+      className={`run-attribution${fallback ? " is-fallback" : ""}`}
       data-run-attribution={attribution.disposition}
       {...(fallback ? { role: "status", "aria-label": "Model fallback" } : {})}
     >
       <div className="run-attribution-summary">
         {fallback && <strong className="run-attribution-warning">Fallback</strong>}
-        <span>{compact ? headerAttributionSummary(attribution, status) : runAttributionSummary(attribution, status)}</span>
-        {!compact && effortChanged && (
+        <span>{runAttributionSummary(attribution, status)}</span>
+        {effortChanged && (
           <span className="run-attribution-effort">
             {requestedEffort === undefined ? `Effective ${effectiveEffort}` : `Requested ${requestedEffort} → effective ${effectiveEffort}`}
           </span>
         )}
       </div>
-      {!compact && hasDetails && (
+      {hasDetails && (
         <details className="run-attribution-details">
           <summary>Routing details</summary>
           <dl>

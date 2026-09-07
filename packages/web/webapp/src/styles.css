@@ -738,7 +738,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .reasoning-part p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reasoning-root:not(.activity-root)[data-streaming="true"] .reasoning-text { mask-image: linear-gradient(to bottom, #000 70%, transparent 100%); }
 .activity-root .reasoning-text-content { gap: 2px; }
-.run-attribution { display: grid; gap: 6px; margin: 8px 0 4px; padding: 8px 10px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 9px; font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.run-attribution { width: fit-content; max-width: 100%; display: grid; gap: 6px; margin: 8px 0 4px; padding: 8px 10px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 9px; font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
 .run-attribution.is-fallback { border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); background: color-mix(in srgb, var(--warning) 7%, var(--surface-subtle)); }
 .run-attribution-summary { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
 .run-attribution-warning { padding: 2px 6px; color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); border-radius: 5px; font-size: 8.5px; letter-spacing: .05em; text-transform: uppercase; }
@@ -750,9 +750,6 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .run-attribution-details dd { margin: 0; font-family: var(--font-mono); font-size: 9.5px; }
 .run-attribution-details ol { margin: 6px 0 0; padding-left: 20px; }
 .run-attribution-details p { margin: 6px 0 0; color: var(--warning); }
-.run-attribution.is-compact { min-width: 0; max-width: min(42vw, 560px); margin: 0; padding: 3px 7px; display: block; overflow: hidden; background: transparent; border-radius: 6px; font-size: 9.5px; white-space: nowrap; text-overflow: ellipsis; }
-.run-attribution.is-compact .run-attribution-summary { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.run-attribution.is-compact .run-attribution-summary > span { margin-left: 5px; }
 .activity-steps > .run-attribution { margin: 5px 8px 7px 0; }
 /* Prose the turn wrote between its tool calls. It narrates the rows around it,
    so it reads as the log's own voice rather than as another answer: no card, no
@@ -912,12 +909,6 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .agent-settings-body h3 { margin: 0 0 5px; font-size: 14px; }
 .agent-settings-body p { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .agent-settings-body .model-selector__trigger { width: 100%; max-width: none; min-height: 42px; justify-content: space-between; border: 1px solid var(--line); border-radius: 10px; }
-.agent-settings-effective { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
-.agent-settings-effective > div { min-width: 0; padding: 10px 11px; background: var(--surface-subtle); border-radius: 9px; }
-.agent-settings-effective dt { color: var(--text-muted); font-size: 9px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
-.agent-settings-effective dd { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 7px; margin: 5px 0 0; }
-.agent-settings-effective dd span { overflow: hidden; font-family: var(--font-mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
-.agent-settings-effective dd b { padding: 2px 5px; color: var(--accent); background: var(--accent-soft); border-radius: 5px; font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
 .agent-settings-config code { color: var(--text-soft); }
 .agent-settings-warning { color: var(--warning) !important; }
 .agent-settings-error { color: var(--danger) !important; }

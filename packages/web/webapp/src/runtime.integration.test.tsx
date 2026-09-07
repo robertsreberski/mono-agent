@@ -21,7 +21,12 @@ vi.mock("./api", () => ({
 }));
 
 import { api, uploadContent } from "./api";
-import { composerDraftKey, hasUnsentComposerDraft, resetComposerDraft } from "./composer-draft";
+import {
+  composerDraftKey,
+  hasUnsentComposerDraft,
+  readComposerDraft,
+  resetComposerDraft,
+} from "./composer-draft";
 import { Composer } from "./components/Composer";
 import { WebRuntimeProvider } from "./runtime";
 
@@ -736,10 +741,19 @@ describe("what the composer is holding, for anything that would destroy it", () 
     });
     const view = await renderComposerRuntime();
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Message" }), {
+    const firstInput = screen.getByRole("combobox", { name: "Message" });
+    let draftAtSelectionCapture = "not captured";
+    Object.defineProperty(firstInput, "selectionStart", {
+      configurable: true,
+      get: () => {
+        draftAtSelectionCapture = readComposerDraft("agent", "thread");
+        return "draft for A".length;
+      },
+    });
+    fireEvent.change(firstInput, {
       target: { value: "draft for A" },
     });
-    await waitFor(() => expect(hasUnsentComposerDraft()).toBe(true));
+    expect(draftAtSelectionCapture).toBe("draft for A");
 
     storeMock.current = createStore(sendTurn, {
       threads: [idleThread, otherThread],
