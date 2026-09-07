@@ -772,9 +772,15 @@ interface RefreshScope {
   readonly bootstrap: boolean;
   /** The selected conversation's messages. */
   readonly detail: boolean;
+  /** A gap repair may fail silently once while the network is recovering. */
+  readonly retryDetailOnFailure: boolean;
 }
 
-const NOTHING_TO_REFRESH: RefreshScope = { bootstrap: false, detail: false };
+const NOTHING_TO_REFRESH: RefreshScope = {
+  bootstrap: false,
+  detail: false,
+  retryDetailOnFailure: false,
+};
 
 /**
  * How many conversations the console remembers as "not in the bucket on
@@ -2632,6 +2638,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         closeMissingThread(selectedForRefresh);
         return;
       }
+      if (scope.retryDetailOnFailure
+        && !scope.bootstrap
+        && selectedForRefresh !== null
+        && selectedThreadRef.current === selectedForRefresh
+        && threadCacheRef.current.get(selectedForRefresh) !== undefined) {
+        // The old dedicated gap reader kept one recovery attempt silent while
+        // the network was coming back. Re-queue without the retry bit so a
+        // second failure is surfaced and this can never become a loop.
+        scheduleRefreshRef.current({ detail: true });
+        return;
+      }
       setActionError(errorMessage(refreshError));
     } finally {
       refreshInFlightRef.current = false;
@@ -2651,6 +2668,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     refreshScopeRef.current = {
       bootstrap: refreshScopeRef.current.bootstrap || scope.bootstrap === true,
       detail: refreshScopeRef.current.detail || scope.detail === true,
+      retryDetailOnFailure: refreshScopeRef.current.retryDetailOnFailure
+        || scope.retryDetailOnFailure === true,
     };
     if (refreshInFlightRef.current) {
       refreshQueuedRef.current = true;
@@ -2792,17 +2811,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     const threadId = selectedThreadRef.current;
     if (threadId === null) return;
-    if (threadCacheRef.current.get(threadId) === undefined) {
-      // Not held, so there is nothing to re-read and nowhere to land an answer.
-      // The observation is what makes the cold read already on the wire -- the
-      // selection effect's -- land stale and go round once more, instead of
-      // settling on a transcript from before the gap.
-      threadCacheRef.current.markStale(threadId);
-    }
+    // Also observes an unheld selection, making a cold read already on the wire
+    // land stale and go round once more rather than settling before the gap.
+    // For a held entry this is the claim that it is not current until a 200 or
+    // 304 answers; `confirmFresh` clears it after the latter.
+    threadCacheRef.current.markStale(threadId);
     // The same single-flight queue pays the initial synchronization debt and
     // every later gap. A reconnect during an active repair therefore records
     // at most one trailing read instead of opening a parallel request.
-    scheduleRefreshRef.current({ detail: true });
+    scheduleRefreshRef.current({ detail: true, retryDetailOnFailure: true });
   }, [loadAgents, revalidateBucket]);
 
   /**

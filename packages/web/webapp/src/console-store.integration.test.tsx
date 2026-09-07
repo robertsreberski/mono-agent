@@ -5561,6 +5561,31 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.connection).toBe("live");
     });
 
+    it("keeps a failed gap repair stale and retries once before surfacing the error", async () => {
+      seedTwo();
+      const store = await openedOnAlpha();
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      // Settle the mount's first-ready obligation so the calls below belong
+      // only to the reconnect gap.
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+      vi.mocked(api.threadIfChanged).mockReset();
+      vi.mocked(api.threadIfChanged)
+        .mockRejectedValueOnce(new Error("gap repair unavailable"))
+        .mockRejectedValueOnce(new Error("gap retry unavailable"));
+
+      dropAndReopen();
+      emit("ready", { payload: { version: 1 } });
+
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(1));
+      expect(store.current.actionError).toBeNull();
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.actionError).toBe("gap retry unavailable"));
+      await quiet();
+      expect(api.threadIfChanged).toHaveBeenCalledTimes(2);
+    });
+
     it("takes the transcript when the conditional read says it moved", async () => {
       seedTwo();
       const store = await openedOnAlpha();
