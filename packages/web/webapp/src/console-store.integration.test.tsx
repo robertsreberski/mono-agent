@@ -68,8 +68,12 @@ import type {
   WebMessage,
 } from "./types";
 import { WebRuntimeProvider } from "./runtime";
+import { NotificationsProvider } from "./notifications";
+import { AgentRail } from "./components/AgentRail";
+import { Chat } from "./components/Chat";
 import { Composer } from "./components/Composer";
 import { AssistantMessage, SystemMessage, UserMessage } from "./components/Messages";
+import { ThreadSidebar } from "./components/ThreadSidebar";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
 // `instanceof ApiError` and on its status to tell a server that refused a
@@ -306,6 +310,148 @@ describe("ConsoleStoreProvider integration", () => {
     const drift = Date.now() - serverNow();
     expect(drift).toBeGreaterThanOrEqual(3_000);
     expect(drift).toBeLessThan(3_500);
+  });
+
+  it("keeps the real console shell mounted while switching agents and conversations", async () => {
+    const alphaAgent = agent("alpha", {
+      label: "Alpha",
+      models: ["provider/alpha"],
+      defaultModel: "provider/alpha",
+      runSettings: {
+        config: { model: "provider/alpha" },
+        override: null,
+        effective: { model: "provider/alpha", modelSource: "config", effortSource: "config" },
+      },
+    });
+    const betaAgent = agent("beta", {
+      label: "Beta",
+      models: ["provider/beta"],
+      defaultModel: "provider/beta",
+      runSettings: {
+        config: { model: "provider/beta" },
+        override: null,
+        effective: { model: "provider/beta", modelSource: "config", effortSource: "config" },
+      },
+    });
+    const alphaFirst = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 2 });
+    const alphaSecond = thread("alpha-second", "alpha", { title: "Alpha second", messageCount: 2 });
+    const betaFirst = thread("beta-first", "beta", { title: "Beta first", messageCount: 2 });
+    const messagesFor = (summary: ThreadSummary, model: string): readonly WebMessage[] => [
+      {
+        id: `${summary.id}-assistant-1`,
+        threadId: summary.id,
+        role: "assistant",
+        parts: [{ type: "text", text: `${summary.title} first answer` }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete",
+        attribution: {
+          requested: { model: "provider/other" },
+          disposition: "requested",
+          attempted: { model: "provider/other" },
+          executed: { model: "provider/other" },
+          transitions: [],
+          retries: [],
+        },
+      },
+      {
+        id: `${summary.id}-assistant-2`,
+        threadId: summary.id,
+        role: "assistant",
+        parts: [{ type: "text", text: `${summary.title} second answer` }],
+        attachments: [],
+        createdAt: "2026-08-14T08:01:00.000Z",
+        updatedAt: "2026-08-14T08:01:00.000Z",
+        status: "complete",
+        attribution: {
+          requested: { model: "provider/requested" },
+          disposition: "fallback",
+          attempted: { model },
+          executed: { model },
+          transitions: [{ from: "provider/requested", to: model, reason: "overloaded" }],
+          retries: [],
+        },
+      },
+    ];
+    const details = new Map<string, ThreadDetail>([
+      [alphaFirst.id, { thread: alphaFirst, messages: messagesFor(alphaFirst, "provider/alpha") }],
+      [alphaSecond.id, { thread: alphaSecond, messages: messagesFor(alphaSecond, "provider/alpha") }],
+      [betaFirst.id, { thread: betaFirst, messages: messagesFor(betaFirst, "provider/beta") }],
+    ]);
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alphaFirst.id }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [alphaAgent, betaAgent],
+      [alphaFirst, alphaSecond],
+      alphaFirst.id,
+      { threadsSourceId: "alpha" },
+    ));
+    vi.mocked(api.threads).mockImplementation(async (sourceId) => ({
+      threads: sourceId === "beta" ? [betaFirst] : [alphaFirst, alphaSecond],
+    }));
+    vi.mocked(api.thread).mockImplementation(async (threadId) => {
+      const next = details.get(threadId);
+      if (next === undefined) throw new Error(`Unexpected detail read: ${threadId}`);
+      return next;
+    });
+    vi.stubGlobal("Notification", {
+      permission: "default",
+      requestPermission: vi.fn().mockResolvedValue("default"),
+    });
+    const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const uncaught = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    window.addEventListener("error", uncaught);
+
+    try {
+      render(
+        <StrictMode>
+          <ConsoleStoreProvider>
+            <NotificationsProvider>
+              <WebRuntimeProvider>
+                <div className="app-shell">
+                  <AgentRail expanded />
+                  <ThreadSidebar />
+                  <Chat onOpenAgents={() => {}} onOpenThreads={() => {}} />
+                </div>
+              </WebRuntimeProvider>
+            </NotificationsProvider>
+          </ConsoleStoreProvider>
+        </StrictMode>,
+      );
+
+      expect(await screen.findByText("Alpha first second answer")).toBeInTheDocument();
+      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      expect(screen.getByText("Fallback: provider/requested → provider/alpha · overloaded")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Open Alpha second" }));
+      expect(await screen.findByText("Alpha second second answer")).toBeInTheDocument();
+      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      expect(screen.getByText("Fallback: provider/requested → provider/alpha · overloaded")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Beta, online" }));
+      expect(await screen.findByText("Beta first second answer")).toBeInTheDocument();
+      expect(screen.getByText("Ran with provider/other")).toBeInTheDocument();
+      expect(screen.getByText("Fallback: provider/requested → provider/beta · overloaded")).toBeInTheDocument();
+
+      expect(uncaught).not.toHaveBeenCalled();
+      expect(consoleError.mock.calls.flat().some(
+        (value) => String(value).includes("useClientLookup"),
+      )).toBe(false);
+      expect(screen.getByRole("navigation", { name: "Agents" })).toBeInTheDocument();
+      expect(screen.getByRole("complementary", { name: "Conversations" })).toBeInTheDocument();
+      expect(screen.getByRole("main")).toBeInTheDocument();
+      expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
+    } finally {
+      window.removeEventListener("error", uncaught);
+      consoleError.mockRestore();
+      cleanupDom();
+      if (scrollToDescriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+      else Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
+    }
   });
 
   it("sends authored draft run choices atomically with thread creation", async () => {

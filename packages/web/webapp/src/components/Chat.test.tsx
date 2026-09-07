@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { StrictMode, type ReactNode } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, thread } from "../test/fixtures";
 import { WebRuntimeProvider } from "../runtime";
@@ -7,6 +7,7 @@ import type { ThreadDetail, ThreadSummary, WebMessage } from "../types";
 
 const MODEL = "pi:openai-codex:gpt-5.5";
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
+const messageRenderMock = vi.hoisted(() => ({ throwAssistant: false }));
 
 vi.mock("../console-store", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../console-store")>();
@@ -36,7 +37,10 @@ vi.mock("./Composer", () => ({
 }));
 vi.mock("./Messages", () => ({
   AskReconciliationProvider: ({ children }: { readonly children: ReactNode }) => <>{children}</>,
-  AssistantMessage: () => <div data-testid="thread-message" />,
+  AssistantMessage: () => {
+    if (messageRenderMock.throwAssistant) throw new Error("deliberate assistant row failure");
+    return <div data-testid="thread-message" />;
+  },
   SystemMessage: () => <div data-testid="thread-message" />,
   UserMessage: () => <div data-testid="thread-message" />,
 }));
@@ -127,6 +131,7 @@ afterAll(() => {
 
 beforeEach(() => {
   messageRowHeight = 100;
+  messageRenderMock.throwAssistant = false;
   resizeObserverCallbacks.clear();
 });
 
@@ -214,6 +219,51 @@ const chatTree = () => (
 );
 
 describe("Chat conversation viewport", () => {
+  it("contains one StrictMode message-row failure and reloads only the conversation pane", () => {
+    const selected = thread("thread-a", "agent");
+    storeMock.current = chatStore(selected, chatDetail(selected, 2));
+    messageRenderMock.throwAssistant = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    render(<StrictMode>{chatTree()}</StrictMode>);
+
+    expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Choose agent" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open conversations" })).toBeVisible();
+    expect(consoleError.mock.calls.filter(
+      ([first]) => first === "[mono-agent] conversation render failed",
+    )).toHaveLength(1);
+
+    messageRenderMock.throwAssistant = false;
+    fireEvent.click(screen.getByRole("button", { name: "Reload conversation" }));
+    expect(screen.getAllByTestId("thread-message")).toHaveLength(2);
+    consoleError.mockRestore();
+  });
+
+  it("clears the StrictMode conversation error when navigation changes its null-safe reset key", () => {
+    const first = thread("thread-a", "agent");
+    const second = thread("thread-b", "agent");
+    storeMock.current = chatStore(first, chatDetail(first, 2));
+    messageRenderMock.throwAssistant = true;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const view = render(<StrictMode>{chatTree()}</StrictMode>);
+    expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeVisible();
+    expect(consoleError.mock.calls.filter(
+      ([firstCall]) => firstCall === "[mono-agent] conversation render failed",
+    )).toHaveLength(1);
+
+    messageRenderMock.throwAssistant = false;
+    storeMock.current = chatStore(second, chatDetail(second, 2));
+    view.rerender(<StrictMode>{chatTree()}</StrictMode>);
+
+    expect(screen.getAllByTestId("thread-message")).toHaveLength(2);
+    expect(screen.queryByRole("heading", { name: "Something went wrong" })).toBeNull();
+    expect(consoleError.mock.calls.filter(
+      ([firstCall]) => firstCall === "[mono-agent] conversation render failed",
+    )).toHaveLength(1);
+    consoleError.mockRestore();
+  });
+
   it("keeps all run attribution out of the conversation header", () => {
     const fallbackThread = thread("thread-a", "agent", {
       trigger: { kind: "cron" },

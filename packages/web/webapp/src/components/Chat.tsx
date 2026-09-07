@@ -16,6 +16,7 @@ import {
 import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
+import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { useRunControls } from "./run-controls";
 
 const runLabel: Record<string, string> = {
@@ -439,67 +440,84 @@ export function Chat({
       </header>
       <ConnectionBanner connection={connection} />
       <CronChannelHeader />
-      <AskReconciliationProvider>
-        <ThreadPrimitive.Root className="thread-root">
-          <SelectionToolbar />
-          <ThreadPrimitive.Viewport
-            key={selectedThreadId ?? "no-thread"}
-            ref={viewportRef}
-            className="thread-viewport"
-            autoScroll
-          >
-            <div ref={contentRef} className="message-column">
-              <EmptyConversation />
-              {hasOlderMessages && (
-                <button
-                  type="button"
-                  className="message-history-more"
-                  onClick={() => void loadOlderMessages().catch(() => undefined)}
-                >
-                  Load earlier messages
-                </button>
-              )}
-              <ThreadPrimitive.Messages
-                components={{
-                  UserMessage,
-                  AssistantMessage,
-                  SystemMessage,
-                }}
-              />
-            </div>
-            <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
-              <Icon name="arrow-down" size={16} />
-            </ThreadPrimitive.ScrollToBottom>
-            <ThreadPrimitive.ViewportFooter className="thread-footer">
-              {selectedThread?.archivedAt ? (
-                <div className="archived-footer">
-                  <span>This conversation is archived.</span>
+      <RenderErrorBoundary
+        scope="conversation"
+        resetKey={`${selectedAgent?.sourceId ?? "none"}:${selectedThreadId ?? "new"}`}
+        fallback={({ reset }) => (
+          <div className="chat-empty thread-render-error" role="alert">
+            <span className="eyebrow">Conversation unavailable</span>
+            <h2>Something went wrong</h2>
+            <p>
+              This conversation could not be displayed. You can switch conversations or try loading it again.
+            </p>
+            <button type="button" className="primary-button" onClick={reset}>
+              Reload conversation
+            </button>
+          </div>
+        )}
+      >
+        <AskReconciliationProvider>
+          <ThreadPrimitive.Root className="thread-root">
+            <SelectionToolbar />
+            <ThreadPrimitive.Viewport
+              key={selectedThreadId ?? "no-thread"}
+              ref={viewportRef}
+              className="thread-viewport"
+              autoScroll
+            >
+              <div ref={contentRef} className="message-column">
+                <EmptyConversation />
+                {hasOlderMessages && (
                   <button
                     type="button"
-                    onClick={() => void unarchiveThread(selectedThread.id).catch(() => undefined)}
+                    className="message-history-more"
+                    onClick={() => void loadOlderMessages().catch(() => undefined)}
                   >
-                    Restore to continue
+                    Load earlier messages
                   </button>
-                </div>
-              ) : selectedThread?.trigger?.kind === "cron" ? (
-                <div className="cron-readonly-footer" role="status">
-                  Cron channels are read-only. Open the originating session to continue the conversation.
-                </div>
-              ) : (
-                <Composer
-                  key={composerDraftKey(selectedAgent?.sourceId ?? null, selectedThreadId) ?? "no-agent"}
-                  runSettings={<ModelControls />}
+                )}
+                <ThreadPrimitive.Messages
+                  components={{
+                    UserMessage,
+                    AssistantMessage,
+                    SystemMessage,
+                  }}
                 />
-              )}
-            </ThreadPrimitive.ViewportFooter>
-          </ThreadPrimitive.Viewport>
-          {detailLoading && selectedThread && (
-            <div className="detail-loading" role="status" aria-label="Loading conversation">
-              <span />
-            </div>
-          )}
-        </ThreadPrimitive.Root>
-      </AskReconciliationProvider>
+              </div>
+              <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
+                <Icon name="arrow-down" size={16} />
+              </ThreadPrimitive.ScrollToBottom>
+              <ThreadPrimitive.ViewportFooter className="thread-footer">
+                {selectedThread?.archivedAt ? (
+                  <div className="archived-footer">
+                    <span>This conversation is archived.</span>
+                    <button
+                      type="button"
+                      onClick={() => void unarchiveThread(selectedThread.id).catch(() => undefined)}
+                    >
+                      Restore to continue
+                    </button>
+                  </div>
+                ) : selectedThread?.trigger?.kind === "cron" ? (
+                  <div className="cron-readonly-footer" role="status">
+                    Cron channels are read-only. Open the originating session to continue the conversation.
+                  </div>
+                ) : (
+                  <Composer
+                    key={composerDraftKey(selectedAgent?.sourceId ?? null, selectedThreadId) ?? "no-agent"}
+                    runSettings={<ModelControls />}
+                  />
+                )}
+              </ThreadPrimitive.ViewportFooter>
+            </ThreadPrimitive.Viewport>
+            {detailLoading && selectedThread && (
+              <div className="detail-loading" role="status" aria-label="Loading conversation">
+                <span />
+              </div>
+            )}
+          </ThreadPrimitive.Root>
+        </AskReconciliationProvider>
+      </RenderErrorBoundary>
     </main>
   );
 }

@@ -11,6 +11,7 @@ import {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { ReplyAccessProvider } from "./components/reply-access";
+import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
 import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
@@ -447,7 +448,14 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
   return [...activity, visible[answerIndex]!, ...afterAnswer];
 };
 
-export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
+interface ConvertWebMessageOptions {
+  readonly selectedModel?: string | null;
+}
+
+export const convertWebMessage = (
+  message: WebMessage,
+  options: ConvertWebMessageOptions = {},
+): ThreadMessageLike => {
   const hasMonitorActivity = message.parts.some((part) => part.type === "monitor-activity");
   const legacyMonitorUpdates = hasMonitorActivity
     ? 0
@@ -510,6 +518,10 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),
         ...(message.quote === undefined ? {} : { quote: message.quote }),
         ...(message.attribution === undefined ? {} : { attribution: message.attribution }),
+        showRunAttribution: shouldShowMessageRunAttribution(
+          message.attribution,
+          options.selectedModel,
+        ),
         runStatus: message.status,
       },
     },
@@ -774,9 +786,17 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     () => coalesceMonitorWakeMessages((store.detail?.messages ?? []).filter((message) => !isLegacySilentCronMessage(message))),
     [store.detail?.messages],
   );
+  // Changing the selected model deliberately gives assistant-ui a new converter,
+  // which reconverts every loaded message so its transient attribution visibility
+  // stays current. Message ids survive that accepted full-cache refresh, so rows
+  // update in place rather than remounting.
+  const convertMessage = useCallback(
+    (message: WebMessage) => convertWebMessage(message, { selectedModel: store.effectiveModel }),
+    [store.effectiveModel],
+  );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages,
-    convertMessage: convertWebMessage,
+    convertMessage,
     isLoading: store.detailLoading,
     isRunning,
     isSendDisabled: !selectedCanSend || turnStarting,

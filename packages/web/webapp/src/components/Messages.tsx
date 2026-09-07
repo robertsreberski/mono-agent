@@ -59,7 +59,7 @@ import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
-import { RunAttribution, shouldShowMessageRunAttribution } from "./RunAttribution";
+import { RunAttribution } from "./RunAttribution";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -1224,7 +1224,6 @@ const activityTiming = (startedAt: number, finishedAt: unknown): ActivityTiming 
 };
 
 function AssistantParts() {
-  const selectedModel = useConsoleStore().effectiveModel;
   const isMessageRunning = useAuiState(
     (state) => state.message.status?.type === "running",
   );
@@ -1232,6 +1231,9 @@ function AssistantParts() {
   const startedAt = useAuiState((state) => state.message.createdAt.getTime());
   const finishedAt = useAuiState((state) => state.message.metadata.custom?.finishedAt);
   const attribution = useAuiState((state) => state.message.metadata.custom?.attribution) as RunAttributionValue | undefined;
+  const showRunAttribution = useAuiState(
+    (state) => state.message.metadata.custom?.showRunAttribution === true,
+  );
   const runStatus = useAuiState((state) => state.message.metadata.custom?.runStatus) as
     | "running" | "complete" | "failed" | "cancelled" | "interrupted" | undefined;
   const timing = useMemo(() => activityTiming(startedAt, finishedAt), [startedAt, finishedAt]);
@@ -1297,7 +1299,7 @@ function AssistantParts() {
           }
         }}
       </MessagePrimitive.GroupedParts>
-      {shouldShowMessageRunAttribution(attribution, selectedModel) && (
+      {showRunAttribution && (
         <RunAttribution attribution={attribution} status={runStatus ?? (isMessageRunning ? "running" : "complete")} />
       )}
     </>
