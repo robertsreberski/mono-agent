@@ -1562,7 +1562,7 @@ describe("WebService", () => {
     await service.stop();
   });
 
-  it.each(["TimeoutError", "Error"])("suppresses replay but releases ordinary response pushes after steering %s", async (errorName) => {
+  it.each(["TimeoutError", "Error", "uncertain"])("suppresses replay but releases ordinary response pushes after steering %s", async (errorName) => {
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const turnBodies: Record<string, unknown>[] = [];
     let now = new Date("2026-09-07T10:00:00.000Z");
@@ -1575,6 +1575,7 @@ describe("WebService", () => {
         }),
         onTurn(body) { turnBodies.push(body); },
         async onLiveInput() {
+          if (errorName === "uncertain") return { status: "uncertain", reason: "delivery_uncertain" };
           throw new DOMException("Steering receipt was lost after delivery", errorName);
         },
       }),
