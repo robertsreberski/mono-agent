@@ -876,7 +876,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .skill-browser-empty { padding: 34px 16px; color: var(--text-muted); text-align: center; font-size: 11px; }
 .composer-send { width: 34px; height: 34px; display: grid; place-items: center; flex: none; padding: 0; color: var(--on-accent); background: var(--accent-strong); border-radius: 10px; cursor: pointer; }
 .composer-send:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
-.composer-stop { min-width: 70px; height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 10px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; font-size: 11px; }
+.composer-stop { width: 34px; height: 34px; display: grid; place-items: center; flex: none; padding: 0; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
 .archived-footer { width: min(100%, 820px); min-height: 52px; display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 auto; padding: 10px 16px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; font-size: 12px; }
 .archived-footer button { color: var(--accent); background: transparent; cursor: pointer; font-weight: 650; }
 .cron-readonly-footer { width: min(100%, 820px); min-height: 48px; display: flex; align-items: center; justify-content: center; margin: 0 auto; padding: 10px 16px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 12px; font-size: 11px; text-align: center; }
@@ -1210,12 +1210,6 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .command-palette { border-radius: 13px; }
   .command-palette footer { display: none; }
   .toast { right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); max-width: calc(100vw - 16px); }
-}
-
-@media (max-width: 420px) {
-  .composer-toolbar { flex-wrap: wrap; row-gap: 4px; }
-  .composer-tools { flex-basis: 100%; }
-  .composer-actions { flex-basis: 100%; }
 }
 
 @media (max-width: 360px) {
