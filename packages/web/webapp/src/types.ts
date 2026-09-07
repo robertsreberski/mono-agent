@@ -377,6 +377,8 @@ export interface RunState {
   readonly status: RunStatus;
   readonly startedAt?: string;
   readonly finishedAt?: string;
+  /** Absent in legacy summaries; null means no meaningful outcome yet. */
+  readonly lastOutcome?: { readonly status: RunStatus; readonly finishedAt?: string } | null;
   readonly error?: { readonly code?: string; readonly message: string };
   readonly model?: string;
   readonly effort?: string;
