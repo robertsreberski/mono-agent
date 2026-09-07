@@ -5,6 +5,7 @@ import {
   coalesceMonitorWakeMessages,
   convertWebMessage,
 } from "./runtime";
+import { projectProcessJobPresentation } from "./process-job-presentation";
 import { agent, attachment, monitor, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
 
@@ -263,6 +264,127 @@ describe("coalesceMonitorWakeMessages", () => {
       expect(shaped.map((entry) => entry.id)).toEqual(["1", "separator", "2"]);
     },
   );
+});
+
+describe("projectProcessJobPresentation", () => {
+  const directAttribution = {
+    requested: { model: "provider:selected" },
+    attempted: { model: "provider:selected" },
+    executed: { model: "provider:selected" },
+    disposition: "requested" as const,
+    transitions: [],
+    retries: [],
+  };
+
+  it("extracts a job-only carrier without mutating it or retaining hidden ordinary attribution", () => {
+    const source = message({
+      role: "assistant",
+      parts: [{ type: "process-job", job: processJob() }],
+      attribution: directAttribution,
+    });
+
+    const projected = projectProcessJobPresentation([source], "provider:selected");
+
+    expect(projected.messages).toEqual([]);
+    expect(projected.jobs).toEqual([{ messageId: source.id, part: source.parts[0] }]);
+    expect(source.parts).toHaveLength(1);
+  });
+
+  it("retains exceptional attribution, message errors, attachments, and rich sibling parts", () => {
+    const visibleAttribution = message({
+      id: "attributed",
+      role: "assistant",
+      parts: [{ type: "process-job", job: processJob({ jobId: "job-attributed" }) }],
+      attribution: directAttribution,
+    });
+    const failed = message({
+      id: "failed",
+      role: "assistant",
+      status: "failed",
+      parts: [{ type: "process-job", job: processJob({ jobId: "job-failed" }) }],
+    });
+    const rich = message({
+      id: "rich",
+      role: "assistant",
+      parts: [
+        { type: "process-job", job: processJob({ jobId: "job-rich" }) },
+        { type: "text", text: "The report is ready." },
+        { type: "error", code: "artifact_warning", message: "One artifact expired." },
+      ],
+      attachments: [attachment("reply")],
+    });
+
+    const projected = projectProcessJobPresentation(
+      [visibleAttribution, failed, rich],
+      "provider:other",
+    );
+
+    expect(projected.messages.map(({ id }) => id)).toEqual(["attributed", "failed", "rich"]);
+    expect(projected.messages[0]?.parts).toEqual([]);
+    expect(projected.messages[1]?.parts).toEqual([]);
+    expect(projected.messages[2]?.parts.map(({ type }) => type)).toEqual(["text", "error"]);
+    expect(projected.messages[2]?.attachments).toEqual(rich.attachments);
+  });
+
+  it("keeps first-slot order while deduping each job to its newest monotonic projection and response", () => {
+    const complete = processJob({ jobId: "job-one" });
+    const running = processJob({
+      jobId: "job-one",
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      output: { ...complete.output, stdoutBytes: 2, preview: "go" },
+      exitCode: null,
+      durationMs: null,
+    });
+    const stale = processJob({
+      ...running,
+      state: "starting",
+      output: { ...running.output, stdoutBytes: 0, preview: "" },
+    });
+    const other = processJob({ jobId: "job-two", tool: "Bash", summary: "second" });
+    const projected = projectProcessJobPresentation([
+      message({ id: "first", role: "assistant", parts: [{ type: "process-job", job: running }] }),
+      message({ id: "second", role: "assistant", parts: [{ type: "process-job", job: other }] }),
+      message({ id: "stale", role: "assistant", parts: [{ type: "process-job", job: stale }] }),
+      message({
+        id: "settled",
+        role: "assistant",
+        parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
+      }),
+    ]);
+
+    expect(projected.messages).toEqual([]);
+    expect(projected.jobs.map(({ messageId, part }) => [messageId, part.job.jobId, part.job.state]))
+      .toEqual([
+        ["first", "job-one", "succeeded"],
+        ["second", "job-two", "succeeded"],
+      ]);
+    expect(projected.jobs[0]?.part.responseText).toBe("Completed normally.");
+  });
+
+  it("drops blank and transport-only siblings but preserves visible telemetry", () => {
+    const hidden = message({
+      id: "hidden",
+      role: "assistant",
+      parts: [
+        { type: "process-job", job: processJob({ jobId: "hidden-job" }) },
+        { type: "text", text: "  " },
+        { type: "telemetry", event: "runtime_telemetry", data: { kind: "usage" } },
+      ],
+    });
+    const visible = message({
+      id: "visible",
+      role: "assistant",
+      parts: [
+        { type: "process-job", job: processJob({ jobId: "visible-job" }) },
+        { type: "telemetry", event: "context_compaction", data: {} },
+      ],
+    });
+
+    expect(projectProcessJobPresentation([hidden, visible]).messages.map(({ id }) => id))
+      .toEqual(["visible"]);
+  });
 });
 
 describe("convertWebMessage", () => {

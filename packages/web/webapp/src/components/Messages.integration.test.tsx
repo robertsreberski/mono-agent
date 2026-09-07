@@ -9,10 +9,15 @@ import { useCallback, useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { writeDataModeSetting } from "../data-mode";
+import {
+  ProcessJobPresentationProvider,
+  projectProcessJobPresentation,
+} from "../process-job-presentation";
 import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
 import type { WebMessage } from "../types";
 import { monitor, processJob } from "../test/fixtures";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+import { ProcessJobStack } from "./ProcessJobStack";
 import { ToolCallRepairProvider } from "./tool-call-repair";
 
 const consoleStoreMock = vi.hoisted(() => ({
@@ -48,12 +53,16 @@ function MessagesHarness({
   readonly onRuntime?: (runtime: AssistantRuntime) => void;
   readonly selectedModel?: string | null;
 }) {
+  const presentation = projectProcessJobPresentation(
+    coalesceMonitorWakeMessages(messages),
+    selectedModel,
+  );
   const convertMessage = useCallback(
     (message: WebMessage) => convertWebMessage(message, { selectedModel }),
     [selectedModel],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
-    messages: coalesceMonitorWakeMessages(messages),
+    messages: presentation.messages,
     convertMessage,
     onNew: async () => undefined,
     adapters: {
@@ -72,11 +81,19 @@ function MessagesHarness({
   });
   useEffect(() => onRuntime?.(runtime), [onRuntime, runtime]);
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root>
-        <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
-      </ThreadPrimitive.Root>
-    </AssistantRuntimeProvider>
+    <ProcessJobPresentationProvider
+      threadId={messages[0]?.threadId ?? "thread"}
+      messages={presentation.messages}
+      jobs={presentation.jobs}
+      historyIsBounded={false}
+    >
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ThreadPrimitive.Root>
+          <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
+          <ProcessJobStack />
+        </ThreadPrimitive.Root>
+      </AssistantRuntimeProvider>
+    </ProcessJobPresentationProvider>
   );
 }
 
@@ -566,7 +583,7 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getAllByText("1 update · exited")).toHaveLength(1);
   });
 
-  it("keeps process jobs as standalone messages between Monitor activity blocks", () => {
+  it("keeps jobs as Monitor boundaries while presenting them once after transcript messages", () => {
     const jobMessage: WebMessage = {
       ...assistantMessage("complete"),
       id: "process-job-message",
@@ -579,9 +596,14 @@ describe("AssistantMessage grouped parts", () => {
       monitorWakeMessage("monitor-after", monitor({ description: "After job" })),
     ]} />);
 
-    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(3);
+    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(2);
     expect(rendered.container.querySelectorAll(".activity-root")).toHaveLength(2);
     expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(2);
+    const stack = rendered.container.querySelector(".process-job-stack")!;
+    const lastMessage = rendered.container.querySelectorAll(".message-assistant").item(1);
+    expect(lastMessage.compareDocumentPosition(stack) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(stack.querySelector(".message-actions")).toBeNull();
   });
 
   it("keeps a meaningful Monitor reply as a boundary while preserving final answer text", () => {
@@ -1161,11 +1183,12 @@ describe("message actions", () => {
     expect(screen.getByText("image/png · 2 KiB")).toBeVisible();
   });
 
-  it("renders one durable process-job row with its rich reply siblings", () => {
+  it("renders one stacked process job while its rich reply siblings stay message-owned", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [
         { type: "process-job", job: processJob(), responseText: "Completed normally." },
+        { type: "text", text: "The background report is ready." },
         {
           type: "attachment",
           id: "job-attachment",
@@ -1191,9 +1214,15 @@ describe("message actions", () => {
       ],
     }} />);
 
-    // The job is a standalone one-row Activity block, not a band: no Activity
-    // header wraps it, and the row itself carries tool, purpose, state and time.
+    // Terminal-only stacks start collapsed; rich siblings and their one copy
+    // action remain in the message while the card lives outside that wrapper.
     expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+    expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
+    expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
+    expect(screen.getByText("The background report is ready.")).toBeVisible();
+    const stackToggle = screen.getByRole("button", { name: /Background jobs.*1 job/u });
+    expect(stackToggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(stackToggle);
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
     expect(row).toHaveClass("activity-row", "is-job", "is-complete");
     expect(within(row).getByText("Exec job")).toBeVisible();
@@ -1211,6 +1240,34 @@ describe("message actions", () => {
     expect(screen.getByRole("region", { name: "Interactive app: Job chart" })).toBeVisible();
     expect(screen.getByRole("alert")).toHaveTextContent("artifact_missing");
     expect(screen.getByRole("alert")).toHaveTextContent("File expired.");
+  });
+
+  it("does not retain job-only copy chrome for hidden attribution but keeps exceptional attribution", async () => {
+    const attributed: WebMessage = {
+      ...assistantMessage("complete"),
+      parts: [{ type: "process-job", job: processJob() }],
+      attribution: {
+        requested: { model: "provider:primary" },
+        attempted: { model: "provider:primary" },
+        executed: { model: "provider:primary" },
+        disposition: "requested",
+        transitions: [],
+        retries: [],
+      },
+    };
+    const rendered = render(<MessageHarness message={attributed} selectedModel="provider:primary" />);
+
+    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(0);
+    expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(0);
+    expect(rendered.container.querySelectorAll(".process-job-stack")).toHaveLength(1);
+
+    rendered.rerender(<MessageHarness message={attributed} selectedModel="provider:other" />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".message-actions")).toHaveLength(1);
+    expect(screen.getByText("Ran with provider:primary")).toBeVisible();
+    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
   });
 
   it("polls one running job every second and stops after the terminal projection", async () => {
@@ -1259,6 +1316,27 @@ describe("message actions", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
+  });
+
+  it("dedupes repeated running projections to one card and one poller", async () => {
+    const complete = processJob();
+    const running = processJob({
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const threadJob = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const first = { ...assistantMessage("running"), id: "job-first", parts: [{ type: "process-job" as const, job: running }] };
+    const second = { ...assistantMessage("running"), id: "job-second", parts: [{ type: "process-job" as const, job: running }] };
+
+    const rendered = render(<MessagesHarness messages={[first, second]} />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(rendered.container.querySelectorAll(".activity-row.is-job")).toHaveLength(1);
+    expect(rendered.container.querySelectorAll(".message-assistant")).toHaveLength(0);
+    expect(threadJob).toHaveBeenCalledTimes(1);
   });
 
   it("takes the mode in force when each round is scheduled, not when the job started", async () => {
@@ -1464,14 +1542,17 @@ describe("message actions", () => {
   });
 
   it.each(["succeeded", "failed", "cancelled"] as const)(
-    "keeps the turn indicator after a terminal %s process job",
+    "omits the empty message wrapper for a terminal %s process job",
     (state) => {
       const { container } = render(<MessageHarness message={{
         ...assistantMessage("running"),
         parts: [{ type: "process-job", job: processJob({ state }) }],
       }} />);
 
-      expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(1);
+      expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
+      expect(container.querySelectorAll(".message-assistant")).toHaveLength(0);
+      expect(container.querySelectorAll(".message-actions")).toHaveLength(0);
+      expect(container.querySelectorAll(".process-job-stack")).toHaveLength(1);
     },
   );
 

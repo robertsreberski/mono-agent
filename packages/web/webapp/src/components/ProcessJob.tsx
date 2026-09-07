@@ -4,7 +4,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { api } from "../api";
 import { currentDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
-import type { ProcessJobProjection, ProcessJobState } from "../types";
+import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../types";
 import { ActivityRow, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
 
@@ -184,9 +184,16 @@ const wakeLabel = (wake: ProcessJobProjection["wake"]): string =>
  * job settles. Everything but tool, purpose, state and time waits behind the
  * disclosure.
  */
-export function ProcessJobPart({ data }: DataMessagePartProps) {
-  const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
-  const initial = payload.job;
+type ProcessJobPartValue = Extract<MessagePart, { type: "process-job" }>;
+
+export function ProcessJobCard({
+  part,
+  onProjectionChange,
+}: {
+  readonly part: ProcessJobPartValue;
+  readonly onProjectionChange?: (projection: ProcessJobProjection) => void;
+}) {
+  const initial = part.job;
   const [live, setLive] = useState(initial);
   const visible = useDocumentVisible();
   const [open, setOpen] = useState(false);
@@ -225,7 +232,11 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
     manuallyCollapsed.current = false;
     followOutput.current = true;
     setOpen(false);
-  }, [jobId]);
+  }, [jobId, threadId]);
+
+  useEffect(() => {
+    if (live !== undefined) onProjectionChange?.(live);
+  }, [live, onProjectionChange]);
 
   useEffect(() => {
     if (live?.state !== "running" || live.output.preview.length === 0 || autoOpened.current) return;
@@ -306,8 +317,8 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
   }, [jobId, terminal, threadId, visible]);
 
   if (live === undefined) return null;
-  const responseText = typeof payload.responseText === "string" && payload.responseText.trim().length > 0
-    ? payload.responseText
+  const responseText = typeof part.responseText === "string" && part.responseText.trim().length > 0
+    ? part.responseText
     : undefined;
   const status = processJobStatus(live.state);
   const stateLabel = processJobStateLabel(live.state);
@@ -364,5 +375,20 @@ export function ProcessJobPart({ data }: DataMessagePartProps) {
         )}
       </div>
     </ActivityRow>
+  );
+}
+
+/** Legacy assistant-ui adapter retained for direct compatibility tests. */
+export function ProcessJobPart({ data }: DataMessagePartProps) {
+  const payload = data as { readonly job?: ProcessJobProjection; readonly responseText?: unknown };
+  if (payload.job === undefined) return null;
+  return (
+    <ProcessJobCard
+      part={{
+        type: "process-job",
+        job: payload.job,
+        ...(typeof payload.responseText === "string" ? { responseText: payload.responseText } : {}),
+      }}
+    />
   );
 }

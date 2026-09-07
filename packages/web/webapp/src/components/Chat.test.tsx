@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode, type ReactNode } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agent, thread } from "../test/fixtures";
+import { agent, processJob, thread } from "../test/fixtures";
 import { WebRuntimeProvider } from "../runtime";
 import type { ThreadDetail, ThreadSummary, WebMessage } from "../types";
 
@@ -219,6 +219,40 @@ const chatTree = () => (
 );
 
 describe("Chat conversation viewport", () => {
+  it("places one loaded job stack after transcript messages and before the footer", () => {
+    const selected = thread("thread-a", "agent");
+    const ordinary = chatMessage("ordinary", selected.id);
+    const jobOnly: WebMessage = {
+      ...chatMessage("job-only", selected.id),
+      parts: [{
+        type: "process-job",
+        job: processJob({
+          origin: {
+            ...processJob().origin,
+            conversationId: `web:${selected.id}`,
+            historyBoundary: `web:${selected.id}`,
+          },
+        }),
+      }],
+    };
+    storeMock.current = {
+      ...chatStore(selected, { thread: selected, messages: [ordinary, jobOnly] }),
+      hasOlderMessages: true,
+    };
+
+    const view = render(chatTree());
+
+    expect(screen.getAllByTestId("thread-message")).toHaveLength(1);
+    const column = view.container.querySelector(".message-column")!;
+    const stack = view.container.querySelector(".process-job-stack")!;
+    const footer = view.container.querySelector(".thread-footer")!;
+    expect(stack.parentElement).toBe(column);
+    expect(column.lastElementChild).toBe(stack);
+    expect(stack.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(stack.querySelector(".message-actions")).toBeNull();
+    expect(screen.getByRole("button", { name: /1 loaded/u })).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("contains one StrictMode message-row failure and reloads only the conversation pane", () => {
     const selected = thread("thread-a", "agent");
     storeMock.current = chatStore(selected, chatDetail(selected, 2));
