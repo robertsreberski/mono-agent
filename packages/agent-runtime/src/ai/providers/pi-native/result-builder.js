@@ -231,6 +231,7 @@ export function buildSuccessResult(params) {
     capabilitiesUsed,
     structuredResult,
     usageMeasured = true,
+    effectiveEffort,
   } = params;
   return {
     text: finalText,
@@ -248,6 +249,7 @@ export function buildSuccessResult(params) {
     numTurns: turnCount || runAssistantCount,
     model: resolved.reference || `${resolved.provider}:${resolved.model}`,
     effort: options.effort || null,
+    effectiveEffort: effectiveEffort || null,
     sdk: "pi",
     cancelled: externalAbort,
     error: errorMessage,
@@ -286,6 +288,7 @@ export function buildErrorResult(params) {
     runtimeWarnings,
     isRetryable,
     piTransport,
+    effectiveEffort,
   } = params;
   return {
     text: assistantTexts.join("") || null,
@@ -295,6 +298,7 @@ export function buildErrorResult(params) {
     numTurns: turnCount,
     model: resolved?.reference || (resolved?.provider && resolved?.model ? `${resolved.provider}:${resolved.model}` : null),
     effort: options.effort || null,
+    effectiveEffort: effectiveEffort || null,
     sdk: "pi",
     cancelled: externalAbort,
     error: externalAbort ? null : errorMessage,

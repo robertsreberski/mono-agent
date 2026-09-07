@@ -442,6 +442,16 @@ The run-settings control marks whether the conversation is running on the agent'
 default or on a choice made here, and while an override is in force the picker
 offers to reset back to the agent default. It uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. Configured models use their configured display name when present and otherwise use the running agent's catalog name. A persisted catalog-only selection stays visible by its canonical reference when lazy provider metadata is absent, fails, or omits that model. While no metadata describes that model at all, its current effort and the shared compatibility ladder the agent accepts remain controllable, without reverting to the agent default; once exact metadata loads it supplies the catalog display name and the advertised ladder, which may narrow, keep, or remove those choices. A model choice applies immediately but leaves the picker open so effort can be chosen next; the explicit **Close** action finishes the interaction. The running agent captures those capabilities at startup from configured/local Pi metadata and Pi's built-in catalog, which covers every bundled provider (Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, and more). If that snapshot marks a model as reasoning-capable but cannot confirm its exact levels, the picker hides the effort control entirely, default row included, instead of substituting the global effort ladder. Silence is different from that claim: older agents that omit per-model metadata retain the global ladder for protocol compatibility. On narrow screens the picker becomes a full-width bottom sheet so every advertised effort level remains reachable without overflowing the viewport. **Default model** delegates model selection to the agent. The default effort names the effective configured value, such as **Default · High**; when the agent leaves that choice to its provider, the control says **Default · Provider** instead of guessing a level. Choosing either default clears the conversation override.
 
+The picker is labelled **Next turn** because it is not evidence about the run
+already on screen. The current or last run has a separate server-owned route
+marker in the header and below the assistant message. A successful primary says
+which model and effort ran. A fallback names the requested and answering models
+and the runtime's classified reason when one was reported; its disclosure shows
+the bounded route chain, same-model retries, route effort, and Pi's effective
+thinking level. Failed chains name the last attempt without claiming that it
+answered. Raw provider errors and request identifiers remain outside browser
+payloads.
+
 The agent rail also has a separate **Agent settings** dialog for defaults used
 when the web console creates a new conversation. Model and effort can each
 inherit resolved config or be overridden, and the dialog labels the effective
@@ -450,6 +460,10 @@ Creation snapshots the effective pair into the new conversation, so later
 settings changes never rewrite existing conversations. The layer applies only
 to interactive web-console creation: Telegram, Slack, cron, webhook, API, and
 TUI requests continue to use their own configured or request-scoped values.
+
+When a process job or Monitor event must start a standalone revival turn, it
+re-reads this conversation snapshot immediately before admission. A wake that
+can be steered into the active run instead keeps that run's existing route.
 
 The context control uses exact per-request measurements. The Pi runtime publishes a normalized `context_usage` telemetry event as each assistant message ends, so a tool-calling turn produces one measurement per provider request rather than one per turn. A percentage appears only when that same exact event carries the serving model's context window. Billing telemetry stays separate and is never converted into an occupancy measurement: `usage_update` is a single aggregate emitted once at the end of a run, carrying that run's cost and processed tokens. Durable message/tool-history storage size is never added to a provider measurement; only history actually sent in that request is already included by the provider.
 
@@ -464,6 +478,9 @@ Reported cost and processed tokens include what the run's subagents spent. A del
 Assistant reasoning, routine tool calls, subagent delegations, and context compactions share one compact **Activity** disclosure without changing their order. Each compaction is one row that updates from running to succeeded, skipped, failed, or interrupted instead of producing duplicate start/end rows. Pi's before/after token counts are estimates and carry a `~` prefix; provider summary text is never displayed. Activity opens while the message is running and force-collapses when the message completes, fails, is cancelled, or is interrupted; it can be reopened afterward, and individual tool payloads remain collapsed inside it. Standalone interactive tools remain outside the group.
 
 An `Agent` call is one foldable row inside Activity — profile name, the model's short task label, and a `4 tools · 12.4s · $0.0042` summary — that **owns** the tool calls its subagent made rather than listing them as siblings. The price appears when the runtime priced that subagent's model, and is the one place a single expensive delegation is identifiable; the run total it folds into cannot say which one spent it. Opening the row reveals each child call indented, individually foldable for its input and output, followed by the report the subagent sent back. Nesting keeps concurrent delegations readable when the provider overlaps them: their events interleave, so a flat transcript would shuffle several agents' work together. Pi 0.85 cannot overlap an `Agent` batch when any stateful/mutating or MCP tool is also offered because its scheduling mode applies to the whole harness. A child that failed is marked without marking the delegation that contains it, and a delegation whose parent call was never observed (a truncated or replayed stream) still renders from its children alone.
+
+The child run's model and any fallback appear inside its own delegation row.
+Parent and child routing attribution stay independent.
 
 Every Activity row is one line at every width: the tool name and status hold their place and a long argument is truncated with an ellipsis, so a list of rows stays scannable rather than reflowing into a ragged block on a phone. Expanding a row reveals the full value. The nesting rails narrow below 560px and the settled Activity list scrolls with the page instead of inside its own box. Individual tool payloads stay height-capped and selectable so their output can still be copied on a phone, and they wrap within the panel rather than extending past it.
 
@@ -573,7 +590,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 20. Schema 9 added the `message_search` FTS5
+The web state database is at schema 21. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
@@ -586,8 +603,10 @@ holds. An earlier build numbered that column 17, so 18 also repairs that shape
 without resetting sequence values already assigned. Schema 19 suppresses silent
 cron projections at the storage read boundary. Schema 20 persists the live
 agent's protected provider-auth capability so Agent settings receives it through
-the same bootstrap projection as the rest of the agent summary. These migrations
-are additive and transactional. An older
+the same bootstrap projection as the rest of the agent summary. Schema 21 adds
+the requested model and effort plus bounded runtime routing evidence to each
+turn, so fallback attribution remains visible after reload. These migrations are
+additive and transactional. An older
 `@mono-agent/web` binary refuses to open a newer database rather than reading it
 incorrectly, so downgrading means restoring a pre-upgrade copy of
 `~/.mono-agent/web/state.sqlite`.

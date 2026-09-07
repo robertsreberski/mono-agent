@@ -354,6 +354,48 @@ describe("RunHistory MCP tool", () => {
     }
   });
 
+  it("keeps an empty-response failure discoverable through the unchanged run-history shape", async () => {
+    const artifactDir = await tempDir();
+    const conversationId = "web:empty-response";
+    await writeRun({
+      artifactDir,
+      runId: "empty-response-run",
+      conversationId,
+      startedAt: "2026-09-07T00:00:00.000Z",
+      userInput: "Do not lose this request",
+      result: {
+        failureKind: "empty_response",
+        error: "Runtime completed without assistant text.",
+      },
+    });
+
+    const history = await openHistoryClient(artifactDir, conversationId);
+    try {
+      const listed = structured<{
+        readonly runs: ReadonlyArray<{ readonly runId: string; readonly status: string; readonly failureKind?: string }>;
+      }>(await history.client.callTool({ name: RUN_HISTORY_TOOL_NAME, arguments: {} }));
+      expect(listed.runs).toEqual([expect.objectContaining({
+        runId: "empty-response-run",
+        status: "failed",
+        failureKind: "empty_response",
+      })]);
+
+      const inspected = structured<{
+        readonly run: { readonly runId: string; readonly status: string; readonly failureKind?: string };
+      }>(await history.client.callTool({
+        name: RUN_HISTORY_TOOL_NAME,
+        arguments: { runId: "empty-response-run" },
+      }));
+      expect(inspected.run).toMatchObject({
+        runId: "empty-response-run",
+        status: "failed",
+        failureKind: "empty_response",
+      });
+    } finally {
+      await history.close();
+    }
+  });
+
   it("projects runtime cancellation evidence as untrusted without promoting its provenance", async () => {
     const artifactDir = await tempDir();
     const conversationId = "web:runtime-cancellation";

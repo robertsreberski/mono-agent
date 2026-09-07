@@ -20,7 +20,7 @@ import {
   type ToolHistoryRunBinding,
 } from "../index.js";
 import { MonoAgentHarness } from "../harness.js";
-import { representedCancellationToolRecordIds } from "../harness/cancelled-turn.js";
+import { representedContinuityToolRecordIds } from "../harness/turn-continuity.js";
 import { buildToolHistoryProjection } from "../tool-history-projection.js";
 
 const tempDirs: string[] = [];
@@ -223,7 +223,77 @@ describe("AgentHarness durable tool lifecycle integration", () => {
       "chat:42",
       "chat:42#2026-08-14",
       "later-run",
-      representedCancellationToolRecordIds(history),
+      representedContinuityToolRecordIds(history),
+    )).toBeUndefined();
+  });
+
+  it("keeps failed tool evidence searchable while the failed account prevents duplicate projection", async () => {
+    const { identityPath, root } = await fixture();
+    const writer = await ToolHistoryWriter.open({ root });
+    const reader = new ToolHistoryReader(root);
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 10 });
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        await options.toolLifecycleSink?.({
+          phase: "invocation",
+          toolCallId: "failed-complete",
+          toolName: "Fetch",
+          arguments: { target: "status" },
+        });
+        await options.toolLifecycleSink?.({
+          phase: "result",
+          toolCallId: "failed-complete",
+          toolName: "Fetch",
+          state: "error",
+          failureKind: "runtime_error",
+          content: "definitive tool failure",
+        });
+        await options.toolLifecycleSink?.({
+          phase: "invocation",
+          toolCallId: "failed-dangling",
+          toolName: "Bash",
+          arguments: { command: "long-running" },
+        });
+        return { failureKind: "provider_unavailable", error: "terminated" };
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      historyStore,
+      createRunId: () => "failed-run",
+      toolHistory: {
+        writer,
+        reader,
+        logicalConversationId: (conversationId) => toolHistoryLogicalConversationId(conversationId, "daily"),
+        release: async () => await writer.close(),
+      },
+    });
+
+    const response = await harness.run(request("chat:42#2026-08-14"));
+    expect(response.failure?.kind).toBe("provider_unavailable");
+    const history = await historyStore.load("chat:42#2026-08-14");
+    expect(history).toHaveLength(2);
+    expect(history[1]?.content).toContain('<failed_turn_history version="1">');
+    expect(history[1]?.content).toContain('"toolCallId":"failed-complete"');
+    expect(history[1]?.content).toContain('"toolCallId":"failed-dangling"');
+    expect(history[1]?.content).toContain('"outcome":"unconfirmed"');
+    await harness.dispose?.();
+    expect(reader.search({
+      logicalConversationId: "chat:42",
+      currentConversationId: "chat:42#2026-08-14",
+      currentRunId: "later-run",
+    }).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ runId: "failed-run", toolCallId: "failed-complete", state: "error" }),
+      expect.objectContaining({ runId: "failed-run", toolCallId: "failed-dangling", state: "error" }),
+    ]));
+    expect(buildToolHistoryProjection(
+      reader,
+      "chat:42",
+      "chat:42#2026-08-14",
+      "later-run",
+      representedContinuityToolRecordIds(history),
     )).toBeUndefined();
   });
 

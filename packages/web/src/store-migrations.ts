@@ -81,6 +81,12 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 20, name: "agent-provider-auth-capability", up: ({ database }) => {
     addColumn(database, "agents", "supports_provider_auth", "INTEGER NOT NULL DEFAULT 0 CHECK (supports_provider_auth IN (0, 1))");
   } },
+  { version: 21, name: "turn-route-attribution", up: ({ database }) => {
+    addColumn(database, "turns", "requested_model", "TEXT");
+    addColumn(database, "turns", "requested_effort", "TEXT");
+    addColumn(database, "turns", "effective_effort", "TEXT");
+    addColumn(database, "turns", "routing_json", "TEXT NOT NULL DEFAULT '{\"transitions\":[],\"retries\":[]}'");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -134,6 +140,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
+      turns: ["requested_model", "requested_effort", "effective_effort", "routing_json"],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
@@ -148,6 +155,13 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       || !/CHECK\s*\(cron_suppressed\s+IN\s*\(0,\s*1\)\)/iu.test(messageDdl.sql)
       || database.prepare("SELECT 1 FROM messages WHERE cron_suppressed NOT IN (0,1) LIMIT 1").get() !== undefined) {
       throw new Error("Invalid cron suppression column.");
+    }
+    const routing = (database.prepare("PRAGMA table_info(turns)").all() as Array<{
+      name: string; type: string; notnull: number; dflt_value: string | null;
+    }>).find((column) => column.name === "routing_json");
+    if (routing?.type !== "TEXT" || routing.notnull !== 1
+       || routing.dflt_value !== `'${JSON.stringify({ transitions: [], retries: [] })}'`) {
+      throw new Error("Invalid routing column.");
     }
     for (const [index, expected] of [
       ["messages_by_thread", ["thread_id", "created_at"]],

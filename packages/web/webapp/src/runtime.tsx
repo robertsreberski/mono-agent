@@ -15,6 +15,7 @@ import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
 import { useConsoleStore, useUploadLimits } from "./console-store";
+import { noteComposerAttachments } from "./composer-draft";
 import type {
   MessagePart,
   ToolCall,
@@ -174,7 +175,11 @@ const monitorIdForMessage = (message: WebMessage): string | undefined => {
 
 /** Parts that must keep this assistant message as its own transcript boundary. */
 const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
-  message.attachments.length > 0 || message.parts.some((part) => {
+  // A fallback marker is permanent per-run evidence. Folding that message into
+  // a later silent wake would replace its attribution with the newest carrier's
+  // and make the earlier divergence invisible.
+  message.attribution?.disposition === "fallback"
+  || message.attachments.length > 0 || message.parts.some((part) => {
     switch (part.type) {
       case "text":
       case "reasoning":
@@ -502,6 +507,8 @@ export const convertWebMessage = (message: WebMessage): ThreadMessageLike => {
         ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
         ...(message.liveInputStatus === undefined ? {} : { liveInputStatus: message.liveInputStatus }),
         ...(message.quote === undefined ? {} : { quote: message.quote }),
+        ...(message.attribution === undefined ? {} : { attribution: message.attribution }),
+        runStatus: message.status,
       },
     },
   };
@@ -537,12 +544,14 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       previousAttachmentContext.current !== attachmentContext
     ) {
       attachmentAdapter.disposeUnsent();
+      noteComposerAttachments(false);
     }
     previousAttachmentContext.current = attachmentContext;
   }, [attachmentAdapter, attachmentContext]);
   useEffect(
     () => () => {
       attachmentAdapter.disposeUnsent({ includeRecovering: true });
+      noteComposerAttachments(false);
     },
     [attachmentAdapter],
   );

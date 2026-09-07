@@ -1,5 +1,6 @@
 import type { DataMessagePartProps } from "@assistant-ui/react";
 import type { ReactNode } from "react";
+import type { RunAttribution as RunAttributionValue } from "../types";
 
 import { formatUsd } from "../usage";
 import {
@@ -15,6 +16,7 @@ import { finiteDuration, formatToolDuration } from "./duration";
 import { safeJson } from "./json";
 import { toolHistoryFailure } from "./tool-history";
 import { useToolCallRepair } from "./tool-call-repair";
+import { RunAttribution } from "./RunAttribution";
 
 type ToolCallStatus = "running" | "complete" | "failed";
 
@@ -50,6 +52,7 @@ interface SubagentView {
   readonly result?: unknown;
   readonly executionMs?: number;
   readonly costUsd?: number;
+  readonly attribution?: RunAttributionValue;
   readonly history?: Record<string, unknown>;
   readonly status: ToolCallStatus;
   readonly calls: readonly SubagentCallView[];
@@ -167,6 +170,9 @@ const subagentView = (data: unknown): SubagentView | undefined => {
       : { executionMs: record.executionMs as number }),
     ...(typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
       ? { costUsd: record.costUsd }
+      : {}),
+    ...(record.attribution !== null && typeof record.attribution === "object" && !Array.isArray(record.attribution)
+      ? { attribution: record.attribution as unknown as RunAttributionValue }
       : {}),
     ...(record.history !== null && typeof record.history === "object" && !Array.isArray(record.history)
       ? { history: record.history as Record<string, unknown> }
@@ -417,6 +423,7 @@ export function SubagentPart({ data }: DataMessagePartProps) {
       duration={meta}
     >
       <div className="activity-steps">
+        <RunAttribution attribution={view.attribution} status={view.status} />
         {/* One repair fetches the whole delegation, so one control asks for it:
             when both the task and the report are previews the Task note -- the
             first one an operator meets -- owns the button, exactly as

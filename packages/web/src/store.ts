@@ -45,6 +45,11 @@ import {
   type WebThreadNotificationTriggerKind,
   type WebQuote,
   type WebRunState,
+  type WebRunAttribution,
+  type WebRunExecution,
+  type WebRunRetry,
+  type WebRunSelection,
+  type WebRunTransition,
   type WebThread,
   type WebToolCall,
   type WebThreadDetail,
@@ -199,6 +204,10 @@ interface TurnRow {
   status: string;
   model: string | null;
   effort: string | null;
+  requested_model: string | null;
+  requested_effort: string | null;
+  effective_effort: string | null;
+  routing_json: string;
   assistant_message_id: string;
   started_at: string;
   finished_at: string | null;
@@ -518,6 +527,8 @@ export interface BeginStoredTurnInput {
   readonly quote?: WebQuote;
   readonly model?: string;
   readonly effort?: string;
+  readonly requestedModel?: string;
+  readonly requestedEffort?: string;
 }
 
 export interface BeginStoredTurnResult {
@@ -571,6 +582,7 @@ export interface StoredLiveInput {
 export interface StoredMessageWrite {
   readonly message: WebMessage;
   readonly delta?: WebMessageDelta;
+  readonly attributionChanged?: true;
 }
 
 /**
@@ -2831,10 +2843,20 @@ export class WebStore {
     this.transaction(() => {
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, input.text, input.model ?? null, input.effort ?? null, assistantMessageId, now);
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(
+        turnId,
+        threadId,
+        input.text,
+        input.model ?? null,
+        input.effort ?? null,
+        input.requestedModel ?? null,
+        input.requestedEffort ?? null,
+        assistantMessageId,
+        now,
+      );
 
       const userParts: WebMessagePart[] = [
         ...(input.quote === undefined
@@ -2889,6 +2911,10 @@ export class WebStore {
     readonly prompt: string;
     /** Monitor output stays memory-only; callers may retain only a non-secret marker. */
     readonly storedPrompt?: string;
+    readonly model?: string;
+    readonly effort?: string;
+    readonly requestedModel?: string;
+    readonly requestedEffort?: string;
   }): BeginStoredAssistantTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
@@ -2912,10 +2938,20 @@ export class WebStore {
     this.transaction(() => {
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, NULL, NULL, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, input.storedPrompt ?? input.prompt, assistantMessageId, now);
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(
+        turnId,
+        threadId,
+        input.storedPrompt ?? input.prompt,
+        input.model ?? null,
+        input.effort ?? null,
+        input.requestedModel ?? null,
+        input.requestedEffort ?? null,
+        assistantMessageId,
+        now,
+      );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
         VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
@@ -3123,10 +3159,10 @@ export class WebStore {
     this.transaction(() => {
       this.database.prepare(`
         INSERT INTO turns (
-          id, thread_id, status, text, model, effort, assistant_message_id,
+          id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
           started_at, finished_at, error_code, error_message
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, NULL, NULL, NULL)
-      `).run(turnId, threadId, row.text, row.model, row.effort, assistantMessageId, now);
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      `).run(turnId, threadId, row.text, row.model, row.effort, row.model, row.effort, assistantMessageId, now);
       this.writeMessageParts(
         row.message_id,
         withoutLiveInputTelemetry(userMessage.parts),
@@ -3163,11 +3199,16 @@ export class WebStore {
     // diffed against a version other than the one its `baseSeq` names is
     // self-consistent and WRONG -- the one corruption a sequence number cannot
     // expose, because the console would apply it without complaint.
-    const delta = this.transaction(() => {
+    const write = this.transaction(() => {
       const message = this.requireMessage(turn.assistant_message_id);
       const parts = [...message.parts];
       let actualModel: string | undefined;
       let actualEffort: string | undefined;
+      let actualEffectiveEffort: string | undefined;
+      let clearEffort = false;
+      let clearEffectiveEffort = false;
+      let routing = parseRoutingState(turn.routing_json);
+      let attributionChanged = false;
       for (const frame of frames) {
         if (frame.kind === "status") {
           parts.push({ type: "telemetry", event: "status", data: { text: frame.text } });
@@ -3178,23 +3219,97 @@ export class WebStore {
         } else if (frame.kind === "event") {
           applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
           if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
-            if (typeof frame.event.data?.model === "string") actualModel = frame.event.data.model;
-            if (typeof frame.event.data?.effort === "string") actualEffort = frame.event.data.effort;
+            const model = canonicalRouteString(frame.event.data?.model);
+            const effort = canonicalRouteString(frame.event.data?.effort, 64);
+            if (model !== undefined) actualModel = model;
+            if (effort !== undefined) {
+              actualEffort = effort;
+              clearEffort = false;
+            }
+            attributionChanged ||= model !== undefined || effort !== undefined;
+          }
+          if (frame.event.type === "runtime_telemetry" && frame.event.kind === "provider_execution_config") {
+            const model = canonicalRouteString(frame.event.data?.model);
+            const effort = canonicalRouteString(frame.event.data?.effort, 64);
+            const effectiveEffort = canonicalRouteString(frame.event.data?.effectiveEffort, 64);
+            if (model !== undefined) actualModel = model;
+            if (effort !== undefined) actualEffort = effort;
+            if (effectiveEffort !== undefined) actualEffectiveEffort = effectiveEffort;
+            clearEffort = effort === undefined;
+            clearEffectiveEffort = effectiveEffort === undefined;
+            attributionChanged ||= model !== undefined || effort !== undefined || effectiveEffort !== undefined;
+          }
+          if (frame.event.type === "provider_status") {
+            if (frame.event.kind === "failover_started") {
+              const from = canonicalRouteString(frame.event.from);
+              const to = canonicalRouteString(frame.event.to);
+              if (from !== undefined && to !== undefined) {
+                const attemptIndex = canonicalRouteIndex(frame.event.attemptIndex);
+                const reason = canonicalRouteString(frame.event.reason, 128);
+                routing = appendRouteTransition(routing, {
+                  from,
+                  to,
+                  ...(attemptIndex === undefined ? {} : { attemptIndex }),
+                  ...(reason === undefined ? {} : { reason }),
+                });
+                actualModel = to;
+                clearEffort = true;
+                clearEffectiveEffort = true;
+                attributionChanged = true;
+              }
+            } else if (frame.event.kind === "retry_started") {
+              const model = canonicalRouteString(frame.event.model);
+              const retryIndex = canonicalRouteIndex(frame.event.retryIndex);
+              const reason = canonicalRouteString(frame.event.reason, 128);
+              routing = appendRouteRetry(routing, {
+                ...(model === undefined ? {} : { model }),
+                ...(retryIndex === undefined ? {} : { retryIndex }),
+                ...(reason === undefined ? {} : { reason }),
+              });
+              attributionChanged = true;
+            } else if (frame.event.kind === "failover_completed") {
+              const model = canonicalRouteString(frame.event.model);
+              if (model !== undefined) {
+                actualModel = model;
+                attributionChanged = true;
+              }
+            } else if (frame.event.kind === "request_started") {
+              const model = canonicalRouteString(frame.event.model);
+              if (model !== undefined) {
+                actualModel = model;
+                attributionChanged = true;
+              }
+            }
           }
         }
       }
-      const written = this.writeMessageDelta(message, parts, this.now());
-      if (actualModel !== undefined || actualEffort !== undefined) {
+      if (actualModel !== undefined || actualEffort !== undefined || actualEffectiveEffort !== undefined || attributionChanged) {
         this.database.prepare(`
           UPDATE turns SET
             model = CASE WHEN ? IS NULL THEN model ELSE ? END,
-            effort = CASE WHEN ? IS NULL THEN effort ELSE ? END
+            effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effort ELSE ? END,
+            effective_effort = CASE WHEN ? = 1 THEN NULL WHEN ? IS NULL THEN effective_effort ELSE ? END,
+            routing_json = ?
           WHERE id = ?
-        `).run(actualModel ?? null, actualModel ?? null, actualEffort ?? null, actualEffort ?? null, turnId);
+        `).run(
+          actualModel ?? null,
+          actualModel ?? null,
+          clearEffort ? 1 : 0,
+          actualEffort ?? null,
+          actualEffort ?? null,
+          clearEffectiveEffort ? 1 : 0,
+          actualEffectiveEffort ?? null,
+          actualEffectiveEffort ?? null,
+          serializeRoutingState(routing),
+          turnId,
+        );
       }
-      return written;
+      return {
+        delta: this.writeMessageDelta(message, parts, this.now()),
+        ...(attributionChanged ? { attributionChanged: true as const } : {}),
+      };
     });
-    return { message: this.requireMessage(turn.assistant_message_id), delta };
+    return { message: this.requireMessage(turn.assistant_message_id), ...write };
   }
 
   completeTurn(
@@ -3721,6 +3836,10 @@ export class WebStore {
         text TEXT NOT NULL,
         model TEXT,
         effort TEXT,
+        requested_model TEXT,
+        requested_effort TEXT,
+        effective_effort TEXT,
+        routing_json TEXT NOT NULL DEFAULT '{"transitions":[],"retries":[]}',
         assistant_message_id TEXT NOT NULL,
         started_at TEXT NOT NULL,
         finished_at TEXT,
@@ -4384,7 +4503,7 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string },
+    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     monitorWakeDeliveryKey?: string,
@@ -4416,7 +4535,7 @@ export class WebStore {
     finalText?: string,
     errorCode?: string,
     errorMessage?: string,
-    runtime?: { readonly model?: string; readonly effort?: string },
+    runtime?: { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string },
     replyParts?: readonly AgentReplyPart[],
     suppressResponsePush = false,
     monitorWakeDeliveryKey?: string,
@@ -4444,7 +4563,8 @@ export class WebStore {
     this.database.prepare(`
         UPDATE turns SET status = ?, finished_at = ?, error_code = ?, error_message = ?,
           model = CASE WHEN ? IS NULL THEN model ELSE ? END,
-          effort = CASE WHEN ? IS NULL THEN effort ELSE ? END
+          effort = CASE WHEN ? IS NULL THEN effort ELSE ? END,
+          effective_effort = CASE WHEN ? IS NULL THEN effective_effort ELSE ? END
         WHERE id = ?
     `).run(
         status,
@@ -4455,6 +4575,8 @@ export class WebStore {
         runtime?.model ?? null,
         runtime?.effort ?? null,
         runtime?.effort ?? null,
+        runtime?.effectiveEffort ?? null,
+        runtime?.effectiveEffort ?? null,
         turnId,
       );
     const delta = this.writeMessageDelta(existing, parts, now, { status });
@@ -4633,12 +4755,16 @@ export class WebStore {
         500,
       );
     }
+    const attribution = message.turnId === undefined
+      ? undefined
+      : runAttribution(this.requireTurn(message.turnId));
     return {
       messageId: message.id,
       baseSeq,
       seq,
       status: columns.status ?? message.status,
       updatedAt: now,
+      ...(attribution === undefined ? {} : { attribution }),
       ops: diffParts(message.parts, parts),
     };
   }
@@ -4655,6 +4781,9 @@ export class WebStore {
     const liveInputStatus = liveInputStatusFromParts(storedParts);
     const role = normalizeRole(row.role);
     const finishedAt = role === "assistant" ? this.turnFinishedAt(row) : undefined;
+    const attribution = role === "assistant" && row.turn_id !== null
+      ? runAttribution(this.requireTurn(row.turn_id))
+      : undefined;
     return {
       id: row.id,
       threadId: row.thread_id,
@@ -4671,6 +4800,7 @@ export class WebStore {
       ...(finishedAt === undefined ? {} : { finishedAt }),
       status: normalizeMessageStatus(row.status),
       ...(liveInputStatus === undefined ? {} : { liveInputStatus }),
+      ...(attribution === undefined ? {} : { attribution }),
       seq: row.seq,
     };
   }
@@ -4693,6 +4823,7 @@ export class WebStore {
       .get(threadId) as unknown as TurnRow | undefined;
     if (row === undefined) return { status: "idle" };
     const status = normalizeRunStatus(row.status);
+    const attribution = runAttribution(row);
     return {
       id: row.id,
       status,
@@ -4703,6 +4834,7 @@ export class WebStore {
         : { error: { ...(row.error_code === null ? {} : { code: row.error_code }), message: row.error_message } }),
       ...(row.model === null ? {} : { model: row.model }),
       ...(row.effort === null ? {} : { effort: row.effort }),
+      ...(attribution === undefined ? {} : { attribution }),
     };
   }
 
@@ -5562,6 +5694,7 @@ function applyEvent(
           status,
           ...(executionMs === undefined ? {} : { executionMs }),
           ...(subagent.costUsd === undefined ? {} : { costUsd: subagent.costUsd }),
+          ...(subagent.attribution === undefined ? {} : { attribution: subagent.attribution }),
         }, historyUpdate));
         return;
       }
@@ -5719,6 +5852,7 @@ function subagentOf(
   readonly name: string;
   readonly label?: string;
   readonly costUsd?: number;
+  readonly attribution?: WebRunAttribution;
 } | undefined {
   const subagent = event.metadata?.subagent;
   if (typeof subagent !== "object" || subagent === null || Array.isArray(subagent)) return undefined;
@@ -5735,11 +5869,13 @@ function subagentOf(
   const costUsd = typeof record.costUsd === "number" && Number.isFinite(record.costUsd) && record.costUsd > 0
     ? record.costUsd
     : undefined;
+  const attribution = canonicalRunAttribution(record.attribution);
   return {
     id: canonicalId,
     name: name.length === 0 ? "subagent" : name,
     ...(label.length === 0 ? {} : { label }),
     ...(costUsd === undefined ? {} : { costUsd }),
+    ...(attribution === undefined ? {} : { attribution }),
   };
 }
 
@@ -6582,8 +6718,11 @@ function canonicalizePersistedPartHistory(value: unknown): unknown {
   if (part.type === "tool-call") return canonicalizePersistedHistoryRecord(part);
   if (part.type !== "subagent") return value;
   const canonicalPart = canonicalizePersistedObjectHistory(part);
+  const { attribution: _rawAttribution, ...withoutAttribution } = canonicalPart;
+  const attribution = canonicalRunAttribution(part.attribution);
   return {
-    ...canonicalPart,
+    ...withoutAttribution,
+    ...(attribution === undefined ? {} : { attribution }),
     ...(Array.isArray(part.calls)
       ? { calls: part.calls.map((call) => canonicalizePersistedHistoryRecord(call)) }
       : {}),
@@ -6645,6 +6784,7 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && (part.label === undefined || typeof part.label === "string")
       && (part.executionMs == null || typeof part.executionMs === "number")
       && (part.costUsd === undefined || typeof part.costUsd === "number")
+      && (part.attribution === undefined || canonicalRunAttribution(part.attribution) !== undefined)
       && (part.history === undefined || isSessionToolHistoryMetadata(part.history))
       && isWebToolCallStatus(part.status)
       && Array.isArray(part.calls)
@@ -6914,17 +7054,203 @@ function normalizeRunStatus(value: string): WebRunState["status"] {
     : "complete";
 }
 
+const WEB_ROUTE_HISTORY_MAX_ENTRIES = 32;
+
+interface StoredRoutingState {
+  readonly transitions: readonly WebRunTransition[];
+  readonly retries: readonly WebRunRetry[];
+  readonly truncated?: true;
+}
+
+function canonicalRouteString(value: unknown, maxCharacters = 256): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().slice(0, maxCharacters);
+  return normalized.length === 0 ? undefined : normalized;
+}
+
+function canonicalRouteIndex(value: unknown): number | undefined {
+  return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
+}
+
+function canonicalRouteTransition(value: unknown): WebRunTransition | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const from = canonicalRouteString(record.from);
+  const to = canonicalRouteString(record.to);
+  if (from === undefined || to === undefined) return undefined;
+  const attemptIndex = canonicalRouteIndex(record.attemptIndex);
+  const reason = canonicalRouteString(record.reason, 128);
+  return {
+    from,
+    to,
+    ...(attemptIndex === undefined ? {} : { attemptIndex }),
+    ...(reason === undefined ? {} : { reason }),
+  };
+}
+
+function canonicalRouteRetry(value: unknown): WebRunRetry | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const model = canonicalRouteString(record.model);
+  const retryIndex = canonicalRouteIndex(record.retryIndex);
+  const attempts = canonicalRouteIndex(record.attempts);
+  const reason = canonicalRouteString(record.reason, 128);
+  return {
+    ...(model === undefined ? {} : { model }),
+    ...(retryIndex === undefined ? {} : { retryIndex }),
+    ...(attempts === undefined ? {} : { attempts }),
+    ...(reason === undefined ? {} : { reason }),
+  };
+}
+
+function boundedRouteEntries<T>(entries: readonly T[]): { readonly entries: readonly T[]; readonly truncated: boolean } {
+  if (entries.length <= WEB_ROUTE_HISTORY_MAX_ENTRIES) return { entries, truncated: false };
+  return {
+    entries: [entries[0]!, ...entries.slice(-(WEB_ROUTE_HISTORY_MAX_ENTRIES - 1))],
+    truncated: true,
+  };
+}
+
+function canonicalRoutingState(value: unknown): StoredRoutingState {
+  const record = typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const transitions = boundedRouteEntries(
+    (Array.isArray(record.transitions) ? record.transitions : [])
+      .map(canonicalRouteTransition)
+      .filter((entry): entry is WebRunTransition => entry !== undefined),
+  );
+  const retries = boundedRouteEntries(
+    (Array.isArray(record.retries) ? record.retries : [])
+      .map(canonicalRouteRetry)
+      .filter((entry): entry is WebRunRetry => entry !== undefined),
+  );
+  return {
+    transitions: transitions.entries,
+    retries: retries.entries,
+    ...(record.truncated === true || transitions.truncated || retries.truncated ? { truncated: true } : {}),
+  };
+}
+
+function parseRoutingState(value: string): StoredRoutingState {
+  try {
+    return canonicalRoutingState(JSON.parse(value) as unknown);
+  } catch {
+    throw new WebConsoleError("storage_corrupt", "Persisted turn routing metadata is not valid JSON.", 500);
+  }
+}
+
+function serializeRoutingState(value: StoredRoutingState): string {
+  return JSON.stringify(canonicalRoutingState(value));
+}
+
+function appendRouteTransition(state: StoredRoutingState, entry: WebRunTransition): StoredRoutingState {
+  const bounded = boundedRouteEntries([...state.transitions, entry]);
+  return {
+    ...state,
+    transitions: bounded.entries,
+    ...(state.truncated === true || bounded.truncated ? { truncated: true } : {}),
+  };
+}
+
+function appendRouteRetry(state: StoredRoutingState, entry: WebRunRetry): StoredRoutingState {
+  const bounded = boundedRouteEntries([...state.retries, entry]);
+  return {
+    ...state,
+    retries: bounded.entries,
+    ...(state.truncated === true || bounded.truncated ? { truncated: true } : {}),
+  };
+}
+
+function canonicalRunSelection(value: unknown): WebRunSelection | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const model = canonicalRouteString(record.model);
+  const effort = canonicalRouteString(record.effort, 64);
+  return {
+    ...(model === undefined ? {} : { model }),
+    ...(effort === undefined ? {} : { effort }),
+  };
+}
+
+function canonicalRunExecution(value: unknown): WebRunExecution | undefined {
+  const selection = canonicalRunSelection(value);
+  if (selection === undefined) return undefined;
+  const effectiveEffort = canonicalRouteString((value as Record<string, unknown>).effectiveEffort, 64);
+  return {
+    ...selection,
+    ...(effectiveEffort === undefined ? {} : { effectiveEffort }),
+  };
+}
+
+function canonicalRunAttribution(value: unknown): WebRunAttribution | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const requested = canonicalRunSelection(record.requested);
+  if (requested === undefined
+    || (record.disposition !== "requested" && record.disposition !== "fallback" && record.disposition !== "unknown")) {
+    return undefined;
+  }
+  const attempted = canonicalRunExecution(record.attempted);
+  const executed = canonicalRunExecution(record.executed);
+  const routing = canonicalRoutingState(record);
+  return {
+    requested,
+    ...(attempted === undefined ? {} : { attempted }),
+    ...(executed === undefined ? {} : { executed }),
+    disposition: record.disposition,
+    transitions: routing.transitions,
+    retries: routing.retries,
+    ...(record.truncated === true || routing.truncated === true ? { truncated: true } : {}),
+  };
+}
+
+function runAttribution(row: TurnRow): WebRunAttribution | undefined {
+  const requestedModel = canonicalRouteString(row.requested_model);
+  const requestedEffort = canonicalRouteString(row.requested_effort, 64);
+  const requested: WebRunSelection = {
+    ...(requestedModel === undefined ? {} : { model: requestedModel }),
+    ...(requestedEffort === undefined ? {} : { effort: requestedEffort }),
+  };
+  const attemptedModel = canonicalRouteString(row.model);
+  const attemptedEffort = canonicalRouteString(row.effort, 64);
+  const effectiveEffort = canonicalRouteString(row.effective_effort, 64);
+  const attempted: WebRunExecution = {
+    ...(attemptedModel === undefined ? {} : { model: attemptedModel }),
+    ...(attemptedEffort === undefined ? {} : { effort: attemptedEffort }),
+    ...(effectiveEffort === undefined ? {} : { effectiveEffort }),
+  };
+  const routing = parseRoutingState(row.routing_json);
+  const hasRequested = requested.model !== undefined || requested.effort !== undefined;
+  const hasAttempted = attempted.model !== undefined || attempted.effort !== undefined || attempted.effectiveEffort !== undefined;
+  if (!hasRequested && !hasAttempted && routing.transitions.length === 0 && routing.retries.length === 0) return undefined;
+  const executed = row.status === "complete" && hasAttempted ? attempted : undefined;
+  const fallback = routing.transitions.length > 0
+    || (executed?.model !== undefined && requested.model !== undefined && executed.model !== requested.model);
+  return {
+    requested,
+    ...(hasAttempted ? { attempted } : {}),
+    ...(executed === undefined ? {} : { executed }),
+    disposition: requested.model === undefined ? "unknown" : fallback ? "fallback" : "requested",
+    transitions: routing.transitions,
+    retries: routing.retries,
+    ...(routing.truncated === true ? { truncated: true } : {}),
+  };
+}
+
 function runtimeMetadata(
   metadata: Readonly<Record<string, unknown>> | undefined,
-): { readonly model?: string; readonly effort?: string } | undefined {
+): { readonly model?: string; readonly effort?: string; readonly effectiveEffort?: string } | undefined {
   const runtime = metadata?.runtime;
   if (typeof runtime !== "object" || runtime === null || Array.isArray(runtime)) return undefined;
   const record = runtime as Record<string, unknown>;
-  const model = typeof record.model === "string" ? record.model : undefined;
-  const effort = typeof record.effort === "string" ? record.effort : undefined;
-  return model === undefined && effort === undefined ? undefined : {
+  const model = canonicalRouteString(record.model);
+  const effort = canonicalRouteString(record.effort, 64);
+  const effectiveEffort = canonicalRouteString(record.effectiveEffort, 64);
+  return model === undefined && effort === undefined && effectiveEffort === undefined ? undefined : {
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(effectiveEffort === undefined ? {} : { effectiveEffort }),
   };
 }
 

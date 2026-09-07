@@ -17,6 +17,11 @@ import {
   THREAD_PAGE_LIMIT,
 } from "./api";
 import { writeDataModeSetting } from "./data-mode";
+import {
+  readComposerDraft,
+  resetComposerDraft,
+  writeComposerDraft,
+} from "./composer-draft";
 import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
@@ -258,6 +263,7 @@ const slowIndexedDb = (delayMs: number): IDBFactory => ({
 describe("ConsoleStoreProvider integration", () => {
   beforeEach(async () => {
     await deviceStore.clearAll();
+    resetComposerDraft();
     vi.clearAllMocks();
     // `clearAllMocks` forgets CALLS, not implementations. A `mockImplementation`
     // one case installs for `api.thread` or `api.threadIfChanged` would answer
@@ -326,6 +332,22 @@ describe("ConsoleStoreProvider integration", () => {
       runModel: "provider/model",
       runEffort: "high",
     });
+  });
+
+  it("moves only the selected agent's new-conversation text onto the created thread", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    writeComposerDraft("alpha", null, "follows the created thread");
+    writeComposerDraft("beta", null, "other agent draft");
+    writeComposerDraft("alpha", "existing", "existing thread draft");
+    vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha"));
+    const store = await renderStore();
+
+    await act(async () => { await store.current.createThread(); });
+
+    expect(readComposerDraft("alpha", null)).toBe("");
+    expect(readComposerDraft("alpha", "created")).toBe("follows the created thread");
+    expect(readComposerDraft("beta", null)).toBe("other agent draft");
+    expect(readComposerDraft("alpha", "existing")).toBe("existing thread draft");
   });
 
   it("shows and snapshots blank-draft web defaults without sending redundant fields", async () => {
@@ -753,6 +775,7 @@ describe("ConsoleStoreProvider integration", () => {
       archivedAt: "2026-08-14T09:00:00.000Z",
     });
     vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+    writeComposerDraft("alpha", "canonical-thread", "canonical draft");
     const store = await renderStore();
 
     await act(async () => store.current.archiveThread("redirected-legacy-id"));
@@ -769,6 +792,7 @@ describe("ConsoleStoreProvider integration", () => {
       true,
     );
     expect(store.current.threads.find((item) => item.id === "canonical-thread")).toBeUndefined();
+    expect(readComposerDraft("alpha", "canonical-thread")).toBe("");
   });
 
   it("converges a selected cron feed on a live event without a manual refresh", async () => {
@@ -1415,9 +1439,11 @@ describe("ConsoleStoreProvider integration", () => {
 
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      writeComposerDraft("alpha", "alpha-thread", "delete me after confirmation");
 
       const deleted = store.current.deleteThread("alpha-thread");
       await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(readComposerDraft("alpha", "alpha-thread")).toBe("delete me after confirmation");
 
       // Still in flight. A page and a bootstrap that both still list the
       // conversation land here, and neither may put it back.
@@ -1433,6 +1459,7 @@ describe("ConsoleStoreProvider integration", () => {
       await refresh("event-2");
       expect(store.current.threads.map((item) => item.id)).toEqual([]);
       expect(store.current.selectedThreadId).toBeNull();
+      expect(readComposerDraft("alpha", "alpha-thread")).toBe("");
     });
 
     it("restores a conversation whose delete failed", async () => {
@@ -1446,12 +1473,14 @@ describe("ConsoleStoreProvider integration", () => {
 
       const store = await renderStore();
       await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      writeComposerDraft("alpha", "alpha-thread", "keep after refusal");
 
       await act(async () => {
         await expect(store.current.deleteThread("alpha-thread")).rejects.toThrow("delete failed");
       });
       await refresh("event-1");
       expect(store.current.threads.map((item) => item.id)).toEqual(["alpha-thread"]);
+      expect(readComposerDraft("alpha", "alpha-thread")).toBe("keep after refusal");
     });
   });
 
@@ -4526,6 +4555,53 @@ describe("ConsoleStoreProvider integration", () => {
       expect(after[0]).toBe(before[0]);
       expect(after[1]).not.toBe(before[1]);
       expect(after[1]?.seq).toBe(2);
+    });
+
+    it("converges full-read and streamed attribution, then preserves it through one-message repair", async () => {
+      const initialAttribution = {
+        requested: { model: "provider:primary", effort: "high" },
+        attempted: { model: "provider:primary", effort: "high", effectiveEffort: "high" },
+        disposition: "requested" as const,
+        transitions: [],
+        retries: [],
+      };
+      const fallbackAttribution = {
+        requested: { model: "provider:primary", effort: "high" },
+        attempted: { model: "provider:fallback", effort: "xhigh", effectiveEffort: "max" },
+        disposition: "fallback" as const,
+        transitions: [{ from: "provider:primary", to: "provider:fallback", reason: "overloaded" }],
+        retries: [{ model: "provider:primary", retryIndex: 1, reason: "overloaded" }],
+      };
+      seedTwo([streamed("m1", "Hel", { attribution: initialAttribution })]);
+      const store = await openedOnAlpha();
+      const conversationReads = vi.mocked(api.thread).mock.calls.length;
+
+      emitDelta(alpha.id, {
+        ops: [{ op: "append", index: 0, delta: "lo" }],
+        attribution: fallbackAttribution,
+      });
+      await waitFor(() => expect(store.current.detail?.messages[0]?.attribution).toEqual(fallbackAttribution));
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(conversationReads);
+      expect(api.message).not.toHaveBeenCalled();
+
+      vi.mocked(api.message).mockResolvedValue(streamed("m1", "Hello!", {
+        seq: 9,
+        status: "complete",
+        attribution: { ...fallbackAttribution, executed: fallbackAttribution.attempted },
+      }));
+      emitDelta(alpha.id, {
+        baseSeq: 8,
+        seq: 9,
+        status: "complete",
+        attribution: { ...fallbackAttribution, executed: fallbackAttribution.attempted },
+      });
+
+      await waitFor(() => expect(api.message).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(store.current.detail?.messages[0]?.attribution).toMatchObject({
+        disposition: "fallback",
+        executed: { model: "provider:fallback", effectiveEffort: "max" },
+      }));
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(conversationReads);
     });
 
     it("consumes a status-only write so the next one still applies", async () => {

@@ -133,6 +133,27 @@ describe("JsonlRunRecorder", () => {
     expect(onDisk).toMatchObject({ failureKind: "cancelled", cancellationReason });
   });
 
+  it("persists an empty-response harness settlement as a failed run", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({
+      runId: "empty-response-run",
+      conversationId: "web:empty-response",
+      artifactDir: dir,
+    });
+
+    const summary = await recorder.finish({
+      failureKind: "empty_response",
+      error: "Runtime completed without assistant text.",
+    });
+    const onDisk = JSON.parse(await readFile(summary.artifactPaths[1]!, "utf8")) as {
+      readonly status?: string;
+      readonly failureKind?: string;
+    };
+
+    expect(summary).toMatchObject({ status: "failed", failureKind: "empty_response" });
+    expect(onDisk).toMatchObject({ status: "failed", failureKind: "empty_response" });
+  });
+
   it("persists the model (from the result) and system prompt (from the recorder option)", async () => {
     const dir = await tempDir();
     const recorder = createJsonlRunRecorder({

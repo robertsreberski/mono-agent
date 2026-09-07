@@ -474,6 +474,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-channel-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 6px; min-width: 0; padding: 7px max(17px, env(safe-area-inset-right)) 7px max(17px, env(safe-area-inset-left)); color: var(--text-muted); font-size: 11px; line-height: 1.5; }
 .cron-channel-header > span { min-width: 0; overflow-wrap: anywhere; }
 .model-controls { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.model-controls-label { color: var(--text-muted); font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap; }
 .model-selector__trigger {
   max-width: min(270px, 30vw);
   height: 36px;
@@ -598,9 +599,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .connection-banner { min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 7px 16px; color: var(--warning); background: color-mix(in srgb, var(--warning) 9%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, var(--line)); font-size: 11px; text-align: center; z-index: 4; }
 .connection-pulse { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; animation: pulse 1.5s ease infinite; }
 .thread-root { position: relative; min-height: 0; display: flex; flex: 1 1 0; flex-direction: column; overflow: hidden; }
-.thread-viewport { width: 100%; min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.message-column { --column-padding: 32px; width: min(100%, 880px); min-height: calc(100% - 160px); margin: 0 auto; padding: 38px var(--column-padding) 20px; }
-.thread-footer { position: sticky; bottom: 0; width: 100%; padding: 28px max(24px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); background: linear-gradient(to bottom, transparent 0, color-mix(in srgb, var(--surface) 94%, transparent) 28px, var(--surface) 70%); z-index: 3; }
+.thread-viewport { width: 100%; min-height: 0; display: flex; flex: 1; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+/* Let the real footer height place short transcripts. A fixed composer reserve
+   leaves a content-dependent gap whenever the composer is shorter than it. */
+.message-column { --column-padding: 32px; width: min(100%, 880px); flex: 1 0 auto; margin: 0 auto; padding: 38px var(--column-padding) 20px; }
+.thread-footer { position: sticky; bottom: 0; width: 100%; flex: none; padding: 28px max(24px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); background: linear-gradient(to bottom, transparent 0, color-mix(in srgb, var(--surface) 94%, transparent) 28px, var(--surface) 70%); z-index: 3; }
 .scroll-bottom { position: sticky; bottom: 143px; width: 36px; height: 36px; display: grid; place-items: center; margin: 0 auto; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: 50%; box-shadow: var(--shadow-sm); cursor: pointer; z-index: 4; }
 .scroll-bottom:disabled { display: none; }
 .detail-loading { position: absolute; inset: 64px 0 0; display: grid; place-items: center; pointer-events: none; background: color-mix(in srgb, var(--surface) 74%, transparent); z-index: 4; }
@@ -735,6 +738,22 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .reasoning-part p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reasoning-root:not(.activity-root)[data-streaming="true"] .reasoning-text { mask-image: linear-gradient(to bottom, #000 70%, transparent 100%); }
 .activity-root .reasoning-text-content { gap: 2px; }
+.run-attribution { display: grid; gap: 6px; margin: 8px 0 4px; padding: 8px 10px; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 9px; font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.run-attribution.is-fallback { border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); background: color-mix(in srgb, var(--warning) 7%, var(--surface-subtle)); }
+.run-attribution-summary { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; }
+.run-attribution-warning { padding: 2px 6px; color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); border-radius: 5px; font-size: 8.5px; letter-spacing: .05em; text-transform: uppercase; }
+.run-attribution-effort { color: var(--warning); }
+.run-attribution-details > summary { width: fit-content; color: var(--text-muted); cursor: pointer; font-size: 10px; }
+.run-attribution-details dl { display: grid; gap: 4px; margin: 7px 0; }
+.run-attribution-details dl > div { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; }
+.run-attribution-details dt { color: var(--text-muted); }
+.run-attribution-details dd { margin: 0; font-family: var(--font-mono); font-size: 9.5px; }
+.run-attribution-details ol { margin: 6px 0 0; padding-left: 20px; }
+.run-attribution-details p { margin: 6px 0 0; color: var(--warning); }
+.run-attribution.is-compact { min-width: 0; max-width: min(42vw, 560px); margin: 0; padding: 3px 7px; display: block; overflow: hidden; background: transparent; border-radius: 6px; font-size: 9.5px; white-space: nowrap; text-overflow: ellipsis; }
+.run-attribution.is-compact .run-attribution-summary { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.run-attribution.is-compact .run-attribution-summary > span { margin-left: 5px; }
+.activity-steps > .run-attribution { margin: 5px 8px 7px 0; }
 /* Prose the turn wrote between its tool calls. It narrates the rows around it,
    so it reads as the log's own voice rather than as another answer: no card, no
    disclosure, and text soft enough that the tool names stay the scan targets. */
@@ -902,15 +921,15 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .agent-settings-config code { color: var(--text-soft); }
 .agent-settings-warning { color: var(--warning) !important; }
 .agent-settings-error { color: var(--danger) !important; }
-.agent-settings-dialog .secondary-button, .agent-settings-dialog .primary-button { min-height: 38px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; border-radius: 9px; cursor: pointer; font-weight: 650; }
+.agent-settings-dialog .secondary-button, .agent-settings-dialog .primary-button { min-height: 38px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; border-radius: 9px; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 650; line-height: 1.5; }
 .agent-settings-dialog .secondary-button { margin-right: auto; color: var(--accent); background: var(--accent-soft); }
 .provider-auth-section { display: grid; gap: 10px; padding-top: 15px; border-top: 1px solid var(--line); }
 .provider-auth-list { display: grid; gap: 9px; }
 .provider-auth-card { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; }
 .provider-auth-flow { display: grid; gap: 8px; padding: 12px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; }
 .provider-auth-heading { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.provider-auth-heading > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.provider-auth-state { padding: 3px 6px; color: var(--text-muted); background: var(--surface); border-radius: 6px; font-size: 8px; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+.provider-auth-heading > b { overflow: hidden; font-family: inherit; font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.provider-auth-state { padding: 3px 6px; color: var(--text-muted); background: var(--surface); border-radius: 6px; font-family: inherit; font-size: 10px; font-weight: 750; line-height: 1.5; letter-spacing: .05em; text-transform: uppercase; }
 .provider-auth-state.is-ok, .provider-auth-state.is-not-applicable { color: var(--accent); }
 .provider-auth-state.is-needs-action { color: var(--warning); }
 .provider-auth-card .secondary-button, .provider-auth-flow .secondary-button { width: fit-content; margin: 0; }
@@ -976,6 +995,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .assistant-content > .activity-row.is-job { margin: 5px 0 11px; padding: 3px 4px; background: color-mix(in srgb, var(--panel) 32%, var(--surface)); border: 1px solid var(--line); border-radius: 12px; }
 .activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
 @media (max-width: 560px) {
+  .model-controls-label { display: none; }
   /* A phone's row cannot hold the purpose and the meta side by side: the flex
      line first squeezed the purpose to nothing and then clipped the meta, so a
      failed wake read as "wak…". Job rows alone go to two lines here — purpose

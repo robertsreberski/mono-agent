@@ -107,7 +107,7 @@ function contentMessages(options: RuntimeRunOptions): string[] {
 }
 
 describe("configured durable Pi history", () => {
-  it("replays canonical history once on warm turns and reseeds a fresh epoch after cancellation", async () => {
+  it("replays canonical history once and reseeds fresh epochs after cancellation and failure", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-app-durable-pi-history-"));
     tempDirs.push(dir);
     const identityPath = join(dir, "IDENTITY.md");
@@ -134,6 +134,8 @@ describe("configured durable Pi history", () => {
         maxTurns: 4,
         workspace: dir,
         session: { mode: "continuous", idleTimeoutMs: 60_000 },
+        compaction: { enabled: false },
+        retry: { primaryAttempts: 1, backoffMs: 1_000, maxBackoffMs: 15_000 },
       },
       providers: { piNative: { piSessionsRoot } },
       context: { identityPath, selectedSkills: [] },
@@ -158,6 +160,8 @@ describe("configured durable Pi history", () => {
     let warmContext: PiContext | undefined;
     let cancelledContext: PiContext | undefined;
     let freshAfterCancellationContext: PiContext | undefined;
+    let failedContext: PiContext | undefined;
+    let freshAfterFailureContext: PiContext | undefined;
     const cancellation = new AbortController();
     faux.setResponses([
       (context) => {
@@ -177,6 +181,17 @@ describe("configured durable Pi history", () => {
         freshAfterCancellationContext = context as PiContext;
         return fauxAssistantMessage([fauxText("turn-3-assistant")]);
       },
+      (context) => {
+        failedContext = context as PiContext;
+        return fauxAssistantMessage([], {
+          stopReason: "error",
+          errorMessage: "invalid_request_error: bad schema",
+        });
+      },
+      (context) => {
+        freshAfterFailureContext = context as PiContext;
+        return fauxAssistantMessage([fauxText("turn-4-assistant")]);
+      },
     ]);
 
     let firstHarness: AgentHarness | undefined;
@@ -191,6 +206,7 @@ describe("configured durable Pi history", () => {
           piResolvedModel: piModel,
           piResolvedModels: models,
           effort: "none",
+          piMaxRetries: 0,
         },
       });
 
@@ -278,6 +294,7 @@ describe("configured durable Pi history", () => {
           piResolvedModel: piModel,
           piResolvedModels: models,
           effort: "none",
+          piMaxRetries: 0,
         },
       });
       const third = await resumedHarness.run({
@@ -310,6 +327,53 @@ describe("configured durable Pi history", () => {
         expect.stringContaining("<cancelled_turn_history version=\"1\">") as unknown as string,
         expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-3-user$/u),
       ]);
+
+      const failed = await resumedHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "failed-turn-user",
+        abortSignal: new AbortController().signal,
+      });
+      expect(failed.failure).toMatchObject({
+        kind: "provider_unavailable",
+        message: expect.stringContaining("invalid_request_error"),
+      });
+      expect(transcriptOf(failedContext).at(-1)).toMatch(/^user:(?:[\s\S]*\n\n)?failed-turn-user$/u);
+      const historyAfterFailure = await seedStore.load("durable-conversation");
+      expect(historyAfterFailure.at(-2)).toMatchObject({ role: "user", content: "failed-turn-user" });
+      expect(historyAfterFailure.at(-1)).toMatchObject({
+        role: "assistant",
+        idempotencyKey: expect.stringMatching(/^failed-turn:v1:/u),
+        content: expect.stringContaining('<failed_turn_history version="1">'),
+      });
+
+      await resumedHarness.dispose?.();
+      resumedHarness = undefined;
+
+      const afterFailureRuntime = observeRuntime(createMonoRuntime());
+      resumedHarness = await createConfiguredAgentHarness({
+        config,
+        cwd: dir,
+        runtime: afterFailureRuntime.runtime,
+        runtimeOptions: {
+          piResolvedModel: piModel,
+          piResolvedModels: models,
+          effort: "none",
+          piMaxRetries: 0,
+        },
+      });
+      const fourth = await resumedHarness.run({
+        conversationId: "durable-conversation",
+        userMessage: "turn-4-user",
+        abortSignal: new AbortController().signal,
+      });
+      expect(fourth.text).toBe("turn-4-assistant");
+      const seededAfterFailure = contentMessages(afterFailureRuntime.calls[0]!.options);
+      expect(seededAfterFailure).toEqual(expect.arrayContaining([
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?failed-turn-user$/u),
+        expect.stringContaining('<failed_turn_history version="1">') as unknown as string,
+        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-4-user$/u),
+      ]));
+      expect(transcriptOf(freshAfterFailureContext)).toEqual(seededAfterFailure);
     } finally {
       await resumedHarness?.dispose?.();
       await firstHarness?.dispose?.();

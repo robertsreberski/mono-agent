@@ -169,7 +169,7 @@ export function responseMetadata(
 
 function runtimeMetadata(result: RuntimeResult): Record<string, unknown> {
   const metadata: Record<string, unknown> = {};
-  for (const key of ["model", "sdk", "effort", "numTurns", "durationMs", "usage", "cost", "providerSessionId", "runtimeWarnings", "diagnostics", "capabilitiesUsed"] as const) {
+  for (const key of ["model", "sdk", "effort", "effectiveEffort", "numTurns", "durationMs", "usage", "cost", "providerSessionId", "runtimeWarnings", "diagnostics", "capabilitiesUsed"] as const) {
     if (result[key] !== undefined) {
       metadata[key] = result[key];
     }

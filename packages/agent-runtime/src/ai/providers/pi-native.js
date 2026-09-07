@@ -612,6 +612,19 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runtimeWarnings,
     });
 
+    // Report the live harness value, not a downstream recreation of Pi's
+    // thinking-level normalization. This also captures any future adapter-side
+    // adjustment between construction and the provider request.
+    const providerEffectiveEffort = harness.getThinkingLevel();
+    onEvent({
+      type: "provider_execution_config",
+      sdk: "pi",
+      model: reference,
+      ...(options.effort ? { effort: options.effort } : {}),
+      effectiveEffort: providerEffectiveEffort,
+      timestamp: Date.now(),
+    });
+
     onEvent({
       type: "provider_request_started",
       sdk: "pi",
@@ -856,6 +869,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       capabilitiesUsed,
       usageMeasured: hasMeasuredUsage(runTranscript),
       structuredResult: runState.structuredResult,
+      effectiveEffort: providerEffectiveEffort,
     });
   } catch (err) {
     runState.externalAbort ||= !!options.abortSignal?.aborted;
@@ -890,6 +904,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runtimeWarnings,
       isRetryable,
       piTransport,
+      effectiveEffort: harness?.getThinkingLevel?.(),
     });
   } finally {
     try { await harness?.close?.(); } catch { /* best-effort */ }

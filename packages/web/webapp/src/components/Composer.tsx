@@ -3,9 +3,14 @@ import {
   unstable_useComposerInput,
   useAuiState,
 } from "@assistant-ui/react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { canUploadInConsole } from "../capabilities";
-import { noteComposerDraft, resetComposerDraft } from "../composer-draft";
+import {
+  composerDraftKey,
+  noteComposerAttachments,
+  readComposerDraft,
+  writeComposerDraft,
+} from "../composer-draft";
 import { useConsoleStore } from "../console-store";
 import {
   detectSkillQuery,
@@ -72,7 +77,13 @@ export const buildComposerCommands = ({
 
 export function Composer({ runSettings }: { readonly runSettings?: ReactNode } = {}) {
   const store = useConsoleStore();
-  const { connection, selectedAgent, selectedThread } = store;
+  const {
+    connection,
+    selectedAgent,
+    selectedAgentId,
+    selectedThread,
+    selectedThreadId,
+  } = store;
   const composer = unstable_useComposerInput();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [selection, setSelection] = useState({ start: composer.value.length, end: composer.value.length });
@@ -107,24 +118,28 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
     [skillQuery, store.skillRegistry],
   );
 
-  // What the operator has typed or staged and not sent, published where a
-  // decision that would DESTROY it can read it -- the automatic service-worker
-  // reload above all. Not a hook there: the answer is wanted at the moment of
-  // the event, and subscribing would re-render for every keystroke.
-  const draftRef = useRef(false);
+  const draftContextKey = composerDraftKey(selectedAgentId, selectedThreadId);
+  const restorationRef = useRef<{ readonly key: string | null; readonly text: string } | null>(null);
+  useLayoutEffect(() => {
+    const text = readComposerDraft(selectedAgentId, selectedThreadId);
+    restorationRef.current = { key: draftContextKey, text };
+    if (composer.value !== text) composer.setText(text);
+    setSelection({ start: text.length, end: text.length });
+    savedBrowseSelection.current = { start: text.length, end: text.length };
+  }, [draftContextKey]);
+
+  // The layout restoration must be observed before passive mirroring starts;
+  // otherwise assistant-ui's previous context value can overwrite the saved
+  // target draft during a rapid A -> B -> A switch.
   useEffect(() => {
-    draftRef.current = composer.value.trim().length > 0 || attachmentCount > 0;
-    noteComposerDraft(draftRef.current);
-  }, [attachmentCount, composer.value]);
-  useEffect(() => () => {
-    // Only when there is genuinely nothing left. This component is unmounted
-    // for reasons that have nothing to do with the draft -- `Chat` swaps it for
-    // the archived and cron read-only footers -- while the assistant-ui runtime
-    // that actually holds the text outlives it. Resetting unconditionally said
-    // "nothing is held" about a draft still sitting in that runtime, and the
-    // next visibility flip reloaded over it.
-    if (!draftRef.current) resetComposerDraft();
-  }, []);
+    const restoration = restorationRef.current;
+    if (restoration !== null && restoration.key === draftContextKey) {
+      if (composer.value !== restoration.text) return;
+      restorationRef.current = null;
+    }
+    writeComposerDraft(selectedAgentId, selectedThreadId, composer.value);
+    noteComposerAttachments(attachmentCount > 0);
+  }, [attachmentCount, composer.value, draftContextKey, selectedAgentId, selectedThreadId]);
 
   const captureSelection = useCallback((input = inputRef.current) => {
     if (input === null) return;

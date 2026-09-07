@@ -1,8 +1,9 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useConsoleStore } from "../console-store";
 import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
 import {
   buildSelectorModels,
+  initialCatalogProviders,
   providerOfModel,
   type ModelSelectorOption,
 } from "./model-catalog";
@@ -36,6 +37,24 @@ export function useRunControls() {
   // existing thread resolves back to the agent's configured default.
   const agentDefaultModel = model === "" ? effectiveModel : selectedAgent?.defaultModel ?? "";
   const agentDefaultEffort = effort === "" ? effectiveEffort : selectedAgent?.defaultEffort ?? "";
+
+  const firstRenderProviders = useMemo(
+    () => initialCatalogProviders(selectedAgent, effectiveModel, modelOptions),
+    [effectiveModel, modelOptions, selectedAgent],
+  );
+  const initialCatalogScope = [
+    selectedAgent?.sourceId ?? "",
+    selectedAgent?.generation ?? "",
+    effectiveModel,
+    ...firstRenderProviders,
+  ].join("\u0000");
+  const requestedInitialCatalogScopeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (firstRenderProviders.length === 0) return;
+    if (requestedInitialCatalogScopeRef.current === initialCatalogScope) return;
+    requestedInitialCatalogScopeRef.current = initialCatalogScope;
+    for (const provider of firstRenderProviders) void ensureProviderCatalog(provider);
+  }, [ensureProviderCatalog, firstRenderProviders, initialCatalogScope]);
 
   const usage = useMemo<ConsoleUsage | null>(() => {
     const projected = conversationConsoleUsage(detail, { selectedModel: effectiveModel });
