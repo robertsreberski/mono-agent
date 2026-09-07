@@ -66,6 +66,37 @@ describe("provider-model-catalog", () => {
       selectionBasis: "subscription_zero_price",
     });
   });
+
+  it("resolves configured aliases before breaking equal-price ties", () => {
+    const selected = selectProviderAuthCheckModel("fixture", {
+      providers: [{
+        id: "fixture", type: "openai_compat", baseUrl: "http://127.0.0.1:9999",
+        models: [
+          { name: "a", pricing: { input_per_million: 0, output_per_million: 0 } },
+          { name: "b", alias: "preferred", pricing: { input_per_million: 0, output_per_million: 0 } },
+        ],
+      }],
+      configuredRoutes: [parseMonoRuntimeModelReference("fixture:preferred")],
+    });
+
+    expect(selected).toMatchObject({
+      kind: "selected",
+      model: { reference: "fixture:b" },
+      selectionBasis: "subscription_zero_price",
+    });
+  });
+
+  it("does not widen a nonempty built-in allowlist when every declaration is ineligible", () => {
+    const model = listPiBuiltinModels("anthropic")[0]!;
+    for (const configuredModel of [
+      { name: model.id, enabled: false },
+      { name: model.id, capabilities: { advertised_capabilities: ["embedding"] } },
+    ]) {
+      expect(selectProviderAuthCheckModel("anthropic", {
+        providers: [{ id: "anthropic", models: [configuredModel] }],
+      })).toMatchObject({ kind: "unavailable", code: "no_eligible_model" });
+    }
+  });
   it("advertises nothing when the agent declared no providers and has no routes", () => {
     // `providers` is a support gate. An agent that declared nothing and routes
     // nowhere advertises nothing, rather than every Pi built-in it holds no

@@ -173,10 +173,17 @@ export function selectProviderAuthCheckModel(
   }
   const routeOrder = configuredRoutes
     .filter((ref) => ref.provider === providerId)
-    .map((ref) => ref.model);
-  const allowed = configured?.models?.filter((model) => model.enabled !== false
+    .map((ref) => configured?.models?.find(
+      (model) => model.name === ref.model || model.alias === ref.model,
+    )?.name ?? ref.model);
+  const declaredModels = configured?.models;
+  const narrowed = declaredModels !== undefined && declaredModels.length > 0;
+  const allowed = declaredModels?.filter((model) => model.enabled !== false
     && !(model.capabilities?.advertised_capabilities?.includes("embedding")
       && !model.capabilities.advertised_capabilities.includes("completion")));
+  if (narrowed && allowed?.length === 0) {
+    return { kind: "unavailable", code: "no_eligible_model", message: "No eligible text model is configured." };
+  }
   const candidates: Array<{ model: RuntimeModelReference; cost?: number }> = [];
   const isLocal = configured?.type !== undefined || providerId === "ollama" || providerId === "lmstudio";
   if (isLocal) {
@@ -195,9 +202,9 @@ export function selectProviderAuthCheckModel(
     } catch {
       return { kind: "unavailable", code: "provider_unsupported", message: "Provider model catalog is unavailable." };
     }
-    const allowedNames = allowed === undefined || allowed.length === 0
+    const allowedNames = !narrowed
       ? undefined
-      : new Set(allowed.map((model) => model.name));
+      : new Set((allowed ?? []).map((model) => model.name));
     for (const snapshot of snapshots) {
       if (allowedNames !== undefined && !allowedNames.has(snapshot.id)) continue;
       if (!snapshot.input.includes("text")) continue;

@@ -144,7 +144,7 @@ Primary modules:
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
 | Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
-| Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/login/check parsers plus the host-owned operator interfaces and stable operation errors. |
+| Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/login/check parsers, including closed check state/code/message projections, plus the host-owned operator interfaces and stable operation errors. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
@@ -397,6 +397,7 @@ ProcessJobWakeDisposition
 ProcessJobWakeState
 ProviderAuthCheckOperator
 ProviderAuthCheckResult
+ProviderAuthCheckResultCode
 ProviderAuthCheckResultState
 ProviderAuthCheckSelectionBasis
 ProviderAuthCheckSessionSnapshot

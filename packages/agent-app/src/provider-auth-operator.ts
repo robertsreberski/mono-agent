@@ -12,6 +12,7 @@ import {
   type ProviderAuthSessionInput,
   type ProviderAuthSessionSnapshot,
   type ProviderAuthSessionStartInput,
+  type ProviderAuthStatusSnapshot,
 } from "@mono-agent/agent-contracts";
 import { loginPiProviderAuth } from "@mono-agent/agent-runtime/ai";
 
@@ -53,13 +54,18 @@ export interface CreateProviderAuthOperatorOptions extends ProviderAuthStatusOpt
   readonly checkProviderTimeoutMs?: number;
   readonly checkBatchTimeoutMs?: number;
   readonly checkCooldownMs?: number;
+  /** Deterministic test seam shared by login and check admission preparation. */
+  readonly statusSnapshot?: () => Promise<ProviderAuthStatusSnapshot>;
 }
 
 export function createProviderAuthOperator(options: CreateProviderAuthOperatorOptions): ProviderAuthOperator {
   const sessions = new Map<string, LiveSession>();
   const now = options.now ?? Date.now;
   let stopping = false;
-  const loginActive = () => [...sessions.values()].some((candidate) => !isTerminal(candidate.snapshot.state));
+  let loginAdmission = false;
+  const loginActive = () => loginAdmission
+    || [...sessions.values()].some((candidate) => !isTerminal(candidate.snapshot.state));
+  const statusSnapshot = async () => await (options.statusSnapshot?.() ?? providerAuthStatusSnapshot(options));
   const checks = createProviderAuthCheckManager({
     ...options,
     isLoginActive: loginActive,
@@ -179,45 +185,57 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
 
   return {
     async status() {
-      return await providerAuthStatusSnapshot(options);
+      return await statusSnapshot();
     },
     async start(input) {
       if (stopping) throw new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409);
-      const status = await providerAuthStatusSnapshot(options);
-      const provider = status.providers.find((candidate) => candidate.providerId === input.providerId);
-      if (provider === undefined) throw new ProviderAuthOperationError("provider_auth_invalid_request", "Provider is not used by this agent.", 400);
-      if (!provider.methods.some((method) => method.authType === input.authType && method.strategy === input.strategy)) {
-        throw new ProviderAuthOperationError("provider_auth_conflict", "The selected authentication method is unavailable.", 409);
-      }
-      if (options.config.providers?.piAuthPath === undefined) {
-        throw new ProviderAuthOperationError("provider_auth_unavailable", "The Pi auth store is not configured.", 503);
-      }
       if (loginActive() || checks.isActive()) {
         throw new ProviderAuthOperationError("provider_auth_conflict", "Another provider authentication is already active.", 409);
       }
-      const createdAt = new Date(now()).toISOString();
-      const expiresAt = new Date(now() + SESSION_TTL_MS).toISOString();
-      const snapshot: ProviderAuthSessionSnapshot = {
-        schema: PROVIDER_AUTH_SESSION_SCHEMA,
-        id: randomUUID(),
-        providerId: input.providerId,
-        authType: input.authType,
-        strategy: input.strategy,
-        state: "pending",
-        createdAt,
-        updatedAt: createdAt,
-        expiresAt,
-      };
-      const session: LiveSession = { snapshot, abort: new AbortController(), prompt: undefined };
-      sessions.set(snapshot.id, session);
-      session.timeout = setTimeout(() => {
-        session.abort.abort(new Error("Provider authentication timed out."));
-        terminal(session, "failed", { code: "timed_out", message: "Provider authentication timed out." });
-      }, SESSION_TTL_MS);
-      session.timeout.unref?.();
-      startRun(session);
-      await Promise.resolve();
-      return session.snapshot;
+      loginAdmission = true;
+      try {
+        const status = await statusSnapshot();
+        if (stopping) {
+          throw new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409);
+        }
+        if (checks.isActive()) {
+          throw new ProviderAuthOperationError("provider_auth_conflict", "Another provider authentication is already active.", 409);
+        }
+        const provider = status.providers.find((candidate) => candidate.providerId === input.providerId);
+        if (provider === undefined) throw new ProviderAuthOperationError("provider_auth_invalid_request", "Provider is not used by this agent.", 400);
+        if (!provider.methods.some((method) => method.authType === input.authType && method.strategy === input.strategy)) {
+          throw new ProviderAuthOperationError("provider_auth_conflict", "The selected authentication method is unavailable.", 409);
+        }
+        if (options.config.providers?.piAuthPath === undefined) {
+          throw new ProviderAuthOperationError("provider_auth_unavailable", "The Pi auth store is not configured.", 503);
+        }
+        const createdAt = new Date(now()).toISOString();
+        const expiresAt = new Date(now() + SESSION_TTL_MS).toISOString();
+        const snapshot: ProviderAuthSessionSnapshot = {
+          schema: PROVIDER_AUTH_SESSION_SCHEMA,
+          id: randomUUID(),
+          providerId: input.providerId,
+          authType: input.authType,
+          strategy: input.strategy,
+          state: "pending",
+          createdAt,
+          updatedAt: createdAt,
+          expiresAt,
+        };
+        const session: LiveSession = { snapshot, abort: new AbortController(), prompt: undefined };
+        sessions.set(snapshot.id, session);
+        loginAdmission = false;
+        session.timeout = setTimeout(() => {
+          session.abort.abort(new Error("Provider authentication timed out."));
+          terminal(session, "failed", { code: "timed_out", message: "Provider authentication timed out." });
+        }, SESSION_TTL_MS);
+        session.timeout.unref?.();
+        startRun(session);
+        await Promise.resolve();
+        return session.snapshot;
+      } finally {
+        loginAdmission = false;
+      }
     },
     async get(sessionId) {
       return sessions.get(sessionId)?.snapshot;

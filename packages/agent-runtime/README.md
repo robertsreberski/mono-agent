@@ -168,7 +168,7 @@ provider-supplied known kind when available and otherwise `runtime_error`.
 | `listPiBuiltinModels()` / `getPiBuiltinModel()` | Read cloned snapshots from the runtime-owned, exact-pinned Pi model catalog without importing Pi directly |
 | `resolvePiOAuthApiKey()` / `loginPiOAuth()` | Use the runtime-owned Pi OAuth implementation without importing Pi's mutable provider registry |
 | `describePiProviderAuth()` / `checkPiProviderAuth()` / `loginPiProviderAuth()` | Bridge Pi's provider-owned auth descriptions, detection, prompts, device events, and returned credential without exposing its mutable registry |
-| `runPiProviderCheck()` | Execute one isolated, bounded Pi request for an explicitly selected provider/model and return only a fixed sanitized outcome |
+| `runPiProviderCheck()` | Execute one isolated, bounded Pi request for an explicitly selected provider/model and return only a fixed sanitized outcome; only provider-construction options are admitted, never session/history/tool/hook state |
 | `createMetricsObserver()` | Aggregate normalized event, token, cache, cost, tool, error, turn, and approval metrics |
 
 Most hosts should use `@mono-agent/runtime-adapter` instead of importing deep
@@ -201,6 +201,7 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+ProviderCheckCode
 ProviderCheckOutcome
 RISK_TIERS
 RUNTIME_CAPABILITIES
@@ -403,6 +404,7 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+ProviderCheckCode
 ProviderCheckOutcome
 RUNTIME_CAPABILITIES
 RuntimeBridge

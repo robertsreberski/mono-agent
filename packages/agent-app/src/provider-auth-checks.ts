@@ -5,7 +5,9 @@ import {
   ProviderAuthOperationError,
   type ProviderAuthCheckOperator,
   type ProviderAuthCheckResult,
+  type ProviderAuthCheckResultCode,
   type ProviderAuthCheckSessionSnapshot,
+  type ProviderAuthStatusSnapshot,
 } from "@mono-agent/agent-contracts";
 import { resolveConfiguredProviders } from "@mono-agent/config";
 import { runPiProviderCheck } from "@mono-agent/agent-runtime/ai";
@@ -29,7 +31,7 @@ const MAX_CONCURRENCY = 2;
 
 export interface ProviderAuthCheckExecution {
   readonly state: "passed" | "auth_failed" | "network_failed" | "quota_limited" | "model_not_entitled" | "inconclusive";
-  readonly code: string;
+  readonly code: ProviderAuthCheckResultCode;
   readonly message: string;
 }
 
@@ -46,6 +48,14 @@ interface LiveCheckSession {
   batchTimedOut: boolean;
 }
 
+interface PendingCheckAdmission {
+  readonly idempotencyKey: string;
+  readonly promise: Promise<ProviderAuthCheckSessionSnapshot>;
+  readonly resolve: (snapshot: ProviderAuthCheckSessionSnapshot) => void;
+  readonly reject: (error: unknown) => void;
+  cancelled: boolean;
+}
+
 export interface ProviderAuthCheckManager extends ProviderAuthCheckOperator {
   isActive(): boolean;
   credentialPersisted(providerId: string): void;
@@ -60,6 +70,8 @@ export interface CreateProviderAuthCheckManagerOptions extends ProviderAuthStatu
     model: RuntimeModelReference,
     signal: AbortSignal,
   ) => Promise<ProviderAuthCheckExecution>;
+  /** Deterministic test seam for the passive snapshot prepared before a batch. */
+  readonly statusSnapshot?: () => Promise<ProviderAuthStatusSnapshot>;
   readonly providerTimeoutMs?: number;
   readonly batchTimeoutMs?: number;
   readonly cooldownMs?: number;
@@ -77,6 +89,7 @@ export function createProviderAuthCheckManager(
   const cooldownMs = options.cooldownMs ?? CHECK_COOLDOWN_MS;
   let lastTerminalAt = Number.NEGATIVE_INFINITY;
   let stopping = false;
+  let pendingAdmission: PendingCheckAdmission | undefined;
 
   const current = () => [...sessions.values()].find((session) => session.snapshot.state === "running");
   const replaceResult = (session: LiveCheckSession, providerId: string, result: ProviderAuthCheckResult) => {
@@ -155,7 +168,10 @@ export function createProviderAuthCheckManager(
       ...result,
       state,
       checkedAt,
-      code: state === outcome.state ? outcome.code : state,
+      code: revision !== capturedRevision ? "stale"
+        : timedOut || session.batchTimedOut ? "timeout"
+          : session.cancelled ? "cancelled"
+            : outcome.code,
       message: state === "stale" ? "Credential changed before the check completed."
         : state === "timeout" ? "The provider check timed out."
           : state === "cancelled" ? "The provider check was cancelled."
@@ -190,28 +206,16 @@ export function createProviderAuthCheckManager(
     finish(session, session.cancelled ? "cancelled" : "completed");
   };
 
-  return {
-    isActive: () => current() !== undefined,
-    async start(input) {
-      if (stopping) throw new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409);
-      const replayId = byIdempotencyKey.get(input.idempotencyKey);
-      if (replayId !== undefined) {
-        const replay = sessions.get(replayId);
-        if (replay !== undefined) return replay.snapshot;
+  const conflict = (message = "Another provider authentication operation is already active.") =>
+    new ProviderAuthOperationError("provider_auth_conflict", message, 409);
+
+  const prepare = async (admission: PendingCheckAdmission) => {
+    try {
+      const status = await (options.statusSnapshot?.() ?? providerAuthStatusSnapshot(options));
+      if (admission.cancelled || stopping || pendingAdmission !== admission) {
+        throw conflict("Provider authentication is stopping.");
       }
-      if (options.isLoginActive() || current() !== undefined) {
-        throw new ProviderAuthOperationError("provider_auth_conflict", "Another provider authentication operation is already active.", 409);
-      }
-      if (now() - lastTerminalAt < cooldownMs) {
-        const remainingMs = cooldownMs - (now() - lastTerminalAt);
-        throw new ProviderAuthOperationError(
-          "provider_auth_rate_limited",
-          "Wait before running provider checks again.",
-          429,
-          Math.max(1, Math.ceil(remainingMs / 1_000)),
-        );
-      }
-      const status = await providerAuthStatusSnapshot(options);
+      if (options.isLoginActive() || current() !== undefined) throw conflict();
       const resolvedProviders = resolveConfiguredProviders(options.config);
       const configuredRoutes = status.providers.flatMap((provider) => provider.usages.flatMap((usage) => {
         try { return [parseMonoRuntimeModelReference(usage.model)]; } catch { return []; }
@@ -249,7 +253,7 @@ export function createProviderAuthCheckManager(
           expiresAt: new Date(now() + CHECK_RETENTION_MS).toISOString(),
           results,
         },
-        idempotencyKey: input.idempotencyKey,
+        idempotencyKey: admission.idempotencyKey,
         abort: new AbortController(),
         providerAborts: new Map(),
         revisions: new Map(status.providers.map((provider) => [provider.providerId, credentialRevisions.get(provider.providerId) ?? 0])),
@@ -257,7 +261,8 @@ export function createProviderAuthCheckManager(
         batchTimedOut: false,
       };
       sessions.set(session.snapshot.id, session);
-      byIdempotencyKey.set(input.idempotencyKey, session.snapshot.id);
+      byIdempotencyKey.set(admission.idempotencyKey, session.snapshot.id);
+      if (pendingAdmission === admission) pendingAdmission = undefined;
       session.batchTimeout = setTimeout(() => {
         session.batchTimedOut = true;
         session.abort.abort(new Error("Provider check batch timed out."));
@@ -265,7 +270,56 @@ export function createProviderAuthCheckManager(
       session.batchTimeout.unref?.();
       session.run = runBatch(session);
       await Promise.resolve();
-      return session.snapshot;
+      admission.resolve(session.snapshot);
+    } catch (error) {
+      admission.reject(error);
+    } finally {
+      if (pendingAdmission === admission) pendingAdmission = undefined;
+    }
+  };
+
+  return {
+    isActive: () => pendingAdmission !== undefined || current() !== undefined,
+    start(input) {
+      if (stopping) return Promise.reject(conflict("Provider authentication is stopping."));
+      const replayId = byIdempotencyKey.get(input.idempotencyKey);
+      if (replayId !== undefined) {
+        const replay = sessions.get(replayId);
+        if (replay !== undefined) return Promise.resolve(replay.snapshot);
+      }
+      if (pendingAdmission !== undefined) {
+        return pendingAdmission.idempotencyKey === input.idempotencyKey
+          ? pendingAdmission.promise
+          : Promise.reject(conflict());
+      }
+      if (options.isLoginActive() || current() !== undefined) {
+        return Promise.reject(conflict());
+      }
+      if (now() - lastTerminalAt < cooldownMs) {
+        const remainingMs = cooldownMs - (now() - lastTerminalAt);
+        return Promise.reject(new ProviderAuthOperationError(
+          "provider_auth_rate_limited",
+          "Wait before running provider checks again.",
+          429,
+          Math.max(1, Math.ceil(remainingMs / 1_000)),
+        ));
+      }
+      let resolve!: PendingCheckAdmission["resolve"];
+      let reject!: PendingCheckAdmission["reject"];
+      const promise = new Promise<ProviderAuthCheckSessionSnapshot>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      const admission: PendingCheckAdmission = {
+        idempotencyKey: input.idempotencyKey,
+        promise,
+        resolve,
+        reject,
+        cancelled: false,
+      };
+      pendingAdmission = admission;
+      void prepare(admission);
+      return promise;
     },
     async get(checkId) {
       return sessions.get(checkId)?.snapshot;
@@ -287,6 +341,12 @@ export function createProviderAuthCheckManager(
     },
     async stop() {
       stopping = true;
+      const preparing = pendingAdmission;
+      if (preparing !== undefined) {
+        preparing.cancelled = true;
+        pendingAdmission = undefined;
+        preparing.reject(conflict("Provider authentication is stopping."));
+      }
       const active = current();
       if (active !== undefined) {
         active.cancelled = true;

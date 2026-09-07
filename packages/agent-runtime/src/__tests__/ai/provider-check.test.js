@@ -44,6 +44,53 @@ describe("provider check", () => {
     expect(JSON.stringify(outcome)).not.toContain("secret-not-returned");
   });
 
+  it("admits only provider-construction seams into the isolated runtime", async () => {
+    const execute = vi.fn(async () => ({ text: "OK", failureKind: null }));
+    const supported = {
+      customProvider: { id: "fixture" },
+      customModel: { provider_id: "fixture", model_name: "cheap" },
+      modelCapabilities: { tool_use: false },
+      isPrivateProvider: true,
+      piResolvedModel: { provider: "fixture", id: "cheap" },
+      piResolvedModels: { marker: "models" },
+      piResolvedCapabilities: { reasoning: false },
+    };
+    await runPiProviderCheck({
+      model: { provider: "fixture", model: "cheap" },
+      execute,
+      runtimeOptions: {
+        ...supported,
+        sessionId: "ordinary-session",
+        providerSessionId: "provider-session",
+        providerAttributionSessionId: "attribution-session",
+        runId: "ordinary-run",
+        sessionKeepAlive: true,
+        piSessionsRoot: "/tmp/must-not-be-used",
+        messages: [{ role: "user", content: "ordinary history" }],
+        observers: [() => undefined],
+        onEvent: () => undefined,
+        toolLifecycleSink: {},
+        skills: [{ name: "ordinary-skill" }],
+        tools: [{ name: "ordinary-tool" }],
+      },
+    });
+
+    const options = execute.mock.calls[0][1];
+    expect(options).toMatchObject(supported);
+    expect(options).not.toHaveProperty("sessionId");
+    expect(options).not.toHaveProperty("providerSessionId");
+    expect(options).not.toHaveProperty("providerAttributionSessionId");
+    expect(options).not.toHaveProperty("runId");
+    expect(options).not.toHaveProperty("sessionKeepAlive");
+    expect(options).not.toHaveProperty("piSessionsRoot");
+    expect(options).not.toHaveProperty("observers");
+    expect(options).not.toHaveProperty("onEvent");
+    expect(options).not.toHaveProperty("toolLifecycleSink");
+    expect(options).not.toHaveProperty("skills");
+    expect(options).not.toHaveProperty("tools");
+    expect(options.messages).toEqual([{ role: "user", content: "OK" }]);
+  });
+
   it("caps the model dispatched to the real provider transport", async () => {
     const sessionsRoot = mkdtempSync(join(tmpdir(), "provider-check-cap-"));
     try {
@@ -100,6 +147,8 @@ describe("provider check", () => {
     ["invalid_grant", undefined, "auth_failed"],
     ["429 insufficient_quota", undefined, "quota_limited"],
     ["model_not_found", undefined, "model_not_entitled"],
+    ["404 Not Found", undefined, "inconclusive"],
+    ["404 model not found", undefined, "model_not_entitled"],
     ["403 Forbidden", undefined, "inconclusive"],
     ["ECONNREFUSED", "provider_unavailable", "network_failed"],
   ])("classifies %s narrowly", (text, failureKind, state) => {

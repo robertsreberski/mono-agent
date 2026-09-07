@@ -66,7 +66,7 @@ beforeEach(() => {
     results: [
       { providerId: "fixture-pass", label: "Fixture pass", state: "passed", model: "fixture-pass:cheap", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded." },
       { providerId: "fixture-auth", label: "Fixture auth", state: "auth_failed", model: "fixture-auth:cheap", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "credential_rejected", message: "Provider rejected the configured credential." },
-      { providerId: "fixture-quota", label: "Fixture quota", state: "quota_limited", model: "fixture-quota:cheap", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "quota_limited", message: "Provider quota prevented the check." },
+      { providerId: "fixture-quota", label: "Fixture quota", state: "quota_limited", model: "fixture-quota:cheap", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "quota_limited", message: "Provider quota or rate limit prevented the check." },
     ],
   });
   apiMock.cancelProviderAuth.mockResolvedValue(undefined);

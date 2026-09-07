@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+import type { ProviderAuthStatusSnapshot } from "@mono-agent/agent-contracts";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -13,6 +14,52 @@ const tempDirs: string[] = [];
 afterEach(async () => await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }))));
 
 describe("provider auth operator", () => {
+  it("excludes login and check preparation in both start orderings", async () => {
+    let releaseCheckStatus: ((status: ProviderAuthStatusSnapshot) => void) | undefined;
+    const status = operatorStatus();
+    const checkFirst = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+      statusSnapshot: vi.fn()
+        .mockImplementationOnce(async () => await new Promise<ProviderAuthStatusSnapshot>((resolve) => {
+          releaseCheckStatus = resolve;
+        }))
+        .mockResolvedValue(status),
+      checkExecute: async () => ({ state: "passed", code: "passed", message: "Provider request succeeded." }),
+      checkCooldownMs: 0,
+      login: (async () => ({ type: "api_key", key: "fake" })) as never,
+      persist: (async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); }) as never,
+    });
+    const preparingCheck = checkFirst.checks!.start({ idempotencyKey: "check-first" });
+    await expect(checkFirst.start({
+      providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
+    })).rejects.toMatchObject({ code: "provider_auth_conflict", status: 409 });
+    releaseCheckStatus?.(status);
+    await preparingCheck;
+    await checkFirst.stop();
+
+    let releaseLoginStatus: ((status: ProviderAuthStatusSnapshot) => void) | undefined;
+    const loginFirst = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+      statusSnapshot: async () => await new Promise<ProviderAuthStatusSnapshot>((resolve) => {
+        releaseLoginStatus = resolve;
+      }),
+      checkExecute: async () => ({ state: "passed", code: "passed", message: "Provider request succeeded." }),
+      checkCooldownMs: 0,
+      login: (async () => ({ type: "api_key", key: "fake" })) as never,
+      persist: (async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); }) as never,
+    });
+    const preparingLogin = loginFirst.start({
+      providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
+    });
+    await expect(loginFirst.checks!.start({ idempotencyKey: "login-first" }))
+      .rejects.toMatchObject({ code: "provider_auth_conflict", status: 409 });
+    releaseLoginStatus?.(status);
+    await preparingLogin;
+    await loginFirst.stop();
+  });
+
   it("keeps passive status reads side-effect free", async () => {
     const checkExecute = vi.fn();
     const operator = createProviderAuthOperator({
@@ -241,4 +288,20 @@ function config(model = "opencode-go:kimi-k2.6"): MonoAgentConfig {
     runtime: { model: parseMonoRuntimeModelReference(model) },
     providers: { piAuthPath: "/tmp/mono-agent-provider-auth-test.json" },
   } as unknown as MonoAgentConfig;
+}
+
+function operatorStatus(): ProviderAuthStatusSnapshot {
+  return {
+    schema: "mono-agent.provider-auth.v1",
+    generatedAt: "2026-09-06T12:00:00.000Z",
+    providers: [{
+      providerId: "opencode-go",
+      label: "OpenCode Go",
+      usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+      state: "present",
+      source: "stored",
+      verification: "not_verified",
+      methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true }],
+    }],
+  };
 }

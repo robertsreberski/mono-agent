@@ -9,6 +9,7 @@ const SYSTEM_PROMPT = "Provider connectivity check. Reply OK.";
 const USER_PROMPT = "OK";
 
 /** @typedef {"passed"|"auth_failed"|"network_failed"|"quota_limited"|"model_not_entitled"|"inconclusive"} ProviderCheckOutcome */
+/** @typedef {"passed"|"credential_rejected"|"provider_unavailable"|"quota_limited"|"model_not_entitled"|"forbidden"|"inconclusive"|"cancelled"} ProviderCheckCode */
 
 /**
  * Execute one target-only Pi request. This intentionally bypasses the router:
@@ -23,14 +24,15 @@ const USER_PROMPT = "OK";
  *   abortSignal?: AbortSignal,
  *   execute?: typeof generatePiNativeResponse,
  * }} input
- * @returns {Promise<{state: ProviderCheckOutcome, code: string, message: string}>}
+ * @returns {Promise<{state: ProviderCheckOutcome, code: ProviderCheckCode, message: string}>}
  */
 export async function runPiProviderCheck(input) {
   const execute = input.execute ?? generatePiNativeResponse;
+  const runtimeOptions = providerConstructionOptions(input.runtimeOptions);
   let result;
   try {
     result = await execute(SYSTEM_PROMPT, {
-      ...(input.runtimeOptions ?? {}),
+      ...runtimeOptions,
       model: {
         provider: input.model.provider,
         model: input.model.model,
@@ -78,7 +80,7 @@ export async function runPiProviderCheck(input) {
  * are closed, fixed projections and contain no provider-controlled content.
  * @param {string} text
  * @param {string|undefined} failureKind
- * @returns {{state: ProviderCheckOutcome, code: string, message: string}}
+ * @returns {{state: ProviderCheckOutcome, code: ProviderCheckCode, message: string}}
  */
 export function classifyProviderCheckFailure(text, failureKind) {
   const value = String(text || "");
@@ -90,7 +92,7 @@ export function classifyProviderCheckFailure(text, failureKind) {
     || /(rate limit|too many requests|insufficient[_ ]quota|quota exceeded|billing limit|\b429\b)/i.test(value)) {
     return { state: "quota_limited", code: "quota_limited", message: "Provider quota or rate limit prevented the check." };
   }
-  if (/(model[_ ]not[_ ]found|unsupported model|no access to (?:the )?model|model entitlement|\b404\b)/i.test(value)) {
+  if (/(model[_ -]?not[_ -]?found|unsupported model|no access to (?:the )?model|model entitlement|model[^\n]{0,120}(?:does not exist|not found|unavailable))/i.test(value)) {
     return { state: "model_not_entitled", code: "model_not_entitled", message: "The credential could not use the selected model." };
   }
   if (/forbidden|\b403\b/i.test(value)) {
@@ -101,6 +103,29 @@ export function classifyProviderCheckFailure(text, failureKind) {
     return { state: "network_failed", code: "provider_unavailable", message: "The provider could not be reached." };
   }
   return { state: "inconclusive", code: "inconclusive", message: "The provider check failed without a safe diagnosis." };
+}
+
+/**
+ * Keep the public check facade isolated from ordinary run state. These are the
+ * only provider/model construction seams required by configured local
+ * providers and deterministic faux-provider tests.
+ * @param {Record<string, unknown>|undefined} options
+ * @returns {Record<string, unknown>}
+ */
+function providerConstructionOptions(options) {
+  if (options === undefined) return {};
+  const allowed = [
+    "customProvider",
+    "customModel",
+    "modelCapabilities",
+    "isPrivateProvider",
+    "piResolvedModel",
+    "piResolvedModels",
+    "piResolvedCapabilities",
+  ];
+  return Object.fromEntries(allowed
+    .filter((key) => Object.hasOwn(options, key))
+    .map((key) => [key, options[key]]));
 }
 
 export const PROVIDER_CHECK_PROMPT = Object.freeze({ system: SYSTEM_PROMPT, user: USER_PROMPT, maxOutputTokens: 4 });

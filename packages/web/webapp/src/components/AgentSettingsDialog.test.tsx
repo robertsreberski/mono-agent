@@ -211,6 +211,28 @@ describe("AgentSettingsDialog", () => {
     expect(screen.queryByText(/Primary model/u)).not.toBeInTheDocument();
   });
 
+  it("shows a recorded auth failure ahead of a not-applicable static state", async () => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "keyless-fixture", label: "Keyless fixture",
+        usages: [{ kind: "primary", model: "keyless-fixture:model", label: "Primary model" }],
+        state: "not_applicable", verification: "not_applicable", methods: [],
+        lastFailure: {
+          kind: "provider_auth", message: "Provider rejected the configured credential.",
+          model: "keyless-fixture:model", observedAt: "2026-09-06T11:59:00.000Z",
+        },
+      }],
+    });
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+
+    expect(await screen.findByText("Needs action")).toBeVisible();
+    expect(screen.queryByText("Not applicable")).not.toBeInTheDocument();
+  });
+
   it("does not promote static presence to OK and runs one compact explicit batch", async () => {
     storeMock.selectedAgent = agent("alpha", {
       label: "Alpha",
@@ -314,8 +336,98 @@ describe("AgentSettingsDialog", () => {
     expect(await screen.findByText("Checks complete: 0 of 1 passed.")).toBeVisible();
   });
 
+  it("keeps polling through unchanged running snapshots until the check completes", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "environment", verification: "not_verified", methods: [],
+      }],
+    });
+    const running = {
+      schema: "mono-agent.provider-auth-check.v1", id: "check-recurring", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "opencode-go", label: "OpenCode Go", state: "running",
+        model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+      }],
+    } as const;
+    const completed = {
+      ...running,
+      state: "completed",
+      updatedAt: "2026-09-06T12:00:03.000Z",
+      results: [{
+        ...running.results[0], state: "passed", checkedAt: "2026-09-06T12:00:03.000Z",
+        code: "passed", message: "Provider request succeeded.",
+      }],
+    } as const;
+    apiMock.beginProviderAuthCheck.mockResolvedValue(running);
+    apiMock.providerAuthCheck
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce({ ...running })
+      .mockResolvedValueOnce(completed);
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+
+    expect(await screen.findByText("Checking…")).toBeVisible();
+    await vi.waitFor(() => expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(3), { timeout: 4_500 });
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    expect(screen.getByText("Checks complete: 1 of 1 passed.")).toBeVisible();
+  }, 6_000);
+
+  it("closes a method chooser when a live check starts", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "anthropic", label: "Anthropic",
+        usages: [{ kind: "primary", model: "anthropic:claude", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified",
+        methods: [
+          { authType: "oauth", strategy: "paste_back", label: "Anthropic OAuth", recommended: true },
+          { authType: "api_key", strategy: "api_key_prompt", label: "Anthropic API key", recommended: false },
+        ],
+      }],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1", id: "check-methods", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "anthropic", label: "Anthropic", state: "running",
+        model: "anthropic:claude", selectionBasis: "subscription_zero_price",
+      }],
+    });
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Re-authenticate" }));
+    expect(screen.getByRole("button", { name: "Anthropic OAuth" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Anthropic API key" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Run live checks for all displayed providers" }));
+
+    expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Anthropic OAuth" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Anthropic API key" })).not.toBeInTheDocument();
+  });
+
   it("starts OpenAI device code directly and offers paste-back only after it is unavailable", async () => {
-    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
     const methods = [
       { authType: "oauth", strategy: "device_code", label: "OpenAI Codex (device code)", recommended: true },
       { authType: "oauth", strategy: "paste_back", label: "OpenAI Codex (paste redirect)", recommended: false },
@@ -338,6 +450,15 @@ describe("AgentSettingsDialog", () => {
     apiMock.beginProviderAuth.mockResolvedValueOnce(failed).mockResolvedValueOnce({
       ...failed, id: "session-paste", strategy: "paste_back", state: "pending", error: undefined,
     });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1", id: "check-retry", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "openai-codex", label: "OpenAI Codex", state: "running",
+        model: "openai-codex:gpt-5.6-terra", selectionBasis: "subscription_zero_price",
+      }],
+    });
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Authenticate" }));
@@ -346,10 +467,17 @@ describe("AgentSettingsDialog", () => {
     ));
     const retry = await screen.findByRole("button", { name: "Retry with browser paste-back" });
     expect(screen.queryByText("Choose how to authenticate OpenAI Codex")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Run live checks for all displayed providers" }));
+    expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    expect(retry).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel live provider checks" }));
+    await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-retry"));
+    await vi.waitFor(() => expect(retry).toBeEnabled());
     fireEvent.click(retry);
     await vi.waitFor(() => expect(apiMock.beginProviderAuth).toHaveBeenNthCalledWith(
       2, "alpha", "openai-codex", methods[1],
     ));
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "Cancel authentication" })).toBeEnabled());
   });
 
   it("renders paste-back instructions as a safe external link and cancels an active session on close", async () => {

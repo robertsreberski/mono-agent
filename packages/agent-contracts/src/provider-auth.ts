@@ -41,6 +41,21 @@ export type ProviderAuthCheckSelectionBasis =
   | "catalog_pricing"
   | "subscription_zero_price"
   | "sole_candidate_unknown_price";
+export type ProviderAuthCheckResultCode =
+  | "passed"
+  | "credential_rejected"
+  | "provider_unavailable"
+  | "quota_limited"
+  | "model_not_entitled"
+  | "forbidden"
+  | "inconclusive"
+  | "cancelled"
+  | "provider_unsupported"
+  | "no_eligible_model"
+  | "pricing_unavailable"
+  | "timeout"
+  | "stale"
+  | "not_run";
 
 export interface ProviderAuthUsage {
   readonly kind: "primary" | "fallback" | "memory_llm" | "cron" | "webhook";
@@ -139,7 +154,7 @@ export interface ProviderAuthCheckResult {
   readonly model?: string;
   readonly selectionBasis?: ProviderAuthCheckSelectionBasis;
   readonly checkedAt?: string;
-  readonly code?: string;
+  readonly code?: ProviderAuthCheckResultCode;
   readonly message?: string;
 }
 
@@ -405,6 +420,11 @@ function parseCheckResult(value: unknown): ProviderAuthCheckResult {
   if (root.checkedAt !== undefined && !isoDate(root.checkedAt)) invalid("provider auth check time");
   if (root.code !== undefined && !boundedString(root.code)) invalid("provider auth check code");
   if (root.message !== undefined && !boundedString(root.message)) invalid("provider auth check message");
+  if ((root.code === undefined) !== (root.message === undefined)) invalid("provider auth check result");
+  if (root.code !== undefined && root.message !== undefined
+    && !validCheckResultProjection(root.state, root.code, root.message)) {
+    invalid("provider auth check result");
+  }
   return {
     providerId: root.providerId,
     label: root.label,
@@ -412,9 +432,45 @@ function parseCheckResult(value: unknown): ProviderAuthCheckResult {
     ...(root.model === undefined ? {} : { model: root.model }),
     ...(root.selectionBasis === undefined ? {} : { selectionBasis: root.selectionBasis }),
     ...(root.checkedAt === undefined ? {} : { checkedAt: root.checkedAt }),
-    ...(root.code === undefined ? {} : { code: root.code }),
+    ...(root.code === undefined ? {} : { code: root.code as ProviderAuthCheckResultCode }),
     ...(root.message === undefined ? {} : { message: root.message }),
   };
+}
+
+const CHECK_RESULT_MESSAGES: Readonly<Record<
+  ProviderAuthCheckResultState,
+  Readonly<Partial<Record<ProviderAuthCheckResultCode, readonly string[]>>>
+>> = {
+  pending: {},
+  running: {},
+  passed: { passed: ["Provider request succeeded."] },
+  auth_failed: { credential_rejected: ["Provider rejected the configured credential."] },
+  network_failed: { provider_unavailable: ["The provider could not be reached."] },
+  quota_limited: { quota_limited: ["Provider quota or rate limit prevented the check."] },
+  model_not_entitled: { model_not_entitled: ["The credential could not use the selected model."] },
+  inconclusive: {
+    forbidden: ["The provider refused the check for an unspecified reason."],
+    inconclusive: ["The provider check failed without a safe diagnosis."],
+    cancelled: ["The provider check did not complete."],
+  },
+  unsupported: {
+    provider_unsupported: ["Provider is disabled.", "Provider model catalog is unavailable."],
+    no_eligible_model: ["No eligible text model is configured."],
+    pricing_unavailable: ["Model prices are not comparable."],
+  },
+  timeout: { timeout: ["The provider check timed out."] },
+  cancelled: { cancelled: ["The provider check was cancelled."] },
+  stale: { stale: ["Credential changed before the check completed."] },
+  not_run: { not_run: ["The provider check did not start before the batch deadline."] },
+};
+
+function validCheckResultProjection(
+  state: ProviderAuthCheckResultState,
+  code: string,
+  message: string,
+): boolean {
+  const messages = CHECK_RESULT_MESSAGES[state][code as ProviderAuthCheckResultCode];
+  return messages?.includes(message) === true;
 }
 
 function exactRecord(value: unknown, keys: readonly string[], label: string, optional = false): Record<string, unknown> {

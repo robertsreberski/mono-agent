@@ -237,18 +237,26 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       return;
     }
     const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      void api.providerAuthCheck(sourceId, check.id, controller.signal).then((next) => {
-        if (!controller.signal.aborted) adoptCheck(next);
-      }).catch((caught) => {
-        if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
-      });
-    }, 1_000);
+    let timer: number | undefined;
+    const poll = () => {
+      timer = window.setTimeout(() => {
+        void api.providerAuthCheck(sourceId, check.id, controller.signal).then((next) => {
+          if (controller.signal.aborted) return;
+          adoptCheck(next);
+          if (!checkTerminal(next.state)) poll();
+        }).catch((caught) => {
+          if (controller.signal.aborted) return;
+          setAuthError(caught instanceof Error ? caught.message : String(caught));
+          poll();
+        });
+      }, 1_000);
+    };
+    poll();
     return () => {
       controller.abort();
-      window.clearTimeout(timer);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [sourceId, check?.id, check?.state, check?.updatedAt]);
+  }, [sourceId, check?.id, check?.state]);
 
   if (agent.supportsProviderAuth !== true) {
     return (
@@ -275,6 +283,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const startCheck = async () => {
     setBusy(true);
     setAuthError(null);
+    if (sessionRef.current === null) setSelectedProvider(null);
     try {
       adoptCheck(await api.beginProviderAuthCheck(sourceId, crypto.randomUUID()));
     } catch (caught) {
@@ -336,12 +345,14 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     }
   };
 
+  const checkActive = check !== null && !checkTerminal(check.state);
+
   return (
     <section className="provider-auth-section">
       <div className="provider-auth-title-row">
         <h3>Provider authentication</h3>
         {agent.supportsProviderAuthChecks === true && (
-          check !== null && !checkTerminal(check.state) ? (
+          checkActive ? (
             <button type="button" className="secondary-button provider-auth-neutral-button" aria-label="Cancel live provider checks" disabled={busy} onClick={() => void cancelCheck()}>
               Cancel checks
             </button>
@@ -387,7 +398,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
                 </span>
               </div>
               {actionable && (
-                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={busy || session !== null && !terminal(session.state) || check !== null && !checkTerminal(check.state)} onClick={() => openFlow(provider)}>
+                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={busy || session !== null && !terminal(session.state) || checkActive} onClick={() => openFlow(provider)}>
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
                 </button>
               )}
@@ -395,10 +406,10 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
           );
         })}
       </div>
-      {selectedProvider !== null && session === null && selectedProvider.methods.length > 1 && (
+      {selectedProvider !== null && session === null && selectedProvider.methods.length > 1 && !checkActive && (
         <div className="provider-auth-flow">
           {selectedProvider.methods.map((method) => (
-            <button key={method.authType + ":" + method.strategy} type="button" className="secondary-button" disabled={busy} onClick={() => void start(selectedProvider, method)}>
+            <button key={method.authType + ":" + method.strategy} type="button" className="secondary-button" disabled={busy || checkActive} onClick={() => void start(selectedProvider, method)}>
               {method.label}
             </button>
           ))}
@@ -439,7 +450,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
           {session.error?.code === "device_code_unavailable" && selectedProvider !== null && (() => {
             const pasteBack = selectedProvider.methods.find((method) => method.strategy === "paste_back");
             return pasteBack === undefined ? null : (
-              <button type="button" className="secondary-button" disabled={busy} onClick={() => void start(selectedProvider, pasteBack)}>
+              <button type="button" className="secondary-button" disabled={busy || checkActive} onClick={() => void start(selectedProvider, pasteBack)}>
                 Retry with browser paste-back
               </button>
             );
@@ -471,10 +482,13 @@ function providerAuthPresentation(provider: ProviderAuthProviderStatus): {
   readonly glyph: string;
   readonly label: string;
 } {
+  if (provider.lastFailure?.kind === "provider_auth") {
+    return { className: "is-needs-action", glyph: "⚠", label: "Needs action" };
+  }
   if (provider.state === "not_applicable") {
     return { className: "is-not-applicable", glyph: "–", label: "Not applicable" };
   }
-  if (provider.state !== "present" || provider.lastFailure?.kind === "provider_auth") {
+  if (provider.state !== "present") {
     return { className: "is-needs-action", glyph: "⚠", label: "Needs action" };
   }
   if (provider.verification === "verified_by_live_request" && provider.lastFailure === undefined) {
