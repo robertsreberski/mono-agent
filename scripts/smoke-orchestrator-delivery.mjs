@@ -30,6 +30,10 @@ const jobs = [];
 const wakes = [];
 const availability = [];
 const surfaceUpdates = [];
+const diagnosticStartedAt = Date.now();
+const recentSurfaces = new Map();
+const phases = { launchesBegun: 0, launchesEnded: 0, wakesBegun: 0, wakesEnded: 0 };
+let lastProgressAt = diagnosticStartedAt;
 let service;
 let ownership;
 let extension;
@@ -62,19 +66,63 @@ function toolOptions(controller) {
   return { ctx: childCtx, processJobsController: controller };
 }
 async function launch(controller, script, extra = {}) {
+  phases.launchesBegun += 1;
+  lastProgressAt = Date.now();
   const result = await execToolRun({ executable: process.execPath, args: ["--eval", script], workdir: workspace,
     background: true, timeout_ms: 10_000, ...extra }, toolOptions(controller));
   assert.equal(result.outcome.code, "background_started", result.text);
+  phases.launchesEnded += 1;
+  lastProgressAt = Date.now();
   return result.outcome.job_id;
+}
+function safeProjection(projection) {
+  return { depth: projection.limits.chainDepth, state: projection.state,
+    wakeState: projection.wake.state, wakeAttempts: projection.wake.attempts,
+    errorCode: projection.lastError?.code ?? null };
+}
+function diagnosticSnapshot(label, kind) {
+  const health = service?.health;
+  return { kind, label, elapsedMs: Date.now() - diagnosticStartedAt,
+    node: process.version, modulesABI: process.versions.modules,
+    jobsStarted: jobs.length, mainWakes: wakes.filter((wake) => !wake.ambiguous).length,
+    highestWakeDepth: Math.max(0, ...wakes.map((wake) => wake.depth ?? 0)),
+    lastProgressAgeMs: Date.now() - lastProgressAt, phases: { ...phases },
+    health: health === undefined ? null : { state: health.state,
+      quarantinedTransactions: health.quarantinedTransactions,
+      failureOperation: health.failureOperation ?? null },
+    recentSurfaces: [...recentSurfaces.values()].slice(-8) };
+}
+async function timeoutDiagnostic(label) {
+  const snapshot = diagnosticSnapshot(label, "smoke_timeout");
+  // Public projections only, with a separate bounded read so a wedged store
+  // cannot hide the already-cached diagnostic evidence or stall the report.
+  let timer;
+  try {
+    snapshot.currentJobs = await Promise.race([
+      service?.list().then((records) => records.map(safeProjection).slice(-8)) ?? Promise.resolve([]),
+      new Promise((resolve) => { timer = setTimeout(() => resolve("diagnostic_read_timeout"), 2_000); }),
+    ]);
+  } catch {
+    snapshot.currentJobs = "diagnostic_read_failed";
+  } finally {
+    clearTimeout(timer);
+  }
+  console.error(JSON.stringify(snapshot));
 }
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 90_000;
+  let nextDiagnosticAt = Date.now() + 15_000;
   while (Date.now() < deadline) {
     if (callbackError) throw callbackError;
     const result = await predicate();
     if (result) return result;
+    if (Date.now() >= nextDiagnosticAt) {
+      console.error(JSON.stringify(diagnosticSnapshot(label, "smoke_progress")));
+      nextDiagnosticAt = Date.now() + 15_000;
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+  await timeoutDiagnostic(label);
   throw new Error(`Timed out: ${label}`);
 }
 
@@ -129,8 +177,16 @@ try {
   const coreConfig = { runtime: { workspace, model: { provider: "openai-codex", model: "gpt-5.6-sol", reference: "openai-codex:gpt-5.6-sol" } },
     tools: { allowedTools: ["Exec", "Bash"], disallowedTools: [] }, sandbox: { mode: "off" } };
   service = await openProcessJobsService({ cwd: agentRoot, workspace, settings, registration,
-    surfaceUpdate: async (projection) => { surfaceUpdates.push({ jobId: projection.jobId, state: projection.state }); },
+    surfaceUpdate: async (projection) => {
+      surfaceUpdates.push({ jobId: projection.jobId, state: projection.state });
+      recentSurfaces.delete(projection.jobId);
+      recentSurfaces.set(projection.jobId, safeProjection(projection));
+      if (recentSurfaces.size > 8) recentSurfaces.delete(recentSurfaces.keys().next().value);
+      lastProgressAt = Date.now();
+    },
     wake: async (input) => {
+      phases.wakesBegun += 1;
+      lastProgressAt = Date.now();
       try {
         if (input.projection.jobId === unknownId || input.projection.output.preview.includes("AMBIGUOUS_RECEIPT")) {
           wakes.push({ jobId: input.projection.jobId, ambiguous: true });
@@ -147,6 +203,9 @@ try {
       } catch (error) {
         callbackError = error;
         throw error;
+      } finally {
+        phases.wakesEnded += 1;
+        lastProgressAt = Date.now();
       }
     },
   });
