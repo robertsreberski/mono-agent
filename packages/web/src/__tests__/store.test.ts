@@ -2000,6 +2000,129 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("summarizes jobs across the full thread without loading their output into the listing", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const unrelated = store.createThread("agent-one");
+    expect(thread.jobActivity).toBeUndefined();
+    const projections = (["running", "starting", "queued"] as const).map((state, index) =>
+      fakeProcessJob({
+        state,
+        jobId: "11111111-1111-4111-8111-11111111111" + index,
+        conversationId: "web:" + thread.id,
+        preview: "Process output stays out of the summary",
+      }));
+    const upsert = (processJob: ReturnType<typeof fakeProcessJob>, responseText?: string) =>
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob,
+        deliveryKey: processJob.wake.deliveryKey,
+        ...(responseText === undefined ? {} : { responseText }),
+      });
+    const cardIds = projections.map((job) => upsert(job).messageId);
+    expect(store.getThread(thread.id)?.jobActivity).toEqual({ queued: 1, starting: 1, running: 1 });
+    const revision = store.getThread(thread.id)?.revision;
+    expect(upsert(projections[0]!).duplicate).toBe(true);
+    expect(store.getThread(thread.id)?.revision).toBe(revision);
+    expect(store.getThread(unrelated.id)?.jobActivity).toBeUndefined();
+
+    for (let index = 0; index < 20; index += 1) {
+      const turn = store.beginTurn({ threadId: thread.id, text: "Later prompt", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "Later reply");
+    }
+    expect(store.getThreadDetail(thread.id)?.messages.some((message) => cardIds.includes(message.id))).toBe(false);
+    const page = store.listThreadsPage({ sourceId: "agent-one", archived: false });
+    expect(page.threads.find((item) => item.id === thread.id)?.jobActivity)
+      .toEqual({ queued: 1, starting: 1, running: 1 });
+    expect(JSON.stringify(page)).not.toContain("Process output stays out of the summary");
+
+    const completed = fakeProcessJob({
+      state: "succeeded", jobId: projections[0]!.jobId, conversationId: "web:" + thread.id,
+    });
+    const reply = "  Results\n are ready.  " + "x".repeat(200);
+    upsert(completed, reply);
+    const expected = {
+      queued: 1, starting: 1, running: 0,
+      latestTerminal: {
+        state: "succeeded", completedAt: completed.timestamps.completedAt,
+        replyPreview: reply.replace(/\s+/gu, " ").trim().slice(0, 160),
+      },
+    };
+    expect(store.getThread(thread.id)?.jobActivity).toEqual(expected);
+    expect(store.getThread(thread.id)!.revision).toBeGreaterThan(revision!);
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThread(thread.id)?.jobActivity).toEqual(expected);
+    expect(reopened.getThread(thread.id)?.runState.status).toBe("complete");
+    reopened.close();
+  });
+
+  it.each(["succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted"] as const)(
+    "projects terminal job state %s without marking the foreground as running", async (state) => {
+      const base = await temporaryRoot();
+      cleanup.push(base);
+      const store = await WebStore.open({ stateDir: join(base, "state") });
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const processJob = fakeProcessJob({ state, conversationId: "web:" + thread.id });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob, deliveryKey: processJob.wake.deliveryKey,
+      });
+      expect(store.getThread(thread.id)).toMatchObject({
+        runState: { status: "idle" },
+        jobActivity: {
+          queued: 0, starting: 0, running: 0,
+          latestTerminal: { state, completedAt: processJob.timestamps.completedAt },
+        },
+      });
+      store.close();
+    },
+  );
+
+  it("orders terminal jobs by completion instead of card creation or wake retries", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const first = fakeProcessJob({ conversationId: "web:" + thread.id });
+    const second = fakeProcessJob({
+      state: "failed", jobId: "22222222-2222-4222-8222-222222222222", conversationId: "web:" + thread.id,
+    });
+    const upsert = (job: ReturnType<typeof fakeProcessJob>) => store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+    });
+    upsert(first);
+    upsert(second);
+    const completed = fakeProcessJob({ state: "succeeded", conversationId: "web:" + thread.id });
+    upsert({ ...completed, timestamps: { ...completed.timestamps, completedAt: "2026-07-21T09:00:05.000Z" } });
+    // This older failure's delivery can be updated after the successful job.
+    upsert({ ...second, wake: { ...second.wake, state: "delivered", attempts: 1,
+      lastAttemptAt: "2026-07-21T09:00:06.000Z" } });
+    expect(store.getThread(thread.id)?.jobActivity?.latestTerminal)
+      .toEqual({ state: "succeeded", completedAt: "2026-07-21T09:00:05.000Z" });
+    store.close();
+  });
+
+  it("uses a completed job response as its message preview", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const processJob = fakeProcessJob({ state: "succeeded", conversationId: "web:" + thread.id });
+    store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: thread.id, processJob, deliveryKey: processJob.wake.deliveryKey,
+      responseText: "  Worker\n results are ready. ",
+    });
+    expect(store.getThread(thread.id)?.lastMessagePreview).toBe("Worker results are ready.");
+    store.close();
+  });
+
   it("retains one evolving process-job card without synthesizing a web turn", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
