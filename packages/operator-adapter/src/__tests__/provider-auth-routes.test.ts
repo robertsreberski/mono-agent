@@ -1,8 +1,10 @@
 import type {
+  ProviderAuthCheckSessionSnapshot,
   ProviderAuthOperator,
   ProviderAuthSessionSnapshot,
   ProviderAuthStatusSnapshot,
 } from "@mono-agent/agent-contracts";
+import { ProviderAuthOperationError } from "@mono-agent/agent-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { startTuiAdapter, type TuiAdapterStartResult } from "../index.js";
@@ -34,6 +36,15 @@ const session: ProviderAuthSessionSnapshot = {
   expiresAt: "2026-09-06T12:20:00.000Z",
   prompt: { id: "prompt-1", type: "secret", message: "OpenCode API key" },
 };
+const check: ProviderAuthCheckSessionSnapshot = {
+  schema: "mono-agent.provider-auth-check.v1",
+  id: "check-1",
+  state: "completed",
+  createdAt: "2026-09-06T12:00:00.000Z",
+  updatedAt: "2026-09-06T12:00:01.000Z",
+  expiresAt: "2026-09-06T12:10:01.000Z",
+  results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "passed", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded." }],
+};
 
 describe("provider auth routes", () => {
   it("keeps every route bearer-protected when the operator endpoint has an API key", async () => {
@@ -43,6 +54,11 @@ describe("provider auth routes", () => {
       get: vi.fn(async () => session),
       submit: vi.fn(async () => ({ ...session, state: "succeeded", prompt: undefined } as never)),
       cancel: vi.fn(async () => undefined),
+      checks: {
+        start: vi.fn(async () => check),
+        get: vi.fn(async () => check),
+        cancel: vi.fn(async () => undefined),
+      },
       stop: vi.fn(async () => undefined),
     };
     const server = await startTuiAdapter({
@@ -55,7 +71,7 @@ describe("provider auth routes", () => {
     servers.push(server);
     const headers = { authorization: "Bearer owner-key" };
     const info = await fetch(`${server.baseUrl}/v1/info`, { headers });
-    expect(await info.json()).toMatchObject({ capabilities: { providerAuth: { version: 1 } } });
+    expect(await info.json()).toMatchObject({ capabilities: { providerAuth: { version: 1, checks: { version: 1 } } } });
     const denied = await fetch(`${server.baseUrl}/v1/provider-auth`);
     expect(denied.status).toBe(401);
     expect(denied.headers.get("cache-control")).toContain("no-store");
@@ -97,6 +113,47 @@ describe("provider auth routes", () => {
     expect(cancelled.status).toBe(204);
     expect(cancelled.headers.get("cache-control")).toContain("no-store");
     expect(operator.cancel).toHaveBeenCalledWith("session-1");
+
+    const checkCreated = await fetch(`${server.baseUrl}/v1/provider-auth/checks`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "click-one" }),
+    });
+    expect(checkCreated.status).toBe(201);
+    expect(checkCreated.headers.get("cache-control")).toContain("no-store");
+    expect(await checkCreated.json()).toEqual(check);
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`, { headers })).json()).toEqual(check);
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`, { method: "DELETE", headers })).status).toBe(204);
+    expect(operator.checks?.cancel).toHaveBeenCalledWith("check-1");
+  });
+
+  it("returns a bounded cooldown with Retry-After", async () => {
+    const operator: ProviderAuthOperator = {
+      status: async () => status,
+      start: async () => session,
+      get: async () => session,
+      submit: async () => session,
+      cancel: async () => undefined,
+      checks: {
+        start: async () => { throw new ProviderAuthOperationError("provider_auth_rate_limited", "Wait before running provider checks again.", 429, 37); },
+        get: async () => undefined,
+        cancel: async () => undefined,
+      },
+      stop: async () => undefined,
+    };
+    const server = await startTuiAdapter({
+      host: "127.0.0.1", port: 0, apiKey: "owner-key", providerAuth: operator,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+    const response = await fetch(`${server.baseUrl}/v1/provider-auth/checks`, {
+      method: "POST",
+      headers: { authorization: "Bearer owner-key", "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "click-two" }),
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("37");
+    expect(await response.json()).toMatchObject({ error: { code: "provider_auth_rate_limited" } });
   });
 
   it("advertises and serves the full login lifecycle when the operator endpoint has no API key", async () => {
@@ -106,6 +163,11 @@ describe("provider auth routes", () => {
       get: vi.fn(async () => session),
       submit: vi.fn(async () => ({ ...session, state: "succeeded", prompt: undefined } as never)),
       cancel: vi.fn(async () => undefined),
+      checks: {
+        start: vi.fn(async () => check),
+        get: vi.fn(async () => check),
+        cancel: vi.fn(async () => undefined),
+      },
       stop: vi.fn(async () => undefined),
     };
     const server = await startTuiAdapter({
@@ -117,7 +179,7 @@ describe("provider auth routes", () => {
     servers.push(server);
 
     expect(await (await fetch(`${server.baseUrl}/v1/info`)).json())
-      .toMatchObject({ capabilities: { providerAuth: { version: 1 } } });
+      .toMatchObject({ capabilities: { providerAuth: { version: 1, checks: { version: 1 } } } });
     expect(await (await fetch(`${server.baseUrl}/v1/provider-auth`)).json()).toEqual(status);
 
     const created = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
@@ -143,6 +205,18 @@ describe("provider auth routes", () => {
     expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, { method: "DELETE" })).status)
       .toBe(204);
     expect(operator.cancel).toHaveBeenCalledWith("session-1");
+
+    const checkCreated = await fetch(`${server.baseUrl}/v1/provider-auth/checks`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ idempotencyKey: "keyless-click" }),
+    });
+    expect(checkCreated.status).toBe(201);
+    expect(await checkCreated.json()).toEqual(check);
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`)).json()).toEqual(check);
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/checks/check-1`, { method: "DELETE" })).status)
+      .toBe(204);
+    expect(operator.checks?.cancel).toHaveBeenCalledWith("check-1");
   });
 
   it("keeps the capability and routes unavailable without a provider-auth operator", async () => {

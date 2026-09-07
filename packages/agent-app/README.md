@@ -439,7 +439,11 @@ verified turn. Missing Codex setup points to the official instructions at
 <https://developers.openai.com/codex/cli/>; the app never auto-installs it. The
 wizard offers browser callback and headless device-code login. Detected credentials
 skip redundant authentication but remain unverified until the exact route call
-successfully runs. Guided Pi setup covers Anthropic, GitHub Copilot, OpenAI Codex,
+successfully runs. Passive status treats refreshable OAuth expiry as present but
+unverified and fails closed on unusable material or unsafe stores. The optional
+provider-auth check operator runs one explicit target-only, bounded request per
+displayed provider, records only fixed sanitized outcomes, and never probes from
+a status read. Guided Pi setup covers Anthropic, GitHub Copilot, OpenAI Codex,
 and OpenCode-Go; other hand-authored Pi and local-provider configs remain compatible
 without being advertised as guided cloud integrations. Supported OAuth methods and
 the OpenCode-Go key flow come from the bundled upstream catalog;

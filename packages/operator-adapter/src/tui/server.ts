@@ -24,6 +24,8 @@ import {
   parseProviderAuthSessionInput,
   parseProviderAuthSessionSnapshot,
   parseProviderAuthSessionStartInput,
+  parseProviderAuthCheckSessionSnapshot,
+  parseProviderAuthCheckStartInput,
   parseProviderAuthStatusSnapshot,
   serializeAgentStreamFrame,
   type AgentAttachment,
@@ -356,6 +358,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const providerAuthSessionsPath = `${providerAuthPath}/sessions`;
   const providerAuthSessionPath = `${providerAuthSessionsPath}/:sessionId`;
   const providerAuthInputPath = `${providerAuthSessionPath}/input`;
+  const providerAuthChecksPath = `${providerAuthPath}/checks`;
+  const providerAuthCheckPath = `${providerAuthChecksPath}/:checkId`;
 
   app.get(infoPath, (req, res) => {
     if (!authorize(req, res, apiKey)) {
@@ -420,7 +424,12 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
               : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
             ...(options.providerAuth === undefined
               ? {}
-              : { providerAuth: { version: 1 } }),
+              : {
+                  providerAuth: {
+                    version: 1,
+                    ...(options.providerAuth.checks === undefined ? {} : { checks: { version: 1 } }),
+                  },
+                }),
           },
           ...(info?.label === undefined ? {} : { label: info.label }),
           ...(info?.model === undefined ? {} : { model: info.model }),
@@ -1074,6 +1083,64 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }).catch(next);
   });
 
+  app.post(providerAuthChecksPath, express.json({ limit: MAX_PROVIDER_AUTH_BODY_BYTES, strict: true }), (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    if (providerAuth.checks === undefined) {
+      next(new ProviderAuthOperationError("provider_auth_unavailable", "Provider checks are unavailable.", 503));
+      return;
+    }
+    let input;
+    try {
+      input = parseProviderAuthCheckStartInput(req.body);
+    } catch (error) {
+      next(error);
+      return;
+    }
+    void providerAuth.checks.start(input)
+      .then((snapshot) => sendProviderAuth(res, 201, parseProviderAuthCheckSessionSnapshot(snapshot)))
+      .catch(next);
+  });
+
+  app.get(providerAuthCheckPath, (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    if (providerAuth.checks === undefined) {
+      next(new ProviderAuthOperationError("provider_auth_unavailable", "Provider checks are unavailable.", 503));
+      return;
+    }
+    const checkId = boundedProviderAuthSessionId(req.params.checkId);
+    if (checkId === undefined) {
+      next(new TuiAdapterError("invalid_request", "A bounded provider auth check id is required."));
+      return;
+    }
+    void providerAuth.checks.get(checkId).then((snapshot) => {
+      if (snapshot === undefined) {
+        sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Provider auth check was not found."));
+      } else {
+        sendProviderAuth(res, 200, parseProviderAuthCheckSessionSnapshot(snapshot));
+      }
+    }).catch(next);
+  });
+
+  app.delete(providerAuthCheckPath, (req, res, next) => {
+    const providerAuth = requireProviderAuth(req, res);
+    if (providerAuth === undefined) return;
+    if (providerAuth.checks === undefined) {
+      next(new ProviderAuthOperationError("provider_auth_unavailable", "Provider checks are unavailable.", 503));
+      return;
+    }
+    const checkId = boundedProviderAuthSessionId(req.params.checkId);
+    if (checkId === undefined) {
+      next(new TuiAdapterError("invalid_request", "A bounded provider auth check id is required."));
+      return;
+    }
+    void providerAuth.checks.cancel(checkId).then(() => {
+      res.setHeader("Cache-Control", "private, no-store, max-age=0");
+      res.status(204).end();
+    }).catch(next);
+  });
+
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
@@ -1092,6 +1159,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       return;
     }
     if (error instanceof ProviderAuthOperationError) {
+      if (error.retryAfterSeconds !== undefined) {
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+      }
       sendJsonError(res, error.status, error);
       return;
     }

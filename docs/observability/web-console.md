@@ -118,10 +118,13 @@ At startup, mono-agent inspects the existing Tailscale Serve configuration. It p
 
 For every current app-owned agent, **Agent settings** includes one compact
 provider-authentication row for each provider used by the agent's effective
-primary, fallback, memory, and enabled static trigger routes. Each row shows
-`OK`, `Needs action`, or `Not applicable`; an **Authenticate** or
-**Re-authenticate** action appears only when that provider supports a recovery
-flow. A successful login refreshes the checklist immediately.
+primary, fallback, memory, and enabled static trigger routes. A row says **OK**
+only after a retained real request succeeds. Static credential presence is
+**Not verified**; unusable material and a later credential rejection are
+**Needs action**; keyless providers are **Not applicable**. Availability,
+network, quota, and model-entitlement failures do not become false auth claims.
+The evidence is best-effort and process-local: a restart loses check sessions
+and observations, and no provider-auth result is stored durably.
 
 One **Authenticate** or **Re-authenticate** action starts a short-lived session on
 the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and
@@ -129,6 +132,21 @@ code while the headless host polls. Anthropic shows an authorization URL and a
 field for the final localhost redirect URL or code because Pi 0.85.1 has no
 Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
+The neutral recovery action remains available at its normal button size whenever
+the provider exposes a supported login method, even when the row says **OK** or
+**Not verified**.
+
+**Run check** is one explicit section-level action for all provider rows already
+displayed. It sends one tiny request to each provider's deterministically chosen
+cheapest eligible model, with no fallback or alternate-model retry, and reports
+partial results inline. A pass proves only that provider, credential, and model
+worked at the check time. Missing or incomparable prices, including multiple
+candidates when any price is unknown, make no request; a sole eligible candidate
+with unknown price is the one documented exception. Opening or polling settings
+never sends provider traffic. Clicking **Run check** may consume quota or incur a
+minimum charge, and Pi may refresh OAuth and atomically update the agent's auth
+store. Checks run at most two providers concurrently, time out, can be cancelled,
+and observe a one-minute cooldown.
 
 Every browser proxy route requires the exact console origin. The addressed
 agent's provider-auth routes are keyless when its operator endpoint has no API
@@ -146,13 +164,15 @@ accepted because network reachability is deliberately treated as owner-equivalen
 authority; deployments that cannot make that assumption must use `--loopback`
 or add an authenticated network boundary before exposing the console.
 
-The session, URLs, codes, progress, and prompt values live only in agent/webapp
-memory. Responses use `Cache-Control: private, no-store`; closing the dialog or
-switching agents cancels the active session. The web service never reads or
-writes `providers.piAuthPath` and stores no session or submitted value in
-SQLite, threads, browser storage, or run history. The host writes only the Pi
-auth store through its owner-only lock and no-clobber transaction. Codex CLI
-worker credentials in `~/.codex/auth.json` are outside this feature.
+Login/check sessions, URLs, codes, progress, prompts, and sanitized check results
+live only in agent/webapp memory. Responses use `Cache-Control: private,
+no-store`; closing the dialog or switching agents cancels active work. The web
+service never reads or writes `providers.piAuthPath` and stores no session,
+submitted value, raw provider output, or raw provider error in SQLite, threads,
+browser storage, or run history. The host writes the Pi auth store only through
+its owner-only locked transaction, including an OAuth refresh performed by an
+explicit check. Codex CLI worker credentials in `~/.codex/auth.json` are outside
+this feature.
 
 ## How the service is structured
 

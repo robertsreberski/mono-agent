@@ -16,6 +16,10 @@ import {
 import { loginPiProviderAuth } from "@mono-agent/agent-runtime/ai";
 
 import { persistPiProviderCredential } from "./provider-setup.js";
+import {
+  createProviderAuthCheckManager,
+  type CreateProviderAuthCheckManagerOptions,
+} from "./provider-auth-checks.js";
 import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { providerAuthStatusSnapshot, type ProviderAuthStatusOptions } from "./provider-auth-status.js";
 
@@ -45,12 +49,25 @@ export interface CreateProviderAuthOperatorOptions extends ProviderAuthStatusOpt
   readonly login?: typeof loginPiProviderAuth;
   readonly persist?: typeof persistPiProviderCredential;
   readonly now?: () => number;
+  readonly checkExecute?: CreateProviderAuthCheckManagerOptions["execute"];
+  readonly checkProviderTimeoutMs?: number;
+  readonly checkBatchTimeoutMs?: number;
+  readonly checkCooldownMs?: number;
 }
 
 export function createProviderAuthOperator(options: CreateProviderAuthOperatorOptions): ProviderAuthOperator {
   const sessions = new Map<string, LiveSession>();
   const now = options.now ?? Date.now;
   let stopping = false;
+  const loginActive = () => [...sessions.values()].some((candidate) => !isTerminal(candidate.snapshot.state));
+  const checks = createProviderAuthCheckManager({
+    ...options,
+    isLoginActive: loginActive,
+    ...(options.checkExecute === undefined ? {} : { execute: options.checkExecute }),
+    ...(options.checkProviderTimeoutMs === undefined ? {} : { providerTimeoutMs: options.checkProviderTimeoutMs }),
+    ...(options.checkBatchTimeoutMs === undefined ? {} : { batchTimeoutMs: options.checkBatchTimeoutMs }),
+    ...(options.checkCooldownMs === undefined ? {} : { cooldownMs: options.checkCooldownMs }),
+  });
 
   const terminal = (session: LiveSession, state: "succeeded" | "failed" | "cancelled", error?: ProviderAuthSessionSnapshot["error"]) => {
     if (isTerminal(session.snapshot.state)) return;
@@ -148,6 +165,7 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
         },
       }),
     }).then(() => {
+      checks.credentialPersisted(input.providerId);
       options.observations.credentialPersisted(input.providerId);
       terminal(session, "succeeded");
     }).catch((error: unknown) => {
@@ -174,7 +192,7 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
       if (options.config.providers?.piAuthPath === undefined) {
         throw new ProviderAuthOperationError("provider_auth_unavailable", "The Pi auth store is not configured.", 503);
       }
-      if ([...sessions.values()].some((candidate) => !isTerminal(candidate.snapshot.state))) {
+      if (loginActive() || checks.isActive()) {
         throw new ProviderAuthOperationError("provider_auth_conflict", "Another provider authentication is already active.", 409);
       }
       const createdAt = new Date(now()).toISOString();
@@ -228,8 +246,10 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
         await session.run?.catch(() => undefined);
       }
     },
+    checks,
     async stop() {
       stopping = true;
+      await checks.stop();
       await Promise.all([...sessions.values()].map(async (session) => {
         if (!isTerminal(session.snapshot.state)) {
           session.abort.abort(new Error("Provider authentication service stopped."));

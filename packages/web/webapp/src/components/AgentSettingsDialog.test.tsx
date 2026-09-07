@@ -18,6 +18,9 @@ const apiMock = vi.hoisted(() => ({
   providerAuthSession: vi.fn(),
   submitProviderAuth: vi.fn(),
   cancelProviderAuth: vi.fn(),
+  beginProviderAuthCheck: vi.fn(),
+  providerAuthCheck: vi.fn(),
+  cancelProviderAuthCheck: vi.fn(),
 }));
 
 vi.mock("../console-store", () => ({ useConsoleStore: () => storeMock }));
@@ -59,6 +62,7 @@ beforeEach(() => {
   storeMock.setAgentRunDefaults.mockResolvedValue(undefined);
   storeMock.clearAgentRunDefaults.mockResolvedValue(undefined);
   apiMock.cancelProviderAuth.mockResolvedValue(undefined);
+  apiMock.cancelProviderAuthCheck.mockResolvedValue(undefined);
 });
 
 describe("AgentSettingsDialog", () => {
@@ -168,9 +172,9 @@ describe("AgentSettingsDialog", () => {
     expect(document.body.textContent).not.toContain("PROVIDER_AUTH_SECRET_SENTINEL");
     expect(await screen.findByRole("button", { name: "Close authentication" })).toBeVisible();
     await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
-    const ok = await screen.findByText("OK");
-    expect(ok).toBeVisible();
-    expectDialogTypography(ok, "10px");
+    const notVerified = await screen.findByText("Not verified");
+    expect(notVerified).toBeVisible();
+    expectDialogTypography(notVerified, "10px");
   });
 
   it("uses status-only rows and limits actions to actionable providers", async () => {
@@ -181,7 +185,8 @@ describe("AgentSettingsDialog", () => {
       providers: [
         {
           providerId: "openai", label: "OpenAI", usages: [{ kind: "primary", model: "openai:gpt-5", label: "Primary model" }],
-          state: "present", source: "environment", verification: "verified_by_live_request", methods: [],
+          state: "present", source: "environment", verification: "verified_by_live_request",
+          methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenAI API key", recommended: true }],
         },
         {
           providerId: "copilot", label: "GitHub Copilot", usages: [{ kind: "fallback", model: "github-copilot:gpt-5", label: "Fallback model" }],
@@ -200,9 +205,113 @@ describe("AgentSettingsDialog", () => {
     expect(screen.getByText("Needs action")).toBeVisible();
     expect(screen.getByText("Not applicable")).toBeVisible();
     expect(screen.getByRole("button", { name: "Authenticate" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Re-authenticate" })).toBeVisible();
     expect(screen.queryByText("openai")).not.toBeInTheDocument();
     expect(screen.queryByText("environment")).not.toBeInTheDocument();
     expect(screen.queryByText(/Primary model/u)).not.toBeInTheDocument();
+  });
+
+  it("does not promote static presence to OK and runs one compact explicit batch", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [
+        {
+          providerId: "opencode-go", label: "OpenCode Go",
+          usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+          state: "present", source: "environment", verification: "not_verified",
+          methods: [{ authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true }],
+        },
+        {
+          providerId: "openai-codex", label: "OpenAI Codex",
+          usages: [{ kind: "fallback", model: "openai-codex:gpt-5.6-sol", label: "Fallback model" }],
+          state: "present", source: "stored", verification: "not_verified",
+          methods: [{ authType: "oauth", strategy: "device_code", label: "OpenAI Codex", recommended: true }],
+        },
+      ],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1",
+      id: "check-one",
+      state: "completed",
+      createdAt: "2026-09-06T12:00:00.000Z",
+      updatedAt: "2026-09-06T12:00:01.000Z",
+      expiresAt: "2026-09-06T12:10:01.000Z",
+      results: [
+        {
+          providerId: "opencode-go", label: "OpenCode Go", state: "passed",
+          model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+          checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded.",
+        },
+        {
+          providerId: "openai-codex", label: "OpenAI Codex", state: "auth_failed",
+          model: "openai-codex:gpt-5.6-sol", selectionBasis: "subscription_zero_price",
+          checkedAt: "2026-09-06T12:00:01.000Z", code: "credential_rejected", message: "Provider rejected the configured credential.",
+        },
+      ],
+    });
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+
+    expect((await screen.findAllByText("Not verified"))).toHaveLength(2);
+    expect(screen.queryByText("OK")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Re-authenticate" })).toHaveLength(2);
+    const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
+    expect(run).toHaveTextContent("Run check");
+    expectDialogTypography(run, "12px");
+    expect(window.getComputedStyle(run).minHeight).toBe("38px");
+    expect(run).toHaveClass("provider-auth-neutral-button");
+    expect(screen.getByText(/may use quota or refresh OAuth/u)).toBeVisible();
+    fireEvent.click(run);
+
+    await vi.waitFor(() => expect(apiMock.beginProviderAuthCheck).toHaveBeenCalledWith("alpha", expect.any(String)));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    expect(screen.getByText("Auth failed")).toBeVisible();
+    expect(screen.getByText("Checks complete: 1 of 2 passed.")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("offers a normal-size neutral cancel control while checks are active", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha",
+      supportsProviderAuth: true,
+      supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "environment", verification: "not_verified", methods: [],
+      }],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1",
+      id: "check-running",
+      state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z",
+      updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "opencode-go", label: "OpenCode Go", state: "running",
+        model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+      }],
+    });
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    const cancel = await screen.findByRole("button", { name: "Cancel live provider checks" });
+    expect(cancel).toHaveTextContent("Cancel checks");
+    expect(cancel).toHaveClass("provider-auth-neutral-button");
+    expectDialogTypography(cancel, "12px");
+    expect(window.getComputedStyle(cancel).minHeight).toBe("38px");
+    fireEvent.click(cancel);
+    await vi.waitFor(() => expect(apiMock.cancelProviderAuthCheck).toHaveBeenCalledWith("alpha", "check-running"));
+    expect(await screen.findByText("Checks complete: 0 of 1 passed.")).toBeVisible();
   });
 
   it("starts OpenAI device code directly and offers paste-back only after it is unavailable", async () => {

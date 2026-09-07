@@ -44,7 +44,7 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
-  it("omits provider-auth authorization without an agent key and sends it when configured", async () => {
+  it("keeps status, login, and check routes keyless without an agent key and sends the bearer when configured", async () => {
     const requests: { url: string; authorization: string | null; body?: string }[] = [];
     const baseStatus = {
       schema: "mono-agent.provider-auth.v1",
@@ -56,6 +56,12 @@ describe("OperatorClient", () => {
       id: "session-1", providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
       state: "succeeded", createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
     };
+    const checkSession = {
+      schema: "mono-agent.provider-auth-check.v1",
+      id: "check-1", state: "completed",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:10:01.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "passed", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded." }],
+    };
     const fetchImpl = (async (input, init) => {
       const url = String(input);
       requests.push({
@@ -64,9 +70,10 @@ describe("OperatorClient", () => {
         ...(typeof init?.body === "string" ? { body: init.body } : {}),
       });
       if (url.endsWith("/v1/info")) {
-        return Response.json({ schema: 1, capabilities: { providerAuth: { version: 1 } } });
+        return Response.json({ schema: 1, capabilities: { providerAuth: { version: 1, checks: { version: 1 } } } });
       }
       if (url.endsWith("/v1/provider-auth")) return Response.json(baseStatus);
+      if (url.includes("/provider-auth/checks")) return Response.json(checkSession);
       return Response.json(baseSession);
     }) as typeof fetch;
     const keyless = new OperatorClient({
@@ -79,13 +86,14 @@ describe("OperatorClient", () => {
       fetchImpl,
     });
 
-    expect((await keyless.info()).supportsProviderAuth).toBe(true);
+    expect(await keyless.info()).toMatchObject({ supportsProviderAuth: true, supportsProviderAuthChecks: true });
     await keyless.providerAuthStatus();
     await keyless.startProviderAuth({
       providerId: "opencode-go",
       authType: "api_key",
       strategy: "api_key_prompt",
     });
+    expect(await keyless.startProviderAuthCheck({ idempotencyKey: "keyless-click" })).toEqual(checkSession);
     expect(requests.filter(({ url }) => url.includes("/v1/provider-auth")))
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ authorization: null }),
@@ -94,13 +102,29 @@ describe("OperatorClient", () => {
       .toEqual(expect.not.arrayContaining([
         expect.objectContaining({ authorization: expect.any(String) }),
       ]));
-
     const secret = "PROVIDER_AUTH_SECRET_SENTINEL";
     const result = await protectedClient.submitProviderAuth("session-1", { promptId: "prompt-1", value: secret });
     expect(result.state).toBe("succeeded");
     expect(JSON.stringify(result)).not.toContain(secret);
     expect(requests.at(-1)).toMatchObject({ authorization: "Bearer owner-key" });
     expect(requests.at(-1)?.body).toContain(secret);
+    expect(await protectedClient.startProviderAuthCheck({ idempotencyKey: "click-one" })).toEqual(checkSession);
+    expect(requests.at(-1)).toMatchObject({ authorization: "Bearer owner-key" });
+    expect(requests.at(-1)?.body).toBe(JSON.stringify({ idempotencyKey: "click-one" }));
+  });
+
+  it("preserves provider-check cooldown status and Retry-After metadata", async () => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        error: { code: "provider_auth_rate_limited", message: "Wait before running provider checks again." },
+      }, { status: 429, headers: { "Retry-After": "23" } })) as typeof fetch,
+    });
+    await expect(client.startProviderAuthCheck({ idempotencyKey: "click" })).rejects.toMatchObject({
+      code: "provider_auth_rate_limited",
+      status: 429,
+      details: { retryAfterSeconds: 23 },
+    });
   });
 
   it("parses the provider summary on the bounds the producer publishes against", async () => {

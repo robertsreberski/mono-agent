@@ -19,6 +19,7 @@ import {
   normalizeHostForBind,
   parseProviderAuthSessionInput,
   parseProviderAuthSessionStartInput,
+  parseProviderAuthCheckStartInput,
   type ChannelAskAnswer,
 } from "@mono-agent/agent-contracts";
 import compression from "compression";
@@ -304,6 +305,42 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       void trackOperation(service.cancelProviderAuth(
         pathParam(req.params.id),
         pathParam(req.params.sessionId),
+      ), activeOperations).then(() => sendProviderAuth(res, 204)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/agents/:id/provider-auth/checks", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      assertProviderAuthBody(req.body);
+      const input = parseProviderAuthCheckStartInput(req.body);
+      void trackOperation(service.startProviderAuthCheck(pathParam(req.params.id), input), activeOperations)
+        .then((snapshot) => sendProviderAuth(res, 201, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/provider-auth/checks/:checkId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(service.providerAuthCheck(
+        pathParam(req.params.id),
+        pathParam(req.params.checkId),
+      ), activeOperations).then((snapshot) => sendProviderAuth(res, 200, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/agents/:id/provider-auth/checks/:checkId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(service.cancelProviderAuthCheck(
+        pathParam(req.params.id),
+        pathParam(req.params.checkId),
       ), activeOperations).then(() => sendProviderAuth(res, 204)).catch(next);
     } catch (error) {
       next(error);
@@ -928,6 +965,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       && ((error as { status?: unknown }).status === 413 || (error as { type?: unknown }).type === "entity.too.large");
     const status = known ? error.status : tooLarge ? 413 : syntax ? 400 : 500;
     const code = known ? error.code : tooLarge ? "request_too_large" : syntax ? "invalid_json" : "internal_error";
+    const retryAfterSeconds = known && typeof error.details?.retryAfterSeconds === "number"
+      ? error.details.retryAfterSeconds
+      : undefined;
+    if (status === 429 && Number.isSafeInteger(retryAfterSeconds) && (retryAfterSeconds as number) > 0) {
+      res.setHeader("Retry-After", String(retryAfterSeconds));
+    }
     if (status >= 500) logger?.error?.("Web console request failed.", { error: errorMessage(error) });
     res.status(status).json({
       error: {

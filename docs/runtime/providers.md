@@ -92,6 +92,14 @@ request. A completed login is therefore detected but remains unverified until a
 real turn succeeds. Recent process-local provider-auth and provider-unavailable
 failures are warnings alongside that state; they are not durable history.
 
+Static inspection is intentionally conservative. A stored OAuth access token
+past `expires` remains usable-looking when it has a non-empty refresh token,
+because Pi can refresh it during a request. An expired access token without a
+refresh path is expired, while empty material, an unsupported credential type,
+an invalid expiry, an unsafe/unreadable store, or ambient file existence alone
+needs action. Environment API-key presence may establish only
+`present/not_verified`; it never establishes live health.
+
 The headless login flow is provider-owned by Pi 0.85.1:
 
 - GitHub Copilot and OpenAI Codex use native device authorization: open the
@@ -115,6 +123,19 @@ credentials such as `~/.codex/auth.json`.
 The agent routes are keyless when its operator endpoint has no API key and
 otherwise retain the endpoint's normal bearer requirement. No additional auth
 configuration is required to make the surface available.
+
+The explicit **Run check** action uses this agent's effective `piAuthPath`,
+environment, local-provider definition, and Pi implementation. It creates one
+isolated request for the selected provider/model with a four-token output cap,
+no conversation history, memory, tools, MCP servers, fallback, or model retry,
+then discards provider output and raw errors. Candidates must accept text and be
+enabled. The lowest catalog estimate for 64 input plus 4 output tokens wins;
+ties follow effective route order then model id. Multiple candidates are not
+checked when any price is unknown; exactly one unknown-price candidate is the
+sole exception. A zero catalog price on subscription/OAuth providers means no
+cataloged incremental token price, not unlimited or free access. A pass proves
+only the checked provider/credential/model tuple at that moment and may refresh
+OAuth or consume quota.
 
 ## OpenCode request attribution
 

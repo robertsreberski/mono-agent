@@ -117,15 +117,17 @@ export async function providerAuthStatusSnapshot(
       const keyInEnv = local.apiKeyEnv !== undefined && nonEmpty(options.env[local.apiKeyEnv]);
       const hasKey = keyInEnv || nonEmpty(local.apiKey);
       const keyless = local.apiKeyEnv === undefined && local.apiKey === undefined;
+      const state = keyless ? "not_applicable" as const : hasKey ? "present" as const : "missing" as const;
+      const verifiedAt = state === "present" ? observation?.verifiedAt : undefined;
       providers.push({
         providerId,
         label: providerId,
         usages: group.usages,
-        state: keyless ? "not_applicable" : hasKey ? "present" : "missing",
+        state,
         ...(keyless ? {} : { credentialType: "api_key" as const }),
         ...(hasKey ? { source: keyInEnv ? "environment" as const : "config" as const } : {}),
-        verification: keyless ? "not_applicable" : observation?.verifiedAt === undefined ? "not_verified" : "verified_by_live_request",
-        ...(observation?.verifiedAt === undefined ? {} : { verifiedAt: observation.verifiedAt }),
+        verification: keyless ? "not_applicable" : verifiedAt === undefined ? "not_verified" : "verified_by_live_request",
+        ...(verifiedAt === undefined ? {} : { verifiedAt }),
         methods: [],
         ...(local.enabled === false
           ? { unavailableReason: "Provider is disabled in providers.local." }
@@ -146,27 +148,17 @@ export async function providerAuthStatusSnapshot(
       state = "not_applicable";
       unavailableReason = "This provider does not expose an authentication method through Pi.";
     } else {
-      // An unsafe store must never be passed to Pi, but it does not invalidate
-      // an independently resolved environment/ambient credential.
-      const checked = await checkPiProviderAuth(
-        providerId,
-        inspection.status === "ok" ? entry : undefined,
-        options.env,
-      ).catch(() => undefined);
-      if (checked !== undefined) {
-        credentialType = checked.type;
-        source = checked.source;
-        state = "present";
-      }
       const storedType = record(entry) && (entry.type === "oauth" || entry.type === "api_key")
         ? entry.type : undefined;
-      if (storedType !== undefined && !description.methods.some((method) => method.type === storedType)) {
+      const hasStoredEntry = inspection.status === "ok" && entry !== undefined;
+      if (inspection.status === "unsafe") {
+        unavailableReason = `Pi auth store is unsafe (${inspection.reason}).`;
+      } else if (hasStoredEntry && storedType === undefined) {
+        unavailableReason = "Stored credential type is not supported by this provider.";
+      } else if (storedType !== undefined && !description.methods.some((method) => method.type === storedType)) {
         state = "missing";
         credentialType = storedType;
-        source = undefined;
         unavailableReason = "Stored credential type is not supported by this provider.";
-      } else if (inspection.status === "unsafe" && checked === undefined) {
-        unavailableReason = `Pi auth store is unsafe (${inspection.reason}).`;
       } else if (record(entry) && entry.type === "oauth") {
         credentialType = "oauth";
         source = "stored";
@@ -178,14 +170,34 @@ export async function providerAuthStatusSnapshot(
           unavailableReason = "Stored OAuth credential has an invalid expiry.";
         } else if (typeof entry.expires === "number") {
           expiresAt = isoFromEpochMillis(entry.expires) as string;
-          state = entry.expires < Date.now() ? "expired" : "present";
+          state = entry.expires < Date.now() && !nonEmpty(entry.refresh) ? "expired" : "present";
+        } else {
+          state = "present";
         }
-      } else if (record(entry) && entry.type === "api_key" && checked === undefined) {
-        state = "missing";
+      } else {
+        const checked = await checkPiProviderAuth(
+          providerId,
+          inspection.status === "ok" ? entry : undefined,
+          options.env,
+        ).catch(() => undefined);
+        if (checked !== undefined && checked.source !== "ambient") {
+          credentialType = checked.type;
+          source = checked.source;
+          state = "present";
+        } else if (checked?.source === "ambient") {
+          unavailableReason = "Ambient credential evidence cannot establish a usable credential.";
+        } else if (record(entry) && entry.type === "api_key") {
+          state = "missing";
+          credentialType = "api_key";
+          unavailableReason = "Stored API-key credential is unusable.";
+        }
+      }
+      if (record(entry) && entry.type === "api_key" && state === "missing" && unavailableReason === undefined) {
         credentialType = "api_key";
         unavailableReason = "Stored API-key credential is unusable.";
       }
     }
+    const verifiedAt = state === "present" ? observation?.verifiedAt : undefined;
     providers.push({
       providerId,
       label: description?.label ?? providerId,
@@ -195,8 +207,8 @@ export async function providerAuthStatusSnapshot(
       ...(source === undefined ? {} : { source }),
       ...(expiresAt === undefined ? {} : { expiresAt }),
       verification: state === "not_applicable" ? "not_applicable"
-        : observation?.verifiedAt === undefined ? "not_verified" : "verified_by_live_request",
-      ...(observation?.verifiedAt === undefined ? {} : { verifiedAt: observation.verifiedAt }),
+        : verifiedAt === undefined ? "not_verified" : "verified_by_live_request",
+      ...(verifiedAt === undefined ? {} : { verifiedAt }),
       methods: description === undefined ? [] : methodsFor(providerId, description.methods),
       ...(unavailableReason === undefined ? {} : { unavailableReason }),
       ...(observation?.failure === undefined ? {} : { lastFailure: observation.failure }),

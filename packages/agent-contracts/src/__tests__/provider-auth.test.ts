@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_PROVIDER_AUTH_INPUT_BYTES,
+  parseProviderAuthCheckSessionSnapshot,
+  parseProviderAuthCheckStartInput,
   parseProviderAuthSessionInput,
   parseProviderAuthSessionSnapshot,
   parseProviderAuthStatusSnapshot,
@@ -46,10 +48,32 @@ const session = () => ({
   },
 });
 
+const check = () => ({
+  schema: "mono-agent.provider-auth-check.v1",
+  id: "check-one",
+  state: "completed",
+  createdAt: "2026-09-06T12:00:00.000Z",
+  updatedAt: "2026-09-06T12:00:01.000Z",
+  expiresAt: "2026-09-06T12:10:01.000Z",
+  results: [{
+    providerId: "openai-codex",
+    label: "OpenAI Codex",
+    state: "auth_failed",
+    model: "openai-codex:gpt-5.6-sol",
+    selectionBasis: "subscription_zero_price",
+    checkedAt: "2026-09-06T12:00:01.000Z",
+    code: "credential_rejected",
+    message: "Provider rejected the configured credential.",
+  }],
+});
+
 describe("provider auth contracts", () => {
   it("strictly parses bounded status and session snapshots", () => {
     expect(parseProviderAuthStatusSnapshot(status())).toEqual(status());
     expect(parseProviderAuthSessionSnapshot(session())).toEqual(session());
+    expect(parseProviderAuthCheckSessionSnapshot(check())).toEqual(check());
+    expect(parseProviderAuthCheckStartInput({ idempotencyKey: "browser-click-one" }))
+      .toEqual({ idempotencyKey: "browser-click-one" });
   });
 
   it("rejects unknown fields and non-http auth URLs", () => {
@@ -58,6 +82,12 @@ describe("provider auth contracts", () => {
       ...session(),
       deviceCode: { ...session().deviceCode, verificationUri: "javascript:alert(1)" },
     })).toThrow(/Invalid provider device code/u);
+    expect(() => parseProviderAuthCheckSessionSnapshot({ ...check(), token: "secret" }))
+      .toThrow(/Invalid provider auth check session/u);
+    expect(() => parseProviderAuthCheckSessionSnapshot({
+      ...check(),
+      results: [{ ...check().results[0], state: "healthy_enough" }],
+    })).toThrow(/Invalid provider auth check result/u);
   });
 
   it("accepts a secret input without echoing it through a projection", () => {
@@ -65,6 +95,7 @@ describe("provider auth contracts", () => {
     expect(parseProviderAuthSessionInput({ promptId: "prompt-one", value })).toEqual({ promptId: "prompt-one", value });
     expect(JSON.stringify(session())).not.toContain(value);
     expect(JSON.stringify(status())).not.toContain(value);
+    expect(JSON.stringify(check())).not.toContain(value);
     expect(parseProviderAuthSessionInput({ promptId: "prompt-one", value: "" })).toEqual({ promptId: "prompt-one", value: "" });
   });
 

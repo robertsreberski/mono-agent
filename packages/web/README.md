@@ -218,7 +218,13 @@ webhook, API, and TUI requests remain unchanged.
 The same dialog shows **Provider authentication** when the current agent
 advertises provider-auth v1. It renders only the host-returned providers used by
 effective routes, distinguishing detected credentials from live-request
-verification. GitHub Copilot and OpenAI Codex expose Pi device-code flows;
+verification: **OK** requires a retained real success, while static presence is
+**Not verified**. A normal-size neutral Authenticate/Re-authenticate button stays
+available for every supported login method regardless of the row state. Agents
+advertising the additive checks capability also show one section-level **Run
+check** button; it checks only the displayed providers, reports partial fixed
+outcomes inline, and never runs on settings reads or polling. GitHub Copilot and
+OpenAI Codex expose Pi device-code flows;
 Anthropic accepts the final redirect URL/code; API-key providers use masked
 provider-owned prompts. Secret input is cleared before submission. The web
 server requires exact origin, proxies through the agent's ordinary operator
@@ -227,6 +233,11 @@ operator request is keyless when that agent has no API key and uses its bearer
 when it does. Auth state is component/agent memory only—not SQLite, thread
 history, browser storage, or run artifacts. The console remains a
 trusted-network single-user surface, not a per-human authenticated application.
+
+Live checks are explicit side effects: each selected provider receives one tiny
+no-fallback request, which may consume quota, trigger minimum billing, or refresh
+OAuth. Check sessions and observations are process-local, expire from memory,
+and are not persisted by the web service.
 
 Standalone process-job and Monitor revival turns in an existing web conversation
 read that conversation's model/effort snapshot immediately before admission. A

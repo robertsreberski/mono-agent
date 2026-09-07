@@ -13,6 +13,20 @@ const tempDirs: string[] = [];
 afterEach(async () => await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }))));
 
 describe("provider auth operator", () => {
+  it("keeps passive status reads side-effect free", async () => {
+    const checkExecute = vi.fn();
+    const operator = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+      checkExecute,
+    });
+
+    await operator.status();
+    await operator.status();
+    expect(checkExecute).not.toHaveBeenCalled();
+    await operator.stop();
+  });
+
   it("runs a provider-owned secret prompt without retaining or returning the submitted value", async () => {
     let committed: unknown;
     const operator = createProviderAuthOperator({
@@ -60,10 +74,10 @@ describe("provider auth operator", () => {
 
     expect((await operator.status()).providers[0]).toMatchObject({
       state: "present",
-      verification: "verified_by_live_request",
-      verifiedAt: "2026-09-06T12:00:00.000Z",
+      verification: "not_verified",
       lastFailure: { kind: "provider_auth" },
     });
+    expect((await operator.status()).providers[0]).not.toHaveProperty("verifiedAt");
     const started = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
     await vi.waitFor(async () => expect((await operator.get(started.id))?.prompt?.id).toBeDefined());
     await operator.submit(started.id, {

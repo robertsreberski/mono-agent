@@ -81,6 +81,11 @@ Keep bearer values out of source config when possible. Set
   responses are secret-free and set `Cache-Control: private, no-store,
   max-age=0`. The adapter never resolves an auth-store path or persists
   session/input data.
+  When the operator also exposes checks, the nested additive
+  `providerAuth.checks.version = 1` capability enables check start, poll, and
+  cancel routes under `/v1/provider-auth/checks`. A check is an explicit
+  side-effecting action; status reads never start one. Cooldown responses use
+  `429` plus `Retry-After`.
 - `POST {basePath}/v1/turns` accepts
   `{ conversationId, text, attachments?, metadata? }`; attachment-only web
   turns are valid. Web model/effort metadata is preserved and mirrored into the

@@ -3,6 +3,8 @@ import { api } from "../api";
 import { useConsoleStore } from "../console-store";
 import type {
   AgentSummary,
+  ProviderAuthCheckResult,
+  ProviderAuthCheckSessionSnapshot,
   ProviderAuthMethod,
   ProviderAuthProviderStatus,
   ProviderAuthSessionSnapshot,
@@ -160,17 +162,24 @@ export function AgentSettingsDialog({
 function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
   const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
+  const [check, setCheck] = useState<ProviderAuthCheckSessionSnapshot | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
   const sessionRef = useRef<ProviderAuthSessionSnapshot | null>(null);
+  const checkRef = useRef<ProviderAuthCheckSessionSnapshot | null>(null);
   const sourceId = agent.sourceId;
 
   const adoptSession = (next: ProviderAuthSessionSnapshot | null) => {
     sessionRef.current = next;
     setSession(next);
+  };
+
+  const adoptCheck = (next: ProviderAuthCheckSessionSnapshot | null) => {
+    checkRef.current = next;
+    setCheck(next);
   };
 
   const refresh = async (signal?: AbortSignal) => {
@@ -191,7 +200,12 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     if (current !== null && !terminal(current.state)) {
       void api.cancelProviderAuth(sourceId, current.id, AbortSignal.timeout(2_000)).catch(() => undefined);
     }
+    const currentCheck = checkRef.current;
+    if (currentCheck !== null && !checkTerminal(currentCheck.state)) {
+      void api.cancelProviderAuthCheck(sourceId, currentCheck.id, AbortSignal.timeout(2_000)).catch(() => undefined);
+    }
     sessionRef.current = null;
+    checkRef.current = null;
   }, [sourceId, agent.generation]);
 
   useEffect(() => {
@@ -215,6 +229,27 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     };
   }, [sourceId, session?.id, session?.state, session?.updatedAt]);
 
+  useEffect(() => {
+    if (check === null || checkTerminal(check.state)) {
+      if (check !== null) {
+        void refresh().catch((caught) => setAuthError(caught instanceof Error ? caught.message : String(caught)));
+      }
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void api.providerAuthCheck(sourceId, check.id, controller.signal).then((next) => {
+        if (!controller.signal.aborted) adoptCheck(next);
+      }).catch((caught) => {
+        if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
+      });
+    }, 1_000);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [sourceId, check?.id, check?.state, check?.updatedAt]);
+
   if (agent.supportsProviderAuth !== true) {
     return (
       <section className="provider-auth-section">
@@ -230,6 +265,32 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     try {
       adoptSession(await api.beginProviderAuth(sourceId, provider.providerId, method));
       setSelectedProvider(provider);
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const startCheck = async () => {
+    setBusy(true);
+    setAuthError(null);
+    try {
+      adoptCheck(await api.beginProviderAuthCheck(sourceId, crypto.randomUUID()));
+    } catch (caught) {
+      setAuthError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelCheck = async () => {
+    if (check === null) return;
+    setBusy(true);
+    setAuthError(null);
+    try {
+      await api.cancelProviderAuthCheck(sourceId, check.id);
+      adoptCheck({ ...check, state: "cancelled", updatedAt: new Date().toISOString() });
     } catch (caught) {
       setAuthError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -277,23 +338,56 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
   return (
     <section className="provider-auth-section">
-      <h3>Provider authentication</h3>
+      <div className="provider-auth-title-row">
+        <h3>Provider authentication</h3>
+        {agent.supportsProviderAuthChecks === true && (
+          check !== null && !checkTerminal(check.state) ? (
+            <button type="button" className="secondary-button provider-auth-neutral-button" aria-label="Cancel live provider checks" disabled={busy} onClick={() => void cancelCheck()}>
+              Cancel checks
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="secondary-button provider-auth-neutral-button"
+              aria-label="Run live checks for all displayed providers"
+              aria-describedby="provider-auth-check-disclosure"
+              disabled={busy || status === null || session !== null && !terminal(session.state)}
+              onClick={() => void startCheck()}
+            >
+              Run check
+            </button>
+          )
+        )}
+      </div>
+      {agent.supportsProviderAuthChecks === true && (
+        <p id="provider-auth-check-disclosure" className="provider-auth-check-disclosure">Runs one small request per displayed provider; this may use quota or refresh OAuth.</p>
+      )}
       {status === null && authError === null && <p aria-live="polite">Loading provider status…</p>}
       <div className="provider-auth-list">
         {status?.providers.map((provider) => {
-          const actionable = provider.methods.length > 0
-            && (provider.state === "missing" || provider.state === "expired" || provider.lastFailure?.kind === "provider_auth");
+          const actionable = provider.methods.length > 0;
           const presentation = providerAuthPresentation(provider);
+          const checkResult = check?.results.find((result) => result.providerId === provider.providerId);
           return (
             <article className="provider-auth-card" key={provider.providerId}>
               <div className="provider-auth-heading">
                 <b>{provider.label}</b>
-                <span className={"provider-auth-state " + presentation.className}>
-                  <span aria-hidden="true">{presentation.glyph}</span> {presentation.label}
+                <span className="provider-auth-badges">
+                  {checkResult !== undefined && (
+                    <span
+                      className={"provider-auth-check-result " + providerAuthCheckPresentation(checkResult).className}
+                      aria-label={`Live check for ${provider.label}${checkResult.model === undefined ? "" : ` using ${checkResult.model}`}: ${providerAuthCheckPresentation(checkResult).label}.`}
+                    >
+                      {providerAuthCheckPresentation(checkResult).label}
+                    </span>
+                  )}
+                  <span className={"provider-auth-state " + presentation.className}>
+                    <span aria-hidden="true">{presentation.glyph}</span> {presentation.label}
+                  </span>
                 </span>
               </div>
               {actionable && (
-                <button type="button" className="secondary-button" disabled={busy || session !== null && !terminal(session.state)} onClick={() => openFlow(provider)}>
+                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={busy || session !== null && !terminal(session.state) || check !== null && !checkTerminal(check.state)} onClick={() => openFlow(provider)}>
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
                 </button>
               )}
@@ -354,6 +448,11 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
           {terminal(session.state) && <button type="button" className="secondary-button" onClick={() => { adoptSession(null); setSelectedProvider(null); }}>Close authentication</button>}
         </div>
       )}
+      {check !== null && (
+        <p className="provider-auth-check-summary" aria-live="polite">
+          {providerAuthCheckSummary(check)}
+        </p>
+      )}
       {authError !== null && <p className="agent-settings-error" role="alert">{authError}</p>}
     </section>
   );
@@ -361,6 +460,10 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
 function terminal(state: ProviderAuthSessionSnapshot["state"]): boolean {
   return state === "succeeded" || state === "failed" || state === "cancelled";
+}
+
+function checkTerminal(state: ProviderAuthCheckSessionSnapshot["state"]): boolean {
+  return state === "completed" || state === "cancelled";
 }
 
 function providerAuthPresentation(provider: ProviderAuthProviderStatus): {
@@ -374,5 +477,36 @@ function providerAuthPresentation(provider: ProviderAuthProviderStatus): {
   if (provider.state !== "present" || provider.lastFailure?.kind === "provider_auth") {
     return { className: "is-needs-action", glyph: "⚠", label: "Needs action" };
   }
-  return { className: "is-ok", glyph: "✓", label: "OK" };
+  if (provider.verification === "verified_by_live_request" && provider.lastFailure === undefined) {
+    return { className: "is-ok", glyph: "✓", label: "OK" };
+  }
+  return { className: "is-not-verified", glyph: "?", label: "Not verified" };
+}
+
+function providerAuthCheckPresentation(result: ProviderAuthCheckResult): {
+  readonly className: string;
+  readonly label: string;
+} {
+  switch (result.state) {
+    case "pending": return { className: "is-neutral", label: "Pending" };
+    case "running": return { className: "is-neutral", label: "Checking…" };
+    case "passed": return { className: "is-passed", label: "Check passed" };
+    case "auth_failed": return { className: "is-failed", label: "Auth failed" };
+    case "network_failed": return { className: "is-neutral", label: "Network error" };
+    case "quota_limited": return { className: "is-neutral", label: "Quota blocked" };
+    case "model_not_entitled": return { className: "is-neutral", label: "Model unavailable" };
+    case "inconclusive": return { className: "is-neutral", label: "Inconclusive" };
+    case "unsupported": return { className: "is-neutral", label: "Not checked" };
+    case "timeout": return { className: "is-neutral", label: "Timed out" };
+    case "cancelled": return { className: "is-neutral", label: "Cancelled" };
+    case "stale": return { className: "is-neutral", label: "Credential changed" };
+    case "not_run": return { className: "is-neutral", label: "Not run" };
+  }
+}
+
+function providerAuthCheckSummary(check: ProviderAuthCheckSessionSnapshot): string {
+  const finished = check.results.filter((result) => result.state !== "pending" && result.state !== "running").length;
+  if (!checkTerminal(check.state)) return `Checking providers: ${finished} of ${check.results.length} complete.`;
+  const passed = check.results.filter((result) => result.state === "passed").length;
+  return `Checks complete: ${passed} of ${check.results.length} passed.`;
 }

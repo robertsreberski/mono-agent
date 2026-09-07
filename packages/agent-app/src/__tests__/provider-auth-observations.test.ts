@@ -34,7 +34,7 @@ describe("provider auth observations", () => {
     expect(tracker.get("openai")).toBeUndefined();
   });
 
-  it("invalidates stale verification after credential persistence and preserves only availability failures", () => {
+  it("invalidates all evidence after credential persistence", () => {
     let now = Date.parse("2026-09-06T12:00:00.000Z");
     const unavailable = createProviderAuthObservationTracker(() => now);
     unavailable.observe({
@@ -47,14 +47,7 @@ describe("provider auth observations", () => {
       model: "opencode-go:kimi-k2.6", failureKind: "provider_unavailable",
     });
     unavailable.credentialPersisted("opencode-go");
-    expect(unavailable.get("opencode-go")).toEqual({
-      failure: {
-        kind: "provider_unavailable",
-        message: "Provider was unavailable.",
-        model: "opencode-go:kimi-k2.6",
-        observedAt: "2026-09-06T12:00:01.000Z",
-      },
-    });
+    expect(unavailable.get("opencode-go")).toBeUndefined();
 
     const authFailure = createProviderAuthObservationTracker(() => now);
     authFailure.observe({
@@ -89,5 +82,18 @@ describe("provider auth observations", () => {
     tracker.retainProviders(["provider-69"]);
     expect(tracker.get("provider-68")).toBeUndefined();
     expect(tracker.get("provider-69")).toBeDefined();
+  });
+
+  it("orders passive and explicit outcomes by completion time", () => {
+    const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:05.000Z"));
+    tracker.recordSuccess("opencode-go", "opencode-go:kimi-k2.6", "2026-09-06T12:00:02.000Z");
+    tracker.recordFailure("opencode-go", "opencode-go:kimi-k2.6", "provider_auth", "2026-09-06T12:00:01.000Z");
+    expect(tracker.get("opencode-go")).toEqual({ verifiedAt: "2026-09-06T12:00:02.000Z" });
+
+    tracker.recordFailure("opencode-go", "opencode-go:kimi-k2.6", "provider_auth", "2026-09-06T12:00:03.000Z");
+    expect(tracker.get("opencode-go")).toMatchObject({ failure: { kind: "provider_auth" } });
+    expect(tracker.get("opencode-go")).not.toHaveProperty("verifiedAt");
+    tracker.invalidate("opencode-go", "2026-09-06T12:00:04.000Z");
+    expect(tracker.get("opencode-go")).toBeUndefined();
   });
 });
