@@ -85,8 +85,8 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   actions are config-opt-in, API-key-protected, and explicitly confirmed; they
   never rewrite config, environment, or Markdown job sources.
 - Register the host as a traceability source. Config edits are made directly in
-  `mono-agent.config.json`, or proposed through the OS-owner-managed macOS
-  configuration TUI; direct edits take effect on the next `mono-agent restart`.
+  `mono-agent.config.json` or `IDENTITY.md` and take effect after validation and
+  `mono-agent restart`.
 - Check managed launchd logs with bounded metadata reads every five minutes,
   reconcile installed macOS LaunchAgents at login and hourly, and make `status`
   require agreement between the cached trace and launchd's live PID.
@@ -206,21 +206,39 @@ action fails the check.
 Escape or Ctrl-C interrupts preflight; recovery can resume verified routes when
 the non-secret plan fingerprint still matches, restart all checks, edit choices,
 or cancel. Authentication repair clears every prior route proof because it can
-replace credential bytes. Guided commit atomically creates the config and rechecks its exact snapshot after validation. On macOS it then creates or refreshes the canonical per-config launchd service and waits up to 60 seconds for a fresh trace whose durable `metadata.lifecycle.startupCompleted` proof is true. The worker publishes that proof only after channels, memory rituals, and final memory-health work complete; later trace refreshes change the diagnostic `metadata.reason` without revoking readiness. The controller also re-proves the live launchd PID, exact snapshot, current channel/memory health, and reachable TUI before it opens `mono-agent tui --configure` against that background responder. A readiness timeout or trace/TUI-probe error preserves the committed files and skips chat, then unloads the worker plus scheduled maintenance and removes their definitions only when stopped state is proven. If cleanup cannot be proven, the command says that a process may still be running and prints exact `start`, `status`, and `logs --follow` recovery commands plus log paths. Workers from an older release that have no durable lifecycle marker must restart once before configuration can attach. Off macOS, conversational configuration is unavailable: the wizard preserves the files and gives manual edit/validate guidance without claiming readiness. On Linux the next steps use the systemd background service and ordinary TUI; platforms without a background backend use foreground start. Any flag or non-TTY invocation remains scaffold-only and never starts a process.
+replace credential bytes. Guided commit atomically creates the config and
+rechecks its exact snapshot after validation. On macOS it then creates or
+refreshes the canonical per-config launchd service and waits up to 60 seconds
+for a fresh trace whose durable `metadata.lifecycle.startupCompleted` proof is
+true. The worker publishes that proof only after channels, memory rituals, and
+final memory-health work complete; later trace refreshes change the diagnostic
+`metadata.reason` without revoking readiness. Once ready, init prints the manual
+continuation: edit `mono-agent.config.json` or `IDENTITY.md`, run
+`mono-agent validate`, restart, and open the ordinary TUI. A readiness timeout
+preserves the committed files, then unloads the worker plus scheduled
+maintenance and removes their definitions only when stopped state is proven. If
+cleanup cannot be proven, the command says that a process may still be running
+and prints exact `start`, `status`, and `logs --follow` recovery commands plus
+log paths. On Linux the next steps use the systemd background service and
+ordinary TUI; platforms without a background backend use foreground start. Any
+flag or non-TTY invocation remains scaffold-only and never starts a process.
 
 ### Managed skills and documentation companion
 
-Every scaffold selects versioned `mono-agent-configure` and `mono-agent-memory`
-skills from `./skills` with index disclosure. `ReadSkill` remains separate from
-action-tool policy. `mono-agent install-skill --project --check|--update` reports
-version/hash drift and refreshes only unchanged managed copies with backups; a
-canonical owner-only non-symlink parent chain, per-project owner lock, and
-compare-and-swap activation prevent outside or concurrent
-operator edits from being overwritten, and a partial activation restores only
-files that still equal the managed bytes it wrote.
-The persistent SELF-CONFIG workflow guidance is managed-skill version `1.2.0`.
-Existing unchanged copies are reported as stale and are never rewritten on TUI
-startup; run `mono-agent install-skill --project --update` explicitly to refresh them.
+Every scaffold selects the versioned `mono-agent-memory` skill from `./skills`
+with index disclosure. `ReadSkill` remains separate from action-tool policy.
+`mono-agent install-skill --project --check|--update` reports version/hash drift
+and refreshes only unchanged managed copies with backups; a canonical owner-only
+non-symlink parent chain, per-project owner lock, and compare-and-swap activation
+prevent outside or concurrent operator edits from being overwritten, and a
+partial activation restores only files that still equal the managed bytes it
+wrote. Bundle version `2.0.0` retires `mono-agent-configure`: runtime loading
+ignores that exact selected name and validation reports it as non-fatal waiting,
+while any other missing selected skill remains an error. Project check reports
+four retirement states. Project update removes a retired manifest entry and
+deletes its file only when the entry proves ownership and its bytes still match;
+modified and colliding copies fail closed, and retirement participates in the
+same lock, backup, and rollback transaction as the memory update.
 
 Harness-mode `mono-agent install-skill` also pairs the exact matching
 `@mono-agent/docs-mcp` version with available selected Codex and Claude Code
@@ -230,43 +248,6 @@ Use `--no-docs-mcp` for a skill-only install. Managed MCP and skill changes are
 transactional; an unrelated entry named `mono-agent-docs` is never overwritten,
 including with `--force`. Project `--check` / `--update` mode does not touch
 harness MCP configuration.
-
-### Conversational self-configuration
-
-In the separate, visibly marked **SELF-CONFIG** session only, the background app injects proposal-only
-`ProposeAgentConfiguration`. The opening message shows a user-led map of identity/knowledge,
-runtime/models, skills/tools/MCP/plugins, memory, channels/APIs/A2A, automation,
-security, observability/operations, and acceptance criteria, then builds the chosen
-workflow conversationally. It says never to enter secrets and to expect a separate
-host approval before anything changes. Approval, rejection, a proposal-free turn,
-`done`, and `no changes` all keep SELF-CONFIG active; only `/quit`, `/exit`, or
-double `ctrl+c` exits the session, and quitting leaves the background agent running.
-The host accepts only a fail-closed low-risk
-allowlist: public name; effort, turn/session UX; selected project skills and
-disclosure; memory size or MemoryRecall enablement; semantic tool-policy
-tightening; and the separately validated Role body. Every path, memory-tier or
-capture-cost change, runtime/provider route, channel/proactive/plugin, MCP,
-exporter, embeddings/LLM endpoint, sandbox/network field, secret, and unknown
-future field is handed to the explicit guided flow. It canonicalizes
-config/Identity/state paths without following symlink parents, stages and
-fsyncs replacements, then performs the final source comparison and rename as
-one non-yielding commit step under an owner-only transaction lock. Separate TUI
-confirmation, failure-atomic config/Role rollback compensation, rollback
-evidence, a successful managed restart, and a fresh ready trace source remain mandatory. Configuration turns replace
-the ordinary tool/MCP policy with `ReadSkill`, `MemoryRecall`, and the proposal
-tool only. Pure direct-Codex chains use its native read-only plan posture;
-mixed chains keep the finite proposal surface so a route that cannot represent
-it cannot widen authority. Direct OpenCode cannot receive the host-owned MCP
-proposal capability: a direct-OpenCode primary is routed through a configured
-proposal-capable fallback, while a direct-OpenCode fallback makes self-configuration
-unavailable with explicit remediation. The approval card shows
-every full, untruncated JSON patch value and pages through the exact Role body
-while keeping Reject/Approve reachable, and rejects
-terminal-control or bidi-control review text before displaying it. The configuration
-conversation id stays stable across incremental checkpoints and verified restarts;
-each settled turn receives a fresh opaque proposal capability plus a safe host-outcome
-summary. Fast follow-up text remains in the editor until settlement and is never sent
-as ordinary chat or to a stale endpoint. Remote/proactive channels never receive this tool.
 
 ### Managed background runtime
 
@@ -307,8 +288,8 @@ login or reboot. A loaded v1 proof is treated as one-time drift and republished
 by the recovery controller.
 A managed worker freezes the proven config, Identity, optional Soul, and MCP authority
 file into private read-only copies before app/channel loading, while trace metadata continues to
-name the canonical config. Readiness requires one live launchd-owned trace PID,
-the exact durable snapshot, and, for configuration, a reachable TUI endpoint.
+name the canonical config. Readiness requires one live launchd-owned trace PID and
+the exact durable snapshot.
 Stop succeeds only after both launchd unload and worker death are proven.
 
 ### Validation, recovery, and managed logs
@@ -804,8 +785,8 @@ staging, current-run, or authorized in-flight content. Retried identities are
 deduplicated. A manifest
 that cannot accept its delivery-conversation binding becomes one bounded failed
 part while answer text and other valid parts survive. Terminal failure,
-cancellation, or missing run metadata removes uncommitted state. The sealed
-local self-configuration override excludes this publisher.
+cancellation, or missing run metadata removes uncommitted state. An authenticated
+authoritative request-tool override can exclude this publisher.
 
 Audit storage performs one root inventory for a process/root lifecycle, then
 maintains exact owner byte counts under a global append gate. Reclamation uses

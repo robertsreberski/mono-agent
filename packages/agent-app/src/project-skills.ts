@@ -21,13 +21,13 @@ import { isDeepStrictEqual } from "node:util";
 import type { GeneratedFile } from "./modules/types.js";
 import { readVerifiedFile, secureFileReplace } from "./secure-file-replace.js";
 
-export const PROJECT_SKILL_VERSION = "1.3.0";
+export const PROJECT_SKILL_VERSION = "2.0.0";
 export const PROJECT_SKILL_MANIFEST_PATH = "skills/.mono-agent-managed.json";
 
 export const PROJECT_SKILL_NAMES = [
-  "mono-agent-configure",
   "mono-agent-memory",
 ] as const;
+export const RETIRED_PROJECT_SKILL_NAMES = ["mono-agent-configure"] as const;
 
 export type ProjectSkillName = (typeof PROJECT_SKILL_NAMES)[number];
 
@@ -35,30 +35,6 @@ interface BundledProjectSkill {
   readonly name: ProjectSkillName;
   readonly contents: string;
 }
-
-const CONFIGURE_SKILL = `---
-name: mono-agent-configure
-description: Safely refine this agent's identity and config from a host-marked mono-agent SELF-CONFIG session.
-version: ${PROJECT_SKILL_VERSION}
----
-
-# Configure this agent
-
-Use this skill when the operator asks to configure, tune, or change this agent.
-
-1. Treat the current resolved config, the configured identity document's \`## Role\` (normally \`IDENTITY.md → ## Role\`), and validation output as operational truth. Memory may recall preferences, but never use memory as proof that a change is active.
-2. This is a dedicated, multi-turn SELF-CONFIG session, separate from ordinary chat. On the opening turn only, show a compact user-led map of all capability areas: identity and knowledge; runtime and models; skills, tools, MCP servers, and plugins; memory; channels, APIs, and A2A; automation and proactive work; security, sandboxing, and secrets; observability and operations; and acceptance criteria. Then let the operator choose where to start. Do not repeat the map on later turns.
-3. Build the operator's workflow conversationally, one focused question at a time: trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks. Do not turn the map into a long questionnaire. A turn may explore, explain, or ask the next question without making a proposal.
-4. Approval, rejection, a no-proposal turn, \`done\`, and \`no changes\` do not end SELF-CONFIG. Continue from the host outcome and suggest the next relevant area. Only closing the host session exits self-configuration. If the reply is an ordinary task, do not execute it with configuration authority; help translate it into the desired agent workflow, or tell the operator to close SELF-CONFIG before running the task.
-5. Never ask for API keys, OAuth tokens, passwords, bot tokens, or other secrets in chat. Explain the exact masked mono-agent auth or owner-only .env flow instead.
-6. For one decision-complete, safe local checkpoint, call ProposeAgentConfiguration once with a short rationale, an RFC 6902 JSON Patch against mono-agent.config.json, and optionally a replacement body for the configured identity document's \`## Role\` (normally \`IDENTITY.md → ## Role\`). A Role-only proposal uses an empty patch. Keep each proposal coherent and incremental; continue the conversation after the host reports its outcome.
-7. Do not claim the proposal was applied. The local host validates it, shows an out-of-band review, requires the operator to approve it, commits files atomically, restarts the authoritative background agent, and proves readiness. A failed restart restores the approved files and attempts to restore the previous daemon before reporting recovery instructions.
-8. Keep config proposals to the host's documented low-risk allowlist: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; and tool-policy tightening. Paths, memory tier/capture behavior, external MCP servers, plugins, channels or cron/proactive jobs, tool/runtime permissions, model-route or provider posture, embeddings/LLM endpoints, exporters, sandboxing, and network exposure require the explicit guided flow named by the host. Explain those capabilities and their prerequisites, but do not smuggle them into a proposal.
-
-Keep proposals minimal. Preserve unrelated config, existing knowledge references, and every identity section except the optional Role body. Treat every non-command operator message in this session as self-configuration input. The host, not the model, owns session exit and proposal settlement.
-
-The proposal tool exists only in a host-marked SELF-CONFIG operator turn. Enter through the web console's Configure agent action when offered, or run \`bin/mono-agent tui --configure\`. If the tool is unavailable, do not edit configuration directly and do not stop at "no files changed"; explain that this is not a host-marked SELF-CONFIG turn and point the operator to one of those entry points.
-`;
 
 const MEMORY_SKILL = `---
 name: mono-agent-memory
@@ -75,32 +51,49 @@ Use this skill when the operator asks how this agent should remember information
 - Journal: deterministic semantic recall and background indexing, without capture-model calls.
 - BuJo: curated capture plus entity relationships; use it only when the extra model work and graph behavior are valuable.
 
-MemoryRecall is a read-only tool and is enabled by default whenever a memory tier is configured. Use it to recover prior preferences, but inspect the current config and memory audit before describing what is active.
+MemoryRecall is a read-only tool and is enabled by default whenever a memory tier is configured. Use it to recover prior preferences, but inspect mono-agent.config.json and the memory audit before describing what is active.
 
-Never paste remembered private content into a config proposal. Never request embedding or provider secrets in chat. Hand credential setup to the masked guided flow.
+Never copy remembered private content into configuration. Never request embedding or provider secrets in chat. Use the documented owner-only .env and authentication commands.
 
-Use ProposeAgentConfiguration only to adjust memory.maxBytes or memory.recallTool.enabled. Memory tier, path, write/capture behavior, consolidation, embeddings, LLM, provider, endpoint, and credential changes belong in the explicit guided flow. Explain prerequisite services and expected indexing/capture cost before handing Journal or BuJo setup to that flow. The host, not this skill, decides whether a candidate validates and can be applied.
+To change memory, edit mono-agent.config.json directly, run mono-agent validate, then restart the agent. Explain prerequisite services and expected indexing/capture cost before recommending Journal or BuJo, and never claim a change is active until validation and restart have succeeded.
 `;
 
 export const BUNDLED_PROJECT_SKILLS: readonly BundledProjectSkill[] = [
-  { name: "mono-agent-configure", contents: CONFIGURE_SKILL },
   { name: "mono-agent-memory", contents: MEMORY_SKILL },
 ];
+
+export function isRetiredProjectSkillName(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return RETIRED_PROJECT_SKILL_NAMES.some((retired) => retired === normalized);
+}
+
+export function activeProjectSkillSelections(names: readonly string[]): readonly string[] {
+  return names.filter((name) => !isRetiredProjectSkillName(name));
+}
 
 interface ManagedSkillManifest {
   readonly schema: "mono-agent.managed-project-skills.v1";
   readonly version: string;
-  readonly skills: Readonly<Record<ProjectSkillName, { readonly sha256: string }>>;
+  readonly skills: Readonly<Record<string, { readonly sha256: string }>>;
 }
 
-export type ProjectSkillStatusKind = "ready" | "missing" | "stale" | "modified" | "collision";
+export type ProjectSkillStatusKind =
+  | "ready"
+  | "missing"
+  | "stale"
+  | "modified"
+  | "collision"
+  | "retired-managed"
+  | "retired-missing"
+  | "retired-modified"
+  | "retired-collision";
 
 export interface ProjectSkillStatus {
-  readonly name: ProjectSkillName;
+  readonly name: string;
   readonly path: string;
   readonly status: ProjectSkillStatusKind;
   readonly installedSha256?: string;
-  readonly expectedSha256: string;
+  readonly expectedSha256?: string;
 }
 
 export interface CheckProjectSkillsResult {
@@ -112,12 +105,15 @@ export interface CheckProjectSkillsResult {
 
 export interface UpdateProjectSkillsResult extends CheckProjectSkillsResult {
   readonly updated: readonly string[];
+  readonly removed: readonly string[];
   readonly backupDir?: string;
 }
 
 export interface UpdateManagedProjectSkillsOptions {
   /** Fault-injection seam invoked before the built-in compare-and-swap writer. */
   readonly beforeActivate?: (path: string, contents: string) => Promise<void>;
+  /** Fault-injection seam immediately before exact removal of a retired managed skill. */
+  readonly beforeRetire?: (path: string) => Promise<void>;
   /** Fault-injection seam after target validation but before the old pathname is claimed. */
   readonly beforeTargetClaim?: (path: string) => Promise<void>;
   /** Fault-injection seam after staged-inode proof but before exclusive publication. */
@@ -128,6 +124,7 @@ interface ManagedFileSnapshot {
   readonly path: string;
   readonly contents?: string;
   readonly mode?: number;
+  readonly info?: BigIntStats;
 }
 
 function sha256(contents: string | Buffer): string {
@@ -170,7 +167,7 @@ export async function checkManagedProjectSkills(cwd: string): Promise<CheckProje
   for (const skill of BUNDLED_PROJECT_SKILLS) {
     const path = join(root, "skills", skill.name, "SKILL.md");
     await inspectManagedFileInside(root, path, `Managed project skill ${skill.name}`);
-    const expectedSha256 = desired.skills[skill.name].sha256;
+    const expectedSha256 = desired.skills[skill.name]!.sha256;
     const installed = await readOptional(path);
     if (installed === undefined) {
       statuses.push({ name: skill.name, path, status: "missing", expectedSha256 });
@@ -189,6 +186,35 @@ export async function checkManagedProjectSkills(cwd: string): Promise<CheckProje
     }
   }
 
+  for (const retiredName of RETIRED_PROJECT_SKILL_NAMES) {
+    const path = join(root, "skills", retiredName, "SKILL.md");
+    await inspectManagedFileInside(root, path, `Retired managed project skill ${retiredName}`);
+    const installed = await readOptional(path);
+    const recorded = manifest?.skills[retiredName]?.sha256;
+    if (recorded === undefined && installed === undefined) continue;
+    if (recorded === undefined) {
+      statuses.push({
+        name: retiredName,
+        path,
+        status: "retired-collision",
+        installedSha256: sha256(installed!),
+      });
+      continue;
+    }
+    if (installed === undefined) {
+      statuses.push({ name: retiredName, path, status: "retired-missing", expectedSha256: recorded });
+      continue;
+    }
+    const installedSha256 = sha256(installed);
+    statuses.push({
+      name: retiredName,
+      path,
+      status: installedSha256 === recorded ? "retired-managed" : "retired-modified",
+      installedSha256,
+      expectedSha256: recorded,
+    });
+  }
+
   return {
     manifestPath,
     ...(manifest?.version === undefined ? {} : { manifestVersion: manifest.version }),
@@ -200,11 +226,23 @@ export async function checkManagedProjectSkills(cwd: string): Promise<CheckProje
 /** Fail before init writes anything when an existing skill would be claimed or overwritten. */
 export async function assertManagedProjectSkillInitSafe(cwd: string): Promise<void> {
   const check = await checkManagedProjectSkills(cwd);
-  const conflicts = check.statuses.filter((entry) => entry.status === "collision" || entry.status === "modified");
-  if (conflicts.length === 0) return;
+  const conflicts = check.statuses.filter((entry) =>
+    entry.status === "collision"
+    || entry.status === "modified"
+    || entry.status === "retired-modified"
+    || entry.status === "retired-collision");
+  if (conflicts.length > 0) {
+    throw new Error(
+      `Project skill collision: ${conflicts.map((entry) => entry.path).join(", ")} contains operator-managed content. ` +
+      "Move or rename the colliding skill, or keep it and select a different skill name; mono-agent will not overwrite it.",
+    );
+  }
+  const retired = check.statuses.filter((entry) =>
+    entry.status === "retired-managed" || entry.status === "retired-missing");
+  if (retired.length === 0) return;
   throw new Error(
-    `Project skill collision: ${conflicts.map((entry) => entry.path).join(", ")} contains operator-managed content. ` +
-    "Move or rename the colliding skill, or keep it and select a different skill name; mono-agent will not overwrite it.",
+    "This agent still has a managed mono-agent-configure entry. Run `mono-agent install-skill --project --check`, " +
+    "then `mono-agent install-skill --project --update` before running init again.",
   );
 }
 
@@ -222,7 +260,11 @@ async function updateManagedProjectSkillsUnlocked(
   options: UpdateManagedProjectSkillsOptions,
 ): Promise<UpdateProjectSkillsResult> {
   const before = await checkManagedProjectSkills(root);
-  const unsafe = before.statuses.filter((entry) => entry.status === "modified" || entry.status === "collision");
+  const unsafe = before.statuses.filter((entry) =>
+    entry.status === "modified"
+    || entry.status === "collision"
+    || entry.status === "retired-modified"
+    || entry.status === "retired-collision");
   if (unsafe.length > 0) {
     throw new Error(
       `Refusing to update operator-modified project skills: ${unsafe.map((entry) => `${entry.name} (${entry.path})`).join(", ")}. ` +
@@ -232,7 +274,7 @@ async function updateManagedProjectSkillsUnlocked(
 
   const needsUpdate = before.statuses.filter((entry) => entry.status !== "ready");
   if (needsUpdate.length === 0) {
-    return { ...before, updated: [] };
+    return { ...before, updated: [], removed: [] };
   }
 
   const changeId = `${new Date().toISOString().replace(/[:.]/gu, "-")}-${randomUUID().slice(0, 8)}`;
@@ -243,10 +285,17 @@ async function updateManagedProjectSkillsUnlocked(
     const status = needsUpdate.find((entry) => entry.name === skill.name);
     return status === undefined ? [] : [{ path: status.path, contents: skill.contents, name: skill.name }];
   });
+  const retiredStatus = before.statuses.find((entry) =>
+    entry.status === "retired-managed" || entry.status === "retired-missing");
   const manifestPath = join(root, PROJECT_SKILL_MANIFEST_PATH);
   const manifestContents = `${JSON.stringify(desiredManifest(), null, 2)}\n`;
   const snapshots = new Map<string, ManagedFileSnapshot>();
-  for (const target of [...skillTargets, { path: manifestPath, contents: manifestContents, name: "manifest" }]) {
+  const snapshotTargets = [
+    ...skillTargets,
+    ...(retiredStatus === undefined ? [] : [{ path: retiredStatus.path, contents: "", name: retiredStatus.name }]),
+    { path: manifestPath, contents: manifestContents, name: "manifest" },
+  ];
+  for (const target of snapshotTargets) {
     snapshots.set(target.path, await snapshotManagedFile(root, target.path));
   }
   const afterSnapshots = await checkManagedProjectSkills(root);
@@ -273,7 +322,11 @@ async function updateManagedProjectSkillsUnlocked(
   }
 
   const updated: string[] = [];
-  const activated: Array<{ readonly path: string; readonly contents: string }> = [];
+  const removed: string[] = [];
+  const activated: Array<
+    | { readonly kind: "write"; readonly path: string; readonly contents: string }
+    | { readonly kind: "remove"; readonly path: string }
+  > = [];
   try {
     for (const target of skillTargets) {
       await ensureOwnedManagedDirectoryInside(root, dirname(target.path), "Managed project-skill directory");
@@ -287,8 +340,21 @@ async function updateManagedProjectSkillsUnlocked(
         snapshot.mode ?? 0o600,
         options,
       );
-      activated.push({ path: target.path, contents: target.contents });
+      activated.push({ kind: "write", path: target.path, contents: target.contents });
       updated.push(target.path);
+    }
+    if (retiredStatus?.status === "retired-managed") {
+      const snapshot = snapshots.get(retiredStatus.path)!;
+      await options.beforeRetire?.(retiredStatus.path);
+      removeManagedFileExactSync(
+        root,
+        retiredStatus.path,
+        snapshot.contents!,
+        snapshot.info,
+        "Retired managed project skill",
+      );
+      activated.push({ kind: "remove", path: retiredStatus.path });
+      removed.push(retiredStatus.path);
     }
     await options.beforeActivate?.(manifestPath, manifestContents);
     await atomicWriteManagedExact(
@@ -299,19 +365,29 @@ async function updateManagedProjectSkillsUnlocked(
       manifestSnapshot.mode ?? 0o600,
       options,
     );
-    activated.push({ path: manifestPath, contents: manifestContents });
+    activated.push({ kind: "write", path: manifestPath, contents: manifestContents });
 
     const after = await checkManagedProjectSkills(root);
     if (!after.ok) {
       throw new Error("Managed project skill update did not verify.");
     }
-    return { ...after, updated, backupDir };
+    return { ...after, updated, removed, backupDir };
   } catch (error) {
     const rollbackFailures: string[] = [];
     for (const activatedFile of [...activated].reverse()) {
       const snapshot = snapshots.get(activatedFile.path)!;
       try {
-        await restoreManagedFile(root, snapshot, activatedFile.contents);
+        if (activatedFile.kind === "remove") {
+          await atomicWriteManagedExact(
+            root,
+            snapshot.path,
+            undefined,
+            snapshot.contents!,
+            snapshot.mode ?? 0o600,
+          );
+        } else {
+          await restoreManagedFile(root, snapshot, activatedFile.contents);
+        }
       } catch (rollbackError) {
         rollbackFailures.push(`${activatedFile.path}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
       }
@@ -473,7 +549,12 @@ async function snapshotManagedFile(root: string, path: string): Promise<ManagedF
   const snapshot = await readManagedSnapshot(path, "snapshotted");
   return snapshot === undefined
     ? { path }
-    : { path, contents: snapshot.contents.toString("utf8"), mode: Number(snapshot.details.mode & 0o777n) };
+    : {
+        path,
+        contents: snapshot.contents.toString("utf8"),
+        mode: Number(snapshot.details.mode & 0o777n),
+        info: snapshot.details,
+      };
 }
 
 async function restoreManagedFile(

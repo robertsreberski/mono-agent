@@ -234,7 +234,7 @@ are proven down.
 
 Before app or channel loading, managed startup freezes the attested config, Identity, optional Soul, and external MCP authority file into private read-only runtime inputs. Trace and status records still identify the canonical operator-facing config path.
 
-Managed readiness waits up to 60 seconds for the worker's durable `metadata.lifecycle.startupCompleted: true` proof. The worker publishes it only after channels, memory rituals, and the final memory-health lifecycle refresh complete. Later trace publications retain the proof while `metadata.reason` records their latest diagnostic reason, so a periodic health refresh cannot close the attach window. Readiness also requires the trace PID to be alive and launchd-owned; the committed config, `.env`, Identity, Soul, MCP authority, and operational-environment fingerprints to agree; configured channels and current memory health not to have failed; and, for configuration, the TUI endpoint to be reachable. Workers from a release that predates the durable proof must restart once before SELF-CONFIG can attach.
+Managed readiness waits up to 60 seconds for the worker's durable `metadata.lifecycle.startupCompleted: true` proof. The worker publishes it only after channels, memory rituals, and the final memory-health lifecycle refresh complete. Later trace publications retain the proof while `metadata.reason` records their latest diagnostic reason. Readiness also requires the trace PID to be alive and launchd-owned; the committed config, `.env`, Identity, Soul, MCP authority, and operational-environment fingerprints to agree; and configured channels and current memory health not to have failed.
 
 `mono-agent status` applies the same process-ownership direction: a cached trace
 is running only when its PID is alive and equals launchd's current PID. Otherwise
@@ -242,17 +242,11 @@ the command removes the stale PID and transport facts, reports stopped health,
 and rewrites cached `running` channels to `stopped: instance is not running`.
 JSON status returns `ok: false` and exit 1 for that inactive state.
 
-Only after those checks does guided init open `mono-agent tui --configure` against that process. A readiness deadline or trace/TUI-probe error preserves the committed files and skips configuration chat, then uses the same ownership-proven stop path to unload the worker and scheduled-maintenance jobs and remove both definitions. If launchd or PID checks cannot prove the stop, the command fails explicitly that a process may still be running and prints exact `start`, `status`, and `logs --follow` recovery commands.
+After those checks, guided init prints **Agent ready** plus the manual edit, `validate`, `restart`, and ordinary `tui` steps. A readiness deadline preserves the committed files, then uses the same ownership-proven stop path to unload the worker and scheduled-maintenance jobs and remove both definitions. If launchd or PID checks cannot prove the stop, the command fails explicitly that a process may still be running and prints exact `start`, `status`, and `logs --follow` recovery commands.
 
 ### Keyed background snapshot commitments
 
 Exact background file bytes are committed with a per-config 256-bit HMAC key stored under owner-only `~/.mono-agent/background-snapshot-keys/`. The controller creates the key and managed workers load it. Process arguments and trace metadata contain neither the plaintext files nor an offline-testable unkeyed credential digest.
-
-## Persistent self-configuration and rollback
-
-The first TUI session after guided macOS setup is visibly marked `[SELF-CONFIG]`, not ordinary chat. Its opening guide maps all capability areas once and helps the operator shape a workflow one focused question at a time. It tells the operator not to enter secrets and requires a host-rendered approval before any proposed change can be applied. Ordinary action tools and configured MCP servers are replaced with the narrow configuration capability for every non-command turn in that session.
-
-A proposal-free turn, rejection, successful approval, `done`, `no changes`, or recovered rollback rotates the opaque proposal capability and continues the same configuration conversation. Approval commits the files, restarts the agent, waits for its new ready source, and only then swaps the TUI endpoint and supplies a fixed host-outcome summary to the next turn. If the new configuration cannot start, the host restores the previous files and attempts to restart the prior agent. Text submitted while settlement is in progress is restored to the editor and never sent to ordinary chat or stale local state. If neither the new start nor recovery can prove a live endpoint, the marker remains visible, the endpoint disconnects, and manual recovery is required. Only `/quit`, `/exit`, or double `ctrl+c` exits self-configuration; quitting does not stop the background agent.
 
 ## Related references
 
@@ -263,5 +257,4 @@ A proposal-free turn, rejection, successful approval, `done`, `no changes`, or r
 | Dotenv precedence and secret fields | [Environment Variables](/config/env-vars/) |
 | Agent-folder ownership and generated paths | [Folder Layout](/config/folder-layout/) |
 | Exact command, readiness, and recovery behavior | [CLI Reference](/observability/cli-reference/) |
-| Self-configuration authority | [TUI](/observability/tui/) |
 | Feature-level coverage contracts | [Feature Registry](/reference/feature-registry/) |

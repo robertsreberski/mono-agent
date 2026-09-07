@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Breaking: framework self-configuration has been removed.** The dedicated
+  SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
+  `/configure`, host-side proposal review/apply/restart transaction, and bundled
+  `mono-agent-configure` skill no longer exist. Edit `mono-agent.config.json` or
+  `IDENTITY.md`, run `mono-agent validate`, restart, and use the ordinary TUI.
+  Existing `mono-agent-configure` selections are ignored at runtime and reported
+  as waiting by validation so running consumers do not break. With index
+  disclosure, active selected skill bodies load in full without `ReadSkill`
+  until the retired selector is removed. Run
+  `mono-agent install-skill --project --check`, then `--update` to retire exact
+  manifest-owned legacy state. Modified or colliding copies are preserved and
+  require operator resolution.
 - Preserve natural conversation continuity after any admitted, non-isolated run
   settles as cancelled or failed before its success commit. The next turn
   receives a 48 KiB redacted account of the request, partial assistant output,

@@ -14,10 +14,15 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
         for (const path of result.updated) {
           process.stdout.write(`${ui.badge("ok")}${ui.style.green("updated")}  ${path}\n`);
         }
+        for (const path of result.removed) {
+          process.stdout.write(`${ui.badge("ok")}${ui.style.green("removed")}  ${path}\n`);
+        }
         if (result.backupDir !== undefined) {
           process.stdout.write(`${ui.badge("ok")}backup    ${result.backupDir}\n`);
         }
-        if (result.updated.length === 0) process.stdout.write(`${ui.badge("ok")}project skills are current\n`);
+        if (result.updated.length === 0 && result.removed.length === 0) {
+          process.stdout.write(`${ui.badge("ok")}project skills are current\n`);
+        }
         process.stdout.write(`${ui.badge("ok")}docs MCP pairing skipped in project mode\n`);
         return 0;
       }
@@ -31,11 +36,18 @@ export async function runInstallSkill(args: ParsedCliArgs): Promise<number> {
         return result.ok ? 0 : 1;
       }
       for (const status of result.statuses) {
-        const badge = status.status === "ready" ? ui.badge("ok") : ui.badge("error");
+        const badge = status.status === "ready"
+          ? ui.badge("ok")
+          : status.status.startsWith("retired-")
+            ? ui.badge("waiting")
+            : ui.badge("error");
         process.stdout.write(`${badge}${status.name}: ${status.status} (${status.path})\n`);
       }
       if (!result.ok && args.check !== true) {
-        process.stderr.write(ui.errorLine("Project skills need attention. Run `mono-agent install-skill --project --update`; modified copies require manual reconciliation."));
+        process.stderr.write(ui.errorLine(
+          "Project skills need attention. Run `mono-agent install-skill --project --update`; " +
+          "modified or collision copies require manual reconciliation.",
+        ));
       }
       process.stdout.write(`${ui.badge("ok")}docs MCP pairing skipped in project mode\n`);
       return result.ok ? 0 : 1;

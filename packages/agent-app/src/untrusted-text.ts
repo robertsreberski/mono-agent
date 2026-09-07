@@ -53,7 +53,7 @@ const CREDENTIAL_ENV_NAME = /(?:api.?key|credential|password|secret|token)/iu;
  * Deliberately narrow. An earlier revision also excluded `_TOKENS`, `_NAME`,
  * and `_URL`, which dropped genuine credential holders such as
  * `SERVICE_API_TOKENS` and `SLACK_APP_TOKENS` from the scan — and because this
- * helper also backs the SELF-CONFIG proposal guard, that weakened two surfaces
+ * helper is shared by security-sensitive persistence guards, so that weakened multiple surfaces
  * at once. The residual cost is accepted and documented: a credential-named
  * budget such as `..._KEEP_RECENT_TOKENS=8000` still makes the literal `8000`
  * unstorable through `Remember`. Favouring a false rejection over a persisted
@@ -65,7 +65,7 @@ const NON_CREDENTIAL_ENV_NAME = /(?:_ENV|_ENV_VAR|_PATH|_FILE|_DIR)$/iu;
  * Shortest environment value worth matching.
  *
  * Deliberately low: a short PIN or numeric key is still a credential, and this
- * guard also backs the SELF-CONFIG proposal check, so raising it to reduce
+ * guard is shared by other persistence checks, so raising it to reduce
  * false positives would quietly widen what both surfaces let through. The
  * name-based exclusion above is the targeted fix for operational settings.
  */

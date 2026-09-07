@@ -63,7 +63,7 @@ describe("baseConfig", () => {
 
     const withoutSkills = baseConfig({ dirBasename: "a", skillsRootExists: false }, "A", DEFAULT_MODEL, []);
     expect(withoutSkills.context?.skillsRoot).toBe("./skills");
-    expect(withoutSkills.context?.selectedSkills).toEqual(["mono-agent-configure", "mono-agent-memory"]);
+    expect(withoutSkills.context?.selectedSkills).toEqual(["mono-agent-memory"]);
     expect(withoutSkills.context?.skillDisclosure).toBe("index");
   });
 

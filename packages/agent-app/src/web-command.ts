@@ -59,7 +59,6 @@ import {
 } from "./managed-web-logs.js";
 import type { ManagedWebLogMonitorDependencies } from "./managed-web-logs.js";
 import { managedWebLogMaintenanceEnvironment } from "./managed-web-maintenance-environment.js";
-import { hasCompletedManagedStartup } from "./managed-startup.js";
 import { verifyManagedRuntimeMaintenanceEntrypoint } from "./managed-runtime-maintenance-entry.js";
 import { managedWebPaths } from "./web-maintenance-paths.js";
 import type { ManagedWebPaths } from "./web-maintenance-paths.js";
@@ -106,13 +105,6 @@ interface StartWebServerOptions {
   readonly registryDirs?: readonly string[];
   readonly stateDir?: string;
   readonly env?: Record<string, string | undefined>;
-  readonly configurationHost?: {
-    supports(agent: { readonly source: import("@mono-agent/observability").TraceSourceListItem }): boolean;
-    create(agent: { readonly source: import("@mono-agent/observability").TraceSourceListItem }): Promise<{
-      readonly configuration: unknown;
-      dispose(): Promise<void>;
-    }>;
-  };
 }
 
 interface ResetWebStateOptions {
@@ -397,27 +389,7 @@ async function runWebForeground(options: RunWebCommandOptions, deps: RunWebComma
   let handle: WebServerHandle;
   try {
     const startServer = deps.startServer ?? defaultStartWebServer;
-    const configurationHost = (deps.platform ?? process.platform) === "darwin"
-      ? {
-          supports: (agent: { readonly source: import("@mono-agent/observability").TraceSourceListItem }) =>
-            agent.source.configPath !== undefined
-              && agent.source.health === "running"
-              && hasCompletedManagedStartup(agent.source),
-          create: async (agent: { readonly source: import("@mono-agent/observability").TraceSourceListItem }) => {
-            const { createManagedWebConfigurationSession } = await import("./tui-command.js");
-            return await createManagedWebConfigurationSession(agent.source, options.env);
-          },
-        }
-      : undefined;
-    handle = await startServer({
-      host,
-      port,
-      theme,
-      registryDirs: [registryDir],
-      stateDir: paths.stateDir,
-      env: options.env,
-      ...(configurationHost === undefined ? {} : { configurationHost }),
-    });
+    handle = await startServer({ host, port, theme, registryDirs: [registryDir], stateDir: paths.stateDir, env: options.env });
   } catch (error) {
     stderr.write(ui.errorLine(`mono-agent web failed to start: ${errorMessage(error)}`));
     return 1;

@@ -528,20 +528,21 @@ for an existing local agent, with one backend-specific branch in step 6.
    npm install --save-exact "@mono-agent/memory-supermemory@$VERSION"
    ```
 
-3. Check/refresh the two managed configuration skills. Reconcile any
-   operator-modified skill before using `--update`. On macOS, ensure the
-   background agent is ready before opening the dedicated SELF-CONFIG
-   conversation:
+3. Check or refresh the managed memory skill. Reconcile any operator-modified
+   skill before using `--update`; the updater also reports and safely retires
+   an exact manifest-owned legacy configuration skill:
 
    ```bash
    mono-agent install-skill --project --check
    mono-agent install-skill --project --update
-   mono-agent status
-   mono-agent tui --configure
    mono-agent config
+   mono-agent validate
+   mono-agent restart
+   mono-agent tui
    ```
 
-   The opening message marks SELF-CONFIG, maps every capability area once, and begins a user-led workflow conversation; never enter secrets. The bundled `mono-agent-configure` and `mono-agent-memory` skills can prepare an incremental constrained proposal, but the host still validates it and asks for separate approval before writing. No proposal, rejection, approval, `done`, or `no changes` exits the session. Approval restarts the background agent and waits for a new ready source; a failed new config restores the files and restarts the previous agent. Only quitting closes SELF-CONFIG, while the background agent stays up. Off macOS, edit the config/identity manually, validate, use `start --foreground`, and open ordinary `tui`; conversational configuration is unavailable.
+   Edit the config or identity directly, never enter secrets in either file,
+   validate the result, restart, and open ordinary `tui` only after readiness.
 
 4. Confirm that the exact embeddings model is available from the selected provider. For Ollama:
 

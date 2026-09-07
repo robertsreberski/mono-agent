@@ -117,7 +117,12 @@ import {
 import { piAuthRecoveryCommand } from "./provider-setup.js";
 import { collectUsedProviderReferences } from "./provider-auth-status.js";
 import { inspectPiAuthStore, type PiAuthStoreInspection, type PiAuthStoreUnsafeReason } from "./pi-auth-store-inspection.js";
-import { checkManagedProjectSkills, managedProjectSkillsExist } from "./project-skills.js";
+import {
+  activeProjectSkillSelections,
+  checkManagedProjectSkills,
+  isRetiredProjectSkillName,
+  managedProjectSkillsExist,
+} from "./project-skills.js";
 import { runtimeProvenanceDetail } from "./runtime-provenance.js";
 import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
@@ -956,6 +961,8 @@ function hasNonEmptyCredentialValue(value: unknown): value is string {
 async function contextSection(config: MonoAgentConfig, cwd: string): Promise<ValidationSection> {
   const details: string[] = [];
   let status: ValidationStatus = "ok";
+  const activeSelectedSkills = activeProjectSkillSelections(config.context.selectedSkills);
+  const retiredSelectedSkills = config.context.selectedSkills.filter(isRetiredProjectSkillName);
 
   if (await pathExists(config.context.identityPath)) {
     details.push(`Identity: ${config.context.identityPath}`);
@@ -969,10 +976,21 @@ async function contextSection(config: MonoAgentConfig, cwd: string): Promise<Val
     details.push(`Soul file is missing: ${config.context.soulPath}`);
   }
 
-  if (config.context.skillsRoot !== undefined) {
+  for (const skill of retiredSelectedSkills) {
+    if (status === "ok") status = "waiting";
+    details.push(
+      `Skill \`${skill}\` is retired and ignored. Remove it from context.selectedSkills or ` +
+      "MONO_AGENT_SELECTED_SKILLS, then run `mono-agent install-skill --project --check`." +
+      (config.context.skillDisclosure === "index"
+        ? " Skill disclosure runs as `full` until the retired selector is removed."
+        : ""),
+    );
+  }
+
+  if (activeSelectedSkills.length > 0 && config.context.skillsRoot !== undefined) {
     if (await pathExists(config.context.skillsRoot)) {
       details.push(`Skills root: ${config.context.skillsRoot}`);
-      for (const skill of config.context.selectedSkills) {
+      for (const skill of activeSelectedSkills) {
         const skillPath = join(config.context.skillsRoot, skill, "SKILL.md");
         if (await pathExists(skillPath)) {
           details.push(`Skill \`${skill}\`: ${skillPath}`);
@@ -985,7 +1003,7 @@ async function contextSection(config: MonoAgentConfig, cwd: string): Promise<Val
       status = "error";
       details.push(`Skills root is missing: ${config.context.skillsRoot}`);
     }
-  } else if (config.context.selectedSkills.length > 0) {
+  } else if (activeSelectedSkills.length > 0) {
     status = "error";
     details.push("Skills are selected but context.skillsRoot is not set.");
   }

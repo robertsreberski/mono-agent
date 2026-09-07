@@ -928,39 +928,6 @@ describe("web HTTP server", () => {
     expect(await json(response)).toMatchObject({ error: { code: "request_too_large" } });
   });
 
-  it("requires the exact browser origin before granting SELF-CONFIG", async () => {
-    const { baseUrl } = await start({
-      host: "127.0.0.1",
-      configurationHost: {
-        supports: () => true,
-        create: async () => ({
-          configuration: {
-            sessionId: "11111111-2222-4333-8444-555555555555",
-            conversationId: "web-config-http-test",
-            roleLocation: "/tmp/IDENTITY.md -> ## Role",
-            initialPrompt: "Open configuration.",
-            prompt: "Open configuration.",
-            operatorPrompt: "Continue configuration.",
-            takeProposal: async () => undefined,
-            approve: async () => ({ kind: "applied", message: "Applied." }),
-            reject: async () => ({ kind: "rejected", message: "Rejected." }),
-            abandon: async () => undefined,
-          },
-          dispose: async () => undefined,
-        }),
-      },
-    });
-    const path = `${baseUrl}/api/v1/agents/agent-one/configuration-sessions`;
-    const denied = await fetch(path, { method: "POST", headers: { origin: "https://evil.example" } });
-    expect(denied.status).toBe(403);
-    const allowed = await fetch(path, { method: "POST", headers: { origin: baseUrl } });
-    expect(allowed.status).toBe(201);
-    expect((await json(allowed)).session).toMatchObject({
-      sourceId: "agent-one",
-      status: "active",
-    });
-  });
-
   it("requires exact origin for provider-auth reads and proxies no-store responses without persistence", async () => {
     const providerAuthStatus = {
       schema: "mono-agent.provider-auth.v1",

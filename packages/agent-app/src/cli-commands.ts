@@ -262,11 +262,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         configPath: resolve(process.cwd(), args.configPath ?? "mono-agent.config.json"),
         cwd: process.cwd(),
         env: process.env,
-        ...(args.envFile === undefined ? {} : { envFile: args.envFile }),
         ...(args.agent === undefined ? {} : { agent: args.agent }),
         ...(args.conversation === undefined ? {} : { conversationId: args.conversation }),
         ...(args.local === true ? { local: true } : {}),
-        ...(args.configure === true ? { configure: true } : {}),
       });
     }
     case "web": {

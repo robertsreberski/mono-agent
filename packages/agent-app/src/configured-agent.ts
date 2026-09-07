@@ -112,6 +112,7 @@ import {
   type ProcessJobsRootRegistrySnapshot,
 } from "./process-jobs-root-registry.js";
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
+import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
@@ -1203,8 +1204,19 @@ async function createConfiguredAgentHarnessInternal(
     ...(config.context.soulPath === undefined ? {} : { soulPath: config.context.soulPath }),
     ...(config.context.skillsRoot === undefined ? {} : { skillsRoot: config.context.skillsRoot }),
     ...(config.context.skillMaxBytes === undefined ? {} : { skillMaxBytes: config.context.skillMaxBytes }),
-    ...(config.context.skillDisclosure === undefined ? {} : { skillDisclosure: config.context.skillDisclosure }),
-    selectedSkills: config.context.selectedSkills,
+    ...(config.context.skillDisclosure === undefined
+      ? {}
+      : {
+          // Index disclosure inventories every installed skill, not only selected
+          // ones. Until the explicit updater retires the legacy file, fall back
+          // to selected-body loading so that stale configure instructions cannot
+          // re-enter through ReadSkill.
+          skillDisclosure: config.context.skillDisclosure === "index"
+            && config.context.selectedSkills.some(isRetiredProjectSkillName)
+            ? "full"
+            : config.context.skillDisclosure,
+        }),
+    selectedSkills: activeProjectSkillSelections(config.context.selectedSkills),
     runtime,
     model,
     cwd: config.runtime.workspace,

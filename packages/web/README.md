@@ -580,9 +580,6 @@ WebAgentsChangedPayload
 WebAttachment
 WebBootstrap
 WebBootstrapScope
-WebConfigurationMessage
-WebConfigurationProposal
-WebConfigurationSession
 WebConsoleError
 WebConsoleIdentity
 WebEvent
