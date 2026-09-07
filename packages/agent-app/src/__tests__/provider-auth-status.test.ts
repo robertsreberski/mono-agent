@@ -48,6 +48,7 @@ describe("provider auth status", () => {
       },
     } as unknown as MonoAgentConfig;
     const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:00.000Z"));
+    tracker.runStarted("r");
     tracker.observe({ runId: "r", conversationId: "c", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [], model: "opencode-go:kimi-k2.6" });
     const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker });
     expect(snapshot.providers.find((item) => item.providerId === "opencode-go")).toMatchObject({ state: "present", source: "stored", verification: "verified_by_live_request" });
@@ -142,6 +143,7 @@ describe("provider auth status", () => {
       .toMatchObject({ state: "present", verification: "not_verified" });
     expect(await readStatus({ type: "oauth", access: "expired", refresh: "", expires: 1 }))
       .toMatchObject({ state: "expired", verification: "not_verified" });
+    tracker.runStarted("previous-success");
     tracker.observe({
       runId: "previous-success", conversationId: "c", status: "succeeded", durationMs: 1,
       eventCount: 0, artifactPaths: [], model: "openai-codex:gpt-5.6-terra",

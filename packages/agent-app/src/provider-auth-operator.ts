@@ -134,11 +134,19 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
         return;
       }
 
+      let persistenceObserved = false;
+      const observePersistence = () => {
+        if (persistenceObserved) return;
+        persistenceObserved = true;
+        checks.credentialPersisted(input.providerId);
+        options.observations.credentialPersisted(input.providerId);
+      };
       const persistence = Promise.resolve().then(async () => await persist({
         authPath: options.config.providers?.piAuthPath ?? "",
         provider: input.providerId,
         ...(options.platform === undefined ? {} : { platform: options.platform }),
         abortSignal: session.abort.signal,
+        onCredentialStoreMutation: observePersistence,
         resolveCredential: async () => await login(input.providerId, input.authType, {
           signal: session.abort.signal,
           prompt: async (prompt) => {
@@ -220,7 +228,14 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
             }
           },
         }),
-      }));
+      })).then(() => {
+        // Persistence can enter its deliberately non-cancellable atomic promote
+        // or cleanup phase before a session is replaced/cancelled. Its eventual
+        // success still changed the credential. Real persistence signals at the
+        // first target mutation so a later cleanup failure also fences evidence;
+        // this completion fallback preserves custom persistence seams.
+        observePersistence();
+      });
       activePersistences.add(persistence);
       persistence.then(
         () => activePersistences.delete(persistence),
@@ -232,8 +247,6 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
           terminal(session, "cancelled");
           return;
         }
-        checks.credentialPersisted(input.providerId);
-        options.observations.credentialPersisted(input.providerId);
         terminal(session, "succeeded");
       } catch (error) {
         if (session.abort.signal.aborted || !isCurrent(session)) {

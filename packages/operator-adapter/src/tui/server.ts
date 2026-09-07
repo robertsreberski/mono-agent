@@ -1042,7 +1042,11 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
     void providerAuth.get(sessionId).then((snapshot) => {
       if (snapshot === undefined) {
-        sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Provider authentication session was not found."));
+        sendJsonError(res, 404, new ProviderAuthOperationError(
+          "provider_auth_not_found",
+          "Provider authentication session was not found.",
+          404,
+        ));
       } else {
         sendProviderAuth(res, 200, parseProviderAuthSessionSnapshot(snapshot));
       }
@@ -1116,7 +1120,11 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
     void providerAuth.checks.get(checkId).then((snapshot) => {
       if (snapshot === undefined) {
-        sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Provider auth check was not found."));
+        sendJsonError(res, 404, new ProviderAuthOperationError(
+          "provider_auth_not_found",
+          "Provider auth check was not found.",
+          404,
+        ));
       } else {
         sendProviderAuth(res, 200, parseProviderAuthCheckSessionSnapshot(snapshot));
       }

@@ -73,6 +73,23 @@ describe("Pi provider setup safety", () => {
     expect((await readdir(dir)).filter((name) => name.includes("mono-agent"))).toEqual([]);
   });
 
+  it("signals target mutation before a later credential transaction cleanup failure", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    let mutations = 0;
+
+    await expect(persistPiProviderCredential({
+      authPath,
+      provider: "opencode-go",
+      resolveCredential: async () => ({ type: "api_key", key: "fake-replacement" }),
+      onCredentialStoreMutation: () => { mutations += 1; },
+      beforePiAuthTempCleanup: async () => { throw new Error("fixture cleanup failure"); },
+    })).rejects.toThrow("fixture cleanup failure");
+
+    expect(mutations).toBe(1);
+    expect(Object.hasOwn(JSON.parse(await readFile(authPath, "utf8")) as object, "opencode-go")).toBe(true);
+  });
+
   it("hard-kills a provider probe that traps SIGTERM", async () => {
     if (process.platform === "win32") return;
     const startedAt = Date.now();

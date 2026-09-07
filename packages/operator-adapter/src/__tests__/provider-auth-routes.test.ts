@@ -173,6 +173,36 @@ describe("provider auth routes", () => {
     expect(await response.json()).toMatchObject({ error: { code: "provider_auth_rate_limited" } });
   });
 
+  it("returns the closed not-found code for expired login and check sessions", async () => {
+    const operator: ProviderAuthOperator = {
+      status: async () => status,
+      start: async () => session,
+      get: async () => undefined,
+      submit: async () => session,
+      cancel: async () => undefined,
+      checks: {
+        start: async () => check,
+        get: async () => undefined,
+        cancel: async () => undefined,
+      },
+      stop: async () => undefined,
+    };
+    const server = await startTuiAdapter({
+      host: "127.0.0.1", port: 0, providerAuth: operator,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
+
+    for (const path of [
+      "/v1/provider-auth/sessions/expired-session",
+      "/v1/provider-auth/checks/expired-check",
+    ]) {
+      const response = await fetch(`${server.baseUrl}${path}`);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: { code: "provider_auth_not_found" } });
+    }
+  });
+
   it("advertises and serves the full login lifecycle when the operator endpoint has no API key", async () => {
     const operator: ProviderAuthOperator = {
       status: vi.fn(async () => status),

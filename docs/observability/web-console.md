@@ -124,7 +124,10 @@ only after a retained real request succeeds. Static credential presence is
 **Needs action**; keyless providers are **Not applicable**. Availability,
 network, quota, and model-entitlement failures do not become false auth claims.
 The evidence is best-effort and process-local: a restart loses check sessions
-and observations, and no provider-auth result is stored durably.
+and observations, and no provider-auth result is stored durably. Ordinary run
+evidence is fenced at provider-execution start: any target-store mutation makes
+already-running summaries and their failover attempts ineligible to verify or
+reject the replacement credential, even if post-install cleanup later fails.
 
 One **Authenticate** or **Re-authenticate** action starts a short-lived session on
 the agent host. GitHub Copilot and OpenAI Codex show Pi's native device URL and
@@ -145,7 +148,9 @@ promotion or cleanup, the replacement waits up to two seconds for it to finish
 safely. A longer drain fails the fresh session with `replacement_timeout`
 without starting another writer; retry after the prior transaction finishes.
 An already-open provider page may still complete remotely, but its stale local
-callback cannot update the replacement session or auth store.
+callback cannot update the replacement session or auth store. The console keeps
+polling identical active snapshots; an expired retained session releases the
+local running control, while transient status-read failures remain retryable.
 
 **Run check** is one explicit section-level action for all provider rows already
 displayed. It sends one tiny request to each provider's deterministically chosen

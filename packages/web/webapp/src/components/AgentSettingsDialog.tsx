@@ -247,45 +247,33 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   useEffect(() => {
     if (session === null || terminal(session.state)) {
       if (session?.state === "succeeded") {
-        void refresh().catch((caught) => setAuthError(caught instanceof Error ? caught.message : String(caught)));
+        const controller = new AbortController();
+        void refresh(controller.signal).catch((caught) => {
+          if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
+        });
+        return () => controller.abort();
       }
       return;
     }
     const controller = new AbortController();
     const expectedSessionId = session.id;
     const expectedScope = scopeKey;
-    const timer = window.setTimeout(() => {
-      void api.providerAuthSession(sourceId, expectedSessionId, controller.signal).then((next) => {
-        if (!controller.signal.aborted && scopeRef.current === expectedScope && sessionRef.current?.id === expectedSessionId) adoptSession(next);
-      }).catch((caught) => {
-        if (!controller.signal.aborted && scopeRef.current === expectedScope && sessionRef.current?.id === expectedSessionId) {
-          setAuthError(caught instanceof Error ? caught.message : String(caught));
-        }
-      });
-    }, 1_000);
-    return () => {
-      controller.abort();
-      window.clearTimeout(timer);
-    };
-  }, [sourceId, session?.id, session?.state, session?.updatedAt]);
-
-  useEffect(() => {
-    if (check === null || checkTerminal(check.state)) {
-      if (check !== null) {
-        void refresh().catch((caught) => setAuthError(caught instanceof Error ? caught.message : String(caught)));
-      }
-      return;
-    }
-    const controller = new AbortController();
     let timer: number | undefined;
     const poll = () => {
       timer = window.setTimeout(() => {
-        void api.providerAuthCheck(sourceId, check.id, controller.signal).then((next) => {
-          if (controller.signal.aborted) return;
-          adoptCheck(next);
-          if (!checkTerminal(next.state)) poll();
+        void api.providerAuthSession(sourceId, expectedSessionId, controller.signal).then((next) => {
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || sessionRef.current?.id !== expectedSessionId) return;
+          setAuthError(null);
+          adoptSession(next);
+          if (!terminal(next.state)) poll();
         }).catch((caught) => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || sessionRef.current?.id !== expectedSessionId) return;
+          if (providerAuthResourceAbsent(caught)) {
+            adoptSession(null);
+            setSessionProvider(null);
+            setAuthError(null);
+            return;
+          }
           setAuthError(caught instanceof Error ? caught.message : String(caught));
           poll();
         });
@@ -296,7 +284,44 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       controller.abort();
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [sourceId, check?.id, check?.state]);
+  }, [sourceId, scopeKey, session?.id, session?.state]);
+
+  useEffect(() => {
+    if (check === null || checkTerminal(check.state)) {
+      if (check !== null) {
+        void refresh().catch((caught) => setAuthError(caught instanceof Error ? caught.message : String(caught)));
+      }
+      return;
+    }
+    const controller = new AbortController();
+    const expectedCheckId = check.id;
+    const expectedScope = scopeKey;
+    let timer: number | undefined;
+    const poll = () => {
+      timer = window.setTimeout(() => {
+        void api.providerAuthCheck(sourceId, expectedCheckId, controller.signal).then((next) => {
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || checkRef.current?.id !== expectedCheckId) return;
+          setAuthError(null);
+          adoptCheck(next);
+          if (!checkTerminal(next.state)) poll();
+        }).catch((caught) => {
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || checkRef.current?.id !== expectedCheckId) return;
+          if (providerAuthResourceAbsent(caught)) {
+            adoptCheck(null);
+            setAuthError(null);
+            return;
+          }
+          setAuthError(caught instanceof Error ? caught.message : String(caught));
+          poll();
+        });
+      }, 1_000);
+    };
+    poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [sourceId, scopeKey, check?.id, check?.state]);
 
   if (agent.supportsProviderAuth !== true) {
     return (
@@ -359,7 +384,12 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       }
     } catch (caught) {
       if (scopeRef.current === requestScope && checkRef.current?.id === check.id) {
-        setAuthError(caught instanceof Error ? caught.message : String(caught));
+        if (providerAuthResourceAbsent(caught)) {
+          adoptCheck(null);
+          setAuthError(null);
+        } else {
+          setAuthError(caught instanceof Error ? caught.message : String(caught));
+        }
       }
     } finally {
       finishOperation(requestId, requestScope);
@@ -604,4 +634,13 @@ function providerAuthCheckSummary(check: ProviderAuthCheckSessionSnapshot): stri
   if (!checkTerminal(check.state)) return `Checking providers: ${finished} of ${check.results.length} complete.`;
   const passed = check.results.filter((result) => result.state === "passed").length;
   return `Checks complete: ${passed} of ${check.results.length} passed.`;
+}
+
+function providerAuthResourceAbsent(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && "status" in error
+    && "code" in error
+    && (error as { readonly status?: unknown }).status === 404
+    && (error as { readonly code?: unknown }).code === "provider_auth_not_found";
 }

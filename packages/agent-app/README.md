@@ -443,8 +443,12 @@ successfully runs. Passive status treats refreshable OAuth expiry as present but
 unverified and fails closed on unusable material or unsafe stores. The optional
 provider-auth check operator runs one explicit target-only, bounded request per
 displayed provider, records only fixed sanitized outcomes, and never probes from
-a status read. Guided Pi setup covers Anthropic, GitHub Copilot, OpenAI Codex,
-and OpenCode-Go; other hand-authored Pi and local-provider configs remain compatible
+a status read. Ordinary run evidence is generation-fenced before provider
+execution: a target-store mutation invalidates already-running summaries and
+their failover attempts, including when the surrounding persistence finishes
+after logical cancellation or reports a post-install cleanup failure. Guided Pi
+setup covers Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go; other
+hand-authored Pi and local-provider configs remain compatible
 without being advertised as guided cloud integrations. Supported OAuth methods and
 the OpenCode-Go key flow come from the bundled upstream catalog;
 stale auth locks are repaired only when the recorded process is securely proven

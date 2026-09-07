@@ -127,6 +127,20 @@ describe("OperatorClient", () => {
     });
   });
 
+  it("preserves terminal provider-auth absence for polling clients", async () => {
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        error: { code: "provider_auth_not_found", message: "Provider auth check was not found." },
+      }, { status: 404 })) as typeof fetch,
+    });
+
+    await expect(client.providerAuthCheck("expired-check")).rejects.toMatchObject({
+      code: "provider_auth_not_found",
+      status: 404,
+    });
+  });
+
   it("parses the provider summary on the bounds the producer publishes against", async () => {
     // These bounds are one contract, not two guesses. Chosen locally they
     // drifted: a 256-byte provider id the catalog publishes was dropped here at

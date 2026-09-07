@@ -123,6 +123,14 @@ describe("provider authentication controls in Chromium", () => {
     } as const;
     const replacement = deferred<Record<string, unknown>>();
     apiMock.beginProviderAuth.mockResolvedValueOnce(active).mockImplementationOnce(async () => await replacement.promise);
+    let replacementPolls = 0;
+    apiMock.providerAuthSession.mockImplementation(async (_sourceId: string, sessionId: string) => {
+      if (sessionId === active.id) return active;
+      replacementPolls += 1;
+      return replacementPolls < 2
+        ? { ...active, id: "new-session", authType: "api_key", strategy: "api_key_prompt", state: "pending", progress: "NEW FLOW ACTIVE" }
+        : { ...active, id: "new-session", authType: "api_key", strategy: "api_key_prompt", state: "succeeded", progress: "NEW FLOW COMPLETE" };
+    });
     const rendered = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Re-authenticate" }));
@@ -137,12 +145,43 @@ describe("provider authentication controls in Chromium", () => {
     await userEvent.click(screen.getByRole("button", { name: "API key" }));
     expect(screen.getByText("Restarting authentication…")).toBeVisible();
     expect(screen.getByText("OLD FLOW ACTIVE")).toBeVisible();
-    replacement.resolve({ ...active, id: "new-session", authType: "api_key", strategy: "api_key_prompt", progress: "NEW FLOW ACTIVE" });
+    replacement.resolve({ ...active, id: "new-session", authType: "api_key", strategy: "api_key_prompt", state: "pending", progress: "NEW FLOW ACTIVE" });
     expect(await screen.findByText("NEW FLOW ACTIVE")).toBeVisible();
     expect(screen.queryByText("OLD FLOW ACTIVE")).not.toBeInTheDocument();
+    expect(await screen.findByText("NEW FLOW COMPLETE", {}, { timeout: 3_000 })).toBeVisible();
+    expect(replacementPolls).toBe(2);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     rendered.unmount();
-  });
+  }, 5_000);
+
+  it.each([
+    { width: 1_440, height: 900, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
+  ])("releases an expired live check at the $label viewport", async ({ width, height }) => {
+    await page.viewport(width, height);
+    const running = {
+      schema: "mono-agent.provider-auth-check.v1", id: "expired-check", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{
+        providerId: "fixture-pass", label: "Fixture pass", state: "running",
+        model: "fixture-pass:cheap", selectionBasis: "catalog_pricing",
+      }],
+    } as const;
+    apiMock.beginProviderAuthCheck.mockResolvedValue(running);
+    apiMock.providerAuthCheck.mockRejectedValue(Object.assign(new Error("expired"), {
+      status: 404, code: "provider_auth_not_found",
+    }));
+    const rendered = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }, { timeout: 2_000 })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    rendered.unmount();
+  }, 4_000);
 });
 
 function deferred<T>() {

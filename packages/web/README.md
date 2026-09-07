@@ -229,7 +229,9 @@ Anthropic accepts the final redirect URL/code; API-key providers use masked
 provider-owned prompts. Re-authentication remains available during an active
 login: a valid choice replaces it, while the compact flow stays visible until
 the fresh session arrives. Stale start, poll, input, and cancel responses cannot
-restore the old session. A replacement whose prior credential transaction
+restore the old session. Polling continues through identical active snapshots;
+an expired retained session releases the local running control, while transient
+read failures remain retryable. A replacement whose prior credential transaction
 cannot drain safely within two seconds reports `replacement_timeout`. Secret
 input is cleared before submission. The web
 server requires exact origin, proxies through the agent's ordinary operator

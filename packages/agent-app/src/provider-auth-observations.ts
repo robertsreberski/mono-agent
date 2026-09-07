@@ -4,6 +4,7 @@ import type { RunSummary } from "@mono-agent/observability";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 const FAILURE_TTL_MS = 24 * 60 * 60 * 1_000;
+const MAX_TRACKED_RUNS = MAX_PROVIDER_AUTH_ITEMS * 4;
 
 interface ProviderObservation {
   readonly verifiedAt?: string;
@@ -16,6 +17,8 @@ interface InternalProviderObservation extends ProviderObservation {
 }
 
 export interface ProviderAuthObservationTracker {
+  /** Capture the current credential generation before this run can reach a provider. */
+  runStarted(runId: string): void;
   observe(summary: RunSummary): void;
   get(providerId: string): ProviderObservation | undefined;
   /** Retain observations only for the agent's current bounded used-provider set. */
@@ -36,6 +39,8 @@ export function createProviderAuthObservationTracker(
   now: () => number = Date.now,
 ): ProviderAuthObservationTracker {
   const observations = new Map<string, InternalProviderObservation>();
+  const runGenerations = new Map<string, number>();
+  let credentialGeneration = 0;
   const providerOf = (model: string | undefined): string | undefined => {
     if (model === undefined) return undefined;
     try {
@@ -75,7 +80,23 @@ export function createProviderAuthObservationTracker(
     }
   };
   return {
+    runStarted(runId) {
+      runGenerations.delete(runId);
+      runGenerations.set(runId, credentialGeneration);
+      while (runGenerations.size > MAX_TRACKED_RUNS) {
+        const oldest = runGenerations.keys().next().value as string | undefined;
+        if (oldest === undefined) return;
+        runGenerations.delete(oldest);
+      }
+    },
     observe(summary) {
+      const runGeneration = runGenerations.get(summary.runId);
+      runGenerations.delete(summary.runId);
+      // A missing marker was evicted or did not pass through the app-owned start
+      // hook. A changed generation means some credential was persisted while
+      // the run was active. In either case its provider evidence is ambiguous,
+      // including every failed attempt in failoverHistory, so fail closed.
+      if (runGeneration === undefined || runGeneration !== credentialGeneration) return;
       const observedAt = validIso(summary.endedAt) ?? validIso(summary.updatedAt) ?? isoNow();
       for (const attempt of summary.failoverHistory ?? []) {
         failureFor(attempt.failureKind, attempt.model, observedAt);
@@ -114,6 +135,7 @@ export function createProviderAuthObservationTracker(
       }
     },
     credentialPersisted(providerId) {
+      credentialGeneration += 1;
       observations.delete(providerId);
     },
     recordSuccess(providerId, model, observedAt = isoNow()) {

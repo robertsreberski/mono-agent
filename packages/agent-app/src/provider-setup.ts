@@ -183,6 +183,8 @@ export interface PersistPiProviderCredentialOptions extends PiAuthPromotionHooks
    */
   readonly resolveCredential: (signal?: AbortSignal) => Promise<unknown>;
   readonly abortSignal?: AbortSignal;
+  /** Secret-free signal that target-store mutation began; the callback must not throw. */
+  readonly onCredentialStoreMutation?: () => void;
 }
 
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
@@ -695,7 +697,16 @@ export async function persistPiProviderCredential(
     if (!isBoundedCredentialValue(next)) {
       throw new Error(`Provider authentication would exceed the Pi credential store safety limit for ${options.provider}.`);
     }
-    await writePiAuthStoreAtomically(authPath, next, original, ownerUid, assertLockHeld, hooks, options.abortSignal);
+    await writePiAuthStoreAtomically(
+      authPath,
+      next,
+      original,
+      ownerUid,
+      assertLockHeld,
+      hooks,
+      options.abortSignal,
+      options.onCredentialStoreMutation,
+    );
   }, hooks);
 }
 
@@ -1535,6 +1546,7 @@ async function writePiAuthStoreAtomically(
   assertLockHeld: AssertPiAuthLockHeld,
   hooks: PiAuthPromotionHooks,
   abortSignal?: AbortSignal,
+  onCredentialStoreMutation?: () => void,
 ): Promise<void> {
   throwIfProviderAuthAborted(abortSignal);
   await assertPiAuthStoreUnchanged(path, original, ownerUid);
@@ -1563,6 +1575,7 @@ async function writePiAuthStoreAtomically(
       undefined,
       hooks,
       abortSignal,
+      onCredentialStoreMutation,
     );
     promotionInstalled = true;
     try {
@@ -1622,6 +1635,7 @@ async function promotePiAuthStoreWithoutClobber(
   intendedInput?: PiAuthStoreSnapshot,
   hooks: PiAuthPromotionHooks = {},
   abortSignal?: AbortSignal,
+  onCredentialStoreMutation?: () => void,
 ): Promise<void> {
   const intended = intendedInput ?? await readPiAuthStore(stagedPath, piAuthSingleLinkPolicy(ownerUid));
   throwIfProviderAuthAborted(abortSignal);
@@ -1640,6 +1654,7 @@ async function promotePiAuthStoreWithoutClobber(
       if (!installed) {
         throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
       }
+      onCredentialStoreMutation?.();
       await hooks.afterPiAuthLink?.(targetPath, stagedPath);
       await assertPromotedPiAuthStore(intended, stagedPath, targetPath, ownerUid);
       return;
@@ -1724,6 +1739,7 @@ async function promotePiAuthStoreWithoutClobber(
       preserveConcurrentBackup = false;
       throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
     }
+    onCredentialStoreMutation?.();
     try {
       await hooks.afterPiAuthLink?.(targetPath, stagedPath);
       await assertPromotedPiAuthStore(intended, stagedPath, targetPath, ownerUid);

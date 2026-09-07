@@ -177,7 +177,7 @@ describe("AgentSettingsDialog", () => {
     expectDialogTypography(notVerified, "10px");
   });
 
-  it("keeps an active flow visible while re-auth starts and ignores the old poll after replacement", async () => {
+  it("polls an unchanged replacement to success and ignores the old poll when it completes late", async () => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
     const method = { authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true } as const;
     apiMock.providerAuthStatus.mockResolvedValue({
@@ -204,9 +204,19 @@ describe("AgentSettingsDialog", () => {
       progress: "Fresh authentication started",
     } as const;
     const replacementRequest = deferred<typeof replacement>();
-    const oldPoll = deferred<typeof active & { readonly progress?: string }>();
+    const oldPoll = deferred<Omit<typeof active, "state"> & {
+      readonly state: "awaiting_input" | "succeeded";
+      readonly progress?: string;
+    }>();
     apiMock.beginProviderAuth.mockResolvedValueOnce(active).mockImplementationOnce(async () => await replacementRequest.promise);
-    apiMock.providerAuthSession.mockImplementationOnce(async () => await oldPoll.promise);
+    let replacementPolls = 0;
+    apiMock.providerAuthSession.mockImplementation(async (_sourceId: string, sessionId: string) => {
+      if (sessionId === active.id) return await oldPoll.promise;
+      replacementPolls += 1;
+      return replacementPolls < 3
+        ? { ...replacement }
+        : { ...replacement, state: "succeeded", updatedAt: "2026-09-06T12:00:05.000Z", progress: "FRESH SESSION SUCCEEDED" };
+    });
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Re-authenticate" }));
@@ -222,10 +232,12 @@ describe("AgentSettingsDialog", () => {
 
     replacementRequest.resolve(replacement);
     expect(await screen.findByText("Fresh authentication started")).toBeVisible();
-    await act(async () => oldPoll.resolve({ ...active, progress: "STALE OLD SESSION" }));
+    expect(await screen.findByText("FRESH SESSION SUCCEEDED", {}, { timeout: 4_500 })).toBeVisible();
+    expect(apiMock.providerAuthSession.mock.calls.filter(([, sessionId]) => sessionId === replacement.id)).toHaveLength(3);
+    await act(async () => oldPoll.resolve({ ...active, state: "succeeded", progress: "STALE OLD SESSION" }));
     expect(screen.queryByText("STALE OLD SESSION")).not.toBeInTheDocument();
-    expect(screen.getByText("Fresh authentication started")).toBeVisible();
-  });
+    expect(screen.getByText("FRESH SESSION SUCCEEDED")).toBeVisible();
+  }, 6_000);
 
   it("keeps the newest successful start when start responses settle out of order", async () => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true });
@@ -544,6 +556,100 @@ describe("AgentSettingsDialog", () => {
     expect(await screen.findByText("Check passed")).toBeVisible();
     expect(screen.getByText("Checks complete: 1 of 1 passed.")).toBeVisible();
   }, 6_000);
+
+  it("ends a locally running check when its retained session has expired", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [],
+      }],
+    });
+    const running = {
+      schema: "mono-agent.provider-auth-check.v1", id: "expired-check", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "running", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing" }],
+    } as const;
+    apiMock.beginProviderAuthCheck.mockResolvedValue(running);
+    apiMock.providerAuthCheck.mockRejectedValue(Object.assign(new Error("expired"), {
+      status: 404, code: "provider_auth_not_found",
+    }));
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    expect(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }, { timeout: 1_500 })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
+    await new Promise((resolve) => window.setTimeout(resolve, 1_100));
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
+  }, 4_000);
+
+  it("recovers from cancelling a check that is already absent", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [],
+      }],
+    });
+    apiMock.beginProviderAuthCheck.mockResolvedValue({
+      schema: "mono-agent.provider-auth-check.v1", id: "already-absent", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "running", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing" }],
+    });
+    apiMock.cancelProviderAuthCheck.mockRejectedValueOnce(Object.assign(new Error("already absent"), {
+      status: 404, code: "provider_auth_not_found",
+    }));
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel live provider checks" }));
+    expect(await screen.findByRole("button", { name: "Run live checks for all displayed providers" })).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps polling a check after a transient read failure", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1", generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "opencode-go", label: "OpenCode Go",
+        usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+        state: "present", source: "stored", verification: "not_verified", methods: [],
+      }],
+    });
+    const running = {
+      schema: "mono-agent.provider-auth-check.v1", id: "transient-check", state: "running",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", expiresAt: "2026-09-06T12:10:00.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "running", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing" }],
+    } as const;
+    apiMock.beginProviderAuthCheck.mockResolvedValue(running);
+    apiMock.providerAuthCheck
+      .mockRejectedValueOnce(new Error("temporary link failure"))
+      .mockResolvedValueOnce({
+        ...running, state: "completed", updatedAt: "2026-09-06T12:00:02.000Z",
+        results: [{ ...running.results[0], state: "passed", checkedAt: "2026-09-06T12:00:02.000Z", code: "passed", message: "Provider request succeeded." }],
+      });
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    expect(await screen.findByText("Check passed", {}, { timeout: 2_500 })).toBeVisible();
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(2);
+  }, 4_000);
 
   it("closes a method chooser when a live check starts", async () => {
     storeMock.selectedAgent = agent("alpha", {

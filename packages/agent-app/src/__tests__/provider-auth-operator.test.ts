@@ -173,6 +173,63 @@ describe("provider auth operator", () => {
     }
   });
 
+  it("invalidates passive proof when persistence finishes after logical cancellation", async () => {
+    const observations = createProviderAuthObservationTracker();
+    observations.runStarted("credential-a-run");
+    observations.observe({
+      runId: "credential-a-run", conversationId: "web:1", status: "succeeded", durationMs: 1,
+      eventCount: 0, artifactPaths: [], model: "opencode-go:kimi-k2.6",
+    });
+    expect(observations.get("opencode-go")).toBeDefined();
+    let finishPersistence!: () => void;
+    const persistence = new Promise<void>((resolve) => { finishPersistence = resolve; });
+    const operator = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations,
+      statusSnapshot: async () => operatorStatus(),
+      persist: (async () => await persistence) as never,
+    });
+
+    const session = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    await operator.cancel(session.id);
+    expect(await operator.get(session.id)).toMatchObject({ state: "cancelled" });
+    finishPersistence();
+    await operator.stop();
+    expect(observations.get("opencode-go")).toBeUndefined();
+  });
+
+  it("invalidates passive proof when an installed credential is followed by cleanup failure", async () => {
+    const observations = createProviderAuthObservationTracker();
+    observations.runStarted("credential-a-run");
+    observations.observe({
+      runId: "credential-a-run", conversationId: "web:1", status: "succeeded", durationMs: 1,
+      eventCount: 0, artifactPaths: [], model: "opencode-go:kimi-k2.6",
+    });
+    let finishAfterMutation!: () => void;
+    const persist = vi.fn(async (input: Parameters<typeof persistPiProviderCredential>[0] & {
+      readonly onCredentialStoreMutation?: () => void;
+    }) => await new Promise<void>((_resolve, reject) => {
+      finishAfterMutation = () => {
+        input.onCredentialStoreMutation?.();
+        reject(new Error("fixture cleanup failure"));
+      };
+    }));
+    const operator = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations,
+      statusSnapshot: async () => operatorStatus(),
+      persist: persist as never,
+    });
+
+    const session = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    await vi.waitFor(() => expect(persist).toHaveBeenCalledOnce());
+    await operator.cancel(session.id);
+    expect(observations.get("opencode-go")).toBeDefined();
+    finishAfterMutation();
+    await operator.stop();
+    expect(observations.get("opencode-go")).toBeUndefined();
+  });
+
   it("stops and fences a login whose status preparation has not settled", async () => {
     let releaseStatus!: (status: ProviderAuthStatusSnapshot) => void;
     const persist = vi.fn();
@@ -329,11 +386,13 @@ describe("provider auth operator", () => {
     await writeFile(authPath, `${JSON.stringify({ "opencode-go": { type: "api_key", key: "old-key" } })}\n`, { mode: 0o600 });
     let now = Date.parse("2026-09-06T12:00:00.000Z");
     const observations = createProviderAuthObservationTracker(() => now);
+    observations.runStarted("verified");
     observations.observe({
       runId: "verified", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "opencode-go:kimi-k2.6",
     });
     now += 1_000;
+    observations.runStarted("auth-failed");
     observations.observe({
       runId: "auth-failed", conversationId: "web:1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "opencode-go:kimi-k2.6", failureKind: "provider_auth",
@@ -369,6 +428,7 @@ describe("provider auth operator", () => {
       "opencode-go": { type: "api_key", key: "replacement-key" },
     });
     now += 1_000;
+    observations.runStarted("replacement-verified");
     observations.observe({
       runId: "replacement-verified", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "opencode-go:kimi-k2.6",
