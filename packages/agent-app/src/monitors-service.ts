@@ -1048,9 +1048,10 @@ class MonitorsService implements MonitorsServiceHandle {
   private acceptLine(monitor: LiveMonitor, record: DurableMonitorRecord, rawLine: string): void {
     record.linesObserved += 1;
     if (this.trippedRateLimit(monitor, record)) return;
-    // Preserve ANSI until comparison; display neutralization happens only when
-    // building the wake. Otherwise ESC removal leaves "[31m" as false content.
-    const stripped = rawLine;
+    // Normalize display controls BEFORE redaction so a later replacement cannot
+    // reconstruct a known secret. Valid ANSI remains intact (JSON escapes its
+    // control bytes in the envelope) and is stripped only for comparison.
+    const stripped = normalizeMonitorControls(rawLine);
     for (const entry of monitor.redactor.push(stripped, undefined)) {
       this.enqueueRedactedLine(monitor, record, entry.text);
     }
@@ -1918,7 +1919,7 @@ export function monitorWakePrompt(
         stderrTail: neutralizeFence(payload.stderrTail),
       }
       : {}),
-    events: payload.lines.map((line) => neutralizeFence(stripControlCharacters(line))),
+    events: payload.lines.map((line) => neutralizeFence(line)),
   });
   return [
     payload.terminal
@@ -1945,6 +1946,20 @@ function neutralizeFence(value: string): string {
 
 function stripControlCharacters(value: string): string {
   return value.replace(new RegExp("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]", "gu"), " ");
+}
+
+/** Preserve only syntactic ANSI delimiters; sanitize every other C0 control. */
+function normalizeMonitorControls(value: string): string {
+  const delimiters = new Set<number>();
+  // CSI parameters/intermediates/final, or OSC terminated by BEL or ST.
+  const ansi = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\))/gu;
+  for (const match of value.matchAll(ansi)) {
+    delimiters.add(match.index);
+    if (match[0].endsWith("\u0007")) delimiters.add(match.index + match[0].length - 1);
+    else if (match[0].endsWith("\u001b\\")) delimiters.add(match.index + match[0].length - 2);
+  }
+  return value.replace(new RegExp("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]", "gu"),
+    (character, offset: number) => delimiters.has(offset) ? character : " ");
 }
 
 /**

@@ -389,6 +389,30 @@ describe("monitors service", () => {
     });
   });
 
+  it.each(["batch", "exit"] as const)("normalizes controls before redaction for %s wakes while preserving ANSI", async (wakeOn) => {
+    const literal = "lavender meadow stone";
+    const handle = await open();
+    const fake = fakeRequest({ env: { TEST_API_TOKEN: literal } });
+    await handle.controller(origin(), 0).start({ ...fake.request, wakeOn, dedupe: wakeOn === "batch" ? "batch" : "none" });
+    for (const control of ["\u0000", "\u0007", "\u001b", "\u001f"]) {
+      fake.process().emit("\u001b[31mlavender" + control + "meadow stone\u001b[0m\n");
+    }
+    // OSC's own terminator survives, while a control inside its payload must
+    // still be normalized before redaction.
+    fake.process().emit("\u001b]0;lavender\u0000meadow stone\u0007\n");
+    if (wakeOn === "exit") await fake.process().finish();
+    await waitForWakes(1);
+    const events = JSON.parse(fenced(wakes[0]!.prompt)).events as string[];
+    expect(events).toHaveLength(5);
+    expect(events[0]).toBe("\u001b[31m[REDACTED]\u001b[0m");
+    expect(events[4]).toBe("\u001b]0;[REDACTED]\u0007");
+    for (const event of events) {
+      expect(event).not.toContain(literal);
+      expect(event).toContain("[REDACTED]");
+    }
+    expect(wakes[0]!.prompt).not.toContain(literal);
+  });
+
   it.each([1, 200])("retains one representative of an interval-delayed duplicate at line cap %s; terminal bypasses the floor", async (maxBatchLines) => {
     const handle = await open({ maxBatchLines }, { now: () => new Date() });
     const fake = fakeRequest();
