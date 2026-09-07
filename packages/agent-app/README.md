@@ -32,10 +32,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
 - Preserve bounded answered/expired `AskUser` evidence in the assistant history
   copy so cold/stateless provider replay does not lose the out-of-band exchange;
   cancelled asks are not journaled.
-- Publish the harness's bounded, redacted cancellation account for every
-  admitted non-isolated interactive turn that settles as cancelled, including
-  operator stop, shutdown, stale-session, signal, timeout, generic, and
-  unrecorded-reason provenance. The next turn sees that account automatically;
+- Publish the harness's bounded, redacted continuity account for every admitted
+  non-isolated turn that settles as cancelled or failed before its success
+  commit. Cancellation preserves operator, shutdown, stale-session, signal,
+  timeout, generic, and unrecorded-reason provenance; failure records a trusted
+  host settlement category while bounding/redacting runtime/provider code and
+  detail as untrusted evidence. The next turn sees the account automatically;
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
@@ -494,7 +496,7 @@ compatible. List/search defaults to 5 results (maximum 10); timeline pages hold
 at most 10 entries and about 16 KiB. Each result includes tool-authored
 `navigation.guidance` and exact `navigation.nextActions[].arguments` for
 continuing exploration. For an unhinted request to pick up, continue, or
-recover interrupted work, start with `{}`, select a `cancelled` or
+recover incomplete work, start with `{}`, select a `failed`, `cancelled`, or
 `interrupted` candidate, and inspect its `runId`. That overview marks output as
 incomplete evidence and returns a conditional exact `navigation.relatedTools`
 handoff to follow only when `SessionHistory` is available.
@@ -564,7 +566,7 @@ root, or private run path. Only regular files beneath the configured run-specifi
 outside or symlinked paths are dropped. Isolated/proactive
 runs persist but search excludes them unless explicitly requested.
 
-For tool evidence from a cancelled or interrupted `RunHistory` candidate, use
+For tool evidence from a failed, cancelled, or interrupted `RunHistory` candidate, use
 `{ "action": "search", "runIds": ["..."], "includeIsolated": true }` without
 a `states` filter. If it returns no records, do not broaden into another run or
 conversation. Each search result distinguishes the invocation `recordId` from
@@ -670,7 +672,7 @@ title remains the fallback.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for intentionally captured durable facts, `RunHistory` for exact
-settled prior-run evidence (including cancelled/interrupted work), and
+settled prior-run evidence (including failed/cancelled/interrupted work), and
 `SessionHistory` for retained managed-tool calls and
 results. Answered or expired blocking `AskUser` exchanges
 are written into the assistant history copy before the final response;

@@ -388,7 +388,9 @@ describe("AgentHarness continuous sessions", () => {
 
     expect(failed.failure?.kind).toBe("Error");
     expect(fake.calls).toHaveLength(2);
-    expect(fake.calls[1]?.options.sessionId).toBe("ps-1");
+    // The admitted failure publishes host-only canonical continuity, so the
+    // previously warm provider transcript must not be reused.
+    expect(fake.calls[1]?.options.sessionId).toBeUndefined();
   });
 
   it("carries recalled memory on the user message of every turn, including the resumed turn", async () => {
@@ -705,12 +707,16 @@ describe("AgentHarness continuous sessions", () => {
   });
 
   it.each(["failure result", "throw"] as const)(
-    "leaves the durable provider epoch dirty and invalidates it after a %s",
+    "publishes continuity and retires the durable provider epoch after a %s",
     async (outcome) => {
       const identityPath = await identityFixture();
       const root = await mkdtemp(join(tmpdir(), "agent-harness-dirty-provider-"));
       tempDirs.push(root);
-      const historyStore = createCoordinatedDurableHistoryStore({ root: join(root, "history") });
+      const retiredSessions: string[] = [];
+      const historyStore = createCoordinatedDurableHistoryStore({
+        root: join(root, "history"),
+        retireProviderSession: async (providerSessionId) => { retiredSessions.push(providerSessionId); },
+      });
       const fake = createSessionFakeRuntime(async (_prompt, options) => {
         if (outcome === "throw") throw new Error("provider transport died");
         return {
@@ -732,9 +738,17 @@ describe("AgentHarness continuous sessions", () => {
       expect(failed.failure).toBeDefined();
       const failedId = fake.calls[0]?.options.sessionId;
       expect(typeof failedId).toBe("string");
-      expect(fake.invalidatedSessions).toContain(failedId);
+      expect(retiredSessions).toContain(failedId);
       expect(fake.syncedSessions).toEqual([]);
-      expect(await historyStore.load("conv-dirty-provider")).toEqual([]);
+      const history = await historyStore.load("conv-dirty-provider");
+      expect(history).toHaveLength(2);
+      expect(history[0]).toMatchObject({ role: "user", content: "question" });
+      expect(history[1]).toMatchObject({
+        role: "assistant",
+        idempotencyKey: expect.stringMatching(/^failed-turn:v1:run-/u),
+      });
+      expect(history[1]?.content).toContain('<failed_turn_history version="1">');
+      expect(history[1]?.content).toContain('"status":"failed"');
 
       const next = await historyStore.beginProviderSessionTurn("conv-dirty-provider", "next-run");
       expect(next.providerSessionId).not.toBe(failedId);

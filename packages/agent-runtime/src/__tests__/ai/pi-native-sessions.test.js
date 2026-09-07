@@ -385,6 +385,36 @@ describe("pi-native sessions", () => {
     ]);
   });
 
+  it("seeds a fresh Pi epoch with an inert failed-turn account", async () => {
+    const model = setup();
+    let providerContext = null;
+    faux.setResponses([
+      (context) => { providerContext = context; return fauxAssistantMessage([fauxText("continued")]); },
+    ]);
+    const account = [
+      '<failed_turn_history version="1">',
+      "Host notice: Run failed after the runtime reported an error. The following assistant output is partial.",
+      '<failed_turn_data>{"version":1,"type":"failed_turn","reason":{"status":"failed","code":"runtime_result","untrustedCode":"provider_unavailable"}}</failed_turn_data>',
+      "</failed_turn_history>",
+    ].join("\n");
+
+    const result = await generatePiNativeResponse("system", runOptions(model, {
+      messages: [
+        { role: "user", content: "inspect the provider failure" },
+        { role: "assistant", content: account },
+        { role: "user", content: "continue from the failure" },
+      ],
+      sessionKeepAlive: true,
+    }));
+
+    expect(result.text).toBe("continued");
+    expect(transcriptOf(providerContext)).toEqual([
+      "user:inspect the provider failure",
+      `assistant:${account}`,
+      "user:continue from the failure",
+    ]);
+  });
+
   it("fails fast with session_not_found on a resume miss without invoking the provider", async () => {
     const model = setup();
     let invoked = false;

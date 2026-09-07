@@ -11,10 +11,10 @@ import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
 import {
   CANCELLED_TURN_ASSISTANT_MAX_BYTES,
   CANCELLED_TURN_MAX_BYTES,
-  CancelledTurnCollector,
+  UncommittedTurnCollector,
   cancelledTurnReason,
-  representedCancellationToolRecordIds,
-} from "../harness/cancelled-turn.js";
+  representedContinuityToolRecordIds,
+} from "../harness/turn-continuity.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
@@ -354,7 +354,7 @@ describe("cancelled turn natural continuity", () => {
   });
 
   it("redacts secrets assembled across assistant deltas and retains more than 32 fitting whole tool pairs", async () => {
-    const collector = new CancelledTurnCollector();
+    const collector = new UncommittedTurnCollector();
     const token = `ghp_${"a".repeat(36)}`;
     collector.observeRuntimeEvent({ type: "assistant", message: { content: [{ type: "text", text: "token ghp_" }] } });
     collector.observeRuntimeEvent({ type: "assistant", message: { content: [{ type: "text", text: `${"a".repeat(36)} done` }] } });
@@ -366,14 +366,15 @@ describe("cancelled turn natural continuity", () => {
       await sink({ phase: "invocation", toolCallId: `call-${String(index)}`, toolName: "Read", arguments: { index } });
       await sink({ phase: "result", toolCallId: `call-${String(index)}`, state: "success", content: { ok: index } });
     }
-    collector.seal();
+    collector.seal("cancelled");
     await collector.settleAcceptedLifecycleWrites();
     const messages = collector.buildMessages({
       runId: "bounded-run",
       userMessage: "continue",
       liveInputs: [],
       reason: cancelledTurnReason(undefined, "cancelled"),
-      cancelledAt: "2026-09-06T12:00:00.000Z",
+      outcome: "cancelled",
+      settledAt: "2026-09-06T12:00:00.000Z",
     });
     const assistant = messages[1]!;
     const envelope = envelopeFrom(assistant.content);
@@ -383,11 +384,11 @@ describe("cancelled turn natural continuity", () => {
     expect(assistant.content).toContain("[redacted]");
     expect(envelope.completedTools).toHaveLength(40);
     expect(envelope.omissions).toMatchObject({ completedTools: 0 });
-    expect(representedCancellationToolRecordIds(messages).size).toBe(80);
+    expect(representedContinuityToolRecordIds(messages).size).toBe(80);
   });
 
   it("bounds the live assistant prefix internally with UTF-8-safe honest omission metadata", () => {
-    const collector = new CancelledTurnCollector();
+    const collector = new UncommittedTurnCollector();
     const token = `ghp_${"b".repeat(36)}`;
     const deltas = [
       "token ghp_",
@@ -409,13 +410,14 @@ describe("cancelled turn natural continuity", () => {
     const snapshot = collector.assistantRetentionSnapshot();
     expect(snapshot).toMatchObject({ truncated: true, omittedEvents: 2 });
     expect(snapshot.retainedBytes + snapshot.omittedBytes).toBe(totalBytes);
-    collector.seal();
+    collector.seal("cancelled");
     const content = collector.buildMessages({
       runId: "oversized-assistant",
       userMessage: "continue",
       liveInputs: [],
       reason: cancelledTurnReason(undefined, "cancelled"),
-      cancelledAt: "2026-09-06T12:00:00.000Z",
+      outcome: "cancelled",
+      settledAt: "2026-09-06T12:00:00.000Z",
     })[1]!.content;
     const partialAssistant = envelopeFrom(content).partialAssistant as {
       readonly text: string;
@@ -437,7 +439,7 @@ describe("cancelled turn natural continuity", () => {
   });
 
   it("counts one omitted assistant event when several text blocks overflow", () => {
-    const collector = new CancelledTurnCollector();
+    const collector = new UncommittedTurnCollector();
     const overflowA = "x";
     const overflowB = "second omitted block";
     collector.observeRuntimeEvent({
@@ -457,13 +459,14 @@ describe("cancelled turn natural continuity", () => {
       omittedEvents: 1,
       truncated: true,
     });
-    collector.seal();
+    collector.seal("cancelled");
     const content = collector.buildMessages({
       runId: "multi-block-assistant",
       userMessage: "continue",
       liveInputs: [],
       reason: cancelledTurnReason(undefined, "cancelled"),
-      cancelledAt: "2026-09-06T12:00:00.000Z",
+      outcome: "cancelled",
+      settledAt: "2026-09-06T12:00:00.000Z",
     })[1]!.content;
     expect(envelopeFrom(content).partialAssistant).toMatchObject({
       omittedBytes: Buffer.byteLength(overflowA + overflowB, "utf8"),
@@ -472,8 +475,8 @@ describe("cancelled turn natural continuity", () => {
   });
 
   it("retains only applied human live inputs in the cancelled account", async () => {
-    const collector = new CancelledTurnCollector();
-    collector.seal();
+    const collector = new UncommittedTurnCollector();
+    collector.seal("cancelled");
     const messages = collector.buildMessages({
       runId: "live-input-run",
       userMessage: "initial request",
@@ -491,7 +494,8 @@ describe("cancelled turn natural continuity", () => {
         },
       ],
       reason: cancelledTurnReason(undefined, "cancelled"),
-      cancelledAt: "2026-09-06T12:01:02.000Z",
+      outcome: "cancelled",
+      settledAt: "2026-09-06T12:01:02.000Z",
     });
     const envelope = envelopeFrom(messages[1]!.content);
     expect(envelope.appliedLiveInputs).toEqual([{
@@ -503,19 +507,20 @@ describe("cancelled turn natural continuity", () => {
   });
 
   it("omits oversized completed pairs as whole units with an explicit count", async () => {
-    const collector = new CancelledTurnCollector();
+    const collector = new UncommittedTurnCollector();
     const sink = collector.wrapToolLifecycleSink(undefined);
     for (let index = 0; index < 10; index += 1) {
       await sink({ phase: "invocation", toolCallId: `large-${String(index)}`, toolName: "Large", arguments: "a".repeat(20_000) });
       await sink({ phase: "result", toolCallId: `large-${String(index)}`, state: "success", content: "b".repeat(30_000) });
     }
-    collector.seal();
+    collector.seal("cancelled");
     const messages = collector.buildMessages({
       runId: "large-run",
       userMessage: "large",
       liveInputs: [],
       reason: cancelledTurnReason(undefined, "cancelled"),
-      cancelledAt: "2026-09-06T12:00:00.000Z",
+      outcome: "cancelled",
+      settledAt: "2026-09-06T12:00:00.000Z",
     });
     const envelope = envelopeFrom(messages[1]!.content);
     const retained = envelope.completedTools as unknown[];
@@ -527,13 +532,13 @@ describe("cancelled turn natural continuity", () => {
   });
 
   it("quarantines tool lifecycle events that arrive after the cancellation seal", async () => {
-    const collector = new CancelledTurnCollector();
+    const collector = new UncommittedTurnCollector();
     let delegated = 0;
     const sink = collector.wrapToolLifecycleSink(async () => {
       delegated += 1;
       return { persistence: "persisted", recordId: "late" };
     });
-    collector.seal();
+    collector.seal("cancelled");
 
     await expect(sink({
       phase: "invocation",
@@ -546,7 +551,8 @@ describe("cancelled turn natural continuity", () => {
       userMessage: "stop now",
       liveInputs: [],
       reason: cancelledTurnReason(undefined, "cancelled"),
-      cancelledAt: "2026-09-06T12:00:00.000Z",
+      outcome: "cancelled",
+      settledAt: "2026-09-06T12:00:00.000Z",
     });
 
     expect(delegated).toBe(0);

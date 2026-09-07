@@ -14,8 +14,8 @@ Mono-agent uses "session" for five related but different boundaries:
 | Meaning | What owns it | What it controls | What resets it |
 | --- | --- | --- | --- |
 | `runtime.session` config block | Agent config / env | Whether turns try to reuse a warm provider session and how long idle warmth lasts | Changing config, setting `mode: "per-message"`, or disabling resume support |
-| Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, any cancelled admitted interactive turn, harness disposal, or process restart when only in-memory |
-| Canonical logical-session history | Durable message-history files plus the separate `tool-history/tool-lifecycles.sqlite` sidecar | Cold context replay and retained, searchable managed-tool invocation/result evidence; tool records may survive even when a failed or interrupted turn commits no message-history entry | A conversation reset clears every message and tool-history bucket visible in that logical session; `mono-agent restart --clear-sessions` clears all persisted conversation state |
+| Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, any cancelled or failed admitted non-isolated turn before success commit, harness disposal, or process restart when only in-memory |
+| Canonical logical-session history | Durable message-history files plus the separate `tool-history/tool-lifecycles.sqlite` sidecar | Cold context replay and retained, searchable managed-tool invocation/result evidence; settled failed/cancelled non-isolated turns have bounded message accounts, while tool records may still outlive isolated, never-started, or hard-crashed runs with no account | A conversation reset clears every message and tool-history bucket visible in that logical session; `mono-agent restart --clear-sessions` clears all persisted conversation state |
 | Durable Pi transcript | Pi-native JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for Pi-native provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
 | Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments/live follow-ups, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted and requeues uncertain live input |
 
@@ -29,6 +29,7 @@ Boundary rules:
 | Resume replay after stale/missing provider session | The stale provider session id | Durable history, memory, run artifacts, and the run itself, which retries once | `runtime_warning` `session_resume_retry` plus `session_boundary` with `kind: "resume_replay"` |
 | Host-only history append / unsynchronized provider result | The prior durable provider epoch | Canonical history, memory, and run artifacts | The next provider turn receives a fresh epoch id and replays canonical history |
 | Cancelled admitted interactive turn | The active provider epoch and unfinished turn | A bounded, redacted continuity account in canonical history, retained tool-history records, and run artifacts | The next provider turn receives a fresh epoch and sees the request, retained partial output/tool pairs, typed cancellation reason, and in-flight/omission markers |
+| Failed admitted non-isolated turn before success commit | The active provider epoch and failed turn | A bounded, redacted continuity account in canonical history, retained tool-history records, and run artifacts; memory capture remains excluded | The next provider turn receives a fresh epoch and sees the request, retained partial output/tool pairs, trusted host failure category, untrusted bounded/redacted runtime detail, and in-flight/omission markers |
 | Telegram `/new` | Current chat's warm provider session plus message and tool history for its logical session across daily rollover | All unrelated conversations, durable memory, run artifacts, and the chat's model/effort override | Telegram confirmation; the next message rebuilds startup context and reloads skills |
 | Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable Pi transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
@@ -140,9 +141,25 @@ agent's ordinary harness limits. Closing the browser does not free a harness
 slot or cancel that turn; use the visible cancel action when cancellation is
 intended.
 
-Once an admitted interactive run is cancelled, its caller can return promptly even if the provider ignores the abort. The harness seals the accepted partial assistant/tool prefix, releases the conversation lane, and runs one bounded cancellation finalizer. A per-conversation barrier prevents the next turn from assembling context until that finalizer publishes the 48 KiB continuity account and retires the old provider epoch; it does not wait for the old provider call to unwind. Late text and tool events from that call are quarantined. The typed reason preserves whether the cancellation came from the operator, shutdown, stale-session eviction, a signal, a timeout-style abort, another recorded reason, or an abort with no recorded reason. Isolated proactive/continuation runs remain outside shared history, and a queued request cancelled before admission publishes no account.
+Once an admitted, non-isolated run settles as cancelled or failed before success
+commit, the harness seals the accepted partial assistant/tool prefix, releases
+the conversation lane, and runs one bounded continuity finalizer. A
+per-conversation barrier prevents the next turn from assembling context until
+that finalizer publishes the 48 KiB account and retires the old provider epoch;
+it does not wait for an abort-ignoring provider to unwind. Late text and tool
+events from that call are quarantined. Cancellation retains its typed host abort
+reason. Failure records trusted host settlement fields and keeps raw
+runtime/provider code and detail only as bounded, redacted untrusted evidence.
+Isolated proactive/continuation runs remain outside shared history, and a queued
+request cancelled before admission publishes no account. If publication fails,
+later turns fail closed with the outcome-specific continuity error.
 
-The ordinary successful-turn boundary remains atomic. If success has already claimed and committed the turn, a later abort does not replace it with a cancellation account. Failed and interrupted runs retain their current history behavior.
+The ordinary successful-turn boundary remains atomic. Once success claims that
+boundary, a later abort or exception does not replace it with a continuity
+account. A process signal that unwinds through the harness is covered by the
+ordinary cancellation/failure paths. A hard process death that never unwinds is
+not: startup reconciliation can mark the run artifact and web projection
+`interrupted`, but cannot synthesize canonical history from lost process state.
 
 ### Per-channel scope gotcha
 
@@ -188,7 +205,17 @@ With the configured app's default history store, setting `piSessionsRoot` persis
 
 If the process dies after provider mutation but before that clean commit, the fence remains. The next same-conversation run retires the exact fenced JSONL, rotates to a new random epoch, and replays canonical history. An unrelated mutation also reclaims inactive fences as retirement journals: provider deletion and directory fsync complete before the fence is removed. If canonical epoch/revision proves that history commit succeeded and only fence cleanup crashed, maintenance preserves the valid transcript and removes only the stale fence. Beginning and aborting a fresh conversation cannot evict an older successful conversation because fences are bounded separately. Missing/v1 records, failed sync, retention that removes a record, and `appendVerbatimTurn` host-only deliveries retire and rotate provider state for the same reason.
 
-Cancellation is also a host-only canonical history append, so it always retires and rotates the epoch. If Pi still has the session open while its aborted call unwinds, retirement removes it from the registry and unlinks and fsyncs every current exact-id JSONL entry. A late Pi append can recreate an invalid, headerless file at that retired pathname; the post-runtime retirement retry removes it, and the fresh canonical epoch never references the retired id during that interval. The fresh epoch is seeded from the canonical cancellation account. Retirement uncertainty fails the continuation barrier rather than allowing provider-side and canonical transcripts to disagree.
+Cancelled and failed continuity accounts are host-only canonical history appends,
+so both retire and rotate the epoch. Pi rolls a resumed failed turn back to its
+previous leaf first; host retirement then discards that epoch because it does
+not contain the host-authored account. If Pi still has a session open while an
+aborted call unwinds, retirement removes it from the registry and unlinks and
+fsyncs every current exact-id JSONL entry. A late Pi append can recreate an
+invalid, headerless file at that retired pathname; the post-runtime retirement
+retry removes it, and the fresh canonical epoch never references the retired id
+during that interval. The fresh epoch is seeded from the canonical continuity
+account. Retirement uncertainty fails the per-conversation publication barrier
+rather than allowing provider-side and canonical transcripts to disagree.
 
 Each clean record also carries the durable provider transcript revision. A process saves that revision with its warm handle. If another process commits the same epoch first, the revision mismatch forces the stale process-local handle to close and reopen the current JSONL (or rebuild from canonical history) before it can omit history. The same strict refresh runs for an unconfirmed durable resume when a newly constructed harness has no local mapping, preventing a module-global provider registry from reviving older process memory. Cross-process serialization therefore protects both disk writes and in-memory provider state.
 

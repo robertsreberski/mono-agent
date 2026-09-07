@@ -2,16 +2,19 @@
 
 ## Unreleased
 
-- Preserve natural conversation continuity after any admitted interactive run
-  is cancelled. The next turn receives a 48 KiB redacted account of the request,
-  partial assistant output, completed tool pairs, in-flight work, omissions, and
-  typed cancellation provenance; durable Pi epochs rotate so provider state and
-  canonical history stay aligned. Cancelled turns remain excluded from memory
-  capture, while `RunHistory` and `SessionHistory` keep the deeper evidence.
+- Preserve natural conversation continuity after any admitted, non-isolated run
+  settles as cancelled or failed before its success commit. The next turn
+  receives a 48 KiB redacted account of the request, partial assistant output,
+  completed tool pairs, in-flight work, omissions, and typed settlement
+  provenance; durable Pi epochs rotate so provider state and canonical history
+  stay aligned. Cancelled and failed turns remain excluded from memory capture,
+  while `RunHistory` and `SessionHistory` keep the deeper evidence.
   Partial assistant collection stays incrementally bounded to an 8 KiB UTF-8
   prefix on every run, with omissions counted per assistant runtime event.
-  Runtime/provider cancellation codes and details remain only in tag-safe JSON
-  explicitly framed as untrusted evidence and cannot select host provenance.
+  Runtime/provider cancellation or failure codes and details remain only in
+  tag-safe JSON explicitly framed as untrusted evidence and cannot select host
+  provenance. A hard process death that never unwinds through the harness
+  remains artifact/web reconciliation only and cannot publish canonical history.
 - Make web-console model routing explicit per run: requested, attempted, and
   answering models, classified fallback/retry history, Pi's effective thinking
   level, and nested subagent attribution are now visible without exposing raw
