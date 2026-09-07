@@ -2023,6 +2023,9 @@ export class WebService {
           }
           this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, false);
         } catch (error) {
+          // Receipt uncertainty forbids replay, but is not authority to silence
+          // the ordinary answer from the active turn indefinitely.
+          this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId);
           this.options.logger?.warn?.("Web process-job steering outcome is unknown; automatic fallback is suppressed.", {
             threadId: input.threadId,
             error: errorMessage(error),

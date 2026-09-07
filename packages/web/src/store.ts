@@ -1958,6 +1958,14 @@ export class WebStore {
     `).get(turnId, deliveryKey ?? null) !== undefined;
   }
 
+  /** Release only a pending notification hold; the ambiguous delivery reservation remains durable. */
+  releaseProcessJobWakeTurn(deliveryKey: string, turnId: string): void {
+    this.database.prepare(`
+      UPDATE process_job_wake_deliveries SET turn_id = NULL
+      WHERE delivery_key = ? AND turn_id = ? AND state = 'accepted'
+    `).run(deliveryKey, turnId);
+  }
+
   /** Release a reservation only while no operator delivery has begun. */
   abandonProcessJobWake(input: {
     readonly sourceId: string;
