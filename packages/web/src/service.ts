@@ -770,11 +770,10 @@ export class WebService {
   /**
    * The only place provider authentication is projected onto an agent summary.
    *
-   * It is derived from the live operator connection's `/v1/info` response and
-   * has no column in `agents`, so a stored row can never carry it. Putting it on
-   * the discovery summary makes every poll differ from the row it is compared
-   * against: `replaceAgents` reports a change roughly every five seconds while
-   * the field is still dropped on write and never reaches the browser.
+   * It is derived from the live operator connection's `/v1/info` response.
+   * `supportsProviderAuth` has an `agents` column, but the stored presentation
+   * bit is never authorization to call an agent. Keeping the field off discovery
+   * summaries prevents every heartbeat from looking like a fleet change.
    *
    * Provider authentication also requires a live connection deliberately:
    * `requireProviderAuthConnection` refuses without one, so advertising it to a
@@ -2463,9 +2462,9 @@ export class WebService {
     }));
     this.connections = nextConnections;
     const agentsChanged = this.store.replaceAgents(summaries);
-    // Projected capabilities are never stored, so when provider authentication
-    // turns on or off nothing on the summary moves and `replaceAgents` is right
-    // to say so. An operator can start or stop advertising
+    // Usable provider authentication comes from the live connection, so when it
+    // turns on or off nothing on the discovery summary moves and `replaceAgents`
+    // is right to say so. An operator can start or stop advertising
     // `capabilities.providerAuth` across a restart; an open console would
     // otherwise keep the action hidden until an unrelated change, or keep
     // offering one whose route now 409s. Read here after assigning the live
@@ -2511,7 +2510,7 @@ export class WebService {
     const connection = this.connections.get(sourceId);
     if (connection === undefined) throw new WebConsoleError("agent_offline", "This agent is offline.", 409);
     if (connection.info.supportsProviderAuth !== true) {
-      throw new WebConsoleError("provider_auth_unavailable", "This agent does not expose protected provider authentication.", 409);
+      throw new WebConsoleError("provider_auth_unavailable", "This agent does not expose provider authentication.", 409);
     }
     return connection;
   }

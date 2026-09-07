@@ -155,7 +155,7 @@ describe("projected web capabilities", () => {
     let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
     const service = await createService({
       discoverImpl: async () => discovered,
-      fetchImpl: operatorFetch({ supportsProviderAuth: true }),
+      fetchImpl: operatorFetch(),
     });
     const events: unknown[] = [];
     const unsubscribe = service.subscribe((event) => {
@@ -185,8 +185,8 @@ describe("projected web capabilities", () => {
   it("announces provider authentication that an agent starts advertising", async () => {
     let advertised = false;
     let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
-    const withAuth = operatorFetch({ supportsProviderAuth: true });
-    const without = operatorFetch();
+    const withAuth = operatorFetch();
+    const without = operatorFetch({ supportsProviderAuth: false });
     const service = await createService({
       discoverImpl: async () => discovered,
       fetchImpl: ((input: string | URL | Request, init?: RequestInit) =>
@@ -226,7 +226,7 @@ describe("projected web capabilities", () => {
     // connection, so the projection must not advertise it without one --
     // otherwise the browser offers a button that can only 409.
     let reachable = true;
-    const upstream = operatorFetch({ supportsProviderAuth: true });
+    const upstream = operatorFetch();
     const service = await createService({
       fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -248,8 +248,8 @@ describe("projected web capabilities", () => {
 });
 
 describe("WebService", () => {
-  it("includes a live agent's protected provider-auth capability in bootstrap", async () => {
-    const service = await createService({ fetchImpl: operatorFetch({ supportsProviderAuth: true }) });
+  it("includes a current live agent's provider-auth capability in bootstrap", async () => {
+    const service = await createService({ fetchImpl: operatorFetch() });
     try {
       expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
     } finally {

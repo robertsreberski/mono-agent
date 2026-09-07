@@ -224,7 +224,7 @@ export function operatorFetch(options: {
             ? {}
             : { cron: { read: true, actions: options.onCronMutation !== undefined } }),
           ...(options.supportsJobs === true ? { jobs: true } : {}),
-          ...(options.supportsProviderAuth === true ? { providerAuth: { version: 1 } } : {}),
+          ...(options.supportsProviderAuth === false ? {} : { providerAuth: { version: 1 } }),
         },
       });
     }

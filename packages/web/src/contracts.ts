@@ -155,15 +155,11 @@ export interface WebAgentSummary {
   readonly health?: string;
   readonly supportsAttachments: boolean;
   /**
-   * Agent operator exposes bearer-protected Pi provider authentication v1.
+   * Agent operator exposes Pi provider authentication v1. The operator client
+   * adds a bearer only when that discovered endpoint has an API key.
    *
-   * Projected from the live connection's `/v1/info` by
-   * `decorateProjectedCapabilities`, never persisted: the console's state
-   * database has no column for it, so it must stay off the summaries discovery
-   * hands to `replaceAgents`. A field the store cannot retain would make every
-   * heartbeat look like a fleet change and would still be dropped on write.
-   * Its real transitions are announced explicitly by `refreshAgentsOnce`
-   * through `projectedCapabilities`.
+   * Usability is projected from the live connection's `/v1/info`; a stored bit
+   * is presentation state, never authorization to call the agent.
    */
   readonly supportsProviderAuth?: true;
   readonly models?: readonly string[];

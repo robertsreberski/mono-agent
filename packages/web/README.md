@@ -30,8 +30,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   wrapper's effective thinking level, and project bounded fallback/retry
   attribution without exposing raw provider diagnostics.
 - Proxy ephemeral, exact-origin provider-auth status and login sessions to the
-  currently connected bearer-protected agent without storing credentials,
-  prompt input, or session projections.
+  currently connected capability-advertising agent without storing credentials,
+  prompt input, or session projections. The client omits authorization for an
+  agent with no operator API key and sends the discovered bearer when one exists.
 - Let an MCP-capable agent replace the interim first-message title with a short
   semantic title and evolve it after a material topic shift, while treating any
   user rename as a permanent lock.
@@ -221,10 +222,11 @@ verification. GitHub Copilot and OpenAI Codex expose Pi device-code flows;
 Anthropic accepts the final redirect URL/code; API-key providers use masked
 provider-owned prompts. Secret input is cleared before submission. The web
 server requires exact origin, proxies through the agent's ordinary operator
-bearer, marks responses no-store, and never reads the Pi auth path. Auth state
-is component/agent memory only—not SQLite, thread history, browser storage, or
-run artifacts. The console remains a trusted-network single-user surface, not a
-per-human authenticated application.
+connection, marks responses no-store, and never reads the Pi auth path. The
+operator request is keyless when that agent has no API key and uses its bearer
+when it does. Auth state is component/agent memory only—not SQLite, thread
+history, browser storage, or run artifacts. The console remains a
+trusted-network single-user surface, not a per-human authenticated application.
 
 Standalone process-job and Monitor revival turns in an existing web conversation
 read that conversation's model/effort snapshot immediately before admission. A
@@ -509,7 +511,7 @@ ledger; postconditions check the required effects.
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/server.ts) | HTTP service, `/api/v1` routes, hostname/display-name/theme bootstrap identity, per-console PWA manifest, uploads, SSE invalidations, host/origin checks, provider-auth no-store proxy routes, and static webapp serving. |
 | [`service.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/service.ts) | Application lifecycle for discovery, threads, turns, agent-authored automatic titles, live-input delivery/fallback, attachments, `AskUser` snapshots/submission, provider-auth connection-generation guarding, cancellation, notifications, and invalidation. |
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
-| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, and bearer-authenticated provider-auth/process-job requests over the operator protocol. |
+| [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, conditionally bearer-authenticated provider-auth, and owner-authenticated process-job requests over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
 | [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, process-job live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 

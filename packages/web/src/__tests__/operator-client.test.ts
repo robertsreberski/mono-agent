@@ -44,28 +44,62 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
-  it("parses provider auth capability and proxies secret input without accepting it back", async () => {
-    const requests: { url: string; body?: string }[] = [];
+  it("omits provider-auth authorization without an agent key and sends it when configured", async () => {
+    const requests: { url: string; authorization: string | null; body?: string }[] = [];
+    const baseStatus = {
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [],
+    };
     const baseSession = {
       schema: "mono-agent.provider-auth-session.v1",
       id: "session-1", providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
       state: "succeeded", createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
     };
-    const client = new OperatorClient({
+    const fetchImpl = (async (input, init) => {
+      const url = String(input);
+      requests.push({
+        url,
+        authorization: new Headers(init?.headers).get("authorization"),
+        ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      });
+      if (url.endsWith("/v1/info")) {
+        return Response.json({ schema: 1, capabilities: { providerAuth: { version: 1 } } });
+      }
+      if (url.endsWith("/v1/provider-auth")) return Response.json(baseStatus);
+      return Response.json(baseSession);
+    }) as typeof fetch;
+    const keyless = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl,
+    });
+    const protectedClient = new OperatorClient({
       baseUrl: "http://127.0.0.1:1234/gui",
       apiKey: "owner-key",
-      fetchImpl: (async (input, init) => {
-        const url = String(input);
-        requests.push({ url, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
-        if (url.endsWith("/v1/info")) return Response.json({ schema: 1, capabilities: { providerAuth: { version: 1 } } });
-        return Response.json(baseSession);
-      }) as typeof fetch,
+      fetchImpl,
     });
-    expect((await client.info()).supportsProviderAuth).toBe(true);
+
+    expect((await keyless.info()).supportsProviderAuth).toBe(true);
+    await keyless.providerAuthStatus();
+    await keyless.startProviderAuth({
+      providerId: "opencode-go",
+      authType: "api_key",
+      strategy: "api_key_prompt",
+    });
+    expect(requests.filter(({ url }) => url.includes("/v1/provider-auth")))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ authorization: null }),
+      ]));
+    expect(requests.filter(({ url }) => url.includes("/v1/provider-auth")))
+      .toEqual(expect.not.arrayContaining([
+        expect.objectContaining({ authorization: expect.any(String) }),
+      ]));
+
     const secret = "PROVIDER_AUTH_SECRET_SENTINEL";
-    const result = await client.submitProviderAuth("session-1", { promptId: "prompt-1", value: secret });
+    const result = await protectedClient.submitProviderAuth("session-1", { promptId: "prompt-1", value: secret });
     expect(result.state).toBe("succeeded");
     expect(JSON.stringify(result)).not.toContain(secret);
+    expect(requests.at(-1)).toMatchObject({ authorization: "Bearer owner-key" });
     expect(requests.at(-1)?.body).toContain(secret);
   });
 

@@ -246,7 +246,7 @@ export interface TuiAdapterOptions {
   readonly monitors?: MonitorOperator;
   /** Independent owner bearer for monitor routes. Required with monitors. */
   readonly monitorsBearer?: string;
-  /** Privileged Pi credential status/login surface; available only with apiKey. */
+  /** Pi credential status/login surface; uses apiKey when the endpoint has one. */
   readonly providerAuth?: ProviderAuthOperator;
 }
 
@@ -418,7 +418,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
             ...(options.modelCatalog === undefined
               ? {}
               : { modelCatalog: { version: 1, maxPageSize: MAX_MODEL_CATALOG_PAGE_SIZE } }),
-            ...(options.providerAuth === undefined || apiKey === undefined
+            ...(options.providerAuth === undefined
               ? {}
               : { providerAuth: { version: 1 } }),
           },
@@ -984,7 +984,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   });
 
   const requireProviderAuth = (req: Request, res: Response): ProviderAuthOperator | undefined => {
-    if (options.providerAuth === undefined || apiKey === undefined) {
+    if (options.providerAuth === undefined) {
       sendJsonError(res, 404, new TuiAdapterError("invalid_request", "Provider authentication is unavailable."));
       return undefined;
     }

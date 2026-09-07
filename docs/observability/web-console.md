@@ -96,7 +96,7 @@ colors. Theme choice is explicit rather than inferred from the hostname.
 
 ## Security boundary: trusted network, no login
 
-The console intentionally has no application authentication or multi-user accounts. Anyone who can reach its HTTP listener can read retained conversations, upload files, cancel turns, and send instructions to every discovered agent. Treat the listener as an owner-equivalent operator surface:
+The console intentionally has no application authentication or multi-user accounts. Anyone who can reach its HTTP listener can read retained conversations, upload files, cancel turns, send instructions to every discovered agent, and operate provider-authentication flows. Treat the listener as an owner-equivalent operator surface:
 
 - run it only on a trusted LAN or tailnet;
 - use `--loopback` when other devices must not reach it;
@@ -107,11 +107,16 @@ The server rejects unexpected Host/Origin combinations and does not enable cross
 
 Cron read routes preserve the operator endpoint's compatibility posture: they are keyless only when that endpoint has no API key, and otherwise require its bearer. The retained cron config-view proxy reuses the agent's source-annotated field view; it can return the already-visible job prompt, but never reads the console-discovered config path or exposes arbitrary keys and credentials. A stopped or failed cron registry degrades only the advertised cron capability—agent liveness still returns from `/v1/info`.
 
+Provider-auth routes use the same compatibility posture: they are keyless when
+the addressed operator endpoint has no API key and otherwise require its bearer.
+This does not add a separate authentication boundary; the trusted LAN/tailnet
+and operating-system admission controls remain the boundary.
+
 At startup, mono-agent inspects the existing Tailscale Serve configuration. It prefers HTTPS `:443` only when free; otherwise it chooses the first free port in `8443`–`8499`. It never resets or replaces another Serve handler. Ownership is recorded locally, and `web stop` removes only the route this console created. If the first route cannot be created, the local/LAN service stays healthy and status prints the direct URLs plus remediation. If a restart cannot migrate an existing owned route to a changed app port, mono-agent restores the prior worker and exact route and exits nonzero.
 
 ## Provider authentication
 
-For a current protected agent, **Agent settings** includes one compact
+For every current app-owned agent, **Agent settings** includes one compact
 provider-authentication row for each provider used by the agent's effective
 primary, fallback, memory, and enabled static trigger routes. Each row shows
 `OK`, `Needs action`, or `Not applicable`; an **Authenticate** or
@@ -125,11 +130,21 @@ field for the final localhost redirect URL or code because Pi 0.85.1 has no
 Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
 
-Every browser proxy route requires the exact console origin, and the addressed
-agent exposes its route only when its normal operator bearer is configured. The
-web server uses that bearer over the loopback operator connection. These are
-defence-in-depth controls inside the trusted-network, single-user posture above;
-they are not per-human owner/admin login.
+Every browser proxy route requires the exact console origin. The addressed
+agent's provider-auth routes are keyless when its operator endpoint has no API
+key; when it has one, the web server sends the discovered bearer over the
+loopback operator connection and the agent enforces it. These are request
+integrity and compatibility controls inside the trusted-network, single-user
+posture above; they are not per-human owner/admin login.
+
+A person or process that can reach the console inside that trusted network can
+inspect provider status, start or cancel login sessions, read device codes and
+authorization URLs, submit paste-back callbacks or API keys, and thereby bind or
+replace a real provider credential in the agent's Pi auth store. That can switch
+the account and billing identity the agent uses or disrupt its access. This is
+accepted because network reachability is deliberately treated as owner-equivalent
+authority; deployments that cannot make that assumption must use `--loopback`
+or add an authenticated network boundary before exposing the console.
 
 The session, URLs, codes, progress, and prompt values live only in agent/webapp
 memory. Responses use `Cache-Control: private, no-store`; closing the dialog or
@@ -641,8 +656,8 @@ a console compares against to tell the next delta from one it missed; existing
 rows start at 0, which is exactly what a browser that has never seen a delta
 holds. An earlier build numbered that column 17, so 18 also repairs that shape
 without resetting sequence values already assigned. Schema 19 suppresses silent
-cron projections at the storage read boundary. Schema 20 persists the live
-agent's protected provider-auth capability so Agent settings receives it through
+cron projections at the storage read boundary. Schema 20 added the live agent's
+provider-auth capability column so Agent settings receives it through
 the same bootstrap projection as the rest of the agent summary. Schema 21 adds
 the requested model and effort plus bounded runtime routing evidence to each
 turn, so fallback attribution remains visible after reload. These migrations are

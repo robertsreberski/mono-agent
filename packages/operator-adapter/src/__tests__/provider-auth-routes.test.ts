@@ -36,7 +36,7 @@ const session: ProviderAuthSessionSnapshot = {
 };
 
 describe("provider auth routes", () => {
-  it("advertises only with an operator bearer, protects every route, and never echoes input", async () => {
+  it("keeps every route bearer-protected when the operator endpoint has an API key", async () => {
     const operator: ProviderAuthOperator = {
       status: vi.fn(async () => status),
       start: vi.fn(async () => session),
@@ -59,6 +59,11 @@ describe("provider auth routes", () => {
     const denied = await fetch(`${server.baseUrl}/v1/provider-auth`);
     expect(denied.status).toBe(401);
     expect(denied.headers.get("cache-control")).toContain("no-store");
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
+    })).status).toBe(401);
     const listed = await fetch(`${server.baseUrl}/v1/provider-auth`, { headers });
     expect(listed.status).toBe(200);
     expect(listed.headers.get("cache-control")).toContain("no-store");
@@ -94,14 +99,14 @@ describe("provider auth routes", () => {
     expect(operator.cancel).toHaveBeenCalledWith("session-1");
   });
 
-  it("keeps the capability and routes unavailable without an operator bearer", async () => {
+  it("advertises and serves the full login lifecycle when the operator endpoint has no API key", async () => {
     const operator: ProviderAuthOperator = {
-      status: async () => status,
-      start: async () => session,
-      get: async () => session,
-      submit: async () => session,
-      cancel: async () => undefined,
-      stop: async () => undefined,
+      status: vi.fn(async () => status),
+      start: vi.fn(async () => session),
+      get: vi.fn(async () => session),
+      submit: vi.fn(async () => ({ ...session, state: "succeeded", prompt: undefined } as never)),
+      cancel: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
     };
     const server = await startTuiAdapter({
       host: "127.0.0.1",
@@ -110,7 +115,45 @@ describe("provider auth routes", () => {
       responder: { respond: async () => ({ text: "ok" }) },
     });
     servers.push(server);
+
+    expect(await (await fetch(`${server.baseUrl}/v1/info`)).json())
+      .toMatchObject({ capabilities: { providerAuth: { version: 1 } } });
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth`)).json()).toEqual(status);
+
+    const created = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
+    });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual(session);
+    expect(await (await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`)).json()).toEqual(session);
+
+    const secret = "KEYLESS_PROVIDER_AUTH_SECRET_SENTINEL";
+    const submitted = await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1/input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ promptId: "prompt-1", value: secret }),
+    });
+    const submittedText = await submitted.text();
+    expect(submitted.status).toBe(200);
+    expect(submittedText).not.toContain(secret);
+    expect(operator.submit).toHaveBeenCalledWith("session-1", { promptId: "prompt-1", value: secret });
+
+    expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, { method: "DELETE" })).status)
+      .toBe(204);
+    expect(operator.cancel).toHaveBeenCalledWith("session-1");
+  });
+
+  it("keeps the capability and routes unavailable without a provider-auth operator", async () => {
+    const server = await startTuiAdapter({
+      host: "127.0.0.1",
+      port: 0,
+      responder: { respond: async () => ({ text: "ok" }) },
+    });
+    servers.push(server);
     expect(await (await fetch(`${server.baseUrl}/v1/info`)).json()).not.toHaveProperty("capabilities.providerAuth");
     expect((await fetch(`${server.baseUrl}/v1/provider-auth`)).status).toBe(404);
   });
+
 });
