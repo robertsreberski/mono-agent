@@ -1,8 +1,9 @@
 // Wire types belong to the producer. These type-only references never load
 // server modules into the browser bundle.
-import type * as Wire from "../../src/contracts";
+import type * as Wire from "../../src/contracts.js";
 import type {
   AgentMcpAppResource,
+  MonitorProjection,
   ChannelAskOption,
   ChannelAskQuestion,
   ChannelAskAnswer,
@@ -90,6 +91,19 @@ export type MessagePage = Omit<Wire.WebMessagePage, "messages"> & { readonly mes
 export type CronRunPage = Omit<Wire.WebCronRunPage, "messages"> & { readonly messages?: readonly WebMessage[] };
 export type Bootstrap = Omit<Wire.WebBootstrap, "threads"> & { readonly threads: readonly ThreadSummary[] };
 export type LiveInputReceipt = Omit<Wire.WebLiveInputReceipt, "message"> & { readonly message: WebMessage };
+
+// Cached v1 activity predates the producer's v2 accounting fields. Keep its
+// rendering shape derived from the current contract without weakening live data.
+type MonitorV2LimitKey = "wakeOn" | "dedupe" | "minWakeIntervalMs";
+type MonitorV2CounterKey = "batchesSuppressed" | "linesSuppressed"
+  | "followUpWakes" | "steeredWakes" | "unknownDispositionWakes";
+export type CachedMonitorProjection = Omit<MonitorProjection, "schema" | "limits" | "counters"> & {
+  readonly schema: MonitorProjection["schema"] | "mono-agent.monitor-projection.v1";
+  readonly limits: Omit<MonitorProjection["limits"], MonitorV2LimitKey>
+    & Partial<Pick<MonitorProjection["limits"], MonitorV2LimitKey>>;
+  readonly counters: Omit<MonitorProjection["counters"], MonitorV2CounterKey>
+    & Partial<Pick<MonitorProjection["counters"], MonitorV2CounterKey>>;
+};
 
 /** Browser-derived states wrap the live endpoint while a refresh is in flight. */
 export type SkillRegistryState =

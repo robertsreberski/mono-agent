@@ -11,7 +11,7 @@ afterEach(async () => {
 
 function monitor(overrides: Partial<MonitorProjection> = {}): MonitorProjection {
   return {
-    schema: "mono-agent.monitor-projection.v1",
+    schema: "mono-agent.monitor-projection.v2",
     monitorId: "mon-1",
     state: "running",
     description: "Watching a selected pane",
@@ -23,8 +23,8 @@ function monitor(overrides: Partial<MonitorProjection> = {}): MonitorProjection 
       lastEventAt: null,
       completedAt: null,
     },
-    limits: { maxRuntimeMs: 3_600_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
-    counters: { seq: 2, batchesDelivered: 2, linesObserved: 5, linesDelivered: 5, droppedLines: 0, pendingLines: 0 },
+    limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0, maxRuntimeMs: 3_600_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
+    counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0, seq: 2, batchesDelivered: 2, linesObserved: 5, linesDelivered: 5, droppedLines: 0, pendingLines: 0 },
     exitCode: null,
     signal: null,
     cancelRequested: false,

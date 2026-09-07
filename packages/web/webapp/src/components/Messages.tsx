@@ -27,7 +27,7 @@ import { useDocumentVisible } from "../document-visibility";
 import type {
   AskAnswer,
   AskSnapshot,
-  MonitorProjection,
+  CachedMonitorProjection,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
 } from "../types";
@@ -1003,7 +1003,7 @@ function NotePart({ data }: DataMessagePartProps) {
 
 const monitorStateLabel = (state: string): string => state.replaceAll("_", " ");
 
-const monitorActivityStatus = (monitors: readonly MonitorProjection[]): ActivityStatus => {
+const monitorActivityStatus = (monitors: readonly CachedMonitorProjection[]): ActivityStatus => {
   if (monitors.some((monitor) => monitor.state === "starting" || monitor.state === "running")) return "running";
   return monitors.some((monitor) => monitor.lastError !== null) ? "failed" : "complete";
 };
@@ -1014,11 +1014,11 @@ function MonitorActivityPart({ data }: DataMessagePartProps) {
   const entries = Array.isArray(payload.monitors)
     ? payload.monitors.flatMap((raw) => {
         const entry = asRecord(raw);
-        const projection = asRecord(entry.projection) as unknown as MonitorProjection;
+        const projection = asRecord(entry.projection) as unknown as CachedMonitorProjection;
         const deliveryKeys = Array.isArray(entry.deliveryKeys)
           ? entry.deliveryKeys.filter((key): key is string => typeof key === "string")
           : [];
-        return projection.schema === "mono-agent.monitor-projection.v1"
+        return (projection.schema === "mono-agent.monitor-projection.v1" || projection.schema === "mono-agent.monitor-projection.v2")
           ? [{ projection, updateCount: deliveryKeys.length }]
           : [];
       })
@@ -1056,7 +1056,13 @@ function MonitorActivityPart({ data }: DataMessagePartProps) {
                 <div><dt>Observed</dt><dd>{projection.counters.linesObserved}</dd></div>
                 <div><dt>Delivered</dt><dd>{projection.counters.linesDelivered}</dd></div>
                 <div><dt>Dropped</dt><dd>{projection.counters.droppedLines}</dd></div>
+                <div><dt>Suppressed lines</dt><dd>{projection.counters.linesSuppressed ?? 0}</dd></div>
+                <div><dt>Suppressed batches</dt><dd>{projection.counters.batchesSuppressed ?? 0}</dd></div>
+                <div><dt>Follow-up wakes</dt><dd>{projection.counters.followUpWakes ?? 0}</dd></div>
+                <div><dt>Steered wakes</dt><dd>{projection.counters.steeredWakes ?? 0}</dd></div>
+                <div><dt>Unknown disposition wakes</dt><dd>{projection.counters.unknownDispositionWakes ?? projection.counters.batchesDelivered}</dd></div>
               </dl>
+              <p>Counts reflect the host snapshot when this update was dispatched.</p>
             </ActivityStep>
           ))}
         </div>

@@ -27,6 +27,9 @@ function startedResult(overrides = {}) {
     startedAt: new Date().toISOString(),
     maxRuntimeMs: 300_000,
     persistent: false,
+    wakeOn: "batch",
+    dedupe: "none",
+    minWakeIntervalMs: 0,
     ...overrides,
   };
 }
@@ -56,12 +59,17 @@ describe("Monitor tool registration", () => {
           maxRuntimeMs: 3_600_000,
           persistentMaxRuntimeMs: 43_200_000,
           maxActivePerConversation: 3,
+          maxWakeIntervalMs: 5000,
         },
       },
     });
     const monitor = tools.find((tool) => tool.name === "Monitor");
     expect(monitor.parameters.required.sort()).toEqual(["command", "description"]);
     expect(monitor.parameters.properties.timeout_ms.minimum).toBe(1_000);
+    expect(monitor.parameters.properties.wake_on).toMatchObject({ enum: ["batch", "exit"], default: "batch" });
+    expect(monitor.parameters.properties.dedupe).toMatchObject({ enum: ["none", "batch"], default: "none" });
+    expect(monitor.parameters.properties.min_wake_interval_ms).toMatchObject({ minimum: 0, default: 0 });
+    expect(monitor.parameters.properties.min_wake_interval_ms.description).toContain("5000ms");
     expect(monitor.parameters.properties.timeout_ms.description).toContain("1h (3600000 ms)");
     expect(monitor.parameters.properties.persistent.description).toContain("12h (43200000 ms)");
     expect(monitor.description).toContain("3 monitors at once");
@@ -99,6 +107,40 @@ describe("Monitor tool registration", () => {
 });
 
 describe("Monitor hand-off", () => {
+  it("requires an explicit context before preparing a monitor command", async () => {
+    const start = vi.fn();
+    await expect(monitorToolRun(
+      { command: "echo hi", description: "Watching a probe", wake_on: "exit" },
+      { monitorsController: { start, stop: vi.fn() } },
+    )).rejects.toThrow("explicit ToolContext");
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("passes the requested policy and reports the host effective interval", async () => {
+    const workspace = tempWorkspace();
+    const start = vi.fn(async () => startedResult({ dedupe: "batch", minWakeIntervalMs: 1000 }));
+    const result = await monitorToolRun(
+      { command: "echo hi", description: "Watching a probe", wake_on: "batch", dedupe: "batch", min_wake_interval_ms: 900000 },
+      options(workspace, { start, stop: vi.fn() }),
+    );
+    expect(start.mock.calls[0][0]).toMatchObject({ wakeOn: "batch", dedupe: "batch", minWakeIntervalMs: 900000 });
+    expect(result.outcome).toMatchObject({ wake_on: "batch", dedupe: "batch", min_wake_interval_ms: 1000 });
+  });
+
+  it.each([
+    { wake_on: "invalid" }, { dedupe: "invalid" },
+    { min_wake_interval_ms: -1 }, { min_wake_interval_ms: 1.5 },
+    { wake_on: "exit", dedupe: "batch" }, { wake_on: "exit", min_wake_interval_ms: 1 },
+  ])("rejects invalid policy before preparation: %j", async (policy) => {
+    const start = vi.fn();
+    const result = await monitorToolRun(
+      { command: "echo hi", description: "Watching a probe", ...policy },
+      options(tempWorkspace(), { start, stop: vi.fn() }),
+    );
+    expect(result.outcome.code).toBe("monitor_invalid");
+    expect(start).not.toHaveBeenCalled();
+  });
+
   it("prepares the command exactly like Bash and returns a receipt without waiting", async () => {
     const workspace = tempWorkspace();
     const start = vi.fn(async () => startedResult({ maxRuntimeMs: 120_000 }));
@@ -125,6 +167,9 @@ describe("Monitor hand-off", () => {
       started_at: expect.any(String),
       max_runtime_ms: 120_000,
       persistent: false,
+      wake_on: "batch",
+      dedupe: "none",
+      min_wake_interval_ms: 0,
     });
     expect(result.text).toContain("Do not poll it");
     expect(result.outcome.code).toBe("monitor_started");
@@ -195,11 +240,19 @@ describe("Monitor hand-off", () => {
     expect(result.text).not.toContain("internal detail");
   });
 
-  it("rejects a malformed controller start result", async () => {
+  it.each([
+    { monitorId: "" },
+    startedResult({ wakeOn: undefined }),
+    startedResult({ dedupe: "bad" }),
+    startedResult({ minWakeIntervalMs: 300001 }),
+    startedResult({ minWakeIntervalMs: -1 }),
+    startedResult({ wakeOn: "exit", dedupe: "batch" }),
+    startedResult({ wakeOn: "exit", minWakeIntervalMs: 1 }),
+  ])("rejects a malformed controller start result: %j", async (receipt) => {
     const workspace = tempWorkspace();
     const result = await monitorToolRun(
       { command: "x", description: "Watching x" },
-      { ctx, ...options(workspace, { start: async () => ({ monitorId: "" }), stop: vi.fn() }) },
+      options(workspace, { start: async () => receipt, stop: vi.fn() }),
     );
     expect(result.error).toBe(true);
     expect(result.outcome.code).toBe("monitor_controller_invalid");

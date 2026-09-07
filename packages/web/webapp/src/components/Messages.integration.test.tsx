@@ -506,7 +506,38 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("2 updates · running")).toBeVisible();
     expect(screen.getByText("1 update · exited")).toBeVisible();
     expect(screen.getAllByText("Observed")).toHaveLength(2);
+    expect(screen.getAllByText("Suppressed lines")).toHaveLength(2);
+    expect(screen.getAllByText("Suppressed batches")).toHaveLength(2);
+    expect(screen.getAllByText("Follow-up wakes")).toHaveLength(2);
+    expect(screen.getAllByText("Steered wakes")).toHaveLength(2);
+    expect(screen.getAllByText("Unknown disposition wakes")).toHaveLength(2);
     expect(screen.getByText("Both watches were handled.")).toBeVisible();
+  });
+
+  it("renders cached v1 Monitor activity with defaults for new accounting fields", () => {
+    // Persisted browser data can outlive the operator schema that produced it.
+    const legacy = JSON.parse(JSON.stringify(monitor()));
+    legacy.schema = "mono-agent.monitor-projection.v1";
+    for (const key of ["wakeOn", "dedupe", "minWakeIntervalMs"]) delete legacy.limits[key];
+    for (const key of ["batchesSuppressed", "linesSuppressed", "followUpWakes",
+      "steeredWakes", "unknownDispositionWakes"]) delete legacy.counters[key];
+    render(<MessageHarness message={{
+      ...assistantMessage("complete"),
+      parts: [{ type: "monitor-activity", monitors: [{
+        projection: legacy,
+        deliveryKeys: ["monitor:legacy-delivery"],
+      }] }],
+    }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    fireEvent.click(screen.getByText("Monitor update").closest("summary")!);
+    expect(screen.getAllByText("Watch the worker queue")).toHaveLength(2);
+    expect(screen.getByText("Suppressed lines").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Suppressed batches").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Follow-up wakes").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Steered wakes").nextElementSibling).toHaveTextContent("0");
+    expect(screen.getByText("Unknown disposition wakes").nextElementSibling).toHaveTextContent("2");
+    expect(screen.queryByText(/legacy-delivery/u)).toBeNull();
   });
 
   it("renders streamed same-Monitor wake turns as one gap-free block through terminal state", async () => {

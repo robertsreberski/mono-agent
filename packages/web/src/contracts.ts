@@ -266,6 +266,8 @@ export interface WebRunState {
   readonly status: WebRunStatus;
   readonly startedAt?: string;
   readonly finishedAt?: string;
+  /** Previous meaningful outcome when this completion was a silent host-only wake. */
+  readonly lastOutcome?: { readonly status: WebRunStatus; readonly finishedAt?: string } | null;
   readonly error?: { readonly code?: string; readonly message: string };
   readonly model?: string;
   readonly effort?: string;
