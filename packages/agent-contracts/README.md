@@ -166,8 +166,9 @@ completion can add one secret-redacted, 120-code-point `Result` or `Reason` line
 later completion bookends may enrich the row but cannot re-expand it. Skill
 disclosure renders the selected skill name as
 `📚 Reading "<skill>"` without exposing its path. Read-only memory recall is
-preview-free as `🧠 Recalling memory`; memory writes and ordinary file reads
-retain their distinct `🧠 Updating memory` and `📖 Reading` families. File
+preview-free as `🧠 Recalling memory`, and chronological browsing is separately
+preview-free as `🧠 Browsing memory journal`; memory writes and ordinary file
+reads retain their distinct `🧠 Updating memory` and `📖 Reading` families. File
 paths use suffix-weighted middle truncation so filenames survive; commands keep
 a balanced prefix and suffix. A shell call that carries a `description` renders
 that intent instead of the command line, dropping the verb so it does not

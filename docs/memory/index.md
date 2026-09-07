@@ -21,6 +21,7 @@ for the current framework boundary and external-service pattern.
 | Capability | `lite` | `journal` | `bujo` |
 | --- | --- | --- | --- |
 | FTS keyword recall | yes | yes | yes |
+| Bounded curated chronology (`MemoryJournal`) | yes | yes | yes |
 | Deterministic host observation | canonical daily log | canonical daily log, hash-deduplicated | separate raw audit |
 | Hybrid recall (BM25 + vector RRF) | — | yes | yes |
 | Semantic indexing off the successful-turn path | — | yes, bounded batches | yes, during bounded curation |
@@ -32,6 +33,22 @@ for the current framework boundary and external-service pattern.
 | Living `index.md` + retired `future-log.md` stub | — | — | yes |
 | **Requires embeddings** | no | **yes** | **yes** |
 | **Requires chat model** | no | no | **yes** |
+
+All three local tiers can back the app-owned `MemoryJournal` tool without a
+provider call. It reads the curated active index in chronological order; BuJo's
+raw `audit/` observations and dropped records remain excluded. Supermemory
+supports targeted search but not this local chronology.
+
+Route by the evidence the question needs:
+
+| Question shape | Evidence surface |
+| --- | --- |
+| What was just said in this exchange? | Active conversation history |
+| What specific durable preference, fact, or decision was recorded? | `MemoryRecall` targeted indexed search |
+| What did we broadly work on over explicit dates? | `MemoryJournal` bounded curated chronology, when local support is available |
+| What exactly ran, failed, returned, or was interrupted? | `RunHistory`, then `SessionHistory` for exact managed-tool lifecycle evidence |
+
+An unhinted interrupted-work recovery request still begins with `RunHistory {}`.
 
 ### `lite`
 
@@ -384,9 +401,14 @@ tiers during the memory strategy step (question 6). See
 `packages/agent-app/skills/mono-agent-composer/references/discovery-questions.md` for
 the full question flow and config blocks the composer writes.
 
-## Recall Tool (`MemoryRecall`)
+## Explicit memory read tools
 
-The agent gets a single read-only `MemoryRecall` tool — FTS search for Lite and hybrid keyword/semantic search for Journal/BuJo. It is **auto-provisioned by `agent-app`** from the single `config.memory` block and defaults on for every configured tier; set `recallTool.enabled` to `false` to opt out. There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
+The agent gets targeted read-only `MemoryRecall` — FTS search for Lite and hybrid
+keyword/semantic search for Journal/BuJo. `agent-app` auto-provisions it from the
+single `config.memory` block for every backend. Local Lite, Journal, and BuJo stores
+also gain the separately policy-gated `MemoryJournal` chronological tool; Supermemory
+does not. Set `recallTool.enabled` to `false` to opt out of both explicit read tools.
+There is no hand-wired `.mcp.json` entry and no separate local LLM to run.
 
 Unqualified active-conversation questions are not durable-memory searches. For example,
 `What did you send in the last message?` bypasses automatic recall, and a mistaken tool call
@@ -394,13 +416,27 @@ returns guidance to use the current provider conversation without querying the m
 Qualified archived history still uses the tool. BuJo tool recall may add one deterministic graph
 hop; automatic context remains direct-only, while Lite/Journal never expand the graph.
 
-Recalled entries do **not** sit in the system prompt. The harness appends them to the **user message** each turn (when recall returns hits), so memory survives a session resume; a `memory_recalled` diagnostic keeps recall visible in run traces. The `MemoryRecall` tool described here is the *on-demand* path the agent can additionally call mid-turn to pull more. See [Context assembly → Memory recall](/context/assembly/#memory-recall).
+Automatically recalled entries do **not** sit in the system prompt. The harness appends
+them to the **user message** each turn (when recall returns hits), so memory survives a
+session resume; a `memory_recalled` diagnostic keeps recall visible in run traces.
+`MemoryRecall` and `MemoryJournal` are on-demand paths the agent can call mid-turn;
+chronological journal bodies are never automatically injected. See
+[Context assembly → Memory recall](/context/assembly/#memory-recall).
 
 Under the hood `agent-app` exposes a request-scoped loopback MCP endpoint over its **same app-owned retrieval service and store**. Automatic recall and an identical normalized tool query share one per-turn lookup; a materially different query may search again. Recall needs no chat LLM; durable writes stay in-app via per-turn capture (`writeMode: "capture"`). This replaces the retired standalone `@mono-agent/memory-mcp` package (which also shipped `memory_capture`/`memory_note` — both dropped, since in-app capture already covers durable writes).
 
 **Migrating off `@mono-agent/memory-mcp` (external consumers):** the package is removed from this repo (the published `0.3.0` stays on npm but receives no further updates). If you depended on it directly: (1) **as an MCP server bin / `node .../memory-mcp/dist/main.js` in a `.mcp.json`** — drop that entry and instead set `config.memory.recallTool.enabled: true` so the host auto-provisions the bundled `mono-agent-memory` recall server (no hand-wired entry, no separate LLM); (2) **as a library import (`@mono-agent/memory-mcp`)** — build directly on `@mono-agent/memory/bujo` (`createBujoMemoryStore`) + `@mono-agent/memory/search` (`createEmbeddingProvider`), which is exactly what the recall server does; (3) **the `memory_capture` / `memory_note` write tools have no replacement tool** — durable writes are now host-driven per turn via `memory.writeMode: "capture"` (or `append-host-summary`), so the agent no longer needs an explicit write tool.
 
-**Tool-policy note:** `MemoryRecall` is an MCP tool, and like every MCP server tool (config `mcpServers`, `AskCollaborator`) it is **gated by its declaration, not by `tools.allowedTools`**. `tools.allowedTools` filters the built-in runtime tools (Read/Bash/…) and adapter send tools; it does **not** suppress app-injected MCP tools. Set `config.memory.recallTool.enabled: false` to remove the on-demand tool; automatic score- and answer-evidence-gated context recall remains part of configured memory.
+**Tool-policy note:** `MemoryRecall` is gated by its memory declaration, not by
+`tools.allowedTools`. `MemoryJournal` shares `memory.recallTool.enabled` but, because it
+enumerates a date range, is additionally governed by normal app-tool policy: a
+restrictive allowlist must name `MemoryJournal`, while deny wins. Set
+`config.memory.recallTool.enabled: false` to remove both explicit read tools; automatic
+score- and answer-evidence-gated context recall remains part of configured memory.
+
+See [Capture & recall](/memory/capture-and-recall/#the-memoryjournal-chronological-tool)
+for the journal tool's required dates/time zone, snapshot and page bounds, provenance,
+lifecycle, privacy, and explicit empty/unsupported/failure distinctions.
 
 
 ## Write Tool (`Remember`)
@@ -424,4 +460,4 @@ removal remains the explicit two-phase `mono-agent memory forget` workflow.
 ## References
 
 - [Memory quality benchmark](/memory/benchmarking/) — disposable offline quality and efficiency gate
-- Feature registry rows: `docs/reference/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`
+- [Feature registry](/reference/feature-registry/) rows — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`, `memory.journal-browse`

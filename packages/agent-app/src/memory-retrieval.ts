@@ -18,6 +18,8 @@ import {
   isConversationRelativeQuery,
   MARKER_FOR,
   selectAutomaticRecallHits,
+  type JournalBrowseInput,
+  type JournalBrowseSnapshot,
 } from "@mono-agent/memory/bujo";
 
 import {
@@ -28,6 +30,11 @@ import {
 } from "./memory-recall.js";
 
 export interface SharedRecallStore extends MemoryStore, RecallCapableStore {
+  /** Local-tier chronology. External recall backends intentionally omit it. */
+  tier?(): "lite" | "journal" | "bujo";
+  browseJournal?(input: JournalBrowseInput): Promise<JournalBrowseSnapshot>;
+  /** Affirmative capability signal; a method alone is insufficient. */
+  supportsJournalBrowse?(): boolean;
   /** Optional local-store telemetry hook; it must not alter relevance. */
   recordAccess?(ids: readonly string[]): void;
   /**
@@ -179,6 +186,30 @@ export class MemoryRetrievalService implements MemoryStore {
 
   supportsGraphExpansion(): boolean {
     return this.store.expandGraph !== undefined && this.store.supportsGraphExpansion?.() !== false;
+  }
+
+  supportsJournalBrowse(): boolean {
+    if (
+      typeof this.store.tier !== "function"
+      || typeof this.store.browseJournal !== "function"
+      || this.store.supportsJournalBrowse?.() !== true
+    ) return false;
+    const tier = this.store.tier();
+    return tier === "lite" || tier === "journal" || tier === "bujo";
+  }
+
+  tier(): "lite" | "journal" | "bujo" {
+    if (!this.supportsJournalBrowse() || this.store.tier === undefined) {
+      throw new Error("memory: the configured store has no chronological journal surface.");
+    }
+    return this.store.tier();
+  }
+
+  async browseJournal(input: JournalBrowseInput): Promise<JournalBrowseSnapshot> {
+    if (!this.supportsJournalBrowse() || this.store.browseJournal === undefined) {
+      throw new Error("memory: the configured store has no chronological journal surface.");
+    }
+    return await this.store.browseJournal(input);
   }
 
   recordAccessIdsForTurn(turnId: string, ids: readonly string[]): void {

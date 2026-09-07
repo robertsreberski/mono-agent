@@ -37,6 +37,8 @@ describe('buildAgentContext', () => {
     });
     expect(context.sections.map((section) => section.id)).toEqual(['core', 'identity', 'user-message']);
     expect(context.sections[0]?.content).toBe(DEFAULT_SOUL_TEXT);
+    expect(DEFAULT_SOUL_TEXT).toMatch(/active conversation history.*targeted durable fact.*broad explicit-period retrospective.*exact execution evidence/su);
+    expect(DEFAULT_SOUL_TEXT).toContain('RunHistory {} when available');
     expect(context.prompt).toContain('## Core Guardrails');
     expect(context.prompt).toContain('## Identity\n\nYou are Test Agent.');
     expect(context.prompt).toContain('## Current User Message\n\nSummarize the current task.');

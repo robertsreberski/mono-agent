@@ -56,6 +56,41 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
 }
 
 describe("MemoryRetrievalService", () => {
+  it("forwards chronological browse only when the local store affirms the capability", async () => {
+    const absent = new MemoryRetrievalService(fakeStore());
+    expect(absent.supportsJournalBrowse()).toBe(false);
+
+    let journalSupported = true;
+    const store = Object.assign(fakeStore(), {
+      tier: () => "journal" as const,
+      supportsJournalBrowse: () => journalSupported,
+      browseJournal: async () => ({
+        records: [],
+        rangeScanComplete: true,
+        truncatedBy: [],
+        nonJournalProvenanceExcluded: false,
+      }),
+    });
+    const service = new MemoryRetrievalService(store);
+    expect(service.supportsJournalBrowse()).toBe(true);
+    expect(service.tier()).toBe("journal");
+    await expect(service.browseJournal({
+      fromInclusive: "2026-09-01T00:00:00.000Z",
+      toExclusive: "2026-09-02T00:00:00.000Z",
+      maxEntries: 10,
+      maxBytes: 1_000,
+    })).resolves.toMatchObject({ records: [], rangeScanComplete: true });
+
+    journalSupported = false;
+    expect(service.supportsJournalBrowse()).toBe(false);
+    await expect(service.browseJournal({
+      fromInclusive: "2026-09-01T00:00:00.000Z",
+      toExclusive: "2026-09-02T00:00:00.000Z",
+      maxEntries: 10,
+      maxBytes: 1_000,
+    })).rejects.toThrow(/no chronological journal surface/iu);
+  });
+
   it("exposes and delegates strong completed-turn admission only when the backend supports it", async () => {
     const admissions: MemoryCompletedTurn[] = [];
     const store = fakeStore();

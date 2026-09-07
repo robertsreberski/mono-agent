@@ -3120,6 +3120,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(memory.status).toBe("ok");
     expect(memory.details.join("\n")).not.toMatch(/WARN/iu);
     expect(memory.details.join("\n")).toContain("bujo");
+    expect(memory.details.join("\n")).toMatch(/Chronological journal: supported/iu);
   });
 
   it("reports the supermemory backend as reachable for any HTTP response without sending auth or data", async () => {
@@ -3150,6 +3151,7 @@ describe("validateMonoAgentFolder — bujo memory checks", () => {
     expect(text).toContain("agent-alpha");
     expect(text).toContain("transport reachable");
     expect(text).toContain("HTTP 405");
+    expect(text).toMatch(/Chronological journal: unsupported by Supermemory/iu);
     // bujo-only "Mode:" line is not used for external backends.
     expect(text).not.toMatch(/^Mode:/mu);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -5284,6 +5286,64 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(tools.status).toBe("waiting");
     expect(tools.details.join("\n")).toMatch(/recall will not work|recallTool/u);
     expect(report.ok).toBe(true);
+  });
+
+  it.each([
+    "MemoryJournal",
+    "mcp__mono-agent-memory-journal__MemoryJournal",
+    "mcp__mono-agent-memory-journal__*",
+  ])("applies MemoryJournal capability checks to policy spelling %s", async (name) => {
+    const configPath = await writeToolsConfig({ allowedTools: [name] });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const tools = sectionById(report, "tools");
+    expect(tools.status).toBe("waiting");
+    expect(tools.details.join("\n")).toMatch(/no memory block.*chronological journal/iu);
+  });
+
+  it("accepts a policy-allowed local MemoryJournal and explains shared read-tool disablement", async () => {
+    const enabledPath = await writeToolsConfig(
+      { allowedTools: ["MemoryJournal"] },
+      { memory: { mode: "lite", path: dir, recallTool: { enabled: true } } },
+    );
+    const enabled = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: enabledPath, liveness: false });
+    expect(sectionById(enabled, "tools").status).toBe("ok");
+    expect(sectionById(enabled, "memory").details.join("\n")).toMatch(/Chronological journal: supported/iu);
+
+    const disabledPath = await writeToolsConfig(
+      { allowedTools: ["MemoryJournal"] },
+      { memory: { mode: "lite", path: dir, recallTool: { enabled: false } } },
+    );
+    const disabled = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: disabledPath, liveness: false });
+    expect(sectionById(disabled, "tools")).toMatchObject({ status: "waiting" });
+    expect(sectionById(disabled, "tools").details.join("\n")).toMatch(/explicit memory read tools will not work/iu);
+    expect(sectionById(disabled, "memory").details.join("\n")).toMatch(/Explicit memory read tools are disabled/iu);
+  });
+
+  it("reports allowed Supermemory chronology as unsupported and honors deny-wins", async () => {
+    const supermemoryPath = await writeToolsConfig(
+      { allowedTools: ["MemoryJournal"] },
+      {
+        memory: {
+          backend: "supermemory",
+          mode: "lite",
+          path: dir,
+          supermemory: { baseUrl: "http://127.0.0.1:6767", container: "synthetic" },
+        },
+      },
+    );
+    const unsupported = await validateMonoAgentFolder({
+      env: {}, cwd: dir, configPath: supermemoryPath, liveness: false,
+    });
+    expect(sectionById(unsupported, "tools")).toMatchObject({ status: "waiting" });
+    expect(sectionById(unsupported, "tools").details.join("\n")).toMatch(/Supermemory.*no chronological journal surface/iu);
+
+    const deniedPath = await writeToolsConfig(
+      { allowedTools: ["MemoryJournal"], disallowedTools: ["mcp__mono-agent-memory-journal__*"] },
+      { memory: { mode: "lite", path: dir, recallTool: { enabled: true } } },
+    );
+    const denied = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath: deniedPath, liveness: false });
+    expect(sectionById(denied, "tools")).toMatchObject({ status: "waiting" });
+    expect(sectionById(denied, "tools").details.join("\n")).toMatch(/resolves to denied.*deny wins/iu);
   });
 
   it.each([

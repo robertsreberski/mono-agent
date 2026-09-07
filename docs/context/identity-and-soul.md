@@ -119,11 +119,11 @@ Both blocks are passed through verbatim, subject to the per-section size handlin
 
 When `context.soulPath` is **omitted**, the `## Core Guardrails` section is filled with a built-in default soul — a conservative, source-grounded baseline (follow the instruction hierarchy, read before acting, keep scope small and reversible, preserve secrets, do not fake success, surface failures honestly, ask when unsure, leave handoff notes).
 
-The default soul also carries a capability-agnostic recall guardrail:
+The default soul also carries a capability-conditional evidence-routing guardrail:
 
-> Before assuming a fact or asking the user, first check the provided context and any available recall/search tools for the information.
+> Route evidence by scope before assuming or asking: use active conversation history for what was just said, available memory search for a targeted durable fact or decision, available chronological memory browsing for a broad explicit-period retrospective, and history tools for exact execution evidence. For unhinted interrupted-work recovery, start with RunHistory {} when available.
 
-This nudges the agent to consult what it already has — the prompt context and any enabled recall/search tools — before guessing or asking, without implying a specific tool exists. It pairs with the strengthened [`MemoryRecall` tool description](/tools/mcp/), which directs proactive recall when context is missing or uncertain. If you supply your own `soulPath`, consider keeping an equivalent line so a memory-enabled agent actually reaches for [recall](/memory/capture-and-recall/).
+This keeps current dialogue, targeted durable search, broad curated chronology, and exact run/tool evidence distinct while naming each capability only when available. The unhinted recovery priority remains `RunHistory {}`. Detailed input and safety rules stay in the owning tool descriptions rather than being duplicated in the prompt. If you supply your own `soulPath`, consider keeping an equivalent compact router.
 
 :::note
 The fallback is **the default soul text, not your identity**. Leaving out `soulPath` does not duplicate the identity into the guardrails section — it inserts the framework default instead. Set `context.soulPath` only when you want to replace that baseline.

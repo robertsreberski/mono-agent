@@ -367,9 +367,12 @@ export interface MonoAgentConfig {
     /** LLM for bujo capture and effective tier selection. */
     readonly llm?: MemoryLlmConfig;
     /**
-     * Read-only `MemoryRecall` tool exposed to the agent (embeddings + FTS, no
-     * chat LLM). Derived from this single memory block — no hand-wired MCP entry.
-     * Defaults on for every configured memory tier; explicit false opts out.
+     * Explicit read-only memory tools exposed to the agent. `MemoryRecall`
+     * provides targeted search for every backend; capable local tiers may also
+     * provide policy-gated `MemoryJournal` chronology. Derived from this single
+     * memory block — no hand-wired MCP entry. Defaults on for every configured
+     * memory tier; explicit false opts out of both explicit read tools without
+     * disabling automatic memory context.
      */
     readonly recallTool?: { readonly enabled: boolean };
     /**

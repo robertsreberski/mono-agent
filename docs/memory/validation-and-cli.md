@@ -13,7 +13,7 @@ The memory subsystem **never silently downshifts**: invalid tier prerequisites a
 
 `mono-agent memory` is the operator preview for the memory configured in the current agent folder. It loads the same `mono-agent.config.json` and `.env` resolution path as the app, so it sees the active memory mode, backend, root path, embeddings provider, and Supermemory settings without a separate root argument.
 
-This operator surface remains available when `memory.recallTool.enabled` is `false`. That setting removes the live `MemoryRecall` tool from the agent; it does not disable explicit operator inspection or maintenance. Preview and live recall share the same backend, Supermemory-container, embeddings, and credential resolution, with bypassing the live-tool gate as the only preview-specific behavior.
+This operator surface remains available when `memory.recallTool.enabled` is `false`. That setting removes both live memory-read tools (`MemoryRecall` and, on local tiers, `MemoryJournal`) from the agent; it does not disable explicit operator inspection or maintenance. Preview and live recall share the same backend, Supermemory-container, embeddings, and credential resolution, with bypassing the live-tool gate as the only preview-specific behavior.
 
 Coverage: cli.
 
@@ -75,6 +75,14 @@ Plain `audit` is the detailed local operator report: its JSON contains counts, s
 While the configured store runs, it atomically publishes a coalesced metadata-only snapshot at `.index/runtime.json` (plus a 30-second heartbeat). `audit` uses that snapshot for queue capacity/backlog/high-water/drain/failure/discard counts and embedding/LLM call counts since that store start. It marks a closed, dead-process, invalid, or older-than-90-seconds snapshot as stale. Monetary cost, tokens, and search percentiles remain `null` unless another telemetry surface records them; audit does not guess them from memory content.
 
 `search` uses the same recall path as the `MemoryRecall` tool. When local semantic embeddings are configured but unavailable, it prints a warning and falls back to FTS-only recall instead of pretending semantic search succeeded. For Supermemory-backed agents, `search` queries Supermemory and `stats` reports the known configured container/base URL while marking local SQLite-only counts as unknown.
+
+The CLI's `today` and `show <date>` commands remain local operator inspection: they
+print raw daily Markdown and are not the model-facing chronological API. The configured
+host instead offers bounded `MemoryJournal` pages for Lite, Journal, and BuJo. Validation
+reports local chronology as supported, disabled when `recallTool.enabled` is false, and
+unsupported for Supermemory. A restrictive policy that mentions `MemoryJournal` while
+its memory capability is absent also reports that mismatch; no state is represented as
+a successful empty journal.
 
 ### Reversible explicit BuJo forget plans
 
@@ -605,7 +613,17 @@ for an existing local agent, with one backend-specific branch in step 6.
    `memory audit --json` is safe for Supermemory but reports local integration
    metadata only; it cannot inspect the remote index.
 
-7. Verify both kinds of context in the TUI or an enabled conversational channel without restarting between messages. For Telegram, send `Reply exactly with this token: V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last message?` and confirm the token comes back. That second run should use active history and inject no durable memory. Finally ask a qualified durable-memory question such as `What did we decide about releases last month?` to exercise `MemoryRecall`.
+7. Verify all evidence routes in the TUI or an enabled conversational channel without
+   restarting between messages. For Telegram, send `Reply exactly with this token:
+   V1-HISTORY-<unique>`, wait for that reply, then ask `What did you send in the last
+   message?` and confirm the token comes back from active history without a durable
+   lookup. Ask one specific durable question such as `Which release color did we choose?`
+   to exercise `MemoryRecall`. On a local tier, call a broad retrospective with an
+   explicit period such as `What did we work on from 2026-09-01 through 2026-09-07 in
+   Europe/Amsterdam?` to exercise `MemoryJournal`; treat its answer as a curated summary.
+   Ask for exact commands/results or interrupted recovery separately and require
+   `RunHistory`/`SessionHistory`. These observations are provider behavior checks; prompt
+   string tests alone do not prove autonomous routing.
 
 The strict audit deliberately includes live runtime telemetry. While the agent is stopped it reports
 `runtime_missing` or `runtime_stale` instead of claiming the whole running system is healthy. Use

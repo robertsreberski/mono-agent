@@ -69,6 +69,11 @@ import {
 } from "./agent-root-coordinator.js";
 import type { ChannelId } from "./channels.js";
 import { resolveMemoryRecallSettings } from "./memory-recall.js";
+import {
+  createMemoryJournalRuntimeExtension,
+  isMemoryJournalCapableStore,
+  isMemoryJournalToolAllowed,
+} from "./memory-journal.js";
 import { BUILTIN_TOOL_NAMES, canonicalToolName, isAllowAllTools } from "./modules/known-tools.js";
 import {
   createSharedMemoryRecallRuntimeExtension,
@@ -185,6 +190,8 @@ export interface ConfiguredAgentHarnessOptions {
   ) => AgentHarnessRuntimeOptionsExtension | Promise<AgentHarnessRuntimeOptionsExtension>;
   /** Best-effort diagnostic when the default MemoryRecall endpoint cannot start. */
   readonly onMemoryRecallUnavailable?: (error: unknown) => void;
+  /** Best-effort diagnostic when the chronological MemoryJournal endpoint cannot start. */
+  readonly onMemoryJournalUnavailable?: (error: unknown) => void;
   /** Best-effort diagnostic when the durable Remember endpoint cannot start. */
   readonly onMemoryRememberUnavailable?: (error: unknown) => void;
   /** Best-effort host diagnostic for post-provider memory write failures. */
@@ -1080,13 +1087,28 @@ async function createConfiguredAgentHarnessInternal(
     processJobsProtectionPosture,
   ));
   const memory = configuredMemoryForHarness(config, configuredMemory);
-  const memoryRecall = resolveMemoryRecallSettings(config) === undefined
+  const memoryReadToolsEnabled = resolveMemoryRecallSettings(config) !== undefined;
+  const memoryRecall = !memoryReadToolsEnabled
     || !(memory instanceof MemoryRetrievalService)
     ? undefined
     : createSharedMemoryRecallRuntimeExtension(memory, {
         ...(options.onMemoryRecallUnavailable === undefined
           ? {}
           : { onUnavailable: options.onMemoryRecallUnavailable }),
+      });
+  // Chronological enumeration shares the explicit memory-read switch with
+  // MemoryRecall, but additionally follows normal app-tool policy and requires
+  // an affirmative local capability. External search backends stay incapable.
+  const memoryJournal = !memoryReadToolsEnabled
+    || !(memory instanceof MemoryRetrievalService)
+    || !isMemoryJournalCapableStore(memory)
+    || !isMemoryJournalToolAllowed(config.tools)
+    ? undefined
+    : createMemoryJournalRuntimeExtension(memory, {
+        ...(options.env === undefined ? {} : { env: options.env }),
+        ...(options.onMemoryJournalUnavailable === undefined
+          ? {}
+          : { onUnavailable: options.onMemoryJournalUnavailable }),
       });
   // The durable write surface is gated three ways: the store must affirm the
   // capability (a read-only or external backend never does), the operator must
@@ -1105,6 +1127,7 @@ async function createConfiguredAgentHarnessInternal(
       });
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
+    memoryJournal,
     memoryRemember,
     options.runtimeOptionsForRequest,
   ], {

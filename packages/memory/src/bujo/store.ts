@@ -7,7 +7,7 @@ import type {
   MemoryStore,
   MemoryWriteResult,
 } from "@mono-agent/agent-contracts";
-import type { RecallHit } from "../store/index.js";
+import type { JournalBrowseInput, JournalBrowseSnapshot, RecallHit } from "../store/index.js";
 import { openMemoryDb, type MemoryDb, type MemoryRecord } from "../store/index.js";
 
 import {
@@ -58,7 +58,11 @@ import {
 } from "./migrate.js";
 import { consolidateBujoMemory, type ConsolidateResult } from "./consolidate.js";
 import { writeFutureLog } from "./projections.js";
-import { listCanonicalFileNames, readCanonicalFileSnapshot } from "./path-safety.js";
+import {
+  assertCanonicalDailySourcePath,
+  listCanonicalFileNames,
+  readCanonicalFileSnapshot,
+} from "./path-safety.js";
 import type { Bullet, BujoLogger, BujoOptions, BujoTier, MemoryRememberResult } from "./types.js";
 import { BoundedBatchQueue, type BackgroundQueueSnapshot, type QueueJob } from "./queue.js";
 import {
@@ -407,6 +411,26 @@ export class BujoMemoryStore implements MemoryStore {
         : options.trackAccess === undefined ? {} : { trackAccess: options.trackAccess }),
       abortSignal,
     }));
+  }
+
+  /** Every local tier has a curated canonical/index chronology. */
+  supportsJournalBrowse(): boolean {
+    return true;
+  }
+
+  /**
+   * Read a bounded chronological snapshot from the curated index only.
+   * BuJo's raw audit observations never enter that index and unsafe/non-daily
+   * provenance is omitted before the app can project a source reference.
+   */
+  async browseJournal(input: JournalBrowseInput): Promise<JournalBrowseSnapshot> {
+    this.assertOpen("browseJournal");
+    return await this.runAdmittedOperation(async (abortSignal) => {
+      abortSignal.throwIfAborted();
+      const snapshot = this.db.browseJournal(input);
+      abortSignal.throwIfAborted();
+      return snapshot;
+    });
   }
 
   /** Whether this strict tier may expose graph expansion to explicit MemoryRecall. */

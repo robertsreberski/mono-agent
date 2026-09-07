@@ -36,6 +36,7 @@ export const APP_TOOL_NAMES = [
   "RunHistory",
   "SessionHistory",
   "SetConversationTitle",
+  "MemoryJournal",
   "Remember",
 ] as const;
 

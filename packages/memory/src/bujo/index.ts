@@ -125,6 +125,16 @@ export { MemoryRememberPartialWriteError } from "./store.js";
 export type { CanonicalBulletLocation } from "./canonical-lookup.js";
 export { createIdFactory } from "./ids.js";
 export type { Bullet, BujoOptions, BujoTier, MemoryRememberResult } from "./types.js";
+export type {
+  JournalBrowseCapableStore,
+  JournalBrowseInput,
+  JournalBrowseSnapshot,
+  MemoryJournalBrowseTruncation,
+} from "../store/index.js";
+export {
+  MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES,
+  MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES,
+} from "../store/index.js";
 export type { LlmComplete, LlmCompleteOptions } from "./llm.js";
 export { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 export type { MemoryModelKind } from "./model-error.js";

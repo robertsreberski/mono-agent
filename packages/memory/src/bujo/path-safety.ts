@@ -17,6 +17,8 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 
+import { isCanonicalDailySourcePath as isCanonicalDailySourcePathValue } from "../store/journal-source.js";
+
 const DEFAULT_DIRECTORY_MODE = 0o700;
 const DEFAULT_FILE_MODE = 0o600;
 const ROOT_CACHE = new Map<string, { readonly canonical: string; readonly dev: number; readonly ino: number }>();
@@ -154,8 +156,7 @@ export function assertCanonicalRelativePath(path: string): void {
 /** Accept only canonical daily sources, including the supported root legacy layout. */
 export function assertCanonicalDailySourcePath(path: string): void {
   assertCanonicalRelativePath(path);
-  const match = /^(?:daily\/)?(\d{4}-\d{2}-\d{2})\.md$/u.exec(path);
-  if (match === null || !isCanonicalIsoDay(match[1]!)) {
+  if (!isCanonicalDailySourcePathValue(path)) {
     throw new Error(
       `memory-bujo: rewrite source must be daily/YYYY-MM-DD.md or a root legacy YYYY-MM-DD.md, got "${path}".`,
     );
@@ -633,9 +634,4 @@ function isMissing(error: unknown): boolean {
 
 function isAlreadyExists(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "EEXIST";
-}
-
-function isCanonicalIsoDay(day: string): boolean {
-  const parsed = new Date(`${day}T00:00:00.000Z`);
-  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === day;
 }

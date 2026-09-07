@@ -100,6 +100,8 @@ describe("toolHintFor", () => {
   it("derives a hint from the tool segment of an MCP tool name", () => {
     expect(toolHintFor("mcp__gws__calendar_list_events")).toBe("Checking the calendar…");
     expect(toolHintFor("mcp__todoist__add_task")).toBe("Checking your tasks…");
+    expect(toolHintFor("MemoryJournal")).toBe("Browsing memory journal…");
+    expect(toolHintFor("mcp__mono-agent-memory-journal__MemoryJournal")).toBe("Browsing memory journal…");
   });
 
   it("falls back to a generic hint for unknown tools (never a raw name)", () => {
@@ -307,6 +309,8 @@ describe("formatToolActivityLine", () => {
     ["vision", { question: "identify product" }, "👁️ Looking at the image identify product"],
     ["MemoryRecall", { query: "private preferences" }, "🧠 Recalling memory"],
     ["memory_recall", { query: "private preferences" }, "🧠 Recalling memory"],
+    ["MemoryJournal", { fromDate: "2026-09-01", throughDate: "2026-09-07" }, "🧠 Browsing memory journal"],
+    ["mcp__mono-agent-memory-journal__MemoryJournal", { cursor: "private" }, "🧠 Browsing memory journal"],
     ["memory_write", { target: "preferences" }, "🧠 Updating memory preferences"],
   ])("maps %s to its stable activity family", (name, args, expected) => {
     expect(formatToolActivityLine(name, args)).toBe(expected);

@@ -752,7 +752,7 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {
-              "description": "Enables the memory capability.",
+              "description": "Enables explicit memory reads: targeted MemoryRecall for every backend and chronological MemoryJournal when a local store supports it. Automatic recall is unchanged.",
               "examples": [
                 true
               ],

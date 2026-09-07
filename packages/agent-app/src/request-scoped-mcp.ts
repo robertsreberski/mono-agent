@@ -19,6 +19,8 @@ export interface RequestScopedMcpEndpointOptions {
   /** A fresh server is required for every stateless HTTP request. */
   readonly createServer: (input: Parameters<RuntimeOptionsExtension>[0]) => McpServer;
   readonly onUnavailable?: (error: unknown) => void;
+  /** Test seam for simulating loopback startup failure. */
+  readonly listen?: (server: Server) => Promise<void>;
 }
 
 /**
@@ -68,7 +70,7 @@ export function createRequestScopedMcpRuntimeExtension(
     });
 
     try {
-      await listenLoopback(http);
+      await (options.listen ?? listenLoopback)(http);
       const address = http.address() as AddressInfo;
       port = address.port;
       let closed = false;

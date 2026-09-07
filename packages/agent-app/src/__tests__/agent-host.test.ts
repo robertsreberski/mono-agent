@@ -18,6 +18,7 @@ import type { MemoryStore } from "@mono-agent/agent-contracts";
 import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
+import type { JournalBrowseSnapshot } from "@mono-agent/memory/store";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
@@ -228,6 +229,67 @@ describe("agent host composition helpers", () => {
     });
   });
 
+  it("composes MemoryJournal only for enabled, policy-allowed, affirmative local memory", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const base = monoConfig({ dir, identityPath, artifactDir, memoryPath: join(dir, "memory") });
+
+    async function run(input: { readonly readEnabled: boolean; readonly policyAllowed: boolean; readonly capable: boolean }) {
+      const fake = createFakeRuntime(async () => ({ text: "Configured" }));
+      const config: MonoAgentConfig = {
+        ...base,
+        memory: { ...base.memory!, recallTool: { enabled: input.readEnabled } },
+        tools: {
+          allowedTools: input.policyAllowed ? ["MemoryJournal"] : ["Read"],
+          disallowedTools: [],
+        },
+      };
+      const memory = {
+        async load() { return undefined; },
+        async recall() { return []; },
+        tier: () => "lite" as const,
+        supportsJournalBrowse: () => input.capable,
+        async browseJournal() {
+          return {
+            records: [],
+            rangeScanComplete: true,
+            truncatedBy: [],
+            nonJournalProvenanceExcluded: false,
+          };
+        },
+        async appendHostSummary(conversationId: string) {
+          return { conversationId, source: "test", bytesWritten: 0 };
+        },
+        async close() {},
+      } satisfies MemoryStore & {
+        recall(): Promise<readonly []>;
+        tier(): "lite";
+        supportsJournalBrowse(): boolean;
+        browseJournal(): Promise<JournalBrowseSnapshot>;
+        close(): Promise<void>;
+      };
+      const responder = await createConfiguredAgentResponder({ config, runtime: fake.runtime, memory });
+      await responder.respond(
+        { conversationId: "journal-composition", text: "Review this week", abortSignal: new AbortController().signal },
+        { append: async () => {} },
+      );
+      return Object.keys(fake.calls[0]?.options.mcpServers ?? {});
+    }
+
+    await expect(run({ readEnabled: true, policyAllowed: true, capable: true })).resolves.toEqual([
+      "mono-agent-memory",
+      "mono-agent-memory-journal",
+    ]);
+    await expect(run({ readEnabled: true, policyAllowed: false, capable: true })).resolves.toEqual([
+      "mono-agent-memory",
+    ]);
+    await expect(run({ readEnabled: false, policyAllowed: true, capable: true })).resolves.toEqual([]);
+    await expect(run({ readEnabled: true, policyAllowed: true, capable: false })).resolves.toEqual([
+      "mono-agent-memory",
+    ]);
+  });
 
   it("preserves failure instructions and the original exporter error through the artifact commit hook", async () => {
     const dir = await tempDir();
