@@ -10,7 +10,7 @@ import {
   MEMORY_WRITE_MODES,
   MonoAgentConfigError,
 } from "@mono-agent/config";
-import type { ConfigViewFieldId, MonoAgentConfigJson } from "@mono-agent/config";
+import type { MonoAgentConfigJson } from "@mono-agent/config";
 import {
   PI_TRANSPORTS,
   SANDBOX_FALLBACKS,
@@ -1546,7 +1546,6 @@ function exampleFor(id: string): SettingsJsonValue {
     "runtime.retry.backoffMs": 2_000,
     "runtime.retry.maxBackoffMs": 30_000,
     "runtime.effort": "medium",
-    "runtime.permissionMode": "default",
     "runtime.compaction.triggerRatio": 0.70,
     "runtime.compaction.keepRecentTokens": 12_800,
     "runtime.compaction.summaryMaxTokens": 5_120,
@@ -1717,7 +1716,7 @@ function descriptionFor(id: string): string {
     return "Ceiling for the doubling same-model retry delay.";
   }
   if (id === "runtime.effort") {
-    return "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Ranking above max only prevents keyword downgrade.";
+    return "Route-specific effort forwarded through Pi to the selected provider. Doctor warns when a configured value falls outside the model's advertised ladder but keeps turn-time handling permissive. Message text never changes effort.";
   }
   if (id === "tools.mcpRequestContextServers") {
     return "Configured stdio MCP server names that receive trusted per-request conversation, run, output-directory, and scoped progress context.";

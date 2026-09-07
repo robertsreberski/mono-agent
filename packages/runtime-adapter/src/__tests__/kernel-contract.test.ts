@@ -182,7 +182,6 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
       policyOptions: {
         allowedTools: ["*"],
         disallowedTools: [],
-        permissionMode: "plan",
       },
     } satisfies MonoRuntimeAttemptResolution;
     assertAssignable<MonoRuntimeAttemptResolution>(resolution);
@@ -190,7 +189,7 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
     if (false) {
       const invalid = {
         policyOptions: {
-          permissionMode: "plan",
+          allowedTools: [],
           // @ts-expect-error attempt policy projection cannot replace messages.
           messages: [],
         },

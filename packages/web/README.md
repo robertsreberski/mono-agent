@@ -715,15 +715,16 @@ race.
 
 The server depends only on the `core` `@mono-agent/agent-contracts` and
 `@mono-agent/config` packages, the `observability` trace-source registry, and
-Express. Its Node-side operator clients use Undici to keep deliberately
-long-lived turn and host-wake streams under their explicit lifecycle owners.
+Express. Its Node-side clients use `@mono-agent/operator-adapter/client` for
+bounded NDJSON decoding and long-lived turn and host-wake fetch mechanics;
+authentication, loopback policy, and lifecycle ownership remain in web.
 Its compiled browser bundle additionally contains the production graph
 from the isolated `webapp` lockfile: assistant-ui, Base UI, cmdk, React, and
 Workbox plus their transitive dependencies. The repository advisory and license
 gates audit that nested production graph separately because it ships inside this
 package even though it is not part of the root pnpm workspace. Running agents
 are reached over their loopback HTTP operator endpoints; this package does not
-import a communication adapter or another operator surface.
+import another operator surface or start the operator adapter server.
 
 ## What This Package Does Not Own
 

@@ -1,3 +1,4 @@
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
@@ -37,17 +38,17 @@ afterEach(() => {
 
 describe("Monitor tool registration", () => {
   it("registers neither tool without a controller and both with one", () => {
-    const withoutController = getPiBuiltinTools(["Monitor", "MonitorStop", "Bash"]);
+    const withoutController = getPiBuiltinTools(["Monitor", "MonitorStop", "Bash"], { ctx });
     expect(withoutController.map((tool) => tool.name)).toEqual(["Bash"]);
 
-    const withController = getPiBuiltinTools(["Monitor", "MonitorStop", "Bash"], {
+    const withController = getPiBuiltinTools(["Monitor", "MonitorStop", "Bash"], { ctx,
       monitorsController: { start: vi.fn(), stop: vi.fn() },
     });
     expect(withController.map((tool) => tool.name).sort()).toEqual(["Bash", "Monitor", "MonitorStop"]);
   });
 
   it("states the host ceilings in the schema when the controller publishes limits", () => {
-    const tools = getPiBuiltinTools(["Monitor"], {
+    const tools = getPiBuiltinTools(["Monitor"], { ctx,
       monitorsController: {
         start: vi.fn(),
         stop: vi.fn(),
@@ -67,7 +68,7 @@ describe("Monitor tool registration", () => {
   });
 
   it("omits an unstated ceiling instead of inventing one", () => {
-    const tools = getPiBuiltinTools(["Monitor"], {
+    const tools = getPiBuiltinTools(["Monitor"], { ctx,
       monitorsController: { start: vi.fn(), stop: vi.fn() },
     });
     const monitor = tools.find((tool) => tool.name === "Monitor");
@@ -103,7 +104,7 @@ describe("Monitor hand-off", () => {
     const start = vi.fn(async () => startedResult({ maxRuntimeMs: 120_000 }));
     const result = await monitorToolRun(
       { command: "echo hi", description: "Watching a probe" },
-      options(workspace, { start, stop: vi.fn() }),
+      { ctx, ...options(workspace, { start, stop: vi.fn() }) },
     );
 
     expect(result.error).toBe(false);
@@ -134,7 +135,7 @@ describe("Monitor hand-off", () => {
     const start = vi.fn(async () => startedResult({ maxRuntimeMs: 0, persistent: true }));
     await monitorToolRun(
       { command: "tail -f x", description: "Watching x", persistent: true, timeout_ms: 5_000 },
-      options(workspace, { start, stop: vi.fn() }),
+      { ctx, ...options(workspace, { start, stop: vi.fn() }) },
     );
     const request = start.mock.calls[0][0];
     expect(request.timeoutMs).toBeUndefined();
@@ -146,7 +147,7 @@ describe("Monitor hand-off", () => {
     const start = vi.fn(async () => startedResult());
     await monitorToolRun(
       { command: "x", description: "Watching x", timeout_ms: 5 },
-      options(workspace, { start, stop: vi.fn() }),
+      { ctx, ...options(workspace, { start, stop: vi.fn() }) },
     );
     expect(start.mock.calls[0][0].timeoutMs).toBe(1_000);
   });
@@ -154,12 +155,12 @@ describe("Monitor hand-off", () => {
   it("requires a description and refuses a NUL command", async () => {
     const workspace = tempWorkspace();
     const controller = { start: vi.fn(), stop: vi.fn() };
-    const missing = await monitorToolRun({ command: "x" }, options(workspace, controller));
+    const missing = await monitorToolRun({ command: "x" }, { ctx, ...options(workspace, controller) });
     expect(missing.error).toBe(true);
     expect(missing.outcome.code).toBe("monitor_invalid");
     const nul = await monitorToolRun(
       { command: `x${NUL}y`, description: "Watching x" },
-      options(workspace, controller),
+      { ctx, ...options(workspace, controller) },
     );
     expect(nul.error).toBe(true);
     expect(controller.start).not.toHaveBeenCalled();
@@ -170,7 +171,7 @@ describe("Monitor hand-off", () => {
     const controller = { start: vi.fn(), stop: vi.fn() };
     const result = await monitorToolRun(
       { command: "x", description: "Watching x", workdir: "/etc" },
-      options(workspace, controller),
+      { ctx, ...options(workspace, controller) },
     );
     expect(result.error).toBe(true);
     expect(result.outcome.code).toBe("workdir_denied");
@@ -186,7 +187,7 @@ describe("Monitor hand-off", () => {
     });
     const result = await monitorToolRun(
       { command: "x", description: "Watching x" },
-      options(workspace, { start, stop: vi.fn() }),
+      { ctx, ...options(workspace, { start, stop: vi.fn() }) },
     );
     expect(result.error).toBe(true);
     expect(result.outcome.code).toBe("monitor_conversation_capacity");
@@ -198,7 +199,7 @@ describe("Monitor hand-off", () => {
     const workspace = tempWorkspace();
     const result = await monitorToolRun(
       { command: "x", description: "Watching x" },
-      options(workspace, { start: async () => ({ monitorId: "" }), stop: vi.fn() }),
+      { ctx, ...options(workspace, { start: async () => ({ monitorId: "" }), stop: vi.fn() }) },
     );
     expect(result.error).toBe(true);
     expect(result.outcome.code).toBe("monitor_controller_invalid");
@@ -208,7 +209,7 @@ describe("Monitor hand-off", () => {
 describe("MonitorStop", () => {
   it("reports a stop it actually requested", async () => {
     const stop = vi.fn(async () => ({ monitorId: "mon-1", state: "running", stopped: true }));
-    const result = await monitorStopToolRun({ monitor_id: "mon-1" }, { monitorsController: { start: vi.fn(), stop } });
+    const result = await monitorStopToolRun({ monitor_id: "mon-1" }, { ctx, monitorsController: { start: vi.fn(), stop } });
     expect(result.error).toBe(false);
     expect(result.text).toContain("one final wake");
     expect(JSON.parse(result.text.slice(result.text.indexOf("\n") + 1))).toEqual({
@@ -220,7 +221,7 @@ describe("MonitorStop", () => {
 
   it("treats an already-terminal monitor as an idempotent success", async () => {
     const stop = vi.fn(async () => ({ monitorId: "mon-1", state: "exited", stopped: false }));
-    const result = await monitorStopToolRun({ monitor_id: "mon-1" }, { monitorsController: { start: vi.fn(), stop } });
+    const result = await monitorStopToolRun({ monitor_id: "mon-1" }, { ctx, monitorsController: { start: vi.fn(), stop } });
     expect(result.error).toBe(false);
     expect(result.outcome.code).toBe("monitor_stop_accepted");
     expect(result.text).toContain("already in a terminal state");
@@ -230,15 +231,18 @@ describe("MonitorStop", () => {
   it("rejects a missing or oversized id before reaching the controller", async () => {
     const stop = vi.fn();
     const controller = { start: vi.fn(), stop };
-    expect((await monitorStopToolRun({}, { monitorsController: controller })).outcome.code).toBe("monitor_invalid");
-    expect((await monitorStopToolRun({ monitor_id: "x".repeat(257) }, { monitorsController: controller })).outcome.code)
+    expect((await monitorStopToolRun({}, { ctx, monitorsController: controller })).outcome.code).toBe("monitor_invalid");
+    expect((await monitorStopToolRun({ monitor_id: "x".repeat(257) }, { ctx, monitorsController: controller })).outcome.code)
       .toBe("monitor_invalid");
     expect(stop).not.toHaveBeenCalled();
   });
 
   it("errors without a controller instead of silently succeeding", async () => {
-    const result = await monitorStopToolRun({ monitor_id: "mon-1" }, {});
+    const result = await monitorStopToolRun({ monitor_id: "mon-1" }, { ctx,});
     expect(result.error).toBe(true);
     expect(result.outcome.code).toBe("monitor_unsupported");
   });
 });
+
+// Each test file binds its direct tool calls to an explicit context.
+const ctx = createToolContext();

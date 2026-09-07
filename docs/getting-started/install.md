@@ -41,7 +41,7 @@ Install the `create-mono-agent` installer globally to get the `mono-agent` comma
 npm i -g create-mono-agent
 ```
 
-`create-mono-agent` ships both a `create-mono-agent` and a `mono-agent` bin. The persistent `mono-agent` name forwards arguments unchanged to `@mono-agent/agent-app` (installed alongside it). The installer name treats a bare invocation or any invocation whose first argument is a flag as `init`, except that singleton `--help`/`-h` prints the `init` help topic and singleton `--version`/`-v` prints the shared `mono-agent <version>` identity. Explicit subcommands pass through. Prefer the scoped host directly? It also puts `mono-agent` on your `PATH` and additionally installs the `mono-agent-memory-recall` helper bin used by the memory recall tool:
+`create-mono-agent` ships both a `create-mono-agent` and a `mono-agent` bin. The persistent `mono-agent` name forwards arguments unchanged to `@mono-agent/agent-app` (installed alongside it). The installer name treats a bare invocation or any invocation whose first argument is a flag as `init`, except that singleton `--help`/`-h` prints the `init` help topic and singleton `--version`/`-v` prints the shared `mono-agent <version>` identity. Explicit subcommands pass through. Prefer the scoped host directly? It also puts `mono-agent` on your `PATH`; the memory recall tool is provided directly by the host:
 
 ```bash
 npm i -g @mono-agent/agent-app

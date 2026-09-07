@@ -241,24 +241,6 @@ describe("layerJsonOntoEnv", () => {
     expect(JSON.parse(layered.MONO_AGENT_PROVIDERS_JSON ?? "{}")).toEqual({ ollama: { type: "ollama" } });
   });
 
-  it("translates JSON runtime permission mode to env keys", () => {
-    const layered = layerJsonOntoEnv(
-      { runtime: { permissionMode: "bypassPermissions" } },
-      {},
-    );
-    expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("bypassPermissions");
-  });
-
-  it("lets env override JSON permission mode", () => {
-    const layered = layerJsonOntoEnv(
-      { runtime: { permissionMode: "bypassPermissions" } },
-      {
-        MONO_AGENT_PERMISSION_MODE: "default",
-      },
-    );
-    expect(layered.MONO_AGENT_PERMISSION_MODE).toBe("default");
-  });
-
   it("translates runtime.compaction JSON and lets env override individual fields", () => {
     const layered = layerJsonOntoEnv(
       {

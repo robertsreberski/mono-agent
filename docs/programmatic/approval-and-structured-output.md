@@ -11,7 +11,7 @@ and live in-flight input steering. The direct runtime APIs are **code-only**.
 The managed Slack, Telegram, and web-console hosts additionally expose live
 steering automatically when the selected backend supports it.
 
-The closest config-level lever is `runtime.permissionMode`, the declarative tool-permission posture for CLI backends. It is unrelated to the callback-driven approval gates below, but it is the right tool when you want a static posture rather than an interactive prompt — see [Execution effort & permissions](/runtime/execution-effort-permissions/) and [Tool policy](/tools/policy/).
+Use the direct tool policy and sandbox configuration for static restrictions. Programmatic approval callbacks below provide interactive tool approvals; see [Tool policy](/tools/policy/) and [Sandbox](/tools/sandbox/).
 
 ## Human-in-the-loop approval gates
 
@@ -87,19 +87,6 @@ backend-native approval seams.
 Use `approvalAlwaysAllowTools` for read-only tools so reviewers are only interrupted for genuinely risky actions. Pair it with `toolRiskTiers` so the bulk of your approval policy is declarative and `onToolApprovalRequest` only handles the cases that actually reach a human.
 :::
 
-### When to use `runtime.permissionMode` instead
-
-If you do not need interactive, per-call decisions, the config-level posture is simpler and requires no host code:
-
-```json
-{
-  "runtime": {
-    "permissionMode": "default"
-  }
-}
-```
-
-Env var: `MONO_AGENT_PERMISSION_MODE` (`default` / `plan` / `acceptEdits` / `bypassPermissions`). This is a static posture, but the Pi runtime does not consume it — supervision is driven by the direct tool policy and the per-call approval manager. See [Execution effort & permissions](/runtime/execution-effort-permissions/).
 
 ## Structured output
 
@@ -218,5 +205,5 @@ commands, and `AskUser` answers retain their existing non-steering paths.
 
 - [Composition](/programmatic/composition/) — building on `createMonoRuntime` and configured responders.
 - [Multi-agent](/programmatic/multi-agent/) — orchestrating collaborator responders.
-- [Execution effort & permissions](/runtime/execution-effort-permissions/) — config-level `permissionMode` (validated and forwarded, not consumed by the Pi runtime).
+- [Execution effort & permissions](/runtime/execution-effort-permissions/) — explicit effort, tool policy and enforced approval controls.
 - [Tool policy](/tools/policy/) — allow/deny lists and tool guards.

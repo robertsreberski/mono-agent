@@ -39,7 +39,6 @@ import type {
   RunSummary,
   RuntimeResultLike,
 } from "@mono-agent/observability";
-import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 import {
   createMonoRuntime,
   createPiOAuthApiKeyResolver,
@@ -119,6 +118,7 @@ import {
 import type { ProcessJobsServiceHandle } from "./process-jobs-service.js";
 import { activeProjectSkillSelections, isRetiredProjectSkillName } from "./project-skills.js";
 import { isReadSkillDenied } from "./skill-registry.js";
+import { loadPhoenixPlugin } from "./phoenix-plugin.js";
 import { loadSupermemoryPlugin } from "./supermemory-plugin.js";
 
 type StaticRuntimeOptions = NonNullable<AgentHarnessOptions["runtimeOptions"]>;
@@ -158,6 +158,8 @@ type AgentHarnessSessionOptionsWithEvents = NonNullable<AgentHarnessOptions["ses
 };
 
 export interface ConfiguredAgentHarnessOptions {
+  /** Managed workers resolve optional exporters only from their immutable app closure. */
+  readonly preferAppPluginInstall?: boolean;
   readonly config: MonoAgentConfig;
   /**
    * Canonical agent-root authority and plugin-resolution folder. Configured
@@ -217,7 +219,7 @@ export interface ConfiguredAgentHarnessOptions {
   };
   /** Best-effort exporter warnings (timeouts, transport failures). */
   readonly exporterWarn?: (warning: { phase: string; message: string }) => void;
-  /** Injection seam (tests); defaults to createPhoenixRunExporter. */
+  /** Injection seam (tests); production loads the configured optional Phoenix plugin. */
   readonly exporterFactory?: (config: PhoenixExporterConfig) => RunExporter;
 }
 
@@ -329,7 +331,10 @@ function composeRunRecorder(
   if (exporterCfg === undefined) {
     return jsonl;
   }
-  const exporter = (deps.exporterFactory ?? createPhoenixRunExporter)(exporterCfg);
+  if (deps.exporterFactory === undefined) {
+    throw new Error("Configured Phoenix exporter was not loaded before recorder creation.");
+  }
+  const exporter = deps.exporterFactory(exporterCfg);
   const context: RunExportContext = {
     runId: args.runId,
     conversationId: args.conversationId,
@@ -429,14 +434,23 @@ function withArtifactCommitHook(
 }
 
 /** Collect the recorder-composition deps from the host config + harness options. */
-function recorderCompositionDeps(
+async function recorderCompositionDeps(
   config: MonoAgentConfig,
   options: Pick<
     ConfiguredAgentHarnessOptions,
-    "observabilityContext" | "exporterWarn" | "exporterFactory"
+    "observabilityContext" | "exporterWarn" | "exporterFactory" | "cwd" | "preferAppPluginInstall"
   >,
   internalHooks: ConfiguredAgentInternalHooks = {},
-): RecorderCompositionDeps {
+): Promise<RecorderCompositionDeps> {
+  const exporters = config.observability?.exporters ?? [];
+  const exporterFactory = options.exporterFactory ?? (exporters.length === 0
+    ? undefined
+    : (await loadPhoenixPlugin({
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        ...(options.preferAppPluginInstall === undefined
+          ? {}
+          : { preferAppInstall: options.preferAppPluginInstall }),
+      })).createPhoenixRunExporter);
   const sourceLabel = options.observabilityContext?.sourceLabel ?? config.agent?.name;
   const observabilityContext = options.observabilityContext === undefined && sourceLabel === undefined
     ? undefined
@@ -446,12 +460,12 @@ function recorderCompositionDeps(
       };
   return {
     artifactDir: config.artifacts.dir,
-    exporters: config.observability?.exporters ?? [],
+    exporters,
     ...(observabilityContext === undefined
       ? {}
       : { observabilityContext }),
     ...(options.exporterWarn === undefined ? {} : { exporterWarn: options.exporterWarn }),
-    ...(options.exporterFactory === undefined ? {} : { exporterFactory: options.exporterFactory }),
+    ...(exporterFactory === undefined ? {} : { exporterFactory }),
     ...(internalHooks.onRunArtifactCommitted === undefined
       ? {}
       : { onRunArtifactCommitted: internalHooks.onRunArtifactCommitted }),
@@ -1000,6 +1014,7 @@ async function createConfiguredAgentHarnessInternal(
   internalHooks: ConfiguredAgentInternalHooks = {},
 ): Promise<AgentHarness> {
   const config = options.config;
+  const recording = await recorderCompositionDeps(config, options, internalHooks);
   const ownership = await acquireAgentRootOwnership(options.cwd ?? process.cwd());
   const agentRoot = ownership.agentRoot;
   let ownershipTransferred = false;
@@ -1083,7 +1098,12 @@ async function createConfiguredAgentHarnessInternal(
   // fallback-free runtime when no `memoryRuntime` is injected.
   const configuredMemory = options.memory ?? (await createConfiguredMemoryInternal(
     config,
-    { cwd: agentRoot },
+    {
+      cwd: agentRoot,
+      ...(options.preferAppPluginInstall === undefined
+        ? {}
+        : { preferAppPluginInstall: options.preferAppPluginInstall }),
+    },
     processJobsProtectionPosture,
   ));
   const memory = configuredMemoryForHarness(config, configuredMemory);
@@ -1318,7 +1338,7 @@ async function createConfiguredAgentHarnessInternal(
     toolPolicy: createToolPolicy(toolPolicyInput(config)),
     ...(harnessSandboxPolicy === undefined ? {} : { sandboxPolicy: harnessSandboxPolicy }),
     recorderFactory: ({ runId, conversationId, userInput, source, sourceDetail, isolated }) =>
-      composeRunRecorder(recorderCompositionDeps(config, options, internalHooks), {
+      composeRunRecorder(recording, {
         runId,
         conversationId,
         runKind: "channel",
@@ -1904,7 +1924,13 @@ async function createConfiguredMemoryInternal(
   const recording =
     deps.observability === undefined
       ? undefined
-      : recorderCompositionDeps(config, deps.observability);
+      : await recorderCompositionDeps(config, {
+          ...deps.observability,
+          ...(deps.cwd === undefined ? {} : { cwd: deps.cwd }),
+          ...(deps.preferAppPluginInstall === undefined
+            ? {}
+            : { preferAppPluginInstall: deps.preferAppPluginInstall }),
+        });
   const llm = configuredMemoryLlm(
     bujo,
     config,
@@ -2368,46 +2394,42 @@ function toolPolicyInput(config: MonoAgentConfig): ToolPolicyInput {
 }
 
 function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | undefined {
-  const { permissionMode, compaction } = config.runtime;
+  const { compaction } = config.runtime;
   // NOTE: there is intentionally no reasoning-summary runtime option. The sole pi
   // runtime (pi-native) derives reasoning from `effort` and does not consume an
   // explicit summary level, and the codex/claude CLIs emit summaries
   // unconditionally — so the former `piReasoningSummary` runtime option was dead
   // plumbing and the `runtime.reasoningSummary` config field was removed.
   const piNative = config.providers?.piNative;
-  // MCP call timeouts ride the runtime's `settings` bag (the same channel the
-  // agent loop reads via resolveAgentCompactionPolicy) — only when configured, so
-  // the runtime defaults (120s inactivity / 45 min total) stay authoritative.
+  // Typed MCP limits override runtime defaults only when explicitly configured.
   const { mcpCallTimeoutMs, mcpCallMaxTotalTimeoutMs } = config.tools;
   const webSearchConfig = config.tools.web?.search;
   const webFetchConfig = config.tools.web?.fetch;
-  const settings = mcpCallTimeoutMs === undefined && mcpCallMaxTotalTimeoutMs === undefined
+  const toolLimits = mcpCallTimeoutMs === undefined && mcpCallMaxTotalTimeoutMs === undefined
     ? undefined
     : {
-        ...(mcpCallTimeoutMs === undefined ? {} : { agent_mcp_call_timeout_ms: mcpCallTimeoutMs }),
+        ...(mcpCallTimeoutMs === undefined ? {} : { mcpCallTimeoutMs }),
         ...(mcpCallMaxTotalTimeoutMs === undefined
           ? {}
-          : { agent_mcp_call_max_total_timeout_ms: mcpCallMaxTotalTimeoutMs }),
+          : { mcpCallMaxTotalTimeoutMs }),
       };
   if (
-    permissionMode === undefined
-    && piNative?.transport === undefined
+    piNative?.transport === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
     && compaction === undefined
-    && settings === undefined
+    && toolLimits === undefined
     && webSearchConfig === undefined
     && webFetchConfig === undefined
   ) {
     return undefined;
   }
   return {
-    ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(compaction === undefined ? {} : { compaction }),
-    ...(settings === undefined ? {} : { settings }),
+    ...(toolLimits === undefined ? {} : { toolLimits }),
     ...(webSearchConfig === undefined ? {} : { webSearchConfig }),
     ...(webFetchConfig === undefined ? {} : { webFetchConfig }),
     ...(config.tools.web?.coordination === "host" ? { webRequestCoordinator: createHostWebRequestCoordinator() } : {}),

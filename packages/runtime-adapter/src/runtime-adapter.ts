@@ -253,7 +253,7 @@ export interface MonoRuntimeAttemptResolution {
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<
     RuntimeRunOptions,
-    "allowedTools" | "disallowedTools" | "permissionMode"
+    "allowedTools" | "disallowedTools"
   >>;
   readonly cleanup?: () => void | Promise<void>;
 }

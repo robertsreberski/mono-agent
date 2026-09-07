@@ -130,7 +130,7 @@ Env: `MONO_AGENT_FALLBACKS_JSON`. CLI: repeat `--fallback <ref>` and optionally 
 
 - [Providers](/runtime/providers/) — declaring providers, zero-config autodiscovery, and credential resolution.
 - [Local providers](/runtime/local-providers/) — declaring Ollama / LM Studio / OpenAI-compatible providers.
-- [Execution, effort & permissions](/runtime/execution-effort-permissions/) — `effort`, `permissionMode`.
+- [Execution, effort & permissions](/runtime/execution-effort-permissions/) — explicit effort, tool approvals, and sandbox controls.
 - [Fallback & failover](/runtime/fallback/) — ordered backup models.
 - [Sessions & concurrency](/runtime/sessions-concurrency/) — continuous vs per-message sessions and resume.
 - [Environment variables](/config/env-vars/) — `MONO_AGENT_MODEL` and friends.

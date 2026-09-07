@@ -9,7 +9,6 @@ import {
   serializeCaptureIntent,
   type CaptureIntent,
   type CaptureIntentAction,
-  type LegacyCaptureClockCorrection,
   type LegacyCaptureClockRepairIntent,
 } from "./capture-outbox.js";
 import { appendBullet } from "./daily.js";

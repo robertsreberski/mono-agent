@@ -184,20 +184,20 @@ describe("WebStore first-class cron channels", () => {
     // A cron message is inserted with real prose while its run is still going,
     // so indexing it at insert would freeze that first body: the channel would
     // keep matching narration it no longer contains.
-    store.reconcileCronRuns("agent-one", "daily:brief", [
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [
       cronRun({ runId, sequence: 1, status: "running", text: "alphaunique early narration" }),
-    ]);
+    ]).messages;
     expect(store.searchThreads({ sourceId: "agent-one", query: "alphaunique" }).hits).toEqual([]);
 
-    store.reconcileCronRuns("agent-one", "daily:brief", [
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [
       cronRun({ runId, sequence: 1, status: "running", text: "betaunique later narration" }),
-    ]);
+    ]).messages;
     expect(store.searchThreads({ sourceId: "agent-one", query: "alphaunique" }).hits).toEqual([]);
     expect(store.searchThreads({ sourceId: "agent-one", query: "betaunique" }).hits).toEqual([]);
 
-    store.reconcileCronRuns("agent-one", "daily:brief", [
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [
       cronRun({ runId, sequence: 1, status: "succeeded", text: "gammaunique final narration" }),
-    ]);
+    ]).messages;
     const settled = store.searchThreads({ sourceId: "agent-one", query: "gammaunique" });
     expect(settled.hits).toMatchObject([{ thread: { id: threadId } }]);
     // Only the settled text is searchable; no superseded body was ever indexed.
@@ -216,21 +216,21 @@ describe("WebStore first-class cron channels", () => {
 
     // The insert starts the count, which is exactly what a console that has
     // never seen a delta for this message holds.
-    const [inserted] = store.reconcileCronRuns("agent-one", "daily:brief", [
+    const [inserted] = store.reconcileCronRunsResult("agent-one", "daily:brief", [
       cronRun({ runId, sequence: 1, status: "running", text: "Early narration" }),
-    ]);
+    ]).messages;
     expect(inserted?.seq).toBe(0);
 
-    const [updated] = store.reconcileCronRuns("agent-one", "daily:brief", [
+    const [updated] = store.reconcileCronRunsResult("agent-one", "daily:brief", [
       cronRun({ runId, sequence: 1, status: "succeeded", text: "Final narration" }),
-    ]);
+    ]).messages;
     expect(updated?.seq).toBe(1);
 
     // A reconciliation that changes nothing writes nothing, so the version a
     // console holds stays valid.
-    const [unchanged] = store.reconcileCronRuns("agent-one", "daily:brief", [
+    const [unchanged] = store.reconcileCronRunsResult("agent-one", "daily:brief", [
       cronRun({ runId, sequence: 1, status: "succeeded", text: "Final narration" }),
-    ]);
+    ]).messages;
     expect(unchanged?.seq).toBe(1);
 
     // The delivery folds its text into the same run message.
@@ -261,7 +261,7 @@ describe("WebStore first-class cron channels", () => {
       sequence: 1,
       text: "Retained history",
     });
-    store.reconcileCronRuns("agent-one", "daily:brief", [run]);
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [run]).messages;
 
     store.syncCronOverview({
       sourceId: "agent-one",
@@ -521,7 +521,7 @@ describe("WebStore first-class cron channels", () => {
       sequence: 1,
       status: "admitted",
     });
-    store.reconcileCronRuns("agent-one", "daily:brief", [runFirst]);
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [runFirst]).messages;
     const runFirstDelivery = store.reserveNotification({
       sourceId: "agent-one",
       triggerKind: "cron",
@@ -531,13 +531,13 @@ describe("WebStore first-class cron channels", () => {
       text: "First digest",
     });
     store.completeNotification(runFirstDelivery);
-    store.reconcileCronRuns("agent-one", "daily:brief", [{
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [{
       ...runFirst,
       status: "succeeded",
       startedAt: "2026-08-14T10:00:01.000Z",
       completedAt: "2026-08-14T10:00:02.000Z",
       text: "First digest",
-    }]);
+    }]).messages;
 
     const deliveryFirst = cronRun({
       runId: "cron:daily%3Abrief:2026-08-14T10:10:00.000Z",
@@ -558,7 +558,7 @@ describe("WebStore first-class cron channels", () => {
       text: "Second digest",
     });
     store.completeNotification(deliveryFirstReservation);
-    store.reconcileCronRuns("agent-one", "daily:brief", [deliveryFirst]);
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [deliveryFirst]).messages;
 
     const messages = store.getThreadDetail(threadId)!.messages;
     expect(messages).toHaveLength(2);
@@ -870,7 +870,7 @@ describe("WebStore first-class cron channels", () => {
       status: "running",
       startedAt: "2026-08-14T10:00:01.000Z",
     });
-    initial.reconcileCronRuns("agent-one", "daily:brief", [runningCron]);
+    initial.reconcileCronRunsResult("agent-one", "daily:brief", [runningCron]).messages;
     const ordinaryThread = initial.createThread("agent-one");
     const ordinaryTurn = initial.beginTurn({
       threadId: ordinaryThread.id,
@@ -955,7 +955,7 @@ describe("WebStore first-class cron channels", () => {
       }),
       cronRun({ runId: "cron:daily%3Abrief:three", sequence: 3, status: "dropped" }),
     ];
-    store.reconcileCronRuns("agent-one", "daily:brief", [runs[2]!, runs[0]!, runs[1]!]);
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [runs[2]!, runs[0]!, runs[1]!]).messages;
     expect(store.storedCronRuns("agent-one", "daily:brief").runs.map((run) => run.sequence)).toEqual([3, 2, 1]);
     const feed = store.getThreadDetail(threadId)!.messages;
     expect(feed.map((message) => {
@@ -967,10 +967,10 @@ describe("WebStore first-class cron channels", () => {
         ? telemetry.data.sequence
         : undefined;
     })).toEqual([1, 2, 3]);
-    expect(() => store.reconcileCronRuns("agent-one", "daily:brief", [{
+    expect(() => store.reconcileCronRunsResult("agent-one", "daily:brief", [{
       ...runs[1]!,
       orderedAt: "2026-08-14T10:01:00.000Z",
-    }])).toThrowError(expect.objectContaining({ code: "invalid_cron_response" }));
+    }]).messages).toThrowError(expect.objectContaining({ code: "invalid_cron_response" }));
     store.close();
   });
 
@@ -985,18 +985,18 @@ describe("WebStore first-class cron channels", () => {
       sequence: 7,
       status: "admitted",
     });
-    store.reconcileCronRuns("agent-one", "daily:brief", [admitted]);
-    store.reconcileCronRuns("agent-one", "daily:brief", [{
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [admitted]).messages;
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [{
       ...admitted,
       status: "running",
       startedAt: "2026-08-14T10:00:01.000Z",
-    }]);
-    store.reconcileCronRuns("agent-one", "daily:brief", [{
+    }]).messages;
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [{
       ...admitted,
       status: "succeeded",
       startedAt: "2026-08-14T10:00:01.000Z",
       completedAt: "2026-08-14T10:00:02.000Z",
-    }]);
+    }]).messages;
 
     const messages = store.getThreadDetail(threadId)!.messages;
     expect(messages).toEqual([]);
@@ -1067,7 +1067,7 @@ describe("WebStore first-class cron channels", () => {
       text: "Bounded summary",
       fieldsTruncated: ["text"],
     });
-    store.reconcileCronRuns("agent-one", "daily:brief", [summary]);
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [summary]).messages;
     const detail: WebCronRun = {
       ...summary,
       projection: "detail",
@@ -1130,12 +1130,12 @@ describe("WebStore first-class cron channels", () => {
     const store = await WebStore.open({ stateDir: join(base, "state") });
     store.replaceAgents([agent()]);
     const threadId = syncCronJob(store).jobs[0]!.threadId;
-    store.reconcileCronRuns("agent-one", "daily:brief", [cronRun({
+    store.reconcileCronRunsResult("agent-one", "daily:brief", [cronRun({
       runId: "cron:daily%3Abrief:silent",
       sequence: 8,
       status: "succeeded",
       text: "  NOTHING_TO_REPORT  ",
-    })]);
+    })]).messages;
 
     expect(store.getThreadDetail(threadId)!.messages).toEqual([]);
     expect(store.storedCronRuns("agent-one", "daily:brief").runs).toHaveLength(1);
@@ -1201,7 +1201,7 @@ describe("silent cron projections", () => {
     const { store, thread } = await fixture();
     try {
       const run = cronRun({ runId: "transition", sequence: 1, status: "running" });
-      const message = store.reconcileCronRuns("agent-one", "daily:brief", [run])[0]!;
+      const message = store.reconcileCronRunsResult("agent-one", "daily:brief", [run]).messages[0]!;
       const silent = { ...run, status: "succeeded" as const, text: "NOTHING_TO_REPORT" };
       const before = store.getThread(thread)!;
       expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [silent])).toMatchObject({ changed: true, messages: [], writtenMessageIds: [] });
@@ -1243,9 +1243,9 @@ describe("silent cron projections", () => {
     const { store, thread } = await fixture();
     try {
       const run = cronRun({ runId: "truncated", sequence: 1, text: "NOTHING_TO_REPORT", fieldsTruncated: ["text"] });
-      expect(store.reconcileCronRuns("agent-one", "daily:brief", [run])).toHaveLength(1);
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [run]).messages).toHaveLength(1);
       const detail = { ...run, fieldsTruncated: [], projection: "detail" as const, events: [], eventsIncluded: 0 };
-      expect(store.reconcileCronRuns("agent-one", "daily:brief", [detail])).toEqual([]);
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [detail]).messages).toEqual([]);
       expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [{ ...run, text: "Checked a long list" }]).changed).toBe(false);
       expect(store.getThreadDetail(thread)!.messages).toEqual([]);
     } finally { store.close(); }
@@ -1255,7 +1255,7 @@ describe("silent cron projections", () => {
     const { store, thread } = await fixture();
     try {
       const run = cronRun({ runId: "rich", sequence: 1, status: "running" });
-      const message = store.reconcileCronRuns("agent-one", "daily:brief", [run])[0]!;
+      const message = store.reconcileCronRunsResult("agent-one", "daily:brief", [run]).messages[0]!;
       const rich = { type: "mcp_app", id: "11111111-1111-4111-8111-111111111111",
         invocationId: "11111111-1111-4111-8111-111111111111", connectionId: "connection", serverName: "widgets",
         toolName: "chart", resourceUri: "ui://widgets/chart", mediaType: "text/html;profile=mcp-app", protocolVersion: "2026-01-26" };
@@ -1263,8 +1263,8 @@ describe("silent cron projections", () => {
       db.prepare("UPDATE messages SET parts_json = ? WHERE id = ?").run(JSON.stringify([...message.parts, rich]), message.id);
       db.close();
       const silent = { ...run, status: "succeeded" as const, text: "NOTHING_TO_REPORT" };
-      expect(store.reconcileCronRuns("agent-one", "daily:brief", [silent])).toHaveLength(1);
-      expect(store.reconcileCronRuns("agent-one", "daily:brief", [{ ...silent, projection: "detail", events: [], eventsIncluded: 0 }])).toHaveLength(1);
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [silent]).messages).toHaveLength(1);
+      expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [{ ...silent, projection: "detail", events: [], eventsIncluded: 0 }]).messages).toHaveLength(1);
       expect(store.getThreadDetail(thread)!.messages[0]!.parts).toContainEqual(rich);
     } finally { store.close(); }
   });

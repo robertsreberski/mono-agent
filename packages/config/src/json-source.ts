@@ -140,7 +140,6 @@ export interface MonoAgentConfigJson extends SettingsJson {
       readonly maxBackoffMs?: number;
     };
     readonly effort?: string;
-    readonly permissionMode?: string;
     readonly maxTurns?: number;
     readonly compaction?: {
       readonly enabled?: boolean;
@@ -320,7 +319,7 @@ export async function readMonoAgentConfigJson(path: string): Promise<ReadMonoAge
  * Reject removed JSON fields before a host's generic unknown-key validation.
  *
  * Reports every retired key present, not just the first: migrating by hand is one edit
- * pass, and a config carrying all four retired keys used to surface them one re-run at a
+ * pass, and a config carrying multiple retired keys used to surface them one re-run at a
  * time. `path` stays the first match so existing single-key consumers are unchanged;
  * `paths` carries the full set.
  */

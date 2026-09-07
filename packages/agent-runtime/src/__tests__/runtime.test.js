@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.fn();
 const resolveRuntimeBridgeMock = vi.fn();
@@ -8,7 +8,6 @@ vi.mock("../ai/runtime/registry.js", () => ({
 }));
 
 const { createRuntime } = await import("../runtime.js");
-const { readToolRuntime, resetToolRuntime } = await import("../agent/tools/shared/runtime-context.js");
 
 function modelRef(provider, model) {
   return { provider, model, reference: `${provider}:${model}` };
@@ -18,12 +17,8 @@ beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
   resolveRuntimeBridgeMock.mockResolvedValue({ id: "stub", execute: executeMock });
-  resetToolRuntime();
 });
 
-afterEach(() => {
-  resetToolRuntime();
-});
 
 describe("createRuntime", () => {
   it("exposes run() and configureTools() and threads a per-instance tool context to bridge.execute", async () => {
@@ -49,7 +44,6 @@ describe("createRuntime", () => {
       ripgrepPath: "/usr/bin/rg",
       qaOutputDir: "/tmp/qa",
     });
-    expect(readToolRuntime().workspace).toBeUndefined();
   });
 
   it("ignores host keys it does not recognize when building the tool context", async () => {
@@ -74,10 +68,11 @@ describe("createRuntime", () => {
     expect(executeMock.mock.calls[0][1].toolContext).not.toBe(executeMock.mock.calls[1][1].toolContext);
   });
 
-  it("does not touch the global default tool runtime, regardless of host tool keys", () => {
-    createRuntime({ workspace: "/tmp/work", ripgrepPath: "/usr/bin/rg" });
-    expect(readToolRuntime().workspace).toBeUndefined();
-    expect(readToolRuntime().ripgrepPath).toBeUndefined();
+  it("rejects removed flat settings before resolving a provider", async () => {
+    const runtime = createRuntime();
+    await expect(runtime.run("sys", { model: modelRef("faux", "x"), settings: {} }))
+      .rejects.toThrow("runOptions.settings was removed");
+    expect(resolveRuntimeBridgeMock).not.toHaveBeenCalled();
   });
 
   it("run() throws without a model", async () => {
@@ -90,9 +85,7 @@ describe("createRuntime", () => {
     const runtime = createRuntime();
     const model = modelRef("anthropic", "claude-sonnet-4-6");
     await runtime.run("sys", { model, liveInput: false });
-    expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(model, {
-      liveInput: false,
-    });
+    expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(model);
   });
 
   it("run() defaults liveInput to false when omitted", async () => {
@@ -101,7 +94,6 @@ describe("createRuntime", () => {
     await runtime.run("sys", { model: modelRef("anthropic", "x") });
     expect(resolveRuntimeBridgeMock).toHaveBeenCalledWith(
       modelRef("anthropic", "x"),
-      { liveInput: false },
     );
   });
 
@@ -288,9 +280,6 @@ describe("createRuntime", () => {
     expect(ctxB.workspace).toBe("/tmp/b");
     expect(ctxA.runtimeBrand.schemaPrefix).toBe("aa");
     expect(ctxB.runtimeBrand.schemaPrefix).toBe("bb");
-    // Neither instance published anything to the process-global default context.
-    expect(readToolRuntime().workspace).toBeUndefined();
-    expect(readToolRuntime().runtimeBrand.schemaPrefix).toBe("agent_runtime");
   });
 
 describe("createRuntime subagent seam", () => {

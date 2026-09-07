@@ -93,27 +93,16 @@ export async function persistSuccessfulMemory(
       const memory = harnessOptions.memory;
       const summary = deterministicHostSummary(userMessage, assistantText, persistenceOptions);
       try {
-        const persistCompletedTurn = memory.persistCompletedTurn;
-        if (persistCompletedTurn !== undefined) {
-          // A strong store owns the entire write. Its stable run id makes a
-          // retry idempotent, and awaiting it keeps successful completion behind
-          // the store's admission boundary without replaying either legacy call.
-          await persistCompletedTurn.call(memory, {
-            runId: persistenceOptions.runId,
-            conversationId,
-            summary,
-            ...(mode === "capture"
-              ? { captureText: captureTurnText(userMessage, assistantText, persistenceOptions) }
-              : {}),
-          });
-        } else {
-          // Legacy stores retain the deterministic rapid log plus optional
-          // best-effort curation queue exactly as before.
-          await memory.appendHostSummary(conversationId, summary);
-          if (mode === "capture") {
-            memory.scheduleCapture?.(conversationId, captureTurnText(userMessage, assistantText, persistenceOptions));
-          }
-        }
+        // Harness construction guarantees write capability. Await the stable-run
+        // admission boundary before returning the already-successful provider answer.
+        await memory.persistCompletedTurn!({
+          runId: persistenceOptions.runId,
+          conversationId,
+          summary,
+          ...(mode === "capture"
+            ? { captureText: captureTurnText(userMessage, assistantText, persistenceOptions) }
+            : {}),
+        });
       } catch {
         // The provider answer already succeeded. Memory is additive and must
         // never retroactively turn that answer into a failed turn. Keep this

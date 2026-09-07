@@ -1,5 +1,13 @@
 import { types as nodeUtilTypes } from "node:util";
 
+export {
+  createLogRedactor,
+  isSafePrototypeInstance,
+  readSafeDataProperty,
+} from "./log-redaction.js";
+export type { LogRedactorOptions, LogRedactor, SecretSafeLogSink } from "./log-redaction.js";
+export { assertMatchingReplyAttachment, collectExactReplyArtifactBytes } from "./reply-artifacts.js";
+
 export * from "./provider-auth.js";
 
 export type AgentRequestMetadata = Record<string, unknown>;
@@ -58,7 +66,6 @@ export type {
   MemoryCompletedTurnResult,
   MemoryLoadOptions,
   MemoryStore,
-  MemoryWriteResult,
 } from "./memory.js";
 
 /**

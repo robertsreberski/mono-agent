@@ -1,3 +1,4 @@
+import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -258,11 +259,20 @@ describe("failed turn natural continuity", () => {
       memoryWriteMode: "capture",
       memory: {
         async load() { return undefined; },
-        async appendHostSummary(conversationId: string) {
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
           memoryWrites += 1;
-          return { conversationId, source: "test", bytesWritten: 1 };
+          if (turn.captureText !== undefined) {
+            memoryWrites += 1;
+          }
+          return {
+            source: "test",
+            bytesWritten: 1,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
         },
-        scheduleCapture() { memoryWrites += 1; },
       },
       createRunId: (() => {
         let index = 0;
@@ -337,9 +347,16 @@ describe("failed turn natural continuity", () => {
       memoryWriteMode: "append-host-summary",
       memory: {
         async load() { return undefined; },
-        async appendHostSummary(conversationId: string) {
+        async persistCompletedTurn(turn: MemoryCompletedTurn) {
           memoryWrites += 1;
-          return { conversationId, source: "test", bytesWritten: 1 };
+          return {
+            source: "test",
+            bytesWritten: 1,
+            id: turn.runId,
+            runId: turn.runId,
+            conversationId: turn.conversationId,
+            admissionStatus: "admitted" as const,
+          };
         },
       },
       createRunId: () => "empty-run",

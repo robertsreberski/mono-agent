@@ -10,7 +10,7 @@ import {
 import { dailyFilePath, readBullet } from "./daily.js";
 import {
   MAX_RECONCILIATION_TEXT_CODE_POINTS,
-  normalizeCandidateText,
+  normalizeReconciliationText,
   type CandidateMemory,
 } from "./distill.js";
 import { parseJsonExact, parseJsonLoose } from "./json.js";
@@ -55,10 +55,6 @@ export interface ReconcileDeps {
 }
 
 const VALID_ACTIONS = new Set(["add", "update", "supersede", "noop"]);
-
-function normalizeReconciliationText(value: unknown): string | undefined {
-  return normalizeCandidateText(value, "reconcile");
-}
 
 interface Classification {
   readonly action: string;

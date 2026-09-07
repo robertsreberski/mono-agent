@@ -86,7 +86,7 @@ The supported equivalents are:
   caller-defined native teammate profiles.
 
 For fallback chains, `resolveAttempt().policyOptions` may project only
-`allowedTools`, `disallowedTools`, and `permissionMode` for the route actually
+`allowedTools` and `disallowedTools` for the route actually
 being attempted. Every other logical request field remains protected and cannot
 be replaced through `resolveAttempt().options`.
 
@@ -135,7 +135,7 @@ provider kernel:
 | `src/types.ts` | Structural runtime, result, event, live-input, approval, and session contracts |
 | `src/sandbox*.ts` | Sandbox policy, managed SRT integrity, and command wrapping |
 | `src/local-providers.ts` | Ollama, LM Studio, and OpenAI-compatible provider validation/discovery |
-| `src/mcp-servers.ts` / `src/runtime-policies.ts` | MCP normalization and legacy-policy migration |
+| `src/mcp-servers.ts` | MCP normalization |
 | `src/process-jobs.ts` | Typed host controller, kernel-shape bridge, launch/result contracts, and conformance boundary |
 
 ## Public API
@@ -231,7 +231,6 @@ RuntimeMcpAppHost
 RuntimeMcpAppRegistration
 RuntimeMessage
 RuntimeModelReference
-RuntimePolicies
 RuntimePromptOverrides
 RuntimeResult
 RuntimeRunOptions
@@ -303,7 +302,6 @@ parseMonoRuntimeModelReference
 prepareSandboxedCommand
 protectSandboxRoots
 resolveModelEffortLevels
-resolveRuntimePolicies
 resolveSandboxEffectiveState
 runtimeBackendForModel
 runtimeOptionsForLocalProvider

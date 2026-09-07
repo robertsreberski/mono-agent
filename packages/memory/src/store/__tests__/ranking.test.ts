@@ -15,23 +15,18 @@ describe("rrfFuse", () => {
 });
 
 describe("reScore", () => {
-  it("ignores access recency while retaining salience and insight tie-breakers", () => {
-    const now = new Date("2026-06-15T00:00:00.000Z");
+  it("uses relevance with salience and insight tie-breakers", () => {
     const base = { rrfScore: 1, salience: 0.5, isInsight: false };
-    const old = reScore(base, DEFAULT_WEIGHTS, 0.995, new Date("2026-01-01T00:00:00.000Z"));
-    const fresh = reScore(base, DEFAULT_WEIGHTS, 0.995, now);
-    const insight = reScore({ ...base, isInsight: true }, DEFAULT_WEIGHTS, 0.995, now);
-    expect(fresh).toBe(old);
+    const fresh = reScore(base, DEFAULT_WEIGHTS);
+    const insight = reScore({ ...base, isInsight: true }, DEFAULT_WEIGHTS);
+    expect(fresh).toBe(1.005);
     expect(insight).toBeGreaterThan(fresh);
   });
 
   it("returns a finite score from relevance and bounded tie-breakers", () => {
-    const now = new Date("2026-06-15T00:00:00.000Z");
     const score = reScore(
       { rrfScore: 1, salience: 0.5, isInsight: false },
       DEFAULT_WEIGHTS,
-      0.995,
-      now,
     );
     expect(Number.isNaN(score)).toBe(false);
   });

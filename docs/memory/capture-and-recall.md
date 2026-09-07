@@ -79,9 +79,8 @@ Lite or Journal is refused before source mutation, because those tiers cannot pr
 BuJo run-derived ids and provider-bound replay contract. Start the current BuJo configuration to
 finish the durable intake before changing tiers.
 
-External `MemoryStore` implementations can opt into the same contract with
-`persistCompletedTurn`. Stores without it retain the legacy `appendHostSummary` plus optional
-`scheduleCapture` behavior. The bundled Supermemory backend implements the strong method as one
+External writable `MemoryStore` implementations must implement `persistCompletedTurn`.
+Read-only stores may omit it; the harness rejects enabled writing when the method is absent. The bundled Supermemory backend implements the strong method as one
 awaited, run-id-keyed remote upsert and propagates admission failure to the harness warning path.
 Within one store process, the 10,000 most recently completed or exactly retried run fingerprints
 are retained in a bounded LRU by default. An exact retained retry is returned as a duplicate
@@ -96,19 +95,12 @@ can therefore replace the remote document at the same stable id. That first requ
 new in-flight/local fingerprint, so its exact concurrent retries coalesce and concurrent
 alternatives still fail as conflicts.
 
-### Legacy BuJo capture compatibility
+### Direct integrations
 
-The bundled harness does not call `scheduleCapture` on `BujoMemoryStore`.
-Because the built-in store implements `persistCompletedTurn`, configured BuJo
-agents always use the strong branch described above; capture mode reaches the
-strict parser only after durable, run-idempotent admission.
-
-BuJo retains `scheduleCapture`, direct `capture()`, and the loose capture exports
-as explicit opt-in compatibility/composition surfaces for direct embedders and
-offline calibration tooling. No bundled host invokes them. Their best-effort
-queue is created only when a direct caller invokes `scheduleCapture`; it is absent
-during normal bundled host operation. New integrations should use
-`persistCompletedTurn` instead.
+The harness, direct embedders, and offline calibration use `persistCompletedTurn`.
+Capture mode reaches strict extraction after durable, run-idempotent admission.
+The legacy capture queue, direct `capture()` method, and loose capture exports have
+been removed. See the [migration guide](/reference/framework-simplification-migration/).
 
 ### Strict tier write behavior
 

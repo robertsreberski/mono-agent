@@ -22,7 +22,6 @@ import {
 import {
   assertCanonicalDailySourcePath,
   listCanonicalFileNames,
-  listCanonicalRootFileNames,
   readCanonicalFileSnapshot,
   removeCanonicalFile,
   writeCanonicalFileAtomic,

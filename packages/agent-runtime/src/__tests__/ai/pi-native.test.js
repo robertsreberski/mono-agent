@@ -1131,7 +1131,7 @@ describe("pi-native AgentHarness bridge", () => {
       // so the params are filled in purely from the resolved tool limits. The
       // configured clamps are set BELOW the pi-bridge fallbacks (16000 text /
       // 100 search) so the normalized params can only equal the configured values
-      // if settings-driven clamping reached the tool builder + display path.
+      // if typed policy clamping reached the tool builder + display path.
       faux.setResponses([
         fauxAssistantMessage([fauxToolCall("Grep", { pattern: "needle" }, { id: "g-1" })]),
         fauxAssistantMessage([fauxText("done")]),
@@ -1141,13 +1141,7 @@ describe("pi-native AgentHarness bridge", () => {
         cwd: root,
         allowedTools: ["Grep"],
         messages: [{ role: "user", content: "search" }],
-        settings: {
-          // Both below the pi-bridge fallbacks (16000 text / 100 search) AND
-          // within resolveAgentCompactionPolicy's clamp floors (>=1000 text,
-          // >=10 search) so they survive policy resolution verbatim.
-          agent_tool_text_limit_chars: 1000,
-          agent_search_result_limit: 25,
-        },
+        toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
         onEvent,
       }));
       expect(result.error).toBeNull();
@@ -1177,19 +1171,19 @@ describe("pi-native AgentHarness bridge", () => {
     expect(result.capabilitiesUsed.context_compaction_applied).toBe(false);
   });
 
-  it("reports context_compaction_applied as null when disabled via settings", async () => {
+  it("reports context_compaction_applied as null when disabled via typed policy", async () => {
     const model = setup();
     faux.setResponses([fauxAssistantMessage([fauxText("ok")])]);
     const result = await generatePiNativeResponse("system", runOptions(model, {
       messages: [{ role: "user", content: "hi" }],
-      settings: { agent_compaction_enabled: false },
+      compaction: { enabled: false },
     }));
     expect(result.error).toBeNull();
     expect(result.capabilitiesUsed.context_compaction_applied).toBeNull();
   });
 });
 
-describe("pi-native typed policy objects + deprecated settings shim", () => {
+describe("pi-native typed policy objects", () => {
   const deprecationWarnings = (result) =>
     (result.runtimeWarnings || []).filter((warning) => warning?.warning_kind === "deprecated_settings_option");
 
@@ -1232,27 +1226,11 @@ describe("pi-native typed policy objects + deprecated settings shim", () => {
     expect(deprecationWarnings(result)).toHaveLength(0);
   });
 
-  it("emits exactly one deprecated_settings_option warning (with the consumed keys) when settings is used", async () => {
-    const { result } = await grepClampRun({
-      settings: { agent_tool_text_limit_chars: 1000, agent_search_result_limit: 25 },
-    });
-    const warnings = deprecationWarnings(result);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0].settings_keys).toEqual(
-      expect.arrayContaining(["agent_tool_text_limit_chars", "agent_search_result_limit"]),
-    );
-  });
-
-  it("lets a typed toolLimits object win over settings for its group (settings ignored, no warning)", async () => {
-    const { result, toolUse } = await grepClampRun({
-      toolLimits: { toolTextLimitChars: 1000, searchResultLimit: 25 },
-      settings: { agent_tool_text_limit_chars: 5000, agent_search_result_limit: 77 },
-    });
-    // Typed object wins; the settings tool keys are ignored, so no group falls
-    // back to settings and no deprecation warning fires.
-    expect(toolUse.input.max_output_chars).toBe(1000);
-    expect(toolUse.input.head_limit).toBe(25);
-    expect(deprecationWarnings(result)).toHaveLength(0);
+  it("rejects the removed settings bag before provider or tool execution", async () => {
+    await expect(grepClampRun({ settings: { agent_tool_text_limit_chars: 1000 } }))
+      .rejects.toThrow("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
+    await expect(grepClampRun({ toolLimits: { toolTextLimitChars: 1000 }, settings: {} }))
+      .rejects.toThrow("runOptions.settings was removed");
   });
 
   it("emits no deprecation warning when neither settings nor typed objects are passed", async () => {
@@ -1579,7 +1557,7 @@ describe("pi-native auto-compaction", () => {
       piSessionsRoot: sessionsRoot,
       // Escape hatch: explicitly disable the correction to restore the prior
       // transcript-only trigger (under-counts overhead).
-      settings: { agent_compaction_fixed_overhead_enabled: false },
+      compaction: { fixedOverheadEnabled: false },
     }));
     expect(result.error).toBeNull();
     // Disabling overhead reproduces the prior under-counting behavior: the proactive

@@ -17,11 +17,8 @@ import {
   clearSessionsRegistryRoot as resolveClearSessionsRegistryRoot,
   conversationStatePurgePlanEntries,
   type ConversationStatePurgePlan,
-  type ConversationStatePurgeRoots,
   type ResolvedConversationStatePurgeRoot,
-  resolveAndAttestConversationStatePurgeRoot,
   resolveConversationStatePurgePlan,
-  resolveConversationStatePurgeRoots,
   sameFileSystemIdentity,
 } from "./conversation-state-roots.js";
 import { syncDirectory } from "./continuation-store-fs.js";
@@ -30,7 +27,6 @@ import {
   loadProcessJobsSettings,
   readProcessJobsConfigSnapshot,
   resolveProcessJobsRegistryWorkspace,
-  type ProcessJobsConfigSnapshot,
 } from "./process-jobs-config.js";
 import {
   assertProcessJobsRegistryDisjointFromPaths,
@@ -104,84 +100,6 @@ interface ClearSessionsDestructiveProtection {
   readonly processRegistry: ProcessJobsRootRegistryFreeze;
 }
 
-interface CurrentConversationStateRoots {
-  readonly snapshot: ProcessJobsConfigSnapshot;
-  readonly workspace: string;
-  readonly roots: ConversationStatePurgeRoots;
-}
-
-/**
- * Remove the durable pi-session store so the next start begins with fresh sessions
- * instead of resuming persisted transcripts. A no-op (`removed: false`) when no
- * on-disk store is configured (in-memory sessions) or the directory does not exist.
- *
- * The runtime recreates the directory on the next session, and the agent's durable
- * memory lives elsewhere (`memory.path`), so this drops only resumable conversation
- * transcripts — not the knowledge base. Stop the worker before calling this so it is
- * not writing sessions while they are deleted.
- */
-export async function purgeSessions(input: MonoAgentAppConfigInput): Promise<PurgeSessionsResult> {
-  return await withClearSessionsDestructiveProtection(input.cwd, async (protection) => {
-    const current = await resolveCurrentConversationStateRoots(input);
-    const root = current.roots.sessions === undefined
-      ? undefined
-      : await resolveAndAttestConversationStatePurgeRoot(
-          "Pi provider sessions",
-          current.roots.sessions,
-        );
-    return await purgeSessionsRoot(root, protection, current);
-  });
-}
-
-async function purgeSessionsRoot(
-  root: ResolvedConversationStatePurgeRoot | undefined,
-  protection: ClearSessionsDestructiveProtection,
-  current: CurrentConversationStateRoots,
-): Promise<PurgeSessionsResult> {
-  const roots = root === undefined ? [] : [root];
-  await assertStandalonePurgeProtected(protection, current, roots);
-  const inspected = await inspectSessionsRoot(root);
-  await securelyRemoveStandaloneRoots(
-    protection.registry,
-    roots.filter((candidate) => candidate.target !== undefined),
-    async () => await assertStandalonePurgeProtected(protection, current, roots),
-  );
-  return inspected;
-}
-
-/**
- * Remove the configured responder's canonical active-conversation history.
- * This root is separate from both run artifacts and `memory.path`; callers must
- * stop the worker first so no history transaction is active during deletion.
- */
-export async function purgeConversationHistory(
-  input: MonoAgentAppConfigInput,
-): Promise<PurgeConversationHistoryResult> {
-  return await withClearSessionsDestructiveProtection(input.cwd, async (protection) => {
-    const current = await resolveCurrentConversationStateRoots(input);
-    const root = await resolveAndAttestConversationStatePurgeRoot(
-      "durable session/tool history",
-      current.roots.history,
-    );
-    return await purgeConversationHistoryRoot(root, protection, current);
-  });
-}
-
-async function purgeConversationHistoryRoot(
-  root: ResolvedConversationStatePurgeRoot,
-  protection: ClearSessionsDestructiveProtection,
-  current: CurrentConversationStateRoots,
-): Promise<PurgeConversationHistoryResult> {
-  await assertStandalonePurgeProtected(protection, current, [root]);
-  const inspected = await inspectConversationHistoryRoot(root);
-  await securelyRemoveStandaloneRoots(
-    protection.registry,
-    root.target === undefined ? [] : [root],
-    async () => await assertStandalonePurgeProtected(protection, current, [root]),
-  );
-  return inspected;
-}
-
 async function inspectConversationHistoryRoot(
   root: ResolvedConversationStatePurgeRoot,
 ): Promise<PurgeConversationHistoryResult> {
@@ -216,35 +134,6 @@ async function inspectConversationHistoryRoot(
     }),
   };
   return { root: root.path, removed: true, messageHistory, toolHistory };
-}
-
-/** Revoke every durable ACP session id associated with the configured responder. */
-export async function purgeAcpSessionAuthorizations(
-  input: MonoAgentAppConfigInput,
-): Promise<PurgeAcpSessionAuthorizationsResult> {
-  return await withClearSessionsDestructiveProtection(input.cwd, async (protection) => {
-    const current = await resolveCurrentConversationStateRoots(input);
-    const root = await resolveAndAttestConversationStatePurgeRoot(
-      "ACP sessions",
-      current.roots.acpSessions,
-    );
-    return await purgeAcpSessionAuthorizationsRoot(root, protection, current);
-  });
-}
-
-async function purgeAcpSessionAuthorizationsRoot(
-  root: ResolvedConversationStatePurgeRoot,
-  protection: ClearSessionsDestructiveProtection,
-  current: CurrentConversationStateRoots,
-): Promise<PurgeAcpSessionAuthorizationsResult> {
-  await assertStandalonePurgeProtected(protection, current, [root]);
-  const inspected = await inspectAcpSessionAuthorizationsRoot(root);
-  await securelyRemoveStandaloneRoots(
-    protection.registry,
-    root.target === undefined ? [] : [root],
-    async () => await assertStandalonePurgeProtected(protection, current, [root]),
-  );
-  return inspected;
 }
 
 /** Clear every persisted conversation-continuity store while preserving memory and run artifacts. */
@@ -395,7 +284,6 @@ export function clearSessionsRegistryRoot(cwd: string): string {
 /** Generic, path-free model boundary: any pending or unsafe recovery state blocks execution. */
 export async function assertClearSessionsRecoveryResolved(cwd: string): Promise<void> {
   try {
-    const path = clearSessionsRegistryRoot(cwd);
     let registry: AttestedPrivateDirectory;
     try {
       registry = await attestStableRegistry(cwd);
@@ -408,59 +296,6 @@ export async function assertClearSessionsRecoveryResolved(cwd: string): Promise<
     if (entries.length !== 0) throw new Error("pending");
   } catch {
     throw new Error("Clear-sessions recovery is unresolved; run restart --clear-sessions before model execution.");
-  }
-}
-
-async function securelyRemoveStandaloneRoots(
-  registry: AttestedPrivateDirectory,
-  roots: readonly ResolvedConversationStatePurgeRoot[],
-  beforeFirstRename: () => Promise<void>,
-): Promise<void> {
-  for (const root of roots) {
-    if (pathsContainEachOther(registry.canonicalPath, root.canonicalPath)) {
-      throw new Error("Clear-sessions registry must be disjoint from every purge root.");
-    }
-  }
-  await securelyRemovePurgeRoots(roots, registry, {}, beforeFirstRename);
-}
-
-async function resolveCurrentConversationStateRoots(
-  input: MonoAgentAppConfigInput,
-): Promise<CurrentConversationStateRoots> {
-  const snapshot = await readProcessJobsConfigSnapshot(input);
-  const frozenInput = { ...input, env: { ...snapshot.env } };
-  const workspace = resolveProcessJobsRegistryWorkspace(snapshot, input.cwd);
-  const roots = await resolveConversationStatePurgeRoots(frozenInput, snapshot);
-  return { snapshot, workspace, roots };
-}
-
-async function assertStandalonePurgeProtected(
-  protection: ClearSessionsDestructiveProtection,
-  current: CurrentConversationStateRoots,
-  roots: readonly ResolvedConversationStatePurgeRoot[],
-): Promise<void> {
-  assertClearSessionsRegistryDisjointFromRoots(protection.registry, roots);
-  const processRegistry = await protection.processRegistry.reattest(current.workspace);
-  await Promise.all([
-    assertProcessJobsConfigSnapshotUnchanged(current.snapshot),
-    ...roots.map(assertConversationStatePurgeRootUnchanged),
-  ]);
-  assertProcessJobsRegistryDisjointFromPaths(
-    processRegistry,
-    clearSessionsDestructivePaths(protection.registry, roots),
-  );
-}
-
-function assertClearSessionsRegistryDisjointFromRoots(
-  registry: AttestedPrivateDirectory,
-  roots: readonly ResolvedConversationStatePurgeRoot[],
-): void {
-  for (const root of roots) {
-    if ([registry.path, registry.canonicalPath].some((registryPath) =>
-      [root.path, root.canonicalPath].some((rootPath) =>
-        pathsContainEachOther(registryPath, rootPath)))) {
-      throw new Error("Clear-sessions registry must be disjoint from every purge root.");
-    }
   }
 }
 

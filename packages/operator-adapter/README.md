@@ -172,6 +172,10 @@ server validates both, forwards the exact-run target to the responder, and moves
 the fallback identity onto a non-enumerable host-only metadata symbol so it
 cannot become prompt, history, or JSON wire content.
 
+The `@mono-agent/operator-adapter/client` subpath owns shared Node transport
+mechanics. Callers retain authentication, URL trust policy, error presentation,
+and their compatibility frame ceilings (1 MiB in TUI, 8 MiB in web).
+
 ### Package structure
 
 | Source module | Responsibility |
@@ -187,6 +191,8 @@ cannot become prompt, history, or JSON wire content.
 | API | Use it for |
 | --- | --- |
 | `startTuiAdapter` | Expose a structural responder over the conversational operator protocol. |
+| `readOperatorStreamFrames` / `operatorResponseFromFinishFrame` (`./client`) | Decode byte-bounded NDJSON and preserve multipart terminal responses. |
+| `fetchLongLivedTurn` / `fetchLongLivedHostWake` (`./client`) | Reuse the global dispatcher while disabling only the required inactivity timers. |
 | `TuiAdapterInfo` | Advertise identity, model choices, model-specific effort support, context windows, and an optional bounded skill registry. |
 | `loadTuiAdapterConfig` / `TUI_CONFIG_FIELDS` | Reuse the config-first host's `tui.*` validation and provenance metadata. |
 
@@ -250,12 +256,22 @@ redactTuiAdapterConfig
 startTuiAdapter
 ```
 
+**`@mono-agent/operator-adapter/client`**
+
+```text
+OperatorStreamFrameTooLargeError
+fetchLongLivedHostWake
+fetchLongLivedTurn
+operatorResponseFromFinishFrame
+readOperatorStreamFrames
+```
+
 <!-- public-api-inventory:end -->
 
 ## Dependency Boundary
 
 This adapter depends on Express plus shared `@mono-agent/agent-contracts`
-primitives. It must not depend on the agent harness, runtime adapter, operator
+primitives. Its Node client subpath uses Undici for long-lived requests. It must not depend on the agent harness, runtime adapter, operator
 surfaces, memory, observability, other communication adapters, or host composition
 code. Hosts compose it with structural responders.
 

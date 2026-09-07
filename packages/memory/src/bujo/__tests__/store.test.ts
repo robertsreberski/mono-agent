@@ -1,3 +1,4 @@
+import { projectSummary, projectCapture } from "./helpers.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -7,7 +8,7 @@ import { openMemoryDb, type MemoryRecord } from "../../store/index.js";
 import { fakeEmbeddings, fakeLlm } from "./helpers.js";
 import { writeCaptureIntent } from "../capture-outbox.js";
 import { createBujoMemoryStore } from "../store.js";
-import { appendBullet, dailyFilePath, normalizedContentHash } from "../daily.js";
+import { appendBullet, auditFilePath, dailyFilePath, normalizedContentHash } from "../daily.js";
 import { auditCanonicalGraphParity, appendGraphBatch } from "../index.js";
 import { parseDailyFile } from "../grammar.js";
 import { migrate } from "../migrate.js";
@@ -15,7 +16,7 @@ import { readBujoRuntimeSnapshot } from "../runtime-snapshot.js";
 import type { Bullet } from "../types.js";
 
 describe("BujoMemoryStore — tier derivation", () => {
-  it("lite tier: no embeddings → tier() === 'lite'; appendHostSummary + load work; capture() returns undefined", async () => {
+  it("lite tier: no embeddings → tier() === 'lite'; completed-turn summary and recall work", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-lite-"));
     const now = new Date("2026-06-16T09:00:00.000Z");
     // No embeddings — FTS-only store
@@ -23,33 +24,37 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     expect(store.tier()).toBe("lite");
 
-    await store.appendHostSummary("s1", "Morgan's memory preference is opt-in.");
+    await projectSummary(store, "s1", "Morgan's memory preference is opt-in.");
     const block = await store.load("What is Morgan's memory preference?");
     // FTS recall: keyword must appear in the block
     expect(block?.content).toContain("memory preference is opt-in");
 
-    expect(await store.capture("s1", "some text")).toBeUndefined();
+    await projectCapture(store, "s1", "some text");
+    expect(store.queueSnapshot().intake).toMatchObject({ resolved: 2, pending: 0, dead: 0 });
+    expect(parseDailyFile(readFileSync(dailyFilePath(root, now), "utf8")).bullets.map(({ text }) => text)).toContain("some text");
 
     await store.close();
   });
 
-  it("journal tier: embeddings + no llm → tier() === 'journal'; load works; capture() undefined", async () => {
+  it("journal tier: embeddings + no llm → tier() === 'journal'; completed-turn summary and recall work", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-journal-"));
     const now = new Date("2026-06-16T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
 
     expect(store.tier()).toBe("journal");
 
-    await store.appendHostSummary("s1", "Morgan's weekly review status is complete.");
+    await projectSummary(store, "s1", "Morgan's weekly review status is complete.");
     const block = await store.load("What is Morgan's weekly review status?");
     expect(block?.content).toContain("weekly review");
 
-    expect(await store.capture("s1", "some text")).toBeUndefined();
+    await projectCapture(store, "s1", "some text");
+    expect(store.queueSnapshot().intake).toMatchObject({ resolved: 2, pending: 0, dead: 0 });
+    expect(parseDailyFile(readFileSync(dailyFilePath(root, now), "utf8")).bullets.map(({ text }) => text)).toContain("some text");
 
     await store.close();
   });
 
-  it("bujo tier: embeddings + llm → tier() === 'bujo'; capture() returns {actions, entities}", async () => {
+  it("bujo tier: embeddings + llm → tier() === 'bujo'; completed-turn capture curates memories", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-tier-bujo-"));
     const now = new Date("2026-06-16T09:00:00.000Z");
     const llm = fakeLlm([
@@ -66,9 +71,8 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     expect(store.tier()).toBe("bujo");
 
-    const result = await store.capture("s1", "Morgan prefers morning routines for focus.");
-    expect(result).toBeDefined();
-    expect(result?.actions).toBeGreaterThanOrEqual(1);
+    await projectCapture(store, "s1", "Morgan prefers morning routines for focus.");
+    expect(store.queueSnapshot().intake?.resolved).toBe(1);
 
     await store.flush();
     const running = readBujoRuntimeSnapshot(root);
@@ -83,11 +87,8 @@ describe("BujoMemoryStore — tier derivation", () => {
         counters: { embeddingCalls: 2, embeddingTexts: 2, llmCalls: 1 },
       },
     });
-    expect(running.snapshot?.queues.capture).toBeUndefined();
+    expect(running.snapshot?.queues.intake?.resolved).toBe(1);
 
-    // Activate the retained compatibility queue explicitly so the closed-snapshot schema check
-    // below still proves that queue metadata cannot grow a private payload field.
-    store.scheduleCapture("legacy-direct", "Explicit compatibility capture");
     await store.flush();
     await store.close();
     expect(readBujoRuntimeSnapshot(root)).toMatchObject({
@@ -98,9 +99,9 @@ describe("BujoMemoryStore — tier derivation", () => {
 
     const runtimePath = join(root, ".index", "runtime.json");
     const injected = JSON.parse(readFileSync(runtimePath, "utf8")) as {
-      queues: { capture: Record<string, unknown> };
+      queues: { intake: Record<string, unknown> };
     };
-    injected.queues.capture["privateText"] = "must never pass through audit";
+    injected.queues.intake["privateText"] = "must never pass through audit";
     writeFileSync(runtimePath, `${JSON.stringify(injected)}\n`, "utf8");
     expect(readBujoRuntimeSnapshot(root)).toEqual({
       available: false,
@@ -364,9 +365,9 @@ describe("BujoMemoryStore — tier derivation", () => {
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
 
     expect(store.tier()).toBe("journal");
-    await store.appendHostSummary("s1", "Morgan prefers opt-in memory.");
+    await projectSummary(store, "s1", "Morgan prefers opt-in memory.");
     now = new Date("2026-06-02T09:00:00.000Z");
-    await store.appendHostSummary("s2", "morgan prefers opt in memory");
+    await projectSummary(store, "s2", "morgan prefers opt in memory");
     now = new Date("2026-07-06T09:00:00.000Z");
 
     const result = await store.consolidate();
@@ -382,12 +383,12 @@ describe("BujoMemoryStore — tier derivation", () => {
 });
 
 describe("BujoMemoryStore", () => {
-  it("appendHostSummary writes a canonical daily bullet and indexes it", async () => {
+  it("completed-turn summary projects a canonical daily bullet and indexes it", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-"));
     const now = new Date("2026-06-15T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
 
-    const result = await store.appendHostSummary("global", "Morgan's memory preference is opt-in.");
+    const result = await projectSummary(store, "global", "Morgan's memory preference is opt-in.");
     expect(result.bytesWritten).toBeGreaterThan(0);
 
     const file = readFileSync(dailyFilePath(root, now), "utf8");
@@ -406,7 +407,7 @@ describe("BujoMemoryStore", () => {
     // No hits → no block (a header-only block carries no signal).
     expect(await store.load("global")).toBeUndefined();
     // With a hit, load returns a markdown block.
-    await store.appendHostSummary("s1", "Morgan's memory preference is opt-in.");
+    await projectSummary(store, "s1", "Morgan's memory preference is opt-in.");
     const block = await store.load("What is Morgan's memory preference?");
     expect(block?.kind).toBe("markdown");
     expect(block?.content).toContain("memory preference is opt-in");
@@ -416,7 +417,7 @@ describe("BujoMemoryStore", () => {
   it("loads a qualifying block from a read-only store without access writes", async () => {
     const root = tmpRoot();
     const writable = createBujoMemoryStore({ root });
-    await writable.appendHostSummary("seed", "Morgan's memory preference is opt-in.");
+    await projectSummary(writable, "seed", "Morgan's memory preference is opt-in.");
     await writable.close();
 
     const readOnly = createBujoMemoryStore({ root, readOnly: true });
@@ -435,16 +436,16 @@ describe("BujoMemoryStore", () => {
     }
   });
 
-  it("appends multiple summaries: both indexed, single daily header, bytesWritten counts the bullet line", async () => {
+  it("appends multiple summaries: both indexed, single daily header, bytesWritten counts durable admission", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-"));
     const now = new Date("2026-06-15T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
 
     const summary = "Morgan's memory preference is opt-in.";
-    const r1 = await store.appendHostSummary("s1", summary);
-    await store.appendHostSummary("s2", "lunch was pizza on tuesday");
+    const r1 = await projectSummary(store, "s1", summary);
+    await projectSummary(store, "s2", "lunch was pizza on tuesday");
 
-    // bytesWritten reflects the serialized bullet line (incl. metadata comment), not the raw summary.
+    // bytesWritten reflects durable intake metadata plus the host summary.
     expect(r1.bytesWritten).toBeGreaterThan(Buffer.byteLength(summary, "utf8"));
 
     const file = readFileSync(dailyFilePath(root, now), "utf8");
@@ -461,7 +462,7 @@ describe("BujoMemoryStore", () => {
     const now = new Date("2026-06-15T09:00:00.000Z");
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now });
     const multiline = "User asked about memory.\nAssistant proposed opt-in mode.\nAction: drafted the spec.";
-    await expect(store.appendHostSummary("s1", multiline)).resolves.toBeDefined();
+    await expect(projectSummary(store, "s1", multiline)).resolves.toBeDefined();
     const parsed = parseDailyFile(readFileSync(dailyFilePath(root, now), "utf8"));
     expect(parsed.bullets).toHaveLength(1);
     expect(parsed.bullets[0]?.text).not.toContain("\n");
@@ -469,7 +470,7 @@ describe("BujoMemoryStore", () => {
     await store.close();
   });
 
-  it("capture() with llm: extracts+reconciles; memories are recallable and entity present", async () => {
+  it("completed-turn capture extracts, reconciles, and makes memories recallable", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-capture-"));
     const now = new Date("2026-06-15T10:00:00.000Z");
 
@@ -492,10 +493,9 @@ describe("BujoMemoryStore", () => {
 
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64, clock: () => now, llm });
 
-    const result = await store.capture("s1", "Morgan prefers opt-in memory, never silent fallback.");
-    expect(result).toBeDefined();
-    expect(result?.actions).toBeGreaterThanOrEqual(1);
-    expect(result?.entities).toBe(1);
+    await projectCapture(store, "s1", "Morgan prefers opt-in memory, never silent fallback.");
+    expect(store.queueSnapshot().intake?.resolved).toBe(1);
+
 
     // Captured memory must be recallable via load()
     const block = await store.load("s1", "What is Morgan's memory preference?");
@@ -504,11 +504,25 @@ describe("BujoMemoryStore", () => {
     await store.close();
   });
 
-  it("capture() without llm returns undefined", async () => {
+  it("completed-turn capture without an llm persists only its summary", async () => {
     const root = mkdtempSync(join(tmpdir(), "bujo-store-nollm-"));
     const store = createBujoMemoryStore({ root, embeddings: fakeEmbeddings(64), dim: 64 });
-    const result = await store.capture("s1", "some text that would be captured if llm was set");
-    expect(result).toBeUndefined();
+    const summary = "Deterministic summary remains durable without a capture model.";
+    const admission = await store.persistCompletedTurn({
+      runId: "no-model-capture", conversationId: "s1", summary,
+      captureText: "A different detailed conversation that must not become a curated fact.",
+    });
+    await store.flush();
+    const receipt = JSON.parse(readFileSync(join(root, ".capture-intake", "resolved", `${admission.id}.json`), "utf8"));
+    expect(receipt).toMatchObject({ state: "resolved", outcome: "summary_only" });
+    expect(parseDailyFile(readFileSync(dailyFilePath(root, new Date()), "utf8")).bullets.map(({ text }) => text)).toEqual([summary]);
+    const db = openMemoryDb({ path: join(root, "memory.db"), readOnly: true });
+    try {
+      expect(db.allMemories().map(({ text }) => text)).toEqual([summary]);
+      expect(db.countEntities()).toBe(0);
+    } finally {
+      db.close();
+    }
     await store.close();
   });
 
@@ -558,7 +572,6 @@ describe("BujoMemoryStore", () => {
 
     const result = await store.migrate();
 
-    expect(result).toBeDefined();
     expect(result?.reviewed).toBeGreaterThanOrEqual(1);
     expect(result?.forgotten).toBe(1);
 
@@ -572,8 +585,8 @@ describe("BujoMemoryStore", () => {
 describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
   it("recalls against the query argument, not the conversation id", async () => {
     const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-q-")) });
-    await store.appendHostSummary("c1", "The launch date is March 3rd.");
-    await store.appendHostSummary("c1", "Team lunch was pizza on Tuesday.");
+    await projectSummary(store, "c1", "The launch date is March 3rd.");
+    await projectSummary(store, "c1", "Team lunch was pizza on Tuesday.");
 
     // The query drives recall even when the conversation id shares nothing with the memories.
     const block = await store.load("unrelated-conversation-id", "When is the launch date?");
@@ -585,14 +598,14 @@ describe("BujoMemoryStore — recall query (load 2nd arg)", () => {
 
   it("skips recall (returns undefined) when the query is empty/whitespace", async () => {
     const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-empty-")) });
-    await store.appendHostSummary("c1", "The launch date is March 3rd.");
+    await projectSummary(store, "c1", "The launch date is March 3rd.");
     expect(await store.load("c1", "   ")).toBeUndefined();
     await store.close();
   });
 
   it("falls back to the conversation id as a coarse seed when no query is supplied (back-compat)", async () => {
     const store = createBujoMemoryStore({ root: mkdtempSync(join(tmpdir(), "bujo-recall-seed-")) });
-    await store.appendHostSummary("c1", "The launch date is March 3rd.");
+    await projectSummary(store, "c1", "The launch date is March 3rd.");
     const block = await store.load("When is the launch date?");
     expect(block?.content).toContain("launch");
     await store.close();
@@ -624,397 +637,11 @@ function recordingLlm(order: string[], opts: { throwOnText?: string } = {}): Llm
   };
 }
 
-describe("BujoMemoryStore async capture queue", () => {
-  it("allocates the legacy queue only after an explicit scheduleCapture call", async () => {
-    const store = createBujoMemoryStore({
-      root: tmpRoot(),
-      tier: "bujo",
-      embeddings: fakeEmbeddings(64),
-      dim: 64,
-      llm: recordingLlm([]),
-    });
-
-    expect(store.queueSnapshot().capture).toBeUndefined();
-    store.scheduleCapture("legacy-direct", "Explicit compatibility capture");
-    expect(store.queueSnapshot().capture).toBeDefined();
-    await store.flush();
-    await store.close();
-  });
-
-  it("serializes concurrent direct captures so the second replans without stranding an intent", async () => {
-    const root = tmpRoot();
-    const now = new Date("2026-06-15T12:00:00.000Z");
-    const bullet = journalBullet("CAPTURE-SERIAL", "Morgan prefers blue green deployments", now);
-    appendBullet(root, bullet, now);
-    const seedDb = openMemoryDb({ path: join(root, "memory.db"), embeddings: fakeEmbeddings(64), dim: 64 });
-    await seedDb.upsert({
-      ...bullet,
-      accessCount: 0,
-      tags: [],
-      source: { file: relative(root, dailyFilePath(root, now)) },
-    });
-    seedDb.close();
-
-    const firstText = "Morgan prefers reviewed blue green deployments";
-    const secondText = "Morgan prefers canary blue green deployments";
-    let extractionCalls = 0;
-    let enterFirst!: () => void;
-    let releaseFirst!: () => void;
-    const firstEntered = new Promise<void>((resolve) => { enterFirst = resolve; });
-    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const llm: LlmComplete = {
-      id: "concurrent-direct-capture",
-      complete: async (prompt, options) => {
-        if (options?.label === "capture:extract") {
-          extractionCalls += 1;
-          if (extractionCalls === 1) {
-            enterFirst();
-            await firstGate;
-          }
-          const text = prompt.includes("SECOND") ? secondText : firstText;
-          return JSON.stringify({
-            memories: [{ type: "note", text, salience: 0.8, isInsight: false, entityIds: [] }],
-            entities: [],
-            relations: [],
-          });
-        }
-        if (options?.label === "capture:reconcile-batch") {
-          const text = prompt.includes(secondText) ? secondText : firstText;
-          return JSON.stringify([{
-            index: 0,
-            action: "update",
-            targetId: "CAPTURE-SERIAL",
-            text,
-          }]);
-        }
-        throw new Error(`unexpected LLM call ${options?.label ?? "unlabelled"}`);
-      },
-    };
-    const store = createBujoMemoryStore({
-      root,
-      tier: "bujo",
-      embeddings: fakeEmbeddings(64),
-      dim: 64,
-      llm,
-      clock: () => now,
-    });
-    const completionOrder: string[] = [];
-    const first = store.capture("first", "FIRST capture turn").then((result) => {
-      completionOrder.push("first");
-      return result;
-    });
-    await firstEntered;
-    const second = store.capture("second", "SECOND capture turn").then((result) => {
-      completionOrder.push("second");
-      return result;
-    });
-    await Promise.resolve();
-    expect(extractionCalls).toBe(1);
-
-    releaseFirst();
-    await expect(Promise.all([first, second])).resolves.toEqual([
-      { actions: 1, entities: 0 },
-      { actions: 1, entities: 0 },
-    ]);
-    expect(completionOrder).toEqual(["first", "second"]);
-    expect(extractionCalls).toBe(2);
-    expect(readdirSync(join(root, ".capture-outbox"))).toEqual([]);
-    await store.close();
-
-    const restarted = createBujoMemoryStore({
-      root,
-      tier: "bujo",
-      embeddings: fakeEmbeddings(64),
-      dim: 64,
-      llm: fakeLlm([]),
-      clock: () => now,
-    });
-    await restarted.close();
-    const inspected = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
-    expect(inspected.get("CAPTURE-SERIAL")?.text).toBe(secondText);
-    inspected.close();
-  });
-
-  it("keeps a direct capture behind an in-flight scheduled capture for the same root", async () => {
-    const root = tmpRoot();
-    let calls = 0;
-    let enterScheduled!: () => void;
-    let releaseScheduled!: () => void;
-    const scheduledEntered = new Promise<void>((resolve) => { enterScheduled = resolve; });
-    const scheduledGate = new Promise<void>((resolve) => { releaseScheduled = resolve; });
-    const order: string[] = [];
-    const llm: LlmComplete = {
-      id: "scheduled-direct-serializer",
-      complete: async (prompt, options) => {
-        if (options?.label !== "capture:extract") throw new Error(`unexpected ${options?.label ?? "unlabelled"}`);
-        calls += 1;
-        const tag = prompt.includes("SCHEDULED") ? "scheduled" : "direct";
-        order.push(`start:${tag}`);
-        if (tag === "scheduled") {
-          enterScheduled();
-          await scheduledGate;
-        }
-        order.push(`finish:${tag}`);
-        return JSON.stringify({ memories: [], entities: [], relations: [] });
-      },
-    };
-    const store = createBujoMemoryStore({
-      root,
-      tier: "bujo",
-      embeddings: fakeEmbeddings(64),
-      dim: 64,
-      llm,
-    });
-    store.scheduleCapture("scheduled", "SCHEDULED capture");
-    await scheduledEntered;
-    const direct = store.capture("direct", "DIRECT capture");
-    await Promise.resolve();
-    expect(calls).toBe(1);
-
-    releaseScheduled();
-    await expect(direct).resolves.toEqual({ actions: 0, entities: 0 });
-    await store.flush();
-    expect(order).toEqual([
-      "start:scheduled",
-      "finish:scheduled",
-      "start:direct",
-      "finish:direct",
-    ]);
-    await store.close();
-  });
-
-  it("keeps raw host audit and recall off the blocked curated-capture path", async () => {
-    const root = tmpRoot();
-    const embeddings = fakeEmbeddings(64);
-    const seedAt = new Date("2026-06-15T12:00:00.000Z");
-    appendBullet(root, {
-      id: "FAST-RECALL",
-      type: "note",
-      status: "open",
-      text: "The stable recall sentinel remains available",
-      salience: 0.8,
-      isInsight: false,
-      createdAt: seedAt.toISOString(),
-      refs: [],
-    }, seedAt);
-    const seedDb = openMemoryDb({ path: join(root, "memory.db"), embeddings, dim: 64 });
-    await seedDb.upsert({
-      id: "FAST-RECALL",
-      type: "note",
-      status: "open",
-      text: "The stable recall sentinel remains available",
-      salience: 0.8,
-      isInsight: false,
-      createdAt: seedAt.toISOString(),
-      accessCount: 0,
-      tags: [],
-      source: { file: relative(root, dailyFilePath(root, seedAt)) },
-    });
-    seedDb.close();
-    let enterCapture!: () => void;
-    let releaseCapture!: () => void;
-    const captureEntered = new Promise<void>((resolve) => { enterCapture = resolve; });
-    const captureGate = new Promise<void>((resolve) => { releaseCapture = resolve; });
-    const store = createBujoMemoryStore({
-      root,
-      tier: "bujo",
-      embeddings,
-      dim: 64,
-      llm: {
-        id: "blocked-curation",
-        complete: async (_prompt, options) => {
-          if (options?.label !== "capture:extract") throw new Error(`unexpected ${options?.label ?? "unlabelled"}`);
-          enterCapture();
-          await captureGate;
-          return JSON.stringify({ memories: [], entities: [], relations: [] });
-        },
-      },
-    });
-    const capturing = store.capture("blocked", "BLOCKED curated capture");
-    await captureEntered;
-
-    const criticalPath = Promise.all([
-      store.appendHostSummary("fast", "The compact raw audit must not wait for curation."),
-      store.recall("stable recall sentinel", { topK: 3, trackAccess: false }),
-    ]);
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timeout = setTimeout(() => reject(new Error("raw audit or recall waited behind capture")), 250);
-    });
-    const [raw, hits] = await Promise.race([criticalPath, deadline]).finally(() => {
-      if (timeout !== undefined) clearTimeout(timeout);
-    });
-    expect(readFileSync(raw.source, "utf8")).toContain("compact raw audit must not wait");
-    expect(hits.some((hit) => hit.record.id === "FAST-RECALL")).toBe(true);
-
-    releaseCapture();
-    await expect(capturing).resolves.toEqual({ actions: 0, entities: 0 });
-    await store.close();
-  });
-
-  it("scheduleCapture runs captures serially (no interleaving) and flush awaits them", async () => {
-    const order: string[] = []; // every LLM call pushes its turn tag (FIRST/SECOND)
-    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm: recordingLlm(order) });
-    store.scheduleCapture("c1", "FIRST user text");
-    store.scheduleCapture("c1", "SECOND user text");
-    await store.flush();
-    // Serialized ⇒ ALL of FIRST's calls precede ALL of SECOND's (the last FIRST < the first SECOND).
-    const firstTags = order.map((t, i) => (t.includes("FIRST") ? i : -1)).filter((i) => i >= 0);
-    const secondTags = order.map((t, i) => (t.includes("SECOND") ? i : -1)).filter((i) => i >= 0);
-    expect(firstTags.length).toBeGreaterThan(0);
-    expect(secondTags.length).toBeGreaterThan(0);
-    expect(Math.max(...firstTags)).toBeLessThan(Math.min(...secondTags));
-    await store.close();
-  });
-
-  it("a throwing capture is swallowed and does not block the next capture", async () => {
-    const order: string[] = [];
-    const warnings: string[] = [];
-    const llm: LlmComplete = {
-      id: "poison-then-healthy",
-      complete: async (prompt) => {
-        if (prompt.includes("POISON")) throw new Error("boom");
-        if (prompt.includes("HEALTHY")) order.push("capture:HEALTHY");
-        return JSON.stringify({ memories: [], entities: [], relations: [] });
-      },
-    };
-    const store = createBujoMemoryStore({
-      root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64,
-      llm,
-      logger: { warn: (m) => warnings.push(m) },
-    });
-    store.scheduleCapture("c1", "POISON text");
-    store.scheduleCapture("c1", "HEALTHY text");
-    await expect(store.flush()).resolves.toBeUndefined();
-    expect(warnings.some((w) => /capture/i.test(w))).toBe(true);
-    expect(order.some((t) => t.includes("HEALTHY"))).toBe(true);
-    await store.close();
-  });
-
-  it("a throw in the logging path does not permanently disable the capture chain", async () => {
-    const order: string[] = [];
-    const llm: LlmComplete = {
-      id: "poison-then-healthy",
-      complete: async (prompt) => {
-        if (prompt.includes("POISON")) throw new Error("boom");
-        if (prompt.includes("HEALTHY")) order.push("capture:HEALTHY");
-        return JSON.stringify({ memories: [], entities: [], relations: [] });
-      },
-    };
-    const store = createBujoMemoryStore({
-      root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64,
-      llm,
-      // The logger itself throws — without the terminal guard this would reject captureChain and
-      // silently stop every future capture.
-      logger: { warn: () => { throw new Error("logger exploded"); } },
-    });
-    store.scheduleCapture("c1", "POISON text");
-    store.scheduleCapture("c1", "HEALTHY text");
-    await expect(store.flush()).resolves.toBeUndefined();
-    expect(order.some((t) => t.includes("HEALTHY"))).toBe(true);
-    await store.close();
-  });
-
-  it("scheduleCapture is a no-op without an llm (lite/journal)", async () => {
-    const store = createBujoMemoryStore({ root: tmpRoot() }); // lite
-    expect(() => store.scheduleCapture("c1", "x")).not.toThrow();
-    await expect(store.flush()).resolves.toBeUndefined();
-    await store.close();
-  });
-
-  it("scheduleCapture surfaces a REAL model failure through the logger (not silent)", async () => {
-    // A throwing capture model reaches scheduleCapture's catch and is logged with the underlying
-    // cause, so an operator can tell "the model failed" from "nothing to capture".
-    const warnings: string[] = [];
-    const throwingLlm: LlmComplete = { id: "throws", complete: async () => { throw new Error("ollama down"); } };
-    const store = createBujoMemoryStore({
-      root: tmpRoot(),
-      tier: "bujo",
-      embeddings: fakeEmbeddings(64),
-      dim: 64,
-      llm: throwingLlm,
-      logger: { warn: (m) => warnings.push(m) },
-    });
-    store.scheduleCapture("c1", "a sentence genuinely worth distilling into memory");
-    await store.flush();
-    expect(warnings.some((w) => /capture/i.test(w))).toBe(true);
-    expect(warnings.some((w) => /ollama down/i.test(w))).toBe(true);
-    await store.close();
-  });
-
-  it("marks persistence embedding outages as failed capture work without mutating curated source", async () => {
-    const root = tmpRoot();
-    const warnings: string[] = [];
-    let embeddingCalls = 0;
-    const embeddings = {
-      id: "capture-persist-outage:64",
-      async embed(texts: readonly string[]) {
-        embeddingCalls += 1;
-        if (embeddingCalls === 2) throw new Error("persistence embedding offline");
-        return texts.map(() => Array.from({ length: 64 }, (_, index) => index === 0 ? 1 : 0));
-      },
-    };
-    const llm: LlmComplete = {
-      id: "capture-plan",
-      complete: async () => JSON.stringify({
-        memories: [{ type: "note", text: "A durable candidate", salience: 0.7, isInsight: false, entityIds: [] }],
-        entities: [],
-        relations: [],
-      }),
-    };
-    const store = createBujoMemoryStore({
-      root,
-      tier: "bujo",
-      embeddings,
-      dim: 64,
-      llm,
-      logger: { warn: (message) => warnings.push(message) },
-    });
-    const raw = await store.appendHostSummary("c", "Host-observed completed turn. Candidate discussed.");
-    store.scheduleCapture("c", "User: remember a durable candidate");
-    await store.flush();
-
-    expect(embeddingCalls).toBe(2);
-    expect(store.queueSnapshot().capture).toMatchObject({ completed: 0, failed: 1 });
-    expect(warnings.join(" ")).toMatch(/persistBatch|persistence embedding offline/iu);
-    expect(readFileSync(raw.source, "utf8")).toContain("Candidate discussed");
-    expect(existsSync(join(root, "daily"))).toBe(false);
-    const db = openMemoryDb({ path: join(root, "memory.db"), readOnly: true, dim: 64 });
-    expect(db.count()).toBe(0);
-    db.close();
-    await store.close();
-  });
-
-  it("bounds close when an in-flight capture ignores abort and discards queued curation", async () => {
-    const warnings: string[] = [];
-    const store = createBujoMemoryStore({
-      root: tmpRoot(),
-      tier: "bujo",
-      embeddings: fakeEmbeddings(64),
-      dim: 64,
-      llm: { id: "never", complete: async () => await new Promise<never>(() => {}) },
-      backgroundDrainTimeoutMs: 20,
-      logger: { warn: (message) => warnings.push(message) },
-    });
-    store.scheduleCapture("c1", "first never-ending capture");
-    store.scheduleCapture("c2", "queued capture safely discarded");
-    await waitUntil(() => store.queueSnapshot().capture?.inFlight === 1);
-
-    const started = performance.now();
-    await store.close();
-    const durationMs = performance.now() - started;
-
-    expect(durationMs).toBeLessThan(500);
-    expect(store.queueSnapshot()).toMatchObject({
-      capture: { discarded: 1, dropped: 1, inFlight: 1, accepting: false },
-      shutdown: { drainTimeoutMs: 20, discarded: 1, timedOut: true },
-    });
-    expect(warnings.join(" ")).toContain("drain exceeded 20ms");
-  });
+describe("BujoMemoryStore lifecycle", () => {
 
   it("recall delegates to db.recall and returns scored hits", async () => {
     const store = createBujoMemoryStore({ root: tmpRoot() });
-    await store.appendHostSummary("c1", "The launch date is March 3rd.");
+    await projectSummary(store, "c1", "The launch date is March 3rd.");
     const hits = await store.recall("launch date", { topK: 5 });
     expect(hits.length).toBeGreaterThan(0);
     expect(typeof hits[0]!.score).toBe("number");
@@ -1084,55 +711,6 @@ describe("BujoMemoryStore async capture queue", () => {
     },
   );
 
-  it("close() drains a pending capture before closing the db", async () => {
-    const order: string[] = [];
-    const store = createBujoMemoryStore({ root: tmpRoot(), tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm: recordingLlm(order) });
-    store.scheduleCapture("c1", "DRAINME user text");
-    await store.close(); // must await the queued capture before closing — no explicit flush()
-    expect(order.some((t) => t.includes("DRAINME"))).toBe(true);
-  });
-
-  it("blocks an abort-ignoring capture embedding reply before post-close SQLite or canonical access", async () => {
-    const root = tmpRoot();
-    let entered = false;
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const llm: LlmComplete = {
-      id: "direct-capture-close-race",
-      complete: async () => JSON.stringify({
-        memories: [{ type: "note", text: "Late direct capture must not persist.", salience: 0.8, isInsight: false }],
-        entities: [],
-        relations: [],
-      }),
-    };
-    const embeddings: EmbeddingProvider = {
-      id: "direct-capture-close-race:64",
-      embed: async (texts) => {
-        entered = true;
-        await gate; // deliberately ignore abortSignal
-        return await fakeEmbeddings(64).embed(texts);
-      },
-    };
-    const store = createBujoMemoryStore({
-      root,
-      tier: "bujo",
-      embeddings,
-      dim: 64,
-      llm,
-      backgroundDrainTimeoutMs: 20,
-    });
-
-    const capturing = store.capture("direct", "Remember this only if capture finishes before shutdown.");
-    await waitUntil(() => entered);
-    await store.close();
-    expect(existsSync(join(root, "daily"))).toBe(false);
-
-    const rejected = expect(capturing).rejects.toThrow(/operation drain deadline/iu);
-    release();
-    await rejected;
-    expect(existsSync(join(root, "daily"))).toBe(false);
-  });
-
   it("bounds close around migration and blocks a late decision before source rewrite", async () => {
     const root = tmpRoot();
     const now = new Date("2026-06-15T12:00:00.000Z");
@@ -1193,7 +771,7 @@ describe("BujoMemoryStore async capture queue", () => {
     const lockPath = join(root, ".journal-write.lock");
     writeFileSync(lockPath, `${JSON.stringify({ pid: process.pid, token: "direct-close-race" })}\n`, { mode: 0o600 });
 
-    const writing = store.appendHostSummary("accepted", "An admitted Journal write survives graceful close.");
+    const writing = projectSummary(store, "accepted", "An admitted Journal write survives graceful close.");
     const closing = store.close();
     let closeSettled = false;
     void closing.then(() => { closeSettled = true; });
@@ -1205,7 +783,7 @@ describe("BujoMemoryStore async capture queue", () => {
     unlinkSync(lockPath);
     const [write] = await Promise.all([writing, closing.then(() => undefined)]);
     expect(write.bytesWritten).toBeGreaterThan(0);
-    expect(readFileSync(write.source, "utf8")).toContain("admitted Journal write");
+    expect(readFileSync(dailyFilePath(root, new Date()), "utf8")).toContain("admitted Journal write");
     expect(store.queueSnapshot().index).toMatchObject({ accepting: false, remainingBacklog: 0 });
   });
 
@@ -1218,57 +796,20 @@ describe("BujoMemoryStore async capture queue", () => {
       dim: 64,
       llm: fakeLlm([]),
     });
-    const write = await store.appendHostSummary("c", "Durable audit before close.");
+    await projectSummary(store, "c", "Durable audit before close.");
     await store.close();
-    const sourceBefore = readFileSync(write.source, "utf8");
+    const sourceBefore = readFileSync(auditFilePath(root, new Date()), "utf8");
     const queueBefore = store.queueSnapshot();
 
-    await expect(store.appendHostSummary("late", "must not escape after close")).rejects.toThrow(/closing or closed/iu);
-    expect(() => store.scheduleCapture("late", "must not enter queue")).toThrow(/closing or closed/iu);
-    await expect(store.capture("late", "must not capture")).rejects.toThrow(/closing or closed/iu);
+    await expect(projectSummary(store, "late", "must not escape after close")).rejects.toThrow(/closing or closed/iu);
+    await expect(projectCapture(store, "late", "must not capture")).rejects.toThrow(/closing or closed/iu);
     await expect(store.migrate()).rejects.toThrow(/closing or closed/iu);
     await expect(store.consolidate()).rejects.toThrow(/closing or closed/iu);
     await expect(store.load("late", "audit")).rejects.toThrow(/closing or closed/iu);
     await expect(store.recall("audit")).rejects.toThrow(/closing or closed/iu);
 
-    expect(readFileSync(write.source, "utf8")).toBe(sourceBefore);
+    expect(readFileSync(auditFilePath(root, new Date()), "utf8")).toBe(sourceBefore);
     expect(store.queueSnapshot()).toEqual(queueBefore);
-  });
-
-  it("stops external mutation synchronously during close while draining already-accepted capture once", async () => {
-    const root = tmpRoot();
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    let calls = 0;
-    const llm: LlmComplete = {
-      id: "close-race",
-      complete: async () => {
-        calls += 1;
-        await gate;
-        return JSON.stringify({ memories: [], entities: [], relations: [] });
-      },
-    };
-    const store = createBujoMemoryStore({ root, tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm });
-    const write = await store.appendHostSummary("accepted", "Audit survives the close race.");
-    store.scheduleCapture("accepted", "Accepted capture drains during close.");
-    await waitUntil(() => store.queueSnapshot().capture?.inFlight === 1);
-    const sourceBefore = readFileSync(write.source, "utf8");
-
-    const firstClose = store.close();
-    const secondClose = store.close();
-    expect(secondClose).toBe(firstClose);
-    await expect(store.appendHostSummary("late", "late append")).rejects.toThrow(/closing or closed/iu);
-    expect(() => store.scheduleCapture("late", "late queue admission")).toThrow(/closing or closed/iu);
-    await expect(store.capture("late", "late capture")).rejects.toThrow(/closing or closed/iu);
-    await expect(store.consolidate()).rejects.toThrow(/closing or closed/iu);
-    expect(store.queueSnapshot().capture).toMatchObject({ queued: 0, inFlight: 1, accepting: false });
-    expect(readFileSync(write.source, "utf8")).toBe(sourceBefore);
-
-    release();
-    await firstClose;
-    expect(calls).toBe(1);
-    expect(store.queueSnapshot().capture).toMatchObject({ completed: 1, queued: 0, inFlight: 0 });
-    expect(readFileSync(write.source, "utf8")).toBe(sourceBefore);
   });
 });
 
@@ -1355,7 +896,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     };
     const store = createBujoMemoryStore({ root, tier: "journal", embeddings, dim: 64 });
     const writes = await Promise.all(Array.from({ length: 65 }, (_, index) =>
-      store.appendHostSummary(`c-${index}`, `Journal fact ${index} is durable.`)));
+      projectSummary(store, `c-${index}`, `Journal fact ${index} is durable.`)));
     expect(writes.every((write) => write.bytesWritten > 0)).toBe(true);
     expect(calls).toEqual([]);
     expect(parseDailyFile(readFileSync(dailyFilePath(root, new Date()), "utf8")).bullets).toHaveLength(65);
@@ -1380,7 +921,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
 
   it("keeps the final Journal queue snapshot readable after close", async () => {
     const store = createBujoMemoryStore({ root: tmpRoot(), tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
-    await store.appendHostSummary("c", "The final queue snapshot remains observable.");
+    await projectSummary(store, "c", "The final queue snapshot remains observable.");
     await store.flush();
     await store.close();
 
@@ -1390,9 +931,8 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     });
   });
 
-  // This is a durability/queue-correctness stress case, not a latency SLA:
-  // 300 serialized appends intentionally fsync canonical and lock state while
-  // the package suite runs in parallel with other workspaces.
+  // Seed an overflow-sized durable backlog so this test measures Journal queue
+  // paging independently of completed-turn admission throughput.
   it("pages overflow recovery without rescanning active queue rows", async () => {
     const root = tmpRoot();
     const calls: number[] = [];
@@ -1403,18 +943,19 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
         return texts.map(() => Array.from({ length: 64 }, (_, index) => index === 0 ? 1 : 0));
       },
     };
+    const now = new Date();
+    for (let index = 0; index < 300; index += 1) {
+      appendBullet(root, journalBullet(`overflow-${index}`, `Overflow recovery fact ${index}.`, now), now);
+    }
     const store = createBujoMemoryStore({ root, tier: "journal", embeddings, dim: 64 });
-    await Promise.all(Array.from({ length: 300 }, (_, index) =>
-      store.appendHostSummary(`overflow-${index}`, `Overflow recovery fact ${index}.`)));
-
     await store.flush();
     expect(calls).toHaveLength(Math.ceil(300 / 32));
     expect(store.queueSnapshot().index).toMatchObject({
       completed: 300,
-      dropped: 44,
+      dropped: 0,
       coalesced: 0,
       remainingBacklog: 0,
-      recoveryRowsScanned: 44,
+      recoveryRowsScanned: 300,
       highWaterItems: 256,
     });
     await store.close();
@@ -1473,7 +1014,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     }
     const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
 
-    const write = await store.appendHostSummary("new", "A new turn stays off the recovery path.");
+    const write = await projectSummary(store, "new", "A new turn stays off the recovery path.");
 
     expect(write.bytesWritten).toBeGreaterThan(0);
     expect(store.queueSnapshot().index?.recoveryFilesRemaining).toBeGreaterThan(0);
@@ -1496,7 +1037,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
 
     // A fresh old index has no hash manifest yet. Preserve the append-only source
     // rather than waiting on all history; recovery still collapses the index.
-    const write = await store.appendHostSummary("migration-window", "Project Atlas ships Friday.");
+    const write = await projectSummary(store, "migration-window", "Project Atlas ships Friday.");
     await store.flush();
     const hits = await store.recall("Project Atlas ships Friday", { topK: 10, trackAccess: false });
 
@@ -1512,7 +1053,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
     const lockPath = join(root, ".journal-write.lock");
     writeFileSync(lockPath, `${JSON.stringify({ pid: process.pid, token: "test-owner" })}\n`, { mode: 0o600 });
-    const writing = store.appendHostSummary("contended", "The contended write remains durable.");
+    const writing = projectSummary(store, "contended", "The contended write remains durable.");
     let writeSettled = false;
     void writing.then(() => { writeSettled = true; });
     try {
@@ -1534,14 +1075,22 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     const root = tmpRoot();
     const store = createBujoMemoryStore({ root, tier: "journal", embeddings: fakeEmbeddings(64), dim: 64 });
     const [first, duplicate] = await Promise.all([
-      store.appendHostSummary("a", "Token  ABC   is active."),
-      store.appendHostSummary("b", "Token ABC is active."),
+      projectSummary(store, "a", "Token  ABC   is active."),
+      projectSummary(store, "b", "Token ABC is active."),
     ]);
-    await store.appendHostSummary("c", "Token abc is active.");
+    await projectSummary(store, "c", "Token abc is active.");
     await store.flush();
     const bullets = parseDailyFile(readFileSync(dailyFilePath(root, new Date()), "utf8")).bullets;
-    expect([first.bytesWritten, duplicate.bytesWritten].filter((bytes) => bytes > 0)).toHaveLength(1);
-    expect(bullets.map((bullet) => bullet.text)).toEqual(["Token ABC is active.", "Token abc is active."]);
+    // Each provider run retains its own audit bullet; equivalent text converges
+    // to one Journal index row without erasing the separate run admissions.
+    expect([first.admissionStatus, duplicate.admissionStatus]).toEqual(["admitted", "admitted"]);
+    expect(bullets.map((bullet) => bullet.text)).toEqual(["Token ABC is active.", "Token ABC is active.", "Token abc is active."]);
+    const db = openMemoryDb({ path: join(root, "memory.db"), readOnly: true });
+    try {
+      expect(db.allMemories().map(({ text }) => text).sort()).toEqual(["Token ABC is active.", "Token abc is active."]);
+    } finally {
+      db.close();
+    }
     await store.close();
   });
 
@@ -1555,7 +1104,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
     const first = createBujoMemoryStore({
       root, tier: "journal", embeddings: failing, dim: 64, logger: { warn: (message) => warnings.push(message) },
     });
-    await first.appendHostSummary("c", "The restart backlog fact is durable.");
+    await projectSummary(first, "c", "The restart backlog fact is durable.");
     await first.flush();
     expect(first.queueSnapshot().index).toMatchObject({
       failed: 1,
@@ -1602,7 +1151,7 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
       logger: { warn: (message) => warnings.push(message) },
     });
     await Promise.all(Array.from({ length: 65 }, (_, index) =>
-      store.appendHostSummary(`offline-${index}`, `Offline batch fact ${index} stays durable.`)));
+      projectSummary(store, `offline-${index}`, `Offline batch fact ${index} stays durable.`)));
 
     await store.flush();
 
@@ -1617,61 +1166,6 @@ describe("BujoMemoryStore strict tiers and background Journal indexing", () => {
       recoveryPaused: true,
       retryDelayMs: 1_000,
     });
-    await store.close();
-  });
-
-  it("keeps BuJo compact raw audit outside curated daily recall on capture failure", async () => {
-    const root = tmpRoot();
-    const warnings: string[] = [];
-    const llm: LlmComplete = { id: "down", complete: async () => { throw new Error("capture offline"); } };
-    const store = createBujoMemoryStore({
-      root,
-      tier: "bujo",
-      embeddings: fakeEmbeddings(64),
-      dim: 64,
-      llm,
-      logger: { warn: (message) => warnings.push(message) },
-    });
-    const write = await store.appendHostSummary("c", "Host-observed completed turn. User: hello. Assistant: hi.");
-    store.scheduleCapture("c", "User: hello\nAssistant: hi");
-    await store.flush();
-    expect(write.source).toContain("/audit/");
-    expect(readFileSync(write.source, "utf8")).toContain("Host-observed completed turn");
-    expect(existsSync(join(root, "daily"))).toBe(false);
-    expect(warnings.join(" ")).toContain("capture offline");
-    await store.close();
-  });
-
-  it("bounds BuJo capture overflow while preserving every compact raw audit entry", async () => {
-    const root = tmpRoot();
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    let calls = 0;
-    const llm: LlmComplete = {
-      id: "gated",
-      complete: async () => {
-        calls += 1;
-        if (calls === 1) await gate;
-        return JSON.stringify({ memories: [], entities: [], relations: [] });
-      },
-    };
-    const store = createBujoMemoryStore({
-      root, tier: "bujo", embeddings: fakeEmbeddings(64), dim: 64, llm,
-    });
-
-    for (let index = 0; index < 33; index += 1) {
-      await store.appendHostSummary(`c-${index}`, `Host-observed completed turn ${index}.`);
-      store.scheduleCapture(`c-${index}`, `User: turn ${index}\nAssistant: done ${index}`);
-    }
-    expect(store.queueSnapshot().capture).toMatchObject({ queued: 32, dropped: 1, highWaterItems: 32 });
-    const audit = readFileSync(join(root, "audit", `${new Date().toISOString().slice(0, 10)}.md`), "utf8");
-    expect(parseDailyFile(audit).bullets).toHaveLength(33);
-
-    const flushing = store.flush();
-    await waitUntil(() => calls === 1);
-    release();
-    await flushing;
-    expect(store.queueSnapshot().capture).toMatchObject({ queued: 0, inFlight: 0, completed: 32, dropped: 1 });
     await store.close();
   });
 });

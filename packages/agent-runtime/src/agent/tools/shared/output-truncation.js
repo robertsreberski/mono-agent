@@ -3,14 +3,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_MAX_TOOL_OUTPUT_CHARS } from "./constants.js";
 import { boundedInt } from "./dedup.js";
-import { readToolRuntime } from "./runtime-context.js";
 
 function sanitizeName(value) {
   return String(value || "tool").replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "tool";
 }
 
 export function writeToolArtifact(label, text, ctx) {
-  const { toolArtifactDir, runId } = ctx ?? readToolRuntime();
+  const { toolArtifactDir, runId } = ctx ?? {};
   if (!toolArtifactDir) return null;
   try {
     const safeRunId = sanitizeName(runId || "manual");

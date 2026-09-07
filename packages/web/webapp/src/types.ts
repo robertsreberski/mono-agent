@@ -1,324 +1,93 @@
-export const API_VERSION = 1 as const;
+// Wire types belong to the producer. These type-only references never load
+// server modules into the browser bundle.
+import type * as Wire from "../../src/contracts";
+import type {
+  AgentMcpAppResource,
+  ChannelAskOption,
+  ChannelAskQuestion,
+  ChannelAskAnswer,
+  ChannelAskSnapshot,
+  ChannelAskSubmissionResult,
+  SessionToolHistoryEventMetadata,
+} from "@mono-agent/agent-contracts";
 
-export type WebTheme = "evergreen" | "ocean" | "plum" | "terracotta";
+export type {
+  ProcessJobState,
+  ProcessJobProjection,
+  MonitorState,
+  MonitorProjection,
+  ProviderAuthMethod,
+  ProviderAuthProviderStatus,
+  ProviderAuthStatusSnapshot,
+  ProviderAuthSessionSnapshot,
+} from "@mono-agent/agent-contracts";
 
-export interface ConsoleIdentity {
-  readonly hostName: string;
-  readonly displayName: string;
-  readonly theme: WebTheme;
-}
+export const API_VERSION: typeof Wire.WEB_API_VERSION = 1;
 
-export interface PushBootstrap {
-  readonly applicationServerKey: string;
-  readonly keyFingerprint: string;
-  readonly serviceWorkerVersion: 2;
-}
+export type WebTheme = Wire.WebTheme;
+export type ConsoleIdentity = Wire.WebConsoleIdentity;
+export type PushBootstrap = Wire.WebPushBootstrap;
+export type PushSubscriptionStatus = Wire.WebPushSubscriptionStatus;
+export type AgentStatus = Wire.WebAgentStatus;
+export type NotificationTriggerKind = Wire.WebThreadNotificationTriggerKind;
+export type RunStatus = Wire.WebRunStatus;
+export type ModelOption = Wire.WebModelOption;
+export type RunSettingSource = Wire.WebRunSettingSource;
+export type AgentRunSettings = Wire.WebAgentRunSettings;
+export type AgentSummary = Wire.WebAgentSummary;
+export type SkillAvailability = Wire.WebSkillAvailability;
+export type SkillUnavailableReason = Wire.WebSkillUnavailableReason;
+export type SkillInfo = Wire.WebSkillInfo;
+export type AgentSkillRegistry = Wire.WebSkillRegistry;
+export type RunSelection = Wire.WebRunSelection;
+export type RunExecution = Wire.WebRunExecution;
+export type RunTransition = Wire.WebRunTransition;
+export type RunRetry = Wire.WebRunRetry;
+export type RunAttribution = Wire.WebRunAttribution;
+export type RunState = Wire.WebRunState;
+export type JobActivity = Wire.WebJobActivity;
+export type ToolCallStatus = Wire.WebToolCallStatus;
+export type ToolCall = Wire.WebToolCall;
+export type MessagePart = Wire.WebMessagePart;
+export type WebAttachment = Wire.WebAttachment;
+export type WebQuote = Wire.WebQuote;
+export type MessageDeltaOp = Wire.WebMessageDeltaOp;
+export type MessageDelta = Wire.WebMessageDelta;
+export type CronRunStatus = Wire.WebCronRunStatus;
+export type CronHealth = Wire.WebCronHealth;
+export type CronRun = Wire.WebCronRunSummary;
+export type CronJob = Wire.WebCronJob;
+export type CronOverview = Wire.WebCronOverview;
+export type WebEvent = Wire.WebEvent;
+export type ModelCatalogPage = Wire.WebModelPage;
+export type AgentProvider = Wire.WebAgentProvider;
+export type CatalogModel = Wire.WebCatalogModel;
+export type StartTurnInput = Wire.StartWebTurnInput;
 
-export interface PushSubscriptionStatus {
-  readonly id: string;
-  readonly state: "active" | "disabled" | "expired";
-  readonly keyFingerprint: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly lastSuccessAt?: string;
-  readonly lastErrorAt?: string;
-  readonly lastErrorCode?: string;
-}
+export type AskOption = ChannelAskOption;
+export type AskQuestion = ChannelAskQuestion;
+export type AskAnswer = ChannelAskAnswer;
+export type AskSnapshot = ChannelAskSnapshot;
+export type AskSubmissionResult = ChannelAskSubmissionResult;
+export type SessionToolHistoryMetadata = SessionToolHistoryEventMetadata;
+export type UploadLimits = Wire.WebBootstrap["limits"];
 
-export type AgentStatus = "online" | "offline" | "degraded";
-export type NotificationTriggerKind = "cron" | "webhook";
-export type ProcessJobState =
-  | "queued"
-  | "starting"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "timed_out"
-  | "cancelled"
-  | "spawn_failed"
-  | "queue_expired"
-  | "interrupted";
-
-export interface ProcessJobProjection {
-  readonly schema: "mono-agent.process-job-projection.v1";
-  readonly jobId: string;
-  readonly tool: "Exec" | "Bash";
-  readonly state: ProcessJobState;
-  readonly summary: string;
-  readonly origin: {
-    readonly conversationId: string;
-    readonly channel: string;
-    readonly runId: string;
-    readonly historyBoundary: string;
-    readonly bucket: string | null;
-  };
-  readonly timestamps: {
-    readonly admittedAt: string;
-    readonly queueDeadlineAt: string;
-    readonly startedAt: string | null;
-    readonly runtimeDeadlineAt: string | null;
-    readonly completedAt: string | null;
-  };
-  readonly limits: {
-    readonly maxRuntimeMs: number;
-    readonly maxOutputBytes: number;
-    readonly previewChars: number;
-    readonly chainDepth: number;
-  };
-  readonly output: {
-    readonly stdoutBytes: number;
-    readonly stderrBytes: number;
-    readonly truncated: boolean;
-    readonly preview: string;
-    readonly stdoutRef: string | null;
-    readonly stderrRef: string | null;
-  };
-  readonly wake: {
-    readonly state: "pending" | "delivered" | "failed" | "unknown" | "suppressed";
-    readonly attempts: number;
-    readonly deliveryKey: string;
-    readonly lastAttemptAt: string | null;
-  };
-  readonly exitCode: number | null;
-  readonly signal: string | null;
-  readonly durationMs: number | null;
-  readonly cancelRequested: boolean;
-  readonly lastError: { readonly code: string; readonly message: string } | null;
-}
-
-export type MonitorState =
-  | "starting"
-  | "running"
-  | "exited"
-  | "timed_out"
-  | "cancelled"
-  | "spawn_failed"
-  | "rate_limited"
-  | "interrupted";
-
-/** Secret-free Monitor state retained by the Web console for activity display. */
-export interface MonitorProjection {
-  readonly schema: "mono-agent.monitor-projection.v1";
-  readonly monitorId: string;
-  readonly state: MonitorState;
-  readonly description: string;
-  readonly persistent: boolean;
-  readonly origin: {
-    readonly conversationId: string;
-    readonly channel: string;
-    readonly runId: string;
-    readonly bucket: string | null;
-  };
-  readonly timestamps: {
-    readonly startedAt: string;
-    readonly runtimeDeadlineAt: string | null;
-    readonly lastEventAt: string | null;
-    readonly completedAt: string | null;
-  };
-  readonly limits: {
-    readonly maxRuntimeMs: number;
-    readonly coalesceMs: number;
-    readonly maxBatchLines: number;
-    readonly maxBatchBytes: number;
-    readonly chainDepth: number;
-  };
-  readonly counters: {
-    readonly seq: number;
-    readonly batchesDelivered: number;
-    readonly linesObserved: number;
-    readonly linesDelivered: number;
-    readonly droppedLines: number;
-    readonly pendingLines: number;
-  };
-  readonly exitCode: number | null;
-  readonly signal: string | null;
-  readonly cancelRequested: boolean;
-  readonly lastError: { readonly code: string; readonly message: string } | null;
-}
-export type RunStatus =
-  | "idle"
-  | "running"
-  | "complete"
-  | "failed"
-  | "cancelled"
-  | "interrupted";
-
-export interface ModelOption {
-  readonly effortLevels?: readonly string[];
-  readonly reasoning?: boolean;
-  readonly reasoningMode?: string;
-  readonly label?: string;
-  readonly contextWindow?: number;
-  readonly provider?: string;
-}
-
-export type RunSettingSource = "config" | "override";
-
-export interface AgentRunSettings {
-  readonly config: { readonly model?: string; readonly effort?: string };
-  readonly override: { readonly model?: string; readonly effort?: string } | null;
-  readonly effective: {
-    readonly model?: string;
-    readonly modelSource: RunSettingSource;
-    readonly effort?: string;
-    readonly effortSource: RunSettingSource;
-  };
-}
-
-export interface AskOption {
-  readonly id: string;
-  readonly label: string;
-  readonly description: string;
-}
-
-export interface AskQuestion {
-  readonly id: string;
-  readonly header: string;
-  readonly question: string;
-  readonly options: readonly AskOption[];
-  readonly multiSelect: boolean;
-}
-
-export interface AskAnswer {
-  readonly questionId: string;
-  readonly selectedOptionIds: readonly string[];
-  readonly customReply?: string;
-}
-
-export interface AskSnapshot {
-  readonly interactionId: string;
-  readonly message?: string;
-  readonly questions: readonly AskQuestion[];
-  readonly answers: readonly AskAnswer[];
-  readonly activeQuestionIndex: number;
-  readonly status: "pending" | "answered" | "expired" | "cancelled";
-  readonly createdAt: string;
-  readonly expiresAt: string | null;
-}
-
-export interface AskSubmissionResult {
-  readonly accepted: boolean;
-  readonly code?: "not_found" | "stale" | "invalid_answer";
-  readonly snapshot?: AskSnapshot;
-}
-
-export interface AgentSummary {
-  readonly sourceId: string;
-  /**
-   * Opaque token for the agent PROCESS this summary describes, mirrored from
-   * `WebAgentSummary`: stable while that process lives, different once it is
-   * replaced.
-   *
-   * A source id outlives the process behind it, so everything this console
-   * caches per agent -- above all the `/v1/models` pages the model picker walks
-   * -- outlives the catalog that filled it. Nothing else on this summary is
-   * generation-shaped: there is no pid, no start time, and `updatedAt` is a
-   * discovery heartbeat that changes while nothing has. Absent on any summary
-   * an older server built.
-   */
-  readonly generation?: string;
-  readonly label: string;
-  readonly status: AgentStatus;
-  readonly pinned: boolean;
-  readonly health?: string;
-  readonly supportsAttachments: boolean;
-  readonly supportsProviderAuth?: true;
-  readonly models?: readonly string[];
-  readonly defaultModel?: string;
-  readonly defaultEffort?: string;
-  readonly efforts?: readonly string[];
-  readonly modelOptions?: Readonly<Record<string, ModelOption>>;
-  readonly runSettings: AgentRunSettings;
-  /**
-   * Providers this agent supports, mirrored from `WebAgentSummary`. This is the
-   * set the selector groups and filters by; `modelOptions` stays the configured
-   * shortlist. A provider declared purely to widen selection appears here and
-   * nowhere else, so deriving the chip list from the shortlist hides it.
-   */
-  readonly providers?: readonly AgentProvider[];
-  readonly cron?: { readonly read: boolean; readonly actions: boolean };
-  readonly supportsAskById?: boolean;
-  readonly updatedAt: string;
-}
-
-export interface ProviderAuthMethod {
-  readonly authType: "oauth" | "api_key";
-  readonly strategy: "device_code" | "paste_back" | "provider_prompt" | "api_key_prompt";
-  readonly label: string;
-  readonly recommended: boolean;
-}
-
-export interface ProviderAuthProviderStatus {
-  readonly providerId: string;
-  readonly label: string;
-  readonly usages: readonly { readonly kind: string; readonly model: string; readonly label: string }[];
-  readonly state: "present" | "expired" | "missing" | "not_applicable";
-  readonly credentialType?: "oauth" | "api_key";
-  readonly source?: "stored" | "environment" | "ambient" | "config";
-  readonly expiresAt?: string;
-  readonly verification: "not_verified" | "verified_by_live_request" | "not_applicable";
-  readonly verifiedAt?: string;
-  readonly methods: readonly ProviderAuthMethod[];
-  readonly unavailableReason?: string;
-  readonly lastFailure?: {
-    readonly kind: "provider_auth" | "provider_unavailable";
-    readonly message: string;
-    readonly model: string;
-    readonly observedAt: string;
-  };
-}
-
-export interface ProviderAuthStatusSnapshot {
-  readonly schema: "mono-agent.provider-auth.v1";
-  readonly generatedAt: string;
-  readonly providers: readonly ProviderAuthProviderStatus[];
-}
-
-export interface ProviderAuthSessionSnapshot {
-  readonly schema: "mono-agent.provider-auth-session.v1";
-  readonly id: string;
-  readonly providerId: string;
-  readonly authType: "oauth" | "api_key";
-  readonly strategy: ProviderAuthMethod["strategy"];
-  readonly state: "pending" | "awaiting_input" | "awaiting_user" | "succeeded" | "failed" | "cancelled";
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly expiresAt: string;
-  readonly authUrl?: { readonly url: string; readonly instructions: string };
-  readonly deviceCode?: { readonly verificationUri: string; readonly userCode: string; readonly expiresAt?: string };
-  readonly prompt?: {
-    readonly id: string;
-    readonly type: "text" | "secret" | "select" | "manual_code";
-    readonly message: string;
-    readonly placeholder?: string;
-    readonly allowEmpty?: boolean;
-    readonly options?: readonly { readonly id: string; readonly label: string; readonly description?: string }[];
-  };
-  readonly progress?: string;
-  readonly error?: { readonly code: string; readonly message: string };
-}
-export type SkillAvailability = "inlined" | "on-demand" | "unavailable";
-export type SkillUnavailableReason = "not-selected" | "read-skill-disabled" | "unsupported-name";
-
-export interface SkillInfo {
-  readonly name: string;
-  readonly description: string;
-  readonly availability: SkillAvailability;
-  readonly reference?: string;
-  readonly unavailableReason?: SkillUnavailableReason;
-}
-
-export type AgentSkillRegistry =
-  | {
-      readonly status: "ready";
-      readonly items: readonly SkillInfo[];
-      readonly total: number;
-      readonly truncated?: true;
-    }
-  | {
-      readonly status: "error" | "unsupported" | "offline";
-      readonly items: readonly [];
-    };
+// Locally minted optimistic messages and persisted caches can predate these
+// server fields. Keep that browser compatibility explicit and narrowly scoped.
+export type ThreadSummary = Omit<Wire.WebThread, "runModel" | "runEffort">
+  & Partial<Pick<Wire.WebThread, "runModel" | "runEffort">>;
+export type WebMessage = Omit<Wire.WebMessage, "seq"> & Partial<Pick<Wire.WebMessage, "seq">>;
+export type ThreadDetail = Omit<Wire.WebThreadDetail, "thread" | "messages"> & {
+  readonly thread: ThreadSummary;
+  readonly messages: readonly WebMessage[];
+};
+export type ThreadPage = Omit<Wire.WebThreadPage, "threads"> & { readonly threads: readonly ThreadSummary[] };
+export type ThreadSearchHit = Omit<Wire.WebThreadSearchHit, "thread"> & { readonly thread: ThreadSummary };
+export type ThreadSearchPage = Omit<Wire.WebThreadSearchPage, "hits"> & { readonly hits: readonly ThreadSearchHit[] };
+export type MessagePage = Omit<Wire.WebMessagePage, "messages"> & { readonly messages: readonly WebMessage[] };
+export type CronRunPage = Omit<Wire.WebCronRunPage, "messages"> & { readonly messages?: readonly WebMessage[] };
+export type Bootstrap = Omit<Wire.WebBootstrap, "threads"> & { readonly threads: readonly ThreadSummary[] };
+export type LiveInputReceipt = Omit<Wire.WebLiveInputReceipt, "message"> & { readonly message: WebMessage };
 
 /** Browser-derived states wrap the live endpoint while a refresh is in flight. */
 export type SkillRegistryState =
@@ -330,100 +99,6 @@ export type SkillRegistryState =
       readonly total: number;
       readonly truncated?: true;
     };
-
-export interface RunSelection {
-  readonly model?: string;
-  readonly effort?: string;
-}
-
-export interface RunExecution extends RunSelection {
-  readonly effectiveEffort?: string;
-}
-
-export interface RunTransition {
-  readonly from: string;
-  readonly to: string;
-  readonly attemptIndex?: number;
-  readonly reason?: string;
-}
-
-export interface RunRetry {
-  readonly model?: string;
-  readonly retryIndex?: number;
-  readonly attempts?: number;
-  readonly reason?: string;
-}
-
-export interface RunAttribution {
-  readonly requested: RunSelection;
-  readonly attempted?: RunExecution;
-  readonly executed?: RunExecution;
-  readonly disposition: "requested" | "fallback" | "unknown";
-  readonly transitions: readonly RunTransition[];
-  readonly retries: readonly RunRetry[];
-  readonly truncated?: true;
-}
-
-export interface RunState {
-  readonly id?: string;
-  readonly status: RunStatus;
-  readonly startedAt?: string;
-  readonly finishedAt?: string;
-  readonly error?: { readonly code?: string; readonly message: string };
-  readonly model?: string;
-  readonly effort?: string;
-  readonly attribution?: RunAttribution;
-}
-
-/** Summary of retained jobs, independent of the loaded transcript page. */
-export interface JobActivity {
-  readonly queued: number;
-  readonly starting: number;
-  readonly running: number;
-  readonly latestTerminal?: {
-    readonly state: Exclude<ProcessJobState, "queued" | "starting" | "running">;
-    readonly completedAt: string;
-    readonly replyPreview?: string;
-  };
-}
-
-export interface ThreadSummary {
-  readonly id: string;
-  readonly sourceId: string;
-  readonly title: string;
-  readonly archivedAt: string | null;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly revision: number;
-  readonly trigger?:
-    | { readonly kind: "webhook" }
-    | { readonly kind: "cron"; readonly jobId?: string; readonly configured?: boolean };
-  readonly lastMessagePreview?: string;
-  readonly messageCount: number;
-  readonly runState: RunState;
-  readonly jobActivity?: JobActivity;
-  readonly canSend: boolean;
-  readonly canUpload: boolean;
-  /** Per-conversation model override, or null when the agent default applies. */
-  readonly runModel?: string | null;
-  /** Per-conversation effort override, or null when the agent default applies. */
-  readonly runEffort?: string | null;
-}
-
-export type ToolCallStatus = "running" | "complete" | "failed";
-
-export interface SessionToolHistoryMetadata {
-  readonly recordId?: string;
-  readonly sequence?: number;
-  readonly persistence: "persisted" | "deferred" | "failed";
-  readonly terminalState?: "success" | "rejected" | "error" | "exit_nonzero" | "timeout" | "signal" | "cancelled" | "interrupted";
-  readonly truncated?: boolean;
-  readonly originalBytes?: number;
-  readonly retainedBytes?: number;
-  readonly artifactReferences?: readonly { readonly id: string; readonly available: boolean }[];
-  readonly errorCode?: string;
-  readonly untrusted: true;
-}
 
 /**
  * Per-tool-call metadata the console renders but assistant-ui's tool-call part cannot
@@ -441,423 +116,11 @@ export interface ToolCallArtifact {
   readonly argsBytes?: number;
 }
 
-/** One tool call, whether the agent made it or one of its subagents did. */
-export interface ToolCall {
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly args?: unknown;
-  readonly result?: unknown;
-  /**
-   * An MCP tool's machine-readable result, when it returned one. `result` is the
-   * model-facing text and is lossy; renderers that must reason about the outcome
-   * (the AskUser card reads `interactionId`/`answered`) read this instead.
-   */
-  readonly structuredResult?: unknown;
-  readonly status: ToolCallStatus;
-  /**
-   * How long the runtime spent executing the call, when it reported a timing.
-   * Messages recorded before the console preserved it have none, so a missing
-   * duration is normal and must never render as zero.
-   */
-  readonly executionMs?: number;
-  readonly history?: SessionToolHistoryMetadata;
-  /**
-   * Set when the server sent only the head of `result`. The whole body is one
-   * request away at `api.toolCallPart`; a row that shows a preview says so and
-   * offers to fetch the rest.
-   */
-  readonly resultTruncated?: boolean;
-  /** Character length of the untruncated `result` text, when it was truncated. */
-  readonly resultBytes?: number;
-  /**
-   * Lowercase sha-256 hex of the SERIALIZED untruncated `result`, as the server
-   * names it -- carried by a preview AND by the whole body `api.toolCallPart`
-   * answers with.
-   *
-   * This is what makes a repaired body restorable across a later write of the
-   * same slot: equal names is the same content. Its absence is not evidence, so
-   * a preview that carries none keeps its preview. See `restoreRepairs`.
-   */
-  readonly resultDigest?: string;
-  readonly argsTruncated?: boolean;
-  readonly argsBytes?: number;
-  /** As {@link ToolCall.resultDigest}, for the call's arguments. */
-  readonly argsDigest?: string;
-}
-
-export type MessagePart =
-  | { readonly type: "text"; readonly text: string }
-  | { readonly type: "reasoning"; readonly text: string }
-  | ({ readonly type: "tool-call" } & ToolCall)
-  /** One `Agent` delegation and the tool calls its subagent made. */
-  | {
-      readonly type: "subagent";
-      readonly toolCallId: string;
-      readonly name: string;
-      readonly label?: string;
-      readonly args?: unknown;
-      readonly result?: unknown;
-      readonly executionMs?: number;
-      /** What this delegation cost, when the runtime priced its model. */
-      readonly costUsd?: number;
-      readonly attribution?: RunAttribution;
-      readonly history?: SessionToolHistoryMetadata;
-      /** See {@link ToolCall.resultTruncated}. */
-      readonly resultTruncated?: boolean;
-      readonly resultBytes?: number;
-      /** See {@link ToolCall.resultDigest}. */
-      readonly resultDigest?: string;
-      readonly argsTruncated?: boolean;
-      readonly argsBytes?: number;
-      /** See {@link ToolCall.resultDigest}. */
-      readonly argsDigest?: string;
-      readonly status: ToolCallStatus;
-      readonly calls: readonly ToolCall[];
-    }
-  | {
-      readonly type: "process-job";
-      readonly job: ProcessJobProjection;
-      readonly responseText?: string;
-    }
-  | {
-      readonly type: "monitor-activity";
-      readonly monitors: readonly {
-        readonly projection: MonitorProjection;
-        readonly deliveryKeys: readonly string[];
-      }[];
-    }
-  /**
-   * `data` is present only for the telemetry the console renders or sums; every
-   * other diagnostic keeps its identity (and its position) and drops the
-   * payload, with `kind` naming a stripped `runtime_telemetry`'s variant.
-   */
-  | {
-      readonly type: "telemetry";
-      readonly event: string;
-      readonly kind?: string;
-      readonly data?: unknown;
-    }
-  | { readonly type: "error"; readonly code?: string; readonly message: string }
-  | {
-      readonly type: "attachment";
-      readonly id: string;
-      readonly artifactId: string;
-      readonly name: string;
-      readonly mediaType: string;
-      readonly sizeBytes: number;
-      readonly integrityId: string;
-      readonly expiresAt?: string;
-      /**
-       * Stable path to the console's own durable copy, present once an image has
-       * been persisted. Unlike `contentUrl` it carries no capability token and
-       * never expires, so it keeps working past the agent's retention deadline
-       * and while that agent is stopped.
-       */
-      readonly storedUrl?: string;
-      /** Short-lived, exact-message URL minted by the web service. */
-      readonly contentUrl?: string;
-    }
-  | {
-      readonly type: "mcp_app";
-      readonly id: string;
-      readonly invocationId: string;
-      readonly connectionId: string;
-      readonly serverName: string;
-      readonly toolName: string;
-      readonly resourceUri: string;
-      readonly mediaType: "text/html;profile=mcp-app";
-      readonly protocolVersion: "2026-01-26" | "2025-11-21";
-      readonly title?: string;
-      readonly description?: string;
-      readonly expiresAt?: string;
-      /** Short-lived, exact-message endpoints minted by the web service. */
-      readonly resourceUrl?: string;
-      readonly bridgeUrl?: string;
-    }
-  | {
-      readonly type: "failure";
-      readonly id: string;
-      readonly code: string;
-      readonly message: string;
-      readonly relatedPartId?: string;
-    };
-
 export type McpAppPart = Extract<MessagePart, { readonly type: "mcp_app" }>;
 
-export interface McpAppResource {
+export interface McpAppResource extends Omit<AgentMcpAppResource, "app"> {
   readonly app: McpAppPart;
-  readonly html: string;
-  readonly toolInput?: unknown;
-  readonly toolResult?: unknown;
-  readonly resourceMetadata?: Readonly<Record<string, unknown>>;
   readonly connected: boolean;
-}
-
-export interface WebAttachment {
-  readonly id: string;
-  readonly name: string;
-  readonly contentType: string;
-  readonly sizeBytes: number;
-  readonly kind: "image" | "document";
-  readonly status: "staged" | "committed";
-  readonly uploaded: boolean;
-  readonly createdAt: string;
-  readonly contentUrl?: string;
-}
-
-export interface WebMessage {
-  readonly id: string;
-  readonly threadId: string;
-  readonly turnId?: string;
-  readonly role: "user" | "assistant" | "system";
-  readonly quote?: WebQuote;
-  readonly parts: readonly MessagePart[];
-  readonly attachments: readonly WebAttachment[];
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  /**
-   * When the turn that produced this assistant message reached a terminal state
-   * (complete, failed, cancelled or interrupted). `createdAt` is that turn's
-   * start, so the pair is the turn's wall-clock window. Absent while the turn
-   * runs, on user and system rows, and on assistant rows with no turn.
-   */
-  readonly finishedAt?: string;
-  readonly status: "running" | "complete" | "failed" | "cancelled" | "interrupted";
-  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
-  readonly attribution?: RunAttribution;
-  /**
-   * How many times the server has persisted this message's parts. It is what a
-   * content delta applies against; absent on a message this console minted
-   * itself, and on one read back from a server that predates the count.
-   */
-  readonly seq?: number;
-}
-
-export interface WebQuote {
-  readonly text: string;
-  readonly messageId: string;
-}
-
-/**
- * One edit to a message's part array, mirrored from the server's
- * `WebMessageDeltaOp`.
- *
- * Ops are ordered so that applying them front to back is always well defined: a
- * `truncate` comes first when the array shrank, and the rest ascend by index,
- * so an index never names a slot the shortened array lost. What each one MEANS
- * is fixed by `src/test/message-delta-vectors.ts`, which both sides replay.
- */
-export type MessageDeltaOp =
-  /** Text streamed onto the end of the `text`/`reasoning` part at `index`. */
-  | { readonly op: "append"; readonly index: number; readonly delta: string }
-  /** The whole part at `index`, replaced or appended one past the end. */
-  | { readonly op: "set"; readonly index: number; readonly part: MessagePart }
-  /** Drop every part from `length` onward. Emitted first when it is emitted. */
-  | { readonly op: "truncate"; readonly length: number };
-
-/**
- * One persisted parts write, as content rather than an invalidation hint.
- *
- * `baseSeq` is the version the ops apply to and `seq` the one they produce, so
- * a console whose copy is not at `baseSeq` has missed a write and must re-read
- * that message rather than apply anything. An EMPTY `ops` is real -- a
- * status-only finish emits one -- and still has to be consumed, because it is
- * what advances `seq` to the version the next delta will name.
- */
-export interface MessageDelta {
-  readonly messageId: string;
-  /** The message's {@link WebMessage.seq} BEFORE this write. */
-  readonly baseSeq: number;
-  /** The message's `seq` after it, always `baseSeq + 1`. */
-  readonly seq: number;
-  readonly status: WebMessage["status"];
-  readonly updatedAt: string;
-  /**
-   * {@link WebMessage.finishedAt}, carried by the write that SETS it.
-   *
-   * The Activity header draws the turn's window from `createdAt` to this, and a
-   * console holding only the first half re-read the whole conversation at every
-   * turn finish to learn the other. Absent on every write that leaves the turn
-   * running, and never a clearing signal.
-   */
-  readonly finishedAt?: string;
-  /** Full replacement snapshot when provider routing metadata changed. */
-  readonly attribution?: RunAttribution;
-  readonly ops: readonly MessageDeltaOp[];
-}
-
-export interface ThreadDetail {
-  readonly thread: ThreadSummary;
-  readonly messages: readonly WebMessage[];
-  readonly messagesNextCursor?: string;
-}
-
-export interface ThreadPage {
-  readonly threads: readonly ThreadSummary[];
-  readonly nextCursor?: string;
-}
-
-/** One conversation that matched a search, with the evidence for the match. */
-export interface ThreadSearchHit {
-  readonly thread: ThreadSummary;
-  /**
-   * The best-ranked matching message, with each match wrapped in the
-   * `SEARCH_HIGHLIGHT_*` sentinels. Absent when only the title matched.
-   */
-  readonly snippet?: string;
-  /**
-   * Matching messages inside the server's bounded scan window, so a very common
-   * term reports the window figure rather than a true total.
-   */
-  readonly messageMatches: number;
-  readonly titleMatch: boolean;
-}
-
-export interface ThreadSearchPage {
-  readonly hits: readonly ThreadSearchHit[];
-  /** Some matches were cut: the counts and the list are a bounded view. */
-  readonly truncated: boolean;
-}
-
-export interface MessagePage {
-  readonly messages: readonly WebMessage[];
-  readonly nextCursor?: string;
-}
-
-export type CronRunStatus =
-  | "admitted" | "running" | "queued" | "succeeded" | "failed" | "cancelled"
-  | "skipped_overlap" | "dropped";
-export type CronHealth = "healthy" | "warning" | "unhealthy" | "disabled" | "unknown";
-
-export interface CronRun {
-  readonly projection: "summary";
-  readonly runId: string;
-  readonly jobId: string;
-  readonly scheduledAt: string;
-  readonly orderedAt: string;
-  readonly sequence: number;
-  readonly trigger: "scheduled" | "manual";
-  readonly status: CronRunStatus;
-  readonly startedAt?: string;
-  readonly completedAt?: string;
-  readonly artifactRunId?: string;
-  readonly text?: string;
-  readonly error?: string;
-  readonly failureKind?: string;
-  readonly blockedByRunId?: string;
-  readonly blockedByTrigger?: "scheduled" | "manual";
-  readonly queueDepth?: number;
-  readonly eventCount: number;
-  readonly fieldsTruncated?: readonly ("artifactRunId" | "error" | "failureKind" | "text")[];
-  readonly eventsTruncated?: true;
-}
-
-export interface CronJob {
-  readonly jobId: string;
-  readonly expression?: string;
-  readonly timezone?: string;
-  readonly conversationId: string;
-  readonly configured: boolean;
-  readonly declaredEnabled: boolean;
-  readonly effectiveEnabled: boolean;
-  readonly nextRunAt?: string;
-  readonly health: CronHealth;
-  readonly lastRun?: CronRun;
-  readonly activeRunId?: string;
-  readonly threadId: string;
-}
-
-export interface CronOverview {
-  readonly generatedAt: string;
-  readonly actionsEnabled: boolean;
-  readonly jobs: readonly CronJob[];
-  readonly degradedReason?: string;
-  readonly jobsTruncated?: true;
-}
-
-export interface CronRunPage {
-  readonly runs: readonly CronRun[];
-  readonly nextCursor?: string;
-  readonly messages?: readonly WebMessage[];
-}
-
-export interface UploadLimits {
-  readonly maxFileBytes: number;
-  readonly maxFilesPerTurn: number;
-  readonly maxTurnBytes: number;
-  readonly accept: readonly string[];
-}
-
-export interface Bootstrap {
-  readonly version: typeof API_VERSION;
-  readonly console: ConsoleIdentity;
-  readonly push: PushBootstrap;
-  /** Every discovered agent: the rail shows all of them at once. */
-  readonly agents: readonly AgentSummary[];
-  /** One page of ONE (agent, archived) bucket -- the one `threadsSourceId` names. */
-  readonly threads: readonly ThreadSummary[];
-  /** The bucket `threads` came from, or `null` when there is no agent to open on. */
-  readonly threadsSourceId: string | null;
-  /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
-  readonly threadsNextCursor: string | null;
-  readonly currentThreadId?: string;
-  readonly limits: UploadLimits;
-}
-
-export interface WebEvent {
-  readonly id: string;
-  readonly version: typeof API_VERSION;
-  readonly type:
-    | "ready"
-    | "agents.changed"
-    | "cron.changed"
-    | "threads.changed"
-    | "thread.changed"
-    | "message.changed"
-    | "message.delta"
-    | "turn.changed"
-    | "attachment.changed"
-    | "push.pending";
-  readonly at: string;
-  readonly threadId?: string;
-  readonly payload?: unknown;
-}
-
-export interface ModelCatalogPage {
-  readonly models: readonly CatalogModel[];
-  readonly nextCursor?: string;
-  readonly truncated: boolean;
-}
-
-/** One model served by an agent's lazy `/v1/models` catalog endpoint. */
-export interface AgentProvider {
-  readonly id: string;
-  readonly label: string;
-  readonly configured?: true;
-}
-
-export interface CatalogModel {
-  readonly id: string;
-  readonly name: string;
-  readonly provider: string;
-  readonly providerLabel: string;
-  readonly contextWindow?: number;
-  readonly reasoning?: boolean;
-  readonly effortLevels?: readonly string[];
-  readonly reasoningMode?: string;
-}
-
-export interface StartTurnInput {
-  readonly text?: string;
-  readonly quote?: WebQuote;
-  readonly attachmentIds?: readonly string[];
-  readonly model?: string;
-  readonly effort?: string;
-}
-
-export interface LiveInputReceipt {
-  readonly message: WebMessage;
-  readonly disposition: "pending" | "queued";
 }
 
 export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {

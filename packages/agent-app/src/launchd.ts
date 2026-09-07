@@ -11,7 +11,6 @@ import {
 import { MANAGED_LAUNCHD_MAINTENANCE_ENTRY_FILE } from "./launchd-maintenance-command.js";
 import {
   managedWebLogMaintenanceEnvironment,
-  MANAGED_WEB_LOG_MAINTENANCE_ENV,
 } from "./managed-web-maintenance-environment.js";
 
 export { MANAGED_WEB_LOG_MAINTENANCE_ENV } from "./managed-web-maintenance-environment.js";

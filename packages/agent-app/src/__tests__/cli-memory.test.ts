@@ -175,14 +175,17 @@ describe("runCli memory", () => {
   it("runs import prepare, apply, and restore from the temp-root alias and keeps plans outside the canonical root", async () => {
     const sourceRoot = join(await tempDir(), "memory");
     const destinationRoot = join(await tempDir(), "memory");
-    await seedLocalStore(sourceRoot);
+    // Remember uses content-derived ids. Shared fixture records need the same
+    // timestamp so they represent identical canonical memories in both stores.
+    const seededAt = new Date();
+    await seedLocalStore(sourceRoot, seededAt);
     const sourceOnly = createBujoMemoryStore({ root: sourceRoot });
     try {
-      await sourceOnly.appendHostSummary("source-only", "Portable source-only memory sentinel.");
+      await sourceOnly.remember("source-only", "Portable source-only memory sentinel.");
     } finally {
       await sourceOnly.close();
     }
-    await seedLocalStore(destinationRoot);
+    await seedLocalStore(destinationRoot, seededAt);
     const embeddings = deterministicEmbeddings("ollama:test-embed", 8);
     await safeRebuildMemoryIndex({ root: sourceRoot, tier: "bujo", embeddings, dim: 8 });
     await safeRebuildMemoryIndex({ root: destinationRoot, tier: "bujo", embeddings, dim: 8 });
@@ -234,7 +237,7 @@ describe("runCli memory", () => {
 
     const prepared = await captureCli(() => withCwd(destinationDir, () => withCleanMonoAgentEnv(() =>
       runCli(["memory", "import", "prepare", "--bundle", bundlePath, "--plan", planPath, "--json"]))));
-    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(prepared.code, prepared.stderr || prepared.stdout).toBe(0);
     const prepareResult = JSON.parse(prepared.stdout) as {
       readonly operation: string;
       readonly status: string;
@@ -319,7 +322,9 @@ describe("runCli memory", () => {
     const store = createBujoMemoryStore({ root: memoryRoot });
     let closed = false;
     try {
-      await store.appendHostSummary(privateConversation, privateText);
+      await store.persistCompletedTurn({ runId: "fixture-2", conversationId: privateConversation, summary: privateText });
+
+      await store.flush();
 
       const healthy = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() =>
         runCli(["memory", "audit", "--strict", "--json"]))));
@@ -565,19 +570,19 @@ describe("runCli memory", () => {
       },
     });
     try {
-      store.scheduleCapture("telegram:live", "private sentinel input");
+      await store.persistCompletedTurn({ runId: "private-capture", conversationId: "telegram:live", summary: "private sentinel input", captureText: "private sentinel input" });
       await store.flush();
 
       const audit = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli(["memory", "audit", "--json"]))));
       expect(audit.code).toBe(0);
       expect(JSON.parse(audit.stdout)).toMatchObject({
-        backlog: { captureQueue: 0 },
+        backlog: { completedTurnIntake: 0 },
         runtime: {
           available: true,
           stale: false,
           processAlive: true,
           state: "running",
-          queues: { capture: { completed: 1, queued: 0, inFlight: 0 } },
+          queues: { intake: { resolved: 1, pending: 0, retrying: 0 } },
         },
         cost: { known: true, embeddingCalls: 2, embeddingTexts: 2, llmCalls: 1 },
       });
@@ -843,7 +848,7 @@ describe("runCli memory", () => {
       },
     });
     await seedLocalStore(memoryRoot);
-    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
       return new Response(JSON.stringify({
         data: body.input.map((text, index) => ({
@@ -1256,7 +1261,7 @@ describe("runCli memory", () => {
     const prepared = await captureCli(() => withCwd(dir, () => withCleanMonoAgentEnv(() => runCli([
       "memory", "forget", "prepare", "--ids-file", idsFile, "--reason", "failure_test", "--plan", planPath, "--json",
     ]))));
-    expect(prepared.code, prepared.stderr).toBe(0);
+    expect(prepared.code, prepared.stderr || prepared.stdout).toBe(0);
     const beforeSource = bujoMemory.readBujoCanonicalSourceFingerprint(memoryRoot);
     const beforeDb = openMemoryDb({ path: await resolveActiveMemoryDbPath(memoryRoot), readOnly: true });
     const beforeIntegrity = beforeDb.logicalIntegrityDigest();
@@ -1672,11 +1677,11 @@ describe("runCli memory", () => {
   });
 });
 
-async function seedLocalStore(root: string): Promise<void> {
-  const store = createBujoMemoryStore({ root });
+async function seedLocalStore(root: string, seededAt?: Date): Promise<void> {
+  const store = createBujoMemoryStore({ root, ...(seededAt === undefined ? {} : { clock: () => seededAt }) });
   try {
-    await store.appendHostSummary("conv-1", "Deploy pipeline uses blue green releases.");
-    await store.appendHostSummary("conv-2", "Memory preview should show source metadata.");
+    await store.remember("conv-1", "Deploy pipeline uses blue green releases.");
+    await store.remember("conv-2", "Memory preview should show source metadata.");
   } finally {
     await store.close();
   }
@@ -1972,7 +1977,7 @@ async function failingEmbeddingServer(beforeFailure: () => Promise<void>): Promi
   readonly close: () => Promise<void>;
 }> {
   let requests = 0;
-  const server = createServer((req, res) => {
+  const server = createServer((_req, res) => {
     void (async () => {
       requests += 1;
       await beforeFailure();

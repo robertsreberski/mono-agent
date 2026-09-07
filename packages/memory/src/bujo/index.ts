@@ -139,13 +139,9 @@ export type { LlmComplete, LlmCompleteOptions } from "./llm.js";
 export { MemoryModelError, MemoryModelOutputError } from "./model-error.js";
 export type { MemoryModelKind } from "./model-error.js";
 
-// Opt-in direct-capture surface for embedders and offline calibration tooling. The bundled harness
-// does not call the loose `captureTurn` path; `captureTurnStrict` also remains the internal engine
-// behind `persistCompletedTurn`.
-export { captureTurn, captureTurnStrict } from "./capture.js";
+export { captureTurnStrict } from "./capture.js";
 export type { CaptureTurnResult } from "./capture.js";
 export {
-  extractCapturePlan,
   extractCapturePlanStrict,
   MAX_CAPTURE_ENTITIES,
   MAX_CAPTURE_MEMORIES,
@@ -174,7 +170,7 @@ export type { CandidateMemory } from "./distill.js";
 export { reconcile } from "./reconcile.js";
 export { reconcileBatch } from "./reconcile.js";
 export type { ReconcileAction, ReconcileDeps } from "./reconcile.js";
-export type { Extraction, ExtractedEntity, ExtractedRelation } from "./entities.js";
+export type { ExtractedEntity, ExtractedRelation } from "./entities.js";
 export { appendAssociation, appendGraphBatch, readGraph } from "./graph.js";
 export type { GraphBatchInput, GraphBatchResult } from "./graph.js";
 export { auditCanonicalGraphParity } from "./graph-parity.js";

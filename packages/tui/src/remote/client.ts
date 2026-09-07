@@ -5,14 +5,18 @@ import {
   MAX_INFO_PROVIDER_ID_BYTES,
   MAX_INFO_PROVIDER_ITEMS,
   MAX_INFO_PROVIDER_LABEL_BYTES,
-  parseAgentStreamFrame,
   type AgentMessageStream,
   type AgentRequestBase,
   type AgentResponder,
   type AgentResponse,
 } from "@mono-agent/agent-contracts";
 
-import { fetchLongLivedTurn } from "./long-lived-fetch.js";
+import {
+  fetchLongLivedTurn,
+  operatorResponseFromFinishFrame,
+  OperatorStreamFrameTooLargeError,
+  readOperatorStreamFrames,
+} from "@mono-agent/operator-adapter/client";
 
 const MAX_REMOTE_FRAME_BYTES = 1024 * 1024;
 
@@ -24,8 +28,7 @@ export interface RemoteAgentResponderOptions {
 }
 
 /**
- * Bounded provider summary from `/v1/info` — mirrors the operator-adapter's
- * `TuiProviderInfo` without importing it, so the TUI stays dependency-free.
+ * Bounded provider summary from `/v1/info`.
  * Older agents that omit `providers` degrade to the flat model shortlist.
  *
  * The BOUNDS are not mirrored: they come from `@mono-agent/agent-contracts`, the
@@ -154,48 +157,23 @@ export class RemoteAgentResponder implements AgentResponder {
     }
 
     const feed = frameFeedingMessageStream(stream);
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffered = "";
     try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        buffered += done ? decoder.decode() : decoder.decode(value, { stream: true });
-        const lines = buffered.split("\n");
-        buffered = lines.pop() ?? "";
-        assertRemoteFrameSize(buffered);
-        for (const line of lines) {
-          if (line.length === 0) {
-            continue;
-          }
-          assertRemoteFrameSize(line);
-          const frame = parseAgentStreamFrame(line);
-          if (frame.kind === "finish") {
-            return {
-              ...(frame.finalText === undefined ? {} : { text: frame.finalText }),
-              ...(frame.metadata === undefined ? {} : { metadata: frame.metadata }),
-            };
-          }
-          if (frame.kind === "error") {
-            if (frame.cancelled === true) {
-              throw new AgentResponseCancelledError(frame.message);
-            }
-            throw new RemoteAgentResponderError(frame.message, frame.code);
-          }
-          await feed(frame);
+      for await (const frame of readOperatorStreamFrames(response.body, MAX_REMOTE_FRAME_BYTES)) {
+        if (frame.kind === "finish") return operatorResponseFromFinishFrame(frame);
+        if (frame.kind === "error") {
+          if (frame.cancelled === true) throw new AgentResponseCancelledError(frame.message);
+          throw new RemoteAgentResponderError(frame.message, frame.code);
         }
-        if (done) {
-          break;
-        }
+        await feed(frame);
       }
     } catch (error) {
       if (request.abortSignal.aborted && !(error instanceof AgentResponseCancelledError)) {
         throw new AgentResponseCancelledError();
       }
+      if (error instanceof OperatorStreamFrameTooLargeError) {
+        throw new RemoteAgentResponderError(error.message, "frame_too_large");
+      }
       throw error;
-    } finally {
-      // Idempotent; also tears the socket down on early return/throw.
-      await reader.cancel().catch(() => undefined);
     }
     throw new RemoteAgentResponderError("Stream ended without a finish or error frame.");
   }
@@ -282,14 +260,6 @@ async function readBoundedBody(
     await reader.cancel().catch(() => undefined);
   }
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8");
-}
-
-function assertRemoteFrameSize(frame: string): void {
-  if (Buffer.byteLength(frame, "utf8") <= MAX_REMOTE_FRAME_BYTES) return;
-  throw new RemoteAgentResponderError(
-    `Agent stream frame exceeds the ${String(MAX_REMOTE_FRAME_BYTES)}-byte client limit.`,
-    "frame_too_large",
-  );
 }
 
 /**

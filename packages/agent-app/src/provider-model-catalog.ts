@@ -205,7 +205,6 @@ export function buildProviderModelCatalog(
     );
     return embeddingRefs.has(`${ref.provider}:${model?.name ?? ref.model}`);
   };
-  const configuredRouteKeys = new Set(configuredRoutes.map((ref) => modelReferenceKey(ref)));
   // `providers` is the operator's explicit support list, and a route's own
   // provider is supported by construction — you cannot route through a provider
   // you did not mean to use. Either one marks the provider configured, so a

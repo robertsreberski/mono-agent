@@ -14,7 +14,6 @@ import {
 } from "../../../agent/tools/pi-bridge.js";
 import { createNodeReplController } from "../../../agent/tools/node-repl.js";
 import { createWebToolController } from "../../../agent/tools/web-controller.js";
-import { readToolRuntime } from "../../../agent/tools/shared/runtime-context.js";
 import { formatLiveInputGuidance } from "../../live-input-prompt.js";
 import { createPiHarnessAdapter } from "./harness-adapter.js";
 import { appendStructuredOutputInstruction } from "./structured-output.js";
@@ -62,7 +61,7 @@ export async function buildTurnTools(runState, {
   // per-run policy DATA (sandboxPolicy) still merges monotonically inside
   // resolveSandboxPolicy (I13) regardless of which impl is chosen.
   const runCtx = options.sandbox
-    ? { ...(options.toolContext ?? readToolRuntime()), sandbox: options.sandbox }
+    ? { ...options.toolContext, sandbox: options.sandbox }
     : options.toolContext;
   const sandboxEngine = options.sandboxEngine ?? runCtx?.sandboxEngine;
   const nodeReplController = capabilities.tool_use === false

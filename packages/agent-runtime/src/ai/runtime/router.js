@@ -82,7 +82,7 @@ import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
  * Returned options are never copied into router telemetry.
  * @property {AgentRuntimeInstance} [runtime]
  * @property {Object<string, *>} [options]
- * @property {{allowedTools?: ReadonlyArray<string>, disallowedTools?: ReadonlyArray<string>, permissionMode?: string}} [policyOptions]
+ * @property {{allowedTools?: ReadonlyArray<string>, disallowedTools?: ReadonlyArray<string>}} [policyOptions]
  * Provider-specific projection of the logical tool policy. This deliberately
  * cannot replace any other protected request field.
  * @property {() => (void|Promise<void>)} [cleanup]
@@ -97,7 +97,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
   "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
-  "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
+  "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
   "webSearchState",
   "outputSchema", "liveInput", "toolEnvironment",
@@ -635,7 +635,7 @@ function normalizeAttemptResolution(value) {
   };
 }
 
-const ATTEMPT_POLICY_OPTION_KEYS = new Set(["allowedTools", "disallowedTools", "permissionMode"]);
+const ATTEMPT_POLICY_OPTION_KEYS = new Set(["allowedTools", "disallowedTools"]);
 
 function normalizeAttemptPolicyOptions(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -650,9 +650,6 @@ function normalizeAttemptPolicyOptions(value) {
     if (value[key] !== undefined && !Array.isArray(value[key])) {
       throw new Error(`route attempt resolver policyOptions.${key} must be an array or undefined`);
     }
-  }
-  if (value.permissionMode !== undefined && typeof value.permissionMode !== "string") {
-    throw new Error("route attempt resolver policyOptions.permissionMode must be a string or undefined");
   }
   return value;
 }

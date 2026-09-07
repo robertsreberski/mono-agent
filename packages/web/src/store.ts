@@ -26,7 +26,6 @@ import {
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
-  WEB_MAX_TURN_TEXT_CHARACTERS,
   type WebAgentProvider,
   type WebAgentRunSettings,
   type WebAgentSummary,
@@ -296,19 +295,6 @@ interface PushEventRow {
   topic: string;
   expires_at: string;
   created_at: string;
-}
-
-interface PushDeliveryRow {
-  event_id: string;
-  subscription_id: string;
-  status: string;
-  attempts: number;
-  next_attempt_at: string;
-  last_status_code: number | null;
-  last_error_code: string | null;
-  created_at: string;
-  updated_at: string;
-  finished_at: string | null;
 }
 
 export type WebPushEventKind =
@@ -1457,10 +1443,6 @@ export class WebStore {
     };
   }
 
-  reconcileCronRuns(sourceId: string, jobId: string, runs: readonly WebCronRun[]): WebMessage[] {
-    return [...this.reconcileCronRunsResult(sourceId, jobId, runs).messages];
-  }
-
   reconcileCronRunsResult(
     sourceId: string,
     jobId: string,
@@ -2415,7 +2397,7 @@ export class WebStore {
     }
     const limit = boundedPageLimit(input.limit, WEB_MESSAGE_PAGE_MAX);
     const cursor = input.before === undefined ? undefined : decodeMessageCursor(input.before);
-    const rank = messageRoleRankSql("m", "t");
+    const rank = messageRoleRankSql("m");
     const orderedAt = "COALESCE(t.started_at, m.created_at)";
     const beforeSql = cursor === undefined ? "" : `AND (
       ${orderedAt} < ?
@@ -3414,11 +3396,6 @@ export class WebStore {
       status: WebMessageStatus;
     } | undefined;
     return row?.status;
-  }
-
-  threadIdForTurn(turnId: string): string | undefined {
-    const row = this.database.prepare("SELECT thread_id FROM turns WHERE id = ?").get(turnId) as unknown as { thread_id: string } | undefined;
-    return row?.thread_id;
   }
 
   ensureWebPushIdentity(generate: () => { readonly publicKey: string; readonly privateKey: string }): WebPushIdentity {
@@ -5559,7 +5536,7 @@ function parseStoredCronRun(serialized: string): WebCronRunSummary {
   return run as WebCronRunSummary;
 }
 
-function messageRoleRankSql(messageAlias: string, turnAlias: string): string {
+function messageRoleRankSql(messageAlias: string): string {
   return `CASE WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'user' THEN 0
     WHEN ${messageAlias}.turn_id IS NOT NULL AND ${messageAlias}.role = 'system' THEN 1
     WHEN ${messageAlias}.turn_id IS NOT NULL THEN 2 ELSE 3 END`;

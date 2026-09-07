@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { type FileHandle, lstat, open, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { type FileHandle, lstat, open, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import process from "node:process";
 
@@ -18,7 +18,6 @@ import { formatChannelFactValue } from "./channel-fact-format.js";
 import { formatHumanChannelSections } from "./channel-status-display.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
 import {
-  bootout,
   bootstrap,
   buildLaunchdMaintenancePlistXml,
   buildPlistXml,
@@ -1122,13 +1121,6 @@ async function readExactFileHandle(handle: FileHandle, size: number, description
     offset += result.bytesRead;
   }
   return contents;
-}
-
-function assertOwnerDirectory(details: Stats, path: string, description: string): void {
-  if (!details.isDirectory() || details.isSymbolicLink()) {
-    throw new Error(`${description} ${path} must be a real directory.`);
-  }
-  assertCurrentUserOwns(details, path, description);
 }
 
 function assertOwnerRegularFile(details: Stats, path: string, description: string): void {

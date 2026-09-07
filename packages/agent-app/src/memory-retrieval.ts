@@ -9,12 +9,10 @@ import type {
   MemoryCompletedTurnResult,
   MemoryLoadOptions,
   MemoryStore,
-  MemoryWriteResult,
 } from "@mono-agent/agent-contracts";
 import {
   AUTO_RECALL_BACKEND_HITS,
   AUTO_RECALL_MAX_BYTES,
-  AUTO_RECALL_MAX_HITS,
   isConversationRelativeQuery,
   MARKER_FOR,
   selectAutomaticRecallHits,
@@ -223,10 +221,6 @@ export class MemoryRetrievalService implements MemoryStore {
     if (fresh.length > 0) this.store.recordAccess(fresh);
   }
 
-  appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
-    return this.store.appendHostSummary(conversationId, summary);
-  }
-
   supportsRemember(): boolean {
     // Both halves, not just the signal: advertising a write surface whose
     // method is absent would fail every call instead of never appearing.
@@ -258,10 +252,6 @@ export class MemoryRetrievalService implements MemoryStore {
     // backend searches and re-record access telemetry.
     if (!result.duplicate) this.releaseAllTurns();
     return result;
-  }
-
-  scheduleCapture(conversationId: string, text: string): void {
-    this.store.scheduleCapture?.(conversationId, text);
   }
 
   async flush(): Promise<void> {

@@ -1523,7 +1523,7 @@ export class WebService {
     }
     const attachmentIds = input.attachmentIds ?? [];
     const selection = this.resolveTurnSelection(threadId, input.model, input.effort);
-    const { thread, agent, model, effort, requestedModel, requestedEffort } = selection;
+    const { thread, model, effort, requestedModel, requestedEffort } = selection;
     threadId = thread.id;
     const connection = this.connections.get(thread.sourceId);
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();

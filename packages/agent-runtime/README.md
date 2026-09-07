@@ -79,14 +79,13 @@ See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-rep
 
 ## Architecture
 
-The package uses a fixed registry of bridge descriptors and loads provider code
-only after a run selects a matching model reference and execution mode:
+The package validates each model reference and lazily loads the sole Pi bridge:
 
 ### Data flow
 
 1. `createRuntime()` binds host callbacks and creates an isolated tool context.
-2. `resolveRuntimeBridge()` resolves the single static bridge descriptor.
-3. The selected descriptor lazily imports its provider implementation.
+2. `resolveRuntimeBridge()` validates the canonical model reference.
+3. The resolver directly imports the Pi implementation.
 4. The bridge prepares the runtime inputs it supports, including managed or MCP
    tools only where that bridge can represent them, and streams normalized
    events through the lifecycle gate.
@@ -102,7 +101,7 @@ only after a run selects a matching model reference and execution mode:
 | Source area | Responsibility |
 | --- | --- |
 | `src/runtime.js` | Host binding, per-instance tool context, bridge dispatch, and observer flushing |
-| `src/ai/runtime/` | Model-reference parsing, the lazy bridge registry, capabilities, sessions, and fallback routing |
+| `src/ai/runtime/` | Model-reference parsing, the direct Pi resolver, capabilities, sessions, and fallback routing |
 | `src/ai/providers/` | Pi provider integrations |
 | `src/agent/tools/` | Managed tools, MCP adaptation, output limits, and the injectable sandbox seam |
 | `src/agent/` | Approvals, allowlists, transcript snapshots, and compaction policy helpers |
@@ -192,7 +191,6 @@ ALLOWLIST_MODE_ALL
 ALLOWLIST_MODE_CUSTOM
 APPROVAL_DECISIONS
 BINARY_BLOAT_TOOLS
-BridgeSpec
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
 MAX_TOOL_RESULT_BYTES
@@ -215,7 +213,6 @@ UNKNOWN_CAPABILITY
 buildCapabilitiesUsed
 buildTranscriptTailSnapshot
 checkPiProviderAuth
-configureToolRuntime
 createApprovalManager
 createMetricsObserver
 createObserverHub
@@ -243,12 +240,9 @@ normalizeRuntimeModelReference
 parseRuntimeModelReference
 parseStoredAllowlist
 piNativeRuntimeBridge
-readRuntimeBrand
-readToolRuntime
 reasoningLevelsForPiModel
 refreshProviderSession
 renderResumeSnapshot
-resetToolRuntime
 resolveAgentCompactionPolicy
 resolveAllowlist
 resolveAllowlistMap
@@ -305,12 +299,9 @@ storedAllowlistMode
 
 ```text
 AgentCompactionPolicy
-DEPRECATED_SETTINGS_WARNING_KIND
-deprecatedSettingsWarning
 estimateFixedOverheadTokens
 isLikelyContextTermination
 resolveAgentCompactionPolicy
-resolveRuntimePolicyInputs
 ```
 
 **`@mono-agent/agent-runtime/agent/prompt/skill-index.js`**
@@ -370,16 +361,20 @@ resolveRgPath
 ripgrepMissingMessage
 ```
 
-**`@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js`**
+**`@mono-agent/agent-runtime/agent/tools/shared/tool-context.js`**
 
 ```text
+RuntimeBrand
+RuntimeSandbox
+RuntimeSandboxEngine
+SandboxPolicy
 ToolContext
-ToolRuntimeContext
-configureToolRuntime
-readRuntimeBrand
-readToolRuntime
-resetToolRuntime
+ToolContextOptions
+createToolContext
+requestToolProcessEnvironment
+requireToolContext
 resolveSandboxPolicy
+updateToolContext
 ```
 
 **`@mono-agent/agent-runtime/agent/transcript.js`**
@@ -393,7 +388,6 @@ renderResumeSnapshot
 **`@mono-agent/agent-runtime/ai`**
 
 ```text
-BridgeSpec
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -514,7 +508,6 @@ parseRuntimeModelReference
 **`@mono-agent/agent-runtime/ai/runtime/registry.js`**
 
 ```text
-BridgeSpec
 RUNTIME_CAPABILITIES
 RuntimeBridge
 RuntimeBridgeDescriptor
@@ -545,10 +538,10 @@ runtimeCapabilities
 | Need | Use this | Use Vercel AI SDK | Use Claude Agent SDK |
 |---|---|---|---|
 | Streaming chat UI in React/Next | ✗ | ✓ | ✗ |
-| Multi-provider portability | ✓ (6 bridges, 15+ providers) | partial | ✗ |
-| CLI providers (claude/codex/opencode binaries) | ✓ | ✗ | ✗ |
+| Multi-provider portability | ✓ (Pi provider catalog) | partial | ✗ |
+| Provider CLI runtime bridges | ✗ | ✗ | ✗ |
 | Provider fallback on rate limit / overload | ✓ (`createRouterRuntime`) | ✗ | ✗ |
-| Context handling delegated to the provider (no host auto-summarization) | ✓ | ✓ | ✓ |
+| Adaptive context compaction | ✓ | host-owned | ✓ |
 | Transcript-tail resume after provider drops | ✓ | ✗ | ✗ |
 | Tool-output bloat guard + artifact persistence | ✓ | ✗ | ✗ |
 | MCP transports out of the box (stdio/SSE/HTTP) | ✓ | partial | ✓ |
@@ -557,6 +550,25 @@ runtimeCapabilities
 | Edge-runtime compatibility | ✗ | ✓ | partial |
 
 Honest summary: if the agent runs **without a human watching the screen** for minutes-to-hours and **must survive provider blips**, this is the right tool. If a human is watching a streaming chat, Vercel's SDK is the right tool. Both can coexist in the same app.
+
+### Direct tool calls
+
+Normal hosts use `createRuntime()` or `createMonoRuntime()`, which bind one
+context per runtime. Direct filesystem, shell, web, and MCP helper calls must
+supply their owning context explicitly. Missing context fails before execution.
+The removed process-global `runtime-context.js` entrypoint has no fallback.
+
+```js
+import { createToolContext } from "@mono-agent/agent-runtime/agent/tools/shared/tool-context.js";
+import { readToolImpl } from "@mono-agent/agent-runtime/agent/tools/index.js";
+
+const ctx = createToolContext({ workspace: process.cwd() });
+const text = await readToolImpl({ file_path: "README.md" }, { ctx });
+```
+
+Supply `sandbox` and `sandboxPolicy` on that context when enforcing a host
+sandbox. `updateToolContext(ctx, next)` updates only the selected context;
+`runtime.configureTools(next)` remains the normal host API.
 
 ### Model references
 
@@ -866,7 +878,7 @@ Behaviour:
   index. Its `cleanup` runs after each attempt.
 - `resolveAttempt().policyOptions` is the narrow host seam for translating one
   logical tool policy into the active provider's representation. It may replace
-  only `allowedTools`, `disallowedTools`, and `permissionMode`; the resolver's
+  only `allowedTools` and `disallowedTools`; the resolver's
   general `options` bag still cannot replace protected request fields.
 
 Chain entries can require backend capabilities via `requires: { structured_output: true, supports_mcp: true, ... }`; entries that don't satisfy the requirements are skipped (logged in `failoverHistory` as `failureKind: "skipped_capability_mismatch"`).
@@ -1002,11 +1014,11 @@ lifecycle event. A successful retry then emits a new exact `context_usage`
 snapshot, allowing consumers to discard the pre-compaction value rather than
 guessing the resulting occupancy from the compaction estimate.
 Persistent overflow is classified as `context_limit`, allowing the fallback router to
-try the next configured model. The other backends manage their windows per their own behavior.
+try the next configured model.
 (`docs/reference/feature-registry.md` is the source of truth for this row.)
 
 Hosts pass the typed `RuntimeCompactionPolicy` through `runOptions.compaction`; the
-deprecated programmatic `agent_compaction_*` settings remain a compatibility fallback.
+flat `runOptions.settings` inputs are rejected with migration instructions.
 The config-first host exposes this as `runtime.compaction.*` plus matching
 `MONO_AGENT_COMPACTION_*` variables. Omitted values resolve against effective window
 `W`: trigger ratio `0.70`; safety headroom `clamp(floor(W × 0.25), 16000, 96000)`;
@@ -1028,7 +1040,7 @@ import { parseRuntimeModelReference } from "@mono-agent/agent-runtime/ai/runtime
 import { classifyFailure, FAILURE_KINDS } from "@mono-agent/agent-runtime/ai/failure.js";
 import { resolvePricing, estimateCost } from "@mono-agent/agent-runtime/ai/cost.js";
 import { resolveAgentCompactionPolicy, isLikelyContextTermination } from "@mono-agent/agent-runtime/agent/compaction.js";
-import { configureToolRuntime, readToolRuntime } from "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js";
+import { createToolContext, updateToolContext } from "@mono-agent/agent-runtime/agent/tools/shared/tool-context.js";
 // see package.json "exports" for the full mapped set
 ```
 
@@ -1038,7 +1050,7 @@ These are stable but treated as advanced API. Most consumers should reach for `c
 
 This package has zero `@mono-agent/*` workspace dependencies. Its runtime core
 uses `@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`,
-`@modelcontextprotocol/sdk`, `@vscode/ripgrep`, `cross-spawn`, and `zod`.
+`@modelcontextprotocol/sdk`, `@vscode/ripgrep`, and `zod`.
 Managed web extraction owns its direct parser dependencies: Defuddle,
 Readability, linkedom, Turndown, fast-xml-parser, and unpdf. Image inspection
 uses bmp-ts and sharp.

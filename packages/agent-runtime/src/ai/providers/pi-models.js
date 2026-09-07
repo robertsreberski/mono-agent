@@ -4,7 +4,7 @@
 // `undefined` on an unknown provider/model exactly like the old `getModel`.
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { getBuiltinModel as getPiModel } from "@earendil-works/pi-ai/providers/all";
-import { readRuntimeBrand } from "../../agent/tools/shared/runtime-context.js";
+import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
 
 export const EMPTY_USAGE = {
   input: 0,
@@ -26,7 +26,7 @@ function openAiCompatBaseUrl(provider) {
 }
 
 function customProviderName(provider, brand) {
-  return `${(brand ?? readRuntimeBrand()).providerModelPrefix}-${provider.id}`;
+  return `${(brand ?? DEFAULT_RUNTIME_BRAND).providerModelPrefix}-${provider.id}`;
 }
 
 function customProviderKey(provider, isPrivate) {

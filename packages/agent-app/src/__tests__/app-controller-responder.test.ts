@@ -218,8 +218,8 @@ describe("reply artifact responder composition", () => {
     };
     const memory = {
       async load() { return undefined; },
-      async appendHostSummary(conversationId: string) {
-        return { conversationId, source: "composition-test", bytesWritten: 0 };
+      async persistCompletedTurn(turn: { runId: string; conversationId: string }) {
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "composition-test", bytesWritten: 0, admissionStatus: "admitted" as const };
       },
     };
     const controller: ResponderControllerPort = {
@@ -534,8 +534,8 @@ async function createRouteGuardFixture(
   });
   const memory = {
     async load() { return undefined; },
-    async appendHostSummary(conversationId: string) {
-      return { conversationId, source: "route-guard-test", bytesWritten: 0 };
+    async persistCompletedTurn(turn: { runId: string; conversationId: string }) {
+      return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "route-guard-test", bytesWritten: 0, admissionStatus: "admitted" as const };
     },
   };
   const sandboxEngine = {

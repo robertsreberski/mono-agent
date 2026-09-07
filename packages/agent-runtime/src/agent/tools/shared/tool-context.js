@@ -4,15 +4,9 @@
 // (output-truncation, ripgrep, path-resolver, pi-bridge, the tool impls) need
 // to resolve workdirs, artifact paths, the ripgrep binary, sandbox policy, and
 // host-specific brand strings. `createRuntime` builds ONE context per runtime
-// instance and threads it to every bridge via `options.toolContext`; tools read
-// from it instead of a process-global. This replaces the former one-per-process
-// singleton (see runtime-context.js) that clobbered its fields when a
-// long-lived host created more than one runtime.
-//
-// This module is pure: it owns no module-level state. The default/back-compat
-// singleton lives in runtime-context.js, which builds its own ToolContext with
-// createToolContext and mutates it with updateToolContext. Every internal read
-// site falls back to that default via `ctx ?? readToolRuntime()`.
+// instance and threads it to every bridge via `options.toolContext`. Direct
+// tool callers create and pass their own context explicitly. No process-global
+// tool context exists.
 //
 // Recognized keys:
 //   workspace        — fallback for tool workdir resolution. Default: process.cwd().
@@ -67,9 +61,13 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
  * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment]
  */
 
+/**
+ * @typedef {Omit<Partial<ToolContext>, 'runtimeBrand'> & {runtimeBrand?: Partial<RuntimeBrand>}} ToolContextOptions
+ */
+
 // The data keys (everything except the always-resolved runtimeBrand). A fixed
 // list — not `Object.keys(ctx)` — so an unknown key on `next` is ignored, matching
-// the historical configureToolRuntime contract.
+// the supported tool-context contract.
 const TOOL_CONTEXT_KEYS = /** @type {const} */ ([
   "workspace",
   "repoRoot",
@@ -87,7 +85,7 @@ const TOOL_CONTEXT_KEYS = /** @type {const} */ ([
  * Build a fresh ToolContext from a partial input. `runtimeBrand` is always
  * resolved (to the defaults when absent); the remaining keys default to
  * undefined and are copied from `input` when present.
- * @param {Partial<ToolContext>} [input]
+ * @param {ToolContextOptions} [input]
  * @returns {ToolContext}
  */
 export function createToolContext(input = {}) {
@@ -114,10 +112,9 @@ export function createToolContext(input = {}) {
  * leaving untouched keys as-is. Mutating in place (rather than returning a
  * copy) is deliberate: `createRuntime` threads a single context object to its
  * bridges and `configureTools` updates that same reference so subsequent runs
- * observe the change — the instance-scoped equivalent of the old global
- * configureToolRuntime.
+ * observe the change — the configuration owned by this runtime.
  * @param {ToolContext} ctx
- * @param {Partial<ToolContext>} [next]
+ * @param {ToolContextOptions} [next]
  * @returns {ToolContext}
  */
 export function updateToolContext(ctx, next = {}) {
@@ -126,6 +123,14 @@ export function updateToolContext(ctx, next = {}) {
     // looked-up value type with `key` across two independent indexed accesses
     // (a known structural limitation, not a real type hazard here).
     if (key in next) ctx[key] = /** @type {any} */ (next)[key];
+  }
+  if ("toolEnvironment" in next) {
+    const environment = next.toolEnvironment;
+    ctx.toolEnvironment = environment === undefined ? undefined : {
+      schema: 1,
+      values: { ...environment.values },
+      ...(environment.pathPrepend === undefined ? {} : { pathPrepend: [...environment.pathPrepend] }),
+    };
   }
   if (next.sandbox !== undefined) {
     ctx.sandbox = next.sandbox;
@@ -137,16 +142,14 @@ export function updateToolContext(ctx, next = {}) {
 }
 
 /**
- * Reset every data key to undefined and the brand back to the defaults.
- * @param {ToolContext} ctx
+ * Reject missing execution context before a tool can drop host policy.
+ * @param {ToolContext|null|undefined} ctx
  * @returns {ToolContext}
  */
-export function resetToolContext(ctx) {
-  for (const key of TOOL_CONTEXT_KEYS) {
-    ctx[key] = /** @type {any} */ (undefined);
+export function requireToolContext(ctx) {
+  if (!ctx) {
+    throw new Error("Tool execution requires an explicit ToolContext; use createToolContext() and pass it as ctx.");
   }
-  ctx.sandbox = passthroughSandbox;
-  ctx.runtimeBrand = { ...DEFAULT_RUNTIME_BRAND };
   return ctx;
 }
 

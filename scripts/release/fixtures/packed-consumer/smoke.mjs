@@ -29,6 +29,26 @@ for (const specifier of importSpecifiers) {
   }
 }
 
+if (packageNames.includes("@mono-agent/agent-app")) {
+  const appManifest = packageManifests.get("@mono-agent/agent-app");
+  if (typeof appManifest.bin === "object" && appManifest.bin["mono-agent-memory-recall"] !== undefined) {
+    throw new Error("Packed app still publishes the retired memory-recall binary.");
+  }
+  await assertRemovedImport("@mono-agent/observability/otel", "ERR_PACKAGE_PATH_NOT_EXPORTED");
+  if (target === "@mono-agent/agent-app") {
+    await assertRemovedImport("@mono-agent/observability-phoenix", "ERR_MODULE_NOT_FOUND");
+    await assertRemovedImport("@opentelemetry/otlp-transformer", "ERR_MODULE_NOT_FOUND");
+    await assertRemovedImport("@opentelemetry/sdk-trace-base", "ERR_MODULE_NOT_FOUND");
+  }
+}
+
+if (packageNames.includes("@mono-agent/agent-runtime")) {
+  await assertRemovedImport(
+    "@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js",
+    "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  );
+}
+
 const cliSmokes = [
   { packageName: "@mono-agent/agent-app", binName: "mono-agent", args: ["--help"], statuses: [0] },
   { packageName: "@mono-agent/tui", binName: "mono-agent-tui", args: ["--help"], statuses: [0] },
@@ -73,6 +93,16 @@ console.log(
 
 async function readInstalledManifest(name) {
   return JSON.parse(await readFile(join(installedPackageDirectory(name), "package.json"), "utf8"));
+}
+
+async function assertRemovedImport(specifier, expectedCode) {
+  try {
+    await import(specifier);
+  } catch (error) {
+    if (error?.code === expectedCode) return;
+    throw new Error(`Expected ${specifier} to be unavailable with ${expectedCode}, got ${error?.code}.`, { cause: error });
+  }
+  throw new Error(`Retired or unconfigured package surface remains importable: ${specifier}`);
 }
 
 function installedPackageDirectory(name) {

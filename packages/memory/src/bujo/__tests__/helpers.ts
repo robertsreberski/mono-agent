@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import type { MemoryCompletedTurnResult } from "@mono-agent/agent-contracts";
+import type { BujoMemoryStore } from "../store.js";
 import type { EmbeddingProvider } from "../../search/index.js";
 import type { LlmComplete } from "../llm.js";
 
@@ -39,4 +42,26 @@ export function fakeLlm(responses: ReadonlyArray<readonly [match: string, reply:
       return "[]";
     },
   };
+}
+
+/** Admit a summary and await its canonical projection, without waiting for Journal vectors. */
+export async function projectSummary(
+  store: BujoMemoryStore,
+  conversationId: string,
+  summary: string,
+): Promise<MemoryCompletedTurnResult> {
+  const result = await store.persistCompletedTurn({ runId: randomUUID(), conversationId, summary });
+  const deadline = Date.now() + 20_000;
+  while ((store.queueSnapshot().intake?.pending ?? 0) > 0) {
+    if (Date.now() > deadline) throw new Error("Completed-turn summary projection did not settle.");
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
+  }
+  if ((store.queueSnapshot().intake?.dead ?? 0) > 0) throw new Error("Completed-turn summary projection failed.");
+  return result;
+}
+
+/** Exercise completed-turn capture and wait for downstream work before assertions. */
+export async function projectCapture(store: BujoMemoryStore, conversationId: string, captureText: string): Promise<void> {
+  await store.persistCompletedTurn({ runId: randomUUID(), conversationId, summary: captureText, captureText });
+  await store.flush();
 }

@@ -11,8 +11,9 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
+import type { MemoryCompletedTurn, MemoryCompletedTurnResult } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
-import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
+import { createBujoMemoryStore, inspectCompletedTurnIntake } from "@mono-agent/memory/bujo";
 import type {
   PhoenixExporterConfig,
   RunExportContext,
@@ -76,11 +77,12 @@ describe("createConfiguredMemory — bujo mode", () => {
     })).rejects.toThrow(/requires memory\.embeddings and memory\.llm/i);
   });
 
-  it("BujoMemoryStore.appendHostSummary writes into <root>/daily/ (proves bujo, not markdown)", async () => {
+  it("BujoMemoryStore completed-turn admission writes a durable daily summary", async () => {
     const dir = await tempDir();
     const memoryRoot = join(dir, "bujo-memory");
     const store = createBujoMemoryStore({ root: memoryRoot, embeddings: fakeEmbeddings, dim: 768 });
-    await store.appendHostSummary("conv-1", "A summary of this turn.");
+    await store.persistCompletedTurn({ runId: "summary-run", conversationId: "conv-1", summary: "A summary of this turn." });
+    await store.flush();
     await store.close();
 
     const files = await readdir(join(memoryRoot, "daily"));
@@ -88,28 +90,28 @@ describe("createConfiguredMemory — bujo mode", () => {
     expect(files[0]).toMatch(/^\d{4}-\d{2}-\d{2}\.md$/u);
   });
 
-  it("BujoMemoryStore exposes load, appendHostSummary, and capture (full contract)", async () => {
+  it("BujoMemoryStore exposes load and completed-turn admission", async () => {
     const dir = await tempDir();
 
     const bujoStore = createBujoMemoryStore({ root: join(dir, "bujo-memory"), embeddings: fakeEmbeddings, dim: 768 });
 
     expect(typeof bujoStore.load).toBe("function");
-    expect(typeof bujoStore.appendHostSummary).toBe("function");
-    expect(typeof bujoStore.capture).toBe("function");
+    expect(typeof bujoStore.persistCompletedTurn).toBe("function");
+    expect(bujoStore).not.toHaveProperty("capture");
     await bujoStore.close();
   });
 
-  it("lite-tier BujoMemoryStore (no embeddings) exposes the same contract, capture returns undefined", async () => {
+  it("lite-tier BujoMemoryStore admits summaries without invoking a capture LLM", async () => {
     const dir = await tempDir();
 
     // lite tier: no embeddings — FTS only
     const liteStore = createBujoMemoryStore({ root: join(dir, "lite-memory") });
 
     expect(typeof liteStore.load).toBe("function");
-    expect(typeof liteStore.appendHostSummary).toBe("function");
-    // capture with no LLM returns undefined (not throws)
-    const result = await liteStore.capture("conv-1", "summary text");
-    expect(result).toBeUndefined();
+    expect(typeof liteStore.persistCompletedTurn).toBe("function");
+    const result = await completeTurn(liteStore, "summary text");
+    expect(result.admissionStatus).toBe("admitted");
+    expect(liteStore.queueSnapshot().intake).toMatchObject({ pending: 0, resolved: 1 });
     await liteStore.close();
   });
 
@@ -150,10 +152,9 @@ describe("createConfiguredMemory — bujo mode", () => {
       { memoryRuntime: runtime },
     );
 
-    const result = await (store as unknown as { capture(conversationId: string, text: string): Promise<unknown> })
-      .capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
+    const result = await completeTurn(store as unknown as WritableMemoryStore, "Morgan prefers agent-host memory LLM calls.");
 
-    expect(result).toEqual({ actions: 0, entities: 0 });
+    expect(result.admissionStatus).toBe("admitted");
     expect(runtime.calls).toHaveLength(1);
     for (const call of runtime.calls) {
       expect(call.systemPrompt).toMatch(/private memory maintenance LLM/u);
@@ -169,7 +170,7 @@ describe("createConfiguredMemory — bujo mode", () => {
 
   it("uses LM Studio embeddings at runtime without involving the BuJo chat LLM provider", async () => {
     const dir = await tempDir();
-    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
       return new Response(JSON.stringify({
         data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
@@ -243,9 +244,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
+    await completeTurn(store, "Morgan prefers agent-host memory LLM calls.");
     await store.close();
 
     expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
@@ -265,9 +266,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createRecordingRuntime(), observability: { observabilityContext: { sourceId: "s1", sourceLabel: "Test" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "Morgan prefers agent-host memory LLM calls.");
+    await completeTurn(store, "Morgan prefers agent-host memory LLM calls.");
     await store.close();
 
     expect(await readSummaries(join(dir, "artifacts"))).toHaveLength(0);
@@ -293,9 +294,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
         memoryRuntime: createRecordingRuntime(),
         observability: { observabilityContext: { sourceId: "s1" }, exporterFactory: () => spy.exporter },
       },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "some text");
+    await completeTurn(store, "some text");
     await store.close();
 
     expect(spy.finished).toHaveLength(1);
@@ -307,37 +308,39 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     expect(extract?.memoryOperation).toBe("extract");
   });
 
-  it("reports a memory LLM timeout distinctly from a cancellation (provider too slow/unavailable)", async () => {
-    // Regression for the audit's dominant memory symptom: a dead/slow provider tripped the memory
-    // LLM's 60s timeout, which the runtime reports as `cancelled`. The error must now say "timed out"
-    // (with a provider hint) rather than the misleading "run was cancelled".
-    vi.useFakeTimers();
+  it("retains a durable retry after the memory LLM timeout aborts its provider call", async () => {
+    const dir = await tempDir();
+    const runtime = createAbortAwareRuntime();
+    const store = await createConfiguredMemory(
+      bujoConfig({
+        dir,
+        identityPath: join(dir, "IDENTITY.md"),
+        memoryRoot: join(dir, "m"),
+        llm: { ...agentHostLlm, timeoutMs: 20 },
+      }),
+      { memoryRuntime: runtime },
+    ) as unknown as WritableMemoryStore;
     try {
-      const dir = await tempDir();
-      const store = await createConfiguredMemory(
-        bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
-        { memoryRuntime: createAbortAwareRuntime() },
-      ) as unknown as CapturableStore;
-
-      const expectation = expect(store.capture("conv-1", "text")).rejects.toThrow(
-        /timed out after 60000ms \(provider too slow or unavailable\)/u,
-      );
-      await vi.advanceTimersByTimeAsync(60_000);
-      await expectation;
-      await store.close();
+      await completeTurn(store, "text");
+      expect(runtime.calls).toHaveLength(1);
+      expect(runtime.calls[0]?.options.abortSignal?.aborted).toBe(true);
+      expect(store.queueSnapshot().intake).toMatchObject({ pending: 1, retrying: 0, due: 0 });
+      expect(inspectCompletedTurnIntake(join(dir, "m")).items).toMatchObject([{ state: "pending", attempt: 1, due: false }]);
     } finally {
-      vi.useRealTimers();
+      await store.close();
     }
   });
 
-  it("records a failed run AND rethrows when the memory LLM fails", async () => {
+  it("records a failed memory LLM run and retains its admitted turn for retry", async () => {
     const dir = await tempDir();
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: createFailingRuntime(), observability: { observabilityContext: { sourceId: "s1" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await expect(store.capture("conv-1", "text")).rejects.toThrow();
+    await expect(completeTurn(store, "text")).resolves.toMatchObject({ admissionStatus: "admitted" });
+    expect(store.queueSnapshot().intake).toMatchObject({ pending: 1, retrying: 0, due: 0 });
+    expect(inspectCompletedTurnIntake(join(dir, "m")).items).toMatchObject([{ state: "pending", attempt: 1, due: false }]);
     await store.close();
 
     const summaries = await readSummaries(join(dir, "artifacts", "memory"));
@@ -351,9 +354,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
     const store = await createConfiguredMemory(
       bujoConfig({ dir, identityPath: join(dir, "IDENTITY.md"), memoryRoot: join(dir, "m"), llm: agentHostLlm }),
       { memoryRuntime: runtime },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "text");
+    await completeTurn(store, "text");
     await store.close();
 
     expect(runtime.calls).toHaveLength(1);
@@ -374,9 +377,9 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
         llm: { ...agentHostLlm, trace: false },
       }),
       { memoryRuntime: runtime, observability: { observabilityContext: { sourceId: "s1" } } },
-    ) as unknown as CapturableStore;
+    ) as unknown as WritableMemoryStore;
 
-    await store.capture("conv-1", "text");
+    await completeTurn(store, "text");
     await store.close();
 
     for (const call of runtime.calls) {
@@ -386,10 +389,23 @@ describe("createConfiguredMemory — memory LLM tracing", () => {
   });
 });
 
-type CapturableStore = {
-  capture(conversationId: string, text: string): Promise<unknown>;
+type WritableMemoryStore = {
+  persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
+  flush(): Promise<void>;
+  queueSnapshot(): { readonly intake?: { readonly pending: number; readonly retrying: number; readonly resolved: number } };
   close(): Promise<void>;
 };
+
+async function completeTurn(store: WritableMemoryStore, text: string): Promise<MemoryCompletedTurnResult> {
+  const result = await store.persistCompletedTurn({
+    runId: "completed-turn-fixture",
+    conversationId: "conv-1",
+    summary: text,
+    captureText: text,
+  });
+  await store.flush();
+  return result;
+}
 
 async function readSummaries(artifactsDir: string): Promise<RunSummary[]> {
   let files: string[];
