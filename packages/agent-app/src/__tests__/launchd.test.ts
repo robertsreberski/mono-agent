@@ -294,8 +294,18 @@ describe("buildWebPlistXml", () => {
       "--theme",
       "evergreen",
     ]);
+    expect(args).not.toContain("--name");
     expect(args).not.toContain("--env-file");
     expect(args).not.toContain("MONO_AGENT_WEB_AUTH_TOKEN");
+  });
+
+  it("appends an operator-chosen console name to the web worker argv", () => {
+    const args = buildWebLaunchdProgramArguments(webInput({ name: "Flockbox" }));
+    expect(args.slice(-2)).toEqual(["--name", "Flockbox"]);
+    expect(buildWebPlistXml(webInput({ name: "Flockbox" })))
+      .toContain("<string>Flockbox</string>");
+    expect(() => buildWebPlistXml(webInput({ name: "bad\u0007name" })))
+      .toThrow(/web console name/u);
   });
 
   it("keeps the console label outside agent fleet discovery and emits KeepAlive launchd XML", () => {

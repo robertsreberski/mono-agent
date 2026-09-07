@@ -12,7 +12,7 @@ import {
 } from "./thread-persistence";
 import type { ConsoleIdentity, MessagePart, PushBootstrap, WebMessage } from "./types";
 
-const consoleIdentity: ConsoleIdentity = { hostName: "kitchen", theme: "evergreen" };
+const consoleIdentity: ConsoleIdentity = { hostName: "kitchen", displayName: "kitchen", theme: "evergreen" };
 const push: PushBootstrap = {
   applicationServerKey: "B".repeat(87),
   keyFingerprint: "fingerprint",
@@ -100,7 +100,12 @@ describe("createThreadPersistence", () => {
           savedAt: 1_000,
         });
         const meta = transaction.objectStore("meta");
-        meta.put({ ...snapshot(), savedAt: 1_000 }, "agents");
+        // The previous webapp had no displayName and used hostName everywhere.
+        meta.put({
+          ...snapshot(),
+          console: { hostName: "kitchen", theme: "evergreen" },
+          savedAt: 1_000,
+        }, "agents");
         meta.put("kitchen", "host");
         transaction.oncomplete = () => { db.close(); resolve(); };
         transaction.onerror = () => reject(transaction.error ?? new Error("seed failed"));
@@ -118,6 +123,7 @@ describe("createThreadPersistence", () => {
     // Everything the old build wrote is still there and still usable.
     expect(restored?.host).toBe("kitchen");
     expect(restored?.snapshot?.console.hostName).toBe("kitchen");
+    expect(restored?.snapshot?.console.displayName).toBe("kitchen");
     expect(restored?.threads.map((row) => row.id)).toEqual(["legacy-thread"]);
     expect(restored?.threads[0]?.messages.map((row) => row.id)).toEqual(["legacy-message"]);
     expect(restored?.buckets.map((row) => row.key)).toEqual(["alpha\u0000active"]);
@@ -361,7 +367,7 @@ describe("createThreadPersistence", () => {
 
   it("names the console that wrote what is stored", async () => {
     const store = createThreadPersistence();
-    await store.save({ entries: [], snapshot: snapshot({ hostName: "studio", theme: "ocean" }) });
+    await store.save({ entries: [], snapshot: snapshot({ hostName: "studio", displayName: "studio", theme: "ocean" }) });
 
     expect((await createThreadPersistence().hydrate())?.host).toBe("studio");
   });

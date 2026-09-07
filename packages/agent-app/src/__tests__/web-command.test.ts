@@ -393,7 +393,30 @@ describe("runWebCommand", () => {
     expect(startServer).not.toHaveBeenCalled();
   });
 
-  it("does not silently ignore a theme passed to start when the managed service is already loaded", async () => {
+  it("rejects console names the manifest and launchd argv cannot carry", async () => {
+    for (const [name, expected] of [
+      ["   ", "must not be empty"],
+      ["bad\u0007name", "control characters"],
+      ["bad\u2028name", "line separators"],
+      ["bad\u202ename", "bidirectional overrides"],
+      ["x".repeat(81), "at most 80 characters"],
+    ] as const) {
+      const startServer = vi.fn();
+      let errors = "";
+      await expect(runWebCommand(
+        { positionals: ["run"], env: {}, name },
+        {
+          startServer,
+          stdout: { write: () => undefined },
+          stderr: { write: (text) => { errors += text; } },
+        },
+      )).resolves.toBe(2);
+      expect(errors).toContain(expected);
+      expect(startServer).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not silently ignore presentation flags passed to start when the managed service is already loaded", async () => {
     const home = await testHome();
     const ensureManagedRuntime = vi.fn();
     const launchctl = vi.fn(async (args: readonly string[]) => (
@@ -419,6 +442,23 @@ describe("runWebCommand", () => {
     )).resolves.toBe(1);
 
     expect(errors).toContain("mono-agent web restart --theme ocean");
+
+    await expect(runWebCommand(
+      { positionals: ["start"], env: {}, name: "Robert's Console" },
+      {
+        platform: "darwin",
+        homeDir: home,
+        getuid: () => 501,
+        prepareState,
+        acquireLifecycleLock: async () => async () => undefined,
+        launchctl,
+        ensureManagedRuntime,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => { errors += text; } },
+      },
+    )).resolves.toBe(1);
+
+    expect(errors).toContain("mono-agent web restart --name 'Robert'\"'\"'s Console'");
     expect(ensureManagedRuntime).not.toHaveBeenCalled();
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootout"]));
     expect(launchctl).not.toHaveBeenCalledWith(expect.arrayContaining(["bootstrap"]));
@@ -1445,6 +1485,76 @@ describe("runWebCommand", () => {
 
     expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ theme: "plum" });
     expect(await readFile(paths.launchd.plistPath, "utf8")).toContain("<string>plum</string>");
+  });
+
+  it("preserves the recorded console name by default and clears it with --name -", async () => {
+    const home = await testHome();
+    const paths = webPaths(home);
+    await prepareState({ stateDir: paths.stateDir });
+    await mkdir(paths.launchd.launchAgentsDir, { recursive: true, mode: 0o700 });
+    await writeFile(paths.launchd.plistPath, "old plist\n", { mode: 0o600 });
+    await writeFile(paths.recordPath, `${JSON.stringify({
+      schema: "mono-agent.web-service.v1",
+      host: "127.0.0.1",
+      port: 5050,
+      theme: "plum",
+      name: "Flockbox",
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    })}\n`, { mode: 0o600 });
+    let workerLoaded = true;
+    let helperLoaded = false;
+    const launchctl = async (args: readonly string[]) => {
+      const helper = args.some((value) => value.includes("com.mono-agent-web-maintenance"));
+      const loaded = helper ? helperLoaded : workerLoaded;
+      if (args[0] === "print") return { code: loaded ? 0 : 1, stdout: loaded && !helper ? "pid = 777\n" : "", stderr: "" };
+      if (args[0] === "bootout") {
+        if (helper) helperLoaded = false;
+        else workerLoaded = false;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "bootstrap") {
+        if (helper) helperLoaded = true;
+        else workerLoaded = true;
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+
+    let errors = "";
+    const dependencies = {
+      platform: "darwin" as const,
+      homeDir: home,
+      getuid: () => 501,
+      prepareState,
+      acquireLifecycleLock: async () => async () => undefined,
+      launchctl,
+      tailscale: unavailableTailscaleRunner(),
+      ensureManagedRuntime: async () => ({ cliPath: "/managed/dist/cli.js", nodePath: "/managed/node", launchProof: "cHJvb2Y" }),
+      healthcheck: async () => true,
+      isAlive: (pid: number) => pid === 777 && workerLoaded,
+      stdout: { write: () => undefined },
+      stderr: { write: (text: string) => { errors += text; } },
+    };
+    const result = await runWebCommand(
+      { positionals: ["restart"], env: {} },
+      dependencies,
+    );
+    expect(result, errors).toBe(0);
+
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).toMatchObject({ name: "Flockbox" });
+    let plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).toContain("<string>--name</string>");
+    expect(plist).toContain("<string>Flockbox</string>");
+
+    const cleared = await runWebCommand(
+      { positionals: ["restart"], env: {}, name: "-" },
+      dependencies,
+    );
+    expect(cleared, errors).toBe(0);
+    expect(JSON.parse(await readFile(paths.recordPath, "utf8"))).not.toHaveProperty("name");
+    plist = await readFile(paths.launchd.plistPath, "utf8");
+    expect(plist).not.toContain("<string>--name</string>");
+    expect(plist).not.toContain("<string>Flockbox</string>");
   });
 
   it("retains an exact owned Tailscale hostname when LocalAPI status is transiently unavailable", async () => {

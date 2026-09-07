@@ -371,7 +371,7 @@ export function NotificationsProvider({ children }: { readonly children: ReactNo
               body: responsePreview(detail, arrival.turnId) ?? `Response ready in ${arrival.thread.title}.`,
               tag,
               icon: "/icon-192.png",
-              badge: "/icon-192.png",
+              badge: "/badge-96.png",
               data: { threadId: arrival.thread.id, url: target.href },
             },
           );
