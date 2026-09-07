@@ -443,19 +443,20 @@ default or on a choice made here, and while an override is in force the picker
 offers to reset back to the agent default. It uses a searchable model picker with the selected model's supported reasoning-effort choices in the same popover. Configured models use their configured display name when present and otherwise use the running agent's catalog name. A persisted catalog-only selection stays visible by its canonical reference when lazy provider metadata is absent, fails, or omits that model. While no metadata describes that model at all, its current effort and the shared compatibility ladder the agent accepts remain controllable, without reverting to the agent default; once exact metadata loads it supplies the catalog display name and the advertised ladder, which may narrow, keep, or remove those choices. A model choice applies immediately but leaves the picker open so effort can be chosen next; the explicit **Close** action finishes the interaction. The running agent captures those capabilities at startup from configured/local Pi metadata and Pi's built-in catalog, which covers every bundled provider (Anthropic, GitHub Copilot, OpenAI Codex, OpenCode-Go, and more). If that snapshot marks a model as reasoning-capable but cannot confirm its exact levels, the picker hides the effort control entirely, default row included, instead of substituting the global effort ladder. Silence is different from that claim: older agents that omit per-model metadata retain the global ladder for protocol compatibility. On narrow screens the picker becomes a full-width bottom sheet so every advertised effort level remains reachable without overflowing the viewport. **Default model** delegates model selection to the agent. The default effort names the effective configured value, such as **Default · High**; when the agent leaves that choice to its provider, the control says **Default · Provider** instead of guessing a level. Choosing either default clears the conversation override.
 
 The picker is labelled **Next turn** because it is not evidence about the run
-already on screen. The current or last run has a separate server-owned route
-marker in the header and below the assistant message. A successful primary says
-which model and effort ran. A fallback names the requested and answering models
-and the runtime's classified reason when one was reported; its disclosure shows
-the bounded route chain, same-model retries, route effort, and Pi's effective
-thinking level. Failed chains name the last attempt without claiming that it
-answered. Raw provider errors and request identifiers remain outside browser
-payloads.
+already on screen. The conversation header carries no run attribution. Below an
+assistant message, the server-owned route marker appears for a normal run only
+when the model that ran differs from the conversation's current selection. A
+fallback warning always appears there, even when its answering model matches the
+current selection, and names the requested and answering models plus the
+runtime's classified reason when one was reported. Its disclosure shows the
+bounded route chain, same-model retries, route effort, and Pi's effective thinking
+level. Failed chains name the last attempt without claiming that it answered.
+Raw provider errors and request identifiers remain outside browser payloads.
 
 The agent rail also has a separate **Agent settings** dialog for defaults used
 when the web console creates a new conversation. Model and effort can each
-inherit resolved config or be overridden, and the dialog labels the effective
-source for both fields. **Revert to config** clears both overrides in one click.
+inherit resolved config or be overridden. **Revert to config** clears both
+overrides in one click.
 Creation snapshots the effective pair into the new conversation, so later
 settings changes never rewrite existing conversations. The layer applies only
 to interactive web-console creation: Telegram, Slack, cron, webhook, API, and

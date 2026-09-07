@@ -249,7 +249,7 @@ export function AgentSettingsDialog({
         <div className="agent-settings-body">
           <div>
             <h3>New conversation defaults</h3>
-            <p>Applies only to conversations created after you save. Existing conversations and other channels are unchanged. The model that actually runs, including any fallback, appears on that run.</p>
+            <p>Applies only to conversations created after you save. Existing conversations and other channels are unchanged. Any model mismatch or fallback appears on that run.</p>
           </div>
           <ModelSelector
             models={models}
@@ -264,16 +264,6 @@ export function AgentSettingsDialog({
             providerStatus={providerStatus}
             onProviderRequest={(provider) => { void store.ensureProviderCatalog(provider); }}
           />
-          <dl className="agent-settings-effective">
-            <div>
-              <dt>Effective model</dt>
-              <dd><span>{settings.effective.model ?? "Provider default"}</span><b>{settings.effective.modelSource}</b></dd>
-            </div>
-            <div>
-              <dt>Effective effort</dt>
-              <dd><span>{settings.effective.effort ?? "Provider default"}</span><b>{settings.effective.effortSource}</b></dd>
-            </div>
-          </dl>
           <p className="agent-settings-config">
             Config default: <code>{settings.config.model ?? "provider"}</code> · <code>{settings.config.effort ?? "provider"}</code>
           </p>
