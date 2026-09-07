@@ -2439,7 +2439,7 @@ describe("AgentHarness", () => {
           mcpServers: { authenticated_request: { command: "request-only" } },
         },
         runtimeOptions: {
-          permissionMode: "plan",
+          effort: "low",
           // Tool-shaped fields in the same extension cannot escape the
           // authoritative request boundary.
           allowedTools: ["Bash"],
@@ -2454,7 +2454,7 @@ describe("AgentHarness", () => {
     expect(fake.calls[0]?.options).toMatchObject({
       allowedTools: ["ReadSkill", "CustomProposalTool"],
       disallowedTools: [],
-      permissionMode: "plan",
+      effort: "low",
       mcpServers: { authenticated_request: { command: "request-only" } },
     });
     expect(fake.calls[0]?.options.mcpConfigPath).toBeUndefined();
