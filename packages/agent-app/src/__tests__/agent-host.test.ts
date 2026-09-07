@@ -22,7 +22,6 @@ import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapt
 import { createSandboxPolicy } from "@mono-agent/runtime-adapter";
 import type { SandboxEngine } from "@mono-agent/runtime-adapter";
 import {
-  createToolPolicy,
   ToolHistoryReader,
   type ConversationHistoryStore,
   type HistoryMessage,
@@ -74,11 +73,6 @@ import {
   createConfiguredMemory,
 } from "../index.js";
 import { createConfiguredAgentResponderForApp } from "../configured-agent.js";
-import {
-  CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
-  CONFIGURATION_PROPOSAL_TOOL_NAME,
-  configurationProposalMcpServerSpec,
-} from "../configuration-proposal-tool.js";
 import { isNotifyDestinationConversationId } from "../notify-destinations.js";
 import { createSeenNotifyDestinationCache } from "../seen-conversations.js";
 
@@ -214,7 +208,7 @@ describe("agent host composition helpers", () => {
       memory,
       runtimeOptionsForRequest: () => ({
         runtimeOptions: {
-          allowedTools: ["ProposeAgentConfiguration"],
+          allowedTools: ["CustomProposalTool"],
           mcpServers: {
             configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
           },
@@ -223,131 +217,17 @@ describe("agent host composition helpers", () => {
     });
 
     await responder.respond(
-      { conversationId: "configuration", text: "Configure yourself", abortSignal: new AbortController().signal },
+      { conversationId: "custom-tool", text: "Use the custom tool", abortSignal: new AbortController().signal },
       { append: async () => {} },
     );
 
-    expect(fake.calls[0]?.options.allowedTools).toEqual(["Read", "ProposeAgentConfiguration"]);
+    expect(fake.calls[0]?.options.allowedTools).toEqual(["Read", "CustomProposalTool"]);
     expect(fake.calls[0]?.options.mcpServers).toMatchObject({
       "mono-agent-memory": { type: "http", url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u) },
       configurator: { type: "http", url: "http://127.0.0.1:9876/mcp" },
     });
   });
 
-  it("keeps local configuration authority to proposal, MemoryRecall, and ReadSkill", async () => {
-    const dir = await tempDir();
-    const identityPath = join(dir, "IDENTITY.md");
-    const artifactDir = join(dir, "artifacts");
-    const skillsRoot = join(dir, "skills");
-    const skillDir = join(skillsRoot, "mono-agent-configure");
-    const mcpConfigPath = join(dir, "mcp.json");
-    await mkdir(skillDir, { recursive: true });
-    await writeFile(identityPath, "You are Mono.", "utf8");
-    await writeFile(join(skillDir, "SKILL.md"), "# Configure\n\nInspect and propose configuration.", "utf8");
-    await writeFile(mcpConfigPath, `${JSON.stringify({
-      allowedTools: ["*"],
-      mcpServers: { configuredAction: { command: "configured-action" } },
-    })}\n`, "utf8");
-    const fake = createFakeRuntime(async () => ({ text: "Configured" }));
-    const base = monoConfig({
-      dir,
-      identityPath,
-      artifactDir,
-      memoryPath: join(dir, "memory"),
-      skillsRoot,
-      selectedSkills: ["mono-agent-configure"],
-      mcpConfigPath,
-    });
-    const config: MonoAgentConfig = {
-      ...base,
-      context: { ...base.context, skillDisclosure: "index" },
-      memory: { ...base.memory!, recallTool: { enabled: true } },
-    };
-    const memory = {
-      async load() { return undefined; },
-      async recall() { return []; },
-      async appendHostSummary(conversationId: string) {
-        return { conversationId, source: "test", bytesWritten: 0 };
-      },
-      async close() {},
-    } satisfies MemoryStore & { recall(): Promise<readonly []>; close(): Promise<void> };
-    const proposalServer = configurationProposalMcpServerSpec({
-      sinkPath: join(dir, ".mono-agent", "configuration-proposal.json"),
-      baseVersion: "test-version",
-    }, dir);
-    const allowedConfigurationTools = [
-      "ReadSkill",
-      "MemoryRecall",
-      CONFIGURATION_PROPOSAL_TOOL_NAME,
-      `mcp__${CONFIGURATION_PROPOSAL_MCP_SERVER_NAME}__${CONFIGURATION_PROPOSAL_TOOL_NAME}`,
-    ];
-
-    const responder = await createConfiguredAgentResponder({
-      config,
-      runtime: fake.runtime,
-      memory,
-      runtimeOptions: {
-        allowedTools: ["Write"],
-        mcpServers: { staticAction: { command: "static-action" } },
-      },
-      runtimeOptionsForRequest: () => ({
-        toolPolicyOverride: createToolPolicy({
-          allowedTools: allowedConfigurationTools,
-          disallowedTools: [],
-          mcpServers: {
-            [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
-          },
-        }),
-        runtimeOptions: {
-          permissionMode: "plan",
-          // These hostile tool-shaped fields exercise the harness's
-          // authoritative-override stripping rather than the happy path alone.
-          allowedTools: ["Bash", "Write", "Edit", "PublishReplyFile"],
-          mcpServers: { requestAction: { command: "request-action" } },
-        },
-      }),
-    });
-
-    await responder.respond(
-      {
-        conversationId: "configuration",
-        text: "Configure yourself",
-        abortSignal: new AbortController().signal,
-        metadata: { tui: { local: true, configuration: true } },
-      },
-      { append: async () => {} },
-    );
-
-    const options = fake.calls[0]?.options;
-    expect(options).toMatchObject({
-      allowedTools: allowedConfigurationTools,
-      disallowedTools: [],
-      permissionMode: "plan",
-      skills: [{ name: "mono-agent-configure" }],
-      skillsRoot,
-    });
-    expect(Object.keys(options?.mcpServers ?? {}).sort()).toEqual([
-      CONFIGURATION_PROPOSAL_MCP_SERVER_NAME,
-      "mono-agent-memory",
-    ]);
-    expect(options?.mcpServers).toMatchObject({
-      [CONFIGURATION_PROPOSAL_MCP_SERVER_NAME]: proposalServer,
-      "mono-agent-memory": {
-        type: "http",
-        url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/mcp\//u),
-      },
-    });
-    expect(options?.mcpConfigPath).toBeUndefined();
-    expect(options?.allowedTools).not.toEqual(expect.arrayContaining([
-      "Read",
-      "Glob",
-      "Grep",
-      "Bash",
-      "Write",
-      "Edit",
-      "PublishReplyFile",
-    ]));
-  });
 
   it("preserves failure instructions and the original exporter error through the artifact commit hook", async () => {
     const dir = await tempDir();
@@ -685,6 +565,39 @@ describe("agent host composition helpers", () => {
       { append: async () => {} },
     );
     expect(fake.calls[1]?.prompt).not.toContain("SKILL_TAIL_MARKER");
+  });
+
+  it("filters a stale installed retired project skill before harness loading", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const skillsRoot = join(dir, "skills");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(skillsRoot, "mono-agent-configure"), { recursive: true });
+    await writeFile(
+      join(skillsRoot, "mono-agent-configure", "SKILL.md"),
+      "---\nname: mono-agent-configure\ndescription: Retired project skill.\n---\n\nRETIRED_CONFIGURATION_SKILL_MUST_NOT_LOAD",
+      "utf8",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const responder = await createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        skillsRoot,
+        selectedSkills: ["mono-agent-configure"],
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.prompt).not.toContain("RETIRED_CONFIGURATION_SKILL_MUST_NOT_LOAD");
+    expect(fake.calls[0]?.options.skills).toBeUndefined();
   });
 
   it("fails closed when tools.mcpConfigPath points at a missing file", async () => {

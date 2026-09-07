@@ -296,7 +296,6 @@ function makeHarness(opts: {
   resolveManagedRuntimePackages?: NonNullable<BackgroundDeps["resolveManagedRuntimePackages"]>;
   acquireLifecycleLock?: BackgroundDeps["acquireLifecycleLock"];
   acquireRuntimePublicationBarrier?: NonNullable<BackgroundDeps["acquireRuntimePublicationBarrier"]>;
-  probeTui?: BackgroundDeps["probeTui"];
   captureSnapshot?: NonNullable<BackgroundDeps["captureSnapshot"]>;
   now?: BackgroundDeps["now"];
   sleep?: BackgroundDeps["sleep"];
@@ -388,7 +387,6 @@ function makeHarness(opts: {
       ownerPid: 1234,
       release: async () => undefined,
     } satisfies OwnerPrivateLock)),
-    probeTui: opts.probeTui ?? (async () => true),
     captureSnapshot: opts.captureSnapshot ?? (async (target) => target.expectedSnapshot ?? makeSnapshot(target)),
     stdout: (text) => out.push(text),
     stderr: (text) => err.push(text),
@@ -1154,27 +1152,6 @@ describe("startBackground", () => {
       runner,
       list: listReturning(() => (lists += 1) === 1 ? [] : [source]),
       isAlive: (pid) => pid === 4321 || pid === 9876,
-    });
-
-    const code = await startBackground(target, harness.deps, { timeoutMs: 300, intervalMs: 100 });
-
-    expect(code).toBe(1);
-    expect(harness.err.join("")).toContain("did not report ready");
-  });
-
-  it("requires a reachable TUI endpoint for guided/configuration handoffs", async () => {
-    const { runner } = makeRunner({ loaded: false });
-    const target = makeTarget({ requireTui: true });
-    const source = makeSource(target, {
-      metadata: {
-        reason: "startup-complete",
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5151/gui" } },
-      },
-    });
-    const harness = makeHarness({
-      runner,
-      list: listReturning(() => [source]),
-      probeTui: async () => false,
     });
 
     const code = await startBackground(target, harness.deps, { timeoutMs: 300, intervalMs: 100 });

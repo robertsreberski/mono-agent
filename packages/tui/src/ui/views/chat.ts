@@ -23,26 +23,6 @@ export interface ChatViewOptions {
   readonly onSlashCommand: (command: string, args: string) => boolean;
   readonly logger?: { error?(message: string, metadata?: Record<string, unknown>): void };
   readonly flushIntervalMs?: number;
-  /** Marks ordinary requests as coming from an embedded OS-owner-local TUI. */
-  readonly localMode?: boolean;
-  /** Runs only after the response/presenter has fully settled. */
-  readonly onTurnSettled?: (event: ChatTurnSettledEvent) => void | Promise<void>;
-}
-
-export interface ChatTurnSettledEvent {
-  readonly configuration: boolean;
-  /** Distinguishes the hidden opening guide from an operator configuration turn. */
-  readonly configurationPhase?: "invitation" | "operator";
-  /** Host-owned completion that deliberately skipped the proposal-capable model turn. */
-  readonly configurationCompletion?: "no-changes";
-  readonly status: "ok" | "cancelled" | "error";
-}
-
-export interface ChatConfigurationTurn {
-  readonly conversationId: string;
-  readonly sessionId: string;
-  /** Repeated into the fresh operator-only provider conversation. */
-  readonly operatorPrompt?: string;
 }
 
 /**
@@ -61,14 +41,6 @@ export class ChatView extends Container {
    * tracking only the latest would orphan the turn that is actually running.
    */
   private readonly activeControllers = new Set<AbortController>();
-  /** Conversation ids currently executing, used by the explicit remote cancel fallback. */
-  private readonly activeConversationIds = new Map<AbortController, string>();
-  /**
-   * TUI turns are serialized through their full settled hook. This keeps a
-   * fast follow-up from entering a responder that the configuration hook is
-   * about to rotate and dispose.
-   */
-  private turnBoundary: Promise<void> = Promise.resolve();
   private turnCounter = 0;
   private thinkingExpandedFlag = false;
   /**
@@ -97,12 +69,6 @@ export class ChatView extends Container {
    * override string). Mirror of {@link defaultModel}; set via {@link setDefaultEffort}.
    */
   private defaultEffort: string | undefined;
-  /** Dedicated self-configuration state. It lives until the TUI session quits. */
-  private configuration: ChatConfigurationTurn | undefined;
-  /** The host rearms this only after the preceding configuration transaction settles. */
-  private configurationReady = false;
-  /** Safe host-authored context injected into the next operator turn exactly once. */
-  private configurationHostOutcome: string | undefined;
 
   constructor(options: ChatViewOptions) {
     super();
@@ -121,26 +87,6 @@ export class ChatView extends Container {
 
   setResponder(responder: AgentResponder | undefined): void {
     this.responder = responder;
-  }
-
-  /** Keep the dedicated session active and accept its next configuration reply. */
-  continueConfiguration(configuration: ChatConfigurationTurn, hostOutcome?: string): void {
-    this.configuration = configuration;
-    this.configurationHostOutcome = hostOutcome;
-    this.configurationReady = true;
-    this.options.statusBar.setEphemeral("self-config ready");
-    this.options.tui.requestRender();
-  }
-
-  /** End the dedicated self-configuration session as part of quitting the TUI. */
-  finishConfigurationSession(): void {
-    this.configuration = undefined;
-    this.configurationHostOutcome = undefined;
-    this.configurationReady = false;
-  }
-
-  isConfigurationSessionActive(): boolean {
-    return this.configuration !== undefined;
   }
 
   /**
@@ -237,9 +183,7 @@ export class ChatView extends Container {
     }
     // Belt and braces for remote responders: socket teardown cancels the turn
     // server-side too, but an explicit cancel also clears queued follow-ups.
-    for (const conversationId of new Set(this.activeConversationIds.values())) {
-      this.responder?.cancel?.(conversationId, reason);
-    }
+    this.responder?.cancel?.(this.options.conversationId, reason);
     return true;
   }
 
@@ -266,123 +210,23 @@ export class ChatView extends Container {
     this.options.tui.requestRender();
   }
 
-  /** Start a real, recorded agent turn without rendering the host prompt as an operator message. */
-  beginConfiguration(prompt: string, configuration: ChatConfigurationTurn): void {
-    if (this.hasActiveTurn()) {
-      this.addNotice("Wait for the active turn to settle, then run /configure again.", "warning");
-      return;
-    }
-    this.configuration = configuration;
-    this.configurationReady = false;
-    this.configurationHostOutcome = undefined;
-    void this.runTurn(prompt, {
-      configuration: {
-        ...configuration,
-        conversationId: `${configuration.conversationId}-invitation`,
-        phase: "invitation",
-      },
-      displayUser: false,
-    });
-  }
-
   private handleSubmit(raw: string): void {
     const text = raw.trim();
     if (text.length === 0) {
       return;
     }
+    this.editor.setText("");
+    this.editor.addToHistory(text);
     if (text.startsWith("/")) {
       const [command = "", ...rest] = text.slice(1).split(/\s+/u);
       if (this.options.onSlashCommand(command.toLowerCase(), rest.join(" "))) {
-        this.editor.setText("");
-        this.editor.addToHistory(text);
         return;
       }
     }
-    const configuration = this.configuration;
-    if (configuration !== undefined && (!this.configurationReady || this.hasActiveTurn())) {
-      // pi-tui clears Editor before invoking onSubmit, so explicitly restore
-      // the unsubmitted draft while the host settles this configuration step.
-      this.editor.setText(raw);
-      this.options.statusBar.setEphemeral("self-config is settling — your draft is still in the editor");
-      this.options.tui.requestRender();
-      return;
-    }
-    this.editor.setText("");
-    this.editor.addToHistory(text);
-    if (configuration !== undefined) {
-      this.configurationReady = false;
-    }
-    if (configuration !== undefined && isConfigurationNoChangeReply(text)) {
-      this.completeConfigurationWithoutModel(text, configuration);
-      return;
-    }
-    const hostOutcome = this.configurationHostOutcome;
-    this.configurationHostOutcome = undefined;
-    void this.runTurn(text, {
-      ...(configuration === undefined
-        ? {}
-        : {
-            requestText: createConfigurationOperatorRequest(configuration, text, hostOutcome),
-            configuration: {
-              ...configuration,
-              conversationId: `${configuration.conversationId}-operator`,
-              phase: "operator" as const,
-            },
-          }),
-    });
+    void this.runTurn(text);
   }
 
-  /**
-   * `done` / `no changes` is a control decision, not model input. Record the
-   * operator's reply, serialize behind the invitation, and let the host revoke
-   * the proposal session without ever exposing a proposal-capable turn.
-   */
-  private completeConfigurationWithoutModel(text: string, configuration: ChatConfigurationTurn): void {
-    this.turnCounter += 1;
-    const turnId = `tui-${Date.now()}-${this.turnCounter}`;
-    const conversationId = `${configuration.conversationId}-operator`;
-    this.transcript.addChild(new UserCell(text));
-    this.options.history?.append({
-      id: `${turnId}-user`,
-      role: "user",
-      text,
-      timestamp: Date.now(),
-      conversationId,
-    });
-    this.options.tui.requestRender();
-
-    const previousTurnBoundary = this.turnBoundary;
-    let releaseTurnBoundary: (() => void) | undefined;
-    this.turnBoundary = new Promise<void>((resolve) => {
-      releaseTurnBoundary = resolve;
-    });
-    void (async () => {
-      try {
-        await previousTurnBoundary;
-        await this.options.onTurnSettled?.({
-          configuration: true,
-          configurationPhase: "operator",
-          configurationCompletion: "no-changes",
-          status: "ok",
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.options.logger?.error?.("tui.turn.settled_hook_failed", { message });
-        this.addNotice(message, "error");
-      } finally {
-        releaseTurnBoundary?.();
-      }
-    })();
-  }
-
-  private async runTurn(
-    text: string,
-    options: {
-      readonly configuration?: ChatConfigurationTurn & { readonly phase: "invitation" | "operator" };
-      readonly displayUser?: boolean;
-      readonly requestText?: string;
-    } = {},
-  ): Promise<void> {
+  private async runTurn(text: string): Promise<void> {
     if (this.responder === undefined) {
       this.addNotice("Not connected to an agent — /agents to pick one.", "error");
       return;
@@ -393,69 +237,39 @@ export class ChatView extends Container {
     }
     this.turnCounter += 1;
     const turnId = `tui-${Date.now()}-${this.turnCounter}`;
-    const conversationId = options.configuration?.conversationId ?? this.options.conversationId;
-    if (options.displayUser !== false) {
-      this.transcript.addChild(new UserCell(text));
-      this.options.history?.append({
-        id: `${turnId}-user`,
-        role: "user",
-        text,
-        timestamp: Date.now(),
-        conversationId,
-      });
-    }
+    this.transcript.addChild(new UserCell(text));
+    this.options.history?.append({
+      id: `${turnId}-user`,
+      role: "user",
+      text,
+      timestamp: Date.now(),
+      conversationId: this.options.conversationId,
+    });
 
     const controller = new AbortController();
-    const serializeThroughSettledHook = this.options.onTurnSettled !== undefined;
-    const previousTurnBoundary = serializeThroughSettledHook ? this.turnBoundary : Promise.resolve();
-    let releaseTurnBoundary: (() => void) | undefined;
-    if (serializeThroughSettledHook) {
-      this.turnBoundary = new Promise<void>((resolve) => {
-        releaseTurnBoundary = resolve;
-      });
-    }
-    // Self-configuration is an OS-owner capability bound to the host's
-    // validated route plan. Session /model and /effort preferences belong to
-    // ordinary chat and must never replace that route (notably with direct
-    // OpenCode, which cannot receive the proposal MCP boundary).
-    const requestedModelOverride = options.configuration === undefined ? this.modelOverride : undefined;
-    const requestedEffortOverride = options.configuration === undefined ? this.effortOverride : undefined;
     const presenter = new TurnPresenter({
       transcript: this.transcript,
       statusBar: this.options.statusBar,
       requestRender: () => this.options.tui.requestRender(),
       thinkingExpanded: () => this.thinkingExpandedFlag,
       ...(this.options.flushIntervalMs === undefined ? {} : { flushIntervalMs: this.options.flushIntervalMs }),
-      ...(requestedModelOverride === undefined ? {} : { requestedModelOverride }),
+      ...(this.modelOverride === undefined ? {} : { requestedModelOverride: this.modelOverride }),
     });
     this.activeControllers.add(controller);
-    this.activeConversationIds.set(controller, conversationId);
     this.setLoading(true);
 
     // metadata.tui carries whichever session overrides are active; when both are
     // clear it is omitted entirely so the turn runs the agent's own defaults.
     const tuiMetadata = {
-      ...(requestedModelOverride === undefined ? {} : { model: requestedModelOverride }),
-      ...(requestedEffortOverride === undefined ? {} : { effort: requestedEffortOverride }),
-      ...(this.options.localMode === true ? { local: true } : {}),
-      ...(options.configuration === undefined
-        ? {}
-        : {
-            configuration: true,
-            configurationSessionId: options.configuration.sessionId,
-            configurationPhase: options.configuration.phase,
-          }),
+      ...(this.modelOverride === undefined ? {} : { model: this.modelOverride }),
+      ...(this.effortOverride === undefined ? {} : { effort: this.effortOverride }),
     };
     let status: "ok" | "cancelled" | "error" = "ok";
     try {
-      await previousTurnBoundary;
-      if (controller.signal.aborted) {
-        throw new Error("Turn cancelled before it started.");
-      }
       const response = await this.responder.respond(
         {
-          conversationId,
-          text: options.requestText ?? text,
+          conversationId: this.options.conversationId,
+          text,
           abortSignal: controller.signal,
           metadata: {
             source: "tui",
@@ -479,42 +293,24 @@ export class ChatView extends Container {
         this.addNotice(message, "error");
       }
     } finally {
-      try {
-        presenter.settle();
-        this.options.statusBar.setEphemeral("");
-        const answer = presenter.assistantText();
-        if (answer.length > 0 || status !== "ok") {
-          this.options.history?.append({
-            id: `${turnId}-assistant`,
-            role: "assistant",
-            text: answer,
-            timestamp: Date.now(),
-            conversationId,
-            status,
-          });
-        }
-        this.options.tui.requestRender();
-        try {
-          await this.options.onTurnSettled?.({
-            configuration: options.configuration !== undefined,
-            ...(options.configuration === undefined
-              ? {}
-              : { configurationPhase: options.configuration.phase }),
-            status,
-          });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.options.logger?.error?.("tui.turn.settled_hook_failed", { message });
-          this.addNotice(message, "error");
-        }
-      } finally {
-        this.activeControllers.delete(controller);
-        this.activeConversationIds.delete(controller);
-        if (this.activeControllers.size === 0) {
-          this.setLoading(false);
-        }
-        releaseTurnBoundary?.();
+      this.activeControllers.delete(controller);
+      if (this.activeControllers.size === 0) {
+        this.setLoading(false);
       }
+      presenter.settle();
+      this.options.statusBar.setEphemeral("");
+      const answer = presenter.assistantText();
+      if (answer.length > 0 || status !== "ok") {
+        this.options.history?.append({
+          id: `${turnId}-assistant`,
+          role: "assistant",
+          text: answer,
+          timestamp: Date.now(),
+          conversationId: this.options.conversationId,
+          status,
+        });
+      }
+      this.options.tui.requestRender();
     }
   }
 
@@ -559,21 +355,4 @@ export class ChatView extends Container {
     }
     this.options.tui.requestRender();
   }
-}
-
-function isConfigurationNoChangeReply(text: string): boolean {
-  const normalized = text.trim().toLocaleLowerCase().replace(/[.!]$/u, "").trim();
-  return normalized === "done" || normalized === "no changes";
-}
-
-function createConfigurationOperatorRequest(
-  configuration: ChatConfigurationTurn,
-  text: string,
-  hostOutcome: string | undefined,
-): string {
-  const outcome = hostOutcome === undefined
-    ? ""
-    : `\n\nHost outcome from the previous self-configuration step:\n${hostOutcome}`;
-  return `${configuration.operatorPrompt ?? "Continue the dedicated self-configuration session."}${outcome}\n\n` +
-    `The operator replied:\n\n${text}`;
 }

@@ -2009,9 +2009,9 @@ describe("AgentHarness", () => {
       },
       runtimeOptionsForRequest: () => ({
         toolPolicyOverride: {
-          allowedTools: ["ReadSkill", "ProposeAgentConfiguration"],
+          allowedTools: ["ReadSkill", "CustomProposalTool"],
           disallowedTools: [],
-          mcpServers: { agent_configuration: { command: "proposal-only" } },
+          mcpServers: { authenticated_request: { command: "request-only" } },
         },
         runtimeOptions: {
           permissionMode: "plan",
@@ -2024,13 +2024,13 @@ describe("AgentHarness", () => {
           },
         },
       }),
-    }).run({ conversationId: "c", userMessage: "configure", abortSignal: new AbortController().signal });
+    }).run({ conversationId: "c", userMessage: "continue", abortSignal: new AbortController().signal });
 
     expect(fake.calls[0]?.options).toMatchObject({
-      allowedTools: ["ReadSkill", "ProposeAgentConfiguration"],
+      allowedTools: ["ReadSkill", "CustomProposalTool"],
       disallowedTools: [],
       permissionMode: "plan",
-      mcpServers: { agent_configuration: { command: "proposal-only" } },
+      mcpServers: { authenticated_request: { command: "request-only" } },
     });
     expect(fake.calls[0]?.options.mcpConfigPath).toBeUndefined();
   });

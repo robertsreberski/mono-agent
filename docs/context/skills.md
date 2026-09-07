@@ -38,12 +38,19 @@ The folder convention is part of the standard [agent folder layout](/config/fold
 
 ## Skills generated with every agent
 
-`mono-agent init` creates and selects two versioned project-local skills:
+`mono-agent init` creates and selects one versioned project-local skill:
 
-- `mono-agent-configure` guides the fail-closed low-risk proposal allowlist and hands paths, tiers/capture, secrets, providers, channels, plugins, MCP, sandbox/network, exporters, and unknown fields to explicit guided setup.
-- `mono-agent-memory` explains the built-in memory tiers, prerequisites, and cost/quality tradeoffs.
+- `mono-agent-memory` explains the built-in memory tiers, prerequisites, and cost/quality tradeoffs. Configuration changes are made by editing `mono-agent.config.json` or `IDENTITY.md`, then running `validate` and restarting.
 
 Generated agents use `skillDisclosure: "index"`, so their names/descriptions enter the prompt while the bodies load on demand through `ReadSkill`. `ReadSkill` is shown separately from action-tool allowlists because disabling file/shell/web actions does not disable skill disclosure.
+
+Bundle version `2.0.0` retires the former `mono-agent-configure` skill. A stale
+selector is reported as nonfatal `waiting` and ignored at startup; unrelated
+missing selected skills remain errors. `install-skill --project --check` reports
+retired managed, missing, modified, and collision states. Explicit `--update`
+removes only a manifest-owned byte-identical legacy file inside the normal
+lock/backup/rollback transaction. Modified or unmanaged copies are preserved
+and fail closed.
 
 In index mode, the model-facing Skill Index contains names and descriptions but not filesystem paths to each `SKILL.md`. The prompt tells the agent to call `ReadSkill` with the selected name before following that skill, unless those instructions are already in context; ordinary `Read` remains available for supporting files referenced by the loaded instructions. Skill paths remain in host-side context metadata for diagnostics.
 

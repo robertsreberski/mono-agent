@@ -27,7 +27,7 @@ import {
   isSetConversationTitleToolAllowed,
 } from "./conversation-title.js";
 import { composeRuntimeOptionExtensions, type RuntimeOptionsExtension } from "./runtime-option-extensions.js";
-import { createLocalConfigurationRuntimeExtension } from "./local-configuration.js";
+import { isRetiredProjectSkillName } from "./project-skills.js";
 import { createRunHistoryRuntimeExtension, isRunHistoryToolAllowed } from "./run-history.js";
 import { createSessionHistoryRuntimeExtension, isSessionHistoryToolAllowed } from "./session-history.js";
 import {
@@ -303,12 +303,6 @@ export async function buildResponder(
   const replyArtifactsExtension = replyArtifactsBase;
   const runHistoryExtension = runHistoryBase;
   const sessionHistoryExtension = sessionHistoryBase;
-  const localConfigurationExtension = createLocalConfigurationRuntimeExtension({
-    cwd: controller.cwd,
-    configPath: controller.configPath,
-    configReadPath: controller.configReadPath,
-    env: controller.env,
-  });
   const runtimeOptionsForRequest = composeRuntimeOptionExtensions([
     supermemoryMcp,
     runHistoryExtension,
@@ -318,14 +312,7 @@ export async function buildResponder(
     replyArtifactsExtension,
     adapterSendToolsExtension,
     requestModelOverride.extension,
-    // Last and authoritative: only an opaque owner-created configuration
-    // session can replace the daemon's ordinary action/MCP surface.
-    localConfigurationExtension,
-  ], {
-    // SELF-CONFIG stays proposal-only for writes, but may inspect this exact
-    // read-only host history capability under its authoritative policy.
-    preserveMcpServersUnderOverride: sessionHistoryExtension === undefined ? [] : [sessionHistoryExtension],
-  });
+  ]);
   // The override factory is needed whenever the ROUTER is active, not merely
   // when backups exist: the router freezes the model chain, so an override must
   // run on a runtime whose chain has it as primary. A primary configured for
@@ -337,6 +324,13 @@ export async function buildResponder(
     ? controller.buildRuntimeForModel(coreConfig)
     : undefined;
   const observabilityContext = await controller.observabilityContext();
+  const retiredSelectedSkills = coreConfig.context.selectedSkills.filter(isRetiredProjectSkillName);
+  if (retiredSelectedSkills.length > 0) {
+    controller.logger?.warn?.(
+      "Retired project skill selection ignored; remove it from context.selectedSkills or MONO_AGENT_SELECTED_SKILLS.",
+      { skills: retiredSelectedSkills },
+    );
+  }
   const postedReplyHistory = createSlackPostedReplyHistory({
     maxMessages: DEFAULT_HISTORY_MAX_MESSAGES,
     ...(coreConfig.runtime.session.rollover === undefined

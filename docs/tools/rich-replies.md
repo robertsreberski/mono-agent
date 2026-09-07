@@ -43,7 +43,7 @@ to the model without replacing the first twenty.
 `PublishReplyFile` is request-scoped. Its random loopback endpoint is
 high-entropy, closes with the request, is not logged, and does not contain the
 run id, conversation id, workspace, or artifact path. The tool is removed by
-the sealed local self-configuration policy and is not installed on a route that
+the host's sealed tool policy and is not installed on a route that
 cannot safely receive its MCP server.
 
 ## Channel delivery and fallback

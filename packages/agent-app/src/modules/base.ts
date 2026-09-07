@@ -47,7 +47,7 @@ export function baseConfig(
     context: {
       identityPath: "./IDENTITY.md",
       skillsRoot: "./skills",
-      selectedSkills: ["mono-agent-configure", "mono-agent-memory"],
+      selectedSkills: ["mono-agent-memory"],
       skillDisclosure: "index",
     },
     tools: {

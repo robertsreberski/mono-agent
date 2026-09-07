@@ -230,7 +230,7 @@ describe("Remember tool — credential rejection", () => {
     // Deliberately narrow: `*_TOKENS` is NOT excluded any more, so a
     // credential-named budget such as ..._KEEP_RECENT_TOKENS=8000 does make the
     // literal 8000 unstorable. That false rejection is the accepted cost of not
-    // weakening a guard the SELF-CONFIG proposal check also relies on.
+    // weakening a guard shared by other persistence boundaries.
     const { dir, store } = writableStore();
     const { result } = await callRemember(
       store,
@@ -244,8 +244,7 @@ describe("Remember tool — credential rejection", () => {
 
   it("still rejects a short or numeric configured credential", async () => {
     // Raising the length floor or skipping numeric values to quiet false
-    // positives would also widen what the SELF-CONFIG proposal guard accepts,
-    // since both read this same helper.
+    // positives would also widen every persistence guard using this helper.
     const { dir, store } = writableStore();
     const { result } = await callRemember(
       store,
@@ -273,7 +272,7 @@ describe("Remember tool — widened credential coverage", () => {
 
   it("still scans a credential-named variable whose name ends in _TOKENS", async () => {
     // A blanket `*_TOKENS` carve-out dropped real credential holders such as
-    // SERVICE_API_TOKENS, and this helper also backs the SELF-CONFIG guard.
+    // SERVICE_API_TOKENS, and this helper backs other persistence guards.
     const { dir, store } = writableStore();
     const { result } = await callRemember(
       store,
@@ -345,7 +344,7 @@ describe("Remember tool — credential-shape precision", () => {
 
 describe("Remember runtime extension — production wiring", () => {
   it("uses the environment supplied by the host, not process.env", async () => {
-    // The host resolves `options.env` as authoritative and SELF-CONFIG honours
+    // The host resolves `options.env` as authoritative and persistence honours
     // it. Composing Remember without it silently fell back to process.env, so a
     // credential supplied only through the host was invisible to the guard.
     const { dir, store } = writableStore();
