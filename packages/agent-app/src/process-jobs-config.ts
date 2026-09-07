@@ -38,7 +38,7 @@ export const PROCESS_JOBS_CAPS = Object.freeze({
   maxQueueAgeMs: 60 * 60 * 1_000,
   maxOutputBytes: 8 * 1024 * 1024,
   previewChars: 8_000,
-  maxChainDepth: 8,
+  maxChainDepth: 64,
   retention: Object.freeze({
     maxRecords: 10_000,
     maxAgeMs: 30 * 24 * 60 * 60 * 1_000,

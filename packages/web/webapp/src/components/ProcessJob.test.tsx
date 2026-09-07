@@ -246,6 +246,16 @@ describe("ProcessJobPart", () => {
     expect(screen.getByText("failed (3 attempts)")).toBeVisible();
   });
 
+  it("shows receipt uncertainty without claiming a definite delivery failure", () => {
+    render(part({ type: "process-job", job: processJob({
+      wake: { ...processJob().wake, state: "unknown", attempts: 1 },
+      lastError: { code: "process_job_wake_unknown", message: "Process-job wake delivery outcome is unknown; replay was suppressed." },
+    }) }));
+    const row = screen.getByRole("group", { name: "Exec background job succeeded" });
+    expect(row.querySelector(".activity-row-alert")).toHaveTextContent("wake outcome unknown · replay suppressed");
+    expect(row).not.toHaveTextContent("wake failed");
+  });
+
   it("keeps the summary's slot order the phone layout is written against", () => {
     // styles.css places a job's tag and meta on a second line with sibling
     // selectors (`.failed-tag ~ .activity-row-time`), so the order of the

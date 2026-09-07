@@ -17,6 +17,10 @@ import {
 } from "../process-jobs-config.js";
 
 describe("loadProcessJobsSettings", () => {
+  it("accepts depth 64 and rejects 65 without changing the default", async () => {
+    expect((await loadProcessJobsSettings(await fixture({ processJobs: { maxChainDepth: 64 } })))).toMatchObject({ maxChainDepth: 64 });
+    await expect(loadProcessJobsSettings(await fixture({ processJobs: { maxChainDepth: 65 } }))).rejects.toThrow("cannot exceed 64");
+  });
   async function fixture(value: unknown): Promise<{ cwd: string; configPath: string }> {
     const cwd = await realpath(await mkdtemp(join(tmpdir(), "mono-process-jobs-config-")));
     const configPath = join(cwd, "mono-agent.config.json");
@@ -48,7 +52,7 @@ describe("loadProcessJobsSettings", () => {
       maxQueueAgeMs: 3_600_000,
       maxOutputBytes: 8_388_608,
       previewChars: 8_000,
-      maxChainDepth: 8,
+      maxChainDepth: 64,
       retention: { maxRecords: 10_000, maxAgeMs: 2_592_000_000, artifactMaxBytes: 1_073_741_824 },
     });
     await expect(loadProcessJobsSettings(input)).resolves.toMatchObject({

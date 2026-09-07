@@ -166,6 +166,19 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(view.runtime.thread.getState().messages[1]?.content).toContainEqual({ type: "text", text: "Delivered content" });
   });
 
+  it("omits an empty settled wake row while retaining activity and running turns", async () => {
+    const empty: WebMessage = {
+      id: "empty", threadId: idleThread.id, turnId: "turn-empty", role: "assistant", status: "complete",
+      createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", attachments: [], parts: [],
+    };
+    storeMock.current = createStore(vi.fn(), { detail: { thread: idleThread, messages: [
+      empty, { ...empty, id: "activity", parts: [{ type: "reasoning", text: "Checked the job" }] },
+      { ...empty, id: "running", status: "running" },
+    ] } });
+    const view = await renderRuntime();
+    expect(view.runtime.thread.getState().messages.map((message) => message.id)).toEqual(["activity", "running"]);
+  });
+
   it("restores a rejected turn as a retryable composer draft without an unhandled rejection", async () => {
     let rejectTurn!: (reason: Error) => void;
     const sendTurn = vi

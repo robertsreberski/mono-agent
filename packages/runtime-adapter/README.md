@@ -47,6 +47,9 @@ console.log(result.text);
 ```
 
 Use this package when a TypeScript host needs the mono-agent runtime contract.
+The process-job start contract carries optional `wakeOnCompletion` (default
+true), and `RuntimeRunOptions.processJobsAvailability` carries request lineage
+diagnostics independently of the optional start controller.
 Use `@mono-agent/agent-runtime` directly only when the host deliberately owns
 the lower-level sandbox injection and provider-kernel integration.
 Set `RuntimeRunOptions.piToolExecutionMode` to `"sequential"` when every Pi

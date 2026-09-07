@@ -783,7 +783,10 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   );
 
   const messages = useMemo(
-    () => coalesceMonitorWakeMessages((store.detail?.messages ?? []).filter((message) => !isLegacySilentCronMessage(message))),
+    () => coalesceMonitorWakeMessages((store.detail?.messages ?? []).filter((message) =>
+      !isLegacySilentCronMessage(message)
+      && !(message.role === "assistant" && message.status === "complete"
+        && message.attachments.length === 0 && convertWebMessage(message).content?.length === 0))),
     [store.detail?.messages],
   );
   // Changing the selected model deliberately gives assistant-ui a new converter,

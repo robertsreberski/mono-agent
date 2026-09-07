@@ -96,6 +96,8 @@ export interface DurableProcessJobRecord {
   readonly envKeys: readonly string[];
   readonly origin: ProcessJobOriginRecord;
   readonly chainDepth: number;
+  /** Older v1 records omit this and retain completion wakes. */
+  readonly wakeOnCompletion?: boolean;
   readonly maxRuntimeMs: number;
   readonly maxOutputBytes: number;
   readonly previewChars: number;
@@ -115,7 +117,7 @@ export interface DurableProcessJobRecord {
   stderrRef: string | null;
   cancelRequested: boolean;
   wake: {
-    state: "pending" | "delivered" | "failed";
+    state: "pending" | "delivered" | "failed" | "unknown" | "suppressed";
     attempts: number;
     readonly deliveryKey: string;
     lastAttemptAt: string | null;
@@ -1123,6 +1125,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
       "schemaVersion", "generation", "jobId", "tool", "state", "summary", "agentIncarnation",
       ...(Object.prototype.hasOwnProperty.call(value, "processIncarnation") ? ["processIncarnation"] : []),
       "pid", "pgid", "sandboxSettingsPath", "argvSummary", "cwd", "envKeys", "origin", "chainDepth",
+      ...(Object.prototype.hasOwnProperty.call(value, "wakeOnCompletion") ? ["wakeOnCompletion"] : []),
       "maxRuntimeMs", "maxOutputBytes", "previewChars", "admittedAt", "queueDeadlineAt", "startedAt",
       "runtimeDeadlineAt", "completedAt", "exitCode", "signal", "durationMs", "stdoutBytes", "stderrBytes",
       "truncated", "preview", "stdoutRef", "stderrRef", "cancelRequested", "wake", "lastError",
@@ -1151,6 +1154,7 @@ function assertDurableRecord(value: unknown): asserts value is DurableProcessJob
     )
     || !isProcessJobOriginRecord(value.origin)
     || !nonNegativeInteger(value.chainDepth)
+    || (value.wakeOnCompletion !== undefined && typeof value.wakeOnCompletion !== "boolean")
     || !boundedPositiveInteger(value.maxRuntimeMs, PROCESS_JOBS_CAPS.maxRuntimeMs)
     || !boundedPositiveInteger(value.maxOutputBytes, PROCESS_JOBS_CAPS.maxOutputBytes)
     || !boundedPositiveInteger(value.previewChars, PROCESS_JOBS_CAPS.previewChars)
@@ -1296,7 +1300,8 @@ function validWake(value: unknown): boolean {
         ? ["conversationBusySinceAt"]
         : []),
     ])
-    && (value.state === "pending" || value.state === "delivered" || value.state === "failed")
+    && (value.state === "pending" || value.state === "delivered" || value.state === "failed"
+      || value.state === "unknown" || value.state === "suppressed")
     && nonNegativeInteger(value.attempts)
     && boundedNonEmptyString(value.deliveryKey, 512)
     && nullableIso(value.lastAttemptAt)

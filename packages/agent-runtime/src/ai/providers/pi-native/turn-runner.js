@@ -123,6 +123,7 @@ export async function buildTurnTools(runState, {
       nodeReplController,
       webController,
       processJobsController: options.processJobs,
+      processJobsAvailability: options.processJobsAvailability,
       monitorsController: options.monitors,
       toolExecutionMode,
       subagents: options.subagents,

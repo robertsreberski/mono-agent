@@ -413,7 +413,7 @@ describe("config reference", () => {
     expect(schemaNode(jobs, "maxQueueAgeMs")).toMatchObject({ maximum: 3_600_000, default: 300_000 });
     expect(schemaNode(jobs, "maxOutputBytes")).toMatchObject({ maximum: 8_388_608, default: 1_048_576 });
     expect(schemaNode(jobs, "previewChars")).toMatchObject({ maximum: 8_000, default: 2_000 });
-    expect(schemaNode(jobs, "maxChainDepth")).toMatchObject({ maximum: 8, default: 4 });
+    expect(schemaNode(jobs, "maxChainDepth")).toMatchObject({ maximum: 64, default: 4 });
     expect(schemaNode(retention, "maxRecords")).toMatchObject({ maximum: 10_000, default: 1_000 });
     expect(schemaNode(retention, "maxAgeMs")).toMatchObject({ maximum: 2_592_000_000, default: 604_800_000 });
     expect(schemaNode(retention, "artifactMaxBytes")).toMatchObject({ maximum: 1_073_741_824, default: 268_435_456 });

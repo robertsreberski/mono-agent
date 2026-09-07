@@ -25,7 +25,7 @@ const MAX_EXEC_ARGS = 256;
 /** @typedef {import("./shared/process-jobs.js").ProcessJobsController} ProcessJobsController */
 
 /**
- * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
+ * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolImpl(params, options = {}) {
@@ -35,7 +35,7 @@ export async function execToolImpl(params, options = {}) {
 /**
  * Execute an argv vector directly, without shell parsing.
  *
- * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean}} params
+ * @param {{executable: string, args?: string[], workdir?: string, description?: string, timeout_ms?: number, max_output_chars?: number, background?: boolean, wake_on_completion?: boolean}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: ProcessJobsController}} [options]
  */
 export async function execToolRun(
@@ -47,6 +47,7 @@ export async function execToolRun(
     timeout_ms,
     max_output_chars,
     background,
+    wake_on_completion,
   },
   {
     signal,
@@ -57,6 +58,12 @@ export async function execToolRun(
   } = {},
 ) {
   const startedAt = Date.now();
+  if (wake_on_completion !== undefined && (background !== true || typeof wake_on_completion !== "boolean")) {
+    return failed("Error: wake_on_completion requires background=true and a boolean value.", "process_job_invalid", startedAt);
+  }
+  if (background === true && !processJobsController) {
+    return failed("Error: Background process jobs are unavailable for this request.", "background_unsupported", startedAt);
+  }
   const executableProblem = validateExecutable(executable);
   if (executableProblem) return failed(executableProblem, "invalid_executable", startedAt);
   const argsProblem = validateArgs(args);
@@ -103,6 +110,7 @@ export async function execToolRun(
       prepared,
       summary: `Exec command (${args.length} argument${args.length === 1 ? "" : "s"}; values redacted)`,
       description,
+      wakeOnCompletion: wake_on_completion,
       // Re-derived from the raw param: `timeoutMs` carries the foreground
       // ceiling, and a background job is bounded by processJobs instead.
       timeoutMs: timeout_ms === undefined ? undefined : normalizeBackgroundTimeoutMs(timeout_ms),

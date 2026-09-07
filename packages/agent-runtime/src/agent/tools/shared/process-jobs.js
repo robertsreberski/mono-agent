@@ -14,6 +14,7 @@ import { startPreparedProcess } from "./process-runner.js";
  *   prepared: import("../../sandbox-seam.js").PreparedSandboxCommand,
  *   summary: string,
  *   description?: string,
+ *   wakeOnCompletion?: boolean,
  *   timeoutMs?: number,
  *   maxOutputChars?: number,
  *   launch: (options?: {timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, onStdout?: (chunk: Buffer) => void, onStderr?: (chunk: Buffer) => void}) => ReturnType<typeof startPreparedProcess>,
@@ -30,6 +31,7 @@ import { startPreparedProcess } from "./process-runner.js";
  *   prepared: import("../../sandbox-seam.js").PreparedSandboxCommand,
  *   summary: string,
  *   description?: string,
+ *   wakeOnCompletion?: boolean,
  *   timeoutMs?: number,
  *   maxOutputChars?: number,
  *   startedAt: number,
@@ -42,6 +44,7 @@ export async function handOffProcessJob({
   prepared,
   summary,
   description,
+  wakeOnCompletion,
   timeoutMs,
   maxOutputChars,
   startedAt,
@@ -56,6 +59,7 @@ export async function handOffProcessJob({
       prepared: ownedPrepared,
       summary,
       ...(description === undefined ? {} : { description }),
+      ...(wakeOnCompletion === undefined ? {} : { wakeOnCompletion }),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
       ...(maxOutputChars === undefined ? {} : { maxOutputChars }),
       launch(options = {}) {
@@ -89,7 +93,7 @@ export async function handOffProcessJob({
       ...(result.maxRuntimeMs === undefined ? {} : { max_runtime_ms: result.maxRuntimeMs }),
     };
     return {
-      text: `${BACKGROUND_START_GUIDANCE}\n${JSON.stringify(payload)}`,
+      text: `${wakeOnCompletion === false ? "Background process job started with wake_on_completion=false: its terminal lifecycle card will update, but this conversation will not receive a completion turn. Do not report the work as finished yet." : BACKGROUND_START_GUIDANCE}\n${JSON.stringify(payload)}`,
       outcome: {
         status: "ok",
         code: "background_started",
@@ -147,6 +151,7 @@ const PUBLIC_BACKGROUND_START_FAILURES = Object.freeze({
   process_job_cleanup_incomplete: "Process-job cleanup could not be confirmed.",
   process_job_store_error: "Process-job storage failed.",
   process_job_wake_failed: "Process-job wake delivery failed.",
+  process_job_wake_unknown: "Process-job wake delivery outcome is unknown; replay was suppressed.",
   process_job_response_too_large: "The process-job response exceeded its size limit.",
   process_job_invalid: "The process-job request is invalid.",
 });

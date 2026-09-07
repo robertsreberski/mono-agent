@@ -62,6 +62,14 @@ const orchestrator = await createConfiguredAgentResponder({
 
 ## Smoke test
 
+For command-based workers, use [background process jobs](/tools/background-process-jobs/)
+to hand off Exec/Bash stages and resume from their completion turns.
+`processJobs.maxChainDepth` defaults to 4 and accepts at most 64; choose a
+budget for the workflow without resetting lineage. A depth-32 exhausted wake
+cannot start another background stage when the configured budget is 32.
+Use `wake_on_completion: false` explicitly for helpers whose terminal card
+is sufficient, and treat an unknown wake receipt as non-replayable.
+
 :::tip
 Give the orchestrator a compound task ("research X then write a summary"); confirm the run artifact shows `AskCollaborator` delegating to both researcher and writer, and that the returned `cleanup` closes the MCP port at turn end.
 :::

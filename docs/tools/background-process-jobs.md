@@ -10,7 +10,10 @@ return immediately while mono-agent continues to own the spawned POSIX process
 group.
 There is no separate job tool. When the host has an available process-job
 controller, both schemas gain the optional `background: true` field. Without
-that controller, the schemas and foreground execution path are unchanged.
+that controller, background starts are unavailable. A configured host still
+discloses request lineage diagnostics in the tool descriptions, including
+`chainDepth`, `maxChainDepth`, `remainingStarts`, and
+`unavailableReason=chain_depth_exhausted` when the budget is spent.
 
 Use this for a command that should outlive the current model turn but still
 report back to the exact Slack thread, Telegram chat, or web-console thread that
@@ -62,7 +65,7 @@ clearing conversation state cannot delete process-job records or output.
 | `maxQueueAgeMs` | 5 minutes | 1 hour |
 | `maxOutputBytes` | 1 MiB | 8 MiB |
 | `previewChars` | 2,000 | 8,000 |
-| `maxChainDepth` | 4 | 8 |
+| `maxChainDepth` | 4 | 64 |
 | `retention.maxRecords` | 1,000 | 10,000 |
 | `retention.maxAgeMs` | 7 days | 30 days |
 | `retention.artifactMaxBytes` | 256 MiB | 1 GiB |
@@ -312,6 +315,30 @@ that background delivery was not scheduled for a job it just started. No
 operator command is named in any model-facing copy — the agent has a shell, and
 naming a status command invites the polling this is meant to prevent.
 
+A chain starts at depth zero; a completion wake inherits its parent's depth
+plus one. With `maxChainDepth: 32`, depth 31 permits one further background
+stage and its depth-32 wake permits none. Steering, queued follow-ups and
+retries retain host-owned lineage. The default remains 4; the ceiling is 64,
+and concurrency, queue, output and runtime limits remain independent.
+
+`wake_on_completion` is an optional boolean on background Exec/Bash calls.
+It defaults to true. Set it to false explicitly for a helper that should update
+its terminal lifecycle card without scheduling a completion turn. Using it
+without `background: true` is invalid. This preference survives restart;
+older records retain the default wake behavior. Cancellation never restarts a
+command.
+
+A genuine completion wake can answer with exactly `NOTHING_TO_REPORT` to
+suppress delivery. Narration and rich reply parts remain visible. The host
+matches the exact active delivery key; unrelated and stale keys cannot silence
+another turn. Web removes the sentinel from the settled reply and emits no
+response push for a reply without visible content.
+
+A timeout while awaiting a wake receipt may leave the actual turn running.
+The terminal wake state is `unknown`, with an explicit outcome-unknown error;
+automatic replay is suppressed, including after restart. A definite refusal
+remains failed or follows its existing bounded safe-retry policy.
+
 The process owns its sandbox settings until every process remaining in its
 owned POSIX process group exits.
 On POSIX a command-agnostic detached group leader starts first. Mono-agent
@@ -347,9 +374,10 @@ queued -> starting -> running -> succeeded | failed | timed_out | cancelled
 any nonterminal at restart -> interrupted
 ```
 
-Wake delivery is orthogonal: `pending`, `delivered`, or `failed`, with a stable
-delivery key and attempt count. A terminal transition is lock-idempotent and
-schedules one wake. An adapter result that explicitly proves retry is safe gets
+Wake delivery is orthogonal: `pending`, `delivered`, `failed`, `unknown`, or
+`suppressed`, with a stable delivery key and attempt count. A terminal transition
+is lock-idempotent and schedules one wake unless explicitly opted out.
+An adapter result that explicitly proves retry is safe gets
 at most three attempts with the same delivery key, including across restart.
 Ambiguous wake attempts are not replayed automatically, because a second post
 could duplicate a real first delivery.

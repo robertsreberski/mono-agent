@@ -43,6 +43,7 @@ export const PROCESS_JOB_ERROR_CODES = [
   "process_job_cleanup_incomplete",
   "process_job_store_error",
   "process_job_wake_failed",
+  "process_job_wake_unknown",
   "process_job_response_too_large",
   "process_job_invalid",
 ] as const;
@@ -71,6 +72,7 @@ export const PROCESS_JOB_PUBLIC_ERROR_MESSAGES: Readonly<Record<ProcessJobErrorC
   process_job_cleanup_incomplete: "Process-job cleanup could not be confirmed.",
   process_job_store_error: "Process-job storage failed.",
   process_job_wake_failed: "Process-job wake delivery failed.",
+  process_job_wake_unknown: "Process-job wake delivery outcome is unknown; replay was suppressed.",
   process_job_response_too_large: "The process-job response exceeded its size limit.",
   process_job_invalid: "The process-job request is invalid.",
 });
@@ -80,7 +82,7 @@ export function processJobPublicError(code: ProcessJobErrorCode): ProcessJobProj
   return { code, message: PROCESS_JOB_PUBLIC_ERROR_MESSAGES[code] };
 }
 
-export type ProcessJobWakeState = "pending" | "delivered" | "failed";
+export type ProcessJobWakeState = "pending" | "delivered" | "failed" | "unknown" | "suppressed";
 
 export interface ProcessJobProjectionOrigin {
   /** Exact conversation identity, including any host-owned rollover bucket. */
@@ -264,7 +266,7 @@ function parseLimits(value: unknown): asserts value is ProcessJobProjectionLimit
     || !boundedPositiveInteger(value.maxOutputBytes, 8 * 1024 * 1024)
     || !boundedPositiveInteger(value.previewChars, 8_000)
     || !nonNegativeInteger(value.chainDepth)
-    || Number(value.chainDepth) > 8) {
+    || Number(value.chainDepth) > 64) {
     throw invalid("limits");
   }
 }
@@ -285,7 +287,8 @@ function parseOutput(value: unknown): asserts value is ProcessJobProjectionOutpu
 function parseWake(value: unknown): asserts value is ProcessJobProjectionWake {
   if (!isRecord(value)
     || !hasExactlyKeys(value, ["state", "attempts", "deliveryKey", "lastAttemptAt"])
-    || (value.state !== "pending" && value.state !== "delivered" && value.state !== "failed")
+    || (value.state !== "pending" && value.state !== "delivered" && value.state !== "failed"
+      && value.state !== "unknown" && value.state !== "suppressed")
     || !nonNegativeInteger(value.attempts)
     || !boundedNonEmptyString(value.deliveryKey, 512)
     || !nullableValidDate(value.lastAttemptAt)) {
