@@ -292,10 +292,18 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(composer.getState().text).toBe("");
   });
 
-  it("offers explicit Steer on an idle conversation and routes it to live input", async () => {
+  it("offers explicit Steer on a running conversation and routes it to live input", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
-    storeMock.current = createStore(sendTurn, { sendLiveInput });
+    const runningThread = thread("thread", "agent", {
+      runState: { id: "turn-running", status: "running" },
+    });
+    storeMock.current = createStore(sendTurn, {
+      threads: [runningThread],
+      visibleThreads: [runningThread],
+      selectedThread: runningThread,
+      sendLiveInput,
+    });
     const { runtime } = await renderComposerRuntime();
     const input = screen.getByRole("combobox", { name: "Message" });
     const steer = screen.getByRole("button", { name: "Steer this message" });
@@ -303,7 +311,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(steer).toBeDisabled();
     expect(steer).toHaveAttribute(
       "title",
-      "Offer to the active run; otherwise queue as the next turn.",
+      "Offer to the active run.",
     );
     fireEvent.change(input, { target: { value: "Treat the browser state as stale" } });
     await waitFor(() => expect(steer).toBeEnabled());
@@ -337,7 +345,15 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
   it("fails a forced attachment closed and restores its text, quote, and upload", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
-    storeMock.current = createStore(sendTurn, { sendLiveInput });
+    const runningThread = thread("thread", "agent", {
+      runState: { id: "turn-running", status: "running" },
+    });
+    storeMock.current = createStore(sendTurn, {
+      threads: [runningThread],
+      visibleThreads: [runningThread],
+      selectedThread: runningThread,
+      sendLiveInput,
+    });
     const { runtime } = await renderComposerRuntime();
     const composer = runtime.thread.composer;
     const input = screen.getByRole("combobox", { name: "Message" });
@@ -368,15 +384,19 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(sendTurn).not.toHaveBeenCalled();
   });
 
-  it("does not offer explicit Steer for a new conversation or cron channel", async () => {
+  it("does not offer explicit Steer for an idle conversation, a new conversation, or cron channel", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn);
+    const view = await renderComposerRuntime();
+    expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
+
     storeMock.current = createStore(sendTurn, {
       threads: [],
       visibleThreads: [],
       selectedThread: null,
       selectedThreadId: null,
     });
-    const view = await renderComposerRuntime();
+    view.rerender();
     expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
 
     const cronThread = thread("cron-thread", "agent", {
