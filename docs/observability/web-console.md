@@ -363,12 +363,11 @@ The registry is scoped to the active agent and comes from that running agent's `
 
 The composer remains sendable while a response is running. A normal text-only
 send is persisted immediately and offered to the active provider as live
-guidance. An existing non-cron conversation also provides a secondary
-**Steer** action, with **Control/Command + Shift + Enter** as its shortcut. This
-explicit action uses the same live-input route regardless of whether the
-browser currently displays the conversation as running or idle; the service
-decides whether an active turn can accept it. The message displays one of four
-delivery states:
+guidance. An existing non-cron conversation provides a secondary **Steer**
+action only while a turn is running. **Control/Command + Shift + Enter** uses
+the same live-input route regardless of whether the browser currently displays
+the conversation as running or idle; the service decides whether an active turn
+can accept it. The message displays one of four delivery states:
 
 - **Steering current run…** while the provider settlement is pending;
 - **Applied to current run** after the provider accepts it;
