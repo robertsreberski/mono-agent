@@ -289,6 +289,22 @@ describe("AgentSettingsDialog", () => {
     expect(screen.queryByText("STALE START ERROR")).not.toBeInTheDocument();
     expect(screen.getByText("FINAL SUCCESS")).toBeVisible();
     await vi.waitFor(() => expect(screen.getAllByRole("button", { name: "Re-authenticate" })[0]).toBeEnabled());
+
+    const validOlder = deferred<Record<string, unknown>>();
+    const invalidNewer = deferred<Record<string, unknown>>();
+    apiMock.beginProviderAuth.mockImplementation(async (_source: string, providerId: string) =>
+      await (providerId === "older" ? validOlder.promise : invalidNewer.promise));
+    const finalButtons = screen.getAllByRole("button", { name: "Re-authenticate" });
+    await act(async () => {
+      finalButtons[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      finalButtons[1]!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    invalidNewer.reject(new Error("NEWER INVALID START"));
+    expect(await screen.findByText("NEWER INVALID START")).toBeVisible();
+    validOlder.resolve(sessionSnapshot("session-older-valid", "OLDER VALID SESSION"));
+
+    expect(await screen.findByText("OLDER VALID SESSION")).toBeVisible();
+    expect(screen.queryByText("NEWER INVALID START")).not.toBeInTheDocument();
   });
 
   it("does not let stale input or cancel completion overwrite a replacement session", async () => {
@@ -467,6 +483,82 @@ describe("AgentSettingsDialog", () => {
     expect(await screen.findByText("Check passed")).toBeVisible();
     expect(screen.getByText("Auth failed")).toBeVisible();
     expect(screen.getByText("Checks complete: 1 of 2 passed.")).toHaveAttribute("aria-live", "polite");
+  });
+
+  it("keeps the post-auth status when an older completed-check refresh resolves late", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    const verified = providerAuthStatusSnapshot("verified_by_live_request");
+    const notVerified = providerAuthStatusSnapshot("not_verified");
+    const staleCheckRefresh = deferred<ReturnType<typeof providerAuthStatusSnapshot>>();
+    apiMock.providerAuthStatus
+      .mockResolvedValueOnce(verified)
+      .mockImplementationOnce(async () => await staleCheckRefresh.promise)
+      .mockResolvedValueOnce(notVerified);
+    apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
+    apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    expect(await screen.findByText("OK")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Run live checks for all displayed providers" }));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-authenticate" }));
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Not verified")).toBeVisible();
+
+    await act(async () => staleCheckRefresh.resolve(verified));
+    expect(screen.getByText("Not verified")).toBeVisible();
+    expect(screen.queryByText("OK")).not.toBeInTheDocument();
+  });
+
+  it("ignores an older completed-check refresh rejection after authentication", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    const staleCheckRefresh = deferred<ReturnType<typeof providerAuthStatusSnapshot>>();
+    apiMock.providerAuthStatus
+      .mockResolvedValueOnce(providerAuthStatusSnapshot("verified_by_live_request"))
+      .mockImplementationOnce(async () => await staleCheckRefresh.promise)
+      .mockResolvedValueOnce(providerAuthStatusSnapshot("not_verified"));
+    apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
+    apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    expect(await screen.findByText("OK")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Run live checks for all displayed providers" }));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-authenticate" }));
+    await vi.waitFor(() => expect(apiMock.providerAuthStatus).toHaveBeenCalledTimes(3));
+    expect(await screen.findByText("Not verified")).toBeVisible();
+
+    await act(async () => staleCheckRefresh.reject(new Error("STALE CHECK REFRESH ERROR")));
+    expect(screen.queryByText("STALE CHECK REFRESH ERROR")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("clears a passed live-check result when valid re-authentication is adopted", async () => {
+    storeMock.selectedAgent = agent("alpha", {
+      label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true,
+    });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    apiMock.beginProviderAuthCheck.mockResolvedValue(completedProviderAuthCheck());
+    apiMock.beginProviderAuth.mockResolvedValue(successfulProviderAuthSession());
+
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    expect(await screen.findByText("Not verified")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Run live checks for all displayed providers" }));
+    expect(await screen.findByText("Check passed")).toBeVisible();
+    expect(screen.getByText("Checks complete: 1 of 1 passed.")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-authenticate" }));
+    expect(await screen.findByRole("button", { name: "Close authentication" })).toBeVisible();
+    expect(screen.queryByText("Check passed")).not.toBeInTheDocument();
+    expect(screen.queryByText("Checks complete: 1 of 1 passed.")).not.toBeInTheDocument();
   });
 
   it("offers a normal-size neutral cancel control while checks are active", async () => {
@@ -819,4 +911,52 @@ function sessionSnapshot(id: string, progress: string) {
     expiresAt: "2026-09-06T12:20:00.000Z",
     progress,
   };
+}
+
+function providerAuthStatusSnapshot(verification: "not_verified" | "verified_by_live_request") {
+  return {
+    schema: "mono-agent.provider-auth.v1",
+    generatedAt: verification === "not_verified"
+      ? "2026-09-06T12:00:03.000Z"
+      : "2026-09-06T12:00:01.000Z",
+    providers: [{
+      providerId: "opencode-go", label: "OpenCode Go",
+      usages: [{ kind: "primary", model: "opencode-go:kimi-k2.6", label: "Primary model" }],
+      state: "present", source: "stored", verification,
+      methods: [{
+        authType: "api_key", strategy: "api_key_prompt", label: "OpenCode API key", recommended: true,
+      }],
+    }],
+  } as const;
+}
+
+function completedProviderAuthCheck() {
+  return {
+    schema: "mono-agent.provider-auth-check.v1",
+    id: "check-completed-before-auth",
+    state: "completed",
+    createdAt: "2026-09-06T12:00:00.000Z",
+    updatedAt: "2026-09-06T12:00:01.000Z",
+    expiresAt: "2026-09-06T12:10:01.000Z",
+    results: [{
+      providerId: "opencode-go", label: "OpenCode Go", state: "passed",
+      model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing",
+      checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded.",
+    }],
+  } as const;
+}
+
+function successfulProviderAuthSession() {
+  return {
+    schema: "mono-agent.provider-auth-session.v1",
+    id: "session-new-credential",
+    providerId: "opencode-go",
+    authType: "api_key",
+    strategy: "api_key_prompt",
+    state: "succeeded",
+    createdAt: "2026-09-06T12:00:02.000Z",
+    updatedAt: "2026-09-06T12:00:03.000Z",
+    expiresAt: "2026-09-06T12:20:00.000Z",
+    progress: "NEW CREDENTIAL INSTALLED",
+  } as const;
 }

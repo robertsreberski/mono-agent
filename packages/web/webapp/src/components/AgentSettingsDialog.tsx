@@ -178,6 +178,8 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const latestSuccessfulStartRef = useRef(0);
   const pendingOperationsRef = useRef(new Set<number>());
   const replacementOperationsRef = useRef(new Set<number>());
+  const statusRequestSequenceRef = useRef(0);
+  const statusRefreshControllersRef = useRef(new Set<AbortController>());
   const sourceId = agent.sourceId;
   const scopeKey = `${sourceId}:${agent.generation ?? "unknown"}`;
   const scopeRef = useRef(scopeKey);
@@ -211,16 +213,45 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     setCheck(next);
   };
 
-  const refresh = async (signal?: AbortSignal) => {
-    setStatus(await api.providerAuthStatus(sourceId, signal));
+  const invalidateStatusRefreshes = () => {
+    statusRequestSequenceRef.current += 1;
+    for (const controller of statusRefreshControllersRef.current) controller.abort();
+    statusRefreshControllersRef.current.clear();
+  };
+
+  const adoptAuthenticatedSession = (next: ProviderAuthSessionSnapshot) => {
+    invalidateStatusRefreshes();
+    const retainedCheck = checkRef.current;
+    if (retainedCheck !== null && checkTerminal(retainedCheck.state)) adoptCheck(null);
+    adoptSession(next);
+  };
+
+  const refresh = () => {
+    const controller = new AbortController();
+    const requestId = ++statusRequestSequenceRef.current;
+    const requestScope = scopeKey;
+    statusRefreshControllersRef.current.add(controller);
+    void api.providerAuthStatus(sourceId, controller.signal).then((next) => {
+      if (controller.signal.aborted
+        || !mountedRef.current
+        || scopeRef.current !== requestScope
+        || requestId !== statusRequestSequenceRef.current) return;
+      setStatus(next);
+    }).catch((caught) => {
+      if (controller.signal.aborted
+        || !mountedRef.current
+        || scopeRef.current !== requestScope
+        || requestId !== statusRequestSequenceRef.current) return;
+      setAuthError(caught instanceof Error ? caught.message : String(caught));
+    }).finally(() => {
+      statusRefreshControllersRef.current.delete(controller);
+    });
+    return controller;
   };
 
   useEffect(() => {
     if (agent.supportsProviderAuth !== true || agent.status === "offline") return;
-    const controller = new AbortController();
-    void refresh(controller.signal).catch((caught) => {
-      if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
-    });
+    const controller = refresh();
     return () => controller.abort();
   }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth]);
 
@@ -241,16 +272,14 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       checkRef.current = null;
       pendingOperationsRef.current.clear();
       replacementOperationsRef.current.clear();
+      invalidateStatusRefreshes();
     };
   }, [sourceId, agent.generation]);
 
   useEffect(() => {
     if (session === null || terminal(session.state)) {
       if (session?.state === "succeeded") {
-        const controller = new AbortController();
-        void refresh(controller.signal).catch((caught) => {
-          if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
-        });
+        const controller = refresh();
         return () => controller.abort();
       }
       return;
@@ -289,7 +318,8 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   useEffect(() => {
     if (check === null || checkTerminal(check.state)) {
       if (check !== null) {
-        void refresh().catch((caught) => setAuthError(caught instanceof Error ? caught.message : String(caught)));
+        const controller = refresh();
+        return () => controller.abort();
       }
       return;
     }
@@ -341,7 +371,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       const next = await api.beginProviderAuth(sourceId, provider.providerId, method);
       if (scopeRef.current === requestScope && requestId > latestSuccessfulStartRef.current) {
         latestSuccessfulStartRef.current = requestId;
-        adoptSession(next);
+        adoptAuthenticatedSession(next);
         setSessionProvider(provider);
         setInputValue("");
         setAuthError(null);
