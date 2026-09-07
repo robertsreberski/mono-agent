@@ -265,12 +265,11 @@ must belong to the same thread.
 
 The composer remains sendable while a response is running. A normal text-only
 send is persisted immediately and offered to the active provider as live
-guidance. Every existing interactive conversation also shows a secondary
-**Steer** action; it offers the text through the same server-authoritative path
-even when the browser currently appears idle. Use **Control/Command + Shift +
-Enter** for the same explicit action. With no active turn, the service queues
-the message as exactly one normal turn using the conversation route captured
-when it was offered.
+guidance. An existing interactive conversation shows a secondary **Steer**
+action only while a turn is running. **Control/Command + Shift + Enter** still
+uses the same server-authoritative live-input path regardless of the browser's
+displayed state. With no active turn, the service queues the message as exactly
+one normal turn using the conversation route captured when it was offered.
 
 The message shows `pending`, `applied`, `queued`, or `cancelled`; an unsupported
 provider, delivery failure, end-of-turn race, idle conversation, or web-service

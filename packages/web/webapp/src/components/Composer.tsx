@@ -92,11 +92,11 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
   const canUpload = !isRunning && canUploadInConsole(connection, selectedAgent, selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
-  const canOfferSteer = selectedThread !== null && selectedThread.trigger?.kind !== "cron";
+  const canOfferSteer = isRunning && selectedThread !== null && selectedThread.trigger?.kind !== "cron";
   const steerDisabled = !canSend || attachmentCount > 0 || composer.value.trim().length === 0;
   const steerHelp = attachmentCount > 0
     ? "Steering is text-only."
-    : "Offer to the active run; otherwise queue as the next turn.";
+    : "Offer to the active run.";
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
     hasAgent: selectedAgent !== null,
