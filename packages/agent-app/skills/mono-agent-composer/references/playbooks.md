@@ -11,6 +11,18 @@ Flow, check whether one of these fits and adapt it. Verify every key against
 
 ---
 
+## Efficient command watches
+
+For repeated terminal redraws, enable `processJobs.enabled` and
+`monitors.enabled`, then use Monitor with `wake_on: "batch"`,
+`dedupe: "batch"`, and a chosen `min_wake_interval_ms`. The host clamps the
+interval to `monitors.maxWakeIntervalMs` (default/cap 300000); check the start
+receipt's effective policy. First and terminal wakes bypass the floor.
+Use `wake_on: "exit"` with default dedupe/interval for exactly one terminal
+wake and a bounded retained tail. Finite work whose final result matters still
+fits a background process job. Cancellation intentionally stops the watch;
+never automatically recreate it.
+
 ## 1. Personal Telegram assistant with BuJo memory
 **For:** an individual wanting a private assistant that remembers.
 **Goal:** a Telegram bot (long polling) that captures every turn into BuJo memory with scheduled consolidation and recalls past notes semantically.

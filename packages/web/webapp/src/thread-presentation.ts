@@ -1,4 +1,4 @@
-import type { JobActivity, ThreadSummary } from "./types";
+import type { JobActivity, ThreadSummary } from "./types.js";
 
 const jobOutcome: Readonly<Record<NonNullable<JobActivity["latestTerminal"]>["state"], string>> = {
   succeeded: "Completed",
@@ -22,22 +22,25 @@ export function threadPresentation(thread: ThreadSummary): { readonly text: stri
   }
 
   const terminal = jobActivity?.latestTerminal;
+  // Silent assistant-only host wakes settle real runs, but do not resolve a
+  // previous failure. Missing metadata preserves historical cached summaries.
+  const outcome = runState.lastOutcome === undefined ? runState : runState.lastOutcome;
   // A later foreground answer can resolve an older job failure. Use the job's
   // actual completion, not a later retry of its notification or wake receipt.
-  const jobIsLatest = terminal !== undefined && (runState.finishedAt === undefined
-    || Date.parse(terminal.completedAt) > Date.parse(runState.finishedAt));
+  const jobIsLatest = terminal !== undefined && (outcome?.finishedAt === undefined
+    || Date.parse(terminal.completedAt) > Date.parse(outcome.finishedAt));
   const error = jobIsLatest
     ? terminal.state === "succeeded" ? undefined : jobOutcome[terminal.state]
-    : runState.status === "failed" ? "Failed"
-      : runState.status === "cancelled" ? "Cancelled"
-        : runState.status === "interrupted" ? "Interrupted" : undefined;
+    : outcome?.status === "failed" ? "Failed"
+      : outcome?.status === "cancelled" ? "Cancelled"
+        : outcome?.status === "interrupted" ? "Interrupted" : undefined;
   if (jobs.length > 0) {
     return { text: [...(error === undefined ? [] : [error]), ...jobs].join(" · "), active: true };
   }
   if (error !== undefined) return { text: error, active: false };
   if (jobIsLatest) return { text: terminal.replyPreview || "Completed", active: false };
   return {
-    text: thread.lastMessagePreview || (runState.status === "complete" ? "Completed"
+    text: thread.lastMessagePreview || (outcome?.status === "complete" ? "Completed"
       : thread.messageCount > 0 ? "No reply yet" : "New conversation"),
     active: false,
   };

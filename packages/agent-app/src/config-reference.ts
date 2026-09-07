@@ -165,6 +165,11 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
     description: "Window over which stdout lines are batched into one event wake (compiled cap 5000).",
   },
   {
+    jsonPath: "monitors.maxWakeIntervalMs", env: "--", type: "integer",
+    defaultLabel: "300000", defaultValue: 300_000, example: 60_000,
+    description: "Ceiling for Monitor.min_wake_interval_ms; the receipt reports the clamped effective interval (compiled cap 300000).",
+  },
+  {
     jsonPath: "monitors.maxBatchLines", env: "--", type: "integer",
     defaultLabel: "200", defaultValue: 200, example: 200,
     description: "Maximum lines carried by one event batch; older lines are dropped and counted (compiled cap 2000).",
@@ -182,7 +187,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
     jsonPath: "monitors.maxChainDepth", env: "--", type: "integer",
     defaultLabel: "4", defaultValue: 4, example: 4,
-    description: "Maximum host-owned monitor wake chain depth (compiled cap 8).",
+    description: "Maximum host-owned monitor wake chain depth (compiled cap 64).",
   },
   {
     jsonPath: "monitors.rateLimit.windowMs", env: "--", type: "integer",
@@ -599,7 +604,8 @@ function setMonitorsSchema(root: Record<string, JsonSchema>): void {
       maxBatchLines: { type: "integer", minimum: 1, maximum: 2_000, default: 200 },
       maxBatchBytes: { type: "integer", minimum: 1, maximum: 1_048_576, default: 65_536 },
       maxLineBytes: { type: "integer", minimum: 1, maximum: 65_536, default: 4_096 },
-      maxChainDepth: { type: "integer", minimum: 1, maximum: 8, default: 4 },
+      maxWakeIntervalMs: { type: "integer", minimum: 1, maximum: 300_000, default: 300_000 },
+      maxChainDepth: { type: "integer", minimum: 1, maximum: 64, default: 4 },
       rateLimit: {
         type: "object",
         additionalProperties: false,

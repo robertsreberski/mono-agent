@@ -11,6 +11,19 @@ const jobs = (overrides: Partial<JobActivity> = {}): JobActivity =>
   ({ queued: 0, starting: 0, running: 0, ...overrides });
 
 describe("conversation status presentation", () => {
+  it("distinguishes no meaningful outcome from missing historical metadata", () => {
+    const base = { runState: { status: "complete" as const, finishedAt: later },
+      jobActivity: jobs({ latestTerminal: { state: "failed" as const, completedAt: ended } }) };
+    expect(present(base)).toEqual({ text: "Completed", active: false });
+    expect(present({ ...base, runState: { ...base.runState, lastOutcome: null } }))
+      .toEqual({ text: "Background job failed", active: false });
+    expect(present({ runState: { status: "complete", finishedAt: later,
+      lastOutcome: { status: "failed", finishedAt: ended } } }))
+      .toEqual({ text: "Failed", active: false });
+    expect(present({ runState: { status: "complete", finishedAt: later,
+      lastOutcome: { status: "failed", finishedAt: ended } }, jobActivity: jobs({ running: 1 }) }))
+      .toEqual({ text: "Failed · 1 background job running", active: true });
+  });
   it.each(["failed", "cancelled", "interrupted"] as const)(
     "shows %s instead of an older reply or a message count", (status) => {
       for (const lastMessagePreview of [undefined, "An older answer"]) {

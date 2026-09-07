@@ -26,6 +26,15 @@ async function configFile(contents: string): Promise<string> {
 }
 
 describe("monitors config", () => {
+  it("defaults and bounds wake interval and chain depth independently", () => {
+    expect(parseMonitorsSettings({})).toMatchObject({ maxWakeIntervalMs: 300_000, maxChainDepth: 4 });
+    expect(parseMonitorsSettings({ monitors: { maxWakeIntervalMs: 1000, maxChainDepth: 64 } }))
+      .toMatchObject({ maxWakeIntervalMs: 1000, maxChainDepth: 64 });
+    expect(() => parseMonitorsSettings({ monitors: { maxWakeIntervalMs: 300001 } })).toThrow(/cannot exceed 300000/u);
+    expect(() => parseMonitorsSettings({ monitors: { maxWakeIntervalMs: 0 } })).toThrow(/positive safe integer/u);
+    expect(() => parseMonitorsSettings({ monitors: { maxChainDepth: 65 } })).toThrow(/cannot exceed 64/u);
+  });
+
   it("is disabled and unconfigured when the block is absent", () => {
     const settings = parseMonitorsSettings({});
     expect(settings.configured).toBe(false);

@@ -63,6 +63,30 @@ describe("mono-agent monitors", () => {
     expect(rendered).toContain("mon-1");
     expect(rendered).toContain("Watching a selected pane");
     expect(rendered).not.toContain("/bin/bash");
+    expect(rendered).toContain("SUPPRESSED");
+    expect(rendered).toContain("FOLLOW-UP");
+    expect(rendered).toContain("UNKNOWN");
+  });
+
+  it("migrates an older agent projection in CLI JSON", async () => {
+    const fixture = await createFixture();
+    const legacy = JSON.parse(JSON.stringify(monitor()));
+    legacy.schema = "mono-agent.monitor-projection.v1";
+    for (const key of ["wakeOn", "dedupe", "minWakeIntervalMs"]) delete legacy.limits[key];
+    for (const key of ["batchesSuppressed", "linesSuppressed", "followUpWakes",
+      "steeredWakes", "unknownDispositionWakes"]) delete legacy.counters[key];
+    const output: string[] = [];
+    expect(await runMonitorsCommand({
+      cwd: fixture.cwd, configPath: fixture.configPath, env: fixture.env,
+      listSources: fixture.listSources, positionals: ["get", legacy.monitorId], json: true,
+      fetchImpl: (async () => Response.json(legacy)) as unknown as typeof fetch,
+      stdout: (value) => output.push(value),
+    })).toBe(0);
+    expect(JSON.parse(output.join(""))).toMatchObject({
+      schema: "mono-agent.monitor-projection.v2",
+      limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0 },
+      counters: { linesSuppressed: 0, unknownDispositionWakes: 3 },
+    });
   });
 
   it("rejects an invalid invocation before discovering an agent", async () => {
@@ -190,7 +214,7 @@ async function createFixture(
 
 function monitor(): MonitorProjection {
   return {
-    schema: "mono-agent.monitor-projection.v1",
+    schema: "mono-agent.monitor-projection.v2",
     monitorId: "mon-1",
     state: "running",
     description: "Watching a selected pane",
@@ -202,8 +226,8 @@ function monitor(): MonitorProjection {
       lastEventAt: "2026-09-03T10:01:00.000Z",
       completedAt: null,
     },
-    limits: { maxRuntimeMs: 3_600_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
-    counters: { seq: 3, batchesDelivered: 3, linesObserved: 9, linesDelivered: 9, droppedLines: 0, pendingLines: 0 },
+    limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0, maxRuntimeMs: 3_600_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
+    counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0, seq: 3, batchesDelivered: 3, linesObserved: 9, linesDelivered: 9, droppedLines: 0, pendingLines: 0 },
     exitCode: null,
     signal: null,
     cancelRequested: false,

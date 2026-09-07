@@ -1328,7 +1328,7 @@ const PROCESS_JOB: ProcessJobProjection = {
 };
 
 const MONITOR: MonitorProjection = {
-  schema: "mono-agent.monitor-projection.v1",
+    schema: "mono-agent.monitor-projection.v2",
   monitorId: "22222222-2222-4222-8222-222222222222",
   state: "running",
   description: "Watching a local process",
@@ -1345,8 +1345,8 @@ const MONITOR: MonitorProjection = {
     lastEventAt: "2026-09-04T09:00:01.000Z",
     completedAt: null,
   },
-  limits: { maxRuntimeMs: 1_800_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
-  counters: { seq: 3, batchesDelivered: 2, linesObserved: 4, linesDelivered: 3, droppedLines: 0, pendingLines: 0 },
+  limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0, maxRuntimeMs: 1_800_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
+  counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0, seq: 3, batchesDelivered: 2, linesObserved: 4, linesDelivered: 3, droppedLines: 0, pendingLines: 0 },
   exitCode: null,
   signal: null,
   cancelRequested: false,

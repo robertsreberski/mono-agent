@@ -166,6 +166,17 @@ function repoRoot(): string {
 }
 
 describe("config reference", () => {
+  it("publishes the Monitor wake ceiling and expanded chain cap", () => {
+    const schema = buildMonoAgentConfigSchema();
+    expect((schema.properties as Record<string, unknown>).monitors).toMatchObject({
+      properties: {
+        maxWakeIntervalMs: { type: "integer", minimum: 1, maximum: 300000, default: 300000 },
+        maxChainDepth: { type: "integer", minimum: 1, maximum: 64, default: 4 },
+      },
+    });
+    expect(buildGeneratedConfigReferenceMarkdown()).toContain("monitors.maxWakeIntervalMs");
+  });
+
   it("rejects unknown top-level and nested keys from the generated schema", () => {
     const json = {
       $schema: MONO_AGENT_CONFIG_SCHEMA_URL,

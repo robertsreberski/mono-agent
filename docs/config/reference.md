@@ -96,9 +96,10 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `monitors.maxActivePerConversation` | `integer` | `--` | 2 | `3` | Maximum simultaneously running monitors for one conversation (compiled cap 8). |
 | `monitors.maxBatchBytes` | `integer` | `--` | 65536 | `65536` | Maximum bytes carried by one event batch; older lines are dropped and counted (compiled cap 1 MiB). |
 | `monitors.maxBatchLines` | `integer` | `--` | 200 | `200` | Maximum lines carried by one event batch; older lines are dropped and counted (compiled cap 2000). |
-| `monitors.maxChainDepth` | `integer` | `--` | 4 | `4` | Maximum host-owned monitor wake chain depth (compiled cap 8). |
+| `monitors.maxChainDepth` | `integer` | `--` | 4 | `4` | Maximum host-owned monitor wake chain depth (compiled cap 64). |
 | `monitors.maxLineBytes` | `integer` | `--` | 4096 | `4096` | Per-event line clamp applied after redaction (compiled cap 64 KiB). |
 | `monitors.maxRuntimeMs` | `integer` | `--` | 3600000 | `3600000` | Ceiling for a timed monitor; Monitor.timeout_ms may lower it, never raise it (compiled cap 1 hour). |
+| `monitors.maxWakeIntervalMs` | `integer` | `--` | 300000 | `60000` | Ceiling for Monitor.min_wake_interval_ms; the receipt reports the clamped effective interval (compiled cap 300000). |
 | `monitors.persistentMaxRuntimeMs` | `integer` | `--` | 86400000 | `43200000` | Ceiling for a persistent monitor, which ignores timeout_ms (compiled cap 24 hours). |
 | `monitors.rateLimit.maxLinesPerWindow` | `integer` | `--` | 200 | `200` | Lines per window above which a window counts as over budget (compiled cap 20000). |
 | `monitors.rateLimit.sustainedWindows` | `integer` | `--` | 5 | `5` | Consecutive over-budget windows that stop a monitor with rate_limited and one terminal wake (compiled cap 60). |

@@ -72,6 +72,10 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   tool-capable wake turns; web uses ordinary assistant turns rather than a
   Monitor card, and shares one per-thread serialization lane with ProcessJobs
   wakes and queued user follow-ups.
+  Optional batch deduplication and wake intervals suppress unnecessary inference;
+  exit-only watches deliver one terminal wake. The host clamps intervals through
+  `monitors.maxWakeIntervalMs` (default/cap 300000) and exposes durable suppression
+  and delivery-disposition counters. `maxChainDepth` defaults to 4, with cap 64.
 - Drive each channel through a uniform driver contract with per-channel
   `disabled` / `waiting_for_config` / `running` / `degraded` / `failed` status.
   `degraded` means a temporarily unavailable transport owns its recovery while

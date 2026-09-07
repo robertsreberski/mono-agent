@@ -35,6 +35,7 @@ function settings(overrides: Partial<MonitorsSettings> = {}): MonitorsSettings {
     maxBatchBytes: MONITORS_DEFAULTS.maxBatchBytes,
     maxLineBytes: MONITORS_DEFAULTS.maxLineBytes,
     maxChainDepth: MONITORS_DEFAULTS.maxChainDepth,
+    maxWakeIntervalMs: MONITORS_DEFAULTS.maxWakeIntervalMs,
     rateLimit: { ...MONITORS_DEFAULTS.rateLimit },
     ...overrides,
   };

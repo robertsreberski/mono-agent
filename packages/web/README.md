@@ -45,6 +45,11 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Project foreground outcomes and retained background-job activity into conversation
   rows. Current work and failures take priority over reply previews, including for
   closed conversations and job cards outside the loaded message page.
+  Silent assistant-only host wakes retain the previous meaningful outcome for
+  this priority, without changing their actual run status or completion time.
+  The optional `runState.lastOutcome` is derived from retained user-message
+  provenance and visible reply content; `null` means no prior outcome, while
+  absent metadata preserves compatibility with older cached summaries.
 - Shape projected transcripts at the service boundary — drop non-allowlisted
   telemetry payloads, and preview oversized tool arguments/results with their
   byte count and a digest — while serving the whole part from message-bound
@@ -530,6 +535,11 @@ ledger; postconditions check the required effects.
    receipts update one compact, secret-free activity row rather than creating
    repeated steering cards. The browser may be closed, but the web service must
    remain running.
+
+Monitor activity shows suppressed lines/batches and follow-up, steered, or
+unknown wake dispositions. These are host delivery counts, not model-turn or
+cost estimates. Historical v1 Monitor projections in SQLite and browser caches
+remain readable alongside v2 projections.
 
 ### Package structure
 

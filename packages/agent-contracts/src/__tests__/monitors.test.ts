@@ -12,7 +12,7 @@ import {
 
 function projection(overrides: Partial<MonitorProjection> = {}): MonitorProjection {
   return {
-    schema: "mono-agent.monitor-projection.v1",
+    schema: "mono-agent.monitor-projection.v2",
     monitorId: "mon-1",
     state: "running",
     description: "Watching the deploy log",
@@ -24,8 +24,8 @@ function projection(overrides: Partial<MonitorProjection> = {}): MonitorProjecti
       lastEventAt: null,
       completedAt: null,
     },
-    limits: { maxRuntimeMs: 3_600_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
-    counters: { seq: 0, batchesDelivered: 0, linesObserved: 0, linesDelivered: 0, droppedLines: 0, pendingLines: 0 },
+    limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0, maxRuntimeMs: 3_600_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
+    counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0, seq: 0, batchesDelivered: 0, linesObserved: 0, linesDelivered: 0, droppedLines: 0, pendingLines: 0 },
     exitCode: null,
     signal: null,
     cancelRequested: false,
@@ -39,6 +39,39 @@ describe("monitor projection contract", () => {
     const value = projection();
     expect(parseMonitorProjection(JSON.parse(JSON.stringify(value)))).toEqual(value);
     expect(parseMonitorProjections([JSON.parse(JSON.stringify(value))])).toHaveLength(1);
+  });
+
+  it("migrates historical v1 projections with compatible policy and honest unknown dispositions", () => {
+    const current = projection();
+    const { wakeOn: _wakeOn, dedupe: _dedupe, minWakeIntervalMs: _interval, ...limits } = current.limits;
+    const { batchesSuppressed: _batches, linesSuppressed: _lines, followUpWakes: _follow,
+      steeredWakes: _steered, unknownDispositionWakes: _unknown, ...counters } = current.counters;
+    const legacy = { ...current, schema: "mono-agent.monitor-projection.v1", limits,
+      counters: { ...counters, batchesDelivered: 3 } };
+    expect(parseMonitorProjection(legacy)).toMatchObject({
+      schema: "mono-agent.monitor-projection.v2",
+      limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0 },
+      counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0,
+        unknownDispositionWakes: 3 },
+    });
+    expect(() => parseMonitorProjection({ ...legacy, limits: { ...limits, dedupe: "batch" } })).toThrow();
+  });
+
+  it("validates v2 policy, suppression counters, and the expanded chain cap", () => {
+    expect(parseMonitorProjection({ ...projection(), limits: { ...projection().limits, chainDepth: 64 } })
+      .limits.chainDepth).toBe(64);
+    for (const limits of [
+      { ...projection().limits, wakeOn: "other" },
+      { ...projection().limits, minWakeIntervalMs: -1 },
+      { ...projection().limits, minWakeIntervalMs: 300_001 },
+      { ...projection().limits, wakeOn: "exit", dedupe: "batch" },
+      { ...projection().limits, wakeOn: "exit", minWakeIntervalMs: 1 },
+    ]) expect(() => parseMonitorProjection({ ...projection(), limits })).toThrow();
+    const { linesSuppressed: _suppressed, ...missingCounter } = projection().counters;
+    expect(() => parseMonitorProjection({ ...projection(), counters: missingCounter })).toThrow();
+    expect(() => parseMonitorProjection({ ...projection(), counters: {
+      ...projection().counters, linesSuppressed: 1,
+    } })).toThrow(/counters/u);
   });
 
   it("rejects unknown keys at every depth", () => {
@@ -76,7 +109,7 @@ describe("monitor projection contract", () => {
     })).toThrow(/invalid limits/u);
     expect(() => parseMonitorProjection({
       ...projection(),
-      limits: { ...projection().limits, chainDepth: 9 },
+      limits: { ...projection().limits, chainDepth: 65 },
     })).toThrow(/invalid limits/u);
   });
 

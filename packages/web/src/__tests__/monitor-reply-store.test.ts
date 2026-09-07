@@ -38,6 +38,34 @@ async function setup() {
 }
 
 describe("Monitor terminal reply persistence", () => {
+  it("reads historical v1 projection_json on settlement and publishes v2 accounting", async () => {
+    const s = await setup();
+    const raw = new DatabaseSync(s.store.paths.database);
+    try {
+      s.reserve();
+      const row = raw.prepare("SELECT projection_json FROM monitor_wake_deliveries WHERE delivery_key = ?")
+        .get(s.deliveryKey) as { projection_json: string };
+      const legacy = JSON.parse(row.projection_json);
+      legacy.schema = "mono-agent.monitor-projection.v1";
+      for (const key of ["wakeOn", "dedupe", "minWakeIntervalMs"]) delete legacy.limits[key];
+      for (const key of ["batchesSuppressed", "linesSuppressed", "followUpWakes",
+        "steeredWakes", "unknownDispositionWakes"]) delete legacy.counters[key];
+      raw.prepare("UPDATE monitor_wake_deliveries SET projection_json = ? WHERE delivery_key = ?")
+        .run(JSON.stringify(legacy), s.deliveryKey);
+      s.settle();
+      const activity = s.parts().find((part) => part.type === "monitor-activity");
+      expect(activity?.type === "monitor-activity" && activity.monitors[0]?.projection).toMatchObject({
+        schema: "mono-agent.monitor-projection.v2",
+        limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0 },
+        counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0,
+          unknownDispositionWakes: legacy.counters.batchesDelivered },
+      });
+      expect(JSON.parse((raw.prepare("SELECT projection_json FROM monitor_wake_deliveries WHERE delivery_key = ?")
+        .get(s.deliveryKey) as { projection_json: string }).projection_json).schema)
+        .toBe("mono-agent.monitor-projection.v1");
+    } finally { raw.close(); s.store.close(); }
+  });
+
   it.each([false, true])("preserves the previous answer and repairs push when settlement is late=%s", async (late) => {
     const s = await setup();
     try {

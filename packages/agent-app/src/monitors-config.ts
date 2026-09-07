@@ -20,6 +20,7 @@ export const MONITORS_DEFAULTS = Object.freeze({
   persistentMaxRuntimeMs: 24 * 60 * 60 * 1_000,
   /** Stdout lines produced within this window are delivered as one batch. */
   coalesceMs: 200,
+  maxWakeIntervalMs: 300_000,
   maxBatchLines: 200,
   maxBatchBytes: 64 * 1024,
   maxLineBytes: 4 * 1024,
@@ -37,10 +38,11 @@ export const MONITORS_CAPS = Object.freeze({
   maxRuntimeMs: 60 * 60 * 1_000,
   persistentMaxRuntimeMs: 24 * 60 * 60 * 1_000,
   coalesceMs: 5_000,
+  maxWakeIntervalMs: 300_000,
   maxBatchLines: 2_000,
   maxBatchBytes: 1024 * 1024,
   maxLineBytes: 64 * 1024,
-  maxChainDepth: 8,
+  maxChainDepth: 64,
   rateLimit: Object.freeze({
     windowMs: 60_000,
     maxLinesPerWindow: 20_000,
@@ -65,6 +67,7 @@ export interface MonitorsSettings {
   readonly maxRuntimeMs: number;
   readonly persistentMaxRuntimeMs: number;
   readonly coalesceMs: number;
+  readonly maxWakeIntervalMs: number;
   readonly maxBatchLines: number;
   readonly maxBatchBytes: number;
   readonly maxLineBytes: number;
@@ -79,6 +82,7 @@ const MONITORS_KEYS = [
   "maxRuntimeMs",
   "persistentMaxRuntimeMs",
   "coalesceMs",
+  "maxWakeIntervalMs",
   "maxBatchLines",
   "maxBatchBytes",
   "maxLineBytes",
@@ -141,6 +145,12 @@ function resolved(configured: boolean, block: Record<string, unknown>): Monitors
       MONITORS_CAPS.persistentMaxRuntimeMs,
     ),
     coalesceMs: bounded(block.coalesceMs, "monitors.coalesceMs", MONITORS_DEFAULTS.coalesceMs, MONITORS_CAPS.coalesceMs),
+    maxWakeIntervalMs: bounded(
+      block.maxWakeIntervalMs,
+      "monitors.maxWakeIntervalMs",
+      MONITORS_DEFAULTS.maxWakeIntervalMs,
+      MONITORS_CAPS.maxWakeIntervalMs,
+    ),
     maxBatchLines: bounded(
       block.maxBatchLines,
       "monitors.maxBatchLines",

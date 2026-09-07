@@ -8,8 +8,9 @@ sidebar:
 A monitor is a host-owned watch. `Monitor` starts a command, returns a receipt
 immediately, and mono-agent keeps the process alive after the turn ends. Every
 line the command writes to stdout is one event; lines produced close together
-are batched, and each batch wakes the exact originating conversation with a new
-turn. One final turn reports the watch ending.
+are batched. By default each batch wakes the exact originating conversation.
+Optional deduplication and a wake interval suppress unnecessary inference;
+exit-only mode sends no intermediate wakes. One final wake reports the watch ending.
 
 This is the streaming counterpart of
 [background process jobs](/tools/background-process-jobs/). A background job
@@ -68,6 +69,7 @@ background slot would starve real background work.
     "maxRuntimeMs": 3600000,
     "persistentMaxRuntimeMs": 86400000,
     "coalesceMs": 200,
+    "maxWakeIntervalMs": 300000,
     "maxBatchLines": 200,
     "maxBatchBytes": 65536,
     "maxLineBytes": 4096,
@@ -85,7 +87,8 @@ defaults, which already sit at their caps.
 
 `Monitor` takes a required `command` and a required `description`, plus optional
 `timeout_ms` (default 300000, minimum 1000, ignored when `persistent` is true),
-`persistent`, and `workdir`. Command preparation is byte-identical to `Bash`:
+`persistent`, `workdir`, `wake_on`, `dedupe`, and `min_wake_interval_ms`.
+Command preparation is byte-identical to `Bash`:
 the same `/bin/bash --noprofile --norc -c` shape, the same workdir rules, the
 same cleaned startup environment, and the same sandbox seam. A monitor is never
 a way to run a command `Bash` could not, and there is no separate command
@@ -93,11 +96,29 @@ allowlist to keep in sync.
 
 The start receipt reports `monitor_id`, `state`, `started_at`, `persistent`, and
 `max_runtime_ms` — the budget actually granted, or `0` for a persistent watch.
+It also reports the effective `wake_on`, `dedupe`, and `min_wake_interval_ms`.
+
+| Tool field | Default | Behavior |
+| --- | --- | --- |
+| `wake_on` | `"batch"` | Eligible batches plus one terminal wake; `"exit"` sends only the terminal wake with a bounded retained tail and drop accounting. |
+| `dedupe` | `"none"` | `"batch"` suppresses consecutive identical candidate batches before inference. |
+| `min_wake_interval_ms` | `0` | Nonnegative integer floor between nonterminal wakes, clamped to `monitors.maxWakeIntervalMs` (default and compiled ceiling 300000). First and terminal wakes bypass it. |
+
+Exit-only mode rejects nondefault deduplication or interval settings. Comparison
+happens after redaction and bounds; ANSI CSI/OSC redraw controls are ignored
+only for comparison. Meaningful whitespace, timestamps and changed text remain
+significant. Candidate boundaries remain intact for comparison during interval
+delay; the next permitted wake combines all retained candidates into one bounded
+envelope instead of draining stale candidates one interval at a time. Comparison
+fingerprints stay in memory, and failed or ambiguous delivery cannot seed
+lasting suppression. Terminal wakes always bypass suppression and the interval.
+`monitors.maxChainDepth` defaults to 4 and accepts up to 64.
 
 `MonitorStop` takes the `monitor_id`. Stopping an already-terminal monitor is a
 success that reports the state it settled in, so a model that stops a watch
 after its terminal turn is not pushed into a retry loop. A monitor can only be
 stopped from the conversation that started it.
+A cancelled watch was intentionally stopped: do not automatically recreate it.
 
 ## Event turns
 
@@ -132,7 +153,7 @@ changes nothing should end the turn with exactly `NOTHING_TO_REPORT`, which
 suppresses the reply entirely so a quiet watch posts nothing.
 
 The fenced body carries `monitorId`, `description`, `state`, `seq`,
-`droppedLines`, and the batch's `events`. A terminal envelope adds `exitCode`,
+`droppedLines`, suppression counters, and the batch's `events`. A terminal envelope adds `exitCode`,
 `signal`, the failure code, and a bounded stderr tail — stderr is not an event
 source, only a tail retained so a failing watcher can explain itself.
 
@@ -192,6 +213,10 @@ every line would put untrusted command output into durable state and cost an
 fsync per line. A crash in those windows therefore loses that batch, and the
 counters cannot always attribute it.
 
+Once a wake is durably admitted, v2 records its in-flight line count without
+event text. Recovery classifies an unresolved dispatch as an unknown wake
+disposition and drops its transient lines; it never replays that dispatch.
+
 This is the fail-closed half of a deliberate trade. A batch is written off
 rather than replayed whenever delivery is ambiguous, because a monitor turn the
 conversation has already seen a second time is worse than a gap it can resolve
@@ -201,6 +226,33 @@ a channel that is not running): that batch is re-offered unchanged under a fresh
 sequence number. Delivery keys are never reused.
 
 ## Operating monitors
+
+The v2 store and projections include cumulative `batchesSuppressed`,
+`linesSuppressed`, `followUpWakes`, `steeredWakes`, and
+`unknownDispositionWakes`. These count host delivery dispositions and
+suppression, not model turns or dollar costs. CLI and web expose the same
+accounting. Event text and comparison fingerprints are never persisted.
+
+The existing `monitors-v1.json` filename is retained. Historical v1 records
+are migrated in memory with batch/none/0 policy, zero suppression and known
+disposition counters, and historical delivered batches counted as unknown
+disposition. Unconfirmed historical attempts cannot be reconstructed. All
+subsequent writes use v2. Historical web projections remain readable. Back up
+the owner-private state before adopting the new runtime: an older binary
+rejects a v2 store, so rolling back the binary alone is insufficient. This
+change adds no state root or purge surface; consumer adoption requires its
+separate deliberate restart.
+
+The provider-free transport smoke runs the built host and real subprocesses:
+
+```bash
+pnpm --filter @mono-agent/agent-app... run build
+node scripts/smoke-monitors-efficiency.mjs
+```
+
+Its fixture wake sink measures pre-inference calls for redraw dedupe,
+interval-delayed distinct batches, and exit-only completion. It does not prove
+paid-model behavior or a live consumer rollout.
 
 ```bash
 mono-agent monitors list

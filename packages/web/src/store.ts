@@ -4886,10 +4886,53 @@ export class WebStore {
     if (row === undefined) return { status: "idle" };
     const status = normalizeRunStatus(row.status);
     const attribution = runAttribution(row);
+    // Successful assistant-only turns without visible reply content are host
+    // no-ops, not a new conversation outcome. Keep their real run state while
+    // projecting the prior meaningful outcome for status priority. Derive this
+    // from retained provenance/normalized parts so old stores need no migration.
+    // Match hasMonitorReplyContent without loading transcript bodies into lists.
+    const candidates = status === "complete" ? this.database.prepare(`
+      SELECT t.id, t.status, t.finished_at, t.assistant_message_id,
+        EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
+      FROM turns t
+      WHERE t.thread_id = ? AND t.status <> 'running' AND (
+        t.status <> 'complete'
+        OR EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user')
+        OR EXISTS (
+          SELECT 1 FROM messages m, json_each(m.parts_json) p
+          WHERE m.id = t.assistant_message_id AND (
+            json_extract(p.value, '$.type') IN ('attachment', 'mcp_app', 'failure')
+            OR (json_extract(p.value, '$.type') = 'text'
+              AND length(trim(json_extract(p.value, '$.text'), ?)) > 0)
+          )
+        )
+      ) ORDER BY t.started_at DESC, t.rowid DESC
+    `).iterate(threadId, "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff") : [];
+    let outcome: { id: string; status: string; finished_at: string | null } | undefined;
+    for (const rawCandidate of candidates) {
+      const candidate = rawCandidate as unknown as { id: string; status: string; finished_at: string | null;
+        assistant_message_id: string; has_user: number };
+      // Legacy Monitor rows retain raw sentinel bytes and normalize only on
+      // read. Inspect one associated candidate at a time, never materialize the
+      // transcript or rewrite history merely to derive sidebar status.
+      if (candidate.status === "complete" && candidate.has_user === 0 && this.hasMonitorTurnAssociation(candidate.id)) {
+        const message = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
+          .get(candidate.assistant_message_id) as { parts_json: string };
+        if (!hasMonitorReplyContent(normalizeMonitorTerminalReply(parseParts(message.parts_json)).parts)) continue;
+      }
+      outcome = candidate;
+      break;
+    }
+    const lastOutcome = status !== "complete" || outcome?.id === row.id ? undefined
+      : outcome === undefined ? null : {
+        status: normalizeRunStatus(outcome.status),
+        ...(outcome.finished_at === null ? {} : { finishedAt: outcome.finished_at }),
+      };
     return {
       id: row.id,
       status,
       startedAt: row.started_at,
+      ...(lastOutcome === undefined ? {} : { lastOutcome }),
       ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
       ...(row.error_message === null
         ? {}

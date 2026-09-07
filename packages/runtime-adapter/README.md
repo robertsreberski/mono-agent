@@ -110,6 +110,12 @@ conflicting retry fails rather than overwriting history.
 
 ## Architecture
 
+`MonitorStartRequest` carries optional `wakeOn`, `dedupe`, and
+`minWakeIntervalMs`; `MonitorStartResult` reports the effective values.
+`MonitorControllerLimits.maxWakeIntervalMs` publishes the host interval cap.
+The bridge rejects malformed policy and nondefault dedupe/interval with exit-only
+wakes. Defaults remain batch/none/0.
+
 `runtime-adapter` is the typed boundary between harness code and the JavaScript
 provider kernel:
 

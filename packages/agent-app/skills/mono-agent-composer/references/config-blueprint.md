@@ -197,6 +197,15 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     }
   },
 
+  // Monitor watches reuse processJobs state and require processJobs.enabled.
+  // Tool policy defaults: wake_on batch, dedupe none, min_wake_interval_ms 0.
+  // Exit-only rejects nondefault dedupe/interval; terminal wakes always bypass both.
+  "monitors": {
+    "enabled": false,
+    "maxWakeIntervalMs": 300000,           // host interval ceiling; cap 300000
+    "maxChainDepth": 4                    // host-owned; cap 64
+  },
+
   // Human-in-the-loop bridge: structured blocking AskUser plus
   // run-scoped project-MCP progress. It auto-starts when either ask tool is
   // allowed, this block or an interaction env override is configured, or

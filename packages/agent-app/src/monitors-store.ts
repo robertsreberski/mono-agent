@@ -16,7 +16,8 @@ import { MONITORS_CAPS, MONITORS_MAX_TERMINAL_RECORDS } from "./monitors-config.
 import { processIncarnationFromJson, type ProcessIncarnation } from "./process-incarnation.js";
 import { isProcessJobOriginRecord, type ProcessJobOriginRecord } from "./process-jobs-store.js";
 
-export const MONITOR_RECORD_SCHEMA = 1;
+export const MONITOR_RECORD_SCHEMA = 2;
+// Keep the established filename so upgrades find the same ownership records.
 export const MONITOR_STATE_FILE = "monitors-v1.json";
 export const MONITOR_OWNER_LOCK_FILE = ".monitors-owner";
 export const MONITOR_OWNER_SCHEMA = "mono-agent.monitors-owner.v1";
@@ -42,6 +43,9 @@ export interface DurableMonitorRecord {
   /** Kernel-produced summary; contains no argument values. */
   readonly summary: string;
   readonly persistent: boolean;
+  readonly wakeOn: "batch" | "exit";
+  readonly dedupe: "none" | "batch";
+  readonly minWakeIntervalMs: number;
   readonly origin: ProcessJobOriginRecord;
   readonly chainDepth: number;
   readonly agentIncarnation: ProcessIncarnation;
@@ -62,10 +66,17 @@ export interface DurableMonitorRecord {
   cancelRequested: boolean;
   seq: number;
   batchesDelivered: number;
+  batchesSuppressed: number;
+  linesSuppressed: number;
+  followUpWakes: number;
+  steeredWakes: number;
+  unknownDispositionWakes: number;
   linesObserved: number;
   linesDelivered: number;
   droppedLines: number;
   pendingLines: number;
+  /** Only a count, never event text; null means no unresolved dispatch. */
+  inFlightWakeLines: number | null;
   /** True only while the single terminal wake for this monitor is still owed. */
   terminalWakePending: boolean;
   lastError: { code: MonitorErrorCode; message: string } | null;
@@ -132,15 +143,20 @@ export async function readMonitorStore(stateDir: string): Promise<{
     return { snapshot: emptySnapshot(), corrupt: true, reason: `invalid JSON: ${reasonOf(error)}` };
   }
   if (!isRecord(parsed)
-    || parsed.schemaVersion !== MONITOR_RECORD_SCHEMA
+    || (parsed.schemaVersion !== 1 && parsed.schemaVersion !== MONITOR_RECORD_SCHEMA)
     || !Array.isArray(parsed.records)
     || parsed.records.length > MONITOR_STORE_MAX_RECORDS) {
-    return { snapshot: emptySnapshot(), corrupt: true, reason: "envelope is not a bounded v1 record set" };
+    return { snapshot: emptySnapshot(), corrupt: true, reason: "envelope is not a bounded v1/v2 record set" };
   }
   const records: DurableMonitorRecord[] = [];
   let corrupt = false;
   for (const entry of parsed.records) {
-    if (isDurableMonitorRecord(entry)) records.push(entry);
+    const migrated = parsed.schemaVersion === 1 && isRecord(entry) && entry.schemaVersion === 1
+      ? { ...entry, schemaVersion: MONITOR_RECORD_SCHEMA, wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0,
+        batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0,
+        unknownDispositionWakes: entry.batchesDelivered, inFlightWakeLines: null }
+      : entry;
+    if (isDurableMonitorRecord(migrated)) records.push(migrated);
     else corrupt = true;
   }
   const ids = new Set(records.map((record) => record.monitorId));
@@ -169,7 +185,7 @@ export async function writeMonitorStore(
 
 export function projectMonitor(record: DurableMonitorRecord): MonitorProjection {
   return {
-    schema: "mono-agent.monitor-projection.v1",
+    schema: "mono-agent.monitor-projection.v2",
     monitorId: record.monitorId,
     state: record.state,
     description: record.description,
@@ -187,6 +203,9 @@ export function projectMonitor(record: DurableMonitorRecord): MonitorProjection 
       completedAt: record.completedAt,
     },
     limits: {
+      wakeOn: record.wakeOn,
+      dedupe: record.dedupe,
+      minWakeIntervalMs: record.minWakeIntervalMs,
       maxRuntimeMs: record.maxRuntimeMs,
       coalesceMs: record.coalesceMs,
       maxBatchLines: record.maxBatchLines,
@@ -194,6 +213,11 @@ export function projectMonitor(record: DurableMonitorRecord): MonitorProjection 
       chainDepth: record.chainDepth,
     },
     counters: {
+      batchesSuppressed: record.batchesSuppressed,
+      linesSuppressed: record.linesSuppressed,
+      followUpWakes: record.followUpWakes,
+      steeredWakes: record.steeredWakes,
+      unknownDispositionWakes: record.unknownDispositionWakes,
       seq: record.seq,
       batchesDelivered: record.batchesDelivered,
       linesObserved: record.linesObserved,
@@ -223,7 +247,13 @@ export function isDurableMonitorRecord(value: unknown): value is DurableMonitorR
   if (typeof value.description !== "string" || value.description.length > MAX_DESCRIPTION_CHARS) return false;
   if (typeof value.summary !== "string" || value.summary.length > 8_000) return false;
   if (typeof value.persistent !== "boolean" || typeof value.cancelRequested !== "boolean") return false;
+  if ((value.wakeOn !== "batch" && value.wakeOn !== "exit")
+    || (value.dedupe !== "none" && value.dedupe !== "batch")
+    || !nonNegativeInteger(value.minWakeIntervalMs)
+    || Number(value.minWakeIntervalMs) > 300_000
+    || (value.wakeOn === "exit" && (value.dedupe !== "none" || value.minWakeIntervalMs !== 0))) return false;
   if (typeof value.terminalWakePending !== "boolean") return false;
+  if (value.inFlightWakeLines !== null && !nonNegativeInteger(value.inFlightWakeLines)) return false;
   if (!isMonitorOriginRecord(value.origin)) return false;
   if (!nonNegativeInteger(value.chainDepth) || Number(value.chainDepth) > MONITORS_CAPS.maxChainDepth) return false;
   if (processIncarnationFromJson(value.agentIncarnation) === undefined) return false;
@@ -261,9 +291,16 @@ export function isDurableMonitorRecord(value: unknown): value is DurableMonitorR
     "linesDelivered",
     "droppedLines",
     "pendingLines",
+    "batchesSuppressed",
+    "linesSuppressed",
+    "followUpWakes",
+    "steeredWakes",
+    "unknownDispositionWakes",
   ] as const) {
     if (!nonNegativeInteger(value[key])) return false;
   }
+  if (Number(value.linesDelivered) + Number(value.droppedLines) + Number(value.pendingLines)
+    + Number(value.linesSuppressed) + Number(value.inFlightWakeLines ?? 0) > Number(value.linesObserved)) return false;
   if (value.lastError !== null) {
     if (!isRecord(value.lastError)
       || !isMonitorErrorCode(value.lastError.code)

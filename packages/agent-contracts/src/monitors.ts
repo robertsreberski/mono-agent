@@ -101,6 +101,9 @@ export interface MonitorProjectionTimestamps {
 }
 
 export interface MonitorProjectionLimits {
+  readonly wakeOn: "batch" | "exit";
+  readonly dedupe: "none" | "batch";
+  readonly minWakeIntervalMs: number;
   readonly maxRuntimeMs: number;
   readonly coalesceMs: number;
   readonly maxBatchLines: number;
@@ -114,6 +117,11 @@ export interface MonitorProjectionLimits {
  * to the model so a gap is never silently invisible.
  */
 export interface MonitorProjectionCounters {
+  readonly batchesSuppressed: number;
+  readonly linesSuppressed: number;
+  readonly followUpWakes: number;
+  readonly steeredWakes: number;
+  readonly unknownDispositionWakes: number;
   readonly seq: number;
   readonly batchesDelivered: number;
   readonly linesObserved: number;
@@ -130,7 +138,7 @@ export interface MonitorProjectionCounters {
  * model-authored purpose; monitor event text is never retained here.
  */
 export interface MonitorProjection {
-  readonly schema: "mono-agent.monitor-projection.v1";
+  readonly schema: "mono-agent.monitor-projection.v2";
   readonly monitorId: string;
   readonly state: MonitorState;
   readonly description: string;
@@ -172,10 +180,27 @@ const PROJECTION_KEYS = [
 
 /** Strictly parse one projection, rejecting unknown keys at every depth. */
 export function parseMonitorProjection(value: unknown): MonitorProjection {
+  // Historical web projection_json and older operator hosts remain readable.
+  // Validate the exact legacy nested shape before supplying compatibility defaults.
+  if (isRecord(value) && value.schema === "mono-agent.monitor-projection.v1") {
+    if (!isRecord(value.limits) || !hasExactlyKeys(value.limits,
+      ["maxRuntimeMs", "coalesceMs", "maxBatchLines", "maxBatchBytes", "chainDepth"])
+      || !isRecord(value.counters) || !hasExactlyKeys(value.counters,
+        ["seq", "batchesDelivered", "linesObserved", "linesDelivered", "droppedLines", "pendingLines"])) {
+      throw invalid("legacy projection");
+    }
+    value = {
+      ...value,
+      schema: "mono-agent.monitor-projection.v2",
+      limits: { ...value.limits, wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0 },
+      counters: { ...value.counters, batchesSuppressed: 0, linesSuppressed: 0,
+        followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: value.counters.batchesDelivered },
+    };
+  }
   if (!isRecord(value) || !hasExactlyKeys(value, PROJECTION_KEYS)) {
     throw invalid("envelope");
   }
-  if (value.schema !== "mono-agent.monitor-projection.v1"
+  if (value.schema !== "mono-agent.monitor-projection.v2"
     || !boundedNonEmptyString(value.monitorId, 256)
     || !isMonitorState(value.state)
     || !boundedString(value.description, 4_000)
@@ -192,7 +217,7 @@ export function parseMonitorProjection(value: unknown): MonitorProjection {
   parseCounters(value.counters);
   parseError(value.lastError);
   const parsed = value as unknown as MonitorProjection;
-  if (parsed.counters.linesDelivered + parsed.counters.droppedLines + parsed.counters.pendingLines
+  if (parsed.counters.linesDelivered + parsed.counters.droppedLines + parsed.counters.pendingLines + parsed.counters.linesSuppressed
     > parsed.counters.linesObserved) {
     throw invalid("counters");
   }
@@ -247,13 +272,18 @@ function parseTimestamps(value: unknown): asserts value is MonitorProjectionTime
 
 function parseLimits(value: unknown): asserts value is MonitorProjectionLimits {
   if (!isRecord(value)
-    || !hasExactlyKeys(value, ["maxRuntimeMs", "coalesceMs", "maxBatchLines", "maxBatchBytes", "chainDepth"])
+    || !hasExactlyKeys(value, ["maxRuntimeMs", "coalesceMs", "maxBatchLines", "maxBatchBytes", "chainDepth",
+      "wakeOn", "dedupe", "minWakeIntervalMs"])
+    || (value.wakeOn !== "batch" && value.wakeOn !== "exit")
+    || (value.dedupe !== "none" && value.dedupe !== "batch")
+    || !nonNegativeInteger(value.minWakeIntervalMs) || Number(value.minWakeIntervalMs) > 300_000
+    || (value.wakeOn === "exit" && (value.dedupe !== "none" || value.minWakeIntervalMs !== 0))
     || !boundedPositiveInteger(value.maxRuntimeMs, 24 * 60 * 60 * 1_000)
     || !boundedPositiveInteger(value.coalesceMs, 60_000)
     || !boundedPositiveInteger(value.maxBatchLines, 10_000)
     || !boundedPositiveInteger(value.maxBatchBytes, 8 * 1024 * 1024)
     || !nonNegativeInteger(value.chainDepth)
-    || Number(value.chainDepth) > 8) {
+    || Number(value.chainDepth) > 64) {
     throw invalid("limits");
   }
 }
@@ -267,13 +297,23 @@ function parseCounters(value: unknown): asserts value is MonitorProjectionCounte
       "linesDelivered",
       "droppedLines",
       "pendingLines",
+      "batchesSuppressed",
+      "linesSuppressed",
+      "followUpWakes",
+      "steeredWakes",
+      "unknownDispositionWakes",
     ])
     || !nonNegativeInteger(value.seq)
     || !nonNegativeInteger(value.batchesDelivered)
     || !nonNegativeInteger(value.linesObserved)
     || !nonNegativeInteger(value.linesDelivered)
     || !nonNegativeInteger(value.droppedLines)
-    || !nonNegativeInteger(value.pendingLines)) {
+    || !nonNegativeInteger(value.pendingLines)
+    || !nonNegativeInteger(value.batchesSuppressed)
+    || !nonNegativeInteger(value.linesSuppressed)
+    || !nonNegativeInteger(value.followUpWakes)
+    || !nonNegativeInteger(value.steeredWakes)
+    || !nonNegativeInteger(value.unknownDispositionWakes)) {
     throw invalid("counters");
   }
 }
