@@ -193,24 +193,81 @@ export function createDynamicCredentialStore(apiKeys, resolvePiApiKey, runtimeWa
 // `piResolvedModel`: when supplied it is used verbatim (the model dispatched via
 // `piResolvedModel` may live outside pi's builtin catalog, e.g. a faux model).
 function buildRunModels(runtime, options, runtimeWarnings, providerAttributionSessionId) {
+  let models;
   if (options.piResolvedModels) {
-    return withOpenCodeSessionHeaders(options.piResolvedModels, providerAttributionSessionId);
+    models = options.piResolvedModels;
+  } else {
+    const credentials = createDynamicCredentialStore(runtime.apiKeys, options.resolvePiApiKey, runtimeWarnings);
+    if (options.customProvider) {
+      const model = runtime.model;
+      models = createModels({ credentials });
+      models.setProvider(createProvider({
+        id: model.provider,
+        name: model.name || model.provider,
+        baseUrl: model.baseUrl,
+        auth: { apiKey: envApiKeyAuth(model.name || model.provider, []) },
+        models: [model],
+        api: openAICompletionsApi(),
+      }));
+    } else {
+      models = builtinModels({
+        credentials,
+        ...(options.providerCheckAuthContext === undefined
+          ? {}
+          : { authContext: options.providerCheckAuthContext }),
+      });
+    }
   }
-  const credentials = createDynamicCredentialStore(runtime.apiKeys, options.resolvePiApiKey, runtimeWarnings);
-  if (options.customProvider) {
-    const model = runtime.model;
-    const models = createModels({ credentials });
-    models.setProvider(createProvider({
-      id: model.provider,
-      name: model.name || model.provider,
-      baseUrl: model.baseUrl,
-      auth: { apiKey: envApiKeyAuth(model.name || model.provider, []) },
-      models: [model],
-      api: openAICompletionsApi(),
-    }));
-    return withOpenCodeSessionHeaders(models, providerAttributionSessionId);
-  }
-  return withOpenCodeSessionHeaders(builtinModels({ credentials }), providerAttributionSessionId);
+  return withProviderCheckOutputCap(
+    withOpenCodeSessionHeaders(models, providerAttributionSessionId),
+    options.providerCheckMaxTokens,
+  );
+}
+
+const PROVIDER_CHECK_REQUEST_METHODS = new Set([
+  "stream",
+  "complete",
+  "streamSimple",
+  "completeSimple",
+  "streamDeferred",
+  "fetchDeferred",
+  "cancelDeferred",
+]);
+
+/**
+ * Pi's Agent resolves the transport model through `Models` again, so capping
+ * only the model handed to the harness does not constrain the actual provider
+ * request. Bind the same cap at the dispatcher boundary used by every request
+ * path. This wrapper is activated only for explicit provider checks.
+ *
+ * @param {import("@earendil-works/pi-ai").Models} models
+ * @param {unknown} requestedCap
+ * @returns {import("@earendil-works/pi-ai").Models}
+ */
+function withProviderCheckOutputCap(models, requestedCap) {
+  const cap = Number(requestedCap);
+  if (!Number.isSafeInteger(cap) || cap <= 0) return models;
+  const wrappers = new Map();
+  return /** @type {import("@earendil-works/pi-ai").Models} */ (new Proxy(models, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (typeof property !== "string" || typeof value !== "function") return value;
+      if (!PROVIDER_CHECK_REQUEST_METHODS.has(property)) return value.bind(target);
+      let wrapper = wrappers.get(property);
+      if (wrapper === undefined) {
+        wrapper = (model, ...args) => {
+          const current = Number(model?.maxTokens);
+          const cappedModel = {
+            ...model,
+            maxTokens: Number.isFinite(current) && current > 0 ? Math.min(current, cap) : cap,
+          };
+          return value.call(target, cappedModel, ...args);
+        };
+        wrappers.set(property, wrapper);
+      }
+      return wrapper;
+    },
+  }));
 }
 
 // Normalize the incoming runtime messages into AgentMessages the harness can
@@ -429,7 +486,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // ready pi-ai Model (e.g. a registered faux provider model) plus optional
     // capabilities, bypassing the static model-registry lookup. Production
     // callers leave it undefined and resolve through pi-ai's registry.
-    const runtime = options.piResolvedModel
+    let runtime = options.piResolvedModel
       ? {
         model: options.piResolvedModel,
         capabilities: options.piResolvedCapabilities || {
@@ -444,6 +501,15 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
         apiKeys: new Map(),
       }
       : resolvePiRuntimeModel(resolved, options);
+    if (Number.isSafeInteger(options.providerCheckMaxTokens) && options.providerCheckMaxTokens > 0) {
+      runtime = {
+        ...runtime,
+        model: {
+          ...runtime.model,
+          maxTokens: Math.min(runtime.model.maxTokens, options.providerCheckMaxTokens),
+        },
+      };
+    }
     const capabilities = runtime.capabilities || {};
     const effectiveThinkingLevel = thinkingLevelForEffort(options.effort || "medium", capabilities);
     const reference = resolved.reference || `${resolved.provider}:${resolved.model}`;

@@ -72,19 +72,19 @@ export const FAILURE_KINDS = [
 ];
 
 const CONTEXT_LIMIT_RE = /(?:context[_ ](?:length|window|budget)|token[_ ]limit|(?:input|prompt)(?:[_ ]tokens?)?[_ ](?:is[_ ])?too[_ ]long|(?:input|prompt|request)(?:[_ ]tokens?)?[_ ]exceeds?[_ ](?:the[_ ])?(?:context|maximum|max|limit|allowed[_ ]size)|too[_ ]many[_ ](?:input[_ ])?tokens?|tokens?[_ ]exceed(?:s|ed)?[_ ](?:the[_ ])?(?:context|maximum|max|(?:model[_ ])?limit))/i;
-const USAGE_LIMIT_RE = /(rate limit|usage limit|max(?:imum)?(?:[_ ]output)?[_ ]tokens?|max turns)/i;
+const USAGE_LIMIT_RE = /(rate limit|usage limit|insufficient[_ ]quota|quota exceeded|billing limit|too many requests|429|max(?:imum)?(?:[_ ]output)?[_ ]tokens?|max turns)/i;
 // Pi's Models layer emits the exact `Provider is not configured: <id>` message
 // only after it has found the provider but cannot resolve that provider's auth.
 // Treating it as availability left credential fallbacks pinned to the dead
 // route because the router only advances on provider_auth or retryable outages.
-const PROVIDER_AUTH_RE = /(no api key|missing api key|api key required|invalid api key|incorrect api key|provider is not configured:|authentication|authorization|not authorized|forbidden|oauth (?:refresh|auth|authentication|token).*failed|credential store (?:read|modify) failed|401|403)/i;
+const PROVIDER_AUTH_RE = /(no api key|missing api key|api key required|invalid api key|incorrect api key|provider is not configured:|authentication failed|authorization failed|unauthorized|oauth (?:refresh|auth|authentication|token).*failed|credential store (?:read|modify) failed|invalid[_ ]grant|token[_ ]revoked|revoked (?:oauth )?token|invalidated (?:oauth )?token|encountered invalidated oauth token|\b401\b)/i;
 // Mirrors the conservative connection-error/refused/failed alternation added to
 // RETRYABLE_PROVIDER_RE / retryableProviderSubkind below for pi 0.80's terse
 // "Connection error." — without it, classifyFailure (used directly by hosts
 // like worklab's coordinator, independent of retryableProviderFailureInfo) maps
 // that same terse text to the generic "spawn" kind instead of
 // "provider_unavailable".
-const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket|\bconnection (?:error|refused|failed)\b|\bcould not connect\b|\bstream ended without finish_reason\b)/i;
+const PROVIDER_UNAVAILABLE_RE = /(econn|enotfound|etimedout|timed? ?out|service unavailable|503|502|gateway|fetch failed|network|websocket|forbidden|\b403\b|model[_ ]not[_ ]found|unsupported model|no access to (?:the )?model|\b404\b|\bconnection (?:error|refused|failed)\b|\bcould not connect\b|\bstream ended without finish_reason\b)/i;
 const TOOL_FAILURE_RE = /(tool .* failed|mcp tool|permission denied|EACCES|read-only file system)/i;
 const NON_RETRYABLE_PROVIDER_RE = /(invalid[_ ]request|unknown parameter|no api key|missing api key|api key required|invalid api key|incorrect api key|provider is not configured:|authentication|authorization|not authorized|forbidden|billing|insufficient[_ ]quota|quota exceeded|model[_ ]not[_ ]found|unsupported model|permission denied|bad request|401|403|404)/i;
 // pi 0.80's openai-client-style bridge collapses a connection-refused/unreachable

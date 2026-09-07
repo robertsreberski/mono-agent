@@ -6,10 +6,97 @@ import {
 } from "@mono-agent/agent-runtime";
 import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
-import { buildProviderModelCatalog } from "../provider-model-catalog.js";
+import { buildProviderModelCatalog, selectProviderAuthCheckModel } from "../provider-model-catalog.js";
 import { resolveAdvertisedModelEffortForBuiltin } from "../model-effort-capabilities.js";
 
 describe("provider-model-catalog", () => {
+  it("selects the cheapest bounded check model deterministically", () => {
+    const selected = selectProviderAuthCheckModel("fixture", {
+      providers: [{
+        id: "fixture",
+        type: "openai_compat",
+        baseUrl: "http://127.0.0.1:9999",
+        models: [
+          { name: "costly", pricing: { input_per_million: 10, output_per_million: 20 } },
+          { name: "cheap", pricing: { input_per_million: 1, output_per_million: 2 } },
+        ],
+      }],
+      configuredRoutes: [parseMonoRuntimeModelReference("fixture:costly")],
+    });
+    expect(selected).toMatchObject({
+      kind: "selected",
+      model: { reference: "fixture:cheap" },
+      selectionBasis: "catalog_pricing",
+    });
+  });
+
+  it("refuses incomparable prices but keeps the sole-candidate exception", () => {
+    expect(selectProviderAuthCheckModel("fixture", {
+      providers: [{
+        id: "fixture", type: "openai_compat", baseUrl: "http://127.0.0.1:9999",
+        models: [{ name: "known", pricing: { input_per_million: 1, output_per_million: 1 } }, { name: "unknown" }],
+      }],
+    })).toMatchObject({ kind: "unavailable", code: "pricing_unavailable" });
+    expect(selectProviderAuthCheckModel("fixture", {
+      providers: [{
+        id: "fixture", type: "openai_compat", baseUrl: "http://127.0.0.1:9999", models: [{ name: "only" }],
+      }],
+    })).toMatchObject({
+      kind: "selected",
+      model: { reference: "fixture:only" },
+      selectionBasis: "sole_candidate_unknown_price",
+    });
+  });
+
+  it("uses route order then model id for equal subscription pricing and excludes embeddings", () => {
+    const selected = selectProviderAuthCheckModel("fixture", {
+      providers: [{
+        id: "fixture", type: "openai_compat", baseUrl: "http://127.0.0.1:9999",
+        models: [
+          { name: "a", pricing: { input_per_million: 0, output_per_million: 0 } },
+          { name: "b", pricing: { input_per_million: 0, output_per_million: 0 } },
+          { name: "embed", pricing: { input_per_million: 0, output_per_million: 0 }, capabilities: { advertised_capabilities: ["embedding"] } },
+        ],
+      }],
+      configuredRoutes: [parseMonoRuntimeModelReference("fixture:b")],
+    });
+    expect(selected).toMatchObject({
+      kind: "selected",
+      model: { reference: "fixture:b" },
+      selectionBasis: "subscription_zero_price",
+    });
+  });
+
+  it("resolves configured aliases before breaking equal-price ties", () => {
+    const selected = selectProviderAuthCheckModel("fixture", {
+      providers: [{
+        id: "fixture", type: "openai_compat", baseUrl: "http://127.0.0.1:9999",
+        models: [
+          { name: "a", pricing: { input_per_million: 0, output_per_million: 0 } },
+          { name: "b", alias: "preferred", pricing: { input_per_million: 0, output_per_million: 0 } },
+        ],
+      }],
+      configuredRoutes: [parseMonoRuntimeModelReference("fixture:preferred")],
+    });
+
+    expect(selected).toMatchObject({
+      kind: "selected",
+      model: { reference: "fixture:b" },
+      selectionBasis: "subscription_zero_price",
+    });
+  });
+
+  it("does not widen a nonempty built-in allowlist when every declaration is ineligible", () => {
+    const model = listPiBuiltinModels("anthropic")[0]!;
+    for (const configuredModel of [
+      { name: model.id, enabled: false },
+      { name: model.id, capabilities: { advertised_capabilities: ["embedding"] } },
+    ]) {
+      expect(selectProviderAuthCheckModel("anthropic", {
+        providers: [{ id: "anthropic", models: [configuredModel] }],
+      })).toMatchObject({ kind: "unavailable", code: "no_eligible_model" });
+    }
+  });
   it("advertises nothing when the agent declared no providers and has no routes", () => {
     // `providers` is a support gate. An agent that declared nothing and routes
     // nowhere advertises nothing, rather than every Pi built-in it holds no

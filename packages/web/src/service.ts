@@ -23,6 +23,8 @@ import {
   type ProviderAuthSessionSnapshot,
   type ProviderAuthSessionStartInput,
   type ProviderAuthStatusSnapshot,
+  type ProviderAuthCheckSessionSnapshot,
+  type ProviderAuthCheckStartInput,
 } from "@mono-agent/agent-contracts";
 import { EFFORT_LEVELS } from "@mono-agent/config";
 
@@ -785,10 +787,12 @@ export class WebService {
   private decorateProjectedCapabilities(agent: WebAgentSummary): WebAgentSummary {
     const connection = this.connections.get(agent.sourceId);
     const providerAuth = connection?.info.supportsProviderAuth === true;
+    const providerAuthChecks = connection?.info.supportsProviderAuthChecks === true;
     if (!providerAuth) return agent;
     return {
       ...agent,
       supportsProviderAuth: true,
+      ...(providerAuthChecks ? { supportsProviderAuthChecks: true as const } : {}),
     };
   }
 
@@ -798,7 +802,10 @@ export class WebService {
    */
   private projectedCapabilitySignature(agent: WebAgentSummary): string {
     const projected = this.decorateProjectedCapabilities(agent);
-    return projected.supportsProviderAuth === true ? "providerAuth" : "";
+    return [
+      projected.supportsProviderAuth === true ? "providerAuth" : "",
+      projected.supportsProviderAuthChecks === true ? "providerAuthChecks" : "",
+    ].join("|");
   }
 
   createThread(sourceId: string, input: Omit<CreateWebThreadInput, "sourceId"> = {}): WebThread {
@@ -1362,6 +1369,24 @@ export class WebService {
   async cancelProviderAuth(sourceId: string, sessionId: string): Promise<void> {
     await this.providerAuthCall(sourceId, async (connection) =>
       await connection.client.cancelProviderAuth(sessionId, AbortSignal.timeout(INFO_TIMEOUT_MS)));
+  }
+
+  async startProviderAuthCheck(
+    sourceId: string,
+    input: ProviderAuthCheckStartInput,
+  ): Promise<ProviderAuthCheckSessionSnapshot> {
+    return await this.providerAuthCheckCall(sourceId, async (connection) =>
+      await connection.client.startProviderAuthCheck(input, AbortSignal.timeout(INFO_TIMEOUT_MS)));
+  }
+
+  async providerAuthCheck(sourceId: string, checkId: string): Promise<ProviderAuthCheckSessionSnapshot> {
+    return await this.providerAuthCheckCall(sourceId, async (connection) =>
+      await connection.client.providerAuthCheck(checkId, AbortSignal.timeout(INFO_TIMEOUT_MS)));
+  }
+
+  async cancelProviderAuthCheck(sourceId: string, checkId: string): Promise<void> {
+    await this.providerAuthCheckCall(sourceId, async (connection) =>
+      await connection.client.cancelProviderAuthCheck(checkId, AbortSignal.timeout(INFO_TIMEOUT_MS)));
   }
 
   async cronConfigView(sourceId: string): Promise<WebChannelConfigView> {
@@ -2539,6 +2564,18 @@ export class WebService {
       );
     }
     return result;
+  }
+
+  private async providerAuthCheckCall<T>(
+    sourceId: string,
+    operation: (connection: AgentConnection) => Promise<T>,
+  ): Promise<T> {
+    return await this.providerAuthCall(sourceId, async (connection) => {
+      if (connection.info.supportsProviderAuthChecks !== true) {
+        throw new WebConsoleError("provider_auth_unavailable", "This agent does not expose provider checks.", 409);
+      }
+      return await operation(connection);
+    });
   }
 
   private startTimers(): void {

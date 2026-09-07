@@ -210,6 +210,8 @@
  * @property {ReadonlyArray<string>} [disallowedTools]
  * @property {string} [permissionMode]
  * @property {number} [maxTurns]
+ * @property {number} [providerCheckMaxTokens] Internal provider-check output cap; ordinary callers must omit it.
+ * @property {{env(name: string): Promise<string|undefined>, fileExists(path: string): Promise<boolean>}} [providerCheckAuthContext] Internal provider-check effective auth context; ordinary callers must omit it.
  * @property {Object} [outputSchema]
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]

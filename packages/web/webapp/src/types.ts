@@ -223,6 +223,7 @@ export interface AgentSummary {
   readonly health?: string;
   readonly supportsAttachments: boolean;
   readonly supportsProviderAuth?: true;
+  readonly supportsProviderAuthChecks?: true;
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly defaultEffort?: string;
@@ -297,6 +298,29 @@ export interface ProviderAuthSessionSnapshot {
   readonly progress?: string;
   readonly error?: { readonly code: string; readonly message: string };
 }
+export interface ProviderAuthCheckResult {
+  readonly providerId: string;
+  readonly label: string;
+  readonly state: "pending" | "running" | "passed" | "auth_failed" | "network_failed"
+    | "quota_limited" | "model_not_entitled" | "inconclusive" | "unsupported"
+    | "timeout" | "cancelled" | "stale" | "not_run";
+  readonly model?: string;
+  readonly selectionBasis?: "catalog_pricing" | "subscription_zero_price" | "sole_candidate_unknown_price";
+  readonly checkedAt?: string;
+  readonly code?: string;
+  readonly message?: string;
+}
+
+export interface ProviderAuthCheckSessionSnapshot {
+  readonly schema: "mono-agent.provider-auth-check.v1";
+  readonly id: string;
+  readonly state: "running" | "completed" | "cancelled";
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly expiresAt: string;
+  readonly results: readonly ProviderAuthCheckResult[];
+}
+
 export type SkillAvailability = "inlined" | "on-demand" | "unavailable";
 export type SkillUnavailableReason = "not-selected" | "read-skill-disabled" | "unsupported-name";
 

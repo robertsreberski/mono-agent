@@ -919,15 +919,24 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .agent-settings-dialog .secondary-button, .agent-settings-dialog .primary-button { min-height: 38px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; border-radius: 9px; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 650; line-height: 1.5; }
 .agent-settings-dialog .secondary-button { margin-right: auto; color: var(--accent); background: var(--accent-soft); }
 .provider-auth-section { display: grid; gap: 10px; padding-top: 15px; border-top: 1px solid var(--line); }
+.provider-auth-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.provider-auth-title-row .secondary-button { flex: none; margin: 0; }
+.provider-auth-check-disclosure, .provider-auth-check-summary { margin: -3px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .provider-auth-list { display: grid; gap: 9px; }
 .provider-auth-card { min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; }
 .provider-auth-flow { display: grid; gap: 8px; padding: 12px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; }
 .provider-auth-heading { min-width: 0; flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .provider-auth-heading > b { overflow: hidden; font-family: inherit; font-size: 12px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.provider-auth-badges { display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
 .provider-auth-state { padding: 3px 6px; color: var(--text-muted); background: var(--surface); border-radius: 6px; font-family: inherit; font-size: 10px; font-weight: 750; line-height: 1.5; letter-spacing: .05em; text-transform: uppercase; }
-.provider-auth-state.is-ok, .provider-auth-state.is-not-applicable { color: var(--accent); }
+.provider-auth-state.is-ok { color: var(--accent); }
 .provider-auth-state.is-needs-action { color: var(--warning); }
+.provider-auth-check-result { color: var(--text-muted); font-size: 10px; font-weight: 650; line-height: 1.5; }
+.provider-auth-check-result.is-passed { color: var(--accent); }
+.provider-auth-check-result.is-failed { color: var(--warning); }
 .provider-auth-card .secondary-button, .provider-auth-flow .secondary-button { width: fit-content; margin: 0; }
+.agent-settings-dialog .provider-auth-neutral-button { color: var(--text-soft); background: var(--surface); border: 1px solid var(--line-strong); box-shadow: none; }
+.agent-settings-dialog .provider-auth-neutral-button:hover:not(:disabled) { color: var(--text); background: var(--surface-hover); }
 .provider-auth-flow form { display: grid; gap: 7px; }
 .provider-auth-flow label { color: var(--text-soft); font-size: 11px; }
 .provider-auth-flow input, .provider-auth-flow textarea, .provider-auth-flow select { width: 100%; min-height: 38px; padding: 8px 10px; color: var(--text); background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; font: inherit; }

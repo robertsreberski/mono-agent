@@ -83,6 +83,10 @@ describe("classifyFailure", () => {
   it("classifies provider credential failures separately from availability", () => {
     expect(classifyFailure({ exitCode: 1, errorText: "No API key for provider: openai-codex" })).toBe("provider_auth");
     expect(classifyFailure({ exitCode: 1, errorText: "OAuth refresh failed for openai-codex" })).toBe("provider_auth");
+    expect(classifyFailure({ exitCode: 1, errorText: "invalid_grant: token_revoked" })).toBe("provider_auth");
+    expect(classifyFailure({ exitCode: 1, errorText: "Encountered invalidated oauth token" })).toBe("provider_auth");
+    expect(classifyFailure({ exitCode: 1, errorText: "403 Forbidden" })).toBe("provider_unavailable");
+    expect(classifyFailure({ exitCode: 1, errorText: "429 insufficient_quota" })).toBe("usage_limit");
   });
 
   // I14: classifyFailure is a separate code path from retryableProviderFailureInfo

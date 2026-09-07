@@ -183,6 +183,8 @@ export interface PersistPiProviderCredentialOptions extends PiAuthPromotionHooks
    */
   readonly resolveCredential: (signal?: AbortSignal) => Promise<unknown>;
   readonly abortSignal?: AbortSignal;
+  /** Secret-free signal that target-store mutation began; the callback must not throw. */
+  readonly onCredentialStoreMutation?: () => void;
 }
 
 const DEFAULT_PI_AUTH_PATH = join(homedir(), ".pi", "agent", "auth.json");
@@ -685,10 +687,9 @@ export async function persistPiProviderCredential(
   const hooks: PiAuthPromotionHooks = options;
   await withPiAuthFileLock(options.authPath, async (authPath, ownerUid, assertLockHeld) => {
     const original = await readPiAuthStore(authPath, piAuthSingleLinkPolicy(ownerUid));
-    if (options.abortSignal?.aborted === true) {
-      throw options.abortSignal.reason ?? new Error("Provider authentication was cancelled.");
-    }
-    const credential = await options.resolveCredential(options.abortSignal);
+    throwIfProviderAuthAborted(options.abortSignal);
+    const credential = await resolveProviderCredentialWithAbort(options.resolveCredential, options.abortSignal);
+    throwIfProviderAuthAborted(options.abortSignal);
     if (!isUsableStoredPiCredential(options.provider, credential)) {
       throw new Error(`Provider authentication returned an invalid credential for ${options.provider}.`);
     }
@@ -696,8 +697,48 @@ export async function persistPiProviderCredential(
     if (!isBoundedCredentialValue(next)) {
       throw new Error(`Provider authentication would exceed the Pi credential store safety limit for ${options.provider}.`);
     }
-    await writePiAuthStoreAtomically(authPath, next, original, ownerUid, assertLockHeld, hooks);
+    await writePiAuthStoreAtomically(
+      authPath,
+      next,
+      original,
+      ownerUid,
+      assertLockHeld,
+      hooks,
+      options.abortSignal,
+      options.onCredentialStoreMutation,
+    );
   }, hooks);
+}
+
+async function resolveProviderCredentialWithAbort(
+  resolveCredential: PersistPiProviderCredentialOptions["resolveCredential"],
+  signal?: AbortSignal,
+): Promise<unknown> {
+  throwIfProviderAuthAborted(signal);
+  const pending = Promise.resolve().then(async () => await resolveCredential(signal));
+  if (signal === undefined) return await pending;
+  return await new Promise<unknown>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      callback();
+    };
+    const abort = () => finish(() => reject(signal.reason ?? new Error("Provider authentication was cancelled.")));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    pending.then(
+      (credential) => finish(() => resolve(credential)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
+function throwIfProviderAuthAborted(signal?: AbortSignal): void {
+  if (signal?.aborted === true) {
+    throw signal.reason ?? new Error("Provider authentication was cancelled.");
+  }
 }
 
 function isBoundedCredentialString(value: unknown): value is string {
@@ -1504,18 +1545,27 @@ async function writePiAuthStoreAtomically(
   ownerUid: number,
   assertLockHeld: AssertPiAuthLockHeld,
   hooks: PiAuthPromotionHooks,
+  abortSignal?: AbortSignal,
+  onCredentialStoreMutation?: () => void,
 ): Promise<void> {
+  throwIfProviderAuthAborted(abortSignal);
   await assertPiAuthStoreUnchanged(path, original, ownerUid);
+  throwIfProviderAuthAborted(abortSignal);
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  throwIfProviderAuthAborted(abortSignal);
   const tempDir = await mkdtemp(join(dir, ".mono-agent-pi-auth-write-"));
   const tempPath = join(tempDir, "auth.json");
   let promotionInstalled = false;
   let operationError: unknown;
   try {
+    throwIfProviderAuthAborted(abortSignal);
     await writeFile(tempPath, `${JSON.stringify(auth, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    throwIfProviderAuthAborted(abortSignal);
     await syncFile(tempPath);
+    throwIfProviderAuthAborted(abortSignal);
     await assertPiAuthStoreUnchanged(path, original, ownerUid);
+    throwIfProviderAuthAborted(abortSignal);
     await promotePiAuthStoreWithoutClobber(
       tempPath,
       path,
@@ -1524,6 +1574,8 @@ async function writePiAuthStoreAtomically(
       assertLockHeld,
       undefined,
       hooks,
+      abortSignal,
+      onCredentialStoreMutation,
     );
     promotionInstalled = true;
     try {
@@ -1582,8 +1634,11 @@ async function promotePiAuthStoreWithoutClobber(
   assertLockHeld: AssertPiAuthLockHeld,
   intendedInput?: PiAuthStoreSnapshot,
   hooks: PiAuthPromotionHooks = {},
+  abortSignal?: AbortSignal,
+  onCredentialStoreMutation?: () => void,
 ): Promise<void> {
   const intended = intendedInput ?? await readPiAuthStore(stagedPath, piAuthSingleLinkPolicy(ownerUid));
+  throwIfProviderAuthAborted(abortSignal);
   if (!intended.exists) {
     throw new Error(`Pi auth staging file ${stagedPath} disappeared before promotion.`);
   }
@@ -1592,10 +1647,14 @@ async function promotePiAuthStoreWithoutClobber(
     try {
       await hooks.beforePiAuthPromotion?.(targetPath, stagedPath);
       await assertLockHeld();
+      // This is the last safe cancellation point. Once target mutation starts,
+      // the existing promotion/recovery transaction must run to completion.
+      throwIfProviderAuthAborted(abortSignal);
       installed = await linkPiFileIfAbsent(stagedPath, targetPath);
       if (!installed) {
         throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
       }
+      onCredentialStoreMutation?.();
       await hooks.afterPiAuthLink?.(targetPath, stagedPath);
       await assertPromotedPiAuthStore(intended, stagedPath, targetPath, ownerUid);
       return;
@@ -1618,10 +1677,15 @@ async function promotePiAuthStoreWithoutClobber(
   try {
     await hooks.beforePiAuthPromotion?.(targetPath, stagedPath);
     await assertLockHeld();
+    // Abort cannot safely split the rename/install/recovery sequence below.
+    throwIfProviderAuthAborted(abortSignal);
     try {
       await rename(targetPath, backupPath);
       backupCreated = true;
       targetMutationStarted = true;
+      // Renaming the existing target is the first credential mutation, even
+      // if a later validation fails and recovery restores that same inode.
+      onCredentialStoreMutation?.();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);

@@ -15,6 +15,7 @@ import type {
   ModelCatalogPage,
   ProcessJobProjection,
   ProviderAuthMethod,
+  ProviderAuthCheckSessionSnapshot,
   ProviderAuthSessionSnapshot,
   ProviderAuthStatusSnapshot,
   PushSubscriptionStatus,
@@ -576,6 +577,43 @@ export const api = {
   cancelProviderAuth: async (sourceId: string, sessionId: string, signal?: AbortSignal) => {
     await send(
       `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "DELETE",
+        headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+        ...(signal === undefined ? {} : { signal }),
+      },
+    );
+  },
+
+  beginProviderAuthCheck: (
+    sourceId: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) => request<ProviderAuthCheckSessionSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/checks`,
+    {
+      method: "POST",
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      body: JSON.stringify({ idempotencyKey }),
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
+
+  providerAuthCheck: (
+    sourceId: string,
+    checkId: string,
+    signal?: AbortSignal,
+  ) => request<ProviderAuthCheckSessionSnapshot>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/checks/${encodeURIComponent(checkId)}`,
+    {
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
+
+  cancelProviderAuthCheck: async (sourceId: string, checkId: string, signal?: AbortSignal) => {
+    await send(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/provider-auth/checks/${encodeURIComponent(checkId)}`,
       {
         method: "DELETE",
         headers: { "X-Mono-Agent-Web-Origin": window.location.origin },

@@ -445,8 +445,16 @@ verified turn. Missing Codex setup points to the official instructions at
 <https://developers.openai.com/codex/cli/>; the app never auto-installs it. The
 wizard offers browser callback and headless device-code login. Detected credentials
 skip redundant authentication but remain unverified until the exact route call
-successfully runs. Guided Pi setup covers Anthropic, GitHub Copilot, OpenAI Codex,
-and OpenCode-Go; other hand-authored Pi and local-provider configs remain compatible
+successfully runs. Passive status treats refreshable OAuth expiry as present but
+unverified and fails closed on unusable material or unsafe stores. The optional
+provider-auth check operator runs one explicit target-only, bounded request per
+displayed provider, records only fixed sanitized outcomes, and never probes from
+a status read. Ordinary run evidence is generation-fenced before provider
+execution: a target-store mutation invalidates already-running summaries and
+their failover attempts, including when the surrounding persistence finishes
+after logical cancellation or reports a post-install cleanup failure. Guided Pi
+setup covers Anthropic, GitHub Copilot, OpenAI Codex, and OpenCode-Go; other
+hand-authored Pi and local-provider configs remain compatible
 without being advertised as guided cloud integrations. Supported OAuth methods and
 the OpenCode-Go key flow come from the bundled upstream catalog;
 stale auth locks are repaired only when the recorded process is securely proven
@@ -466,7 +474,11 @@ Copilot and OpenAI Codex use Pi's native device-code flow; Anthropic uses the
 existing manual-code redirect callback; API-key providers use masked
 provider-owned prompts. Returned credentials pass through the same owner-private,
 cross-process-locked, sibling-preserving, no-clobber Pi-store transaction as
-the CLI API-key flow. Sessions, submitted values, URLs, and codes are never
+the CLI API-key flow. A valid repeated login replaces the current session only
+after validation. Late provider work is discarded before promotion; a mutation
+already in atomic promotion or cleanup drains before another writer starts. If
+that drain exceeds two seconds, the fresh session fails closed with
+`replacement_timeout`. Sessions, submitted values, URLs, and codes are never
 written to agent history. The service covers `providers.piAuthPath` only, not
 Codex CLI credentials.
 
