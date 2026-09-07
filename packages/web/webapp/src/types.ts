@@ -4,6 +4,7 @@ export type WebTheme = "evergreen" | "ocean" | "plum" | "terracotta";
 
 export interface ConsoleIdentity {
   readonly hostName: string;
+  readonly displayName: string;
   readonly theme: WebTheme;
 }
 

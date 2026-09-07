@@ -101,6 +101,8 @@ export interface WebPlistInput {
   readonly host: string;
   readonly port: number;
   readonly theme: string;
+  /** Operator-chosen console label; absent means the worker falls back to the machine hostname. */
+  readonly name?: string;
   readonly stdoutPath: string;
   readonly stderrPath: string;
   /** Deliberately allowlisted, non-secret worker environment. */
@@ -432,6 +434,7 @@ export function buildWebPlistXml(input: WebPlistInput): string {
   ] as const) {
     assertControlFree(value, name);
   }
+  if (input.name !== undefined) assertControlFree(input.name, "web console name");
   const argsXml = buildWebLaunchdProgramArguments(input)
     .map((argument) => `    <string>${escapeXml(argument)}</string>`)
     .join("\n");
@@ -555,6 +558,7 @@ export function buildWebLaunchdProgramArguments(input: WebPlistInput): readonly 
     String(input.port),
     "--theme",
     input.theme,
+    ...(input.name === undefined ? [] : ["--name", input.name]),
   ];
   for (const argument of arguments_) assertControlFree(argument, "web launchd program argument");
   return arguments_;

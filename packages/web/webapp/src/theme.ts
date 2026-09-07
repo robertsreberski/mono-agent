@@ -25,7 +25,7 @@ export function applyConsolePresentation(identity: ConsoleIdentity): () => void 
   const previousMetaColors = metas.map((meta) => meta?.getAttribute("content"));
 
   root.dataset.consoleTheme = identity.theme;
-  document.title = `${identity.hostName} · mono-agent`;
+  document.title = `${identity.displayName} · mono-agent`;
   metas[0]?.setAttribute("content", themeColors.light);
   metas[1]?.setAttribute("content", themeColors.dark);
 
