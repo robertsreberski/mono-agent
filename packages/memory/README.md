@@ -100,6 +100,9 @@ The normal write and read paths are:
    `BujoMemoryStore.load()`.
 4. The store performs bounded FTS/vector retrieval and returns a `MemoryBlock`
    to the host.
+5. For an explicit chronological range, a capable local store performs one
+   bounded, instant-ordered SQLite scan through `browseJournal()`; it does not
+   embed, update access telemetry, or read raw Markdown/audit files.
 
 ### Package structure
 
@@ -125,6 +128,22 @@ is what makes retries idempotent: the index is consulted first, then the whole
 canonical source, so a bullet appended before a crash is completed rather than
 duplicated even when the retry lands on a later day. `supportsRemember()` reports
 whether the store can accept writes at all; it is `false` on a read-only store.
+
+### Curated chronological reads
+
+Every built-in tier, including a read-only instance, affirms
+`supportsJournalBrowse()` and exposes `browseJournal()` over the existing active
+SQLite generation. The caller supplies a half-open UTC instant range plus hard
+entry and UTF-8 byte budgets. Results are ordered by parsed `createdAt` instant,
+then id, and report whether the scan was complete.
+
+Only indexed records with canonical `daily/YYYY-MM-DD.md` or supported legacy
+`YYYY-MM-DD.md` provenance enter eligible entry and byte accounting. Missing or
+unsafe provenance is excluded and disclosed by the SQLite scan, `dropped` records
+are excluded in SQL, and raw `audit/` observations are never read. The app-owned
+`MemoryJournal` tool adds local calendar/time-zone resolution, ephemeral
+pagination, privacy projection, and policy; this package does not expose
+arbitrary file browsing.
 
 ### Strong completed-turn boundary
 
@@ -329,6 +348,8 @@ supersede or merge records, rewrite canonical memories, or call a chat model.
 | Subpath | API | Use it for |
 | --- | --- | --- |
 | `@mono-agent/memory/bujo` | `createBujoMemoryStore` | Construct a Lite, Journal, or BuJo store for direct embedding. |
+| `@mono-agent/memory/bujo` | `JournalBrowseCapableStore`, `JournalBrowseInput`, `JournalBrowseSnapshot` | Read a bounded curated local chronology without changing the shared `MemoryStore` contract. |
+| `@mono-agent/memory/store` | `isCanonicalDailySourcePath` | Apply the same pure canonical daily-source eligibility check used before chronological entry/byte accounting. |
 | `@mono-agent/memory/bujo` | `auditBujoMemoryHealth` | Produce the closed, provider-free built-in health report. |
 | `@mono-agent/memory/bujo` | `safeRebuildMemoryIndex` | Build and activate a validated side-by-side index generation. |
 | `@mono-agent/memory/search` | `createEmbeddingProvider` | Construct one Ollama, LM Studio, or OpenAI embedding provider. |
@@ -395,6 +416,9 @@ ExtractedRelation
 Extraction
 GraphBatchInput
 GraphBatchResult
+JournalBrowseCapableStore
+JournalBrowseInput
+JournalBrowseSnapshot
 LegacyReplayAdoptionOptions
 LegacyReplayAdoptionResult
 LlmComplete
@@ -409,6 +433,8 @@ MEMORY_BUNDLE_MANIFEST_FILE
 MEMORY_BUNDLE_SCHEMA_VERSION
 MEMORY_BUNDLE_SOURCE_DIR
 MEMORY_HEALTH_ISSUE_CODES
+MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES
+MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES
 MEMORY_REBUILD_POLICY_VERSION
 ManagedGeneration
 ManagedIndexManifest
@@ -435,6 +461,7 @@ MemoryForgetBackupRetentionResult
 MemoryHealthCounts
 MemoryHealthIssueCode
 MemoryHealthStatus
+MemoryJournalBrowseTruncation
 MemoryModelError
 MemoryModelKind
 MemoryModelOutputError
@@ -537,6 +564,11 @@ DEFAULT_VEC_DIM
 EntityRecord
 EntityRelationRecord
 IndexMetadata
+JournalBrowseCapableStore
+JournalBrowseInput
+JournalBrowseSnapshot
+MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES
+MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES
 MEMORY_STATUSES
 MEMORY_TYPES
 MemoryBlock
@@ -546,6 +578,7 @@ MemoryDb
 MemoryDbOptions
 MemoryEdgeKind
 MemoryEntityAssociation
+MemoryJournalBrowseTruncation
 MemoryLoadOptions
 MemoryRecord
 MemorySource
@@ -560,6 +593,7 @@ RecallHit
 RecallOptions
 RecallWeights
 SimilarHit
+isCanonicalDailySourcePath
 openMemoryDb
 ```
 
@@ -571,7 +605,12 @@ This package may depend on core contracts and local persistence/search dependenc
 
 ## What This Package Does Not Own
 
-It does not own host configuration, backend selection, automatic `MemoryRecall` MCP wiring, external Supermemory storage, model runtime execution, communication channels, or run artifact persistence. `@mono-agent/agent-app` chooses which memory backend to build and wires the recall tool, while `@mono-agent/memory-supermemory` owns the external Supermemory backend.
+It does not own host configuration, backend selection, app-owned `MemoryRecall`
+or `MemoryJournal` MCP wiring, external Supermemory storage, model runtime
+execution, communication channels, or run artifact persistence.
+`@mono-agent/agent-app` chooses which memory backend to build and wires eligible
+tools, while `@mono-agent/memory-supermemory` owns the external Supermemory
+backend and does not claim local chronology.
 
 ## Related Documentation
 

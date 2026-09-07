@@ -17,8 +17,10 @@ mono-agent's memory engine is pluggable. `memory.backend` selects it:
   server-side.
 
 Both implement the same internal `MemoryStore` contract and surface through the same
-`MemoryRecall` tool, so the agent's behavior is identical from the model's point of
-view — what differs is where memory lives, how it's built, and what it costs to run.
+targeted `MemoryRecall` tool. The built-in backend additionally exposes bounded
+chronological `MemoryJournal` retrieval because its local index has canonical dated
+provenance; Supermemory does not currently expose that capability and mono-agent does
+not fake it with repeated searches.
 
 Supermemory is not in the default app install. Before selecting it, install the
 exact lockstep package version printed by `mono-agent --version`:
@@ -50,6 +52,7 @@ npm install "@mono-agent/memory-supermemory@${APP_VERSION}"
 | Setup effort | Pull Ollama models (for `journal`/`bujo`); zero extra services for `lite` | Install the optional mono-agent plugin plus `supermemory-server` (and point it at an LLM) |
 | Lock-in / portability | Open SQLite + markdown; no service | Data lives in Supermemory; no shared index with BuJo |
 | `MemoryRecall` tool | Same tool, same shape | Same tool (proxies Supermemory search behind the same name) |
+| `MemoryJournal` tool | Supported for Lite, Journal, and BuJo over curated canonical daily/index records | Unsupported; no dated journal API, search fallback, or fake empty success |
 
 ## How they differ
 
@@ -81,6 +84,14 @@ own hybrid search. Deliberate tool/search calls return their top-ranked hits; Bu
 may expand one graph hop. Automatic context recall remains direct-only, applies the host score
 and answer-evidence gate, and injects nothing for unsupported attributes or unqualified
 current/last-message questions.
+
+For a broad retrospective over explicit dates, the built-in backend also supports
+`MemoryJournal`. It reads the existing local index in chronological order without an
+embedding or chat-model request. Lite and Journal expose canonical daily records;
+BuJo exposes only curated daily/index records and explicit remembers, never raw
+`audit/` observations. Results are bounded, paginated, provenance-bearing, and labelled
+as untrusted curated summaries rather than exact execution evidence. Supermemory is
+explicitly unsupported until it offers a real dated, stable-pagination contract.
 
 ### Latency & read-after-write
 The built-in store awaits an owner-private, fsynced completed-turn intake before
@@ -198,6 +209,9 @@ plugin or MCP boundary rather than sharing a BuJo directory.
   (works everywhere). `memory.supermemory.exposeMcpServer: true` additionally injects the
   hosted MCP server for cloud deployments with an API key.
 - **Scheduled consolidation is BuJo-only.** The BuJo scheduler does not run for external backends.
+- **Chronological browsing is local-only.** `MemoryJournal` is available for the built-in
+  Lite, Journal, and BuJo tiers. It is omitted for Supermemory rather than returning an
+  empty result or broadening into remote search.
 
 ## See also
 

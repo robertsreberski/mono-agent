@@ -49,6 +49,35 @@ export interface MemoryRecord {
   readonly dim?: number;
 }
 
+export const MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES = 1_000;
+export const MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024;
+
+export type MemoryJournalBrowseTruncation = "entries" | "bytes";
+
+/** Bounded instant range for a curated chronological memory read. */
+export interface JournalBrowseInput {
+  readonly fromInclusive: string;
+  readonly toExclusive: string;
+  readonly maxEntries: number;
+  readonly maxBytes: number;
+}
+
+/** One immutable SQLite snapshot used by the app-owned journal browser. */
+export interface JournalBrowseSnapshot {
+  readonly records: readonly MemoryRecord[];
+  readonly rangeScanComplete: boolean;
+  readonly truncatedBy: readonly MemoryJournalBrowseTruncation[];
+  readonly lastIncluded?: { readonly createdAt: string; readonly id: string };
+  /** True when index rows without safe canonical daily provenance were omitted. */
+  readonly nonJournalProvenanceExcluded: boolean;
+}
+
+/** Affirmative local capability; external recall backends intentionally omit it. */
+export interface JournalBrowseCapableStore {
+  supportsJournalBrowse(): boolean;
+  browseJournal(input: JournalBrowseInput): Promise<JournalBrowseSnapshot>;
+}
+
 /**
  * Edge kinds accepted by the store. The retired `about` kind remains in this
  * published type and the SQLite schema so existing indexes can be read and

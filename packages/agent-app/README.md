@@ -613,6 +613,26 @@ terminal record in place. A newer tool-history schema hard-fails downgrade until
 persisted conversation state is purged; an older compatible version is reported
 as upgrade-pending for the next writer.
 
+### Memory evidence routing and chronological browsing
+
+The configured host keeps four evidence sources distinct: the active
+conversation for what was just said, `MemoryRecall` for a targeted durable fact
+or decision, `MemoryJournal` for a broad retrospective over explicit local
+calendar dates, and `RunHistory`/`SessionHistory` for exact execution evidence.
+Unhinted interrupted-work recovery still begins with `RunHistory {}`.
+
+`MemoryJournal` is request-scoped and read-only. It is offered only for a local
+Lite, Journal, or BuJo store when `memory.recallTool.enabled` is on and normal
+tool policy allows it. Supermemory has search but no chronological capability.
+A first call requires `fromDate`, `throughDate`, and an IANA `timeZone`; the
+inclusive range is capped at 31 calendar days. Pages default to 10 and cap at
+25 entries, 8 KiB projected data, and 2 KiB per entry text. The frozen snapshot
+caps at 1,000 entries/2 MiB and continues only with its request-private authenticated,
+run-bound cursor at the exact issued offset.
+It returns curated daily-source provenance and lifecycle state, excludes raw
+audit observations and dropped records, and labels content untrusted. A clean
+empty range, unsupported composition, and backend failure remain distinct.
+
 ### Durable memory writes
 
 `Remember` gives the agent an explicit way to persist one stated fact, closing
@@ -654,10 +674,11 @@ title remains the fallback.
 ### Channel interactions and conversation history
 
 For missing context, the agent should use active conversation history first,
-`MemoryRecall` for intentionally captured durable facts, `RunHistory` for exact
-settled prior-run evidence (including failed/cancelled/interrupted work), and
-`SessionHistory` for retained managed-tool calls and
-results. Answered or expired blocking `AskUser` exchanges
+`MemoryRecall` for a targeted intentionally captured durable fact,
+`MemoryJournal` for a broad explicit-period curated retrospective, `RunHistory`
+for exact settled prior-run evidence (including failed/cancelled/interrupted
+work), and `SessionHistory` for retained managed-tool calls and results.
+Answered or expired blocking `AskUser` exchanges
 are written into the assistant history copy before the final response;
 cancelled asks are not journaled. The copy is explicitly labelled as untrusted
 historical data and bounded by newest whole interactions. If the newest valid
@@ -866,7 +887,7 @@ path:
 | Channel integration | `channels.ts`, `channel-drivers/` | Built-in drivers plus config-loaded plugin resolution. |
 | Interaction and send tools | `interaction-bridge.ts`, `adapter-send-tools*.ts` | Structured `AskUser` state, channel sinks, progress, adapter-send tools, and bounded interaction-history projection. |
 | Operator CLI | `cli*.ts`, `jobs-command.ts`, `init.ts`, `doctor.ts`, `doctor-observability.ts`, `background*.ts`, `launchd*.ts`, `managed-web-logs.ts`, `web-*.ts` | Setup, focused validation sections, paired managed service/log lifecycle, process-job operation, and diagnostics. |
-| Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
+| Host services | `run-history.ts`, `session-history.ts`, `conversation-title.ts`, `request-scoped-mcp.ts`, `process-jobs*.ts`, `continuation*.ts`, `memory-*.ts` | Shared request-scoped guards, bounded prior-run/tool-lifecycle evidence, bounded local memory chronology, automatic web conversation titles, local process-job ownership/wake/recovery, durable continuations, and memory operations. |
 
 ## Public API
 
@@ -880,6 +901,7 @@ path:
 | Scaffold or validate an agent folder | `initMonoAgentFolder`, `validateMonoAgentFolder` |
 | Add bounded prior-run inspection | `createRunHistoryRuntimeExtension`, `isRunHistoryToolAllowed` |
 | Add bounded retained-tool inspection | `createSessionHistoryRuntimeExtension`, `isSessionHistoryToolAllowed` |
+| Add bounded local memory chronology | `createMemoryJournalRuntimeExtension`, `isMemoryJournalToolAllowed`, `resolveMemoryJournalRange` |
 | Operate the CLI programmatically, including process jobs and the managed web lifecycle | `runCli`, `runJobsCommand`, `parseCliArgs`, `renderHelp` |
 
 The web maintenance controller and publication helpers remain private CLI
@@ -957,8 +979,20 @@ IssueContinuationCapabilityInput
 MANAGED_SRT_LOCK_SHA256
 MANAGED_SRT_PACKAGE
 MANAGED_SRT_VERSION
+MEMORY_JOURNAL_DEFAULT_PAGE_SIZE
+MEMORY_JOURNAL_ENTRY_TEXT_MAX_BYTES
+MEMORY_JOURNAL_MAX_PAGE_SIZE
+MEMORY_JOURNAL_MAX_RANGE_DAYS
+MEMORY_JOURNAL_MAX_SNAPSHOTS
+MEMORY_JOURNAL_MCP_SERVER_NAME
+MEMORY_JOURNAL_PAGE_MAX_BYTES
+MEMORY_JOURNAL_TOOL_NAME
 ManagedSrtSetupOptions
 ManagedSrtSetupResult
+MemoryJournalBinding
+MemoryJournalCapableStore
+MemoryJournalErrorCode
+MemoryJournalRuntimeExtensionOptions
 MemoryRitualSchedule
 MonoAgentApp
 MonoAgentAppConfigInput
@@ -970,6 +1004,7 @@ PreflightResult
 RUN_HISTORY_MCP_SERVER_NAME
 RUN_HISTORY_TOOL_NAME
 ResolvedExporter
+ResolvedMemoryJournalRange
 RunContinuationCommandOptions
 RunHistoryBinding
 RunHistoryRuntimeExtension
@@ -1015,6 +1050,8 @@ createConfiguredAgentResponder
 createConfiguredAgentRuntime
 createConfiguredMemory
 createCronChannelDriver
+createMemoryJournalRuntimeExtension
+createMemoryJournalServer
 createOpenAIApiChannelDriver
 createRunHistoryRuntimeExtension
 createRunHistoryServer
@@ -1033,6 +1070,9 @@ isAppCoreConfigError
 isColorEnabled
 isContinuationMode
 isContinuationState
+isMemoryJournalCapableStore
+isMemoryJournalToolAllowed
+isMemoryJournalToolPolicyName
 isRunHistoryToolAllowed
 isSessionHistoryToolAllowed
 keyValue
@@ -1053,6 +1093,7 @@ resolveAppTraceSourceId
 resolveAppTraceSourceLabel
 resolveAppTraceStaleAfterMs
 resolveChannelDrivers
+resolveMemoryJournalRange
 rule
 runCli
 runContinuationCommand

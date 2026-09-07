@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
+The tool policy decides which tools an agent may call — built-in tools (Read, Bash, …) and policy-gated app-owned MCP tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. It is **allow-all by default**: an agent with no `tools` block gets every policy-gated tool, and you subtract from there. You declare it under `tools.allowedTools` / `tools.disallowedTools` (coverage: `config`), with deny always winning and overlaps rejected up front. External MCP-server tools use server declaration as their boundary instead.
 
 ## Allow-all by default
 
@@ -48,7 +48,9 @@ two families listed under [Tools not gated by allowedTools](#tools-not-gated-by-
 an external server declared in `tools.mcpServers` / `tools.mcpConfigPath` still
 contributes its tools, and `MemoryRecall` still comes from
 `memory.recallTool.enabled`. A genuinely tool-free agent needs `[]` *and* no
-declared MCP server *and* recall left off.
+declared MCP server *and* recall left off. `MemoryJournal` is different: it
+requires that same memory-read enablement and an affirmative local capability,
+but is also removed by `[]` or its own deny entry.
 :::
 
 Runtime discovery still exposes this distinction as
@@ -85,7 +87,7 @@ The example above keeps allow-all (every tool stays available) but denies `Bash`
 
 ## Deny enforcement
 
-`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `SetConversationTitle`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
+`disallowedTools` filters the built-in tools (`Read`, `Bash`, …), the progressive-disclosure `ReadSkill` tool, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, and app-owned adapter send tools (`SlackSendMessage`, `TelegramSendMessage`, …). The Pi runtime honors the list for all of those on every route.
 
 :::caution
 **Known limitation — external MCP tools on pi.** Arbitrary tools advertised by an external MCP server are **not** deny-filtered on the pi-native runtime yet. Listing such a tool in `disallowedTools` has no effect there. To hard-restrict an external MCP tool on pi, **don't declare its server** in `mcp.json` / `tools.mcpServers` — server declaration, not the denylist, is what governs its availability. (The app-owned adapter send tools are exempt from this limitation: they are gated by the app, so their `disallowedTools` entries are honored everywhere.)
@@ -138,6 +140,22 @@ The tool excludes the current/running run, unrelated conversations or threads, s
 ## SessionHistory
 
 `SessionHistory` is the separate read-only, request-scoped tool for redacted and bounded managed-tool invocations/results retained in the current logical session. Under a specific allowlist, include `SessionHistory`; `session_history` is a deprecated policy alias, and deny still wins. Recovery from a cancelled/interrupted `RunHistory` candidate uses a run-scoped search with `includeIsolated: true` and no `states` narrowing. Search navigation distinguishes the invocation `recordId` from the terminal `resultRecordId`, directs inspection of the result when present and the invocation when needed, preserves the isolation flag, uses the supported 8192-byte bound, and supplies exact cursor continuations. A bounded preview is not a substitute for record-level inspection, and an empty exact-run search must not be broadened. The tool excludes the current run and isolated/proactive records by default, keeps foreign conversations opaque, and cannot execute or mutate anything. It does not resume provider state, replay tools, rerun work, or guarantee continuation from an interrupted point; continuation is fresh work in the current run with currently available tools and verification. See [MCP servers](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for search/get, cursor, tombstone, artifact, and untrusted-data bounds.
+
+## MemoryJournal
+
+`MemoryJournal` is the app-owned, read-only chronological view over curated local
+Lite, Journal, or BuJo records. It has two gates: `memory.recallTool.enabled` must
+be on, and normal app-tool policy must allow it. Under allow-all it is offered
+when the local store affirms support; a restrictive allowlist must name
+`MemoryJournal`, `mcp__mono-agent-memory-journal__MemoryJournal`, or the server
+wildcard `mcp__mono-agent-memory-journal__*`. Exact, server, or global deny wins.
+There is no legacy alias.
+
+The tool is omitted when memory is absent, explicit reads are disabled, or the
+backend is unsupported. Supermemory does not fall back to broad search or return
+a fake empty result. A supported empty date range is instead a successful
+`noData: true` result. See [MCP servers](/tools/mcp/#memoryjournal-curated-chronology)
+for its strict range, snapshot, cursor, privacy, and evidence contracts.
 
 ## SetConversationTitle
 

@@ -135,6 +135,7 @@ const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   RunHistory: "inspect safe evidence from prior runs in this conversation",
   SessionHistory: "search bounded tool calls and results retained for this session",
   SetConversationTitle: "maintain semantic titles for writable web conversations",
+  MemoryJournal: "browse bounded curated memory over an explicit calendar-date range",
   Remember: "durably save specific facts the user asks you to remember",
 };
 

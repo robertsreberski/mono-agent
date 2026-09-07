@@ -26,6 +26,7 @@ const BUILTIN_HINTS: Readonly<Record<string, string>> = {
   edit: "Editing a file…",
   glob: "Looking through files…",
   grep: "Searching the workspace…",
+  memoryjournal: "Browsing memory journal…",
 };
 
 // Keyword hints matched against the tool segment of MCP tool names
@@ -145,6 +146,7 @@ const MEMORY_NAMES = new Set([
   "updatememory",
 ]);
 const MEMORY_READ_NAMES = new Set(["memoryrecall"]);
+const MEMORY_JOURNAL_NAMES = new Set(["memoryjournal"]);
 /**
  * Tools that launch a subagent. Their activity line is a *header* for the work
  * that follows, not a leaf action, so renderers group the child tool calls
@@ -422,6 +424,11 @@ function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
   }
   if (IMAGE_NAMES.has(normalized)) {
     return { action: "👁️ Looking at the image", previewFields: ["question", "prompt", "path", "file_path", "name"] };
+  }
+  if (MEMORY_JOURNAL_NAMES.has(normalized)) {
+    // Dates and chronological memory content are both private context. Keep
+    // journal browsing visible as an action but never preview arguments.
+    return { action: "🧠 Browsing memory journal", previewFields: [] };
   }
   if (MEMORY_READ_NAMES.has(normalized)) {
     // A recall query can contain private user context. Keep this status both
