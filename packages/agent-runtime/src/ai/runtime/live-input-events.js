@@ -139,7 +139,7 @@ export function instrumentLiveInputAppliedEvents(liveInput, onEvent) {
 
     /** @type {RuntimeLiveInputMessage} */
     const wrapped = {
-      ...host,
+      ...owner.message,
       accepted(evidence) {
         if (!isCurrent(owner, attempt, "leased")) return "ignored";
         owner.phase = "native_accepted";

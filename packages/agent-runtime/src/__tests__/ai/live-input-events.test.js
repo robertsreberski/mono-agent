@@ -104,6 +104,64 @@ describe("instrumentLiveInputAppliedEvents", () => {
     expect(events.some((event) => event.type === "live_input_duplicate_suppressed")).toBe(true);
   });
 
+  it("refreshes only same-owner callbacks while preserving immutable message fields", async () => {
+    const logicalOwner = {};
+    const originalReceivedAt = "2026-09-07T10:00:00.000Z";
+    const replacementReceivedAt = "2026-09-07T11:00:00.000Z";
+    const originalAccepted = vi.fn(() => "recorded");
+    const originalReject = vi.fn(() => "recorded");
+    const originalAcknowledge = vi.fn(() => "recorded");
+    const freshAccepted = vi.fn(function () {
+      expect(this.body).toBe("invalid replacement body");
+      return "recorded";
+    });
+    const freshAcknowledge = vi.fn(function () {
+      expect(this.receivedAt).toBe(replacementReceivedAt);
+      return "recorded";
+    });
+    const events = [];
+    const stream = instrumentLiveInputAppliedEvents(replayableLiveInput((generation) => [{
+      body: generation === 0 ? "original body" : "invalid replacement body",
+      id: "same-owner",
+      receivedAt: generation === 0 ? originalReceivedAt : replacementReceivedAt,
+      logicalOwner,
+      accepted: generation === 0 ? originalAccepted : freshAccepted,
+      reject: generation === 0 ? originalReject : vi.fn(),
+      acknowledge: generation === 0 ? originalAcknowledge : freshAcknowledge,
+    }]), (event) => events.push(event));
+
+    const first = await stream[Symbol.asyncIterator]().next();
+    expect(first.value.accepted({ providerEntryId: "entry-1" })).toBe("recorded");
+    expect(first.value.reject({ code: "native_queue_removed" })).toBe("recorded");
+
+    const replay = await stream[Symbol.asyncIterator]().next();
+    expect(replay.value).toMatchObject({
+      body: "original body",
+      id: "same-owner",
+      receivedAt: originalReceivedAt,
+      logicalOwner,
+    });
+    expect(first.value.acknowledge({ providerEntryId: "stale" })).toBe("ignored");
+    expect(replay.value.accepted({ providerEntryId: "entry-2" })).toBe("recorded");
+    expect(replay.value.acknowledge({ providerEntryId: "entry-2", providerRunId: "run-2" }))
+      .toBe("recorded");
+
+    expect(originalAccepted).toHaveBeenCalledTimes(1);
+    expect(originalReject).toHaveBeenCalledTimes(1);
+    expect(originalAcknowledge).not.toHaveBeenCalled();
+    expect(freshAccepted).toHaveBeenCalledTimes(1);
+    expect(freshAcknowledge).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event.type === "live_input_duplicate_suppressed")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "live_input_applied")).toHaveLength(1);
+    const eventsWithReceivedAt = events.filter((event) => event.receivedAt !== undefined);
+    expect(eventsWithReceivedAt).toHaveLength(5);
+    expect(eventsWithReceivedAt.every((event) => event.receivedAt === originalReceivedAt)).toBe(true);
+    for (const event of events) {
+      expect(event).not.toHaveProperty("body");
+      expect(event).not.toHaveProperty("text");
+    }
+  });
+
   it("keeps a legacy void safe rejection replayable", async () => {
     const acknowledge = vi.fn(() => "recorded");
     const stream = instrumentLiveInputAppliedEvents(

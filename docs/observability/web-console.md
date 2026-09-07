@@ -651,7 +651,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 21. Schema 9 added the `message_search` FTS5
+The web state database is at schema 22. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
@@ -667,10 +667,16 @@ provider-auth capability column so Agent settings receives it through
 the same bootstrap projection as the rest of the agent summary. Schema 21 adds
 the requested model and effort plus bounded runtime routing evidence to each
 turn, so fallback attribution remains visible after reload. These migrations are
-additive and transactional. An older
-`@mono-agent/web` binary refuses to open a newer database rather than reading it
-incorrectly, so downgrading means restoring a pre-upgrade copy of
-`~/.mono-agent/web/state.sqlite`.
+additive and transactional. Schema 22 adds the nullable
+`pending_live_inputs.dispatch_started_at` marker. The service commits that
+marker before crossing the operator dispatch boundary: unmarked offers recover
+as queued, while marked offers recover as terminal uncertainty and cannot be
+promoted into an automatic next turn. Existing offered rows migrate with a NULL
+marker, so their earlier dispatch history remains ambiguous. Back up the
+database before upgrading. A schema-21 `@mono-agent/web` binary refuses the
+schema-22 database rather than reading it incorrectly; rollback requires
+restoring that compatible pre-upgrade backup and therefore loses subsequent
+writes.
 
 ## Local state and reset
 
