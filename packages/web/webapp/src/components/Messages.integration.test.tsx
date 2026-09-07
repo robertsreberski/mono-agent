@@ -1,10 +1,11 @@
 import {
   AssistantRuntimeProvider,
+  type AssistantRuntime,
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { useState } from "react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useCallback, useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
 import { writeDataModeSetting } from "../data-mode";
@@ -38,10 +39,22 @@ afterEach(() => {
   consoleStoreMock.current.effectiveModel = "provider:primary";
 });
 
-function MessagesHarness({ messages }: { readonly messages: readonly WebMessage[] }) {
+function MessagesHarness({
+  messages,
+  onRuntime,
+  selectedModel = "provider:primary",
+}: {
+  readonly messages: readonly WebMessage[];
+  readonly onRuntime?: (runtime: AssistantRuntime) => void;
+  readonly selectedModel?: string | null;
+}) {
+  const convertMessage = useCallback(
+    (message: WebMessage) => convertWebMessage(message, { selectedModel }),
+    [selectedModel],
+  );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: coalesceMonitorWakeMessages(messages),
-    convertMessage: convertWebMessage,
+    convertMessage,
     onNew: async () => undefined,
     adapters: {
       threadList: {
@@ -57,6 +70,7 @@ function MessagesHarness({ messages }: { readonly messages: readonly WebMessage[
       },
     },
   });
+  useEffect(() => onRuntime?.(runtime), [onRuntime, runtime]);
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root>
@@ -66,8 +80,14 @@ function MessagesHarness({ messages }: { readonly messages: readonly WebMessage[
   );
 }
 
-function MessageHarness({ message }: { readonly message: WebMessage }) {
-  return <MessagesHarness messages={[message]} />;
+function MessageHarness({
+  message,
+  selectedModel,
+}: {
+  readonly message: WebMessage;
+  readonly selectedModel?: string | null;
+}) {
+  return <MessagesHarness messages={[message]} selectedModel={selectedModel} />;
 }
 
 const assistantMessage = (
@@ -203,8 +223,7 @@ describe("AssistantMessage grouped parts", () => {
   });
 
   it("keeps completed fallback attribution visible when it equals the selected model", () => {
-    consoleStoreMock.current.effectiveModel = "provider:fallback";
-    render(<MessageHarness message={{
+    render(<MessageHarness selectedModel="provider:fallback" message={{
       ...assistantMessage("complete"),
       attribution: {
         requested: { model: "provider:primary", effort: "high" },
@@ -224,7 +243,7 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("Older routing entries were omitted.")).toBeInTheDocument();
   });
 
-  it("shows normal attribution only when the executed model differs from the selected model", () => {
+  it("reconverts unchanged messages without remounting their ids when the selected model changes", async () => {
     const attribution = {
       requested: { model: "provider:primary", effort: "high" },
       attempted: { model: "provider:other", effort: "high", effectiveEffort: "max" },
@@ -235,17 +254,32 @@ describe("AssistantMessage grouped parts", () => {
     };
     const message = { ...assistantMessage("complete"), attribution };
 
-    const view = render(<MessageHarness message={message} />);
+    let runtime: AssistantRuntime | undefined;
+    const onRuntime = (current: AssistantRuntime) => { runtime = current; };
+    const view = render(
+      <MessagesHarness
+        messages={[message]}
+        onRuntime={onRuntime}
+        selectedModel="provider:primary"
+      />,
+    );
+    await waitFor(() => expect(runtime).toBeDefined());
     expect(screen.getByText("Ran with provider:other · High")).toBeVisible();
     expect(screen.getByText("Requested High → effective Max")).toBeVisible();
     expect(screen.getByText("Routing details")).toBeVisible();
+    const messageIds = runtime!.thread.getState().messages.map(({ id }) => id);
 
-    view.unmount();
-    consoleStoreMock.current.effectiveModel = "provider:other";
-    render(<MessageHarness message={message} />);
-    expect(screen.queryByText("Ran with provider:other · High")).toBeNull();
+    view.rerender(
+      <MessagesHarness
+        messages={[message]}
+        onRuntime={onRuntime}
+        selectedModel="provider:other"
+      />,
+    );
+    await waitFor(() => expect(screen.queryByText("Ran with provider:other · High")).toBeNull());
     expect(screen.queryByText("Requested High → effective Max")).toBeNull();
     expect(screen.queryByText("Routing details")).toBeNull();
+    expect(runtime!.thread.getState().messages.map(({ id }) => id)).toEqual(messageIds);
   });
 
   it("never claims an exhausted fallback run answered", () => {

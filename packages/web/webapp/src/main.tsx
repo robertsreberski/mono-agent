@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import { App } from "./App";
+import { RenderErrorBoundary, RootErrorFallback } from "./components/RenderErrorBoundary";
 import { ConsoleStoreProvider } from "./console-store";
 import { observeTransferredResources } from "./data-usage";
 import { NotificationsProvider } from "./notifications";
@@ -19,13 +20,18 @@ registerServiceWorkerUpdates(registerSW);
 observeTransferredResources();
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <ConsoleStoreProvider>
-      <NotificationsProvider>
-        <WebRuntimeProvider>
-          <App />
-        </WebRuntimeProvider>
-      </NotificationsProvider>
-    </ConsoleStoreProvider>
-  </StrictMode>,
+  <RenderErrorBoundary
+    scope="console"
+    fallback={() => <RootErrorFallback />}
+  >
+    <StrictMode>
+      <ConsoleStoreProvider>
+        <NotificationsProvider>
+          <WebRuntimeProvider>
+            <App />
+          </WebRuntimeProvider>
+        </NotificationsProvider>
+      </ConsoleStoreProvider>
+    </StrictMode>
+  </RenderErrorBoundary>,
 );
