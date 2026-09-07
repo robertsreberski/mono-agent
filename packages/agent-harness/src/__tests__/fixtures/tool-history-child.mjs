@@ -11,36 +11,57 @@ if (mode === "force-unref-open") {
     return this;
   };
 }
+// Crash-recovery consumers kill this process as soon as a readiness marker is
+// printed and then assert the reopened database. `persist()` returns a
+// `deferred` receipt once the foreground host wait expires, so the production
+// 250 ms ceiling would let readiness precede the commit under a loaded host and
+// turn recovery assertions into a wall-clock race. Match the harness
+// storage-test ceiling and refuse to announce readiness without a persisted id.
+const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;
 const binding = {
   conversationId: "slack:C1#2026-08-14",
   logicalConversationId: "slack:C1",
   runId: "crashed-run",
   isolated: false,
 };
+
+async function persistDurably(writer, runBinding, event) {
+  const startedAt = performance.now();
+  const receipt = await writer.persist(runBinding, event);
+  const waitedMs = Math.round(performance.now() - startedAt);
+  if (receipt?.persistence === "persisted" && typeof receipt.recordId === "string") return receipt;
+  throw new Error(
+    `Tool history ${event.phase} for ${event.toolCallId} was not persisted after ${String(waitedMs)} ms `
+    + `(persistence=${String(receipt?.persistence)}, recordId=${String(receipt?.recordId)}, `
+    + `errorCode=${String(receipt?.errorCode)}).`,
+  );
+}
+
 console.log("STARTING");
 try {
   const writer = await ToolHistoryWriter.open({
     root,
     ownerAcquireCeilingMs: Number(ceilingText),
+    persistenceCeilingMs: STORAGE_TEST_PERSISTENCE_CEILING_MS,
   });
   console.log("ACQUIRED");
   if (mode === "hold") {
-    await writer.persist(binding, {
-        phase: "invocation",
-        toolCallId: "crash-call",
-        toolName: "Bash",
-        arguments: { command: "sleep" },
-      });
+    await persistDurably(writer, binding, {
+      phase: "invocation",
+      toolCallId: "crash-call",
+      toolName: "Bash",
+      arguments: { command: "sleep" },
+    });
     console.log("READY");
   } else if (mode === "settle") {
     const finishedBinding = { ...binding, runId: "finished-run" };
-    await writer.persist(finishedBinding, {
+    await persistDurably(writer, finishedBinding, {
       phase: "invocation",
       toolCallId: "finished-call",
       toolName: "Read",
       arguments: { path: "README.md" },
     });
-    await writer.persist(finishedBinding, {
+    await persistDurably(writer, finishedBinding, {
       phase: "result",
       toolCallId: "finished-call",
       state: "success",
