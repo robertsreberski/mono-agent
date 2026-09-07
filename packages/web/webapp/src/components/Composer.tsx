@@ -235,7 +235,10 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
               unstable_focusOnRunStart={false}
               unstable_focusOnScrollToBottom={false}
               unstable_focusOnThreadSwitched={false}
-              onChange={(event) => captureSelection(event.currentTarget)}
+              onChange={(event) => {
+                writeComposerDraft(selectedAgentId, selectedThreadId, event.currentTarget.value);
+                captureSelection(event.currentTarget);
+              }}
               onSelect={(event) => captureSelection(event.currentTarget)}
               onKeyUp={(event) => captureSelection(event.currentTarget)}
               onClick={(event) => captureSelection(event.currentTarget)}

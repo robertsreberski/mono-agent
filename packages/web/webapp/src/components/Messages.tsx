@@ -59,7 +59,7 @@ import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
-import { RunAttribution } from "./RunAttribution";
+import { RunAttribution, shouldShowMessageRunAttribution } from "./RunAttribution";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -1224,6 +1224,7 @@ const activityTiming = (startedAt: number, finishedAt: unknown): ActivityTiming 
 };
 
 function AssistantParts() {
+  const selectedModel = useConsoleStore().effectiveModel;
   const isMessageRunning = useAuiState(
     (state) => state.message.status?.type === "running",
   );
@@ -1296,7 +1297,9 @@ function AssistantParts() {
           }
         }}
       </MessagePrimitive.GroupedParts>
-      <RunAttribution attribution={attribution} status={runStatus ?? (isMessageRunning ? "running" : "complete")} />
+      {shouldShowMessageRunAttribution(attribution, selectedModel) && (
+        <RunAttribution attribution={attribution} status={runStatus ?? (isMessageRunning ? "running" : "complete")} />
+      )}
     </>
   );
 }

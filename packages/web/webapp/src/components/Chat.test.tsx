@@ -214,8 +214,8 @@ const chatTree = () => (
 );
 
 describe("Chat conversation viewport", () => {
-  it("shows the server-owned current route in the header independently of next-turn controls", () => {
-    const selected = thread("thread-a", "agent", {
+  it("keeps all run attribution out of the conversation header", () => {
+    const fallbackThread = thread("thread-a", "agent", {
       trigger: { kind: "cron" },
       runState: {
         id: "turn-1",
@@ -229,13 +229,33 @@ describe("Chat conversation viewport", () => {
         },
       },
     });
-    storeMock.current = chatStore(selected, chatDetail(selected, 1));
+    storeMock.current = chatStore(fallbackThread, chatDetail(fallbackThread, 1));
 
-    render(chatTree());
+    const view = render(chatTree());
+    const header = view.container.querySelector(".chat-header");
+    expect(header).not.toBeNull();
+    expect(header).not.toHaveTextContent("provider:primary");
+    expect(header).not.toHaveTextContent("provider:fallback");
+    expect(header?.querySelector("[data-run-attribution]")).toBeNull();
 
-    expect(screen.getByRole("status", { name: "Model fallback" })).toBeVisible();
-    expect(screen.getByText("provider:primary → provider:fallback")).toBeVisible();
-    expect(screen.queryByText(/overloaded/u)).toBeNull();
+    const completedThread = thread("thread-b", "agent", {
+      runState: {
+        id: "turn-2",
+        status: "complete",
+        attribution: {
+          requested: { model: "provider:primary", effort: "high" },
+          executed: { model: "provider:primary", effort: "high", effectiveEffort: "high" },
+          disposition: "requested",
+          transitions: [],
+          retries: [],
+        },
+      },
+    });
+    storeMock.current = chatStore(completedThread, chatDetail(completedThread, 1));
+    view.rerender(chatTree());
+    expect(header).not.toHaveTextContent("Last run");
+    expect(header).not.toHaveTextContent("provider:primary");
+    expect(header?.querySelector("[data-run-attribution]")).toBeNull();
   });
 
   it("recreates the viewport for an async conversation switch without interrupting a current conversation", async () => {

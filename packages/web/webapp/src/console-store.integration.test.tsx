@@ -548,6 +548,34 @@ describe("ConsoleStoreProvider integration", () => {
       .toEqual(["provider/existing", "low"]);
   });
 
+  it("resolves a thread without an override to the agent config model", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const existing = thread("existing", "alpha", {
+      runModel: null,
+      runEffort: null,
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", {
+      models: ["provider/config", "provider/web"],
+      defaultModel: "provider/config",
+      defaultEffort: "medium",
+      runSettings: {
+        config: { model: "provider/config", effort: "medium" },
+        override: { model: "provider/web", effort: "high" },
+        effective: {
+          model: "provider/web",
+          modelSource: "override",
+          effort: "high",
+          effortSource: "override",
+        },
+      },
+    })], [existing], existing.id));
+    vi.mocked(api.thread).mockResolvedValue({ thread: existing, messages: [] });
+    const store = await renderStore();
+
+    expect([store.current.effectiveModel, store.current.effectiveEffort])
+      .toEqual(["provider/config", "medium"]);
+  });
+
   it("applies server-authoritative agent default save and revert responses", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
     vi.mocked(api.setAgentRunDefaults).mockResolvedValue(agent("alpha", {
