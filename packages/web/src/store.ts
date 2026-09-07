@@ -3005,6 +3005,13 @@ export class WebStore {
     const messageId = randomUUID();
     const now = this.now();
     const status = active === undefined ? "queued" : "offered";
+    // An idle forced steer becomes an ordinary turn, so freeze the thread's
+    // selected route now rather than consulting a potentially changed
+    // override when the queue drains. An active turn owns its own route,
+    // including explicit null/default values; never fall through from those
+    // nulls to the thread override.
+    const model = active === undefined ? thread.runModel : active.model;
+    const effort = active === undefined ? thread.runEffort : active.effort;
     const parts: WebMessagePart[] = [
       liveInputTelemetry(status === "offered" ? "pending" : "queued"),
       { type: "text", text },
@@ -3024,8 +3031,8 @@ export class WebStore {
         messageId,
         active?.id ?? null,
         text,
-        active?.model ?? null,
-        active?.effort ?? null,
+        model,
+        effort,
         status,
         now,
         now,

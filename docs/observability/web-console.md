@@ -338,9 +338,14 @@ The registry is scoped to the active agent and comes from that running agent's `
 
 ### Steer a running turn
 
-The composer remains sendable while a response is running. A text-only send is
-persisted immediately and offered to the active provider as live guidance. The
-message displays one of four delivery states:
+The composer remains sendable while a response is running. A normal text-only
+send is persisted immediately and offered to the active provider as live
+guidance. An existing non-cron conversation also provides a secondary
+**Steer** action, with **Control/Command + Shift + Enter** as its shortcut. This
+explicit action uses the same live-input route regardless of whether the
+browser currently displays the conversation as running or idle; the service
+decides whether an active turn can accept it. The message displays one of four
+delivery states:
 
 - **Steering current run…** while the provider settlement is pending;
 - **Applied to current run** after the provider accepts it;
@@ -356,13 +361,21 @@ full follow-up stays in its human message. Queued, unavailable, and cancelled
 guidance does not create the row.
 
 Queued guidance starts automatically as a normal turn after the current turn
-settles. Pending delivery and queue state live in the service's owner-private
-SQLite store rather than the browser tab. A web-service restart converts any
-uncertain pending offer to queued and drains it after agent discovery, so it is
-not silently lost. Each live follow-up is limited to 8,000 characters, with at
-most 100 unsettled entries per thread. Attachments keep the ordinary turn path.
-If a quote is present, the browser flattens its Markdown blockquote context into
-the live guidance before persistence and delivery.
+settles, or immediately when an explicit Steer finds the conversation idle. It
+uses the conversation's model and effort captured when the message was
+offered; a follow-up offered during a turn retains that active turn's route.
+Pending delivery and queue state live in the service's owner-private SQLite
+store rather than the browser tab. A web-service restart converts any uncertain
+pending offer to queued and drains it after agent discovery, so it is not
+silently lost. Each live follow-up is limited to 8,000 characters, with at most
+100 unsettled entries per thread.
+
+Steering is text-only. The explicit button is disabled when attachments are
+present, and the shortcut fails closed before either send endpoint while
+restoring the draft, quote, and attachments. Attachments otherwise keep the
+ordinary turn path. If a quote is present, the browser flattens its Markdown
+blockquote context into the live guidance before persistence and delivery.
+
 ## Structured AskUser forms
 
 When an agent calls the channel-agnostic `AskUser` tool, the web console keeps

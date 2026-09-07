@@ -292,6 +292,109 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(composer.getState().text).toBe("");
   });
 
+  it("offers explicit Steer on an idle conversation and routes it to live input", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const sendLiveInput = vi.fn().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, { sendLiveInput });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" });
+    const steer = screen.getByRole("button", { name: "Steer this message" });
+
+    expect(steer).toBeDisabled();
+    expect(steer).toHaveAttribute(
+      "title",
+      "Offer to the active run; otherwise queue as the next turn.",
+    );
+    fireEvent.change(input, { target: { value: "Treat the browser state as stale" } });
+    await waitFor(() => expect(steer).toBeEnabled());
+    fireEvent.click(steer);
+
+    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Treat the browser state as stale"));
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(runtime.thread.composer.getState().text).toBe("");
+  });
+
+  it("forces live input from Ctrl+Shift+Enter while the conversation appears idle", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const sendLiveInput = vi.fn().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, { sendLiveInput });
+    const { runtime } = await renderComposerRuntime();
+    const input = screen.getByRole("combobox", { name: "Message" });
+
+    fireEvent.change(input, { target: { value: "Use the forced shortcut" } });
+    fireEvent.keyDown(input, {
+      key: "Enter",
+      code: "Enter",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+
+    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the forced shortcut"));
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(runtime.thread.composer.getState().text).toBe("");
+  });
+
+  it("fails a forced attachment closed and restores its text, quote, and upload", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    const sendLiveInput = vi.fn().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, { sendLiveInput });
+    const { runtime } = await renderComposerRuntime();
+    const composer = runtime.thread.composer;
+    const input = screen.getByRole("combobox", { name: "Message" });
+
+    await act(async () => {
+      await composer.addAttachment(new File(["keep"], "keep.md", { type: "text/markdown" }));
+    });
+    act(() => composer.setQuote({ text: "quoted context", messageId: "source-message" }));
+    fireEvent.change(input, { target: { value: "Do not drop this" } });
+    const steer = screen.getByRole("button", { name: "Steer this message" });
+    expect(steer).toBeDisabled();
+    expect(steer).toHaveAttribute("title", "Steering is text-only.");
+
+    fireEvent.keyDown(input, {
+      key: "Enter",
+      code: "Enter",
+      metaKey: true,
+      shiftKey: true,
+    });
+
+    await waitFor(() => expect(composer.getState().text).toBe("Do not drop this"));
+    expect(composer.getState().quote).toEqual({
+      text: "quoted context",
+      messageId: "source-message",
+    });
+    expect(composer.getState().attachments).toMatchObject([{ name: "keep.md" }]);
+    expect(sendLiveInput).not.toHaveBeenCalled();
+    expect(sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not offer explicit Steer for a new conversation or cron channel", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, {
+      threads: [],
+      visibleThreads: [],
+      selectedThread: null,
+      selectedThreadId: null,
+    });
+    const view = await renderComposerRuntime();
+    expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
+
+    const cronThread = thread("cron-thread", "agent", {
+      trigger: { kind: "cron", jobId: "daily", configured: true },
+      canSend: false,
+      canUpload: false,
+    });
+    storeMock.current = createStore(sendTurn, {
+      threads: [cronThread],
+      visibleThreads: [cronThread],
+      selectedThread: cronThread,
+      selectedThreadId: cronThread.id,
+    });
+    view.rerender();
+
+    expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
+  });
+
   it("keeps the rendered send button active for a live follow-up", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);

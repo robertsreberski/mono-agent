@@ -39,6 +39,8 @@ interface ComposerRecovery {
   readonly threadId: string | null;
 }
 
+type SubmissionOptions = Parameters<ExternalThreadQueueAdapter["enqueue"]>[1];
+
 const mergeComposerText = (recovered: string, current: string): string => {
   if (!recovered) return current;
   if (!current || current === recovered) return recovered;
@@ -579,7 +581,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   );
 
   const onNew = useCallback(
-    async (message: AppendMessage) => {
+    async (message: AppendMessage, options?: SubmissionOptions) => {
       const text = message.content
         .filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> =>
           part.type === "text",
@@ -595,6 +597,24 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         agentId: store.selectedAgentId,
         threadId: store.selectedThreadId,
       };
+      if (options?.steer === true) {
+        const canForceSteer = !turnStartingRef.current
+          && store.selectedThread !== null
+          && store.selectedThreadId !== null
+          && store.selectedThread.trigger?.kind !== "cron"
+          && canSendInConsole(store.connection, store.selectedAgent, store.selectedThread);
+        // assistant-ui's shortcut can invoke this path without clicking the
+        // disabled button. Live input is text-only, so fail closed before
+        // either endpoint and put everything it cleared back in the composer.
+        if (!canForceSteer || text.length === 0 || attachments.length > 0) {
+          queueRecovery(text, attachments, quote, submissionContext);
+          return;
+        }
+        void store.sendLiveInput(formatLiveInput(text, quote)).catch(() => {
+          queueRecovery(text, [], quote, submissionContext);
+        });
+        return;
+      }
       if (store.selectedThread?.runState.status === "running" && attachments.length === 0) {
         void store.sendLiveInput(formatLiveInput(text, quote)).catch(() => {
           queueRecovery(text, [], quote, submissionContext);
@@ -732,20 +752,22 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     store.selectedThread,
   );
   const isRunning = store.selectedThread?.runState.status === "running";
-  const runningSubmissionQueue = useMemo<ExternalThreadQueueAdapter | undefined>(
-    () => isRunning
+  const submissionQueue = useMemo<ExternalThreadQueueAdapter | undefined>(
+    () => store.selectedThread !== null && store.selectedThread.trigger?.kind !== "cron"
       ? {
           // The web service owns persisted live-input and fallback queue state.
-          // This bridge advertises that capability to assistant-ui so its native
-          // Send primitive and Enter handling remain usable during a run.
+          // Exposing this for every existing interactive conversation lets
+          // assistant-ui carry explicit `{ steer: true }` intent even when the
+          // browser's displayed run state is stale. Ordinary sends still pass
+          // `{ steer: false }` and retain their existing routing below.
           items: [],
-          enqueue: (message) => { void onNew(message); },
+          enqueue: (message, options) => { void onNew(message, options); },
           steer: () => undefined,
           remove: () => undefined,
           clear: () => undefined,
         }
       : undefined,
-    [isRunning, onNew],
+    [onNew, store.selectedThread],
   );
 
   const messages = useMemo(
@@ -760,7 +782,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     isSendDisabled: !selectedCanSend || turnStarting,
     onNew,
     onCancel: store.cancelTurn,
-    queue: runningSubmissionQueue,
+    queue: submissionQueue,
     unstable_capabilities: { copy: true },
     adapters: {
       threadList,

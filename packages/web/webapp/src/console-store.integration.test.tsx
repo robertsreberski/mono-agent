@@ -1415,6 +1415,53 @@ describe("ConsoleStoreProvider integration", () => {
       });
       expect(order).toEqual(["start:0", "end:0", "startTurn"]);
     });
+
+    it("does not offer live input until prior writes land and keeps its captured conversation", async () => {
+      const betaThread = thread("beta-thread", "alpha", { messageCount: 1 });
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread, betaThread],
+        alphaThread.id,
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [alphaThread, betaThread] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) =>
+        detail(threadId === betaThread.id ? betaThread : alphaThread, "hello"));
+      const { order, release } = patchRecorder();
+      const liveMessage: WebMessage = {
+        id: "live-input-message",
+        threadId: alphaThread.id,
+        role: "user",
+        parts: [{ type: "text", text: "use the settled route" }],
+        attachments: [],
+        createdAt: "2026-08-14T09:00:00.000Z",
+        updatedAt: "2026-08-14T09:00:00.000Z",
+        status: "complete",
+        liveInputStatus: "queued",
+      };
+      vi.mocked(api.liveInput).mockResolvedValue({
+        message: liveMessage,
+        disposition: "queued",
+      });
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(alphaThread.id));
+
+      act(() => { store.current.setEffort("high"); });
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(order).toEqual(["start:0"]);
+
+      const sent = store.current.sendLiveInput("use the settled route");
+      act(() => { store.current.selectThread(betaThread.id); });
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });
+      expect(api.liveInput).not.toHaveBeenCalled();
+
+      await act(async () => {
+        release(0);
+        await sent;
+      });
+      expect(order).toEqual(["start:0", "end:0"]);
+      expect(api.liveInput).toHaveBeenCalledWith(alphaThread.id, "use the settled route");
+      expect(store.current.selectedThreadId).toBe(betaThread.id);
+    });
   });
 
   describe("deleted-conversation tombstones", () => {
