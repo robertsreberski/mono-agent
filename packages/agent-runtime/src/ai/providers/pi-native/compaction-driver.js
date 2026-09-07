@@ -554,14 +554,12 @@ export function piCompactionSettings(policy) {
  * (auto-recognized from the model actually serving the request, lowered by any
  * ceiling learned from a prior overflow). A positive `contextWindowOverride`
  * (from the typed `compaction` policy object) replaces provider metadata, but
- * process-local overflow evidence can still lower it. It is not a legacy
- * `settings` key, so it is applied here directly rather than through the
- * settings shim. Drives the proactive trigger + reactive recovery.
- * @param {{harness: any, runtime: any, resolved: any, settings: any, contextWindowOverride?: number}} params
+ * process-local overflow evidence can still lower it. It drives the proactive trigger and reactive recovery.
+ * @param {{harness: any, runtime: any, resolved: any, toolLimits?: any, compaction?: any, contextWindowOverride?: number}} params
  */
-export function resolveLiveCompactionPolicy({ harness, runtime, resolved, settings, contextWindowOverride }) {
+export function resolveLiveCompactionPolicy({ harness, runtime, resolved, toolLimits, compaction, contextWindowOverride }) {
   const contextWindow = effectiveContextWindow(harness, runtime, resolved, contextWindowOverride);
-  return resolveAgentCompactionPolicy(settings || {}, { contextWindow });
+  return resolveAgentCompactionPolicy({ toolLimits, compaction }, { contextWindow });
 }
 
 /**

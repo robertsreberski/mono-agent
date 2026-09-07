@@ -318,7 +318,7 @@ describe("Web Push safety and persistence", () => {
       notBefore: "2026-08-13T08:00:00.000Z",
     });
     const claimed = store.claimDueWebPushDeliveries(1)[0] as ClaimedWebPushDelivery;
-    const payload = JSON.parse(webPushPayload(claimed)) as Record<string, unknown>;
+    const payload = JSON.parse(webPushPayload(claimed, claimed.event.title, claimed.event.body)) as Record<string, unknown>;
     expect(payload).toMatchObject({
       web_push: 8030,
       notification: {
@@ -358,7 +358,7 @@ describe("Web Push safety and persistence", () => {
     const details = webPush.generateRequestDetails({
       endpoint: delivery.subscription.endpoint,
       keys: { p256dh: delivery.subscription.p256dh, auth: delivery.subscription.auth },
-    }, webPushPayload(delivery), {
+    }, webPushPayload(delivery, delivery.event.title, delivery.event.body), {
       TTL: 60,
       contentEncoding: "aes128gcm",
       urgency: webPushUrgency(delivery.event.kind),

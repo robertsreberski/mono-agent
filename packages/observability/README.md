@@ -1,7 +1,7 @@
 # @mono-agent/observability
 
 Record bounded local run evidence, discover agent trace sources, and optionally
-export the same run lifecycle to Phoenix without coupling export to run success.
+forward the same run lifecycle to an optional exporter without coupling export to run success.
 
 ## Category
 
@@ -10,7 +10,7 @@ export the same run lifecycle to Phoenix without coupling export to run success.
 
 Category: `observability`
 Tier: `core`
-Catalog responsibility: Records and reads local JSONL run artifacts, summaries, trace source manifests, and exposes the OTLP/Phoenix exporter through the ./otel subpath.
+Catalog responsibility: Records and reads local JSONL run artifacts, summaries, trace source manifests, and composes optional run exporters.
 
 <!-- package-metadata:end -->
 
@@ -18,8 +18,8 @@ Catalog responsibility: Records and reads local JSONL run artifacts, summaries, 
 
 Records and reads bounded local JSONL run artifacts, summarizes and audits those
 artifacts, and publishes file-backed trace-source manifests for operator
-discovery. Browser-safe subpaths shape timelines and span attributes; the
-optional `./otel` subpath exports runs to Phoenix over OTLP/HTTP.
+discovery. Browser-safe subpaths shape timelines and span attributes. The separate optional
+`@mono-agent/observability-phoenix` package owns Phoenix OTLP/HTTP transport.
 
 Local recorder redaction is always on: non-numeric values under sensitive-looking
 object keys are redacted; numeric values under matched keys are retained; retained
@@ -61,11 +61,11 @@ const summary = await recorder.finish({ model: "openai:gpt-5" });
 console.log(summary.status, summary.artifactPaths);
 ```
 
-The Phoenix transport is intentionally subpath-only, so root imports do not load
-OpenTelemetry or network code:
+Install the optional `@mono-agent/observability-phoenix` package at the same
+version as the framework to export recorded runs:
 
 ```ts
-import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
+import { createPhoenixRunExporter } from "@mono-agent/observability-phoenix";
 ```
 
 ## Architecture
@@ -75,7 +75,7 @@ import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
 1. Runtime events enter the root recorder and become bounded local
    `.events.jsonl` and `.summary.json` snapshots.
 2. A composite recorder can additionally replay the same bounded events to a
-   `RunExporter`; the `./otel` implementation sends them to Phoenix.
+   `RunExporter`; the optional Phoenix package sends them over OTLP.
 3. Host lifecycle updates become trace-source manifests that local operator
    readers use to discover each agent's artifact directory.
 4. Browser consumers pass recorded events through `./event-timeline` for
@@ -92,7 +92,6 @@ stream.
 | `@mono-agent/observability` | Node-backed recorder, artifact readers/audit/retention/metrics, trace registry, composite recorder, and shared contracts. |
 | `@mono-agent/observability/event-timeline` | Browser-safe adjacent-event coalescing for display. |
 | `@mono-agent/observability/run-export` | Node-free event-to-span mapping and exporter helpers. |
-| `@mono-agent/observability/otel` | Optional OpenTelemetry serialization and OTLP/HTTP Phoenix transport. |
 | `src/recorder.ts` / `src/recorded-runs.ts` | Artifact write boundaries and bounded, hostile-file-safe reads. |
 | `src/trace-sources.ts` | File-backed source manifests, heartbeat updates, discovery, and per-source run reads. |
 
@@ -158,10 +157,10 @@ synchronous local `onEvent` path, buffers exporter input, then performs a
 bounded batch replay at finish. Export failures and timeouts become warnings and
 never change the run outcome or suppress the local terminal write.
 
-The `./run-export` subpath exposes pure event-to-span mapping. The `./otel`
-subpath maps a run to OpenInference-flavored spans, serializes OTLP protobuf,
-and posts it to a Phoenix traces endpoint. Deterministic ids make the same run
-safe to re-export.
+The `./run-export` subpath exposes pure event-to-span mapping. The optional
+`@mono-agent/observability-phoenix` package maps a run to OpenInference-flavored
+spans, serializes OTLP protobuf, and posts it to a Phoenix traces endpoint.
+Deterministic ids make the same run safe to re-export.
 
 Privacy default is metadata-only: `includeSensitiveData: false` omits substantive
 payloads. When it is true, non-numeric values under sensitive-looking object
@@ -184,7 +183,6 @@ policy is independent of the local recorder's always-on credential-shape scan.
 | root | `createCompositeRunRecorder` | Keep local recording primary while adding a best-effort exporter. |
 | `./event-timeline` | `combineRecordedRunEvents` | Render a browser-safe, coalesced event timeline. |
 | `./run-export` | `buildRootSpanAttributes` / `buildEventSpans` | Map runs and events without loading Node or network transport code. |
-| `./otel` | `createPhoenixRunExporter` | Send OTLP/HTTP protobuf spans to Phoenix. |
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -330,26 +328,11 @@ truncateVisibleText
 combineRecordedRunEvents
 ```
 
-**`@mono-agent/observability/otel`**
-
-```text
-BuildRunReadableSpansInput
-DEFAULT_PHOENIX_ENDPOINT
-DeterministicIdFactory
-PhoenixRunExporterDeps
-PostOtlpProtobufInput
-PostOtlpProtobufResult
-buildRunReadableSpans
-createDeterministicIdFactory
-createPhoenixRunExporter
-idToHex
-postOtlpProtobuf
-serializeTraceSpans
-```
-
 **`@mono-agent/observability/run-export`**
 
 ```text
+DEFAULT_MAX_EVENTS_PER_RUN
+DEFAULT_MAX_STRING_BYTES
 EventSpanMapping
 SpanAttributeValue
 SpanAttributes
@@ -361,16 +344,18 @@ buildRootSpanAttributes
 composeFailureDetail
 countRuntimeWarnings
 normalizeFailoverHistory
+redactJsonValue
 renderFailoverHistory
 spanKindHint
 spanStatusFor
+truncateString
 ```
 
 <!-- public-api-inventory:end -->
 
 ## Dependency Boundary
 
-The root import writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, or network dependency. The exporter contract and pure span mapping live at the root / `./run-export`; the OTLP network transport is subpath-only in `./otel`, keeping normal observability imports free of OpenTelemetry runtime loading.
+The root import writes and reads local artifact and registry files only. It has no runtime, adapter, UI, database, queue, network, or OpenTelemetry dependency. The exporter contract and pure span mapping live at the root / `./run-export`; OTLP transport and SDK dependencies belong to the optional `@mono-agent/observability-phoenix` package.
 
 ## What This Package Does Not Own
 

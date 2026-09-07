@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { lstat, readdir, realpath, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { isDeepStrictEqual } from "node:util";
 

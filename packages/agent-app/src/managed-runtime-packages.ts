@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { loadAppCoreConfig } from "./app-config.js";
 import { configuredChannelPluginPackageNames } from "./channel-plugins.js";
 import type { ManagedRuntimeAdditionalPackage } from "./background-runtime.js";
+import { PHOENIX_PLUGIN_PACKAGE, resolvePhoenixPluginManifest } from "./phoenix-plugin.js";
 import { SUPERMEMORY_PLUGIN_PACKAGE } from "./supermemory-plugin.js";
 
 export interface ResolveManagedRuntimePackagesInput {
@@ -32,16 +33,22 @@ export async function resolveConfiguredManagedRuntimePackages(
     requirements.set(SUPERMEMORY_PLUGIN_PACKAGE, true);
   }
 
+  if (config.observability?.exporters?.some((exporter) => exporter.type === "phoenix")) {
+    requirements.set(PHOENIX_PLUGIN_PACKAGE, true);
+  }
+
   const appBase = import.meta.url;
   const cwdBase = pathToFileURL(join(cwd, "package.json")).href;
   const resolved = await Promise.all([...requirements]
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(async ([packageName, allowCwdFallback]) => ({
       packageName,
-      packageSource: await resolveInstalledPackageRoot(
-        packageName,
-        allowCwdFallback ? [cwdBase, appBase] : [appBase],
-      ),
+      packageSource: packageName === PHOENIX_PLUGIN_PACKAGE
+        ? await realpath(dirname(resolvePhoenixPluginManifest({ cwd })))
+        : await resolveInstalledPackageRoot(
+            packageName,
+            allowCwdFallback ? [cwdBase, appBase] : [appBase],
+          ),
     })));
   return resolved;
 }

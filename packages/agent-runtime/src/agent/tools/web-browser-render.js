@@ -5,8 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { runPreparedProcess } from "./shared/process-runner.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import { assertNoWebAccessInterstitial } from "./web-access-interstitial.js";
 
 const BROWSER_TIMEOUT_MS = 20_000;
@@ -58,7 +57,7 @@ export async function renderWithAgentBrowser(
   } = {},
 ) {
   const parsed = new URL(url);
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const workspace = resolve(resolvedCtx.workspace || process.cwd());

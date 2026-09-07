@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Breaking: simplify framework configuration, runtime and memory contracts.**
+  Remove inert permission/recall options, prose-triggered effort escalation,
+  process-global tool configuration, legacy flat runtime settings, the legacy
+  memory-write protocol and the standalone memory-recall binary. Phoenix moves
+  to the explicitly installed, matching-version `@mono-agent/observability-phoenix`
+  extra. Operator streaming, wire types, previews and channel redaction share
+  canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
+  before upgrading an existing consumer.
+
 - **Breaking: framework self-configuration has been removed.** The dedicated
   SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
   `/configure`, host-side proposal review/apply/restart transaction, and bundled

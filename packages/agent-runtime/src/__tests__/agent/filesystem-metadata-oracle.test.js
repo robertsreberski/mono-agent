@@ -1,3 +1,4 @@
+import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdirSync,
@@ -53,13 +54,9 @@ import {
   writeToolImpl,
 } from "../../agent/tools/index.js";
 import { createFakeSandbox, testSandboxPolicy } from "../helpers/fake-sandbox.js";
-import {
-  configureToolRuntime,
-  resetToolRuntime,
-} from "../../agent/tools/shared/runtime-context.js";
-import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const tempDirs = [];
+let ctx = createToolContext();
 const PROTECTED_SENTINEL = "PROTECTED_SENTINEL_UNCHANGED";
 
 function createFixture({ denyProtectedCommands = true } = {}) {
@@ -99,7 +96,7 @@ function createFixture({ denyProtectedCommands = true } = {}) {
       };
     },
   };
-  configureToolRuntime({
+  updateToolContext(ctx, {
     workspace: root,
     sandbox: createFakeSandbox(),
     sandboxEngine,
@@ -129,8 +126,8 @@ function swapAfterAuthorization(checkCount, swap) {
 afterEach(() => {
   authorizationSeam.remainingChecks = 0;
   authorizationSeam.swap = undefined;
-  resetToolRuntime();
-  resolveRgPath({ refresh: true });
+  ctx = createToolContext();
+  resolveRgPath({ ctx, refresh: true });
   while (tempDirs.length > 0) rmSync(tempDirs.pop(), { recursive: true, force: true });
 });
 
@@ -142,7 +139,7 @@ const protectedToolCases = [
     expected: "Error: Protected filesystem read was denied.",
     variants: [undefined],
     async run(path, policy) {
-      return await readToolImpl({ file_path: path }, { sandboxPolicy: policy });
+      return await readToolImpl({ file_path: path }, { ctx, sandboxPolicy: policy });
     },
   },
   {
@@ -155,7 +152,7 @@ const protectedToolCases = [
       return await writeToolImpl({
         file_path: path,
         content: "WRITE_REPLACEMENT",
-      }, { sandboxPolicy: policy });
+      }, { ctx, sandboxPolicy: policy });
     },
   },
   {
@@ -169,7 +166,7 @@ const protectedToolCases = [
         file_path: path,
         old_string: PROTECTED_SENTINEL,
         new_string: "CORRUPTED",
-      }, { sandboxPolicy: policy });
+      }, { ctx, sandboxPolicy: policy });
     },
   },
   {
@@ -179,7 +176,7 @@ const protectedToolCases = [
     expected: "Error: Protected filesystem search was denied.",
     variants: [undefined],
     async run(path, policy) {
-      return await globToolImpl({ path, pattern: "**/*" }, { sandboxPolicy: policy });
+      return await globToolImpl({ path, pattern: "**/*" }, { ctx, sandboxPolicy: policy });
     },
   },
   {
@@ -193,7 +190,7 @@ const protectedToolCases = [
         path,
         pattern: PROTECTED_SENTINEL,
         ...(output_mode === undefined ? {} : { output_mode }),
-      }, { sandboxPolicy: policy });
+      }, { ctx, sandboxPolicy: policy });
     },
   },
 ];
@@ -252,26 +249,26 @@ describe("protected filesystem target metadata", () => {
 
     expect(await expectRequestPrepare(async () => await readToolImpl(
       { file_path: fixture.siblingFile },
-      protectedOptions,
+      { ctx, ...protectedOptions },
     ))).toContain("sibling original");
     expect(await expectRequestPrepare(async () => await writeToolImpl(
       { file_path: protectedWritePath, content: "request write" },
-      protectedOptions,
+      { ctx, ...protectedOptions },
     ))).toContain("Successfully wrote");
     expect(await expectRequestPrepare(async () => await editToolImpl({
       file_path: fixture.siblingFile,
       old_string: "original",
       new_string: "edited",
-    }, protectedOptions))).toContain("Successfully edited");
+    }, { ctx, ...protectedOptions }))).toContain("Successfully edited");
     expect(await expectRequestPrepare(async () => await globToolImpl(
       { path: fixture.siblingDirectory, pattern: "*.txt" },
-      protectedOptions,
+      { ctx, ...protectedOptions },
     ))).toContain("allowed.txt");
     expect(await expectRequestPrepare(async () => await grepToolImpl({
       path: fixture.siblingDirectory,
       pattern: "sibling needle",
       output_mode: "content",
-    }, protectedOptions))).toContain("allowed.txt");
+    }, { ctx, ...protectedOptions }))).toContain("allowed.txt");
 
     expect(requestPrepares).toHaveLength(5);
     expect(requestAvailabilityChecks).toBe(5);
@@ -288,26 +285,26 @@ describe("protected filesystem target metadata", () => {
     const noProtectedWritePath = join(fixture.root, "no-protected-write.txt");
     expect(await readToolImpl(
       { file_path: fixture.siblingFile },
-      noProtectedOptions,
+      { ctx, ...noProtectedOptions },
     )).toContain("sibling edited");
     expect(await writeToolImpl(
       { file_path: noProtectedWritePath, content: "host write" },
-      noProtectedOptions,
+      { ctx, ...noProtectedOptions },
     )).toContain("Successfully wrote");
     expect(await editToolImpl({
       file_path: noProtectedWritePath,
       old_string: "host write",
       new_string: "host edited",
-    }, noProtectedOptions)).toContain("Successfully edited");
+    }, { ctx, ...noProtectedOptions })).toContain("Successfully edited");
     expect(await globToolImpl(
       { path: fixture.siblingDirectory, pattern: "*.txt" },
-      noProtectedOptions,
+      { ctx, ...noProtectedOptions },
     )).toContain("allowed.txt");
     expect(await grepToolImpl({
       path: fixture.siblingDirectory,
       pattern: "sibling needle",
       output_mode: "content",
-    }, noProtectedOptions)).toContain("allowed.txt");
+    }, { ctx, ...noProtectedOptions })).toContain("allowed.txt");
     expect(requestPrepares).toHaveLength(5);
     expect(requestAvailabilityChecks).toBe(5);
     expect(contextPrepares).toHaveLength(0);
@@ -383,20 +380,20 @@ describe("protected filesystem target metadata", () => {
 
     const readResult = await readToolImpl(
       { file_path: fixture.siblingFile },
-      { sandboxPolicy: fixture.policy },
+      { ctx, sandboxPolicy: fixture.policy },
     );
     const writeResult = await writeToolImpl(
       { file_path: siblingWritePath, content: "sibling written" },
-      { sandboxPolicy: fixture.policy },
+      { ctx, sandboxPolicy: fixture.policy },
     );
     const editResult = await editToolImpl({
       file_path: fixture.siblingFile,
       old_string: "original",
       new_string: "edited",
-    }, { sandboxPolicy: fixture.policy });
+    }, { ctx, sandboxPolicy: fixture.policy });
     const globResult = await globToolImpl(
       { path: fixture.siblingDirectory, pattern: "*.txt" },
-      { sandboxPolicy: fixture.policy },
+      { ctx, sandboxPolicy: fixture.policy },
     );
     const grepResults = await Promise.all([
       "content",
@@ -408,16 +405,16 @@ describe("protected filesystem target metadata", () => {
       pattern: "sibling needle",
       glob: "*.txt",
       ...(output_mode === undefined ? {} : { output_mode }),
-    }, { sandboxPolicy: fixture.policy })));
+    }, { ctx, sandboxPolicy: fixture.policy })));
     const fileGrepResult = await grepToolImpl({
       path: fixture.siblingFile,
       pattern: "sibling edited",
       output_mode: "content",
-    }, { sandboxPolicy: fixture.policy });
+    }, { ctx, sandboxPolicy: fixture.policy });
     const compatiblePolicy = testSandboxPolicy({ root: fixture.root });
     const compatibleGlobResult = await globToolImpl(
       { path: fixture.siblingDirectory, pattern: "*.txt" },
-      { sandboxPolicy: compatiblePolicy },
+      { ctx, sandboxPolicy: compatiblePolicy },
     );
     const compatibleGrepResults = await Promise.all([
       "content",
@@ -429,12 +426,12 @@ describe("protected filesystem target metadata", () => {
       pattern: "sibling needle",
       glob: "*.txt",
       ...(output_mode === undefined ? {} : { output_mode }),
-    }, { sandboxPolicy: compatiblePolicy })));
+    }, { ctx, sandboxPolicy: compatiblePolicy })));
     const compatibleFileGrepResult = await grepToolImpl({
       path: fixture.siblingFile,
       pattern: "sibling edited",
       output_mode: "content",
-    }, { sandboxPolicy: compatiblePolicy });
+    }, { ctx, sandboxPolicy: compatiblePolicy });
 
     expect(readResult).toContain("sibling original");
     expect(writeResult).toContain("Successfully wrote");
@@ -455,20 +452,20 @@ describe("protected filesystem target metadata", () => {
     const policy = testSandboxPolicy({ root: fixture.root });
     const missing = join(fixture.root, "missing.txt");
 
-    expect(await readToolImpl({ file_path: "missing.txt" }, { sandboxPolicy: policy }))
+    expect(await readToolImpl({ file_path: "missing.txt" }, { ctx, sandboxPolicy: policy }))
       .toBe("Error: File not found: missing.txt");
     expect(await editToolImpl({
       file_path: "missing.txt",
       old_string: "old",
       new_string: "new",
-    }, { sandboxPolicy: policy })).toBe("Error: File not found: missing.txt");
-    expect(await globToolImpl({ path: fixture.siblingFile, pattern: "**/*" }, { sandboxPolicy: policy }))
+    }, { ctx, sandboxPolicy: policy })).toBe("Error: File not found: missing.txt");
+    expect(await globToolImpl({ path: fixture.siblingFile, pattern: "**/*" }, { ctx, sandboxPolicy: policy }))
       .toBe(`Error: Glob path is not a directory: ${fixture.siblingFile}`);
-    expect(await globToolImpl({ path: missing, pattern: "**/*" }, { sandboxPolicy: policy }))
+    expect(await globToolImpl({ path: missing, pattern: "**/*" }, { ctx, sandboxPolicy: policy }))
       .toBe(`Error: Glob path is not a directory: ${missing}`);
-    expect(await grepToolImpl({ path: missing, pattern: "sibling" }, { sandboxPolicy: policy }))
+    expect(await grepToolImpl({ path: missing, pattern: "sibling" }, { ctx, sandboxPolicy: policy }))
       .toBe(`Error: Path not found: ${missing}`);
-    expect(await grepToolImpl({ path: fixture.siblingFile, pattern: "sibling" }, { sandboxPolicy: policy }))
+    expect(await grepToolImpl({ path: fixture.siblingFile, pattern: "sibling" }, { ctx, sandboxPolicy: policy }))
       .toContain("sibling.txt");
   });
 });

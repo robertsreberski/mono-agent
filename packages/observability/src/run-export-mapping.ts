@@ -18,7 +18,7 @@ import type {
  * types) so the built `dist/run-export-mapping.js` stays browser-safe and can be
  * imported through the './run-export' subpath without dragging node:fs/node:path
  * into a browser graph. The concrete network transport lives behind the
- * './otel' subpath; this module only shapes attribute bags.
+ * optional @mono-agent/observability-phoenix package; this module only shapes attribute bags.
  */
 
 export type SpanAttributeValue = string | number | boolean;
@@ -706,3 +706,7 @@ export function spanStatusFor(
   }
   return "UNSET";
 }
+
+// Shared bounded export policy used by optional transport implementations.
+export { DEFAULT_MAX_EVENTS_PER_RUN, DEFAULT_MAX_STRING_BYTES } from "./guards.js";
+export { redactJsonValue, truncateString } from "./redaction.js";

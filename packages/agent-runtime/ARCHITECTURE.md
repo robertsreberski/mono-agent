@@ -35,7 +35,7 @@ flowchart TB
 
   CoreAI --> Runtime["agent-runtime<br/>createRuntime() / createRouterRuntime()"]
 
-  Runtime --> Registry["Runtime bridge registry<br/>model ref + executionMode -> backend"]
+  Runtime --> Registry["Pi bridge resolver<br/>validate model reference"]
   Runtime --> AgentKernel["Agent kernel<br/>built-in tools, MCP, approvals,<br/>compaction, transcript snapshots"]
   Runtime --> Observability["Observers + metrics<br/>usage, cost, events, warnings"]
   Runtime --> Failure["Failure taxonomy<br/>retryable provider detection"]
@@ -64,47 +64,27 @@ flowchart TB
 
 The runtime stays below host domain behavior. Provider code in this package
 must not import host DB, API, coordinator, or UI modules. Hosts pass callbacks
-and pre-resolved settings into the runtime instead.
+and typed runtime policies into the runtime instead.
 
 ## Runtime Selection
 
-**Diagram summary:** Hosts may use `parseRuntimeModelReference()` to turn a
-canonical string into the object required by `run()`. The static registry then
-matches that object plus execution mode and lazily imports Claude SDK, Claude
-Code CLI, Pi SDK, Codex app-server, or OpenCode app-server code. Capability
-descriptors are available without loading those provider implementations.
+**Diagram summary:** Hosts parse a canonical provider/model reference. The
+resolver validates that reference and directly imports the sole Pi bridge.
+Capability metadata remains available without loading provider code.
 
 ```mermaid
 flowchart LR
-  AuthoredRef["authored model string"] --> Parse["parseRuntimeModelReference()"]
-  Parse --> ModelRef["options.model<br/>parsed RuntimeModelRef"]
-  ModelRef --> Mode["options.executionMode<br/>sdk or cli"]
-  Mode --> Resolve["resolveRuntimeBridge()"]
-
-  Resolve -->|sdk=claude + sdk mode| ClaudeSDK["claude bridge<br/>@anthropic-ai/claude-agent-sdk"]
-  Resolve -->|sdk=claude + cli mode| ClaudeCLI["claude-code bridge<br/>claude binary"]
-  Resolve -->|sdk=pi| PiSDK["pi bridge<br/>@earendil-works/pi-agent-core"]
-  Resolve -->|sdk=codex + cli mode| CodexApp["codex-app bridge<br/>codex app-server"]
-  Resolve -->|sdk=opencode + cli mode| OpenCodeApp["opencode-app bridge<br/>isolated OpenCode server"]
-
-  Resolve --> Caps["runtimeCapabilities()<br/>static backend features"]
-  Caps --> Used["capabilitiesUsed<br/>per-call observed features"]
+  AuthoredRef["provider:model string"] --> Parse["parseRuntimeModelReference()"]
+  Parse --> ModelRef["options.model: RuntimeModelRef"]
+  ModelRef --> Resolve["resolveRuntimeBridge(): validate reference"]
+  Resolve --> Pi["pi-native.js: AgentHarness"]
+  Pi --> Provider["Pi provider catalog"]
+  Caps["runtimeCapabilities()"] --> Used["capabilitiesUsed: observed features"]
 ```
 
-Canonical active model references are:
-
-- `claude:<modelId>` for Claude SDK or Claude Code CLI, selected by
-  `executionMode`
-- `pi:<providerId>:<modelName>` for Pi SDK providers
-- `codex:<modelId>` for Codex app-server CLI
-- `opencode:<providerId>:<modelName>` for the isolated OpenCode app-server CLI
-
-`createRuntime().run()` expects this already-parsed object; it does not parse a
-string implicitly.
-
-Legacy aliases are canonicalized at host ingress when needed. The strict parser
-keeps the package boundary honest by rejecting reserved runtime IDs such as
-`openai:*`, `vercel:*`, and `claude-code:*`.
+`createRuntime().run()` requires the parsed object and does not parse strings
+implicitly. Provider and model fallback chains remain owned by the router;
+every accepted route executes through Pi.
 
 ## Host prompt assembly and replay
 
@@ -138,10 +118,10 @@ that it must validate for its domain.
 sequenceDiagram
   participant Host as Host app
   participant Runtime as createRuntime()
-  participant Registry as Bridge registry
+  participant Registry as Pi resolver
   participant Bridge as Provider bridge
   participant Kernel as Agent kernel
-  participant Provider as SDK / CLI / app-server
+  participant Provider as Pi provider
   participant Observer as Observer hub
 
   Host->>Runtime: run(systemPrompt, options)
@@ -154,7 +134,7 @@ sequenceDiagram
     Bridge->>Kernel: prepare tools, MCP, approvals, limits
     Kernel-->>Bridge: provider-specific tool surface
   end
-  Bridge->>Provider: send prompt, messages, tools, schema, settings
+  Bridge->>Provider: send prompt, messages, tools, schema, typed policies
 
   loop streaming events
     Provider-->>Bridge: assistant/tool/result/provider events
@@ -180,8 +160,8 @@ that validation and all state-machine side effects.
 ## Main Subsystems
 
 **Diagram summary:** The public barrels lead to the runtime factory, fallback
-router, AI registry, and agent-kernel helpers. The registry owns five lazy
-provider loaders. Shared agent modules own tools, context, approvals,
+router, Pi resolver, and agent-kernel helpers. The resolver owns one lazy
+provider loader. Shared agent modules own tools, context, approvals,
 compaction, transcript snapshots, and result-size guards; shared AI modules own
 failure, cost, observation, and capability metadata.
 
@@ -195,15 +175,10 @@ flowchart TB
   RuntimeFactory --> Registry["ai/runtime/registry.js"]
   Registry --> Providers["ai/providers/*"]
 
-  Providers --> Claude["claude-sdk.js"]
-  Providers --> ClaudeCode["claude-cli.js"]
   Providers --> Pi["pi-native.js<br/>pi-models/messages/events"]
-  Providers --> Codex["codex-app.js"]
-  Providers --> OpenCode["opencode-app.js<br/>opencode-server.js"]
 
   AgentExports --> Tools["agent/tools/*"]
   Tools --> ToolContext["shared/tool-context.js<br/>per-instance ToolContext<br/>workspace, repoRoot, rg, sandbox, brand"]
-  ToolContext --> ToolRuntime["shared/runtime-context.js<br/>back-compat DEFAULT context<br/>(module-level singleton wrapping tool-context.js)"]
   Tools --> PiBridge["tools/pi-bridge.js<br/>built-ins + MCP adaptation"]
 
   AgentExports --> Compaction["agent/compaction.js"]
@@ -222,9 +197,8 @@ Key responsibilities by subsystem:
 - `runtime.js`: binds host callbacks once, builds a per-instance `ToolContext`
   (`agent/tools/shared/tool-context.js`) threaded to every bridge call via
   `options.toolContext`, and routes each call to the resolved bridge.
-- `ai/runtime/registry.js`: keeps the five static bridge descriptors, exposes
-  their metadata for introspection, and lazily imports the one whose model
-  reference plus execution mode matches a run.
+- `ai/runtime/registry.js`: validates a model reference and directly loads Pi;
+  its descriptor-list wrapper preserves lazy capability introspection.
 - `ai/runtime/router.js`: retries across an ordered fallback chain on retryable
   provider failures, carrying a transcript-tail resume snapshot forward.
 - `ai/providers/*`: owns provider-specific request shapes, event conversion,
@@ -237,18 +211,10 @@ Key responsibilities by subsystem:
   `passthroughSandbox` default (no policy configured → unsandboxed, exactly as
   before; a policy configured with no implementation injected → fails closed).
   Real hosts inject `@mono-agent/runtime-adapter`'s sandbox implementation.
-- `agent/compaction.js`: pure helpers consumed by the pi bridge —
-  `resolveAgentCompactionPolicy` (derives the context-window compaction trigger +
-  adaptive budgets and tool-output payload limits from the typed compaction
-  policy and running model; deprecated `agent_compaction_*` settings remain a
-  compatibility input), `estimateFixedOverheadTokens` (the proactive fixed-overhead correction:
-  system prompt + tool schemas + per-turn message), `isLikelyContextTermination`
-  (classifies a context-pressure error), and the typed-policy/`settings`-bag shim
-  helpers (`resolveRuntimePolicyInputs`, `deprecatedSettingsWarning`) that let a
-  present `toolLimits`/`compaction` object win wholesale per-group over the
-  deprecated flat `settings` bag (MIGRATION.md §8). The bridge drives compaction
-  itself via `AgentHarness.compact()` (proactive + reactive recovery); the legacy
-  in-loop `transformContext` manager was removed.
+- `agent/compaction.js`: derives adaptive compaction budgets and clamped output
+  limits directly from typed `toolLimits` / `compaction` inputs and the model;
+  estimates fixed request overhead and classifies context-pressure errors. Pi
+  drives proactive compaction and reactive recovery through `AgentHarness.compact()`.
 - `agent/transcript.js`: builds bounded resume snapshots from prior provider
   events so a fallback or continuation can keep context.
 - `agent/approval.js`: provides host-driven human-in-the-loop tool approval

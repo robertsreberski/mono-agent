@@ -72,7 +72,6 @@ export const CONFIG_ENV_KEYS = {
   "runtime.retry.backoffMs": "MONO_AGENT_RETRY_BACKOFF_MS",
   "runtime.retry.maxBackoffMs": "MONO_AGENT_RETRY_MAX_BACKOFF_MS",
   "runtime.effort": "MONO_AGENT_EFFORT",
-  "runtime.permissionMode": "MONO_AGENT_PERMISSION_MODE",
   "runtime.maxTurns": "MONO_AGENT_MAX_TURNS",
   "runtime.compaction.enabled": "MONO_AGENT_COMPACTION_ENABLED",
   "runtime.compaction.triggerRatio": "MONO_AGENT_COMPACTION_TRIGGER_RATIO",
@@ -340,12 +339,6 @@ function buildRuntimeSection(input: BuildMonoAgentConfigViewInput): ConfigViewSe
         label: "Effort",
         value: runtime.effort ?? PLACEHOLDER,
         jsonPresent: json.runtime?.effort !== undefined,
-      }),
-      toField(env, {
-        id: "runtime.permissionMode",
-        label: "Permission mode",
-        value: runtime.permissionMode ?? PLACEHOLDER,
-        jsonPresent: json.runtime?.permissionMode !== undefined,
       }),
       toField(env, {
         id: "runtime.maxTurns",

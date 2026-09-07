@@ -16,6 +16,52 @@ the configuration schema.
 
 ---
 
+## Unreleased framework simplification
+
+- `runtime.permissionMode` / `RuntimeRunOptions.permissionMode` are removed.
+  They did not enforce Pi permissions. Retain real sandbox policy, approval
+  callbacks, and tool allow/deny lists.
+- `runOptions.settings` is rejected before provider execution. Pass typed
+  `toolLimits` and `compaction` objects instead. `resolveRuntimePolicies` and
+  its `RuntimePolicies` return type are removed from `runtime-adapter`.
+- `resolveAgentCompactionPolicy` now takes `({ toolLimits, compaction }, model)`.
+  It reads camelCase policy fields directly, preserving clamping and adaptive
+  model-window defaults. `resolveRuntimePolicyInputs`,
+  `deprecatedSettingsWarning`, and `DEPRECATED_SETTINGS_WARNING_KIND` are removed.
+- Root exports `configureToolRuntime`, `readToolRuntime`, `readRuntimeBrand`,
+  and `resetToolRuntime`, plus the `agent/tools/shared/runtime-context.js`
+  subpath, are removed. `createRuntime(host)` and `runtime.configureTools(next)`
+  bind and update only that runtime's context. Direct tool callers import
+  `createToolContext` / `updateToolContext` from
+  `@mono-agent/agent-runtime/agent/tools/shared/tool-context.js` and pass `{ ctx }`
+  on every filesystem, shell, web, or MCP call. Missing execution context fails
+  closed. Read brand fields from your context or pass `runtimeBrand` explicitly
+  to stateless formatting helpers.
+- `resolveRuntimeBridge(model)` directly loads Pi after validation. The optional
+  unused resolver-options parameter and internal `BridgeSpec` type are removed;
+  `listRuntimeBridges()` retains the sole Pi descriptor.
+
+```js
+import { createRuntime } from "@mono-agent/agent-runtime";
+import { createToolContext } from "@mono-agent/agent-runtime/agent/tools/shared/tool-context.js";
+import { readToolImpl } from "@mono-agent/agent-runtime/agent/tools/index.js";
+
+const runtime = createRuntime({ workspace: process.cwd() });
+const policies = {
+  toolLimits: { toolTextLimitChars: 16_000, mcpCallTimeoutMs: 90_000 },
+  compaction: { triggerRatio: 0.7, fixedOverheadEnabled: true },
+};
+// Pass ...policies to runtime.run(...). Omit unspecified scalar budgets so
+// they are derived against the model that actually serves the request.
+const ctx = createToolContext({ workspace: process.cwd() });
+await readToolImpl({ file_path: "README.md" }, { ctx });
+```
+
+External hosts such as Worklab must migrate these imports and flat policy keys
+before adopting this release. Existing installed consumers are not migrated by
+publishing this source change. Versioned sections below describe their
+historical migrations; this section supersedes the removed compatibility paths.
+
 ## 0.21.0
 
 **This is the largest breaking change since `0.3.x`.** mono-agent shipped six
@@ -313,7 +359,7 @@ each edit until it comes back clean.
   a router may continue to Claude. Do not synthesize `collaborationMode` or
   assume Claude profile definitions are portable to Codex.
 - **Per-attempt policy projection:** `resolveAttempt().policyOptions` may replace
-  only `allowedTools`, `disallowedTools`, and `permissionMode` for the active
+  only `allowedTools` and `disallowedTools` for the active
   route. General resolver `options` still cannot replace protected request
   fields.
 - **Pi inline helper ceiling:** the runtime-owned `general-purpose` profile is
@@ -556,8 +602,7 @@ These were Pi-bridge knobs the native path does not consume.
   request (`harness.getModel()`). Numeric overflow limits and generic failed
   request estimates lower a learned process-local ceiling; use
   `runtime.compaction.contextWindowOverride` for a persistent metadata
-  correction. Deprecated programmatic `agent_compaction_*` settings and
-  `resolveAgentCompactionPolicy` remain compatibility surfaces.
+  correction. Pass typed `compaction` fields to `resolveAgentCompactionPolicy`.
 
 ### 4. Durable Pi session resume: create-on-miss semantics
 
@@ -637,35 +682,15 @@ mono-agent hosts — no action needed if you build your runtime through
   `@mono-agent/runtime-adapter`, also pass a `sandbox` implementation, or drop
   the policy.
 
-### 8. Typed run options replace the `settings` bag (`toolLimits` / `compaction` / `prompts`)
+### 8. Typed per-run tool limits and compaction
 
-The flat `options.settings` bag is **deprecated** as the way to configure
-tool-output clamps and context compaction. The supported replacements are typed,
-per-run objects on `RuntimeRunOptions`:
-
-- **`options.toolLimits`** (`RuntimeToolLimits`) — `toolTextLimitChars`,
-  `bashOutputLimitChars`, `mcpTextLimitChars`, `searchResultLimit`,
-  `imageInlineMaxBytes`, `toolPayloadMaxBytes`, `mcpCallTimeoutMs`,
-  `mcpCallMaxTotalTimeoutMs`, `bashTimeoutMs`.
-- **`options.compaction`** (`RuntimeCompactionPolicy`) — `enabled`,
-  `triggerRatio`, `keepRecentTokens`, `summaryMaxTokens`, `minSavingsTokens`,
-  `fixedOverheadEnabled`, `contextWindowOverride`.
-
-Precedence is **per-group**: a present typed object wins wholesale for its group
-and that group's legacy `settings` keys are ignored; an absent typed object lets
-its group's `settings` keys through as a fallback. Consuming **any** legacy
-`settings` key emits exactly one `runtime_warning` with
-**`warning_kind: "deprecated_settings_option"`** per run (listing the consumed
-keys). Passing no `settings` — or an empty/irrelevant bag — never warns.
-
-`resolveAgentCompactionPolicy(settings, model)` stays exported (the canonical
-clamp/mapper both paths route through), and `@mono-agent/runtime-adapter` exposes
-`resolveRuntimePolicies(settings)` to map a legacy bag to the typed objects.
-The migration helper preserves omitted legacy compaction values so adaptive
-defaults are resolved later against the live model rather than frozen at the
-mapper's fallback window.
-**Action:** migrate `settings` → `toolLimits` / `compaction`; until then the shim
-keeps working with one deprecation warning per run.
+The former flat `options.settings` bag and its compatibility translators are
+removed. Use `options.toolLimits` (`RuntimeToolLimits`) for output budgets and
+MCP/Bash timeouts, and `options.compaction` (`RuntimeCompactionPolicy`) for
+compaction toggles, ratios, scalar budgets, and context-window overrides.
+`resolveAgentCompactionPolicy({ toolLimits, compaction }, model)` applies the
+same clamps directly to those typed inputs. Omitted scalar budgets remain
+adaptive to the live model window. See the unreleased migration above.
 
 ### 9. New per-run overrides: `sandbox`, `sandboxPolicy`, `prompts`
 
@@ -736,7 +761,7 @@ The package exposes **14 named deep `.js` subpaths**:
 @mono-agent/agent-runtime/agent/prompt/skill-index.js
 @mono-agent/agent-runtime/agent/tools/index.js
 @mono-agent/agent-runtime/agent/tools/shared/ripgrep.js
-@mono-agent/agent-runtime/agent/tools/shared/runtime-context.js
+@mono-agent/agent-runtime/agent/tools/shared/tool-context.js
 @mono-agent/agent-runtime/agent/transcript.js
 @mono-agent/agent-runtime/ai/cost.js
 @mono-agent/agent-runtime/ai/failure.js

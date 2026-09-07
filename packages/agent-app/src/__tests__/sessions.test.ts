@@ -28,10 +28,7 @@ import {
 import {
   assertClearSessionsRecoveryResolved,
   clearSessionsRegistryRoot,
-  purgeAcpSessionAuthorizations,
-  purgeConversationHistory,
   purgeConversationState,
-  purgeSessions,
 } from "../sessions.js";
 
 let dir: string;
@@ -88,10 +85,10 @@ describe("resolveAppSessionsRoot", () => {
   });
 });
 
-describe("purgeSessions", () => {
+describe("purgeConversationState session accounting", () => {
   it("is a no-op when sessions are in-memory (no root configured)", async () => {
     const configPath = await writeConfig({ runtime: { model: "x:y" } });
-    const result = await purgeSessions(inputFor(configPath));
+    const result = (await purgeConversationState(inputFor(configPath))).sessions;
     expect(result.removed).toBe(false);
     expect(result.files).toBe(0);
   });
@@ -106,7 +103,7 @@ describe("purgeSessions", () => {
     await writeFile(join(workspaceDir, "b.jsonl"), "{}\n");
     await writeFile(join(workspaceDir, "notes.txt"), "ignored — not a session file");
 
-    const result = await purgeSessions(inputFor(configPath));
+    const result = (await purgeConversationState(inputFor(configPath))).sessions;
 
     expect(result.removed).toBe(true);
     expect(result.root).toBe(root);
@@ -116,13 +113,13 @@ describe("purgeSessions", () => {
 
   it("is a no-op when the configured store does not exist on disk yet", async () => {
     const configPath = await writeConfig({ providers: { piNative: { piSessionsRoot: "./.mono-agent/sessions" } } });
-    const result = await purgeSessions(inputFor(configPath));
+    const result = (await purgeConversationState(inputFor(configPath))).sessions;
     expect(result.removed).toBe(false);
     expect(result.files).toBe(0);
   });
 });
 
-describe("purgeConversationHistory", () => {
+describe("purgeConversationState history accounting", () => {
   it("removes only the history root beside the env-selected artifact directory", async () => {
     const configPath = await writeConfig({ artifacts: { dir: "./ignored-artifacts" } });
     const artifactDir = join(dir, "env-artifacts");
@@ -135,7 +132,7 @@ describe("purgeConversationHistory", () => {
     await writeFile(join(root, ".locks", "root.sqlite"), "lock");
     await writeFile(join(memoryRoot, "memory.md"), "durable fact\n");
 
-    const result = await purgeConversationHistory(inputFor(configPath, {
+    const { history: result } = await purgeConversationState(inputFor(configPath, {
       MONO_AGENT_ARTIFACT_DIR: artifactDir,
     }));
 
@@ -151,7 +148,7 @@ describe("purgeConversationHistory", () => {
 
   it("is a no-op when the configured history store does not exist", async () => {
     const configPath = await writeConfig({ artifacts: { dir: "./.mono-agent/artifacts" } });
-    const result = await purgeConversationHistory(inputFor(configPath));
+    const result = (await purgeConversationState(inputFor(configPath))).history;
     expect(result).toEqual({
       root: join(dir, ".mono-agent", "history"),
       removed: false,
@@ -180,7 +177,7 @@ describe("purgeConversationHistory", () => {
     }, { phase: "result", toolCallId: "call-1", state: "success", content: "ok" });
     await writer.close();
 
-    const result = await purgeConversationHistory(inputFor(configPath));
+    const result = (await purgeConversationState(inputFor(configPath))).history;
     expect(result.messageHistory).toEqual({ files: 1, bytes: 3 });
     expect(result.toolHistory).toMatchObject({
       files: 2,
@@ -195,25 +192,25 @@ describe("purgeConversationHistory", () => {
   });
 });
 
-describe("standalone purge process-root protection", () => {
+describe("purgeConversationState process-root protection", () => {
   it.each([
     {
       name: "Pi sessions",
       config: { providers: { piNative: { piSessionsRoot: "./.state/sessions" } } },
       retainedRoot: ".state/sessions",
-      invoke: async (configPath: string) => await purgeSessions(inputFor(configPath)),
+      invoke: async (configPath: string) => (await purgeConversationState(inputFor(configPath))).sessions,
     },
     {
       name: "conversation history",
       config: { artifacts: { dir: "./.state/artifacts" } },
       retainedRoot: ".state/history",
-      invoke: async (configPath: string) => await purgeConversationHistory(inputFor(configPath)),
+      invoke: async (configPath: string) => (await purgeConversationState(inputFor(configPath))).history,
     },
     {
       name: "ACP authorizations",
       config: { artifacts: { dir: "./.state/artifacts" } },
       retainedRoot: ".state/acp-sessions",
-      invoke: async (configPath: string) => await purgeAcpSessionAuthorizations(inputFor(configPath)),
+      invoke: async (configPath: string) => (await purgeConversationState(inputFor(configPath))).acpSessions,
     },
   ])("refuses a retained-root overlap before inspecting or deleting $name", async ({
     config,
@@ -580,18 +577,6 @@ describe("purgeConversationState", () => {
       name: "combined purge",
       invoke: async (configPath: string) => await purgeConversationState(inputFor(configPath)),
     },
-    {
-      name: "standalone Pi sessions purge",
-      invoke: async (configPath: string) => await purgeSessions(inputFor(configPath)),
-    },
-    {
-      name: "standalone history purge",
-      invoke: async (configPath: string) => await purgeConversationHistory(inputFor(configPath)),
-    },
-    {
-      name: "standalone ACP authorization purge",
-      invoke: async (configPath: string) => await purgeAcpSessionAuthorizations(inputFor(configPath)),
-    },
   ])("$name reconciles an older quarantine before validating malformed current config", async ({ invoke }) => {
     const configPath = await writeConfig({
       artifacts: { dir: "./.old/artifacts" },
@@ -611,18 +596,6 @@ describe("purgeConversationState", () => {
     {
       name: "combined purge",
       invoke: async (configPath: string) => await purgeConversationState(inputFor(configPath)),
-    },
-    {
-      name: "standalone Pi sessions purge",
-      invoke: async (configPath: string) => await purgeSessions(inputFor(configPath)),
-    },
-    {
-      name: "standalone history purge",
-      invoke: async (configPath: string) => await purgeConversationHistory(inputFor(configPath)),
-    },
-    {
-      name: "standalone ACP authorization purge",
-      invoke: async (configPath: string) => await purgeAcpSessionAuthorizations(inputFor(configPath)),
     },
   ])("$name refuses recovery when a pending path became a retained process root", async ({ invoke }) => {
     const configPath = await writeConfig({
@@ -674,7 +647,7 @@ describe("purgeConversationState", () => {
       providers: { piNative: { piSessionsRoot: "./replacement-sessions" } },
     }));
 
-    await expect(purgeSessions(inputFor(configPath))).rejects.toThrow(/must be a real directory/u);
+    await expect(purgeConversationState(inputFor(configPath))).rejects.toThrow(/must be a real directory/u);
 
     await expect(stat(quarantine)).rejects.toThrow();
     await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
@@ -711,7 +684,7 @@ describe("purgeConversationState", () => {
     await symlink(outsideRoot, replacementHistoryRoot, "dir");
     await writeFile(configPath, JSON.stringify({ artifacts: { dir: "./.new/artifacts" } }));
 
-    await expect(purgeConversationHistory(inputFor(configPath))).rejects.toThrow(/must be a real directory/u);
+    await expect(purgeConversationState(inputFor(configPath))).rejects.toThrow(/must be a real directory/u);
 
     await expect(stat(quarantine)).rejects.toThrow();
     await expect(readFile(join(outsideRoot, "sentinel.txt"), "utf8")).resolves.toBe("outside\n");
@@ -775,7 +748,7 @@ describe("purgeConversationState", () => {
     await expect(readFile(join(oldSessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("old session\n");
     await writeFile(configPath, JSON.stringify({ artifacts: { dir: "./.new/artifacts" } }));
 
-    await purgeSessions(inputFor(configPath));
+    await purgeConversationState(inputFor(configPath));
 
     await expect(stat(manifest)).rejects.toThrow();
     await expect(readFile(join(oldSessionsRoot, "session.jsonl"), "utf8")).resolves.toBe("old session\n");

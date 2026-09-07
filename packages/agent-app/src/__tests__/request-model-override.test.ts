@@ -13,7 +13,6 @@ import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness"
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideRoutesOnlyPiNative,
-  requestModelOverrideTargetsPiNative,
 } from "../request-model-override.js";
 import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
 
@@ -22,7 +21,6 @@ interface RunOptions {
   readonly localProviders?: readonly LocalProviderDefinition[];
   readonly baseModel?: RuntimeModelReference;
   readonly fallbackModels?: readonly RuntimeModelReference[];
-  readonly baseEffort?: string;
 }
 
 function run(metadata: Record<string, unknown> | undefined, options: RunOptions = {}, userMessage?: string) {
@@ -31,7 +29,6 @@ function run(metadata: Record<string, unknown> | undefined, options: RunOptions 
     ...(options.localProviders === undefined ? {} : { localProviders: options.localProviders }),
     ...(options.baseModel === undefined ? {} : { baseModel: options.baseModel }),
     ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
-    ...(options.baseEffort === undefined ? {} : { baseEffort: options.baseEffort }),
   });
   return extension({
     request: {
@@ -54,29 +51,6 @@ const OLLAMA_PROVIDER: LocalProviderDefinition = {
   baseUrl: "http://localhost:11434",
   enabled: true,
 };
-
-describe("requestModelOverrideTargetsPiNative", () => {
-  it("offers Pi-native tools when an accepted override targets Pi", () => {
-    expect(requestModelOverrideTargetsPiNative(
-      { tui: { model: "openai-codex:gpt-5.6-terra" } },
-      { baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8") },
-    )).toBe(true);
-  });
-
-  it("offers Pi-native tools when only a configured fallback targets Pi", () => {
-    expect(requestModelOverrideTargetsPiNative(undefined, {
-      baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8"),
-      fallbackModels: [parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra")],
-    })).toBe(true);
-  });
-
-  it("offers Pi-native tools for every parsed provider route", () => {
-    expect(requestModelOverrideTargetsPiNative(undefined, {
-      baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8"),
-      fallbackModels: [parseMonoRuntimeModelReference("github-copilot:gpt-5.1")],
-    })).toBe(true);
-  });
-});
 
 describe("requestModelOverrideRoutesOnlyPiNative", () => {
   const piPrimary = parseMonoRuntimeModelReference("openai-codex:gpt-5.6-sol");
@@ -393,70 +367,39 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     );
   });
 
-  describe("effort keyword escalation", () => {
-    it("escalates a plain interactive turn containing 'think' to high", async () => {
-      const result = await run(undefined, {}, "think about this bug");
-      expect(result.runtimeOptions.effort).toBe("high");
-      expect(result.runtimeOptions.model).toBeUndefined();
+  describe("explicit effort only", () => {
+    it.each(["I think the button is broken", "please extra think about it", "What does 'ultra think' mean?", "ultrathink"])(
+      "keeps configured effort for ordinary message text: %s",
+      async (message) => {
+        const logger = { warn: vi.fn(), info: vi.fn() };
+        const result = await run(undefined, { logger }, message);
+        expect(result.runtimeOptions.effort).toBeUndefined();
+        expect(logger.info).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["low", "max", "ultra"])("preserves explicit metadata effort %s", async (effort) => {
+      const result = await run({ webhook: { effort } }, {}, "ultra think through it");
+      expect(result.runtimeOptions.effort).toBe(effort);
     });
 
-    it("escalates 'ultrathink' to max and 'extra think' to xhigh", async () => {
-      expect((await run(undefined, {}, "ultrathink: what is 2+2")).runtimeOptions.effort).toBe("max");
-      expect((await run(undefined, {}, "please extra think about it")).runtimeOptions.effort).toBe("xhigh");
-    });
-
-    it("escalates above the configured base effort", async () => {
-      const result = await run(undefined, { baseEffort: "medium" }, "ultra think");
-      expect(result.runtimeOptions.effort).toBe("max");
-    });
-
-    it("is a no-op when the base effort already meets the keyword level", async () => {
-      const result = await run(undefined, { baseEffort: "xhigh" }, "think about this");
+    it("warns on invalid metadata effort without interpreting message text", async () => {
+      const logger = { warn: vi.fn() };
+      const result = await run({ webhook: { effort: "turbo" } }, { logger }, "think it over");
       expect(result.runtimeOptions.effort).toBeUndefined();
-    });
-
-    it("is a no-op without a trigger phrase or with word fragments", async () => {
-      expect((await run(undefined, {}, "keep thinking about it")).runtimeOptions.effort).toBeUndefined();
-      expect((await run(undefined, {}, "rethink the approach")).runtimeOptions.effort).toBeUndefined();
-      expect((await run(undefined, {})).runtimeOptions.effort).toBeUndefined();
-    });
-
-    it("never downgrades a higher metadata effort override", async () => {
-      const result = await run({ webhook: { effort: "max" } }, {}, "think about this");
-      expect(result.runtimeOptions.effort).toBe("max");
-    });
-
-    it("outranks a lower metadata effort override", async () => {
-      const result = await run({ webhook: { effort: "low" } }, {}, "ultra think through it");
-      expect(result.runtimeOptions.effort).toBe("max");
-    });
-
-    it("escalates over the base effort when the metadata effort was invalid (warned and ignored)", async () => {
-      const logger = { warn: vi.fn(), info: vi.fn() };
-      const result = await run({ webhook: { effort: "turbo" } }, { logger, baseEffort: "low" }, "think it over");
-      expect(result.runtimeOptions.effort).toBe("high");
       expect(logger.warn).toHaveBeenCalledWith(
         expect.stringContaining("invalid per-request effort"),
         expect.objectContaining({ effort: "turbo" }),
-      );
-    });
-
-    it("logs the matched keyword and the from/to efforts via logger.info", async () => {
-      const logger = { warn: vi.fn(), info: vi.fn() };
-      await run(undefined, { logger, baseEffort: "medium" }, "Ultra Think this through");
-      expect(logger.info).toHaveBeenCalledWith(
-        expect.stringContaining("Escalating per-turn effort"),
-        expect.objectContaining({ keyword: "Ultra Think", from: "medium", to: "max" }),
       );
     });
   });
 });
 
 // Mirrors the app.ts wiring shape: sibling extensions composed BEFORE the
-// model-override extension, merged later-wins — escalation must survive the
+// model-override extension, merged later-wins — explicit effort must survive the
 // merge and sibling keys must not be dropped.
-describe("composeRuntimeOptionExtensions with keyword escalation", () => {
-  it("escalates from the harness request userMessage and preserves sibling runtime options", async () => {
+describe("composeRuntimeOptionExtensions with explicit effort", () => {
+  it("preserves explicit request effort and sibling runtime options", async () => {
     const sibling = async () => ({
       runtimeOptions: {
         mcpServers: { memo: { url: "http://127.0.0.1:1" } },
@@ -464,7 +407,7 @@ describe("composeRuntimeOptionExtensions with keyword escalation", () => {
       },
       cleanup: async () => {},
     });
-    const overrideExtension = createRequestModelOverrideRuntimeExtension({ baseEffort: "medium" });
+    const overrideExtension = createRequestModelOverrideRuntimeExtension({});
     const composed = composeRuntimeOptionExtensions([
       sibling,
       async (input) => overrideExtension({ request: input.request }),
@@ -475,6 +418,7 @@ describe("composeRuntimeOptionExtensions with keyword escalation", () => {
       request: {
         conversationId: "conv-1",
         userMessage: "please ultrathink this",
+        metadata: { tui: { effort: "low" } },
         abortSignal: new AbortController().signal,
       },
       runId: "run-1",
@@ -482,7 +426,7 @@ describe("composeRuntimeOptionExtensions with keyword escalation", () => {
     } as unknown as AgentHarnessRuntimeOptionsInput;
     const result = await composed!(input);
 
-    expect(result.runtimeOptions?.effort).toBe("max");
+    expect(result.runtimeOptions?.effort).toBe("low");
     expect(result.runtimeOptions?.mcpServers).toEqual({ memo: { url: "http://127.0.0.1:1" } });
     expect(result.runtimeOptions?.allowedTools).toContain("memo_tool");
     await result.cleanup?.();
@@ -552,44 +496,6 @@ describe("per-request override warnings bound the value they echo", () => {
     const logged = logger.warn.mock.calls[0]?.[1] as { effort: string };
     expect(logged.effort).toBe(echo(effort));
     expect(byteLength(logged.effort)).toBeLessThan(1_000);
-  });
-
-  /**
-   * The escalation `info` is the same kind of record as the warnings above it: the keyword it
-   * prints is a slice of the operator's own message, so it carries no printable/single-line
-   * guarantee of its own and gets the one echo budget every other operator surface uses.
-   */
-  it("escapes a newline inside the matched keyword it logs", async () => {
-    const logger = { warn: vi.fn(), info: vi.fn() };
-    await run(undefined, { logger, baseEffort: "medium" }, `ultra${NEWLINE}think about it`);
-    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
-    expect(logged.keyword).toBe(echo(`ultra${NEWLINE}think`));
-    expect(logged.keyword).not.toContain(NEWLINE);
-  });
-
-  /**
-   * The phrase separator is any ONE whitespace code point, and `\s` includes U+2028 -- a line
-   * separator, invisible and cursor-moving. A newline-only escape is not enough here, which is
-   * why the keyword goes through the same full sanitizer as every other echo.
-   */
-  it("escapes a line separator used as the phrase separator", async () => {
-    const separator = String.fromCharCode(0x2028);
-    const logger = { warn: vi.fn(), info: vi.fn() };
-    await run(undefined, { logger, baseEffort: "medium" }, `ultra${separator}think about it`);
-    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
-    expect(logged.keyword).toBe(String.raw`ultra\u2028think`);
-    expect(logged.keyword).not.toContain(separator);
-  });
-
-  it("bounds the matched keyword when the message floods the phrase separator", async () => {
-    const logger = { warn: vi.fn(), info: vi.fn() };
-    await run(undefined, { logger, baseEffort: "medium" }, `ultra${" ".repeat(1_000_000)}think`);
-    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string; to: string };
-    expect(byteLength(logged.keyword)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
-    // A million spaces is not the phrase "ultra think", so the standalone `think` is what
-    // actually matched -- the escalation stays, one rung lower, and is reported as such.
-    expect(logged.keyword).toBe("think");
-    expect(logged.to).toBe("high");
   });
 
   /** The error the parser actually throws for `model`, for asserting against its two layers. */

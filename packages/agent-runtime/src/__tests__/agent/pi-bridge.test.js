@@ -1,3 +1,4 @@
+import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -14,10 +15,6 @@ import {
   prepareMcpStdioCommand,
   resolveMcpStdioCwd,
 } from "../../agent/tools/pi-bridge.js";
-import {
-  configureToolRuntime,
-  resetToolRuntime,
-} from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 
 function makeSink(runDir) {
@@ -31,6 +28,7 @@ function makeSink(runDir) {
 }
 
 const tempDirs = [];
+let ctx = createToolContext();
 
 function tempWorkspace() {
   const dir = mkdtempSync(resolve("/tmp", "agent-runtime-pi-bridge-"));
@@ -43,11 +41,11 @@ beforeEach(() => {
   // realistic engine-delegated command preparation — see helpers/fake-sandbox.js.
   // (passthroughSandbox, the kernel's zero-dependency default, fails closed on
   // any native-mode policy instead — see sandbox-seam.test.js.)
-  configureToolRuntime({ sandbox: createFakeSandbox() });
+  updateToolContext(ctx, { sandbox: createFakeSandbox() });
 });
 
 afterEach(() => {
-  resetToolRuntime();
+  ctx = createToolContext();
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
 });
 
@@ -110,7 +108,7 @@ describe("pi MCP tool helpers", () => {
     expect(normalizePiBuiltinToolParams("Read", {
       file_path: "src/app.ts",
       max_output_chars: 50000,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({
       file_path: "/repo/src/app.ts",
       max_output_chars: 16000,
     });
@@ -118,7 +116,7 @@ describe("pi MCP tool helpers", () => {
       command: "npm test",
       timeout: 999999,
       max_output_chars: 50000,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({
       command: "npm test",
       workdir: "/repo",
       timeout: 120000,
@@ -127,7 +125,7 @@ describe("pi MCP tool helpers", () => {
     expect(normalizePiBuiltinToolParams("Bash", {
       command: "ls",
       timeout: 30,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({
       command: "ls",
       workdir: "/repo",
       timeout: 30000,
@@ -135,14 +133,14 @@ describe("pi MCP tool helpers", () => {
     expect(normalizePiBuiltinToolParams("Bash", {
       command: "ls",
       timeout: 120000,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({
       command: "ls",
       workdir: "/repo",
       timeout: 120000,
     });
     expect(normalizePiBuiltinToolParams("Bash", {
       command: "ls",
-    }, { cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({
       command: "ls",
       workdir: "/repo",
       timeout_ms: 5000,
@@ -150,7 +148,7 @@ describe("pi MCP tool helpers", () => {
     expect(normalizePiBuiltinToolParams("Exec", {
       executable: "git",
       args: ["status"],
-    }, { cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({
       executable: "git",
       args: ["status"],
       workdir: "/repo",
@@ -159,7 +157,7 @@ describe("pi MCP tool helpers", () => {
     expect(normalizePiBuiltinToolParams("Glob", {
       pattern: "**/*",
       max_matches: 5000,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({
       pattern: "**/*",
       path: undefined,
       limit: 100,
@@ -169,14 +167,14 @@ describe("pi MCP tool helpers", () => {
       pattern: "needle",
       output_mode: "content",
       max_matches: 5000,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({
       pattern: "needle",
       output_mode: "content",
       head_limit: 100,
       workdir: "/repo",
     });
 
-    const tools = getPiBuiltinTools(["Read", "Bash"], { toolLimits });
+    const tools = getPiBuiltinTools(["Read", "Bash"], { ctx, toolLimits });
     const readSchema = tools.find((tool) => tool.name === "Read").parameters;
     const bashSchema = tools.find((tool) => tool.name === "Bash").parameters;
     expect(readSchema.properties.max_output_chars.maximum).toBeUndefined();
@@ -196,27 +194,27 @@ describe("pi MCP tool helpers", () => {
       command: "ls",
       timeout_ms: 14_400_000,
       background: true,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 14_400_000 });
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 14_400_000 });
 
     expect(normalizePiBuiltinToolParams("Exec", {
       executable: "git",
       args: ["status"],
       timeout_ms: 14_400_000,
       background: true,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 14_400_000 });
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 14_400_000 });
 
     // No timeout requested: nothing is injected, so processJobs.maxRuntimeMs governs.
     expect(normalizePiBuiltinToolParams("Bash", {
       command: "ls",
       background: true,
-    }, { cwd: "/repo", toolLimits })).not.toHaveProperty("timeout_ms");
+    }, { ctx, cwd: "/repo", toolLimits })).not.toHaveProperty("timeout_ms");
 
     // Output limits are unrelated to the runtime budget and still apply.
     expect(normalizePiBuiltinToolParams("Bash", {
       command: "ls",
       max_output_chars: 999_999,
       background: true,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({ max_output_chars: 20000 });
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({ max_output_chars: 20000 });
   });
 
   it("still narrows a background hand-off when the host configures bashTimeoutMs", () => {
@@ -226,7 +224,7 @@ describe("pi MCP tool helpers", () => {
       command: "ls",
       timeout_ms: 14_400_000,
       background: true,
-    }, { cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({ timeout_ms: 5000 });
+    }, { ctx, cwd: "/repo", toolLimits: { ...toolLimits, bashTimeoutMs: 5000 } })).toMatchObject({ timeout_ms: 5000 });
   });
 
   it("keeps the foreground timeout ceiling in force", () => {
@@ -235,13 +233,13 @@ describe("pi MCP tool helpers", () => {
     expect(normalizePiBuiltinToolParams("Bash", {
       command: "ls",
       timeout_ms: 14_400_000,
-    }, { cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 120_000 });
+    }, { ctx, cwd: "/repo", toolLimits })).toMatchObject({ timeout_ms: 120_000 });
   });
 
   it("states the host's configured background ceiling in the tool schema", () => {
     // The model must be able to size the work BEFORE launching. Learning the
     // budget only from a start receipt means it has already committed to a plan.
-    const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], {
+    const [bash, exec] = ["Bash", "Exec"].map((name) => getPiBuiltinTools([name], { ctx,
       cwd: "/repo",
       processJobsController: {
         start: async () => ({ jobId: "pj", state: "queued", startedAt: null }),
@@ -258,7 +256,7 @@ describe("pi MCP tool helpers", () => {
   });
 
   it("states no background ceiling when the host publishes none", () => {
-    const bash = getPiBuiltinTools(["Bash"], {
+    const bash = getPiBuiltinTools(["Bash"], { ctx,
       cwd: "/repo",
       processJobsController: { start: async () => ({ jobId: "pj", state: "queued", startedAt: null }) },
     }).find((tool) => tool.name === "Bash");
@@ -269,13 +267,13 @@ describe("pi MCP tool helpers", () => {
 
   it("returns image files read by the builtin Read tool as an image content block", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({ workspace: root });
+    updateToolContext(ctx, { workspace: root });
     const pngBytes = await sharp({
       create: { width: 2, height: 2, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
     }).png().toBuffer();
     writeFileSync(join(root, "shot.png"), pngBytes);
 
-    const read = getPiBuiltinTools(["Read"], { cwd: root }).find((tool) => tool.name === "Read");
+    const read = getPiBuiltinTools(["Read"], { ctx, cwd: root }).find((tool) => tool.name === "Read");
     const result = await read.execute("Read:1", { file_path: "shot.png" });
 
     expect(Array.isArray(result.content)).toBe(true);
@@ -289,10 +287,10 @@ describe("pi MCP tool helpers", () => {
 
   it("rejects corrupt Read images before creating image content blocks", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({ workspace: root });
+    updateToolContext(ctx, { workspace: root });
     writeFileSync(join(root, "broken.png"), Buffer.from("not an image"));
 
-    const read = getPiBuiltinTools(["Read"], { cwd: root }).find((tool) => tool.name === "Read");
+    const read = getPiBuiltinTools(["Read"], { ctx, cwd: root }).find((tool) => tool.name === "Read");
 
     await expect(read.execute("Read:broken", { file_path: "broken.png" }))
       .rejects.toThrow(/^Error: Unable to read image .*broken\.png:/);
@@ -300,7 +298,7 @@ describe("pi MCP tool helpers", () => {
 
   it("caps oversize Read images through the shared tool-result bloat guard", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({ workspace: root });
+    updateToolContext(ctx, { workspace: root });
     const runArtifactDir = join(root, ".mono-agent", "artifacts", "run-read-image");
     const big = await sharp({
       create: { width: 64, height: 64, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
@@ -308,7 +306,7 @@ describe("pi MCP tool helpers", () => {
     writeFileSync(join(root, "big.png"), big);
     const truncations = [];
 
-    const read = getPiBuiltinTools(["Read"], {
+    const read = getPiBuiltinTools(["Read"], { ctx,
       cwd: root,
       toolPayloadMaxBytes: 10,
       persistArtifact: makeSink(runArtifactDir),
@@ -328,14 +326,14 @@ describe("pi MCP tool helpers", () => {
 
   it("lets large Read images through when imageInlineMaxBytes is high", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({ workspace: root });
+    updateToolContext(ctx, { workspace: root });
     // Larger than toolPayloadMaxBytes but within imageInlineMaxBytes.
     const big = await sharp({
       create: { width: 64, height: 64, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
     }).png({ compressionLevel: 0 }).toBuffer();
     writeFileSync(join(root, "big.png"), big);
 
-    const read = getPiBuiltinTools(["Read"], {
+    const read = getPiBuiltinTools(["Read"], { ctx,
       cwd: root,
       toolPayloadMaxBytes: 256,
       imageInlineMaxBytes: 1_000_000,
@@ -361,7 +359,7 @@ describe("pi MCP tool helpers", () => {
     const policy = failClosedSandboxPolicy({ root: "/repo/project" });
     const prepared = await prepareMcpStdioCommand(
       { command: "node", args: ["server.js"], cwd: "tools" },
-      {
+      { ctx,
         cwd: "/repo/project",
         sandboxPolicy: policy,
         sandboxEngine: {
@@ -398,7 +396,7 @@ describe("pi MCP tool helpers", () => {
     });
     const seen = [];
 
-    await prepareMcpStdioCommand(cfg, {
+    await prepareMcpStdioCommand(cfg, { ctx,
       cwd: "/repo/project",
       sandboxPolicy: policy,
       sandboxEngine: {
@@ -412,7 +410,7 @@ describe("pi MCP tool helpers", () => {
         },
       },
     });
-    await prepareMcpStdioCommand({ command: "node", args: ["ordinary.js"] }, {
+    await prepareMcpStdioCommand({ command: "node", args: ["ordinary.js"] }, { ctx,
       cwd: "/repo/project",
       sandboxPolicy: policy,
       sandboxEngine: {
@@ -434,14 +432,14 @@ describe("pi MCP tool helpers", () => {
 
   it("prepares stdio MCP commands under the context-configured sandbox policy without per-call options", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({
+    updateToolContext(ctx, {
       workspace: root,
       sandboxPolicy: failClosedSandboxPolicy({ root }),
     });
 
     const prepared = await prepareMcpStdioCommand(
       { command: "node", args: ["server.js"] },
-      {
+      { ctx,
         cwd: root,
         sandboxEngine: {
           id: "fake",
@@ -471,7 +469,7 @@ describe("pi MCP tool helpers", () => {
         },
       },
       new Set(),
-      {
+      { ctx,
         cwd: root,
         sandboxPolicy: policy,
         sandboxEngine: {
@@ -511,7 +509,7 @@ describe("pi MCP tool helpers", () => {
     const connectSpy = vi.spyOn(McpClient.prototype, "connect")
       .mockRejectedValue(new Error(`Connection failed for ${secretUrl}`));
     try {
-      const result = await initPiMcpTools({ private: spec });
+      const result = await initPiMcpTools({ private: spec }, new Set(), { ctx });
       expect(JSON.stringify(spec)).toBe('{"type":"http"}');
       expect(result.warnings).toEqual([expect.objectContaining({
         warning_kind: "mcp_init_failed",
@@ -539,7 +537,7 @@ describe("pi MCP tool helpers", () => {
       const { tools } = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        { limits: { mcpCallTimeoutMs: 90000 } },
+        { ctx, limits: { mcpCallTimeoutMs: 90000 } },
       );
       const tool = tools.find((entry) => entry.name === "do_thing");
       expect(tool).toBeTruthy();
@@ -581,7 +579,7 @@ describe("pi MCP tool helpers", () => {
       const { tools } = await initPiMcpTools(
         { adapter: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        {
+        { ctx,
           limits: {
             mcpCallTimeoutMs: 90_000,
             mcpCallMaxTotalTimeoutMs: 500_000,
@@ -630,7 +628,7 @@ describe("pi MCP tool helpers", () => {
     // Control. Without this, a passing MCP assertion below could equally be
     // explained by an approval manager that never fires for anything.
     const root = tempWorkspace();
-    const [bash] = getPiBuiltinTools(["Bash"], {
+    const [bash] = getPiBuiltinTools(["Bash"], { ctx,
       cwd: root,
       onEvent: () => {},
       toolLimits: {},
@@ -653,7 +651,7 @@ describe("pi MCP tool helpers", () => {
         new Set(),
         // The same manager the built-in above was denied by, passed the same way
         // a host would expect it to apply everywhere.
-        { cwd: root, limits: {}, approvalManager },
+        { ctx, cwd: root, limits: {}, approvalManager },
       );
       const tool = tools.find((entry) => entry.name === "danger_wipe");
       expect(tool).toBeTruthy();
@@ -695,7 +693,7 @@ describe("pi MCP tool helpers", () => {
       const { tools } = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        {},
+        { ctx,},
       );
       const tool = tools.find((entry) => entry.name === "slow_thing");
       const ac = new AbortController();
@@ -747,7 +745,7 @@ describe("pi MCP tool helpers", () => {
       const { tools, clients } = await initPiMcpTools(
         { linear: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        { limits: { mcpCallTimeoutMs: 120000 } },
+        { ctx, limits: { mcpCallTimeoutMs: 120000 } },
       );
       const tool = tools.find((entry) => entry.name === "slow_thing");
       const pending = tool.execute("call-1", {}, undefined);
@@ -807,7 +805,7 @@ describe("pi MCP tool helpers", () => {
       const initialized = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        { mcpApps, runId: "run-app" },
+        { ctx, mcpApps, runId: "run-app" },
       );
       clients = initialized.clients;
       const clientClose = vi.spyOn(clients[0].client, "close").mockResolvedValue(undefined);
@@ -856,7 +854,7 @@ describe("pi MCP tool helpers", () => {
     try {
       const { tools } = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
-        new Set(),
+        new Set(), { ctx },
       );
       const result = await tools.find((entry) => entry.name === "failing_thing").execute("call-error", {}, undefined);
 
@@ -890,7 +888,7 @@ describe("pi MCP tool helpers", () => {
       const { tools } = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        {
+        { ctx,
           limits: { mcpCallTimeoutMs: 90000, mcpCallMaxTotalTimeoutMs: 500000 },
           onToolProgress: (event) => progressEvents.push(event),
         },
@@ -940,7 +938,7 @@ describe("pi MCP tool helpers", () => {
       const { tools } = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        { limits: { mcpCallTimeoutMs: 90, mcpCallMaxTotalTimeoutMs: 5000 } },
+        { ctx, limits: { mcpCallTimeoutMs: 90, mcpCallMaxTotalTimeoutMs: 5000 } },
       );
       const tool = tools.find((entry) => entry.name === "slow_thing");
       const out = await tool.execute("call-1", {}, undefined);
@@ -964,7 +962,7 @@ describe("pi MCP tool helpers", () => {
       const { tools } = await initPiMcpTools(
         { srv: { type: "http", url: "http://127.0.0.1:9/mcp" } },
         new Set(),
-        { limits: { mcpCallTimeoutMs: 60, mcpCallMaxTotalTimeoutMs: 5000 } },
+        { ctx, limits: { mcpCallTimeoutMs: 60, mcpCallMaxTotalTimeoutMs: 5000 } },
       );
       const tool = tools.find((entry) => entry.name === "stalled_thing");
       await expect(tool.execute("call-1", {}, undefined)).rejects.toThrow(/timed out/);
@@ -977,7 +975,7 @@ describe("pi MCP tool helpers", () => {
 
   it("blocks non-read-only Bash commands when planning shell policy is enforced", async () => {
     const root = tempWorkspace();
-    const bash = getPiBuiltinTools(["Bash"], {
+    const bash = getPiBuiltinTools(["Bash"], { ctx,
       cwd: root,
       toolPolicy: { bashReadOnly: true },
     }).find((tool) => tool.name === "Bash");
@@ -994,23 +992,23 @@ describe("pi MCP tool helpers", () => {
     const screenshot = normalizeMcpToolParams("playwright", "browser_take_screenshot", {
       filename: "screens/title.png",
       fullPage: true,
-    }, { qaOutputDir });
+    }, { ctx, qaOutputDir });
     expect(screenshot.filename).toBe(join(qaOutputDir, "screens", "title.png"));
     expect(existsSync(join(qaOutputDir, "screens"))).toBe(true);
 
     const snapshot = normalizeMcpToolParams("playwright", "browser_snapshot", {
       filename: "../snapshot.md",
-    }, { qaOutputDir });
+    }, { ctx, qaOutputDir });
     expect(snapshot.filename).toBe(join(qaOutputDir, "snapshot.md"));
 
     const absolute = normalizeMcpToolParams("playwright", "browser_console_messages", {
       filename: "/tmp/console.log",
-    }, { qaOutputDir });
+    }, { ctx, qaOutputDir });
     expect(absolute.filename).toBe("/tmp/console.log");
 
     const code = normalizeMcpToolParams("playwright", "browser_run_code", {
       filename: "result.json",
-    }, { qaOutputDir });
+    }, { ctx, qaOutputDir });
     expect(code.filename).toBe("result.json");
   });
 
@@ -1020,7 +1018,7 @@ describe("pi MCP tool helpers", () => {
     mkdirSync(join(skillsRoot, "research"), { recursive: true });
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "---\nname: research\n---\n# Research\n\nFull research skill body.\n");
 
-    const tools = getPiBuiltinTools(["Read"], { skillsRoot, skillNames: ["research"] });
+    const tools = getPiBuiltinTools(["Read"], { ctx, skillsRoot, skillNames: ["research"] });
     const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
     expect(readSkill.description).toBe(
@@ -1046,7 +1044,7 @@ describe("pi MCP tool helpers", () => {
     mkdirSync(join(skillsRoot, "research"), { recursive: true });
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
 
-    const tools = getPiBuiltinTools(["Bash", "Read", "Glob", "Grep"], { skillsRoot, skillNames: ["research"] });
+    const tools = getPiBuiltinTools(["Bash", "Read", "Glob", "Grep"], { ctx, skillsRoot, skillNames: ["research"] });
     expect(tools.find((tool) => tool.name === "ReadSkill")).toBeTruthy();
   });
 
@@ -1059,7 +1057,7 @@ describe("pi MCP tool helpers", () => {
     // The deny gate honors a legacy alias; a policy that blocks only one spelling
     // is not a policy, so agent-app checks both when deciding what a child gets.
     for (const denied of ["ReadSkill", "read_skill"]) {
-      const tools = getPiBuiltinTools(["Read"], { skillsRoot, skillNames: ["research"], disallowedTools: [denied] });
+      const tools = getPiBuiltinTools(["Read"], { ctx, skillsRoot, skillNames: ["research"], disallowedTools: [denied] });
       expect(tools.find((tool) => tool.name === "ReadSkill"), denied).toBeFalsy();
     }
   });
@@ -1074,7 +1072,7 @@ describe("pi MCP tool helpers", () => {
       `# Research\n\n${"x".repeat(12_500)}\n\n${sentinel}\n`,
     );
 
-    const tools = getPiBuiltinTools([], { skillsRoot, skillNames: ["research"] });
+    const tools = getPiBuiltinTools([], { ctx, skillsRoot, skillNames: ["research"] });
     const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     const result = await readSkill.execute("ReadSkill:full", { name: "research" });
 
@@ -1090,7 +1088,7 @@ describe("pi MCP tool helpers", () => {
     // A sibling SKILL.md OUTSIDE the skills root must never be reachable.
     writeFileSync(join(root, "SKILL.md"), "# secret\n\nshould not be reachable\n");
 
-    const tools = getPiBuiltinTools([], { skillsRoot, skillNames: ["research", "..", "../secret"] });
+    const tools = getPiBuiltinTools([], { ctx, skillsRoot, skillNames: ["research", "..", "../secret"] });
     const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     // Traversal-shaped names are filtered out of the enum entirely.
     expect(readSkill.parameters.properties.name.enum).toEqual(["research"]);
@@ -1103,7 +1101,7 @@ describe("pi MCP tool helpers", () => {
     mkdirSync(join(dataDir, "skills", "writing"), { recursive: true });
     writeFileSync(join(dataDir, "skills", "writing", "SKILL.md"), "# Writing\n\nThe writing body.\n");
 
-    const tools = getPiBuiltinTools([], { dataDir, skillNames: ["writing"] });
+    const tools = getPiBuiltinTools([], { ctx, dataDir, skillNames: ["writing"] });
     const readSkill = tools.find((tool) => tool.name === "ReadSkill");
     expect(readSkill).toBeTruthy();
     const result = await readSkill.execute("ReadSkill:dd", { name: "writing" });
@@ -1111,7 +1109,7 @@ describe("pi MCP tool helpers", () => {
   });
 
   it("does not create ReadSkill when neither skillsRoot nor dataDir is supplied", () => {
-    const tools = getPiBuiltinTools([], { skillNames: ["research"] });
+    const tools = getPiBuiltinTools([], { ctx, skillNames: ["research"] });
     expect(tools.find((tool) => tool.name === "ReadSkill")).toBeUndefined();
   });
 
@@ -1125,7 +1123,7 @@ describe("pi MCP tool helpers", () => {
     mkdirSync(join(root, "skills", "research"), { recursive: true });
     writeFileSync(filePath, `---\nname: research\n---\n# Research\n\npi-shape body.\n${"x".repeat(12_500)}\n${sentinel}\n`);
 
-    const tools = getPiBuiltinTools([], {
+    const tools = getPiBuiltinTools([], { ctx,
       skills: [{ name: "research", description: "when researching", content: "ignored — read lazily", filePath }],
     });
     const readSkill = tools.find((tool) => tool.name === "ReadSkill");
@@ -1147,7 +1145,7 @@ describe("pi MCP tool helpers", () => {
     const filePath = join(root, "writing.md");
     writeFileSync(filePath, "# Writing\n\nflat skill body.\n");
 
-    const tools = getPiBuiltinTools([], {
+    const tools = getPiBuiltinTools([], { ctx,
       skills: [{ name: "writing", description: "d", content: "c", filePath }],
     });
     const readSkill = tools.find((tool) => tool.name === "ReadSkill");
@@ -1166,7 +1164,7 @@ describe("pi MCP tool helpers", () => {
     mkdirSync(join(root, "elsewhere", "research"), { recursive: true });
     writeFileSync(strayPath, "# Research\n\nstray body — should not be read.\n");
 
-    const tools = getPiBuiltinTools([], {
+    const tools = getPiBuiltinTools([], { ctx,
       skillsRoot,
       skillNames: ["research"],
       skills: [{ name: "research", description: "d", content: "c", filePath: strayPath }],
@@ -1186,7 +1184,7 @@ describe("pi MCP tool helpers", () => {
     mkdirSync(join(skillsRoot, "research"), { recursive: true });
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nminimal-form body.\n");
 
-    const tools = getPiBuiltinTools([], {
+    const tools = getPiBuiltinTools([], { ctx,
       skillsRoot,
       skillNames: ["research"],
       skills: [{ name: "research" }],
@@ -1198,7 +1196,7 @@ describe("pi MCP tool helpers", () => {
   });
 
   it("does not create ReadSkill for pi-shape skills whose name is unsafe or filePath is missing", () => {
-    const tools = getPiBuiltinTools([], {
+    const tools = getPiBuiltinTools([], { ctx,
       skills: [
         { name: "../escape", description: "d", content: "c", filePath: "/tmp/escape/SKILL.md" },
         { name: "nofile", description: "d", content: "c" },
@@ -1209,7 +1207,7 @@ describe("pi MCP tool helpers", () => {
 
   it("passes abort signals to Bash tool execution", async () => {
     const root = tempWorkspace();
-    const bash = getPiBuiltinTools(["Bash"], { cwd: root }).find((tool) => tool.name === "Bash");
+    const bash = getPiBuiltinTools(["Bash"], { ctx, cwd: root }).find((tool) => tool.name === "Bash");
     const ac = new AbortController();
     const promise = bash.execute("tool-1", {
       command: `${process.execPath} -e "setTimeout(() => {}, 5000)"`,
@@ -1239,7 +1237,7 @@ function toolNames(tools) {
 
 describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", () => {
   it("teaches explicit search routing and transparent static-to-browser escalation", () => {
-    const tools = getPiBuiltinTools(["WebFetch", "WebSearch"], {});
+    const tools = getPiBuiltinTools(["WebFetch", "WebSearch"], { ctx,});
     const fetch = tools.find((tool) => tool.name === "WebFetch");
     const search = tools.find((tool) => tool.name === "WebSearch");
 
@@ -1254,45 +1252,45 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
   });
 
   it('treats the "*" sentinel as all built-in tools', () => {
-    const tools = getPiBuiltinTools(["*"], {});
+    const tools = getPiBuiltinTools(["*"], { ctx,});
     expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
   });
 
   it('treats a wildcard mixed with named tools as all built-in tools', () => {
-    const tools = getPiBuiltinTools(["*", "Read"], {});
+    const tools = getPiBuiltinTools(["*", "Read"], { ctx,});
     expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
   });
 
   it("treats undefined as all built-in tools (unchanged)", () => {
-    const tools = getPiBuiltinTools(undefined, {});
+    const tools = getPiBuiltinTools(undefined, { ctx,});
     expect(toolNames(tools)).toEqual([...BUILTIN_TOOL_NAMES].sort());
   });
 
   it("treats [] as no built-in tools (unchanged)", () => {
-    expect(getPiBuiltinTools([], {})).toEqual([]);
+    expect(getPiBuiltinTools([], { ctx,})).toEqual([]);
   });
 
   it("selects exactly the named subset (unchanged)", () => {
-    const tools = getPiBuiltinTools(["Read", "Bash"], {});
+    const tools = getPiBuiltinTools(["Read", "Bash"], { ctx,});
     expect(toolNames(tools)).toEqual(["Bash", "Read"]);
   });
 
   it('applies disallowedTools to the "*" allow-all set (deny wins)', () => {
-    const tools = getPiBuiltinTools(["*"], { disallowedTools: ["Bash"] });
+    const tools = getPiBuiltinTools(["*"], { ctx, disallowedTools: ["Bash"] });
     const names = tools.map((tool) => tool.name);
     expect(names).not.toContain("Bash");
     expect([...names].sort()).toEqual(BUILTIN_TOOL_NAMES.filter((name) => name !== "Bash").sort());
   });
 
   it("applies disallowedTools to an explicit allow list (deny wins)", () => {
-    const tools = getPiBuiltinTools(["Read", "Bash"], { disallowedTools: ["Bash"] });
+    const tools = getPiBuiltinTools(["Read", "Bash"], { ctx, disallowedTools: ["Bash"] });
     expect(tools.map((tool) => tool.name)).toEqual(["Read"]);
   });
 
   it("exposes a sequential NodeRepl tool only when its run-owned controller is supplied", async () => {
     const execute = vi.fn(async () => "42");
     const controller = { execute };
-    const tools = getPiBuiltinTools(["NodeRepl"], { nodeReplController: controller });
+    const tools = getPiBuiltinTools(["NodeRepl"], { ctx, nodeReplController: controller });
     const nodeRepl = tools.find((tool) => tool.name === "NodeRepl");
     const signal = new AbortController().signal;
 
@@ -1309,14 +1307,14 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     await expect(nodeRepl.execute("NodeRepl:1", { code: "40 + 2" }, signal))
       .resolves.toMatchObject({ content: [{ type: "text", text: "42" }] });
     expect(execute).toHaveBeenCalledWith({ code: "40 + 2" }, { signal });
-    expect(getPiBuiltinTools(["NodeRepl"], {})).toEqual([]);
+    expect(getPiBuiltinTools(["NodeRepl"], { ctx,})).toEqual([]);
   });
 
   it("applies wildcard and deny-wins policy to the run-owned NodeRepl tool", () => {
     const controller = { execute: vi.fn(async () => "ok") };
-    expect(toolNames(getPiBuiltinTools(["*"], { nodeReplController: controller })))
+    expect(toolNames(getPiBuiltinTools(["*"], { ctx, nodeReplController: controller })))
       .toContain("NodeRepl");
-    expect(toolNames(getPiBuiltinTools(["*"], {
+    expect(toolNames(getPiBuiltinTools(["*"], { ctx,
       nodeReplController: controller,
       disallowedTools: ["NodeRepl"],
     }))).not.toContain("NodeRepl");
@@ -1329,10 +1327,10 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
 
     // Baseline: ReadSkill is present without the denylist.
-    const withSkill = getPiBuiltinTools(["*"], { skillsRoot, skillNames: ["research"] });
+    const withSkill = getPiBuiltinTools(["*"], { ctx, skillsRoot, skillNames: ["research"] });
     expect(withSkill.find((tool) => tool.name === "ReadSkill")).toBeTruthy();
 
-    const denied = getPiBuiltinTools(["*"], {
+    const denied = getPiBuiltinTools(["*"], { ctx,
       skillsRoot,
       skillNames: ["research"],
       disallowedTools: ["ReadSkill"],
@@ -1346,7 +1344,7 @@ describe("getPiBuiltinTools — allow-all wildcard + disallowedTools denylist", 
     mkdirSync(join(skillsRoot, "research"), { recursive: true });
     writeFileSync(join(skillsRoot, "research", "SKILL.md"), "# Research\n\nbody\n");
 
-    const denied = getPiBuiltinTools(["*"], {
+    const denied = getPiBuiltinTools(["*"], { ctx,
       skillsRoot,
       skillNames: ["research"],
       disallowedTools: ["read_skill"], // legacy alias
@@ -1362,24 +1360,24 @@ describe("getPiBuiltinTools Agent registration", () => {
   const names = (tools) => tools.map((tool) => tool.name);
 
   it("registers Agent only when subagents are wired for this run", () => {
-    expect(names(getPiBuiltinTools(["Agent"], {}))).not.toContain("Agent");
-    expect(names(getPiBuiltinTools(["Agent"], { subagents: subagents() }))).toContain("Agent");
+    expect(names(getPiBuiltinTools(["Agent"], { ctx,}))).not.toContain("Agent");
+    expect(names(getPiBuiltinTools(["Agent"], { ctx, subagents: subagents() }))).toContain("Agent");
   });
 
   it("suppresses Agent inside a subagent run", () => {
-    expect(names(getPiBuiltinTools(["Agent"], { subagents: { ...subagents(), depth: 1 } })))
+    expect(names(getPiBuiltinTools(["Agent"], { ctx, subagents: { ...subagents(), depth: 1 } })))
       .not.toContain("Agent");
   });
 
   it("honors the allow-all sentinel and deny-wins for Agent", () => {
-    expect(names(getPiBuiltinTools(["*"], { subagents: subagents() }))).toContain("Agent");
-    expect(names(getPiBuiltinTools(["*"], { subagents: subagents(), disallowedTools: ["Agent"] })))
+    expect(names(getPiBuiltinTools(["*"], { ctx, subagents: subagents() }))).toContain("Agent");
+    expect(names(getPiBuiltinTools(["*"], { ctx, subagents: subagents(), disallowedTools: ["Agent"] })))
       .not.toContain("Agent");
-    expect(names(getPiBuiltinTools(["Read"], { subagents: subagents() }))).not.toContain("Agent");
+    expect(names(getPiBuiltinTools(["Read"], { ctx, subagents: subagents() }))).not.toContain("Agent");
   });
 
   it("keeps Agent parallel so it cannot serialize a mixed tool batch", () => {
-    const agent = getPiBuiltinTools(["Agent"], { subagents: subagents() })
+    const agent = getPiBuiltinTools(["Agent"], { ctx, subagents: subagents() })
       .find((tool) => tool.name === "Agent");
     expect(agent.executionMode).toBeUndefined();
   });
@@ -1390,7 +1388,7 @@ describe("getPiBuiltinTools Agent registration", () => {
     // children whose requests carry them too.
     const run = vi.fn(async () => ({ text: "ok", events: [] }));
     const skills = [{ name: "research", description: "Reads the web." }];
-    const agent = getPiBuiltinTools(["Agent"], {
+    const agent = getPiBuiltinTools(["Agent"], { ctx,
       subagents: { ...subagents(), run },
       subagentContext: { skills, skillsRoot: "/repo/skills" },
     }).find((tool) => tool.name === "Agent");
@@ -1426,7 +1424,7 @@ describe("stable MCP discovery surface", () => {
       const result = await initPiMcpTools({
         first: { type: "http", url: `http://127.0.0.1:${port}/mcp` },
         second: { type: "http", url: `http://127.0.0.1:${port + 1}/mcp` },
-      }, new Set(), { cwd: tempWorkspace(), limits: {} });
+      }, new Set(), { ctx, cwd: tempWorkspace(), limits: {} });
       await closePiMcpClients(result.clients);
       return { bytes: JSON.stringify(result.tools.map(({ name, description, parameters }) => ({ name, description, parameters }))), result };
     };

@@ -156,6 +156,8 @@ Primary modules:
 | Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
 | Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/login/check parsers, including closed check state/code/message projections, plus the host-owned operator interfaces and stable operation errors. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
+| Channel log safety | `log-redaction.ts` | Bounded descriptor-safe redaction with channel-specific credentials and sinks. |
+| Reply artifact validation | `reply-artifacts.ts` | Shared attachment metadata checks and exact bounded byte collection. |
 
 `ChannelId` is intentionally open so third-party drivers can choose an id.
 `isDeliverableConversation` only checks a conversation scheme against the ids a
@@ -321,6 +323,8 @@ InboundHttpHeaders
 JsonEnvFieldSpec
 JsonEnvMapping
 ListenErrorFactories
+LogRedactor
+LogRedactorOptions
 MAX_AGENT_REPLY_PARTS
 MAX_CRON_OPERATOR_CONVERSATION_ID_BYTES
 MAX_CRON_OPERATOR_CURSOR_BYTES
@@ -369,7 +373,6 @@ MemoryCompletedTurnAdmissionStatus
 MemoryCompletedTurnResult
 MemoryLoadOptions
 MemoryStore
-MemoryWriteResult
 MessageRef
 MonitorErrorCode
 MonitorOperator
@@ -440,6 +443,7 @@ RunningChannel
 RunningMonitorChannel
 RunningProcessJobChannel
 SUBAGENT_TOOL_SEPARATOR
+SecretSafeLogSink
 SessionToolHistoryEventMetadata
 SessionToolHistoryTerminalState
 SettingsJson
@@ -452,13 +456,16 @@ ToolActivityLineOptions
 agentAttachmentKindFromMimeType
 appendReplyPartFallback
 assertAgentContinuationOriginContext
+assertMatchingReplyAttachment
 assertSafeBind
 bearerTokensEqual
 buildStreamingTailPreview
 classifyNotifySuppression
 close
 closeServerBounded
+collectExactReplyArtifactBytes
 createChannelUserCancelReason
+createLogRedactor
 decodeAgentAttachmentText
 encodeJsonEnvValue
 fieldSpecMappings
@@ -477,6 +484,7 @@ isMonitorErrorCode
 isMonitorState
 isProcessJobErrorCode
 isProcessJobState
+isSafePrototypeInstance
 isSubagentLaunchToolName
 isTerminalMonitorState
 isTerminalProviderAuthSessionState
@@ -512,6 +520,7 @@ readInteger
 readJsonSection
 readRecord
 readRequired
+readSafeDataProperty
 readSettingsJson
 readString
 redactedSecret

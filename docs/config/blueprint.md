@@ -93,7 +93,6 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
                                            // mono-agent doctor warns and names the nearest supported level when a
                                            // configured value is outside the model's advertised set.
                                            // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions (validated + forwarded; not consumed by the Pi runtime)
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true

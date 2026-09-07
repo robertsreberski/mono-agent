@@ -5,7 +5,7 @@ import type { AgentReplyPart, MonitorProjection, ProcessJobProjection } from "@m
 
 import type { WebThreadNotificationTriggerKind } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
-import { fetchLongLivedHostWake } from "./long-lived-fetch.js";
+import { fetchLongLivedHostWake } from "@mono-agent/operator-adapter/client";
 import { resolveWebStatePaths, type WebStatePathOptions } from "./state-paths.js";
 
 const NOTIFICATION_INGRESS_SCHEMA = 1;

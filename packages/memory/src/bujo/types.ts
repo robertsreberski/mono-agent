@@ -20,7 +20,7 @@ export interface Bullet {
 
 export type BujoTier = "lite" | "journal" | "bujo";
 
-/** Minimal logger sink for best-effort background work (capture queue). */
+/** Minimal logger sink for background indexing and completed-turn intake. */
 export interface BujoLogger {
   warn(message: string): void;
 }
@@ -40,12 +40,12 @@ export interface BujoOptions {
   readonly maxBytes?: number;
   readonly clock?: () => Date;
   /** Optional LLM for the intelligent batched capture and reconciliation path.
-   * When absent, `capture()` returns `undefined` and `appendHostSummary` is the only write path. */
+   * When absent, completed-turn admission persists the deterministic summary only. */
   readonly llm?: LlmComplete;
   /** Explicit tier override. When absent, the tier is derived from the options:
    * no embeddings → `"lite"`; embeddings + no llm → `"journal"`; embeddings + llm → `"bujo"`. */
   readonly tier?: BujoTier;
-  /** Optional sink for caught errors in the async capture queue. Defaults to a no-op. */
+  /** Optional sink for background indexing and intake warnings. Defaults to a no-op. */
   readonly logger?: BujoLogger;
   /** Programmatic shutdown bound for background queues. Default 10000ms. */
   readonly backgroundDrainTimeoutMs?: number;

@@ -1,3 +1,4 @@
+import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -5,7 +6,7 @@ import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type { MemoryBlock, MemoryStore } from "@mono-agent/agent-contracts";
 import type { HistoryMessage } from "../context/index.js";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
@@ -146,12 +147,20 @@ function createSpyMemoryStore() {
     async load(): Promise<MemoryBlock | undefined> {
       return undefined;
     },
-    async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
+    async persistCompletedTurn(turn: MemoryCompletedTurn) {
+      const summary = turn.summary;
       hostSummaryCalls += 1;
-      return { conversationId, source: "spy", bytesWritten: summary.length };
-    },
-    scheduleCapture(): void {
-      captureCalls += 1;
+      if (turn.captureText !== undefined) {
+        captureCalls += 1;
+      }
+      return {
+        source: "spy",
+        bytesWritten: summary.length,
+        id: turn.runId,
+        runId: turn.runId,
+        conversationId: turn.conversationId,
+        admissionStatus: "admitted" as const,
+      };
     },
   };
   return { store, hostSummaryCalls: () => hostSummaryCalls, captureCalls: () => captureCalls };
@@ -399,8 +408,16 @@ describe("AgentHarness continuous sessions", () => {
       async load(): Promise<MemoryBlock | undefined> {
         return { kind: "markdown", content: "## Memory (recalled)\n- [ ] launch checklist", source: "spy", truncated: false };
       },
-      async appendHostSummary(conversationId: string, summary: string): Promise<MemoryWriteResult> {
-        return { conversationId, source: "spy", bytesWritten: summary.length };
+      async persistCompletedTurn(turn: MemoryCompletedTurn) {
+        const summary = turn.summary;
+        return {
+          source: "spy",
+          bytesWritten: summary.length,
+          id: turn.runId,
+          runId: turn.runId,
+          conversationId: turn.conversationId,
+          admissionStatus: "admitted" as const,
+        };
       },
     };
     const fake = createSessionFakeRuntime(async () => ({ text: "answer", providerSessionId: "ps-1" }));
@@ -457,7 +474,7 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.syncedSessions).toEqual([fake.calls[0]?.options.sessionId]);
 
     // Once the exact clean epoch is live, the warm optimization omits history.
-    const second = await harness.run(request("conv-d", "second question"));
+    await harness.run(request("conv-d", "second question"));
     expect(fake.calls[1]?.options.sessionId).toBe(fake.calls[0]?.options.sessionId);
     expect(fake.calls[1]?.prompt).not.toContain(HISTORY_MARKER);
     expect(fake.calls[1]?.options.messages).toEqual([

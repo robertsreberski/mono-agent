@@ -5,7 +5,7 @@ import { join, relative } from "node:path";
 import { openMemoryDb, type MemoryDb } from "../../store/index.js";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { captureTurn as captureTurnImpl } from "../capture.js";
+import { captureTurnStrict as captureTurnImpl } from "../capture.js";
 import { replayCaptureOutbox } from "../capture-outbox.js";
 import { appendBullet, dailyFilePath } from "../daily.js";
 import { readGraph } from "../graph.js";
@@ -81,7 +81,7 @@ async function seed(db: MemoryDb, root: string, id: string, text: string): Promi
   await db.upsert(record);
 }
 
-describe("captureTurn", () => {
+describe("captureTurnStrict", () => {
   it("batches persistence embeddings across the maximum eight novel candidates", async () => {
     const root = newRoot();
     const batchSizes: number[] = [];
@@ -206,7 +206,7 @@ describe("captureTurn", () => {
     expect(readFileSync(monthly, "utf8")).not.toContain("mono-agent-migrate:");
   });
 
-  it("writes one durable row and merged association set for same-turn duplicate candidates", async () => {
+  it("rejects duplicate candidates before writing any durable rows or graph evidence", async () => {
     const root = newRoot();
     const db = openDb(root);
     const labels: string[] = [];
@@ -228,24 +228,17 @@ describe("captureTurn", () => {
       },
     };
 
-    const result = await captureTurn("Morgan prefers tea.", {
+    await expect(captureTurn("Morgan prefers tea.", {
       db,
       root,
       llm,
       nextId: makeSeqNextId(),
       now: () => FIXED,
-    });
+    })).rejects.toThrow(/memories must be distinct/iu);
 
     expect(labels).toEqual(["capture:extract"]);
-    expect(result.actions).toHaveLength(1);
-    expect(result.associations).toBe(2);
-    expect(db.count()).toBe(1);
-    const id = result.actions[0]?.kind === "add" ? result.actions[0].id : "";
-    expect(db.associationsForMemory(id).map((association) => association.entityId)).toEqual([
-      "concept:tea",
-      "person:morgan",
-    ]);
-    expect(readGraph(root).associations).toHaveLength(2);
+    expect(db.count()).toBe(0);
+    expect(readGraph(root).associations).toEqual([]);
   });
 
   it("does not attach either candidate's entities when same-turn mutations collide on one target", async () => {
@@ -304,10 +297,7 @@ describe("captureTurn", () => {
     await captureTurn("Morgan prefers blue-green deployments", deps);
     db.findSimilarMany = async (texts) => texts.map(() => [{ record: db.get("CAP0001")!, distance: 0.1 }]);
 
-    const result = await captureTurn("Morgan clarified the deployment preference", deps);
-
-    expect(result.actions).toEqual([]);
-    expect(result.associations).toBe(0);
+    await expect(captureTurn("Morgan clarified the deployment preference", deps)).rejects.toThrow(/multiple candidates selected one target/iu);
     expect(db.get("CAP0001")?.text).toBe("Morgan prefers blue-green deployments");
     expect(db.associationsForMemory("CAP0001")).toEqual([]);
     expect(readGraph(root).associations).toEqual([]);
@@ -382,9 +372,8 @@ describe("captureTurn", () => {
     }
   });
 
-  it("does not throw when a single entity write fails (entity id missing from db result doesn't abort)", async () => {
-    // Verifies the defensive try/catch per-item behavior — overall captureTurn should not throw
-    // even with a minimal setup where entity writes are perfectly valid.
+  it("persists a valid entity and its exact association", async () => {
+    // Strict extraction accepts the complete valid graph, then persists it durably.
     const root = newRoot();
     const db = openDb(root);
 
@@ -658,7 +647,7 @@ describe("captureTurn", () => {
   });
 });
 
-describe("captureTurn entity reuse", () => {
+describe("captureTurnStrict entity reuse", () => {
   /**
    * A second mention of the same thing must extend the node the first mention
    * created. Before reuse hints, extraction never saw the graph, so one set of

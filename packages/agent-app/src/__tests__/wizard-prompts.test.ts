@@ -36,7 +36,6 @@ import {
   WizardCancelled,
 } from "../wizard/prompts.js";
 import {
-  defaultEffortForModelRef,
   discoverWizardModelCandidates,
   rankWizardModelCandidates,
   type WizardModelCandidate,
@@ -487,19 +486,6 @@ describe("provider setup planner", () => {
 });
 
 describe("wizard model discovery", () => {
-  it("derives only local/reasoning defaults and never fabricates cloud effort metadata", () => {
-    expect(defaultEffortForModelRef("anthropic:claude-sonnet-5")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-terra")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-sol")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-terra")).toBeUndefined();
-    expect(defaultEffortForModelRef("openai-codex:gpt-5.6-sol")).toBeUndefined();
-    expect(defaultEffortForModelRef("ollama:llama3.1:8b")).toBe("none");
-    expect(defaultEffortForModelRef("lmstudio:qwen/qwen3-8b")).toBe("medium");
-    expect(defaultEffortForModelRef("opencode-go:some-model", true)).toBe("medium");
-    expect(defaultEffortForModelRef("opencode-go:some-model", false)).toBe("none");
-    expect(defaultEffortForModelRef("openai:gpt-5.5")).toBeUndefined();
-  });
-
   it("discovers Pi, Ollama, and LM Studio candidates without dropping static Pi options", async () => {
     const exec = vi.fn(async (file: string) => {
       if (file === "ollama") {

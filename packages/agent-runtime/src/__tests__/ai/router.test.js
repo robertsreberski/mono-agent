@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.fn();
 const resolveRuntimeBridgeMock = vi.fn();
@@ -14,7 +14,6 @@ vi.mock("../../ai/runtime/registry.js", async () => {
 const { createRouterRuntime } = await import("../../ai/runtime/router.js");
 const { createRuntime } = await import("../../runtime.js");
 const { passthroughSandbox } = await import("../../agent/sandbox-seam.js");
-const { resetToolRuntime } = await import("../../agent/tools/shared/runtime-context.js");
 const { createFakeSandbox } = await import("../helpers/fake-sandbox.js");
 
 function modelRef(provider, model) {
@@ -25,12 +24,8 @@ beforeEach(() => {
   executeMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
   resolveRuntimeBridgeMock.mockResolvedValue({ id: "stub", execute: executeMock });
-  resetToolRuntime();
 });
 
-afterEach(() => {
-  resetToolRuntime();
-});
 
 describe("createRouterRuntime — basic", () => {
   it("rejects an empty chain", () => {
@@ -798,8 +793,8 @@ describe("createRouterRuntime — production fallback contracts", () => {
       ],
       resolveAttempt: ({ model }) => ({
         policyOptions: model.provider === "openai-codex"
-          ? { allowedTools: ["*"], disallowedTools: [], permissionMode: "plan" }
-          : { allowedTools: ["Read", "Agent"], disallowedTools: ["Write"], permissionMode: undefined },
+          ? { allowedTools: ["*"], disallowedTools: [] }
+          : { allowedTools: ["Read", "Agent"], disallowedTools: ["Write"] },
       }),
     });
 
@@ -813,13 +808,11 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(executeMock.mock.calls[0][1]).toMatchObject({
       allowedTools: ["*"],
       disallowedTools: [],
-      permissionMode: "plan",
     });
     expect(executeMock.mock.calls[1][1]).toMatchObject({
       allowedTools: ["Read", "Agent"],
       disallowedTools: ["Write"],
     });
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("permissionMode");
   });
 
   it("keeps primary run-level custom metadata for compatibility but scrubs every fallback without a resolver", async () => {

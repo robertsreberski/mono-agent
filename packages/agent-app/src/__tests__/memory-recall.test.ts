@@ -22,7 +22,6 @@ import {
   createMemoryEmbeddingProvider,
   createMemoryRecallServer,
   createRecallStore,
-  memoryRecallSettingsFromEnv,
   resolveMemoryRecallSettings,
 } from "../memory-recall.js";
 import type { MemoryRecallBujoSettings, MemoryRecallSettings } from "../memory-recall.js";
@@ -223,117 +222,6 @@ describe("resolveMemoryRecallSettings", () => {
   });
 });
 
-describe("memoryRecallSettingsFromEnv", () => {
-  const settings = {
-    root: "/memory",
-    tier: "bujo" as const,
-    embeddings: {
-      provider: "ollama" as const,
-      model: "nomic-embed-text:v1.5",
-      endpoint: "http://localhost:11434",
-      dim: 768,
-    },
-  };
-
-  it("hydrates built-in settings from the standalone binary environment", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_MODE: "bujo",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
-      MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:11434",
-      MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "768",
-    };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(settings);
-  });
-
-  it("rejects env missing the required memory path", () => {
-    expect(() => memoryRecallSettingsFromEnv({})).toThrow(/missing required environment/u);
-  });
-
-  it("hydrates embeddings timeout + circuit-breaker tuning from the env (F11)", () => {
-    const tuned: MemoryRecallSettings = {
-      root: "/memory",
-      embeddings: {
-        provider: "ollama",
-        model: "nomic-embed-text:v1.5",
-        timeoutMs: 4_000,
-        circuitBreaker: { failureThreshold: 7, cooldownMs: 12_000 },
-      },
-    };
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "ollama",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "nomic-embed-text:v1.5",
-      MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS: "4000",
-      MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD: "7",
-      MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS: "12000",
-    };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(tuned);
-  });
-
-  it("resolves a declared apiKeyEnv from the inherited standalone-binary environment (F13)", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "MY_OPENAI_KEY",
-    };
-    const resolved = bujo(memoryRecallSettingsFromEnv({ ...env, MY_OPENAI_KEY: "resolved-secret" }));
-    expect(resolved.embeddings?.apiKey).toBe("resolved-secret");
-    expect(resolved.embeddings?.apiKeyEnv).toBe("MY_OPENAI_KEY");
-  });
-
-  it("hydrates LM Studio settings with a named secret", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_MODE: "journal",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-test",
-      MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT: "http://localhost:1234",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
-      MONO_AGENT_MEMORY_EMBEDDINGS_DIM: "4",
-    };
-
-    expect(memoryRecallSettingsFromEnv({ ...env, LM_STUDIO_API_KEY: "child-secret" })).toEqual({
-      root: "/memory",
-      tier: "journal",
-      embeddings: {
-        provider: "lmstudio",
-        model: "text-embedding-test",
-        endpoint: "http://localhost:1234",
-        apiKey: "child-secret",
-        apiKeyEnv: "LM_STUDIO_API_KEY",
-        dim: 4,
-      },
-    });
-  });
-
-  it("rejects a missing declared recall credential instead of falling back to a literal or keyless request", () => {
-    expect(() => memoryRecallSettingsFromEnv({
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "lmstudio",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-test",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV: "LM_STUDIO_API_KEY",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "must-not-fallback",
-    })).toThrow(/LM_STUDIO_API_KEY.*no non-empty value/iu);
-  });
-
-  it("accepts a literal apiKey when no apiKeyEnv is declared (F13 residual)", () => {
-    const env = {
-      MONO_AGENT_MEMORY_PATH: "/memory",
-      MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER: "openai",
-      MONO_AGENT_MEMORY_EMBEDDINGS_MODEL: "text-embedding-3-small",
-      MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY: "inline-secret",
-    };
-    expect(bujo(memoryRecallSettingsFromEnv(env)).embeddings?.apiKey).toBe("inline-secret");
-  });
-
-  it("resolves FTS-only settings from an env carrying only the memory path (F12)", () => {
-    expect(memoryRecallSettingsFromEnv({ MONO_AGENT_MEMORY_PATH: "/memory" })).toEqual({ root: "/memory" });
-  });
-});
-
 describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
   it("routes last-message questions to active history without searching durable memory", async () => {
     let recallCalls = 0;
@@ -391,8 +279,11 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
   it("answers a tools/call against a lite (FTS-only) store", async () => {
     // No embeddings → lite tier → FTS-only recall, so the test needs no Ollama/OpenAI.
     const store = createBujoMemoryStore({ root: dir });
-    await store.appendHostSummary("conv-1", "The deploy pipeline uses blue-green releases on Fridays.");
-    await store.appendHostSummary("conv-1", "Lunch preferences are irrelevant noise.");
+    await store.persistCompletedTurn({ runId: "fixture-1", conversationId: "conv-1", summary: "The deploy pipeline uses blue-green releases on Fridays." });
+    await store.flush();
+    await store.persistCompletedTurn({ runId: "fixture-2", conversationId: "conv-1", summary: "Lunch preferences are irrelevant noise." });
+
+    await store.flush();
 
     const server = createMemoryRecallServer(store);
     const client = new Client({ name: "memory-recall-test", version: "0.1.0" }, { capabilities: {} });
@@ -420,7 +311,8 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
 
   it("returns a no-match message when nothing matches", async () => {
     const store = createBujoMemoryStore({ root: dir });
-    await store.appendHostSummary("conv-1", "An unrelated note about gardening.");
+    await store.persistCompletedTurn({ runId: "fixture-3", conversationId: "conv-1", summary: "An unrelated note about gardening." });
+    await store.flush();
     const server = createMemoryRecallServer(store);
     const client = new Client({ name: "memory-recall-test", version: "0.1.0" }, { capabilities: {} });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -484,7 +376,7 @@ describe("MemoryRecall MCP tool (FTS, hermetic)", () => {
 
 describe("createRecallStore", () => {
   it("builds a keyless LM Studio provider with the exact root and identity", async () => {
-    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchSpy = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: readonly string[] };
       return new Response(JSON.stringify({
         data: body.input.map(() => ({ embedding: [1, 0, 0, 0] })),
@@ -523,7 +415,7 @@ describe("createRecallStore", () => {
       expect(store.tier()).toBe("lite");
       const hits = await store.recall("deploy pipeline releases");
       expect(hits.some((hit) => hit.record.text.includes("blue-green releases"))).toBe(true);
-      await expect(store.appendHostSummary("conv-2", "Recall must not write.")).rejects.toThrow(/read.?only/iu);
+      await expect(store.persistCompletedTurn({ runId: "rejected-write", conversationId: "conv-2", summary: "Recall must not write." })).rejects.toThrow(/read.?only/iu);
     } finally {
       await store.close();
     }
@@ -655,7 +547,7 @@ describe("createRecallStore", () => {
 async function seedRecallMemory(root: string, text: string): Promise<void> {
   const store = createBujoMemoryStore({ root });
   try {
-    await store.appendHostSummary("conv-1", text);
+    await store.remember("conv-1", text);
   } finally {
     await store.close();
   }
@@ -767,41 +659,6 @@ describe("supermemory backend recall", () => {
         timeoutMs: 4_500,
       },
     });
-  });
-
-  it("hydrates a resolved Supermemory apiKey value from the standalone-binary env", () => {
-    const settings: MemoryRecallSettings = {
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha", apiKey: "sm-secret", timeoutMs: 5_000 },
-    };
-    const env = {
-      MONO_AGENT_MEMORY_BACKEND: "supermemory",
-      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
-      MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY: "sm-secret",
-      MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS: "5000",
-    };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(settings);
-  });
-
-  it("hydrates a keyless (local, no-auth) Supermemory recall config", () => {
-    const keyless: MemoryRecallSettings = {
-      supermemory: { baseUrl: "http://127.0.0.1:6767", container: "agent-alpha" },
-    };
-    const env = {
-      MONO_AGENT_MEMORY_BACKEND: "supermemory",
-      MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER: "agent-alpha",
-    };
-    expect(memoryRecallSettingsFromEnv(env)).toEqual(keyless);
-  });
-
-  it("fails loud when the child env is missing the container (wiring bug, not a default)", () => {
-    expect(() =>
-      memoryRecallSettingsFromEnv({
-        MONO_AGENT_MEMORY_BACKEND: "supermemory",
-        MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL: "http://127.0.0.1:6767",
-      }),
-    ).toThrow(/SUPERMEMORY_CONTAINER/);
   });
 
   it("builds a SupermemoryMemoryStore from supermemory settings", async () => {

@@ -23,8 +23,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "mono-agent": "./dist/cli.js",
-    "mono-agent-memory-recall": "./dist/memory-recall-main.js"
+    "mono-agent": "./dist/cli.js"
   },
   "files": [
     "dist",

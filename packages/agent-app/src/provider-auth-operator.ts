@@ -21,7 +21,6 @@ import {
   createProviderAuthCheckManager,
   type CreateProviderAuthCheckManagerOptions,
 } from "./provider-auth-checks.js";
-import type { ProviderAuthObservationTracker } from "./provider-auth-observations.js";
 import { providerAuthStatusSnapshot, type ProviderAuthStatusOptions } from "./provider-auth-status.js";
 
 const SESSION_TTL_MS = 20 * 60 * 1_000;

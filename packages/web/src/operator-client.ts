@@ -10,7 +10,6 @@ import {
   parseProviderAuthSessionSnapshot,
   parseProviderAuthStatusSnapshot,
   parseProviderAuthCheckSessionSnapshot,
-  parseAgentStreamFrame,
   MAX_INFO_BODY_BYTES,
   MAX_INFO_PROVIDER_ID_BYTES,
   MAX_INFO_PROVIDER_ITEMS,
@@ -41,7 +40,6 @@ import type {
   WebCronJob,
   WebCronMutationResult,
   WebCronOverview,
-  WebCronRun,
   WebCronRunDetail,
   WebCronRunPage,
   WebCronRunSummary,
@@ -53,7 +51,12 @@ import type {
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import { isTrustedOperatorBaseUrl } from "./discovery.js";
-import { fetchLongLivedTurn } from "./long-lived-fetch.js";
+import {
+  fetchLongLivedTurn,
+  operatorResponseFromFinishFrame,
+  OperatorStreamFrameTooLargeError,
+  readOperatorStreamFrames,
+} from "@mono-agent/operator-adapter/client";
 
 const OPERATOR_WIRE_SCHEMA = 1;
 const MAX_PROCESS_JOBS_BODY_BYTES = 16 * 1024 * 1024;
@@ -369,15 +372,10 @@ export class OperatorClient {
       throw new WebConsoleError("empty_operator_stream", "The agent returned an empty response stream.", 502);
     }
     try {
-      for await (const line of readBoundedNdjsonLines(response.body, MAX_NDJSON_FRAME_BYTES)) {
-        if (line.trim().length === 0) continue;
-        const frame = parseAgentStreamFrame(line);
+      for await (const frame of readOperatorStreamFrames(response.body, MAX_NDJSON_FRAME_BYTES)) {
         if (frame.kind === "finish") {
-          return {
-            ...(frame.finalText === undefined ? {} : { finalText: frame.finalText }),
-            ...(frame.metadata === undefined ? {} : { metadata: frame.metadata }),
-            ...(frame.parts === undefined ? {} : { parts: frame.parts }),
-          };
+          const { text, ...result } = operatorResponseFromFinishFrame(frame);
+          return { ...result, ...(text === undefined ? {} : { finalText: text }) };
         }
         if (frame.kind === "error") {
           const error = new WebConsoleError(
@@ -390,8 +388,11 @@ export class OperatorClient {
         }
         await input.onFrame(frame);
       }
-    } finally {
-      await response.body.cancel().catch(() => undefined);
+    } catch (error) {
+      if (error instanceof OperatorStreamFrameTooLargeError) {
+        throw new WebConsoleError("operator_frame_too_large", "Agent stream frame exceeded its size limit.", 502);
+      }
+      throw error;
     }
     throw new WebConsoleError("incomplete_operator_stream", "The agent stream ended without a terminal frame.", 502);
   }
@@ -1161,50 +1162,6 @@ async function readBodyPrefix(response: Response, maxBytes: number): Promise<str
     await reader.cancel().catch(() => undefined);
   }
   return `${Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total).toString("utf8")}${truncated ? "…" : ""}`;
-}
-
-async function* readBoundedNdjsonLines(
-  body: ReadableStream<Uint8Array>,
-  maxFrameBytes: number,
-): AsyncGenerator<string> {
-  const reader = body.getReader();
-  let segments: Uint8Array[] = [];
-  let pendingBytes = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      let start = 0;
-      for (let index = 0; index < value.byteLength; index += 1) {
-        if (value[index] !== 0x0a) continue;
-        const segment = value.subarray(start, index);
-        if (pendingBytes + segment.byteLength > maxFrameBytes) {
-          throw new WebConsoleError("operator_frame_too_large", "Agent stream frame exceeded its size limit.", 502);
-        }
-        yield decodeSegments(segments, segment, pendingBytes + segment.byteLength);
-        segments = [];
-        pendingBytes = 0;
-        start = index + 1;
-      }
-      const remainder = value.subarray(start);
-      if (pendingBytes + remainder.byteLength > maxFrameBytes) {
-        throw new WebConsoleError("operator_frame_too_large", "Agent stream frame exceeded its size limit.", 502);
-      }
-      if (remainder.byteLength > 0) {
-        segments.push(remainder);
-        pendingBytes += remainder.byteLength;
-      }
-    }
-    if (pendingBytes > 0) yield decodeSegments(segments, undefined, pendingBytes);
-  } finally {
-    await reader.cancel().catch(() => undefined);
-  }
-}
-
-function decodeSegments(segments: readonly Uint8Array[], tail: Uint8Array | undefined, total: number): string {
-  const buffers = segments.map((segment) => Buffer.from(segment));
-  if (tail !== undefined && tail.byteLength > 0) buffers.push(Buffer.from(tail));
-  return Buffer.concat(buffers, total).toString("utf8");
 }
 
 function parseModelOptions(value: unknown): Record<string, WebModelOption> | undefined {

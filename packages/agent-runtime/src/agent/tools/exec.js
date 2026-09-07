@@ -16,8 +16,7 @@ import {
   runPreparedProcess,
 } from "./shared/process-runner.js";
 import { handOffProcessJob } from "./shared/process-jobs.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
-import { requestToolProcessEnvironment, resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requestToolProcessEnvironment, requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 const MAX_EXEC_ARGS = 256;
@@ -69,7 +68,7 @@ export async function execToolRun(
   const argsProblem = validateArgs(args);
   if (argsProblem) return failed(argsProblem, "invalid_args", startedAt);
 
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   const pathOptions = { sandboxPolicy: policy, ctx: resolvedCtx };

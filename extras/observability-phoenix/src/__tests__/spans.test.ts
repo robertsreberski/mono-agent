@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MAX_STRING_BYTES } from "../../guards.js";
-import type { RunExportContext, RunSummary, RuntimeEventLike } from "../../types.js";
+import { DEFAULT_MAX_STRING_BYTES } from "@mono-agent/observability/run-export";
+import type { RunExportContext, RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 
 import { createDeterministicIdFactory } from "../ids.js";
 import { serializeTraceSpans } from "../serialize.js";

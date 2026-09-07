@@ -1,3 +1,4 @@
+import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 // Pi-NATIVE runtime bridge.
 //
 // This is the SOLE pi runtime path: the hand-rolled pi bridge (formerly
@@ -27,13 +28,10 @@ import { estimateCost } from "../cost.js";
 import { retryableProviderFailureInfo } from "../failure.js";
 import { runtimeCapabilities } from "../runtime/capabilities.js";
 import {
-  deprecatedSettingsWarning,
   resolveAgentCompactionPolicy,
-  resolveRuntimePolicyInputs,
 } from "../../agent/compaction.js";
 import { subagentInvocationCount, subagentUsageForRun } from "../../agent/tools/agent-tool.js";
 import { closePiMcpClients } from "../../agent/tools/pi-bridge.js";
-import { readToolRuntime } from "../../agent/tools/shared/runtime-context.js";
 import { createApprovalManager } from "../../agent/approval.js";
 import { buildCapabilitiesUsed, toolCompactionAppliedFromWarnings } from "../runtime/capabilities-used.js";
 import { reasoningLevelsForPiModel, resolvePiRuntimeModel } from "./pi-models.js";
@@ -316,6 +314,21 @@ function splitUserContent(content) {
 }
 
 export async function generatePiNativeResponse(systemPrompt, options = {}) {
+  if (Object.hasOwn(options, "settings")) {
+    throw new Error("runOptions.settings was removed; pass typed toolLimits and compaction instead.");
+  }
+  // Direct provider callers own a fresh context; createRuntime already binds
+  // its instance context. Every internal execution path receives this object.
+  if (!options.toolContext) {
+    options = { ...options, toolContext: createToolContext({
+      workspace: options.cwd,
+      toolEnvironment: options.toolEnvironment,
+      runtimeBrand: options.runtimeBrand,
+      sandbox: options.sandbox,
+      sandboxPolicy: options.sandboxPolicy,
+      sandboxEngine: options.sandboxEngine,
+    }) };
+  }
   // Idempotent; arms the undici diagnostics-channel probe so a transport
   // failure during this run can be resolved back to a real reason even after
   // an intermediate layer flattens the Error to its message.
@@ -514,30 +527,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     const effectiveThinkingLevel = thinkingLevelForEffort(options.effort || "medium", capabilities);
     const reference = resolved.reference || `${resolved.provider}:${resolved.model}`;
 
-    // Resolve the typed `toolLimits` / `compaction` policy objects against the
-    // deprecated `settings` fallback (per-group precedence: a present typed
-    // object wins and its group's legacy keys are ignored; an absent object
-    // falls back to `settings`). Consuming any legacy key emits exactly one
-    // deprecation warning per run. mono-agent never passes `settings`, so this
-    // is a no-op there; the shim exists for worklab's day-one port.
-    const { settingsLike, consumedSettingsKeys } = resolveRuntimePolicyInputs({
-      toolLimits: options.toolLimits,
-      compaction: options.compaction,
-      settings: options.settings,
-    });
-    if (consumedSettingsKeys.length > 0) {
-      const warning = deprecatedSettingsWarning(consumedSettingsKeys);
-      runtimeWarnings.push(warning);
-      onEvent({ type: "runtime_warning", ...warning });
-    }
-
-    // Tool-output limits (clamps for tool/MCP payloads). The legacy pi-sdk bridge
-    // wired these via the compaction manager's `.policy`; resolveAgentCompactionPolicy
-    // is pure (no manager/Agent), so we compute the same policy directly from the
-    // resolved settings-like inputs and pass it into the tool builders + display
-    // normalization. Restores configurable clamping (toolTextLimitChars,
-    // searchResultLimit, ...) on top of the 256KB hard ceiling.
-    const toolLimits = resolveAgentCompactionPolicy(settingsLike, runtime.model);
+    // One canonical clamp path consumes the typed policy inputs directly.
+    const toolLimits = resolveAgentCompactionPolicy(options, runtime.model);
     const toolExecution = resolvePiToolExecutionMode(options);
     for (const warning of toolExecution.warnings) {
       runtimeWarnings.push(warning);
@@ -663,7 +654,8 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       harness,
       runtime,
       resolved,
-      settings: settingsLike,
+      toolLimits: options.toolLimits,
+      compaction: options.compaction,
       contextWindowOverride: options.compaction?.contextWindowOverride,
     });
     await runProactiveCompaction(runState, {
@@ -782,12 +774,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // way `subagentInvoked` below reads its count.
     const usage = withSubagentUsage(
       ownUsage,
-      subagentUsageForRun(options.subagents, (options.toolContext ?? readToolRuntime())?.runId),
+      subagentUsageForRun(options.subagents, options.toolContext?.runId),
       estimatedCost,
     );
     emitUsageCostEvents({
       onEvent,
-      resolved,
       reference,
       usage,
       estimatedCost,
@@ -861,7 +852,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // yields the same key.
       subagentInvoked: subagentInvocationCount(
         options.subagents,
-        (options.toolContext ?? readToolRuntime())?.runId,
+        options.toolContext?.runId,
       ) > 0,
       mcpServersUsed: mcpClients.map((entry) => entry?.name).filter(Boolean),
       // Empty by contract, not by omission: "native" means provider-native

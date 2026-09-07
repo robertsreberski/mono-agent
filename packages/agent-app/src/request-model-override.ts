@@ -1,4 +1,4 @@
-import { detectEffortKeyword, EFFORT_LEVELS, effortRank } from "@mono-agent/config";
+import { EFFORT_LEVELS } from "@mono-agent/config";
 import {
   assertParsedRuntimeModelReference,
   MODEL_REFERENCE_ECHO_MAX_BYTES,
@@ -27,12 +27,6 @@ import type {
  * harness default) rather than failing — a bad dynamic webhook `model` must not
  * 500 the request.
  *
- * The extension ALSO scans every turn's message text for effort trigger
- * phrases ("think"/"extra think"/"ultra think") and escalates the turn's
- * effort — see `applyEffortKeywordEscalation`. This lives here rather than in
- * a sibling extension because siblings compose later-wins in parallel: only
- * this extension knows the metadata effort the keyword must be compared
- * against (escalation-only).
  * Effort-only writes keep the shared session (the harness isolates on MODEL
  * overrides only).
  *
@@ -65,8 +59,6 @@ export interface RequestModelOverrideOptions {
   readonly baseModel?: RuntimeModelReference;
   /** Host fallback chain retained behind a request-level primary override. */
   readonly fallbackModels?: readonly RuntimeModelReference[];
-  /** Host effort inherited by model-only overrides unless the override supplies one. */
-  readonly baseEffort?: string;
   /**
    * Configured local providers (`config.providers?.local`). When an override
    * names a model one of these serves, the extension recomputes the provider
@@ -144,7 +136,6 @@ export function createRequestModelOverrideRuntimeExtension(
   return async (input) => {
     const { rawModel, rawEffort, model } = resolveAcceptedModelOverride(
       input.request.metadata,
-      options,
       logger,
     );
     const runtimeOptions: RequestModelOverrideResult["runtimeOptions"] = {};
@@ -164,62 +155,8 @@ export function createRequestModelOverrideRuntimeExtension(
       }
     }
 
-    applyEffortKeywordEscalation(
-      runtimeOptions,
-      input.request.userMessage,
-      options?.baseEffort,
-      logger,
-    );
-
     return { runtimeOptions, cleanup: async () => {} };
   };
-}
-
-/**
- * Always-on background escalation: a trigger phrase in the turn's message text
- * ("think" → high, "extra think" → xhigh, "ultra think" → max) RAISES this
- * turn's effort, never lowers it. The baseline is the effort the turn would
- * otherwise run at — an accepted metadata override, else the host default — so
- * a webhook `effort:"max"` survives a bare "think" and an equal-or-lower
- * keyword writes nothing (no spurious `run_config.overridden`). The message
- * text itself is never mutated — trigger words reach the model.
- */
-function applyEffortKeywordEscalation(
-  runtimeOptions: RequestModelOverrideResult["runtimeOptions"],
-  userMessage: string | undefined,
-  baseEffort: string | undefined,
-  logger: RequestModelOverrideLogger | undefined,
-): void {
-  if (typeof userMessage !== "string" || userMessage.length === 0) {
-    return;
-  }
-  const match = detectEffortKeyword(userMessage);
-  if (match === undefined) {
-    return;
-  }
-  const resolvedEffort = runtimeOptions.effort ?? baseEffort;
-  if (effortRank(match.effort) <= effortRank(resolvedEffort)) {
-    return;
-  }
-  runtimeOptions.effort = match.effort;
-  logger?.info?.("Escalating per-turn effort from message keyword.", {
-    // A matched keyword is a slice of the operator's own message. The trigger bounds its
-    // LENGTH (a phrase plus at most one separator); it says nothing about the separator's
-    // CONTENT, which may be a line separator. Same escape-then-clamp helper and same budget
-    // as the warnings above, so no record here can outgrow or outline the others.
-    keyword: echoValue(match.keyword),
-    from: resolvedEffort ?? null,
-    to: match.effort,
-  });
-}
-
-/** Whether the accepted request route (or its configured base) is Pi-native. */
-export function requestModelOverrideTargetsPiNative(
-  metadata: Record<string, unknown> | undefined,
-  options?: RequestModelOverrideOptions,
-): boolean {
-  const accepted = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
-  return [accepted, ...(options?.fallbackModels ?? [])].some((model) => model !== undefined);
 }
 
 /**
@@ -228,9 +165,7 @@ export function requestModelOverrideTargetsPiNative(
  * stronger contract: a single non-Pi primary or fallback would move execution
  * to a provider-owned tool loop that cannot enforce the mono-agent sandbox.
  *
- * Keep this separate from `requestModelOverrideTargetsPiNative`, whose
- * intentionally permissive any-Pi meaning is used by other capability
- * discovery. The chain projection mirrors `fallbackChainForConfig`: an
+ * The chain projection mirrors `fallbackChainForConfig`: an
  * accepted request override replaces the primary and a configured fallback
  * equal to that effective primary is skipped without otherwise rewriting the
  * configured order. Missing, malformed, or duplicate reachable routes fail
@@ -242,7 +177,7 @@ export function requestModelOverrideRoutesOnlyPiNative(
   options?: RequestModelOverrideOptions,
 ): boolean {
   try {
-    const primary = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
+    const primary = resolveAcceptedModelOverride(metadata, undefined).model ?? options?.baseModel;
     assertParsedRuntimeModelReference(primary);
     const fallbacks = options?.fallbackModels;
     if (fallbacks !== undefined && !Array.isArray(fallbacks)) {
@@ -284,7 +219,6 @@ interface ModelOverrideResolution {
 
 function resolveAcceptedModelOverride(
   metadata: Record<string, unknown> | undefined,
-  options: RequestModelOverrideOptions | undefined,
   logger: RequestModelOverrideLogger | undefined,
 ): ModelOverrideResolution {
   const { model: rawModel, effort: rawEffort } = readOverride(metadata);
@@ -348,7 +282,7 @@ function applyLocalProviderBlock(
  * Read model/effort from webhook, cron, web-console, TUI, Telegram, or Slack request metadata.
  * Webhook takes precedence, then cron, then the web block, then its optional TUI
  * compatibility mirror, then Telegram, then Slack. A turn carrying none of these blocks
- * returns `{}`, leaving only the keyword escalation scan.
+ * returns `{}`, preserving the configured runtime defaults.
  */
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;

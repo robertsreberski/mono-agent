@@ -483,6 +483,7 @@ describe("monitors service", () => {
   });
 
   it("retains a dedupe representative across a refused or unpersisted dispatch", async () => {
+    const minWakeIntervalMs = 100;
     let persistDispatch = false;
     const handle = await open({}, {
       writeStore: async (root, records) => {
@@ -491,7 +492,7 @@ describe("monitors service", () => {
       },
     });
     const fake = fakeRequest();
-    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch" });
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch", minWakeIntervalMs });
     fake.process().emit("repeat\n");
     await vi.waitFor(() => expect(warnings.some((warning) => warning.includes("withheld"))).toBe(true));
     fake.process().emit("repeat\n");
@@ -499,11 +500,18 @@ describe("monitors service", () => {
     expect(wakes).toHaveLength(0);
     wakeResult = () => ({ delivered: false, code: "conversation_busy", retryable: true });
     persistDispatch = true;
-    await waitUntil(() => wakes.length > 0);
-    await pause(50);
+    await waitForWakes(1);
+    // The fixed clock holds later retries while we verify a durably refused
+    // representative, rather than racing another dispatch's pending fsync.
+    await vi.waitFor(async () => {
+      expect((await readMonitorStore(stateDir)).snapshot.records[0]).toMatchObject({
+        seq: 1, inFlightWakeLines: null, pendingLines: 1, linesDelivered: 0,
+      });
+    });
     fake.process().emit("repeat\n");
     await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(2));
     wakeResult = () => ({ delivered: true, disposition: "follow_up" });
+    now = new Date(now.getTime() + minWakeIntervalMs);
     await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesDelivered).toBe(1));
     const counters = (await handle.get("mon-1"))!.counters;
     expect(counters.droppedLines).toBe(0);

@@ -10,7 +10,6 @@
     ],
     "effort": "xhigh",
     "workspace": ".",
-    "permissionMode": "bypassPermissions",
     "session": {
       "mode": "continuous",
       "idleTimeoutMs": 1800000,

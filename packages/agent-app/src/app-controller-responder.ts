@@ -9,6 +9,8 @@ import type {
   SandboxEngine,
 } from "@mono-agent/runtime-adapter";
 
+import type { BackgroundSnapshot } from "./background-snapshot.js";
+
 import { resolveAppArtifactDir } from "./app-config.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import {
@@ -84,6 +86,7 @@ import { bindProcessJobWakeContextToResponder } from "./process-jobs-context.js"
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 
 export interface ResponderControllerPort {
+  readonly backgroundSnapshot?: BackgroundSnapshot | undefined;
   readonly cwd: string;
   readonly configPath: string;
   readonly configReadPath: string;
@@ -341,6 +344,7 @@ export async function buildResponder(
       : { rolloverTimezone: coreConfig.runtime.session.rolloverTimezone }),
   });
   const responder = await createConfiguredAgentResponderForApp({
+    preferAppPluginInstall: controller.backgroundSnapshot !== undefined,
     config: coreConfig,
     cwd: controller.cwd,
     // The host's resolved environment is authoritative for credential checks;
@@ -446,7 +450,6 @@ export function requestModelOverrideRuntimeOptions(
     ...(configuredRuntimeFallbackModels(coreConfig.runtime).length === 0
       ? {}
       : { fallbackModels: configuredRuntimeFallbackModels(coreConfig.runtime) }),
-    ...(coreConfig.runtime.effort === undefined ? {} : { baseEffort: coreConfig.runtime.effort }),
     ...(coreConfig.providers?.local === undefined ? {} : { localProviders: coreConfig.providers.local }),
   };
   const extension = createRequestModelOverrideRuntimeExtension(options);

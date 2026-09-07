@@ -9,13 +9,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   PhoenixExporterConfig,
-  RunExportContext,
   RunExporter,
   RunSummary,
   RuntimeEventLike,
 } from "@mono-agent/observability";
 import type { MemoryStore } from "@mono-agent/agent-contracts";
-import { createPhoenixRunExporter } from "@mono-agent/observability/otel";
+import { createPhoenixRunExporter } from "@mono-agent/observability-phoenix";
 import { createBujoMemoryStore } from "@mono-agent/memory/bujo";
 import type { EmbeddingProvider } from "@mono-agent/memory/search";
 import type { JournalBrowseSnapshot } from "@mono-agent/memory/store";
@@ -197,8 +196,8 @@ describe("agent host composition helpers", () => {
     const memory = {
       async load() { return undefined; },
       async recall() { return []; },
-      async appendHostSummary(conversationId: string) {
-        return { conversationId, source: "test", bytesWritten: 0 };
+      async persistCompletedTurn(turn: { runId: string; conversationId: string }) {
+        return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
       },
       async close() {},
     } satisfies MemoryStore & { recall(): Promise<readonly []>; close(): Promise<void> };
@@ -259,8 +258,8 @@ describe("agent host composition helpers", () => {
             nonJournalProvenanceExcluded: false,
           };
         },
-        async appendHostSummary(conversationId: string) {
-          return { conversationId, source: "test", bytesWritten: 0 };
+        async persistCompletedTurn(turn: { runId: string; conversationId: string }) {
+          return { id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "test", bytesWritten: 0, admissionStatus: "admitted" as const };
         },
         async close() {},
       } satisfies MemoryStore & {
@@ -413,7 +412,7 @@ describe("agent host composition helpers", () => {
     };
     const memory: MemoryStore = {
       load: async () => undefined,
-      appendHostSummary: async () => { throw new Error("memory disk became read-only"); },
+      persistCompletedTurn: async () => { throw new Error("memory disk became read-only"); },
     };
     const responder = await createConfiguredAgentResponder({
       config: monoConfig({
@@ -719,7 +718,7 @@ describe("agent host composition helpers", () => {
     ).rejects.toThrowError(expect.objectContaining({ code: "tool_policy_read_failed" }));
   });
 
-  it("forwards runtime.permissionMode to the runtime and never sets a reasoning-summary option", async () => {
+  it("never sets a retired permission or reasoning-summary option", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -731,7 +730,6 @@ describe("agent host composition helpers", () => {
         dir,
         identityPath,
         artifactDir,
-        permissionMode: "bypassPermissions",
       }),
       runtime: fake.runtime,
     });
@@ -740,13 +738,13 @@ describe("agent host composition helpers", () => {
       { append: async () => {} },
     );
 
-    expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
+    expect(fake.calls[0]?.options).not.toHaveProperty("permissionMode");
     // The retired reasoning-summary knob is gone: pi-native derives reasoning from
     // effort and the codex/claude CLIs emit summaries themselves.
     expect(fake.calls[0]?.options.piReasoningSummary).toBeUndefined();
   });
 
-  it("forwards tools.mcpCall*TimeoutMs to the runtime as agent settings, omitting settings when unset", async () => {
+  it("forwards tools.mcpCall*TimeoutMs as typed tool limits, omitting limits when unset", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -767,12 +765,12 @@ describe("agent host composition helpers", () => {
       { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
       { append: async () => {} },
     );
-    expect(fake.calls[0]?.options.settings).toMatchObject({
-      agent_mcp_call_timeout_ms: 60_000,
-      agent_mcp_call_max_total_timeout_ms: 900_000,
+    expect(fake.calls[0]?.options.toolLimits).toMatchObject({
+      mcpCallTimeoutMs: 60_000,
+      mcpCallMaxTotalTimeoutMs: 900_000,
     });
 
-    // Unset timeouts must not materialize a settings object — the runtime's own
+    // Unset timeouts must not materialize a tool limits object — the runtime's own
     // defaults (120s inactivity / 45 min total) apply.
     const plain = await createConfiguredAgentResponder({
       config: monoConfig({ dir, identityPath, artifactDir }),
@@ -782,7 +780,7 @@ describe("agent host composition helpers", () => {
       { conversationId: "c2", text: "hi", abortSignal: new AbortController().signal },
       { append: async () => {} },
     );
-    expect(fake.calls[1]?.options.settings).toBeUndefined();
+    expect(fake.calls[1]?.options.toolLimits).toBeUndefined();
   });
 
   it("bounds in-flight runs at concurrency.maxConcurrentRuns", async () => {
@@ -951,10 +949,9 @@ describe("agent host composition helpers", () => {
     const fake = createFakeRuntime(async () => ({ text: "ok" }));
 
     const responder = await createConfiguredAgentResponder({
-      config: monoConfig({ dir, identityPath, artifactDir, permissionMode: "acceptEdits" }),
+      config: monoConfig({ dir, identityPath, artifactDir }),
       runtime: fake.runtime,
       runtimeOptions: {
-        permissionMode: "bypassPermissions",
         piMaxRetries: 5,
       },
     });
@@ -963,7 +960,7 @@ describe("agent host composition helpers", () => {
       { append: async () => {} },
     );
 
-    expect(fake.calls[0]?.options.permissionMode).toBe("bypassPermissions");
+    expect(fake.calls[0]?.options).not.toHaveProperty("permissionMode");
     expect(fake.calls[0]?.options.piMaxRetries).toBe(5);
   });
 
@@ -1986,7 +1983,6 @@ function monoConfig(input: {
   readonly mcpConfigPath?: string;
   readonly mcpCallTimeoutMs?: number;
   readonly mcpCallMaxTotalTimeoutMs?: number;
-  readonly permissionMode?: "default" | "plan" | "acceptEdits" | "bypassPermissions";
   readonly compaction?: NonNullable<MonoAgentConfig["runtime"]["compaction"]>;
   readonly observability?: NonNullable<MonoAgentConfig["observability"]>;
 }): MonoAgentConfig {
@@ -1996,7 +1992,6 @@ function monoConfig(input: {
       maxTurns: 4,
       workspace: input.dir,
       session: { mode: "per-message", idleTimeoutMs: 1_800_000 },
-      ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
       ...(input.compaction === undefined ? {} : { compaction: input.compaction }),
     },
     providers: {

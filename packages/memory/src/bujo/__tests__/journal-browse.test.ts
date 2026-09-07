@@ -1,3 +1,4 @@
+import { projectSummary } from "./helpers.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +57,7 @@ describe("BujoMemoryStore journal browse capability", () => {
       clock: () => new Date("2026-09-01T10:00:00.000Z"),
     });
     expect(writable.supportsJournalBrowse()).toBe(true);
-    await writable.appendHostSummary("conversation-private", "Synthetic Lite journal entry.");
+    await projectSummary(writable, "conversation-private", "Synthetic Lite journal entry.");
     const writableSnapshot = await writable.browseJournal(RANGE);
     await writable.close();
 

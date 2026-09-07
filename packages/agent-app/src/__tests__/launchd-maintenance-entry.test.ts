@@ -124,7 +124,7 @@ describe("launchd maintenance lightweight entry", () => {
     const calls: string[] = [];
     const { deps, env } = entryHarness({
       sleep: async () => { calls.push("dispersed"); },
-      acquireLifecycleLock: async (target) => {
+      acquireLifecycleLock: async (_target) => {
         calls.push("per-agent-won");
         return async () => { calls.push("release-per-agent"); };
       },

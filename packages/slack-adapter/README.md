@@ -471,6 +471,8 @@ at-most-once admission first.
 | [`socket-mode-runner.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/socket-mode-runner.ts) | Socket Mode acknowledgements, bounded event callback admission, heartbeat, degradation, and reconnect lifecycle. |
 | [`slack-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-client.ts) | Typed Slack Web API boundary and private-file downloads. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/message-stream.ts) | Final-only delivery, transient status, retry classification, and message limits. |
+| [`log-redaction.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/log-redaction.ts) | Slack token patterns and diagnostic labels for the bounded shared log sanitizer in `agent-contracts`. |
+| [`reply-files.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/reply-files.ts) | Native upload and destination-bound deduplication, using shared artifact metadata and byte-count verification. |
 | [`slack-markdown.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/slack-markdown.ts) | Standard Markdown to Slack `mrkdwn` conversion and normalization. |
 | [`user-directory.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/user-directory.ts) | Bounded `users.info` cache turning user IDs into model-visible speaker names. |
 | [`thread-context.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/slack-adapter/src/thread-context.ts) | Pure selection, bounding, and deadline logic for the preceding-message transcript. |

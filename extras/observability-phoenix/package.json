@@ -1,0 +1,42 @@
+{
+  "name": "@mono-agent/observability-phoenix",
+  "version": "0.20.14",
+  "description": "Optional Phoenix tracing exporter over OTLP/HTTP protobuf.",
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/robertsreberski/mono-agent.git",
+    "directory": "extras/observability-phoenix"
+  },
+  "private": false,
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mono-agent/observability": "workspace:0.20.14",
+    "@opentelemetry/otlp-transformer": "0.219.0",
+    "@opentelemetry/sdk-trace-base": "2.8.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

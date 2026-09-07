@@ -29,8 +29,6 @@ import { MonoAgentAppController } from "../app-controller.js";
 import type { BackgroundSnapshot } from "../background-snapshot.js";
 import { loadAppCoreConfig, resolveAppTraceSourceId } from "../app-config.js";
 import { ADAPTER_SEND_TOOLS_MCP_SERVER_NAME } from "../adapter-send-tools.js";
-import { SET_CONVERSATION_TITLE_MCP_SERVER_NAME } from "../conversation-title.js";
-import { RUN_HISTORY_MCP_SERVER_NAME } from "../run-history.js";
 import {
   createSlackChannelDriver,
   createTelegramChannelDriver,
@@ -2836,7 +2834,7 @@ describe("startMonoAgentApp", () => {
     const order: string[] = [];
     const fakeStore = {
       load: async () => undefined,
-      appendHostSummary: async () => ({ conversationId: "c", source: "s", bytesWritten: 1 }),
+      persistCompletedTurn: async (turn: { runId: string; conversationId: string }) => ({ id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "s", bytesWritten: 1, admissionStatus: "admitted" }),
       flush: async () => { order.push("flush"); },
       close: async () => { order.push("close"); },
     };
@@ -2864,7 +2862,7 @@ describe("startMonoAgentApp", () => {
     (app as unknown as { __setSharedMemoryForTest(store: unknown): void })
       .__setSharedMemoryForTest({
         load: async () => undefined,
-        appendHostSummary: async () => ({ conversationId: "c", source: "s", bytesWritten: 1 }),
+        persistCompletedTurn: async (turn: { runId: string; conversationId: string }) => ({ id: turn.runId, runId: turn.runId, conversationId: turn.conversationId, source: "s", bytesWritten: 1, admissionStatus: "admitted" }),
         flush: async () => { order.push("flush"); },
       });
 

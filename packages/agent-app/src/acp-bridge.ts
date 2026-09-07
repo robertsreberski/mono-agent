@@ -849,14 +849,6 @@ function toolKind(name: string): ToolKind {
   return "other";
 }
 
-function toolNameFromEvent(event: AgentStreamEvent, toolNames: Map<string, string>): string | undefined {
-  if (event.type !== "tool_call_started" && event.type !== "tool_call_progress" && event.type !== "tool_call_completed") {
-    return undefined;
-  }
-  if (event.name !== undefined) toolNames.set(event.id, event.name);
-  return event.name ?? toolNames.get(event.id);
-}
-
 function boundedToolContent(value: unknown): string {
   const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
   return text.length <= MAX_TOOL_CONTENT_CHARS

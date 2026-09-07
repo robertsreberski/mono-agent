@@ -125,11 +125,10 @@ export function failureKindForPiError(message, diagnostics, { maxTurnsHit = fals
 
 /**
  * Emit the per-run cache / cost / provider-completed events.
- * @param {{onEvent: (event: any) => void, resolved: any, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, estimatedCost: number, start: number, externalAbort: boolean}} params
+ * @param {{onEvent: (event: any) => void, reference: string, usage: {input: number, output: number, cacheRead: number, cacheWrite: number, cost: number}, estimatedCost: number, start: number, externalAbort: boolean}} params
  */
 export function emitUsageCostEvents({
   onEvent,
-  resolved,
   reference,
   usage,
   estimatedCost,

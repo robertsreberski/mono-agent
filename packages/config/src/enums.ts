@@ -9,12 +9,6 @@
  */
 export const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
-/**
- * Closed set of runtime permission modes, validated by the loader's
- * `MONO_AGENT_PERMISSION_MODE` parsing.
- */
-export const PERMISSION_MODES = ["default", "plan", "acceptEdits", "bypassPermissions"] as const;
-
 /** Built-in and external memory store implementations. */
 export const MEMORY_BACKENDS = ["bujo", "supermemory"] as const;
 

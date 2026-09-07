@@ -263,8 +263,7 @@ export interface RuntimeResult {
 
 /**
  * Typed per-run tool-output limits (mirrors agent-runtime's RuntimeToolLimits,
- * ai/types.js). The supported replacement for the deprecated `settings` tool
- * keys; build one with {@link resolveRuntimePolicies}.
+ * ai/types.js). Omitted fields use the kernel defaults.
  */
 export interface RuntimeToolLimits {
   readonly toolTextLimitChars?: number;
@@ -285,8 +284,7 @@ export interface RuntimeToolLimits {
 
 /**
  * Typed per-run context-compaction policy (mirrors agent-runtime's
- * RuntimeCompactionPolicy). The supported replacement for the deprecated
- * `settings` compaction keys. Omitted scalar budgets resolve adaptively against
+ * RuntimeCompactionPolicy). Omitted scalar budgets resolve adaptively against
  * the effective model context window.
  */
 export interface RuntimeCompactionPolicy {
@@ -297,12 +295,6 @@ export interface RuntimeCompactionPolicy {
   readonly minSavingsTokens?: number;
   readonly fixedOverheadEnabled?: boolean;
   readonly contextWindowOverride?: number;
-}
-
-/** The pair {@link resolveRuntimePolicies} returns from a legacy settings bag. */
-export interface RuntimePolicies {
-  readonly toolLimits: RuntimeToolLimits;
-  readonly compaction: RuntimeCompactionPolicy;
 }
 
 /**
@@ -432,11 +424,11 @@ export interface RuntimeRunOptions {
    */
   readonly fastMode?: never;
   readonly nativeSubagents?: never;
-  /** Typed tool-output limits (supported replacement for the `settings` tool keys). */
+  /** Typed tool-output limits. */
   readonly toolLimits?: RuntimeToolLimits;
   /** Exact `server:tool` names whose host-owned lifecycle has no total deadline. */
   readonly mcpCallNoTotalTimeoutTools?: readonly string[];
-  /** Typed compaction policy (supported replacement for the `settings` compaction keys). */
+  /** Typed compaction policy. */
   readonly compaction?: RuntimeCompactionPolicy;
   /** Per-run prompt-fragment overrides. */
   readonly prompts?: RuntimePromptOverrides;

@@ -1,13 +1,11 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { readToolRuntime } from "./runtime-context.js";
-import { resolveSandboxPolicy } from "./tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./tool-context.js";
 
-// Every read here falls back to the module-default context when no per-instance
-// ToolContext is threaded (`ctx ?? readToolRuntime()`), so hosts that only call
-// the deep-path configureToolRuntime keep their historical behavior.
+// Filesystem policy checks require the owning runtime context. Missing context
+// must not silently drop the host workspace or sandbox policy.
 function configured(ctx) {
-  const { workspace, repoRoot, additionalReadRoots, additionalWriteRoots } = ctx ?? readToolRuntime();
+  const { workspace, repoRoot, additionalReadRoots, additionalWriteRoots } = requireToolContext(ctx);
   return { workspace, repoRoot, additionalReadRoots, additionalWriteRoots };
 }
 
@@ -43,7 +41,7 @@ export function isWritablePathLexicallyAllowed(path, workdir, options = {}) {
 function isPathAllowedFor(path, workdir, access, options) {
   const ctx = options.ctx;
   const r = resolveToolPath(path, workdir, ctx);
-  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  const policy = resolveSandboxPolicy(requireToolContext(ctx), options.sandboxPolicy);
   if (policy) {
     const field = access === "write" ? policy.writableRoots : policy.readableRoots;
     return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
@@ -61,7 +59,7 @@ function isPathAllowedFor(path, workdir, access, options) {
 function isPathLexicallyAllowedFor(path, workdir, access, options) {
   const ctx = options.ctx;
   const r = resolveToolPath(path, workdir, ctx);
-  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  const policy = resolveSandboxPolicy(requireToolContext(ctx), options.sandboxPolicy);
   if (policy) {
     const field = access === "write" ? policy.writableRoots : policy.readableRoots;
     return !insideLexicalRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
@@ -80,7 +78,7 @@ export function isWorkdirAllowed(workdir, options = {}) {
   if (!workdir) return true;
   const ctx = options.ctx;
   const r = resolve(workdir);
-  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  const policy = resolveSandboxPolicy(requireToolContext(ctx), options.sandboxPolicy);
   if (policy) {
     return !insideProtectedRoots(Array.isArray(policy.protectedRoots) ? policy.protectedRoots : [], r)
       && insideSandboxRoots(Array.isArray(policy.readableRoots) ? policy.readableRoots : [], r);
@@ -96,7 +94,7 @@ export function isWorkdirAllowed(workdir, options = {}) {
  */
 export function protectedRelativePaths(directory, options = {}) {
   const ctx = options.ctx;
-  const policy = resolveSandboxPolicy(ctx ?? readToolRuntime(), options.sandboxPolicy);
+  const policy = resolveSandboxPolicy(requireToolContext(ctx), options.sandboxPolicy);
   if (!policy || !Array.isArray(policy.protectedRoots)) return [];
   const root = resolve(directory);
   const out = new Set();

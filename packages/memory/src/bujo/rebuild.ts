@@ -140,7 +140,7 @@ export async function rebuildFromMarkdown(root: string, db: MemoryDb): Promise<{
   const result = await db.rebuild(records);
 
   // Ingest entity graph — db.rebuild already wiped the entity tables, so start fresh.
-  // No LLM: graph.jsonl is the canonical source written by captureTurn.
+  // No LLM: graph.jsonl is the canonical source written by captureTurnStrict.
   const g = readGraph(root);
   for (const entity of g.entities) {
     try {

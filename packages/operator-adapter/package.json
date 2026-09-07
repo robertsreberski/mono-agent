@@ -19,6 +19,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
     }
   },
   "files": [
@@ -32,7 +36,8 @@
   },
   "dependencies": {
     "@mono-agent/agent-contracts": "workspace:0.20.14",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "undici": "8.9.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.2"

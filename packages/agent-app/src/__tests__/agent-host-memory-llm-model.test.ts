@@ -19,6 +19,7 @@ import { join } from "node:path";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { MemoryCompletedTurn, MemoryCompletedTurnResult } from "@mono-agent/agent-contracts";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import { createSandboxPolicy, type RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
@@ -27,7 +28,7 @@ const fakeRuntime = {
   async run(systemPrompt: string, options: RuntimeRunOptions) {
     runCalls.push({ systemPrompt, options });
     // Empty JSON extraction so capture short-circuits without further work.
-    return { text: "[]" };
+    return { text: '{"memories":[],"entities":[],"relations":[]}' };
   },
 };
 const createMonoRuntimeMock = vi.fn((_options: unknown) => fakeRuntime);
@@ -106,11 +107,13 @@ describe("memory LLM honours config.memory.llm.model", () => {
     const dir = await tempDir();
 
     const store = await createConfiguredMemory(memoryModelConfig(dir), {}) as unknown as {
-      capture(conversationId: string, text: string): Promise<unknown>;
+      persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
+      flush(): Promise<void>;
       close(): Promise<void>;
     };
 
-    await store.capture("conv-1", "Morgan prefers the configured memory model.");
+    await store.persistCompletedTurn({ runId: "memory-model", conversationId: "conv-1", summary: "Morgan prefers the configured memory model.", captureText: "Morgan prefers the configured memory model." });
+    await store.flush();
     await store.close();
 
     // The memory LLM must have actually run.
@@ -155,11 +158,13 @@ describe("memory LLM honours config.memory.llm.model", () => {
     });
     await releaseAgentRootOwnershipWhenIdle(ownership);
     const store = await createConfiguredMemoryForApp(config, { cwd: dir }, posture) as unknown as {
-      capture(conversationId: string, text: string): Promise<unknown>;
+      persistCompletedTurn(turn: MemoryCompletedTurn): Promise<MemoryCompletedTurnResult>;
+      flush(): Promise<void>;
       close(): Promise<void>;
     };
 
-    await store.capture("conv-unsafe", "Keep trusted host memory direct.");
+    await store.persistCompletedTurn({ runId: "memory-unsafe", conversationId: "conv-unsafe", summary: "Keep trusted host memory direct.", captureText: "Keep trusted host memory direct." });
+    await store.flush();
     await store.close();
 
     expect(createSrtSandboxEngineMock).not.toHaveBeenCalled();

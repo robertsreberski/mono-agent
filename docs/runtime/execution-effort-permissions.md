@@ -14,7 +14,6 @@ A representative runtime block:
   "runtime": {
     "model": "openai-codex:gpt-5.6-terra",
     "effort": "medium",
-    "permissionMode": "default",
     "maxTurns": 0,
     "workspace": "."
   }
@@ -37,7 +36,7 @@ The Pi runtime maps the configured value onto the resolved model's capabilities:
 - `max` passes through only when the resolved model explicitly advertises `max` as a reasoning level; otherwise it degrades to the Pi `xhigh` ceiling so an advertised-but-unsupported level never escalates silently.
 - `ultra` is not a Pi reasoning level and resolves to `low`.
 
-`mono-agent doctor` validates effort against the model's advertised levels and, when the configured value sits outside the advertised set, emits a warning naming the nearest supported level — while remaining permissive and forwarding the configured value. `effortRank` places `ultra` above `max` only so keyword escalation cannot downgrade an explicitly configured value.
+`mono-agent doctor` validates effort against the model's advertised levels and, when the configured value sits outside the advertised set, emits a warning naming the nearest supported level — while remaining permissive and forwarding the configured value.
 
 ```json
 { "runtime": { "model": "openai-codex:gpt-5.6-terra", "effort": "high" } }
@@ -56,42 +55,15 @@ The Pi runtime maps the configured value onto the resolved model's capabilities:
 }
 ```
 
-### Per-turn keyword escalation
+### Explicit effort selection
 
-Every inbound message is scanned for effort trigger phrases, always on with no configuration:
+Per-turn effort comes from validated request metadata or the configured runtime default. Message prose does not change it: words such as `think`, `extra think`, and `ultra think` remain ordinary user text. Provider-supported effort ceilings still apply.
 
-| Phrase | Effort |
-|--------|--------|
-| `think` | `high` |
-| `extra think` / `extrathink` | `xhigh` |
-| `ultra think` / `ultrathink` | `max` |
+## Permission controls
 
-Matching is case-insensitive on word boundaries anywhere in the message ("what do you *think*?" triggers; "thinking" and "rethink" do not), and the strongest matching phrase wins. Escalation is one-directional: the turn runs at the **higher** of the otherwise-resolved effort (configured default or a per-trigger override) and the keyword's level, so a bare `think` never lowers a `xhigh` agent and an equal-or-lower keyword changes nothing. The trigger words stay in the message text.
+`runtime.permissionMode` and `MONO_AGENT_PERMISSION_MODE` have been removed. The Pi runtime did not enforce them. Remove these settings when upgrading; validation reports an actionable migration error.
 
-Escalated `max` degrades to the same per-model ceiling as configured effort: native `max` when the resolved model advertises it, otherwise `xhigh`. The escalated effort is visible in the run's `run_config` event with `overridden: true`, and only the single turn is affected — the session and configured default stay unchanged. The trigger list is exported as `EFFORT_KEYWORD_TRIGGERS` from `@mono-agent/config`.
-
-## Permission mode
-
-`runtime.permissionMode` is validated config with the `MONO_AGENT_PERMISSION_MODE` override. With the Pi-only runtime there are no vendor CLI processes to project permission flags onto, so the key is **validated and forwarded, never enforced**: it rides through run options and the fallback router's per-attempt policy options, and nothing inside the runtime reads it. The built-in tools do not consult it, the sandbox does not consult it, and the approval manager does not take it — `createApprovalManager` is configured by `onToolApprovalRequest`, `toolRiskTiers`, and `approvalAlwaysAllowTools` alone.
-
-The values below therefore describe an *intent a host can implement*, not a posture mono-agent applies on its own:
-
-| Value | Intent for a host that reads it |
-|-------|---------------------------------|
-| `default` | Normal posture — the host pauses tool calls that need approval for its approval callback |
-| `plan` | Read-only posture used by guided/planning flows |
-| `acceptEdits` | Auto-accept file edits |
-| `bypassPermissions` | Remove interactive guardrails |
-
-| Key | Values | Default | Env var |
-|-----|--------|---------|---------|
-| `runtime.permissionMode` | `default` \| `plan` \| `acceptEdits` \| `bypassPermissions` | `default` | `MONO_AGENT_PERMISSION_MODE` |
-
-The enforced tool posture for Pi-executed tools comes from the [sandbox](/tools/sandbox/) filesystem scopes and the programmatic human-in-the-loop approval gates on `createMonoRuntime` (`onToolApprovalRequest`, `toolRiskTiers`, `approvalDefaultRiskTier`, `approvalTimeoutMs`, `approvalAlwaysAllowTools`), which require a host UI to answer prompts — see [programmatic approval & structured output](/programmatic/approval-and-structured-output/). For limiting *which* tools exist at all, use the tool policy in [Tools & guards](/runtime/tools-and-guards/) and [Tool policy](/tools/policy/).
-
-:::caution
-`permissionMode: "bypassPermissions"` asks a host to drop its interactive guardrails; it does not by itself loosen anything mono-agent enforces, and setting `default` does not by itself add a gate. Do not treat this key as a safety control. The enforced boundary is the [sandbox](/tools/sandbox/) filesystem scopes — `sandbox.readableRoots` / `sandbox.writableRoots` relative entries resolve against the workspace, and `.env*`, `.git/config`, and `.git/hooks/**` are denied for writes by default — together with the tool policy and the programmatic approval gates.
-:::
+The enforced tool posture comes from the [sandbox](/tools/sandbox/), [tool policy](/tools/policy/), and programmatic approval gates on `createMonoRuntime`: `onToolApprovalRequest`, `toolRiskTiers`, `approvalDefaultRiskTier`, `approvalTimeoutMs`, and `approvalAlwaysAllowTools`. See [programmatic approval and structured output](/programmatic/approval-and-structured-output/) and the [framework migration guide](/reference/framework-simplification-migration/).
 
 ## Max turns
 
@@ -123,7 +95,6 @@ The workspace is also the default root for sandbox filesystem scopes — `sandbo
 | Key | Env var | Default | Coverage |
 |-----|---------|---------|----------|
 | `runtime.effort` | `MONO_AGENT_EFFORT` | unset (provider/model default) | config |
-| `runtime.permissionMode` | `MONO_AGENT_PERMISSION_MODE` | `default` | config |
 | `runtime.maxTurns` | `MONO_AGENT_MAX_TURNS` | `0` (unlimited) | config |
 | `runtime.workspace` | `MONO_AGENT_WORKSPACE` | `"."` | config |
 

@@ -11,7 +11,6 @@ import * as memoryStore from "@mono-agent/memory/store";
 import { canonicalContinuationJson, continuationDigest } from "../continuations.js";
 import { MAX_RECORD_BYTES } from "../continuation-store-types.js";
 import { launchdLogsSectionFromInspection, validateMonoAgentFolder } from "../doctor.js";
-import type { DoctorStatusExecFile } from "../doctor.js";
 import type { LaunchdLogInspection } from "../launchd-logs.js";
 import { agentAppPackageVersion } from "../package-version.js";
 import {

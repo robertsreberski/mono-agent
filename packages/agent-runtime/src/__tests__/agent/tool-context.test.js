@@ -1,20 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createFakeSandbox, testSandboxPolicy as failClosedSandboxPolicy } from "../helpers/fake-sandbox.js";
 import {
   createToolContext,
   updateToolContext,
-  resetToolContext,
   resolveSandboxPolicy,
 } from "../../agent/tools/shared/tool-context.js";
-import {
-  configureToolRuntime,
-  readToolRuntime,
-  resetToolRuntime,
-} from "../../agent/tools/shared/runtime-context.js";
 import { DEFAULT_RUNTIME_BRAND } from "../../runtime-brand.js";
-import { readToolImpl } from "../../agent/tools/index.js";
+import { bashToolImpl, execToolImpl, readToolImpl, webFetchToolImpl, webSearchToolImpl } from "../../agent/tools/index.js";
+import { prepareMcpStdioCommand } from "../../agent/tools/pi-bridge.js";
+import { createNodeReplController } from "../../agent/tools/node-repl.js";
 
 const tempDirs = [];
 
@@ -25,7 +21,6 @@ function tempDir() {
 }
 
 afterEach(() => {
-  resetToolRuntime();
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
 });
 
@@ -58,6 +53,58 @@ describe("createToolContext", () => {
   });
 });
 
+describe("direct execution requires context", () => {
+  it.each([
+    ["Bash", () => bashToolImpl({ command: "exit 0" })],
+    ["Exec", () => execToolImpl({ executable: process.execPath, args: ["-e", "process.exit(0)"] })],
+    ["WebFetch", () => webFetchToolImpl({ url: "https://example.invalid", render: "never" })],
+    ["WebSearch", () => webSearchToolImpl({ query: "context regression" })],
+    ["MCP stdio", () => prepareMcpStdioCommand({ command: process.execPath })],
+  ])("rejects missing context for %s before execution", async (_name, run) => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    try {
+      await expect(run()).rejects.toThrow("explicit ToolContext");
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      fetch.mockRestore();
+    }
+  });
+
+  it("rejects missing context before constructing a Node REPL controller", () => {
+    expect(() => createNodeReplController()).toThrow("explicit ToolContext");
+  });
+
+  it("binds direct MCP command preparation to the context workspace, engine, and policy", async () => {
+    const workspace = tempDir();
+    const engine = {};
+    const policy = failClosedSandboxPolicy({ root: workspace });
+    const prepareCommand = vi.fn(async (input) => ({ ...input.command, sandboxed: true }));
+    const ctx = createToolContext({
+      workspace,
+      sandboxEngine: engine,
+      sandboxPolicy: policy,
+      sandbox: { ...createFakeSandbox(), prepareCommand },
+    });
+    await prepareMcpStdioCommand({ command: process.execPath }, { ctx });
+    expect(prepareCommand).toHaveBeenCalledWith(expect.objectContaining({
+      engine,
+      policy: expect.objectContaining({ root: workspace }),
+      command: expect.objectContaining({ cwd: workspace }),
+    }));
+  });
+
+  it("copies direct request environments so caller mutations cannot change tool execution", () => {
+    const values = { TASK_ID: "first" };
+    const pathPrepend = ["/tmp/first/bin"];
+    const ctx = createToolContext({ toolEnvironment: { schema: 1, values, pathPrepend } });
+    values.TASK_ID = "changed";
+    pathPrepend.push("/tmp/changed/bin");
+    expect(ctx.toolEnvironment).toEqual({ schema: 1, values: { TASK_ID: "first" }, pathPrepend: ["/tmp/first/bin"] });
+    updateToolContext(ctx, { toolEnvironment: undefined });
+    expect(ctx.toolEnvironment).toBeUndefined();
+  });
+});
+
 describe("updateToolContext", () => {
   it("mutates in place, leaving untouched keys and returning the same reference", () => {
     const ctx = createToolContext({ workspace: "/tmp/w", ripgrepPath: "/usr/bin/rg" });
@@ -73,15 +120,6 @@ describe("updateToolContext", () => {
     expect(ctx.runtimeBrand.schemaPrefix).toBe("one");
     updateToolContext(ctx, { runtimeBrand: { schemaPrefix: "two" } });
     expect(ctx.runtimeBrand.schemaPrefix).toBe("two");
-  });
-});
-
-describe("resetToolContext", () => {
-  it("clears data keys and restores the default brand", () => {
-    const ctx = createToolContext({ workspace: "/tmp/w", runtimeBrand: { schemaPrefix: "demo" } });
-    resetToolContext(ctx);
-    expect(ctx.workspace).toBeUndefined();
-    expect(ctx.runtimeBrand).toEqual(DEFAULT_RUNTIME_BRAND);
   });
 });
 
@@ -131,8 +169,8 @@ describe("resolveSandboxPolicy (I13 monotonic merge)", () => {
   });
 });
 
-describe("per-instance vs default context divergence", () => {
-  it("two contexts do not clobber each other and stay independent of the default", () => {
+describe("per-instance context isolation", () => {
+  it("two contexts do not clobber each other", () => {
     const a = createToolContext({ workspace: "/tmp/a", runtimeBrand: { schemaPrefix: "aa" } });
     const b = createToolContext({ workspace: "/tmp/b", runtimeBrand: { schemaPrefix: "bb" } });
     updateToolContext(a, { workspace: "/tmp/a-updated" });
@@ -140,26 +178,19 @@ describe("per-instance vs default context divergence", () => {
     expect(b.workspace).toBe("/tmp/b");
     expect(a.runtimeBrand.schemaPrefix).toBe("aa");
     expect(b.runtimeBrand.schemaPrefix).toBe("bb");
-    // The module-default context is a separate object, untouched by either.
-    expect(readToolRuntime().workspace).toBeUndefined();
   });
 
-  it("a real tool resolves against the threaded ctx workspace, falling back to the default when ctx is absent", async () => {
-    const defaultWs = tempDir();
+  it("a real tool resolves against its explicit context and rejects missing context", async () => {
     const ctxWs = tempDir();
     // The target file exists ONLY inside the per-instance workspace.
     writeFileSync(resolve(ctxWs, "target.txt"), "hello from ctx", "utf8");
-    // The deep/worklab default path configures the process-global context.
-    configureToolRuntime({ workspace: defaultWs });
 
     const ctx = createToolContext({ workspace: ctxWs });
     // With the instance ctx threaded, the relative path resolves under ctxWs.
     const withCtx = await readToolImpl({ file_path: "target.txt" }, { ctx });
     expect(withCtx).toContain("hello from ctx");
 
-    // Without a ctx, the same call falls back to the default context (defaultWs),
-    // where the file does not exist — proving the two paths are genuinely distinct.
-    const withoutCtx = await readToolImpl({ file_path: "target.txt" }, {});
-    expect(withoutCtx).toContain("Error: File not found");
+    // Omitting ctx must fail before an unconfined filesystem read.
+    await expect(readToolImpl({ file_path: "target.txt" }, {})).rejects.toThrow("explicit ToolContext");
   });
 });

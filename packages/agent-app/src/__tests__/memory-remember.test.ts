@@ -99,7 +99,7 @@ describe("isRememberCapableStore", () => {
     // A read-only store structurally HAS remember(); only the signal separates them.
     expect(isRememberCapableStore({ remember: async () => ({}), supportsRemember: () => false })).toBe(false);
     // The Supermemory shape: a MemoryStore with no durable write surface at all.
-    expect(isRememberCapableStore({ appendHostSummary: async () => ({}) })).toBe(false);
+    expect(isRememberCapableStore({ persistCompletedTurn: async () => ({}) })).toBe(false);
     expect(isRememberCapableStore(undefined)).toBe(false);
     expect(isRememberCapableStore({ remember: async () => ({}), supportsRemember: () => true })).toBe(true);
   });
@@ -387,7 +387,7 @@ describe("Remember runtime extension registration", () => {
 
   it.each([
     ["a read-only store", { remember: async () => ({}), supportsRemember: () => false }],
-    ["a store with no remember surface", { appendHostSummary: async () => ({}) }],
+    ["a store with no remember surface", { persistCompletedTurn: async () => ({}) }],
   ])("registers nothing for %s", async (_label, store) => {
     const extension = await createMemoryRememberRuntimeExtension(store as never)(request());
     expect(extension.runtimeOptions).toEqual({});

@@ -36,10 +36,6 @@ const joinClassNames = (...values: Array<string | undefined>): string =>
 
 const ReasoningPreviewContext = createContext(false);
 
-export const REASONING_GROUP_BY = groupPartByType({
-  reasoning: ["group-reasoning"] as const,
-});
-
 const ACTIVITY_GROUP_BY_TYPE = groupPartByType({
   reasoning: ["group-activity"] as const,
   "tool-call": ["group-activity"] as const,
@@ -336,14 +332,6 @@ const ReasoningImpl: ReasoningMessagePartComponent = ({ text, status }) => {
   );
 };
 
-export interface ReasoningGroupProps extends PropsWithChildren {
-  readonly className?: string;
-  readonly defaultOpen?: boolean;
-  readonly duration?: number;
-  readonly status?: { readonly type: string };
-  readonly streaming?: boolean;
-}
-
 export interface ActivityGroupProps extends PropsWithChildren {
   readonly className?: string;
   /** The turn's window; omitted for bands that are not the one still open. */
@@ -352,29 +340,6 @@ export interface ActivityGroupProps extends PropsWithChildren {
   readonly stepCount?: number;
   readonly streaming?: boolean;
 }
-
-const ReasoningGroupImpl = ({
-  children,
-  className,
-  defaultOpen,
-  duration,
-  status,
-  streaming,
-}: ReasoningGroupProps) => {
-  const isStreaming = streaming ?? status?.type === "running";
-  return (
-    <ReasoningRoot
-      className={className}
-      defaultOpen={defaultOpen}
-      streaming={isStreaming}
-    >
-      <ReasoningTrigger active={isStreaming} duration={duration} />
-      <ReasoningContent aria-busy={isStreaming}>
-        <ReasoningText>{children}</ReasoningText>
-      </ReasoningContent>
-    </ReasoningRoot>
-  );
-};
 
 export const Reasoning = Object.assign(memo(ReasoningImpl), {
   Root: ReasoningRoot,
@@ -389,9 +354,6 @@ export const Reasoning = Object.assign(memo(ReasoningImpl), {
 };
 
 Reasoning.displayName = "Reasoning";
-
-export const ReasoningGroup = memo(ReasoningGroupImpl);
-ReasoningGroup.displayName = "ReasoningGroup";
 
 const ActivityGroupImpl = ({
   children,

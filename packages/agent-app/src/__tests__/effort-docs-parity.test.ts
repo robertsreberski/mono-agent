@@ -445,13 +445,10 @@ function expectUltraRouteContract(value: string, label: string): void {
     "route-specific effort forwarded through pi to the selected provider",
     "doctor warns when a configured value falls outside the model's advertised ladder",
     "keeps turn-time handling permissive",
-    "ranking above max only prevents keyword downgrade",
+    "message text never changes effort",
   ]) {
     expect(prose, `${label} is missing: ${fact}`).toContain(fact);
   }
-  expect(prose, `${label} must explain the escalation-only rank`).toMatch(
-    /(?:effortrank places ultra above max only so keyword escalation cannot downgrade|ranking above max only prevents keyword downgrade)/u,
-  );
   expect(
     unqualifiedPiLowClaims(value),
     `${label} contains a recognized unqualified Pi ultra-to-LOW mapping`,
@@ -576,7 +573,7 @@ describe("ultra effort documentation parity", () => {
 
     const help = normalizeProse(initHelpText());
     expect(help).toContain("pi forwards the configured effort to the selected provider");
-    expect(help).toContain("ranking above max only prevents keyword downgrade");
+    expect(help).toContain("message text never changes effort");
     expect(unqualifiedPiLowClaims(help)).toEqual([]);
   });
 });

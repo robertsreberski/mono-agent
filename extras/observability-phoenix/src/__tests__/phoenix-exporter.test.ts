@@ -4,9 +4,9 @@ import type {
   RunExportContext,
   RunExportEventContext,
   RunSummary,
-} from "../../types.js";
+} from "@mono-agent/observability";
 
-import { DEFAULT_MAX_EVENTS_PER_RUN } from "../../guards.js";
+import { DEFAULT_MAX_EVENTS_PER_RUN } from "@mono-agent/observability/run-export";
 import { createPhoenixRunExporter } from "../phoenix-exporter.js";
 
 const summary: RunSummary = {

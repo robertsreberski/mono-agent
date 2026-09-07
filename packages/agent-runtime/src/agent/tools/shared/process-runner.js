@@ -135,7 +135,7 @@ input.once("end", () => {
  * shared byte cap even when the child times out, is aborted, exits by signal,
  * or exceeds that cap.
  *
- * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
+ * @param {{command: string, args?: readonly string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
  * @param {{timeoutMs?: number, signal?: AbortSignal, maxBufferBytes?: number, input?: string|Buffer, exactEnvironment?: boolean}} [options]
  */
 export function runPreparedProcess(
@@ -165,7 +165,7 @@ export function runPreparedProcess(
  * through their bound launcher: sandbox cleanup must not run while a detached
  * descendant in the owned group is still alive.
  *
- * @param {{command: string, args?: string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
+ * @param {{command: string, args?: readonly string[], cwd?: string, env?: Record<string, string|undefined>}} commandSpec
  * `outputMode` selects how output is handled. "buffer" (default) accumulates it
  * under `maxBufferBytes` and terminates the process when that bound is crossed —
  * the right contract for a job whose whole output is the result. "stream" hands

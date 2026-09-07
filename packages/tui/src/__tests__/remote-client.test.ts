@@ -140,6 +140,25 @@ describe("RemoteAgentResponder", () => {
     );
   });
 
+  it("preserves multipart replies on the real operator wire", async () => {
+    const parts = [
+      { type: "failure", id: "f0", code: "artifact_missing", message: "Another file expired." },
+      { type: "failure", id: "f1", code: "artifact_missing", message: "File expired." },
+    ] as const;
+    await withAdapter({ respond: async () => ({ text: "Report", parts }) }, async (adapter) => {
+      const client = new RemoteAgentResponder({ baseUrl: adapter.baseUrl });
+      await expect(client.respond(request(), collectingStream().stream)).resolves.toEqual({ text: "Report", parts });
+    });
+  });
+
+  it("accepts a final frame without a newline", async () => {
+    const client = new RemoteAgentResponder({
+      baseUrl: "http://127.0.0.1:1/gui",
+      fetchImpl: async () => new Response(JSON.stringify({ kind: "finish", finalText: "done 🙂" })),
+    });
+    await expect(client.respond(request(), collectingStream().stream)).resolves.toEqual({ text: "done 🙂" });
+  });
+
   it("keeps a silent remote turn alive beyond the transport body timeout", async () => {
     const previousDispatcher = getGlobalDispatcher();
     const testAgent = new Agent();

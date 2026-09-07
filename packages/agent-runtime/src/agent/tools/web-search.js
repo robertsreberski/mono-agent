@@ -5,9 +5,8 @@ import { isIP } from "node:net";
 import { parseHTML } from "linkedom";
 import { passthroughSandbox } from "../sandbox-seam.js";
 import { searchCodexSubscription } from "./codex-subscription-search.js";
-import { readToolRuntime } from "./shared/runtime-context.js";
 import { createCountingSemaphore } from "./shared/semaphore.js";
-import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { requireToolContext, resolveSandboxPolicy } from "./shared/tool-context.js";
 import {
   claimWebSearchRequest,
   createWebSearchRunState,
@@ -154,7 +153,7 @@ async function performSearch(
     callClaims.requests,
   );
 
-  const resolvedCtx = ctx ?? readToolRuntime();
+  const resolvedCtx = requireToolContext(ctx);
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
   const policy = resolveSandboxPolicy(resolvedCtx, sandboxPolicy);
   // Operators, quotes, and site: constraints are never relaxed or rewritten by

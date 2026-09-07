@@ -16,7 +16,7 @@
 
 /**
  * @typedef {"pi"} RuntimeBridgeId
- * Registry bridge id. See src/ai/runtime/registry.js's builtinBridgeSpecs.
+ * Direct Pi bridge id returned by src/ai/runtime/registry.js.
  */
 
 /**
@@ -138,8 +138,7 @@
 
 /**
  * @typedef {Object} RuntimeToolLimits
- * Typed per-run tool-output limits (the supported replacement for the
- * `agent_tool_*` / `agent_mcp_*` keys of the deprecated `settings` bag). Every
+ * Typed per-run tool-output limits. Every
  * field is optional; an omitted field falls back to the kernel default (see
  * resolveAgentCompactionPolicy, agent/compaction.js).
  * @property {number} [toolTextLimitChars]        Max chars of a builtin tool's text result.
@@ -158,8 +157,7 @@
 
 /**
  * @typedef {Object} RuntimeCompactionPolicy
- * Typed per-run context-compaction policy (the supported replacement for the
- * `agent_compaction_*` keys of the deprecated `settings` bag). Every field is
+ * Typed per-run context-compaction policy. Every field is
  * optional; omitted scalar budgets resolve adaptively against the effective
  * model context window.
  * @property {boolean} [enabled]              Whether auto-compaction runs at all.
@@ -168,7 +166,7 @@
  * @property {number} [summaryMaxTokens]      Combined output-token budget for generated compaction summaries.
  * @property {number} [minSavingsTokens]      Minimum token savings required for proactive compaction; reactive recovery accepts any positive reduction.
  * @property {boolean} [fixedOverheadEnabled] Whether the system-prompt + tool-schema overhead correction is folded into the trigger.
- * @property {number} [contextWindowOverride] Persistent correction for provider context-window metadata; learned overflow evidence may lower it process-locally (applied at resolveLiveCompactionPolicy; has no legacy settings equivalent).
+ * @property {number} [contextWindowOverride] Persistent correction for provider context-window metadata; learned overflow evidence may lower it process-locally (applied at resolveLiveCompactionPolicy).
  */
 
 /**
@@ -208,7 +206,6 @@
  * @property {string} [skillsRoot]                       Directory holding `<name>/SKILL.md`. Required alongside `skills` for `ReadSkill` to be built.
  * @property {ReadonlyArray<string>} [allowedTools]
  * @property {ReadonlyArray<string>} [disallowedTools]
- * @property {string} [permissionMode]
  * @property {number} [maxTurns]
  * @property {number} [providerCheckMaxTokens] Internal provider-check output cap; ordinary callers must omit it.
  * @property {{env(name: string): Promise<string|undefined>, fileExists(path: string): Promise<boolean>}} [providerCheckAuthContext] Internal provider-check effective auth context; ordinary callers must omit it.
@@ -219,10 +216,10 @@
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
  * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
  * @property {import('../agent/sandbox-seam.js').RuntimeSandbox} [sandbox] Per-run sandbox IMPLEMENTATION override; when set it enforces this run's tools instead of the host/ToolContext impl (precedence run > host > passthrough). Policy DATA still merges monotonically (I13); this overrides only the enforcing code.
- * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits (supported replacement for the deprecated `settings` tool keys).
+ * @property {RuntimeToolLimits} [toolLimits] Typed per-run tool-output limits.
  * @property {readonly string[]} [mcpCallNoTotalTimeoutTools] Exact `server:tool`
  *   names whose host-owned lifecycle has no total deadline. Inactivity and abort still apply.
- * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy (supported replacement for the deprecated `settings` compaction keys).
+ * @property {RuntimeCompactionPolicy} [compaction] Typed per-run compaction policy.
  * @property {RuntimePromptOverrides} [prompts] Per-run prompt-fragment overrides (run wins over the host default).
  * @property {any} [webRequestCoordinator] Host-owned shared web admission and quota state.
  * @property {{backend?: "auto"|"searxng"|"ollama"|"codex"|"keyless", maxRequestsPerRun?: number, endpoint?: string, searxng?: {endpoint?: string}, ollama?: {baseUrl?: string, apiKey?: string, apiKeyEnv?: string, trustPublicUrl?: boolean}, codex?: {model?: string}}} [webSearchConfig] Run-scoped WebSearch backend configuration.
@@ -230,7 +227,6 @@
  * @property {{render?: "never"|"auto", browserCommand?: string}} [webFetchConfig] Run-scoped WebFetch extraction/render configuration.
  * @property {"sequential"|"safe-parallel"} [piToolExecutionMode] Pi built-in tool scheduling mode. Safe parallelism is the default.
  * @property {"one-at-a-time"|"all"} [piToolParallelismMode] DEPRECATED. Compatibility alias mapped to piToolExecutionMode.
- * @property {Object} [settings] DEPRECATED. Legacy flat settings bag; consumed only as a per-group FALLBACK when the corresponding typed object (`toolLimits` / `compaction`) is absent. Consuming any key emits one `deprecated_settings_option` runtime_warning per run. Migrate via resolveRuntimePolicies (@mono-agent/runtime-adapter).
  * @property {RuntimeSubagentsOptions} [subagents] In-process `Agent` built-in: profiles, caps, and the nested-run callback.
  * @property {import('../agent/tools/shared/process-jobs.js').ProcessJobsController} [processJobs] Pi-native-only structural process-job controller. When absent, Exec/Bash schemas and foreground behavior are unchanged.
  * @property {{chainDepth: number, maxChainDepth: number, remainingStarts: number, unavailableReason?: string}} [processJobsAvailability] Host-owned request lineage diagnostics, including when the controller is unavailable.
@@ -415,7 +411,7 @@
 /**
  * @typedef {Object} AgentRuntimeHostOptions
  * The `host` object passed to `createRuntime(host)` / `createRouterRuntime({host, chain})`.
- * Combines the tool-runtime keys (forwarded to configureToolRuntime) and the
+ * Combines the tool-context keys (bound per runtime instance) and the
  * host-integration callbacks (bound once, applied to every run via hostDefaults).
  * @property {string} [workspace]
  * @property {string} [repoRoot]

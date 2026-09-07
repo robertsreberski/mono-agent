@@ -42,8 +42,7 @@ effort. `runtime.fallbackModels` and `MONO_AGENT_FALLBACK_MODELS` were retired i
     "effort": "medium",                    // none|minimal|low|medium|high|xhigh|max|ultra
                                            // Narrowed per model for display; still accepted at turn time.
                                            // A model advertising no ultra rung simply does not offer it in pickers.
-                                           // Ranking above max only prevents keyword downgrade.
-    "permissionMode": "default",           // default|plan|acceptEdits|bypassPermissions
+                                           // Message text never changes effort.
     "maxTurns": 0,                         // 0 or omitted means unlimited; 1-100 caps turns
     "compaction": {
       "enabled": true,                     // default true

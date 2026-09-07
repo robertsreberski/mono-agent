@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createJsonlRunRecorder, type RunSummary } from "@mono-agent/observability";
-import { buildRunReadableSpans, createDeterministicIdFactory } from "@mono-agent/observability/otel";
+import { buildRunReadableSpans, createDeterministicIdFactory } from "@mono-agent/observability-phoenix";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { backfillRuns, isRetryable, readRunArtifacts, runStartEndNanos } from "../backfill.js";

@@ -22,7 +22,7 @@ async function smoke(serviceUrl) {
       : { apiKey: process.env.MONO_AGENT_TEST_SUPERMEMORY_API_KEY }),
   });
   try {
-    store.scheduleCapture("smoke", `The unique verification marker is ${marker}.`);
+    await store.persistCompletedTurn({ runId: marker, conversationId: "smoke", summary: `The unique verification marker is ${marker}.`, captureText: `The unique verification marker is ${marker}.` });
     await store.flush();
 
     const deadline = Date.now() + 60_000;

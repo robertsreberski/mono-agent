@@ -1,3 +1,4 @@
+import { createToolContext, updateToolContext } from "../../agent/tools/shared/tool-context.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
@@ -21,12 +22,9 @@ import {
   webSearchToolImpl,
   writeToolImpl,
 } from "../../agent/tools/index.js";
-import {
-  configureToolRuntime,
-  resetToolRuntime,
-} from "../../agent/tools/shared/runtime-context.js";
 
 const tempDirs = [];
+let ctx = createToolContext();
 let previousPath = process.env.PATH;
 
 function tempWorkspace() {
@@ -34,7 +32,7 @@ function tempWorkspace() {
   tempDirs.push(dir);
   // The fake sandbox fixture gives these tests realistic root/write/network
   // enforcement without a workspace dependency — see helpers/fake-sandbox.js.
-  configureToolRuntime({ workspace: dir, sandbox: createFakeSandbox() });
+  updateToolContext(ctx, { workspace: dir, sandbox: createFakeSandbox() });
   return dir;
 }
 
@@ -46,8 +44,8 @@ function writeFile(path, content = "") {
 afterEach(() => {
   if (previousPath === undefined) delete process.env.PATH;
   else process.env.PATH = previousPath;
-  resetToolRuntime();
-  resolveRgPath({ refresh: true });
+  ctx = createToolContext();
+  resolveRgPath({ ctx, refresh: true });
   while (tempDirs.length) rmSync(tempDirs.pop(), { recursive: true, force: true });
 });
 
@@ -89,7 +87,7 @@ describe("ai tool helpers", () => {
     writeFile(join(root, "dist", "assets", "app.js"), "bundle");
     writeFile(join(root, "src", "app.ts.map"), "sourcemap");
 
-    const result = await globToolImpl({ path: root, pattern: "**/*" });
+    const result = await globToolImpl({ path: root, pattern: "**/*" }, { ctx });
 
     expect(result).toContain("src/app.ts");
     expect(result).not.toContain("/node_modules/");
@@ -104,7 +102,7 @@ describe("ai tool helpers", () => {
       writeFile(join(root, "src", `file-${index}.ts`), "source");
     }
 
-    const result = await globToolImpl({ path: root, pattern: "**/*", max_matches: 2 });
+    const result = await globToolImpl({ path: root, pattern: "**/*", max_matches: 2 }, { ctx });
 
     expect((result.match(/src\/file-/g) || [])).toHaveLength(2);
     expect(result).toContain("[truncated Glob result: showing 2 of 5 lines");
@@ -114,10 +112,10 @@ describe("ai tool helpers", () => {
     const root = tempWorkspace();
     writeFile(join(root, "src", "packaged.ts"), "packaged needle");
     process.env.PATH = "";
-    resolveRgPath({ refresh: true });
+    resolveRgPath({ ctx, refresh: true });
 
-    const globResult = await globToolImpl({ path: root, pattern: "src/*.ts" });
-    const grepResult = await grepToolImpl({ path: root, pattern: "packaged needle" });
+    const globResult = await globToolImpl({ path: root, pattern: "src/*.ts" }, { ctx });
+    const grepResult = await grepToolImpl({ path: root, pattern: "packaged needle" }, { ctx });
 
     expect(globResult).toContain("src/packaged.ts");
     expect(grepResult).toContain("src/packaged.ts");
@@ -131,7 +129,7 @@ describe("ai tool helpers", () => {
     writeFile(join(root, "dist", "bundle.js"), "needle bundle");
     writeFile(join(root, "src", "bundle.js.map"), "needle map");
 
-    const result = await grepToolImpl({ path: root, pattern: "needle", max_matches: 1 });
+    const result = await grepToolImpl({ path: root, pattern: "needle", max_matches: 1 }, { ctx });
 
     expect(result).toMatch(/src\/(one|two)\.ts/);
     expect(result).not.toContain("/node_modules/");
@@ -143,9 +141,9 @@ describe("ai tool helpers", () => {
   it("resolves relative file paths and shell commands from the configured workspace", async () => {
     const root = tempWorkspace();
 
-    const writeResult = await writeToolImpl({ file_path: "src/relative.txt", content: "hello" });
-    const readResult = await readToolImpl({ file_path: "src/relative.txt" });
-    const bashResult = await bashToolImpl({ command: "pwd && test -f src/relative.txt && echo ok" });
+    const writeResult = await writeToolImpl({ file_path: "src/relative.txt", content: "hello" }, { ctx });
+    const readResult = await readToolImpl({ file_path: "src/relative.txt" }, { ctx });
+    const bashResult = await bashToolImpl({ command: "pwd && test -f src/relative.txt && echo ok" }, { ctx });
 
     expect(writeResult).toContain(join(root, "src", "relative.txt"));
     expect(readResult).toContain("1\thello");
@@ -159,10 +157,10 @@ describe("ai tool helpers", () => {
     tempDirs.push(project);
     writeFile(join(project, "src", "project.txt"), "from project");
 
-    const writeResult = await writeToolImpl({ file_path: "src/new.txt", content: "new", workdir: project });
-    const readResult = await readToolImpl({ file_path: "src/project.txt", workdir: project });
-    const globResult = await globToolImpl({ path: ".", pattern: "src/*.txt", workdir: project });
-    const bashResult = await bashToolImpl({ command: "pwd && test -f src/project.txt && echo ok", workdir: project });
+    const writeResult = await writeToolImpl({ file_path: "src/new.txt", content: "new", workdir: project }, { ctx });
+    const readResult = await readToolImpl({ file_path: "src/project.txt", workdir: project }, { ctx });
+    const globResult = await globToolImpl({ path: ".", pattern: "src/*.txt", workdir: project }, { ctx });
+    const bashResult = await bashToolImpl({ command: "pwd && test -f src/project.txt && echo ok", workdir: project }, { ctx });
 
     expect(writeResult).toContain(join(project, "src", "new.txt"));
     expect(readResult).toContain("1\tfrom project");
@@ -176,8 +174,8 @@ describe("ai tool helpers", () => {
     const root = tempWorkspace();
     writeFile(join(root, "src", "large.txt"), Array.from({ length: 300 }, (_, index) => `line ${index + 1}`).join("\n"));
 
-    const first = await readToolImpl({ file_path: "src/large.txt" });
-    const second = await readToolImpl({ file_path: "src/large.txt" });
+    const first = await readToolImpl({ file_path: "src/large.txt" }, { ctx });
+    const second = await readToolImpl({ file_path: "src/large.txt" }, { ctx });
 
     expect(first).toContain("240\tline 240");
     expect(first).not.toContain("241\tline 241");
@@ -192,7 +190,7 @@ describe("ai tool helpers", () => {
     }).png().toBuffer();
     writeFileSync(join(root, "shot.png"), pngBytes);
 
-    const result = await readToolImpl({ file_path: "shot.png" });
+    const result = await readToolImpl({ file_path: "shot.png" }, { ctx });
 
     expect(typeof result).not.toBe("string");
     expect(result.kind).toBe("image");
@@ -207,7 +205,7 @@ describe("ai tool helpers", () => {
     }).jpeg().toBuffer();
     writeFileSync(join(root, "photo.JPG"), jpgBytes);
 
-    const result = await readToolImpl({ file_path: "photo.JPG" });
+    const result = await readToolImpl({ file_path: "photo.JPG" }, { ctx });
 
     expect(result.kind).toBe("image");
     expect(result.mimeType).toBe("image/jpeg");
@@ -222,7 +220,7 @@ describe("ai tool helpers", () => {
     }).png().toBuffer();
     writeFileSync(sourcePath, pngBytes);
 
-    const result = await readToolImpl({ file_path: "tall.png" });
+    const result = await readToolImpl({ file_path: "tall.png" }, { ctx });
     const normalized = Buffer.from(result.data, "base64");
     const metadata = await sharp(normalized).metadata();
 
@@ -245,7 +243,7 @@ describe("ai tool helpers", () => {
     const imageBytes = await source.toFormat(format).toBuffer();
     writeFileSync(join(root, `tall.${extension}`), imageBytes);
 
-    const result = await readToolImpl({ file_path: `tall.${extension}` });
+    const result = await readToolImpl({ file_path: `tall.${extension}` }, { ctx });
     const metadata = await sharp(Buffer.from(result.data, "base64")).metadata();
 
     expect(result.mimeType).toBe(mimeType);
@@ -266,7 +264,7 @@ describe("ai tool helpers", () => {
       .toBuffer();
     writeFileSync(join(root, "animated.gif"), gifBytes);
 
-    const result = await readToolImpl({ file_path: "animated.gif" });
+    const result = await readToolImpl({ file_path: "animated.gif" }, { ctx });
     const normalized = Buffer.from(result.data, "base64");
     const metadata = await sharp(normalized, { animated: true }).metadata();
 
@@ -286,7 +284,7 @@ describe("ai tool helpers", () => {
     }).data;
     writeFileSync(join(root, "tall.bmp"), bmpBytes);
 
-    const result = await readToolImpl({ file_path: "tall.bmp" });
+    const result = await readToolImpl({ file_path: "tall.bmp" }, { ctx });
     const normalized = Buffer.from(result.data, "base64");
     const metadata = await sharp(normalized).metadata();
 
@@ -300,7 +298,7 @@ describe("ai tool helpers", () => {
     const root = tempWorkspace();
     writeFileSync(join(root, "broken.png"), Buffer.from("not an image"));
 
-    const result = await readToolImpl({ file_path: "broken.png" });
+    const result = await readToolImpl({ file_path: "broken.png" }, { ctx });
 
     expect(result).toMatch(/^Error: Unable to read image broken\.png:/);
   });
@@ -309,7 +307,7 @@ describe("ai tool helpers", () => {
     const root = tempWorkspace();
     writeFile(join(root, "src", "note.txt"), "hello world");
 
-    const result = await readToolImpl({ file_path: "src/note.txt" });
+    const result = await readToolImpl({ file_path: "src/note.txt" }, { ctx });
 
     expect(typeof result).toBe("string");
     expect(result).toContain("1\thello world");
@@ -320,8 +318,8 @@ describe("ai tool helpers", () => {
     writeFile(join(root, "src", "one.ts"), "needle one");
     writeFile(join(root, "src", "two.ts"), "needle two");
 
-    const filesOnly = await grepToolImpl({ path: root, pattern: "needle", max_matches: 1 });
-    const content = await grepToolImpl({ path: root, pattern: "needle", output_mode: "content", head_limit: 2 });
+    const filesOnly = await grepToolImpl({ path: root, pattern: "needle", max_matches: 1 }, { ctx });
+    const content = await grepToolImpl({ path: root, pattern: "needle", output_mode: "content", head_limit: 2 }, { ctx });
 
     expect(filesOnly).toMatch(/src\/(one|two)\.ts/);
     expect(filesOnly).not.toContain("needle one");
@@ -333,13 +331,13 @@ describe("ai tool helpers", () => {
     const root = tempWorkspace();
     const dataDir = mkdtempSync(resolve("/tmp", "agent-runtime-tool-artifacts-"));
     tempDirs.push(dataDir);
-    configureToolRuntime({ toolArtifactDir: dataDir, runId: "run-tools" });
+    updateToolContext(ctx, { toolArtifactDir: dataDir, runId: "run-tools" });
 
     const result = await bashToolImpl({
       command: "printf 'HEAD'; printf '%04000d' 0; printf 'TAIL'",
       max_output_chars: 500,
       workdir: root,
-    });
+    }, { ctx });
 
     expect(result).toContain("HEAD");
     expect(result).toContain("TAIL");
@@ -350,7 +348,7 @@ describe("ai tool helpers", () => {
     const root = tempWorkspace();
     const result = await bashToolImpl(
       { command: "echo unsandboxed", workdir: root },
-      {
+      { ctx,
         sandboxPolicy: failClosedSandboxPolicy({ root }),
         sandboxEngine: {
           id: "fake",
@@ -380,7 +378,7 @@ describe("ai tool helpers", () => {
       command: `${process.execPath} -e "setTimeout(() => {}, 5000)" ${marker}`,
       timeout: 1,
       workdir: root,
-    });
+    }, { ctx });
 
     expect(result).toContain("Command timed out after 1000ms");
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
@@ -392,15 +390,15 @@ describe("ai tool helpers", () => {
     const root = tempWorkspace();
     const sandboxPolicy = failClosedSandboxPolicy({ root });
 
-    const fetchResult = await webFetchToolImpl({ url: "https://example.com" }, { sandboxPolicy });
-    const searchResult = await webSearchToolImpl({ query: "mono agent" }, { sandboxPolicy });
+    const fetchResult = await webFetchToolImpl({ url: "https://example.com" }, { ctx, sandboxPolicy });
+    const searchResult = await webSearchToolImpl({ query: "mono agent" }, { ctx, sandboxPolicy });
 
     expect(fetchResult).toContain("Network access denied by sandbox policy");
     expect(searchResult).toContain("Network access denied by sandbox policy");
   });
 
   it("rejects non-http WebFetch URLs before calling fetch", async () => {
-    const result = await webFetchToolImpl({ url: "file:///etc/passwd" });
+    const result = await webFetchToolImpl({ url: "file:///etc/passwd" }, { ctx });
 
     expect(result).toBe("Error: WebFetch only supports http(s) URLs.");
   });
@@ -418,7 +416,7 @@ describe("ai tool helpers", () => {
       return new Response("recovered body", { status: 200 });
     };
     try {
-      const result = await webFetchToolImpl({ url: "https://example.com" }, { retryDelaysMs: [0, 0] });
+      const result = await webFetchToolImpl({ url: "https://example.com" }, { ctx, retryDelaysMs: [0, 0] });
       expect(result).toContain("recovered body");
       expect(calls).toBe(2);
     } finally {
@@ -436,7 +434,7 @@ describe("ai tool helpers", () => {
       throw err;
     };
     try {
-      const result = await webFetchToolImpl({ url: "https://example.com" }, { retryDelaysMs: [0, 0] });
+      const result = await webFetchToolImpl({ url: "https://example.com" }, { ctx, retryDelaysMs: [0, 0] });
       expect(result).toContain("Error fetching URL");
       expect(calls).toBe(3); // initial attempt + 2 retries
     } finally {
@@ -452,7 +450,7 @@ describe("ai tool helpers", () => {
       throw new Error("certificate has expired");
     };
     try {
-      const result = await webFetchToolImpl({ url: "https://example.com" }, { retryDelaysMs: [0, 0] });
+      const result = await webFetchToolImpl({ url: "https://example.com" }, { ctx, retryDelaysMs: [0, 0] });
       expect(result).toBe("Error fetching URL: certificate has expired");
       expect(calls).toBe(1);
     } finally {
@@ -462,12 +460,12 @@ describe("ai tool helpers", () => {
 
   it("returns a clean error when ripgrep is unavailable", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({ workspace: root, ripgrepPath: join(root, "missing-rg") });
+    updateToolContext(ctx, { workspace: root, ripgrepPath: join(root, "missing-rg") });
     process.env.PATH = "";
-    resolveRgPath({ refresh: true });
+    resolveRgPath({ ctx, refresh: true });
 
-    const globResult = await globToolImpl({ path: root, pattern: "**/*" });
-    const grepResult = await grepToolImpl({ path: root, pattern: "needle" });
+    const globResult = await globToolImpl({ path: root, pattern: "**/*" }, { ctx });
+    const grepResult = await grepToolImpl({ path: root, pattern: "needle" }, { ctx });
 
     expect(globResult).toContain("ripgrep (rg) is not available");
     expect(globResult).not.toContain("ENOENT");
@@ -480,11 +478,11 @@ describe("ai tool helpers", () => {
     const outside = "/etc/agent-runtime-not-real";
     const outsideFile = `${outside}/secret.txt`;
 
-    const readResult = await readToolImpl({ file_path: outsideFile });
-    const writeResult = await writeToolImpl({ file_path: `${outside}/new.txt`, content: "x" });
-    const editResult = await editToolImpl({ file_path: outsideFile, old_string: "do", new_string: "x" });
-    const globResult = await globToolImpl({ path: outside, pattern: "**/*" });
-    const grepResult = await grepToolImpl({ path: outside, pattern: "do" });
+    const readResult = await readToolImpl({ file_path: outsideFile }, { ctx });
+    const writeResult = await writeToolImpl({ file_path: `${outside}/new.txt`, content: "x" }, { ctx });
+    const editResult = await editToolImpl({ file_path: outsideFile, old_string: "do", new_string: "x" }, { ctx });
+    const globResult = await globToolImpl({ path: outside, pattern: "**/*" }, { ctx });
+    const grepResult = await grepToolImpl({ path: outside, pattern: "do" }, { ctx });
 
     expect(readResult).toContain("Path not allowed");
     expect(writeResult).toContain("Path not allowed");
@@ -504,23 +502,23 @@ describe("ai tool helpers", () => {
     writeFile(join(unrelated, "secret.ts"), "outside needle");
     symlinkSync(unrelated, join(ownedWorktrees, "escaped"), "dir");
 
-    configureToolRuntime({
+    updateToolContext(ctx, {
       workspace,
       additionalReadRoots: [mainCheckout, ownedWorktrees],
       additionalWriteRoots: [ownedWorktrees],
     });
 
-    expect(await grepToolImpl({ path: ownedWorktrees, pattern: "owned needle" }))
+    expect(await grepToolImpl({ path: ownedWorktrees, pattern: "owned needle" }, { ctx }))
       .toContain("feature/source.ts");
-    expect(await readToolImpl({ file_path: join(mainCheckout, "source.ts") }))
+    expect(await readToolImpl({ file_path: join(mainCheckout, "source.ts") }, { ctx }))
       .toContain("main needle");
-    expect(await writeToolImpl({ file_path: join(ownedWorktrees, "feature", "new.ts"), content: "ok" }))
+    expect(await writeToolImpl({ file_path: join(ownedWorktrees, "feature", "new.ts"), content: "ok" }, { ctx }))
       .toContain("Successfully wrote");
-    expect(await writeToolImpl({ file_path: join(mainCheckout, "new.ts"), content: "no" }))
+    expect(await writeToolImpl({ file_path: join(mainCheckout, "new.ts"), content: "no" }, { ctx }))
       .toContain("Path not allowed");
-    expect(await grepToolImpl({ path: unrelated, pattern: "outside needle" }))
+    expect(await grepToolImpl({ path: unrelated, pattern: "outside needle" }, { ctx }))
       .toContain("Path not allowed");
-    expect(await grepToolImpl({ path: join(ownedWorktrees, "escaped"), pattern: "outside needle" }))
+    expect(await grepToolImpl({ path: join(ownedWorktrees, "escaped"), pattern: "outside needle" }, { ctx }))
       .toContain("Path not allowed");
   });
 
@@ -529,15 +527,15 @@ describe("ai tool helpers", () => {
     const outsideTmpFile = join(resolve("/tmp"), `mono-agent-outside-${process.pid}.txt`);
     writeFile(outsideTmpFile, "outside");
 
-    configureToolRuntime({
+    updateToolContext(ctx, {
       workspace: root,
       additionalReadRoots: [resolve("/tmp")],
       additionalWriteRoots: [resolve("/tmp")],
       sandboxPolicy: failClosedSandboxPolicy({ root }),
     });
 
-    const readResult = await readToolImpl({ file_path: outsideTmpFile });
-    const bashResult = await bashToolImpl({ command: "pwd", workdir: "/tmp" });
+    const readResult = await readToolImpl({ file_path: outsideTmpFile }, { ctx });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: "/tmp" }, { ctx });
 
     expect(readResult).toContain("Path not allowed");
     expect(bashResult).toContain("Working directory not allowed");
@@ -553,9 +551,9 @@ describe("ai tool helpers", () => {
       writableRoots: [],
     });
 
-    const readResult = await readToolImpl({ file_path: rootFile }, { sandboxPolicy });
-    const writeResult = await writeToolImpl({ file_path: join(root, "new.txt"), content: "x" }, { sandboxPolicy });
-    const bashResult = await bashToolImpl({ command: "pwd", workdir: root }, { sandboxPolicy });
+    const readResult = await readToolImpl({ file_path: rootFile }, { ctx, sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: join(root, "new.txt"), content: "x" }, { ctx, sandboxPolicy });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: root }, { ctx, sandboxPolicy });
 
     expect(readResult).toContain("Path not allowed");
     expect(writeResult).toContain("Path not allowed");
@@ -568,11 +566,11 @@ describe("ai tool helpers", () => {
     writeFile(outsideTmpFile, "outside");
     const sandboxPolicy = failClosedSandboxPolicy({ root });
 
-    const readResult = await readToolImpl({ file_path: outsideTmpFile }, { sandboxPolicy });
-    const writeResult = await writeToolImpl({ file_path: outsideTmpFile, content: "x" }, { sandboxPolicy });
-    const globResult = await globToolImpl({ path: "/tmp", pattern: "**/*" }, { sandboxPolicy });
-    const grepResult = await grepToolImpl({ path: "/tmp", pattern: "outside" }, { sandboxPolicy });
-    const bashResult = await bashToolImpl({ command: "pwd", workdir: "/tmp" }, { sandboxPolicy });
+    const readResult = await readToolImpl({ file_path: outsideTmpFile }, { ctx, sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: outsideTmpFile, content: "x" }, { ctx, sandboxPolicy });
+    const globResult = await globToolImpl({ path: "/tmp", pattern: "**/*" }, { ctx, sandboxPolicy });
+    const grepResult = await grepToolImpl({ path: "/tmp", pattern: "outside" }, { ctx, sandboxPolicy });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: "/tmp" }, { ctx, sandboxPolicy });
 
     expect(readResult).toContain("Path not allowed");
     expect(writeResult).toContain("Path not allowed");
@@ -583,16 +581,16 @@ describe("ai tool helpers", () => {
 
   it("enforces a context-configured sandbox policy on bash and network tools without per-call options", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({
+    updateToolContext(ctx, {
       workspace: root,
       sandboxPolicy: failClosedSandboxPolicy({ root }),
     });
 
-    const fetchResult = await webFetchToolImpl({ url: "https://example.com" });
-    const searchResult = await webSearchToolImpl({ query: "mono agent" });
+    const fetchResult = await webFetchToolImpl({ url: "https://example.com" }, { ctx });
+    const searchResult = await webSearchToolImpl({ query: "mono agent" }, { ctx });
     const bashResult = await bashToolImpl(
       { command: "echo host", workdir: root },
-      {
+      { ctx,
         sandboxEngine: {
           id: "fake",
           async isAvailable() {
@@ -617,14 +615,14 @@ describe("ai tool helpers", () => {
 
   it("does not let a per-call policy weaken the context-configured sandbox policy", async () => {
     const root = tempWorkspace();
-    configureToolRuntime({
+    updateToolContext(ctx, {
       workspace: root,
       sandboxPolicy: failClosedSandboxPolicy({ root }),
     });
 
     const fetchResult = await webFetchToolImpl(
       { url: "https://example.com" },
-      { sandboxPolicy: { mode: "off" } },
+      { ctx, sandboxPolicy: { mode: "off" } },
     );
 
     expect(fetchResult).toContain("Network access denied by sandbox policy");
@@ -637,12 +635,12 @@ describe("ai tool helpers", () => {
     writeFile(join(outside, "secret.txt"), "secret");
     symlinkSync(outside, join(root, "linked-outside"));
 
-    configureToolRuntime({
+    updateToolContext(ctx, {
       workspace: root,
       sandboxPolicy: failClosedSandboxPolicy({ root }),
     });
 
-    const readResult = await readToolImpl({ file_path: "linked-outside/secret.txt" });
+    const readResult = await readToolImpl({ file_path: "linked-outside/secret.txt" }, { ctx });
 
     expect(readResult).toContain("Path not allowed");
   });
@@ -659,7 +657,7 @@ describe("ai tool helpers", () => {
     writeFile(siblingPath, "sibling-readable");
     writeFile(join(privateRoot, "artifacts", "attachments", "input.txt"), "attachment-readable");
     symlinkSync(stateDir, join(root, "jobs-alias"));
-    configureToolRuntime({
+    updateToolContext(ctx, {
       sandboxEngine: {
         async isAvailable() { return true; },
         async prepareCommand(command) {
@@ -677,15 +675,15 @@ describe("ai tool helpers", () => {
     });
     const sandboxPolicy = failClosedSandboxPolicy({ root, protectedRoots: [stateDir] });
 
-    const readResult = await readToolImpl({ file_path: secretPath }, { sandboxPolicy });
-    const aliasReadResult = await readToolImpl({ file_path: aliasSecretPath }, { sandboxPolicy });
-    const writeResult = await writeToolImpl({ file_path: join(stateDir, "records", "job.json"), content: "bad" }, { sandboxPolicy });
-    const bashResult = await bashToolImpl({ command: "pwd", workdir: stateDir }, { sandboxPolicy });
-    const execResult = await execToolImpl({ executable: "/bin/pwd", workdir: stateDir }, { sandboxPolicy });
-    const siblingRead = await readToolImpl({ file_path: siblingPath }, { sandboxPolicy });
-    const siblingWrite = await writeToolImpl({ file_path: join(root, "sibling-output.txt"), content: "ok" }, { sandboxPolicy });
-    const attachmentRead = await readToolImpl({ file_path: join(privateRoot, "artifacts", "attachments", "input.txt") }, { sandboxPolicy });
-    const globResult = await globToolImpl({ pattern: "**/*", path: root }, { sandboxPolicy });
+    const readResult = await readToolImpl({ file_path: secretPath }, { ctx, sandboxPolicy });
+    const aliasReadResult = await readToolImpl({ file_path: aliasSecretPath }, { ctx, sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: join(stateDir, "records", "job.json"), content: "bad" }, { ctx, sandboxPolicy });
+    const bashResult = await bashToolImpl({ command: "pwd", workdir: stateDir }, { ctx, sandboxPolicy });
+    const execResult = await execToolImpl({ executable: "/bin/pwd", workdir: stateDir }, { ctx, sandboxPolicy });
+    const siblingRead = await readToolImpl({ file_path: siblingPath }, { ctx, sandboxPolicy });
+    const siblingWrite = await writeToolImpl({ file_path: join(root, "sibling-output.txt"), content: "ok" }, { ctx, sandboxPolicy });
+    const attachmentRead = await readToolImpl({ file_path: join(privateRoot, "artifacts", "attachments", "input.txt") }, { ctx, sandboxPolicy });
+    const globResult = await globToolImpl({ pattern: "**/*", path: root }, { ctx, sandboxPolicy });
     const grepResults = await Promise.all([
       "content",
       "files_with_matches",
@@ -695,7 +693,7 @@ describe("ai tool helpers", () => {
       pattern: "EXACT_PROCESS_JOB_SECRET|sibling-readable",
       path: root,
       ...(output_mode === undefined ? {} : { output_mode }),
-    }, { sandboxPolicy })));
+    }, { ctx, sandboxPolicy })));
 
     expect(readResult).toBe("Error: Protected filesystem read was denied.");
     expect(aliasReadResult).toBe("Error: Protected filesystem read was denied.");
@@ -724,15 +722,15 @@ describe("ai tool helpers", () => {
     writeFile(siblingPath, "unchanged");
     const sandboxPolicy = failClosedSandboxPolicy({ root, protectedRoots: [stateDir] });
 
-    const readResult = await readToolImpl({ file_path: siblingPath }, { sandboxPolicy });
-    const writeResult = await writeToolImpl({ file_path: siblingPath, content: "changed" }, { sandboxPolicy });
+    const readResult = await readToolImpl({ file_path: siblingPath }, { ctx, sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: siblingPath, content: "changed" }, { ctx, sandboxPolicy });
     const editResult = await editToolImpl({
       file_path: siblingPath,
       old_string: "unchanged",
       new_string: "changed",
-    }, { sandboxPolicy });
-    const globResult = await globToolImpl({ pattern: "**/*", path: root }, { sandboxPolicy });
-    const grepResult = await grepToolImpl({ pattern: "unchanged", path: root }, { sandboxPolicy });
+    }, { ctx, sandboxPolicy });
+    const globResult = await globToolImpl({ pattern: "**/*", path: root }, { ctx, sandboxPolicy });
+    const grepResult = await grepToolImpl({ pattern: "unchanged", path: root }, { ctx, sandboxPolicy });
 
     expect(readResult).toBe("Error: Protected filesystem read was denied.");
     expect(writeResult).toBe("Error: Protected filesystem write was denied.");
@@ -749,7 +747,7 @@ describe("ai tool helpers", () => {
     writeFile(join(outside, "linked.txt"), "linked content");
     symlinkSync(outside, join(root, "linked-dep"));
 
-    const readResult = await readToolImpl({ file_path: "linked-dep/linked.txt" });
+    const readResult = await readToolImpl({ file_path: "linked-dep/linked.txt" }, { ctx });
 
     expect(readResult).toContain("linked content");
   });
@@ -757,7 +755,7 @@ describe("ai tool helpers", () => {
   it("runs an empty bash command without sandbox argument validation errors", async () => {
     const root = tempWorkspace();
 
-    const result = await bashToolImpl({ command: "", workdir: root });
+    const result = await bashToolImpl({ command: "", workdir: root }, { ctx });
 
     expect(result).toBe("(no output)");
   });
@@ -768,7 +766,7 @@ describe("ai tool helpers", () => {
     tempDirs.push(readable);
     writeFile(join(readable, "note.txt"), "read only");
 
-    configureToolRuntime({
+    updateToolContext(ctx, {
       workspace: root,
       sandboxPolicy: failClosedSandboxPolicy({
         root,
@@ -777,9 +775,9 @@ describe("ai tool helpers", () => {
       }),
     });
 
-    const readResult = await readToolImpl({ file_path: join(readable, "note.txt") });
-    const writeResult = await writeToolImpl({ file_path: join(readable, "new.txt"), content: "x" });
-    const editResult = await editToolImpl({ file_path: join(readable, "note.txt"), old_string: "read", new_string: "write" });
+    const readResult = await readToolImpl({ file_path: join(readable, "note.txt") }, { ctx });
+    const writeResult = await writeToolImpl({ file_path: join(readable, "new.txt"), content: "x" }, { ctx });
+    const editResult = await editToolImpl({ file_path: join(readable, "note.txt"), old_string: "read", new_string: "write" }, { ctx });
 
     expect(readResult).toContain("1\tread only");
     expect(writeResult).toContain("Path not allowed");
@@ -795,19 +793,19 @@ describe("ai tool helpers", () => {
 
     const sandboxPolicy = failClosedSandboxPolicy({ root });
 
-    const writeResult = await writeToolImpl({ file_path: ".env", content: "TOKEN=new" }, { sandboxPolicy });
-    const envLocalResult = await writeToolImpl({ file_path: ".env.local", content: "TOKEN=new" }, { sandboxPolicy });
+    const writeResult = await writeToolImpl({ file_path: ".env", content: "TOKEN=new" }, { ctx, sandboxPolicy });
+    const envLocalResult = await writeToolImpl({ file_path: ".env.local", content: "TOKEN=new" }, { ctx, sandboxPolicy });
     const editResult = await editToolImpl({
       file_path: ".git/config",
       old_string: "repositoryformatversion",
       new_string: "changed",
-    }, { sandboxPolicy });
+    }, { ctx, sandboxPolicy });
     const hookResult = await editToolImpl({
       file_path: ".git/hooks/pre-commit",
       old_string: "echo old",
       new_string: "echo changed",
-    }, { sandboxPolicy });
-    const allowedWriteResult = await writeToolImpl({ file_path: "notes.txt", content: "ok" }, { sandboxPolicy });
+    }, { ctx, sandboxPolicy });
+    const allowedWriteResult = await writeToolImpl({ file_path: "notes.txt", content: "ok" }, { ctx, sandboxPolicy });
 
     expect(writeResult).toContain("Path not allowed");
     expect(envLocalResult).toContain("Path not allowed");
@@ -823,7 +821,7 @@ describe("ai tool helpers", () => {
   it("rejects bash workdir outside the workspace boundary", async () => {
     tempWorkspace();
 
-    const result = await bashToolImpl({ command: "pwd", workdir: "/etc/agent-runtime-not-real" });
+    const result = await bashToolImpl({ command: "pwd", workdir: "/etc/agent-runtime-not-real" }, { ctx });
 
     expect(result).toContain("Working directory not allowed");
   });

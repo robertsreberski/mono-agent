@@ -9,7 +9,6 @@ import { isConversationRelativeQuery } from "@mono-agent/memory/bujo";
 import * as z from "zod/v4";
 
 import type {
-  MemoryRecallBujoSettings,
   MemoryRecallEmbeddings,
   MemoryRecallSettings,
   MemoryRecallSupermemorySettings,
@@ -36,11 +35,6 @@ export type {
  * automatic recall and explicit tool calls use the same store and per-turn cache. Recall needs only
  * embeddings + FTS — no chat LLM — and still serves FTS-only (lexical) results when embeddings are
  * absent. Capture stays in-app (unchanged); this module never touches it.
- *
- * The separately published `mono-agent-memory-recall` binary remains a standalone compatibility
- * surface. It reads explicitly supplied `MONO_AGENT_MEMORY_*` settings through
- * {@link memoryRecallSettingsFromEnv}; the app itself does not construct or inject a stdio-child
- * server spec.
  *
  * MCP tools are not gated by `tools.allowedTools`, so no allowlist entry is required.
  */
@@ -88,120 +82,10 @@ export interface MemoryRecallRuntimeExtension {
 }
 
 /**
- * Bound embeddings calls in the recall child so a slow/cold backend cannot stall a turn for the
+ * Bound embeddings calls in the recall store so a slow/cold backend cannot stall a turn for the
  * provider default. Mirrors the in-app `createConfiguredMemory` host default (agent-host).
  */
 export const DEFAULT_RECALL_EMBEDDINGS_TIMEOUT_MS = 10_000;
-
-/**
- * Re-read recall settings from the recall server's own environment (the stdio child process).
- *
- * Only `MONO_AGENT_MEMORY_PATH` is required. When the embeddings provider/model are both absent the
- * child runs FTS-only (no embedding provider). When present, the embeddings slice — including the
- * resilience knobs (timeout + circuit breaker) — is rehydrated. When
- * `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV` is set, that named inherited value is authoritative and
- * must resolve; a literal `MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY` is accepted only for the inline-key
- * case where no env-var name was declared.
- */
-export function memoryRecallSettingsFromEnv(env: Record<string, string | undefined>): MemoryRecallSettings {
-  if (optionalString(env.MONO_AGENT_MEMORY_BACKEND) === "supermemory") {
-    const baseUrl = optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL);
-    if (baseUrl === undefined) {
-      throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_SUPERMEMORY_BASE_URL).");
-    }
-    // Container is forwarded by the parent's resolveSupermemoryContainer (always non-empty). A missing
-    // value in the child is a wiring bug, not a default — fail loud rather than search a wrong/empty
-    // namespace, mirroring the baseUrl check above.
-    const container = optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER);
-    if (container === undefined) {
-      throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_SUPERMEMORY_CONTAINER).");
-    }
-    const apiKey = optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_API_KEY);
-    const timeoutMs = parsePositiveInt(
-      optionalString(env.MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS),
-      "MONO_AGENT_MEMORY_SUPERMEMORY_TIMEOUT_MS",
-    );
-    return {
-      supermemory: {
-        baseUrl,
-        container,
-        ...(apiKey === undefined ? {} : { apiKey }),
-        ...(timeoutMs === undefined ? {} : { timeoutMs }),
-      },
-    };
-  }
-  const root = optionalString(env.MONO_AGENT_MEMORY_PATH);
-  if (root === undefined) {
-    throw new Error("memory-recall: missing required environment (MONO_AGENT_MEMORY_PATH).");
-  }
-  const rawTier = optionalString(env.MONO_AGENT_MEMORY_MODE);
-  if (rawTier !== undefined && rawTier !== "lite" && rawTier !== "journal" && rawTier !== "bujo") {
-    throw new Error(`memory-recall: unsupported MONO_AGENT_MEMORY_MODE "${rawTier}" (expected lite, journal, or bujo).`);
-  }
-  const tier = rawTier as MemoryRecallBujoSettings["tier"];
-  const provider = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER);
-  const model = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_MODEL);
-  if (provider === undefined && model === undefined) {
-    // No embeddings configured → FTS-only recall store.
-    return { root, ...(tier === undefined ? {} : { tier }) };
-  }
-  if (provider === undefined || model === undefined) {
-    throw new Error(
-      "memory-recall: incomplete embeddings environment (MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER and MONO_AGENT_MEMORY_EMBEDDINGS_MODEL must be set together).",
-    );
-  }
-  if (provider !== "ollama" && provider !== "lmstudio" && provider !== "openai") {
-    throw new Error(
-      `memory-recall: unsupported MONO_AGENT_MEMORY_EMBEDDINGS_PROVIDER "${provider}" ` +
-      `(expected "ollama", "lmstudio", or "openai").`,
-    );
-  }
-  const endpoint = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_ENDPOINT);
-  const apiKeyEnv = optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY_ENV);
-  const namedApiKey = apiKeyEnv === undefined ? undefined : optionalString(env[apiKeyEnv]);
-  if (apiKeyEnv !== undefined && namedApiKey === undefined) {
-    throw new Error(
-      `memory-recall: memory.embeddings.apiKeyEnv ${apiKeyEnv} is declared but the inherited environment ` +
-      `has no non-empty value; set ${apiKeyEnv} before starting recall.`,
-    );
-  }
-  // A declared name is authoritative: never turn a missing named credential
-  // into an accidental keyless request or silently substitute another value.
-  const apiKey = apiKeyEnv === undefined
-    ? optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_API_KEY)
-    : namedApiKey;
-  const dim = parseDim(optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_DIM));
-  const timeoutMs = parsePositiveInt(optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS), "MONO_AGENT_MEMORY_EMBEDDINGS_TIMEOUT_MS");
-  const failureThreshold = parsePositiveInt(
-    optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD),
-    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_FAILURE_THRESHOLD",
-  );
-  const cooldownMs = parsePositiveInt(
-    optionalString(env.MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS),
-    "MONO_AGENT_MEMORY_EMBEDDINGS_CIRCUIT_BREAKER_COOLDOWN_MS",
-  );
-  const circuitBreaker =
-    failureThreshold === undefined && cooldownMs === undefined
-      ? undefined
-      : {
-          ...(failureThreshold === undefined ? {} : { failureThreshold }),
-          ...(cooldownMs === undefined ? {} : { cooldownMs }),
-        };
-  return {
-    root,
-    ...(tier === undefined ? {} : { tier }),
-    embeddings: {
-      provider,
-      model,
-      ...(endpoint === undefined ? {} : { endpoint }),
-      ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
-      ...(apiKey === undefined ? {} : { apiKey }),
-      ...(dim === undefined ? {} : { dim }),
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
-      ...(circuitBreaker === undefined ? {} : { circuitBreaker }),
-    },
-  };
-}
 
 /**
  * Build a RECALL-ONLY store: embeddings + FTS, no chat LLM (recall needs none, so capture/reflect
@@ -216,7 +100,7 @@ export function memoryRecallSettingsFromEnv(env: Record<string, string | undefin
 export async function createRecallStore(settings: MemoryRecallSettings): Promise<RecallCapableStore> {
   // Backend packages load lazily so importing the settings/type surface never pulls the
   // SQLite/BuJo stack or Supermemory client into the main process. Only a recall command or the
-  // standalone binary pays for the backend it actually serves.
+  // injected tool pays for the backend it actually serves.
   if (isSupermemorySettings(settings)) {
     const { createSupermemoryStore } = await loadSupermemoryPlugin();
     const sm = settings.supermemory;
@@ -354,34 +238,4 @@ function clampLimit(limit: number | undefined, fallback: number): number {
     return fallback;
   }
   return Math.min(50, Math.max(1, Math.trunc(limit)));
-}
-
-function optionalString(value: string | undefined): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? undefined : trimmed;
-}
-
-function parseDim(raw: string | undefined): number | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`memory-recall: invalid MONO_AGENT_MEMORY_EMBEDDINGS_DIM "${raw}" (expected a positive integer).`);
-  }
-  return parsed;
-}
-
-function parsePositiveInt(raw: string | undefined, name: string): number | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed <= 0) {
-    throw new Error(`memory-recall: invalid ${name} "${raw}" (expected a positive integer).`);
-  }
-  return parsed;
 }

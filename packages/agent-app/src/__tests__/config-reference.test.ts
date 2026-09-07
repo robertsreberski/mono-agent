@@ -29,7 +29,6 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   "runtime.retry.backoffMs": "integer",
   "runtime.retry.maxBackoffMs": "integer",
   "runtime.effort": "string",
-  "runtime.permissionMode": "string",
   "runtime.maxTurns": "integer",
   "runtime.compaction.enabled": "boolean",
   "runtime.compaction.triggerRatio": "number",

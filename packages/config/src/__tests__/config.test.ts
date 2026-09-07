@@ -345,18 +345,6 @@ describe("loadMonoAgentConfig", () => {
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
-  it("loads permission mode from env", () => {
-    const config = loadMonoAgentConfig({
-      cwd: "/repo",
-      env: {
-        ...baseEnv,
-        MONO_AGENT_PERMISSION_MODE: "bypassPermissions",
-      },
-    });
-
-    expect(config.runtime.permissionMode).toBe("bypassPermissions");
-  });
-
   it("treats an omitted runtime max turns value as unlimited", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
 
@@ -377,7 +365,7 @@ describe("loadMonoAgentConfig", () => {
 
   it("omits permission mode when the env is unset", () => {
     const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
-    expect(config.runtime.permissionMode).toBeUndefined();
+    expect(config.runtime).not.toHaveProperty("permissionMode");
   });
 
   it("loads pi-native provider knobs from env", () => {
@@ -422,13 +410,13 @@ describe("loadMonoAgentConfig", () => {
     ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
   });
 
-  it("rejects an invalid permission mode value", () => {
+  it("rejects the retired permission mode with an actionable repair", () => {
     expect(() =>
       loadMonoAgentConfig({
         cwd: "/repo",
-        env: { ...baseEnv, MONO_AGENT_PERMISSION_MODE: "yolo" },
+        env: { ...baseEnv, MONO_AGENT_PERMISSION_MODE: "bypassPermissions" },
       }),
-    ).toThrowError(expect.objectContaining({ code: "invalid_env" }));
+    ).toThrow(/MONO_AGENT_PERMISSION_MODE.*was removed.*Remove the variable.*sandbox/);
   });
 
   it("loads a trimmed public agent name and uses it as the default trace label", () => {
@@ -675,6 +663,7 @@ describe("loadMonoAgentConfig", () => {
     "MONO_AGENT_ROUTE_SAFETY",
     "MONO_AGENT_FALLBACK_MODELS",
     "MONO_AGENT_MEMORY_LLM_EXECUTION_MODE",
+    "MONO_AGENT_PERMISSION_MODE",
   ] as const)("treats an empty retired env key %s as unset", (env) => {
     // Every reader here treats an empty env var as unset, and the layered
     // loader drops empty values before layering, so `KEY=` in a deployed .env

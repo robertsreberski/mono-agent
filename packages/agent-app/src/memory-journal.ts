@@ -8,7 +8,6 @@ import {
   MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES,
   isCanonicalDailySourcePath,
   type JournalBrowseCapableStore,
-  type JournalBrowseInput,
   type JournalBrowseSnapshot,
   type MemoryRecord,
 } from "@mono-agent/memory/store";

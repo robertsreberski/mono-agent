@@ -38,12 +38,12 @@
     "@mono-agent/agent-contracts": "workspace:0.20.14",
     "@mono-agent/config": "workspace:0.20.14",
     "@mono-agent/observability": "workspace:0.20.14",
-    "undici": "8.9.0"
+    "@mono-agent/operator-adapter": "workspace:0.20.14"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
-    "@mono-agent/operator-adapter": "workspace:0.20.14"
+    "undici": "8.9.0"
   }
 }

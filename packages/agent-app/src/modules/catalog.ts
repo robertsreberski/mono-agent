@@ -5,6 +5,7 @@ import {
   DEFAULT_MEMORY_EMBEDDING_ENDPOINTS,
   memoryEmbeddingEndpointProblem,
 } from "../memory-embedding-service.js";
+import { missingPhoenixPluginMessage } from "../phoenix-plugin.js";
 import { DEFAULT_MODEL, memoryBlock } from "./base.js";
 import type { CapabilityModule, ModuleKind } from "./types.js";
 
@@ -494,7 +495,7 @@ const observabilityPhoenix: CapabilityModule = {
     observability: { exporters: [{ type: "phoenix", includeSensitiveData: false }] },
   }),
   validateExpectations: [
-    { sectionId: "observability", mustBe: "ok", note: "Start Phoenix (or it reports `waiting`)." },
+    { sectionId: "observability", mustBe: "ok", note: `${missingPhoenixPluginMessage()} Then start Phoenix (or it reports \`waiting\`).` },
   ],
 };
 

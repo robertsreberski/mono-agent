@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { MemoryCompletedTurn, MemoryWriteResult } from "@mono-agent/agent-contracts";
+import type { MemoryCompletedTurn } from "@mono-agent/agent-contracts";
 import { createAgentHarness } from "@mono-agent/agent-harness";
 import { openMemoryDb, type MemoryRecord } from "@mono-agent/memory/store";
 import { describe, expect, it } from "vitest";
@@ -48,9 +48,6 @@ function fakeStore(options: { readonly fail?: boolean } = {}): SharedRecallStore
       }));
     },
     recordAccess(ids) { accesses.push([...ids]); },
-    async appendHostSummary(conversationId): Promise<MemoryWriteResult> {
-      return { conversationId, source: "fake", bytesWritten: 0 };
-    },
     async close() {},
   };
 }
@@ -119,8 +116,8 @@ describe("MemoryRetrievalService", () => {
     });
     expect(admissions).toEqual([turn]);
 
-    const legacyService = new MemoryRetrievalService(fakeStore());
-    expect(legacyService.persistCompletedTurn).toBeUndefined();
+    const readOnlyService = new MemoryRetrievalService(fakeStore());
+    expect(readOnlyService.persistCompletedTurn).toBeUndefined();
   });
 
   it("shares one normalized backend lookup between automatic and tool recall in a turn", async () => {
@@ -502,7 +499,6 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     const hits: { readonly score: number; readonly record: { id: string; text: string } }[] = [];
     const store = {
       async load() { return undefined; },
-      async appendHostSummary() { return { conversationId: "c", source: "s", bytesWritten: 0 }; },
       async recall() { return [...hits]; },
       supportsRemember: () => true,
       async remember(_conversationId: string, text: string) {
@@ -526,7 +522,6 @@ describe("MemoryRetrievalService.remember cache coherence", () => {
     let recallCalls = 0;
     const store = {
       async load() { return undefined; },
-      async appendHostSummary() { return { conversationId: "c", source: "s", bytesWritten: 0 }; },
       async recall() { recallCalls += 1; return []; },
       supportsRemember: () => true,
       async remember(_conversationId: string, text: string) {

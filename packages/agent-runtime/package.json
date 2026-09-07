@@ -63,10 +63,6 @@
       "types": "./types/agent/tools/index.d.ts",
       "default": "./src/agent/tools/index.js"
     },
-    "./agent/tools/shared/runtime-context.js": {
-      "types": "./types/agent/tools/shared/runtime-context.d.ts",
-      "default": "./src/agent/tools/shared/runtime-context.js"
-    },
     "./agent/tools/shared/ripgrep.js": {
       "types": "./types/agent/tools/shared/ripgrep.d.ts",
       "default": "./src/agent/tools/shared/ripgrep.js"
@@ -86,6 +82,10 @@
     "./agent/compaction.js": {
       "types": "./types/agent/compaction.d.ts",
       "default": "./src/agent/compaction.js"
+    },
+    "./agent/tools/shared/tool-context.js": {
+      "types": "./types/agent/tools/shared/tool-context.d.ts",
+      "default": "./src/agent/tools/shared/tool-context.js"
     }
   },
   "main": "./src/index.js",
@@ -115,7 +115,6 @@
     "@mozilla/readability": "0.6.0",
     "@vscode/ripgrep": "1.18.0",
     "bmp-ts": "1.0.9",
-    "cross-spawn": "^7.0.6",
     "defuddle": "0.19.2",
     "fast-xml-parser": "5.7.3",
     "linkedom": "0.18.13",
