@@ -6,6 +6,7 @@ describe("provider auth observations", () => {
   it("attributes fallback failures, verifies only the successful provider, and clears later failures", () => {
     let now = Date.parse("2026-09-06T12:00:00.000Z");
     const tracker = createProviderAuthObservationTracker(() => now);
+    tracker.runStarted("run-1");
     tracker.observe({
       runId: "run-1", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "openai-codex:gpt-5.6-terra",
@@ -15,6 +16,7 @@ describe("provider auth observations", () => {
     expect(tracker.get("openai-codex")?.verifiedAt).toBe("2026-09-06T12:00:00.000Z");
 
     now += 1_000;
+    tracker.runStarted("run-2");
     tracker.observe({
       runId: "run-2", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "anthropic:claude-sonnet-4-5",
@@ -25,6 +27,7 @@ describe("provider auth observations", () => {
   it("expires failure warnings after 24 hours without inventing verification", () => {
     let now = 1_000;
     const tracker = createProviderAuthObservationTracker(() => now);
+    tracker.runStarted("run");
     tracker.observe({
       runId: "run", conversationId: "web:1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "openai:gpt-5.5", failureKind: "provider_unavailable", error: "raw secret-shaped provider text",
@@ -34,34 +37,31 @@ describe("provider auth observations", () => {
     expect(tracker.get("openai")).toBeUndefined();
   });
 
-  it("invalidates stale verification after credential persistence and preserves only availability failures", () => {
+  it("invalidates all evidence after credential persistence", () => {
     let now = Date.parse("2026-09-06T12:00:00.000Z");
     const unavailable = createProviderAuthObservationTracker(() => now);
+    unavailable.runStarted("verified");
     unavailable.observe({
       runId: "verified", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "opencode-go:kimi-k2.6",
     });
     now += 1_000;
+    unavailable.runStarted("unavailable");
     unavailable.observe({
       runId: "unavailable", conversationId: "web:1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "opencode-go:kimi-k2.6", failureKind: "provider_unavailable",
     });
     unavailable.credentialPersisted("opencode-go");
-    expect(unavailable.get("opencode-go")).toEqual({
-      failure: {
-        kind: "provider_unavailable",
-        message: "Provider was unavailable.",
-        model: "opencode-go:kimi-k2.6",
-        observedAt: "2026-09-06T12:00:01.000Z",
-      },
-    });
+    expect(unavailable.get("opencode-go")).toBeUndefined();
 
     const authFailure = createProviderAuthObservationTracker(() => now);
+    authFailure.runStarted("verified");
     authFailure.observe({
       runId: "verified", conversationId: "web:1", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "opencode-go:kimi-k2.6",
     });
     now += 1_000;
+    authFailure.runStarted("auth-failed");
     authFailure.observe({
       runId: "auth-failed", conversationId: "web:1", status: "failed", durationMs: 1, eventCount: 0, artifactPaths: [],
       model: "opencode-go:kimi-k2.6", failureKind: "provider_auth",
@@ -73,6 +73,7 @@ describe("provider auth observations", () => {
   it("retains only current used providers and caps pre-status observations", () => {
     const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:00.000Z"));
     for (let index = 0; index < 70; index += 1) {
+      tracker.runStarted(`run-${index}`);
       tracker.observe({
         runId: `run-${index}`,
         conversationId: "web:1",
@@ -89,5 +90,68 @@ describe("provider auth observations", () => {
     tracker.retainProviders(["provider-69"]);
     expect(tracker.get("provider-68")).toBeUndefined();
     expect(tracker.get("provider-69")).toBeDefined();
+  });
+
+  it("orders passive and explicit outcomes by completion time", () => {
+    const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:05.000Z"));
+    tracker.recordSuccess("opencode-go", "opencode-go:kimi-k2.6", "2026-09-06T12:00:02.000Z");
+    tracker.recordFailure("opencode-go", "opencode-go:kimi-k2.6", "provider_auth", "2026-09-06T12:00:01.000Z");
+    expect(tracker.get("opencode-go")).toEqual({ verifiedAt: "2026-09-06T12:00:02.000Z" });
+
+    tracker.recordFailure("opencode-go", "opencode-go:kimi-k2.6", "provider_auth", "2026-09-06T12:00:03.000Z");
+    expect(tracker.get("opencode-go")).toMatchObject({ failure: { kind: "provider_auth" } });
+    expect(tracker.get("opencode-go")).not.toHaveProperty("verifiedAt");
+    tracker.invalidate("opencode-go", "2026-09-06T12:00:04.000Z");
+    expect(tracker.get("opencode-go")).toBeUndefined();
+  });
+
+  it("rejects main and failover evidence from a run that predates credential replacement", () => {
+    const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:05.000Z"));
+    tracker.runStarted("old-run");
+    tracker.credentialPersisted("openai-codex");
+    tracker.observe({
+      runId: "old-run",
+      conversationId: "web:1",
+      status: "succeeded",
+      durationMs: 5_000,
+      eventCount: 0,
+      artifactPaths: [],
+      startedAt: "2026-09-06T12:00:00.000Z",
+      endedAt: "2026-09-06T12:00:05.000Z",
+      updatedAt: "2026-09-06T12:00:05.000Z",
+      model: "openai-codex:gpt-5.6-terra",
+      failoverHistory: [{ model: "anthropic:claude-sonnet-4-5", failureKind: "provider_auth" }],
+    });
+    expect(tracker.get("openai-codex")).toBeUndefined();
+    expect(tracker.get("anthropic")).toBeUndefined();
+
+    tracker.runStarted("replacement-run");
+    tracker.observe({
+      runId: "replacement-run",
+      conversationId: "web:1",
+      status: "succeeded",
+      durationMs: 1,
+      eventCount: 0,
+      artifactPaths: [],
+      model: "openai-codex:gpt-5.6-terra",
+    });
+    expect(tracker.get("openai-codex")).toEqual({ verifiedAt: "2026-09-06T12:00:05.000Z" });
+  });
+
+  it("bounds unfinished run generations and fails closed when an old marker is evicted", () => {
+    const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:00.000Z"));
+    for (let index = 0; index < 300; index += 1) tracker.runStarted(`pending-${index}`);
+
+    tracker.observe({
+      runId: "pending-0", conversationId: "web:1", status: "succeeded", durationMs: 1,
+      eventCount: 0, artifactPaths: [], model: "openai-codex:gpt-5.6-terra",
+    });
+    expect(tracker.get("openai-codex")).toBeUndefined();
+
+    tracker.observe({
+      runId: "pending-299", conversationId: "web:1", status: "succeeded", durationMs: 1,
+      eventCount: 0, artifactPaths: [], model: "openai-codex:gpt-5.6-terra",
+    });
+    expect(tracker.get("openai-codex")).toBeDefined();
   });
 });

@@ -243,6 +243,35 @@ describe("provider authentication", () => {
       }),
     );
   });
+
+  it("starts, polls, and cancels an encoded live-check session", async () => {
+    const snapshot = {
+      schema: "mono-agent.provider-auth-check.v1",
+      id: "check/one", state: "completed",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:10:01.000Z",
+      results: [],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json(snapshot, { status: 201 }))
+      .mockResolvedValueOnce(Response.json(snapshot))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.beginProviderAuthCheck("agent/one", "click-one")).resolves.toEqual(snapshot);
+    await expect(api.providerAuthCheck("agent/one", "check/one")).resolves.toEqual(snapshot);
+    await expect(api.cancelProviderAuthCheck("agent/one", "check/one")).resolves.toBeUndefined();
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/v1/agents/agent%2Fone/provider-auth/checks",
+      "/api/v1/agents/agent%2Fone/provider-auth/checks/check%2Fone",
+      "/api/v1/agents/agent%2Fone/provider-auth/checks/check%2Fone",
+    ]);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+      body: JSON.stringify({ idempotencyKey: "click-one" }),
+    });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: "DELETE" });
+  });
 });
 
 describe("process-job API", () => {

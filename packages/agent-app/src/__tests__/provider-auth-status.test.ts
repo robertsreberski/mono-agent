@@ -48,10 +48,11 @@ describe("provider auth status", () => {
       },
     } as unknown as MonoAgentConfig;
     const tracker = createProviderAuthObservationTracker(() => Date.parse("2026-09-06T12:00:00.000Z"));
+    tracker.runStarted("r");
     tracker.observe({ runId: "r", conversationId: "c", status: "succeeded", durationMs: 1, eventCount: 0, artifactPaths: [], model: "opencode-go:kimi-k2.6" });
     const snapshot = await providerAuthStatusSnapshot({ config, env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker });
     expect(snapshot.providers.find((item) => item.providerId === "opencode-go")).toMatchObject({ state: "present", source: "stored", verification: "verified_by_live_request" });
-    expect(snapshot.providers.find((item) => item.providerId === "openai-codex")).toMatchObject({ state: "expired", credentialType: "oauth", verification: "not_verified" });
+    expect(snapshot.providers.find((item) => item.providerId === "openai-codex")).toMatchObject({ state: "present", credentialType: "oauth", verification: "not_verified" });
     expect(snapshot.providers.find((item) => item.providerId === "anthropic")).toMatchObject({ state: "not_applicable", methods: [] });
     expect(JSON.stringify(snapshot)).not.toContain("secret-not-projected");
   });
@@ -88,7 +89,11 @@ describe("provider auth status", () => {
       config: { ...configWith(join(dir, "unsafe.json")), runtime: { model: parseMonoRuntimeModelReference("opencode-go:kimi-k2.6") } } as unknown as MonoAgentConfig,
       env: { OPENCODE_API_KEY: ambientSecret }, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker,
     });
-    expect(withUnsafeStore.providers[0]).toMatchObject({ state: "present", source: "environment" });
+    expect(withUnsafeStore.providers[0]).toMatchObject({
+      state: "missing",
+      unavailableReason: expect.stringContaining("unsafe"),
+    });
+    expect(withUnsafeStore.providers[0]).not.toHaveProperty("source");
 
     const wrongTypePath = join(dir, "wrong-type.json");
     await writeFile(wrongTypePath, `${JSON.stringify({
@@ -112,6 +117,43 @@ describe("provider auth status", () => {
       env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} }, observations: tracker,
     });
     expect(profile.providers[0]).toMatchObject({ state: "present", credentialType: "api_key", source: "stored" });
+  });
+
+  it("distinguishes refreshable OAuth expiry from expired and empty credentials", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-status-oauth-"));
+    tempDirs.push(dir);
+    const authPath = join(dir, "auth.json");
+    const tracker = createProviderAuthObservationTracker();
+    const readStatus = async (credential: unknown) => {
+      await writeFile(authPath, `${JSON.stringify({ "openai-codex": credential })}\n`, { mode: 0o600 });
+      await chmod(authPath, 0o600);
+      return (await providerAuthStatusSnapshot({
+        config: {
+          ...configWith(authPath),
+          runtime: { model: parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra") },
+        } as unknown as MonoAgentConfig,
+        env: {},
+        drivers: [],
+        input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+        observations: tracker,
+      })).providers[0];
+    };
+
+    expect(await readStatus({ type: "oauth", access: "expired", refresh: "usable", expires: 1 }))
+      .toMatchObject({ state: "present", verification: "not_verified" });
+    expect(await readStatus({ type: "oauth", access: "expired", refresh: "", expires: 1 }))
+      .toMatchObject({ state: "expired", verification: "not_verified" });
+    tracker.runStarted("previous-success");
+    tracker.observe({
+      runId: "previous-success", conversationId: "c", status: "succeeded", durationMs: 1,
+      eventCount: 0, artifactPaths: [], model: "openai-codex:gpt-5.6-terra",
+    });
+    expect(await readStatus({ type: "oauth", access: "", refresh: "", expires: 1 }))
+      .toMatchObject({
+        state: "missing",
+        verification: "not_verified",
+        unavailableReason: "Stored OAuth credential is unusable.",
+      });
   });
 });
 

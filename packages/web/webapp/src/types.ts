@@ -20,6 +20,8 @@ export type {
   ProviderAuthProviderStatus,
   ProviderAuthStatusSnapshot,
   ProviderAuthSessionSnapshot,
+  ProviderAuthCheckResult,
+  ProviderAuthCheckSessionSnapshot,
 } from "@mono-agent/agent-contracts";
 
 export const API_VERSION: typeof Wire.WEB_API_VERSION = 1;

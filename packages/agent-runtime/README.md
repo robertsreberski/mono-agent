@@ -173,6 +173,7 @@ provider-supplied known kind when available and otherwise `runtime_error`.
 | `listPiBuiltinModels()` / `getPiBuiltinModel()` | Read cloned snapshots from the runtime-owned, exact-pinned Pi model catalog without importing Pi directly |
 | `resolvePiOAuthApiKey()` / `loginPiOAuth()` | Use the runtime-owned Pi OAuth implementation without importing Pi's mutable provider registry |
 | `describePiProviderAuth()` / `checkPiProviderAuth()` / `loginPiProviderAuth()` | Bridge Pi's provider-owned auth descriptions, detection, prompts, device events, and returned credential without exposing its mutable registry |
+| `runPiProviderCheck()` | Execute one isolated, bounded Pi request for an explicitly selected provider/model and return only a fixed sanitized outcome; only provider-construction options are admitted, never session/history/tool/hook state |
 | `createMetricsObserver()` | Aggregate normalized event, token, cache, cost, tool, error, turn, and approval metrics |
 
 Most hosts should use `@mono-agent/runtime-adapter` instead of importing deep
@@ -194,6 +195,7 @@ BINARY_BLOAT_TOOLS
 DEFAULT_RUNTIME_BRAND
 DEFAULT_TOOL_BLOAT_CONFIG
 MAX_TOOL_RESULT_BYTES
+PROVIDER_CHECK_PROMPT
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -203,6 +205,8 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+ProviderCheckCode
+ProviderCheckOutcome
 RISK_TIERS
 RUNTIME_CAPABILITIES
 RuntimeBridge
@@ -213,6 +217,7 @@ UNKNOWN_CAPABILITY
 buildCapabilitiesUsed
 buildTranscriptTailSnapshot
 checkPiProviderAuth
+classifyProviderCheckFailure
 createApprovalManager
 createMetricsObserver
 createObserverHub
@@ -249,6 +254,7 @@ resolveAllowlistMap
 resolvePiOAuthApiKey
 resolveRuntimeBrand
 resolveRuntimeBridge
+runPiProviderCheck
 runtimeCapabilities
 storedAllowlistMode
 syncProviderSession
@@ -388,6 +394,7 @@ renderResumeSnapshot
 **`@mono-agent/agent-runtime/ai`**
 
 ```text
+PROVIDER_CHECK_PROMPT
 PiBuiltinModelSnapshot
 PiBuiltinProviderSnapshot
 PiOAuthCredentialsSnapshot
@@ -397,6 +404,8 @@ PiProviderAuthDescription
 PiProviderAuthInteraction
 PiProviderAuthPrompt
 PiReasoningLevel
+ProviderCheckCode
+ProviderCheckOutcome
 RUNTIME_CAPABILITIES
 RuntimeBridge
 RuntimeBridgeDescriptor
@@ -405,6 +414,7 @@ RuntimeModelRef
 UNKNOWN_CAPABILITY
 buildCapabilitiesUsed
 checkPiProviderAuth
+classifyProviderCheckFailure
 createMetricsObserver
 createObserverHub
 createSessionRegistry
@@ -427,6 +437,7 @@ reasoningLevelsForPiModel
 refreshProviderSession
 resolvePiOAuthApiKey
 resolveRuntimeBridge
+runPiProviderCheck
 runtimeCapabilities
 syncProviderSession
 toolCompactionAppliedFromWarnings
@@ -683,7 +694,10 @@ or ambient credential detection without refreshing or making a model request,
 and `loginPiProviderAuth()` to relay Pi's typed prompts and events. The last
 function returns a credential to its caller but does not persist it; the owning
 application must apply its own safe-store transaction and must never serialize
-prompt answers into an operator projection.
+prompt answers into an operator projection. Abort can close supported Pi flows
+and discard an uncooperative provider's late result, but it cannot undo a
+provider-side grant or a filesystem mutation that already began; the owning app
+must fence pre-mutation persistence and safely drain atomic promotion/cleanup.
 
 Returns:
 

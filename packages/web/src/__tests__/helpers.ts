@@ -153,8 +153,10 @@ export function operatorFetch(options: {
   readonly supportsMcpApps?: boolean;
   readonly supportsJobs?: boolean;
   readonly supportsProviderAuth?: boolean;
+  readonly supportsProviderAuthChecks?: boolean;
   readonly providerAuthStatus?: Record<string, unknown>;
   readonly providerAuthSession?: Record<string, unknown>;
+  readonly providerAuthCheckSession?: Record<string, unknown>;
   readonly onProviderAuthRequest?: (url: string, init?: RequestInit) => void;
   readonly jobs?: readonly ProcessJobProjection[];
   readonly onJobRequest?: (jobId: string, authorization: string | null) => void;
@@ -224,7 +226,12 @@ export function operatorFetch(options: {
             ? {}
             : { cron: { read: true, actions: options.onCronMutation !== undefined } }),
           ...(options.supportsJobs === true ? { jobs: true } : {}),
-          ...(options.supportsProviderAuth === false ? {} : { providerAuth: { version: 1 } }),
+          ...(options.supportsProviderAuth === false ? {} : {
+            providerAuth: {
+              version: 1,
+              ...(options.supportsProviderAuthChecks === true ? { checks: { version: 1 } } : {}),
+            },
+          }),
         },
       });
     }
@@ -232,6 +239,7 @@ export function operatorFetch(options: {
       options.onProviderAuthRequest?.(url, init);
       if (url.endsWith("/v1/provider-auth")) return Response.json(options.providerAuthStatus ?? {});
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      if (url.includes("/provider-auth/checks")) return Response.json(options.providerAuthCheckSession ?? {});
       return Response.json(options.providerAuthSession ?? {});
     }
     if (url.endsWith("/v1/cron")) {

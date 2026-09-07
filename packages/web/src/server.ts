@@ -19,6 +19,7 @@ import {
   normalizeHostForBind,
   parseProviderAuthSessionInput,
   parseProviderAuthSessionStartInput,
+  parseProviderAuthCheckStartInput,
   type ChannelAskAnswer,
 } from "@mono-agent/agent-contracts";
 import compression from "compression";
@@ -95,11 +96,13 @@ const MAX_MCP_APP_BRIDGE_REQUEST_BYTES = 64 * 1024;
  * their URL, so the browser may hold them for a year and skip the request.
  */
 const IMMUTABLE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
-const WEB_THEME_CHROME: Readonly<Record<WebTheme, { readonly light: string; readonly dark: string }>> = {
-  evergreen: { light: "#eeefeb", dark: "#0f1110" },
-  ocean: { light: "#edf1f4", dark: "#0d1115" },
-  plum: { light: "#f2eef3", dark: "#120f14" },
-  terracotta: { light: "#f4efec", dark: "#130f0d" },
+const WEB_THEME_MANIFEST_COLORS: Readonly<
+  Record<WebTheme, { readonly themeColor: string; readonly backgroundColor: string }>
+> = {
+  evergreen: { themeColor: "#191c1a", backgroundColor: "#0f1110" },
+  ocean: { themeColor: "#191c1a", backgroundColor: "#0d1115" },
+  plum: { themeColor: "#191c1a", backgroundColor: "#120f14" },
+  terracotta: { themeColor: "#191c1a", backgroundColor: "#130f0d" },
 };
 
 export interface StartWebServerOptions extends CreateWebServiceOptions {
@@ -304,6 +307,42 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       void trackOperation(service.cancelProviderAuth(
         pathParam(req.params.id),
         pathParam(req.params.sessionId),
+      ), activeOperations).then(() => sendProviderAuth(res, 204)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/agents/:id/provider-auth/checks", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      assertProviderAuthBody(req.body);
+      const input = parseProviderAuthCheckStartInput(req.body);
+      void trackOperation(service.startProviderAuthCheck(pathParam(req.params.id), input), activeOperations)
+        .then((snapshot) => sendProviderAuth(res, 201, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/agents/:id/provider-auth/checks/:checkId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(service.providerAuthCheck(
+        pathParam(req.params.id),
+        pathParam(req.params.checkId),
+      ), activeOperations).then((snapshot) => sendProviderAuth(res, 200, snapshot)).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/agents/:id/provider-auth/checks/:checkId", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      void trackOperation(service.cancelProviderAuthCheck(
+        pathParam(req.params.id),
+        pathParam(req.params.checkId),
       ), activeOperations).then(() => sendProviderAuth(res, 204)).catch(next);
     } catch (error) {
       next(error);
@@ -928,6 +967,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       && ((error as { status?: unknown }).status === 413 || (error as { type?: unknown }).type === "entity.too.large");
     const status = known ? error.status : tooLarge ? 413 : syntax ? 400 : 500;
     const code = known ? error.code : tooLarge ? "request_too_large" : syntax ? "invalid_json" : "internal_error";
+    const retryAfterSeconds = known && typeof error.details?.retryAfterSeconds === "number"
+      ? error.details.retryAfterSeconds
+      : undefined;
+    if (status === 429 && Number.isSafeInteger(retryAfterSeconds) && (retryAfterSeconds as number) > 0) {
+      res.setHeader("Retry-After", String(retryAfterSeconds));
+    }
     if (status >= 500) logger?.error?.("Web console request failed.", { error: errorMessage(error) });
     res.status(status).json({
       error: {
@@ -1046,13 +1091,13 @@ async function loadWebManifest(
   if (template === null || typeof template !== "object" || Array.isArray(template)) {
     throw new WebConsoleError("invalid_static_manifest", "The web console manifest must be a JSON object.", 500);
   }
-  const chrome = WEB_THEME_CHROME[identity.theme];
+  const colors = WEB_THEME_MANIFEST_COLORS[identity.theme];
   return {
     ...(template as Readonly<Record<string, unknown>>),
     name: `${identity.displayName} · mono-agent Console`,
     short_name: identity.displayName,
-    theme_color: chrome.dark,
-    background_color: chrome.dark,
+    theme_color: colors.themeColor,
+    background_color: colors.backgroundColor,
   };
 }
 

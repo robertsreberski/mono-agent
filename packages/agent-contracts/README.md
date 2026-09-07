@@ -149,7 +149,7 @@ Primary modules:
 | Message delivery | `buffered-message-stream.ts`, `resilient-message-stream.ts`, `stream-text.ts`, `tool-hints.ts` | Collect or safely adapt incremental output and format bounded activity copy. |
 | Process transport | `stream-wire.ts` | NDJSON stream frames for operator clients. |
 | Process-job projection | `process-jobs.ts` | Neutral lifecycle/error enums, stable public safety/cleanup messages, strict secret-free projection parsers, and the owner-authorized operator interface. |
-| Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/session parsers plus the host-owned operator interface and stable operation errors. |
+| Provider-auth projection | `provider-auth.ts` | Strict bounded, secret-free provider status/login/check parsers, including closed check state/code/message projections, plus the host-owned operator interfaces and stable operation errors. |
 | Shared safety helpers | `host-safety.ts`, `bearer.ts`, `http-headers.ts`, `config-loader.ts`, `json-source.ts` | Safe binds, bounded HTTP shutdown/streaming, tokens, sanitized headers, layered config coercion, and settings files. |
 | Channel log safety | `log-redaction.ts` | Bounded descriptor-safe redaction with channel-specific credentials and sinks. |
 | Reply artifact validation | `reply-artifacts.ts` | Shared attachment metadata checks and exact bounded byte collection. |
@@ -206,7 +206,7 @@ editing in place and never changes final-answer delivery.
 | Sanitize or validate reply-part delivery outcomes | `sanitizeReplyPartDeliveryOutcomes`, `isAgentReplyPartDeliveryOutcomes` |
 | Carry stream events across a process boundary | `AgentStreamWireFrame`, `serializeAgentStreamFrame`, `parseAgentStreamFrame` |
 | Exchange process-job state without kernel/app coupling | `ProcessJobProjection`, `ProcessJobState`, `ProcessJobErrorCode`, `parseProcessJobProjection`, `ProcessJobOperator`, `MAX_PROCESS_JOB_OUTSTANDING_LIFECYCLES` |
-| Exchange provider-auth state without exposing credentials | `ProviderAuthStatusSnapshot`, `ProviderAuthSessionSnapshot`, `parseProviderAuthStatusSnapshot`, `parseProviderAuthSessionSnapshot`, `ProviderAuthOperator` |
+| Exchange provider-auth state without exposing credentials | `ProviderAuthStatusSnapshot`, `ProviderAuthSessionSnapshot`, `ProviderAuthCheckSessionSnapshot`, `parseProviderAuthStatusSnapshot`, `parseProviderAuthSessionSnapshot`, `parseProviderAuthCheckSessionSnapshot`, `ProviderAuthOperator` |
 | Load adapter settings safely | `readSettingsJson`, `writeSettingsJson`, `layerJsonOntoEnv` |
 | Protect an HTTP listener | `assertSafeBind`, `listen`, `generateBearerToken`, `readAuthorizationBearer` |
 
@@ -387,6 +387,7 @@ NotifySuppression
 PROCESS_JOB_ERROR_CODES
 PROCESS_JOB_PUBLIC_ERROR_MESSAGES
 PROCESS_JOB_STATES
+PROVIDER_AUTH_CHECK_SCHEMA
 PROVIDER_AUTH_SESSION_SCHEMA
 PROVIDER_AUTH_STATUS_SCHEMA
 ProcessJobErrorCode
@@ -403,6 +404,14 @@ ProcessJobWakeDeliveryInput
 ProcessJobWakeDeliveryResult
 ProcessJobWakeDisposition
 ProcessJobWakeState
+ProviderAuthCheckOperator
+ProviderAuthCheckResult
+ProviderAuthCheckResultCode
+ProviderAuthCheckResultState
+ProviderAuthCheckSelectionBasis
+ProviderAuthCheckSessionSnapshot
+ProviderAuthCheckSessionState
+ProviderAuthCheckStartInput
 ProviderAuthErrorCode
 ProviderAuthMethod
 ProviderAuthOperationError
@@ -491,6 +500,8 @@ parseMonitorProjection
 parseMonitorProjections
 parseProcessJobProjection
 parseProcessJobProjections
+parseProviderAuthCheckSessionSnapshot
+parseProviderAuthCheckStartInput
 parseProviderAuthSessionInput
 parseProviderAuthSessionSnapshot
 parseProviderAuthSessionStartInput

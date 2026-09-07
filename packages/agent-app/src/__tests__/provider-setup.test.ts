@@ -7,6 +7,12 @@ import { promisify } from "node:util";
 import { PassThrough } from "node:stream";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, link: vi.fn(actual.link) };
+});
 
 import {
   detectProviderCredentialStates,
@@ -14,6 +20,7 @@ import {
   piAuthPathForSetup,
   piAuthRecoveryCommand,
   planProviderSetup,
+  persistPiProviderCredential,
   repairStalePiAuthLock,
   runBoundedProviderCommand,
 } from "../provider-setup.js";
@@ -22,10 +29,106 @@ const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
 
 afterEach(async () => {
+  vi.mocked(link).mockReset();
+  vi.mocked(link).mockImplementation((await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).link);
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
 describe("Pi provider setup safety", () => {
+  it.each([false, true])("invalidates observations at rename before link or recovery (concurrent change: %s)", async (concurrentChange) => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    const original = JSON.stringify({ openai: { type: "api_key", key: "fake-original" } });
+    await writeFile(authPath, original, { mode: 0o600 });
+    const tracker = createProviderAuthObservationTracker();
+    tracker.runStarted("old-run");
+    const mutation = vi.fn(() => tracker.credentialPersisted("opencode-go"));
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const canonicalTarget = join(await actual.realpath(dir), "auth.json");
+    let observedBeforeLink = false;
+    vi.mocked(link).mockImplementation(async (from, to) => {
+      if (to === canonicalTarget) {
+        observedBeforeLink = true;
+        tracker.observe({ runId: "old-run", conversationId: "fixture", status: "failed", failureKind: "provider_auth", model: "openai:fixture", durationMs: 1, eventCount: 0, artifactPaths: [] });
+      }
+      return actual.link(from, to);
+    });
+    const pending = persistPiProviderCredential({
+      authPath, provider: "opencode-go",
+      resolveCredential: async () => ({ type: "api_key", key: "fake-replacement" }),
+      onCredentialStoreMutation: mutation,
+      ...(concurrentChange ? { beforePiAuthPromotion: async () => { await writeFile(authPath, `${original}\n`, { mode: 0o600 }); } } : {}),
+    });
+    if (concurrentChange) await expect(pending).rejects.toThrow(/changed|promotion/u);
+    else await pending;
+    expect(observedBeforeLink).toBe(true);
+    expect(mutation).toHaveBeenCalledOnce();
+    expect(tracker.get("openai")).toBeUndefined();
+    if (concurrentChange) expect(await readFile(authPath, "utf8")).toBe(`${original}\n`);
+  });
+
+  it("abandons an abort-ignoring credential resolver without committing its late result", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    const controller = new AbortController();
+    let resolveCredential!: (value: unknown) => void;
+    const credential = new Promise<unknown>((resolve) => { resolveCredential = resolve; });
+    const pending = persistPiProviderCredential({
+      authPath,
+      provider: "opencode-go",
+      abortSignal: controller.signal,
+      resolveCredential: async () => await credential,
+    });
+    await vi.waitFor(async () => expect(await readdir(dir)).toContain("auth.json.mono-agent.lock"));
+
+    controller.abort(new Error("cancelled"));
+    const settled = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    expect(settled).toBe("rejected");
+    await expect(readFile(`${authPath}.mono-agent.lock`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    resolveCredential({ type: "api_key", key: "late-fake-key" });
+    await Promise.resolve();
+    await expect(readFile(authPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("checks abort again immediately before credential promotion", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    const original = `${JSON.stringify({ openai: { type: "api_key", key: "sibling" } })}\n`;
+    await writeFile(authPath, original, { mode: 0o600 });
+    const controller = new AbortController();
+
+    await expect(persistPiProviderCredential({
+      authPath,
+      provider: "opencode-go",
+      abortSignal: controller.signal,
+      resolveCredential: async () => ({ type: "api_key", key: "fake-replacement" }),
+      beforePiAuthPromotion: () => controller.abort(new Error("cancelled before promotion")),
+    })).rejects.toThrow("cancelled before promotion");
+
+    expect(await readFile(authPath, "utf8")).toBe(original);
+    expect((await readdir(dir)).filter((name) => name.includes("mono-agent"))).toEqual([]);
+  });
+
+  it("signals target mutation before a later credential transaction cleanup failure", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    let mutations = 0;
+
+    await expect(persistPiProviderCredential({
+      authPath,
+      provider: "opencode-go",
+      resolveCredential: async () => ({ type: "api_key", key: "fake-replacement" }),
+      onCredentialStoreMutation: () => { mutations += 1; },
+      beforePiAuthTempCleanup: async () => { throw new Error("fixture cleanup failure"); },
+    })).rejects.toThrow("fixture cleanup failure");
+
+    expect(mutations).toBe(1);
+    expect(Object.hasOwn(JSON.parse(await readFile(authPath, "utf8")) as object, "opencode-go")).toBe(true);
+  });
+
   it("hard-kills a provider probe that traps SIGTERM", async () => {
     if (process.platform === "win32") return;
     const startedAt = Date.now();
