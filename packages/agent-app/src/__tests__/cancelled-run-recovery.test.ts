@@ -21,6 +21,25 @@ import {
 
 const tempDirs: string[] = [];
 
+// Match the harness storage-test ceiling: this test asserts durable record
+// identity across finalization and reopen, not the production 250 ms foreground
+// host-wait boundary that legitimately returns a `deferred` receipt.
+const STORAGE_TEST_PERSISTENCE_CEILING_MS = 5_000;
+
+type ToolHistoryPersistence = Awaited<ReturnType<ToolHistoryWriter["persist"]>>;
+
+function persistedRecordId(
+  receipt: ToolHistoryPersistence,
+  phase: "invocation" | "result",
+  toolCallId: string,
+): string {
+  if (receipt.recordId !== undefined) return receipt.recordId;
+  throw new Error(
+    `Tool history ${phase} was not persisted for toolCallId=${JSON.stringify(toolCallId)} `
+    + `(persistence=${receipt.persistence}, errorCode=${receipt.errorCode ?? "undefined"}).`,
+  );
+}
+
 async function tempRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "mono-agent-cancelled-recovery-"));
   tempDirs.push(root);
@@ -86,10 +105,10 @@ async function writeToolCall(
     ...(state === "cancelled" ? { failureKind: "cancelled_user" } : {}),
     content,
   });
-  if (invocation.recordId === undefined || result.recordId === undefined) {
-    throw new Error("Tool history invocation/result pair was not persisted.");
-  }
-  return { invocationId: invocation.recordId, resultId: result.recordId };
+  return {
+    invocationId: persistedRecordId(invocation, "invocation", toolCallId),
+    resultId: persistedRecordId(result, "result", toolCallId),
+  };
 }
 
 describe("cancelled run recovery contract", () => {
@@ -183,7 +202,10 @@ describe("cancelled run recovery contract", () => {
       runId: cancelledRunId,
       isolated: true,
     };
-    const writer = await ToolHistoryWriter.open({ root: historyRoot });
+    const writer = await ToolHistoryWriter.open({
+      root: historyRoot,
+      persistenceCeilingMs: STORAGE_TEST_PERSISTENCE_CEILING_MS,
+    });
     const largeResultEnd = "schema-result-end-marker";
     const successRecords = await writeToolCall(
       writer,
@@ -203,12 +225,12 @@ describe("cancelled run recovery contract", () => {
       "cancelled",
       `checksum was interrupted; ${instructionText}`,
     );
-    const pendingInvocation = await writer.persist(runBinding, {
+    const pendingInvocationId = persistedRecordId(await writer.persist(runBinding, {
       phase: "invocation",
       toolCallId: "slow-validation",
       toolName: "Validate",
       arguments: { stage: "migration", path: "/private/work/pending-schema.json" },
-    });
+    }), "invocation", "slow-validation");
     await writer.finishRun(runBinding, "cancelled", "cancelled_user", "operator");
     await writeToolCall(writer, {
       conversationId: "web:foreign#2026-09-05",
@@ -351,7 +373,7 @@ describe("cancelled run recovery contract", () => {
       }>(sessionSearchResult);
       expect(new Set(sessionSearch.items.map((item) => item.state))).toEqual(new Set(["success", "cancelled"]));
       expect(new Set(sessionSearch.items.map((item) => item.recordId)))
-        .toEqual(new Set([successRecords.invocationId, cancelledRecords.invocationId, pendingInvocation.recordId]));
+        .toEqual(new Set([successRecords.invocationId, cancelledRecords.invocationId, pendingInvocationId]));
       expect([...new Set(sessionSearch.items.map((item) => item.resultRecordId).filter(Boolean))])
         .toEqual(expect.arrayContaining([successRecords.resultId, cancelledRecords.resultId]));
       expect(sessionSearch.items).toHaveLength(3);

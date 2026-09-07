@@ -728,15 +728,28 @@ describe("durable continuation service", () => {
 
   it("isolates hung synthesis workers and aborts their drain during shutdown", async () => {
     let releaseFirst!: () => void;
+    let firstSynthesisEntered!: () => void;
     const held = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    // The worker publishes `synthesizing` before it calls the model, so this
+    // mock-owned latch is an exact state boundary rather than a wall-clock poll.
+    const firstStarted = new Promise<void>((resolve) => { firstSynthesisEntered = resolve; });
     let firstId = "";
     const synthesize = vi.fn(async (input: { readonly continuationId: string }) => {
-      if (input.continuationId === firstId) await held;
+      if (input.continuationId === firstId) {
+        firstSynthesisEntered();
+        await held;
+      }
       return { text: `answer:${input.continuationId}` };
+    });
+    const delivered: string[] = [];
+    const deliver = vi.fn(async (input: { readonly continuationId: string }) => {
+      delivered.push(input.continuationId);
+      return { kind: "delivered" as const, code: "delivered" as const };
     });
     const service = await start({
       stateDir: fixtureDir("isolated-workers"),
       synthesize,
+      deliver,
       limits: { maxConcurrent: 2 },
     });
     const first = await issueAndClaim(service, "isolated-first");
@@ -745,15 +758,20 @@ describe("durable continuation service", () => {
     await putResult(first, { order: 1 });
     await putResult(second, { order: 2 });
 
-    const processing = service.processDue(2);
+    const processing = service.processDue(1);
     const processingOutcome = processing.then(
       () => undefined,
       (error: unknown) => error,
     );
-    await vi.waitFor(() => expect(synthesize).toHaveBeenCalledTimes(2));
-    await vi.waitFor(async () => {
-      await expect(getStatus(second)).resolves.toMatchObject({ state: "delivered" });
-    });
+    await firstStarted;
+    // The first job holds one of the two concurrency slots and its lease. With
+    // maxConcurrent 2 the second job must still start and run to completion;
+    // its own dispatch promise is the post-delivery state-publication boundary,
+    // so no polling and no deliver-callback-as-durability shortcut is needed.
+    await expect(service.processDue(1)).resolves.toBe(1);
+    expect(synthesize).toHaveBeenCalledTimes(2);
+    expect(delivered).toEqual([second.continuationId]);
+    await expect(getStatus(second)).resolves.toMatchObject({ state: "delivered" });
     await expect(getStatus(first)).resolves.toMatchObject({ state: "synthesizing" });
 
     await expect(Promise.race([

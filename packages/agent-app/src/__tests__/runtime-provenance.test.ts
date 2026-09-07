@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, link, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import process from "node:process";
@@ -166,6 +166,51 @@ async function rewriteClosureManifestForDependency(
   await writeMarker(fixture.markerPath, marker);
 }
 
+interface ManagedFixtureSnapshot {
+  readonly fixture: ManagedFixture;
+  readonly closureManifestPath: string;
+  readonly markerBytes: Buffer;
+  readonly markerMode: number;
+  readonly closureManifestBytes: Buffer;
+  readonly closureManifestMode: number;
+  readonly healthyDetail: string;
+}
+
+/**
+ * Building one managed runtime closure costs two orders of magnitude more than
+ * validating it, so the hostile marker cases share a single fixture. Sharing is
+ * only safe when every case starts from a proven-managed snapshot; capture the
+ * exact bytes and modes each case can mutate so restoration is verifiable
+ * rather than assumed.
+ */
+async function captureManagedFixture(fixture: ManagedFixture): Promise<ManagedFixtureSnapshot> {
+  const closureManifestPath = join(fixture.installRoot, ".mono-agent-closure.json");
+  const markerDetails = await lstat(fixture.markerPath);
+  const closureManifestDetails = await lstat(closureManifestPath);
+  return {
+    fixture,
+    closureManifestPath,
+    markerBytes: await readFile(fixture.markerPath),
+    markerMode: markerDetails.mode & 0o777,
+    closureManifestBytes: await readFile(closureManifestPath),
+    closureManifestMode: closureManifestDetails.mode & 0o777,
+    healthyDetail: `Runtime provenance: managed closure ${fixture.closureId} (`
+      + `@mono-agent/agent-app ${String(agentAppPackageVersion())}; ${process.platform}-${process.arch}; `
+      + `Node ABI ${process.versions.modules}; installed ${INSTALLED_AT}).`,
+  };
+}
+
+async function restoreManagedFixture(snapshot: ManagedFixtureSnapshot): Promise<void> {
+  // In-place truncating writes only. The managed execution proof pins the
+  // inode, link count, size and ctime of the install root and its package tree,
+  // so any case that adds or removes a directory entry under the install root,
+  // or changes the root's own mode, is unrecoverable and must own its fixture.
+  await writeFile(snapshot.fixture.markerPath, snapshot.markerBytes);
+  await chmod(snapshot.fixture.markerPath, snapshot.markerMode);
+  await writeFile(snapshot.closureManifestPath, snapshot.closureManifestBytes);
+  await chmod(snapshot.closureManifestPath, snapshot.closureManifestMode);
+}
+
 describe("runtimeProvenanceDetail", () => {
   it("names the full closure and sanitized install metadata for a valid managed snapshot", async () => {
     const fixture = await managedFixture("managed");
@@ -318,69 +363,79 @@ describe("runtimeProvenanceDetail", () => {
   });
 
   it("fails closed without echoing malformed or untrusted marker contents", async () => {
-    const malformed = await managedFixture("malformed-json");
-    await writeFile(malformed.markerPath, "{\"operatorSecret\":", { mode: 0o600 });
-
-    const wrongSchema = await managedFixture("wrong-schema");
-    await writeMarker(wrongSchema.markerPath, { ...wrongSchema.marker, schema: "attacker-schema" });
-
-    const missingCliHash = await managedFixture("missing-cli-hash");
-    const { cliSha256: _removedCliHash, ...withoutCliHash } = missingCliHash.marker;
-    await writeMarker(missingCliHash.markerPath, withoutCliHash);
-
-    const missingClosureHash = await managedFixture("missing-closure-hash");
-    const { sourceClosureSha256: _removedClosureHash, ...withoutClosureHash } = missingClosureHash.marker;
-    await writeMarker(missingClosureHash.markerPath, withoutClosureHash);
-
-    const mismatchedLayout = await managedFixture("mismatched-layout");
-    await writeMarker(mismatchedLayout.markerPath, {
-      ...mismatchedLayout.marker,
-      sourceClosureSha256: "d".repeat(64),
-    });
-
-    const invalidClosureManifest = await managedFixture("invalid-closure-manifest");
+    const fixture = await managedFixture("hostile-marker");
+    const snapshot = await captureManagedFixture(fixture);
     const invalidManifest = Buffer.from(JSON.stringify({ schema: "attacker-manifest", entries: [] }), "utf8");
-    await writeFile(join(invalidClosureManifest.installRoot, ".mono-agent-closure.json"), invalidManifest, { mode: 0o600 });
-    await writeMarker(invalidClosureManifest.markerPath, {
-      ...invalidClosureManifest.marker,
-      closureManifestSha256: sha256(invalidManifest),
-    });
-
-    const extraKey = await managedFixture("extra-key");
-    await writeMarker(extraKey.markerPath, {
-      ...extraKey.marker,
-      operatorSecret: "DO-NOT-ECHO-this-marker-content",
-    });
-
-    const permissiveMarker = await managedFixture("permissive-marker");
-    await chmod(permissiveMarker.markerPath, 0o644);
-
-    const symlinkMarker = await managedFixture("symlink-marker");
     const symlinkTarget = join(dir, "untrusted-marker-target.json");
     await writeFile(symlinkTarget, "DO-NOT-ECHO-symlink-target", { mode: 0o600 });
-    await unlink(symlinkMarker.markerPath);
-    await symlink(symlinkTarget, symlinkMarker.markerPath);
+    const { cliSha256: _droppedCliHash, ...withoutCliHash } = fixture.marker;
+    const { sourceClosureSha256: _droppedClosureHash, ...withoutClosureHash } = fixture.marker;
 
-    const permissiveRoot = await managedFixture("permissive-root");
-    await chmod(permissiveRoot.installRoot, 0o755);
+    const cases: ReadonlyArray<readonly [string, () => Promise<void>]> = [
+      ["malformed", async () => {
+        await writeFile(fixture.markerPath, "{\"operatorSecret\":", { mode: 0o600 });
+      }],
+      ["wrongSchema", async () => {
+        await writeMarker(fixture.markerPath, { ...fixture.marker, schema: "attacker-schema" });
+      }],
+      ["missingCliHash", async () => { await writeMarker(fixture.markerPath, withoutCliHash); }],
+      ["missingClosureHash", async () => { await writeMarker(fixture.markerPath, withoutClosureHash); }],
+      ["mismatchedLayout", async () => {
+        await writeMarker(fixture.markerPath, { ...fixture.marker, sourceClosureSha256: "d".repeat(64) });
+      }],
+      ["invalidClosureManifest", async () => {
+        await writeFile(snapshot.closureManifestPath, invalidManifest, { mode: 0o600 });
+        await writeMarker(fixture.markerPath, {
+          ...fixture.marker,
+          closureManifestSha256: sha256(invalidManifest),
+        });
+      }],
+      ["extraKey", async () => {
+        await writeMarker(fixture.markerPath, {
+          ...fixture.marker,
+          operatorSecret: "DO-NOT-ECHO-this-marker-content",
+        });
+      }],
+      ["permissiveMarker", async () => { await chmod(fixture.markerPath, 0o644); }],
+    ];
 
-    for (const [name, fixture] of Object.entries({
-      malformed,
-      wrongSchema,
-      missingCliHash,
-      missingClosureHash,
-      mismatchedLayout,
-      invalidClosureManifest,
-      extraKey,
-      permissiveMarker,
-      symlinkMarker,
-      permissiveRoot,
-    })) {
+    for (const [name, mutate] of cases) {
+      await expect(runtimeProvenanceDetail(fixture.packageRoot), `${name} precondition`)
+        .resolves.toBe(snapshot.healthyDetail);
+      await mutate();
+
       const detail = await runtimeProvenanceDetail(fixture.packageRoot);
       expect(detail, name).toBe(UNMANAGED_DETAIL);
       expect(detail, name).not.toContain("DO-NOT-ECHO");
       expect(detail, name).not.toContain(dir);
+
+      await restoreManagedFixture(snapshot);
     }
+    await expect(runtimeProvenanceDetail(fixture.packageRoot)).resolves.toBe(snapshot.healthyDetail);
+
+    // Replacing the marker changes the install root's directory entries, and
+    // relaxing the root's mode changes its ctime. Neither is restorable inside
+    // the execution proof, so each keeps its own fixture.
+    const symlinkMarker = await managedFixture("symlink-marker");
+    const symlinkSnapshot = await captureManagedFixture(symlinkMarker);
+    await expect(runtimeProvenanceDetail(symlinkMarker.packageRoot), "symlinkMarker precondition")
+      .resolves.toBe(symlinkSnapshot.healthyDetail);
+    await unlink(symlinkMarker.markerPath);
+    await symlink(symlinkTarget, symlinkMarker.markerPath);
+    const symlinkDetail = await runtimeProvenanceDetail(symlinkMarker.packageRoot);
+    expect(symlinkDetail, "symlinkMarker").toBe(UNMANAGED_DETAIL);
+    expect(symlinkDetail, "symlinkMarker").not.toContain("DO-NOT-ECHO");
+    expect(symlinkDetail, "symlinkMarker").not.toContain(dir);
+
+    const permissiveRoot = await managedFixture("permissive-root");
+    const permissiveSnapshot = await captureManagedFixture(permissiveRoot);
+    await expect(runtimeProvenanceDetail(permissiveRoot.packageRoot), "permissiveRoot precondition")
+      .resolves.toBe(permissiveSnapshot.healthyDetail);
+    await chmod(permissiveRoot.installRoot, 0o755);
+    const permissiveDetail = await runtimeProvenanceDetail(permissiveRoot.packageRoot);
+    expect(permissiveDetail, "permissiveRoot").toBe(UNMANAGED_DETAIL);
+    expect(permissiveDetail, "permissiveRoot").not.toContain("DO-NOT-ECHO");
+    expect(permissiveDetail, "permissiveRoot").not.toContain(dir);
   }, 15_000);
 });
 
