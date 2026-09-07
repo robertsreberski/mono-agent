@@ -55,6 +55,8 @@ export interface ProcessJobStartRequest {
    * bound and redact this before retaining it; never persist the raw value.
    */
   readonly description?: string;
+  /** Omission preserves the terminal wake; false updates lifecycle surfaces only. */
+  readonly wakeOnCompletion?: boolean;
   /** Explicit per-call narrowing; omission delegates to compiled host config. */
   readonly timeoutMs?: number;
   /** Explicit per-call preview narrowing; omission delegates to host config. */
@@ -127,6 +129,7 @@ function assertKernelStartRequest(request: ProcessJobStartRequest): void {
     || (request.tool !== "Exec" && request.tool !== "Bash")
     || typeof request.summary !== "string"
     || (request.description !== undefined && typeof request.description !== "string")
+    || (request.wakeOnCompletion !== undefined && typeof request.wakeOnCompletion !== "boolean")
     || typeof request.launch !== "function"
     || request.prepared === null
     || typeof request.prepared !== "object"

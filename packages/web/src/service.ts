@@ -1999,6 +1999,7 @@ export class WebService {
       const active = this.activeTurns.get(input.threadId);
       if (active !== undefined && connection.info.supportsLiveInput) {
         try {
+          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId);
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`,
             id: input.deliveryKey,
@@ -2008,15 +2009,23 @@ export class WebService {
             signal: AbortSignal.timeout(10 * 60 * 1_000),
           });
           if (settlement.status === "applied") {
-            this.store.completeProcessJobWake({
+            const message = this.store.completeProcessJobWake({
               sourceId: input.sourceId,
               jobId: input.processJob.jobId,
               deliveryKey: input.deliveryKey,
               disposition: "steered",
+              turnId: active.turnId,
             });
+            if (message !== undefined) {
+              this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
+            }
             return { delivered: true, disposition: "steered" };
           }
+          this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, false);
         } catch (error) {
+          // Receipt uncertainty forbids replay, but is not authority to silence
+          // the ordinary answer from the active turn indefinitely.
+          this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId);
           this.options.logger?.warn?.("Web process-job steering outcome is unknown; automatic fallback is suppressed.", {
             threadId: input.threadId,
             error: errorMessage(error),
@@ -2071,6 +2080,7 @@ export class WebService {
           retryable: false,
         };
       }
+      this.store.associateProcessJobWakeTurn(input.deliveryKey, started.turnId);
       const completion = this.launchTurn(
         started,
         refreshedConnection.client,

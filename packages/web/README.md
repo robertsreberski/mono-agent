@@ -86,6 +86,11 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 ## Install / Usage
 
+Process-job completion replies suppress only an exact sentinel-only terminal
+message with a verified wake association; narration and rich replies remain
+visible. Silent replies create no response push. Job cards distinguish an
+unknown wake receipt from failure and explain that replay was suppressed.
+
 `@mono-agent/agent-app` provides the normal managed-service lifecycle:
 
 ```bash
