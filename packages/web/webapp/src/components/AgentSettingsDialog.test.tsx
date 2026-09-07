@@ -68,8 +68,10 @@ describe("AgentSettingsDialog", () => {
 
     expect(screen.getByRole("dialog", { name: "Alpha settings" })).toBeVisible();
     expect(screen.getByText(/Existing conversations and other channels are unchanged/u)).toBeVisible();
-    expect(screen.getByText(/model that actually runs, including any fallback, appears on that run/u)).toBeVisible();
-    expect(screen.getAllByText("config")).toHaveLength(2);
+    expect(screen.getByText(/Any model mismatch or fallback appears on that run/u)).toBeVisible();
+    expect(screen.queryByText("Effective model")).toBeNull();
+    expect(screen.queryByText("Effective effort")).toBeNull();
+    expect(screen.getByText(/Config default:/u)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Choose other model" }));
     fireEvent.click(screen.getByRole("button", { name: "Choose high effort" }));
     const save = screen.getByRole("button", { name: "Save for new conversations" });
