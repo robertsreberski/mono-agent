@@ -76,6 +76,15 @@ describe("process-job contracts", () => {
     expect(() => parseProcessJobProjections([...atCap, value])).toThrow(TypeError);
   });
 
+  it("accepts terminal unknown/suppressed receipts and depth 64, rejecting 65", () => {
+    const value = projection();
+    for (const state of ["unknown", "suppressed"] as const) {
+      expect(parseProcessJobProjection({ ...value, limits: { ...value.limits, chainDepth: 64 },
+        wake: { ...value.wake, state } }).wake.state).toBe(state);
+    }
+    expect(() => parseProcessJobProjection({ ...value, limits: { ...value.limits, chainDepth: 65 } })).toThrow(/limits/u);
+  });
+
   it.each([
     ["top level", (value: any) => { value.extra = true; }],
     ["origin", (value: any) => { value.origin.replyTarget = "secret"; }],

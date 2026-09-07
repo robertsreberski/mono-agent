@@ -1,12 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-import type {
-  AgentLiveInputOffer,
-  AgentLiveInputRequest,
-  AgentMessageStream,
-  AgentRequestBase,
-  AgentResponder,
-  AgentResponse,
+import {
+  classifyNotifySuppression,
+  type AgentLiveInputOffer,
+  type AgentLiveInputRequest,
+  type AgentMessageStream,
+  type AgentRequestBase,
+  type AgentResponder,
+  type AgentResponse,
 } from "@mono-agent/agent-contracts";
 
 export interface ProcessJobWakeContext {
@@ -42,6 +43,12 @@ const wakeContextByRequestMetadata = new WeakMap<object, readonly ProcessJobWake
 // on a non-JSON symbol so a queued adapter callback can recover its own flight
 // without attributing context to unrelated work in the same conversation.
 const wakeFlightsByDeliveryKey = new Map<string, readonly ProcessJobWakeFlight[]>();
+const silentWakeDeliveryKeys = new Set<string>();
+
+/** Consume only the exact host-issued wake receipt; never a conversation-level marker. */
+export function consumeSilentProcessJobWake(deliveryKey: string): boolean {
+  return silentWakeDeliveryKeys.delete(deliveryKey);
+}
 
 interface ActiveProcessJobSteeringTarget {
   readonly token: object;
@@ -101,6 +108,7 @@ export async function runWithProcessJobWakeContext<T>(
     deliveryKey,
   });
   const current = wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
+  if (current.length === 0) silentWakeDeliveryKeys.delete(deliveryKey);
   wakeFlightsByDeliveryKey.set(deliveryKey, [...current, flight]);
   try {
     return await wakeContext.run(flight, operation);
@@ -124,7 +132,10 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
   }).startNewSession;
   return {
     respond: async (request: AgentRequestBase, stream: AgentMessageStream): Promise<AgentResponse> => {
-      const context = wakeContext.getStore();
+      const deliveryKey = processJobWakeDeliveryKey(request.metadata);
+      const flights = deliveryKey === undefined ? [] : wakeFlightsByDeliveryKey.get(deliveryKey) ?? [];
+      const context = deliveryKey === undefined ? wakeContext.getStore()
+        : flights.length === 1 ? flights[0] : undefined;
       let installed: ProcessJobWakeRequestBinding | undefined;
       if (context !== undefined) {
         if (request.metadata === undefined) {
@@ -135,7 +146,23 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
         wakeContextByRequestMetadata.set(request.metadata, [...current, installed]);
       }
       try {
-        return await responder.respond(request, stream);
+        const response = await responder.respond(request, stream);
+        const active = context === undefined ? [] : wakeFlightsByDeliveryKey.get(context.deliveryKey) ?? [];
+        // Monitor wraps the same lineage seam but owns its own suppression policy.
+        // A stale/missing/ambiguous key, narration, or any rich part stays visible.
+        if (context !== undefined
+          && !context.deliveryKey.startsWith("monitor:")
+          && active.length === 1 && active[0]?.token === context.token
+          && classifyNotifySuppression(response.text) === "sentinel"
+          && (response.parts?.length ?? 0) === 0) {
+          if (silentWakeDeliveryKeys.size >= 10_096) {
+            const oldest = silentWakeDeliveryKeys.values().next().value;
+            if (oldest !== undefined) silentWakeDeliveryKeys.delete(oldest);
+          }
+          silentWakeDeliveryKeys.add(context.deliveryKey);
+          return { ...response, text: "" };
+        }
+        return response;
       } finally {
         if (installed !== undefined && request.metadata !== undefined) {
           const current = wakeContextByRequestMetadata.get(request.metadata) ?? [];

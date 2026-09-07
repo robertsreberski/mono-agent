@@ -165,6 +165,9 @@ const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode
   if (terminal && job.wake.state === "failed") {
     items.push(<span key="wake" className="activity-row-alert">wake failed</span>);
   }
+  if (terminal && job.wake.state === "unknown") {
+    items.push(<span key="wake" className="activity-row-alert">wake outcome unknown · replay suppressed</span>);
+  }
   return items.length === 0 ? undefined : joinMeta(items);
 };
 

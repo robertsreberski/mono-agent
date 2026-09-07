@@ -74,7 +74,7 @@ export interface ProcessJobProjection {
     readonly stderrRef: string | null;
   };
   readonly wake: {
-    readonly state: "pending" | "delivered" | "failed";
+    readonly state: "pending" | "delivered" | "failed" | "unknown" | "suppressed";
     readonly attempts: number;
     readonly deliveryKey: string;
     readonly lastAttemptAt: string | null;

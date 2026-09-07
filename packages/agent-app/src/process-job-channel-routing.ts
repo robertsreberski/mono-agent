@@ -131,7 +131,8 @@ function routingFailure(
     conversationId: input.conversationId,
     reason,
   });
-  return { delivered: false, code: "process_job_wake_failed", reason, retryable: false };
+  return { delivered: false, code: "process_job_wake_failed", reason, retryable: false,
+    ...(operation === "wake" ? { ambiguous: true } : {}) };
 }
 
 function baseConversationId(conversationId: string): string {

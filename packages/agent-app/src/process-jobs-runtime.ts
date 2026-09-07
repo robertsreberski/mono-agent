@@ -105,6 +105,20 @@ export function createProcessJobsRuntimeExtension(
         const origin = processJobOriginForRequest(input, options.channelId, options.conversationScheme);
         const wake = processJobWakeContextForRequest(input.request);
         const chainDepth = wake.kind === "resolved" ? wake.context.chainDepth : 0;
+        const maxChainDepth = options.service.settings.maxChainDepth;
+        const unavailableReason = wake.kind === "missed" ? "wake_context_unavailable" as const
+          : origin === undefined ? "origin_unavailable" as const
+            : chainDepth >= maxChainDepth ? "chain_depth_exhausted" as const
+              : !hasAllowedProcessTool(options.coreConfig) ? "tool_unavailable" as const : undefined;
+        runtimeOptions = {
+          ...runtimeOptions,
+          processJobsAvailability: {
+            chainDepth,
+            maxChainDepth,
+            remainingStarts: unavailableReason === undefined ? maxChainDepth - chainDepth : 0,
+            ...(unavailableReason === undefined ? {} : { unavailableReason }),
+          },
+        };
         if (origin !== undefined && wake.kind !== "missed") {
           steeringTarget = registerProcessJobSteeringTarget({
             conversationId: origin.baseConversationId,

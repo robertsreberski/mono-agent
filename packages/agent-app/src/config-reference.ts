@@ -571,7 +571,7 @@ function setProcessJobsSchema(root: Record<string, JsonSchema>): void {
       maxQueueAgeMs: { type: "integer", minimum: 1, maximum: 3_600_000, default: 300_000 },
       maxOutputBytes: { type: "integer", minimum: 1, maximum: 8_388_608, default: 1_048_576 },
       previewChars: { type: "integer", minimum: 1, maximum: 8_000, default: 2_000 },
-      maxChainDepth: { type: "integer", minimum: 1, maximum: 8, default: 4 },
+      maxChainDepth: { type: "integer", minimum: 1, maximum: 64, default: 4 },
       retention: {
         type: "object",
         additionalProperties: false,
