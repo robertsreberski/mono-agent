@@ -257,6 +257,7 @@ describe("wizard prompt builders", () => {
       "RunHistory",
       "SessionHistory",
       "SetConversationTitle",
+      "MemoryJournal",
       "Remember",
       "TelegramSendMessage",
       "AskUser",
@@ -268,6 +269,7 @@ describe("wizard prompt builders", () => {
     expect(options.find((option) => option.value === "RunHistory")?.hint).toContain("prior runs");
     expect(options.find((option) => option.value === "SessionHistory")?.hint).toContain("tool calls");
     expect(options.find((option) => option.value === "SetConversationTitle")?.hint).toContain("web conversations");
+    expect(options.find((option) => option.value === "MemoryJournal")?.hint).toContain("calendar-date range");
     expect(options.find((option) => option.value === "Remember")?.hint).toContain("durably save");
   });
 

@@ -13,8 +13,12 @@ import {
   DEFAULT_RRF_K,
   DEFAULT_VEC_DIM,
   DEFAULT_WEIGHTS,
+  MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES,
+  MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES,
   type ContentHashRecord,
   type EntityRecord,
+  type JournalBrowseInput,
+  type JournalBrowseSnapshot,
   type MemoryDbOptions,
   type MemoryRecord,
   type RecallHit,
@@ -458,6 +462,70 @@ export class MemoryDbCore {
   allMemories(): MemoryRecord[] {
     const rows = this.db.prepare(`SELECT * FROM memories ORDER BY id`).all() as Record<string, unknown>[];
     return rows.map((row) => this.fromRow(row));
+  }
+
+  /**
+   * Bounded chronological inventory over indexed memory rows.
+   *
+   * The query compares parsed instants rather than timestamp strings so valid
+   * RFC 3339 offsets retain their real ordering. It never changes recall access
+   * telemetry and deliberately leaves canonical-source policy to BuJoMemoryStore.
+   */
+  browseJournal(input: JournalBrowseInput): JournalBrowseSnapshot {
+    const fromMs = Date.parse(input.fromInclusive);
+    const toMs = Date.parse(input.toExclusive);
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || fromMs >= toMs) {
+      throw new Error("memory-store: journal browse requires a valid increasing instant range.");
+    }
+    if (!Number.isInteger(input.maxEntries) || input.maxEntries <= 0
+      || input.maxEntries > MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES) {
+      throw new Error(
+        `memory-store: journal browse maxEntries must be between 1 and ${MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES}.`,
+      );
+    }
+    if (!Number.isInteger(input.maxBytes) || input.maxBytes <= 0
+      || input.maxBytes > MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES) {
+      throw new Error(
+        `memory-store: journal browse maxBytes must be between 1 and ${MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES}.`,
+      );
+    }
+
+    const rows = this.db.prepare(
+      `SELECT * FROM memories
+       WHERE status <> 'dropped'
+         AND julianday(created_at) IS NOT NULL
+         AND julianday(created_at) >= julianday(?)
+         AND julianday(created_at) < julianday(?)
+       ORDER BY julianday(created_at) ASC, id ASC
+       LIMIT ?`,
+    ).iterate(input.fromInclusive, input.toExclusive, input.maxEntries + 1) as Iterable<Record<string, unknown>>;
+
+    const records: MemoryRecord[] = [];
+    const truncatedBy: Array<"entries" | "bytes"> = [];
+    let bytes = 0;
+    for (const row of rows) {
+      if (records.length >= input.maxEntries) {
+        truncatedBy.push("entries");
+        break;
+      }
+      const record = this.fromRow(row);
+      const recordBytes = Buffer.byteLength(JSON.stringify(record), "utf8");
+      if (bytes + recordBytes > input.maxBytes) {
+        truncatedBy.push("bytes");
+        break;
+      }
+      bytes += recordBytes;
+      records.push(record);
+    }
+
+    const last = records.at(-1);
+    return {
+      records,
+      rangeScanComplete: truncatedBy.length === 0,
+      truncatedBy,
+      ...(last === undefined ? {} : { lastIncluded: { createdAt: last.createdAt, id: last.id } }),
+      nonJournalProvenanceExcluded: false,
+    };
   }
 
   count(): number {

@@ -56,6 +56,7 @@ import {
   loadAppCoreConfig,
 } from "./app-config.js";
 import { isRememberToolAllowed, isRememberToolPolicyName } from "./memory-remember.js";
+import { isMemoryJournalToolAllowed, isMemoryJournalToolPolicyName } from "./memory-journal.js";
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import { adapterSendToolNames, isAdapterSendToolAllowed, resolveAdapterSendToolsSettings } from "./adapter-send-tools.js";
 import { canonicalToolName, isAllowAllTools, isKnownToolName, isMcpToolName, suggestToolName } from "./modules/known-tools.js";
@@ -1050,7 +1051,15 @@ async function memorySection(
   preferAppPluginInstall: boolean,
 ): Promise<ValidationSection> {
   if (config.memory === undefined) {
-    return { id: "memory", label: "Memory", status: "disabled", details: ["No memory configured."] };
+    return {
+      id: "memory",
+      label: "Memory",
+      status: "disabled",
+      details: [
+        "No memory configured.",
+        "Chronological journal: disabled because no local memory backend is configured.",
+      ],
+    };
   }
   // External backend (e.g. supermemory): mode/embeddings/llm are bujo-only and
   // ignored, so validate the plugin-owned shape before any soft liveness probe.
@@ -1095,6 +1104,9 @@ async function memorySection(
       sm.apiKey === undefined
         ? "Auth: no API key configured (keyless — works only if the instance allows it)."
         : "Auth: API key configured.",
+      config.memory.recallTool?.enabled === false
+        ? "Explicit memory read tools are disabled by memory.recallTool.enabled. Chronological journal browsing is also unsupported by Supermemory."
+        : "Chronological journal: unsupported by Supermemory; MemoryJournal is not offered.",
     ];
     if (!liveness) {
       details.push("Supermemory liveness probe skipped; ingestion is async.");
@@ -1118,6 +1130,9 @@ async function memorySection(
   }
   const details: string[] = [
     `Mode: ${config.memory.mode}, path: ${config.memory.path}, writeMode: ${config.memory.writeMode}.`,
+    config.memory.recallTool?.enabled === false
+      ? `Explicit memory read tools are disabled by memory.recallTool.enabled; the local ${config.memory.mode} tier supports chronology but MemoryJournal is not offered.`
+      : `Chronological journal: supported by the local ${config.memory.mode} tier when tool policy allows MemoryJournal.`,
   ];
   let status: ValidationStatus = "ok";
   if (config.memory.llm !== undefined) {
@@ -1571,6 +1586,32 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
     details.push(`Allowed tools: ${allowedTools.join(", ")}.`);
     let mcpNoteAdded = false;
     for (const name of allowedTools) {
+      if (isMemoryJournalToolPolicyName(name)) {
+        // This app-owned MCP surface must be checked before the generic MCP
+        // branch, using the same deny-wins spellings as runtime composition.
+        if (!isMemoryJournalToolAllowed(config.tools)) {
+          status = "waiting";
+          details.push(
+            `${name} is listed but tool policy still resolves to denied (deny wins, including the mcp__mono-agent-memory-journal__* spelling) - the tool will not be offered.`,
+          );
+        } else if (config.memory === undefined) {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but no memory block is configured - chronological journal browsing will not work.`,
+          );
+        } else if (config.memory.recallTool?.enabled === false) {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but memory.recallTool.enabled is off - explicit memory read tools will not work.`,
+          );
+        } else if ((config.memory.backend ?? "bujo") === "supermemory") {
+          status = "waiting";
+          details.push(
+            `${name} is in allowedTools but the Supermemory backend exposes no chronological journal surface - the tool will not be offered.`,
+          );
+        }
+        continue;
+      }
       if (isRememberToolPolicyName(name)) {
         // Reconcile with the runtime's own resolution, which honours the
         // `mcp__mono-agent-memory-write__*` spellings and deny-wins. This check

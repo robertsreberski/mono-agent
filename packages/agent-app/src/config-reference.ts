@@ -1686,6 +1686,9 @@ function descriptionFor(id: string): string {
   if (id === "memory.embeddings.apiKeyEnv") {
     return "Environment-variable name containing an optional provider bearer token; an explicitly declared name must resolve before memory starts.";
   }
+  if (id === "memory.recallTool.enabled") {
+    return "Enables explicit memory reads: targeted MemoryRecall for every backend and chronological MemoryJournal when a local store supports it. Automatic recall is unchanged.";
+  }
   if (id === "tools.web.search.ollama.apiKeyEnv") {
     return "Environment variable containing the hosted Ollama API key. Required only for exact https://ollama.com and rejected for every other origin; the key value is never stored in JSON.";
   }

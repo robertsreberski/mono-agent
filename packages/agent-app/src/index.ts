@@ -46,6 +46,29 @@ export type {
   RunHistoryRuntimeExtensionOptions,
 } from "./run-history.js";
 export {
+  createMemoryJournalRuntimeExtension,
+  createMemoryJournalServer,
+  isMemoryJournalCapableStore,
+  isMemoryJournalToolAllowed,
+  isMemoryJournalToolPolicyName,
+  MEMORY_JOURNAL_DEFAULT_PAGE_SIZE,
+  MEMORY_JOURNAL_ENTRY_TEXT_MAX_BYTES,
+  MEMORY_JOURNAL_MAX_PAGE_SIZE,
+  MEMORY_JOURNAL_MAX_RANGE_DAYS,
+  MEMORY_JOURNAL_MAX_SNAPSHOTS,
+  MEMORY_JOURNAL_MCP_SERVER_NAME,
+  MEMORY_JOURNAL_PAGE_MAX_BYTES,
+  MEMORY_JOURNAL_TOOL_NAME,
+  resolveMemoryJournalRange,
+} from "./memory-journal.js";
+export type {
+  MemoryJournalBinding,
+  MemoryJournalCapableStore,
+  MemoryJournalErrorCode,
+  MemoryJournalRuntimeExtensionOptions,
+  ResolvedMemoryJournalRange,
+} from "./memory-journal.js";
+export {
   createCronChannelDriver,
   createOpenAIApiChannelDriver,
   createSlackChannelDriver,

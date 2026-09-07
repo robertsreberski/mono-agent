@@ -1513,9 +1513,11 @@ function readMemoryConfig(env: Record<string, string | undefined>, cwd: string):
     }
   }
 
-  // Every configured memory tier has a read-only recall surface: lite uses FTS,
+  // Every configured backend has targeted read-only recall: lite uses FTS,
   // journal/bujo add semantic ranking, and external backends provide search.
-  // Explicit false remains the privacy/availability opt-out.
+  // The same switch also gates policy-allowed chronological browsing on local
+  // tiers that affirm that separate capability. Explicit false is the shared
+  // explicit-read opt-out; it does not disable automatic context recall.
   const recallToolDefault = backend === "supermemory" ? supermemory !== undefined : true;
   const recallToolEnabled = readBoolean(
     env.MONO_AGENT_MEMORY_RECALL_TOOL_ENABLED,

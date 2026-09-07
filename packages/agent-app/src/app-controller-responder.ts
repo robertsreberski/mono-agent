@@ -368,6 +368,11 @@ export async function buildResponder(
         { error: reasonOf(error) },
       );
     },
+    onMemoryJournalUnavailable: () => {
+      controller.logger?.warn?.(
+        "MemoryJournal tool endpoint could not start; continuing without chronological memory browsing.",
+      );
+    },
     onMemoryWarning: (message) => {
       controller.logger?.warn?.(message);
     },

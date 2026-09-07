@@ -307,6 +307,8 @@ describe("formatToolActivityLine", () => {
     ["vision", { question: "identify product" }, "👁️ Looking at the image identify product"],
     ["MemoryRecall", { query: "private preferences" }, "🧠 Recalling memory"],
     ["memory_recall", { query: "private preferences" }, "🧠 Recalling memory"],
+    ["MemoryJournal", { fromDate: "2026-09-01", throughDate: "2026-09-07" }, "🧠 Browsing memory journal"],
+    ["mcp__mono-agent-memory-journal__MemoryJournal", { cursor: "private" }, "🧠 Browsing memory journal"],
     ["memory_write", { target: "preferences" }, "🧠 Updating memory preferences"],
   ])("maps %s to its stable activity family", (name, args, expected) => {
     expect(formatToolActivityLine(name, args)).toBe(expected);

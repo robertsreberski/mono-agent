@@ -8,12 +8,16 @@ export type {
   EntityRecord,
   EntityRelationRecord,
   IndexMetadata,
+  JournalBrowseInput,
+  JournalBrowseCapableStore,
+  JournalBrowseSnapshot,
   MemoryCountByStatus,
   MemoryCountByType,
   MemoryDbOptions,
   MemoryEdgeKind,
   MemoryEntityAssociation,
   MemoryRecord,
+  MemoryJournalBrowseTruncation,
   MemorySource,
   MemoryStatus,
   MemoryStoreStats,
@@ -26,4 +30,8 @@ export type {
   SimilarHit,
 } from "./types.js";
 export { DEFAULT_VEC_DIM, MEMORY_STATUSES, MEMORY_TYPES } from "./types.js";
+export {
+  MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES,
+  MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES,
+} from "./types.js";
 export type { MemoryBlock, MemoryLoadOptions, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";

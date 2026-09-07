@@ -197,7 +197,15 @@ is not added to long-term memory capture. Non-blocking
 `TelegramSendMessage.reply_options` returns immediately; a later tap becomes a
 separate user turn rather than part of the in-turn interaction transcript.
 
-Use active conversation history first for the current exchange. Use `MemoryRecall` for durable facts that were intentionally captured, [`SessionHistory`](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for retained managed-tool calls/results in the current logical session, and [`RunHistory`](/tools/mcp/#runhistory-prior-run-evidence) for broader prior-run warnings or final output.
+Choose evidence by question shape: use active conversation history for the current
+exchange, `MemoryRecall` for a targeted durable fact, and `MemoryJournal` for a broad
+retrospective over explicit local dates when that local-memory tool is available. Use
+[`RunHistory`](/tools/mcp/#runhistory-prior-run-evidence) for exact settled-run evidence
+or interrupted-work recovery and
+[`SessionHistory`](/tools/mcp/#sessionhistory-retained-tool-lifecycles) for exact retained
+managed-tool calls/results. Journal entries are never automatically injected into this
+assembly; they enter context only when the model explicitly calls the bounded tool, and
+remain untrusted curated summaries rather than exact execution evidence.
 
 An ordinary service restart keeps message and tool-lifecycle history plus ACP session authorizations. A conversation reset clears both history stores across that logical session's daily buckets. The explicit `mono-agent restart --clear-sessions` reset clears both history stores and ACP session authorizations together with provider transcripts, but does not delete `MemoryRecall`'s long-term-memory store or recorded run artifacts.
 

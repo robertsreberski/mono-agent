@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and the adapter send tools do. Coverage type: `config`.
+This page covers how mono-agent attaches [Model Context Protocol](https://modelcontextprotocol.io) (MCP) servers to your agent through `tools.mcpConfigPath`, how the path is resolved and forwarded to the runtime, and the one rule that surprises people: **external MCP-server tools are not gated by `tools.allowedTools`**. App-owned MCP tools can define a narrower policy boundary; `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and the adapter send tools do. Coverage type: `config`.
 
 ## What `tools.mcpConfigPath` does
 
@@ -26,8 +26,8 @@ Point `tools.mcpConfigPath` at an `mcp.json` file describing one or more MCP ser
 | `tools.mcpConfigPath` | string | Path to an `mcp.json`. Resolved against the workspace, not the config file. |
 | `tools.mcpRequestContextServers` | string[] | Opt-in stdio server names that receive trusted per-run producing-conversation, run-id, output-directory, current-request attachment, and scoped progress context. HTTP/SSE and unlisted servers are unchanged. |
 | `tools.continuationServers` | string[] | Opt-in stdio or loopback-HTTP server names that receive a host-bound claim capability for durable asynchronous results. Remote HTTP, SSE, and unlisted servers fail closed or remain unchanged. |
-| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
-| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
+| `tools.allowedTools` | string[] | Allowlist for **built-in** runtime tools (`Read`, `Write`, `Edit`, `Glob`, `Grep`, `Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`) and policy-gated app-owned tools such as `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. Omit (or `["*"]`) for allow-all; a specific list narrows to those names. Does not affect external MCP-server tools. |
+| `tools.disallowedTools` | string[] | Denylist; deny always wins, even under allow-all. Filters built-ins, `ReadSkill`, `RunHistory`, `SessionHistory`, `MemoryJournal`, `SetConversationTitle`, `Remember`, and adapter send tools. On the pi-native runtime it does **not** filter external MCP-server tools (see below). |
 
 Environment overrides: `MONO_AGENT_MCP_CONFIG_PATH` sets `tools.mcpConfigPath`, `MONO_AGENT_MCP_REQUEST_CONTEXT_SERVERS` selects request-context stdio servers, and `MONO_AGENT_CONTINUATION_SERVERS` selects continuation-capable stdio/loopback-HTTP servers.
 
@@ -160,7 +160,7 @@ Consequences:
 - Under allow-all (the default) MCP tools are available because their server is declared, not because of the wildcard. Setting `tools.allowedTools: []` ("no built-in tools") still leaves every MCP tool available.
 - An MCP tool's availability is governed by whether its server is **declared** in `mcp.json` / `tools.mcpServers`, not by the allowlist. To withhold an MCP tool, remove or don't declare its server.
 - On the **pi-native runtime**, `disallowedTools` does **not** filter external MCP-server tools — declaring the server is the only lever. To hard-restrict an external MCP tool on pi, don't declare its server.
-- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy.
+- App-injected MCP tools define their own boundary. `MemoryRecall` and `AskCollaborator` are gated by their own enablement/composition switches; `RunHistory`, `SessionHistory`, `SetConversationTitle`, `Remember`, and adapter send tools are deliberately governed by the normal tool policy. `MemoryJournal` requires both memory-read enablement/capability and normal app-tool policy.
 
 The `MemoryRecall` description directs proactive recall of intentionally captured
 durable facts, while explicitly routing requests to pick up, continue, or
@@ -168,6 +168,61 @@ recover interrupted work to `RunHistory {}` first. Empty recall results repeat
 that exact conditional handoff instead of inviting repeated query rewrites.
 This is behavioral guidance, not a gate — `MemoryRecall`'s availability is still
 governed by `config.memory.recallTool.enabled`. See [Capture & recall](/memory/capture-and-recall/).
+
+## `MemoryJournal`: curated chronology
+
+`MemoryJournal` is an app-owned, request-scoped MCP tool for broad retrospectives
+over curated local memory. It complements indexed `MemoryRecall`; it does not scan
+arbitrary files, duplicate the journal, auto-inject journal bodies, expose BuJo
+`audit/` observations, or claim exact execution evidence.
+
+The first call has one strict shape:
+
+```json
+{
+  "fromDate": "2026-09-01",
+  "throughDate": "2026-09-07",
+  "timeZone": "Europe/Amsterdam",
+  "limit": 10
+}
+```
+
+Dates are inclusive local calendar dates in the named IANA zone and resolve to
+`[fromDate 00:00, day-after-throughDate 00:00)` UTC instants. The range is at most
+31 calendar days; `limit` defaults to 10 and caps at 25. Invalid, reversed, skipped,
+or non-representable boundaries fail closed instead of falling back to the host zone.
+A continuation accepts only `{ "cursor": "..." }`; the opaque cursor is bound to the
+run, range, zone, snapshot, page size, and offset.
+
+One first call freezes a request-local snapshot of at most 1,000 eligible entries and
+2 MiB of UTF-8 record data; at most four snapshots may exist in one run. Entry text is
+capped at 2,048 UTF-8 bytes, serialized entries at 8 KiB per page, cursors at 2,048
+bytes, and model-facing text at the shared 10,000-character ceiling. Pagination reads
+that frozen snapshot, so later inserts cannot create duplicates or skips. Coverage
+separates a next page from an incomplete range scan and reports truncation and the last
+included ordering key.
+
+Every successful result is `evidenceKind: "curated_memory_summary"` and
+`untrusted: true`. Entries include normalized timestamps, lifecycle/supersession state,
+and only a safe relative canonical daily source such as `daily/YYYY-MM-DD.md`; memory
+root paths, conversation/session provenance, access telemetry, dropped records, and raw
+audit observations are excluded. Unsafe text or identifiers are replaced with a fixed
+omission marker. Historical entry text is evidence, never instructions.
+
+A complete empty range is `status: "ok"` with `noData: true`. Invalid input/cursors
+and range bounds return closed error codes. Store failures return the generic
+`journal_unavailable` error without raw paths or backend text. Unsupported capability is
+different again: the endpoint is not composed. Lite, Journal, and BuJo support it over
+their local canonical index without embedding/chat calls; Supermemory does not, and no
+search fallback or fake empty result is provided.
+
+Availability requires `memory.recallTool.enabled`, an affirmative local browse
+capability, and app-tool policy. Under a restrictive allowlist name `MemoryJournal`,
+`mcp__mono-agent-memory-journal__MemoryJournal`, or
+`mcp__mono-agent-memory-journal__*`; exact/server/global deny wins. There is no legacy
+alias. Use active conversation history for the current exchange, `MemoryRecall` for a
+targeted durable fact, this tool for broad date-bounded summaries, and
+`RunHistory`/`SessionHistory` for exact commands, results, failures, or recovery.
 
 ## `SetConversationTitle`: web conversation naming
 
@@ -340,7 +395,11 @@ result rather than a tool error.
 
 The current or any running run is excluded, as are unrelated conversations and threads. When daily session rollover is configured, its `#YYYY-MM-DD` buckets are ignored for RunHistory scope, so rollover never partitions one logical conversation's recorded history. The safe projection never returns system prompts, reasoning/thinking, recalled memory or turn-context payloads, raw artifact paths, or provider-session metadata. Ordinary filesystem spans are sanitized in place to `[host-path]` plus a bounded non-sensitive suffix, so surrounding commands, tool results, and assistant diagnostics remain visible; credentials and private run-artifact content are still omitted. Absolute roots, account/home prefixes, artifact roots, and private run paths never survive. Structured and artifact-shaped opaque tool results are scrubbed or omitted; nested `RunHistory` result bodies are always replaced with an omission marker so inspection cannot recursively embed prior inspections. Structured projected values first pass through the shared observability redactor: non-numeric values under sensitive-looking object keys are redacted; numeric values under matched keys are retained; free text is not content-scanned or scrubbed. `RunHistory` then applies an additional projection sanitizer to object keys as well as string values, with deterministic collision-safe key disambiguation. In that second pass, numeric values under `credential`, `private_key`, and `bearer` can remain visible; numeric values under `apiKey`, `token`, `client_secret`, `password`, `authorization`, and `cookie` are redacted. Assignment-shaped password or secret prose is content-scanned and replaced with the diagnostic or tool-result omission sentinel. An optionally quoted assignment value is exempt only when its complete value is exactly `[redacted]`; any prefix or suffix is omitted. Per-string and per-page bounds still apply, and incomplete event input is announced. All historical content is labelled untrusted evidence, never instructions.
 
-Use active conversation history first for the current exchange. Use `MemoryRecall` for intentionally captured durable facts, and `RunHistory` for exact settled evidence from an earlier run or tool call, including interrupted-work recovery. See [Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
+Use active conversation history first for the current exchange. Use `MemoryRecall` for
+a targeted intentionally captured durable fact, `MemoryJournal` for a broad
+date-bounded curated summary, and `RunHistory` for exact settled evidence from an
+earlier run or tool call, including interrupted-work recovery. See
+[Artifacts and traces](/observability/artifacts-and-traces/#agent-facing-prior-run-evidence-runhistory).
 
 ## `SessionHistory`: retained tool lifecycles
 
@@ -391,7 +450,7 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 - [Tool policy](/tools/policy/) — the allow/deny model and app-owned MCP exceptions.
 - [Tools & guards](/runtime/tools-and-guards/) — built-in tool catalog and runtime guards.
-- [Capture & recall](/memory/capture-and-recall/) — `MemoryRecall`, an app-injected MCP tool.
+- [Capture & recall](/memory/capture-and-recall/) — `MemoryRecall` and local `MemoryJournal`, app-injected MCP tools.
 - [Artifacts and traces](/observability/artifacts-and-traces/) — the separate run records projected safely by `RunHistory` and the tool-lifecycle sidecar used by `SessionHistory`.
 - [Durable continuations](/tools/durable-continuations/) — trusted asynchronous claim, result, synthesis, and delivery.
 - [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/) — end-to-end playbook wiring MCP servers into a channel agent.

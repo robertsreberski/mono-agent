@@ -92,6 +92,13 @@ returns. The provider answer remains successful if admission rejects; the harnes
 `memory_persistence_degraded` and invokes the configured warning sink. Stores without the strong
 method keep the legacy awaited `appendHostSummary` plus optional best-effort `scheduleCapture` path.
 
+The built-in default soul adds only a compact evidence router: active dialogue
+for what was just said, targeted memory search for a durable fact or decision,
+chronological memory browsing for a broad explicit-period retrospective, and
+history tools for exact execution evidence. It uses capability-conditional
+language because the harness itself does not own or assume any app MCP tool.
+Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
+
 ## Architecture
 
 The harness is the request-to-runtime composition boundary:

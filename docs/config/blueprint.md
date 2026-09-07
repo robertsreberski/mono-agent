@@ -185,7 +185,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
       "timeoutMs": 60000                   // in-app per-call timeout; 1000-600000, default 60000. Raise for slow local models.
       // For agent-host, use: "model": "openai-codex:gpt-5.6-terra"; omit endpoint.
     },
-    "recallTool": { "enabled": true },      // read-only MemoryRecall tool; default on when memory is configured
+    "recallTool": { "enabled": true },      // explicit reads: MemoryRecall everywhere + local MemoryJournal; default on
     "rememberTool": { "enabled": true },    // agent-callable Remember write tool; bujo backend only, also allowlist-gated
     // Bujo auto-scheduler — override the default or disable it.
     // Consolidation runs in-app; no external cron or launchd needed.
@@ -196,7 +196,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // allowlist/denylist onto its direct built-in tools; MCP tools are not
   // re-filtered through the built-in lists.
   "tools": {
-    "allowedTools": ["*"],                 // omit or include "*" = all tools; ["Read","Bash"] = just those; [] = none (chat-only)
+    "allowedTools": ["*"],                 // specific lists must name MemoryJournal for broad local chronology
     "disallowedTools": [],                 // deny wins where supported; overlap is rejected
     "mcpConfigPath": "./mcp.json",         // stdio/sse/http servers; inlined for SDK runtimes
     "mcpRequestContextServers": ["transcribe"], // trusted stdio servers receiving scoped request/progress context
