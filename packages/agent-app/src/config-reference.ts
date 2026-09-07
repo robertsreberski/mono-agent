@@ -117,7 +117,7 @@ const APP_FIELDS: readonly ConfigReferenceField[] = [
   {
     jsonPath: "processJobs.maxChainDepth", env: "--", type: "integer",
     defaultLabel: "4", defaultValue: 4, example: 4,
-    description: "Maximum host-owned background wake chain depth (compiled cap 8).",
+    description: "Maximum host-owned background wake chain depth (compiled cap 64).",
   },
   {
     jsonPath: "processJobs.retention.maxRecords", env: "--", type: "integer",
