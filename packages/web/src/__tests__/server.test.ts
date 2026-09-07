@@ -653,12 +653,17 @@ describe("web HTTP server", () => {
     expect(await json(response)).toMatchObject({ error: { code: "push_endpoint_unresolvable" } });
   });
 
-  it("publishes the selected theme and host-specific install manifest", async () => {
-    const { baseUrl } = await start({ theme: "plum" });
+  it.each([
+    ["evergreen", "#0f1110"],
+    ["ocean", "#0d1115"],
+    ["plum", "#120f14"],
+    ["terracotta", "#130f0d"],
+  ] as const)("publishes the selected %s theme and distinct install manifest colors", async (theme, backgroundColor) => {
+    const { baseUrl } = await start({ theme });
 
     expect(await json(await fetch(`${baseUrl}/api/v1/bootstrap`))).toMatchObject({
       version: 1,
-      console: { hostName: hostname(), displayName: hostname(), theme: "plum" },
+      console: { hostName: hostname(), displayName: hostname(), theme },
     });
     const response = await fetch(`${baseUrl}/manifest.webmanifest`);
     expect(response.status).toBe(200);
@@ -669,8 +674,8 @@ describe("web HTTP server", () => {
       short_name: hostname(),
       start_url: "/",
       scope: "/",
-      theme_color: "#120f14",
-      background_color: "#120f14",
+      theme_color: "#191c1a",
+      background_color: backgroundColor,
       icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml" }],
     }));
   });
