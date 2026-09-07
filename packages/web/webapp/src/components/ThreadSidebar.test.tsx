@@ -1,11 +1,12 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Fragment, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readDataModeSetting } from "../data-mode";
 import { recordDataUsage, resetDataUsage } from "../data-usage";
 import { agent, thread } from "../test/fixtures";
 import { SEARCH_HIGHLIGHT_CLOSE, SEARCH_HIGHLIGHT_OPEN } from "../thread-search";
-import type { ThreadSearchHit } from "../types";
+import type { ThreadSearchHit, ThreadSummary } from "../types";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 const apiMock = vi.hoisted(() => ({ searchThreads: vi.fn() }));
@@ -14,17 +15,22 @@ vi.mock("../console-store", () => ({
   useConsoleStore: () => storeMock.current,
 }));
 vi.mock("../api", () => ({ api: apiMock }));
-// The sidebar list itself is assistant-ui's; these tests are about the search
-// surface that replaces it, so the primitives are reduced to plain markup.
+// Keep the real list-row rendering; only assistant-ui's runtime bindings are
+// reduced to markup, so preview and activity regressions are observable here.
 vi.mock("@assistant-ui/react", () => ({
   ThreadListPrimitive: {
     Root: ({ children, ...rest }: Record<string, unknown>) => <div {...rest}>{children as never}</div>,
-    Items: () => null,
+    Items: ({ children, archived }: {
+      children: (input: { threadListItem: { id: string } }) => ReactNode;
+      archived: boolean;
+    }) => <>{(storeMock.current?.threads as ThreadSummary[] ?? [])
+      .filter((item) => Boolean(item.archivedAt) === archived)
+      .map((item) => <Fragment key={item.id}>{children({ threadListItem: { id: item.id } })}</Fragment>)}</>,
     New: ({ children, ...rest }: Record<string, unknown>) => <button type="button" {...rest}>{children as never}</button>,
   },
   ThreadListItemPrimitive: {
     Root: ({ children }: Record<string, unknown>) => <div>{children as never}</div>,
-    Trigger: ({ children }: Record<string, unknown>) => <button type="button">{children as never}</button>,
+    Trigger: ({ children, ...rest }: Record<string, unknown>) => <button type="button" {...rest}>{children as never}</button>,
     Title: () => null,
     Archive: () => null,
     Unarchive: () => null,
@@ -65,6 +71,50 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("ThreadSidebar conversation rows", () => {
+  it("renders active jobs on an unselected conversation and clears activity at completion", () => {
+    const running = thread("worker", "agent-one", {
+      title: "Background work",
+      messageCount: 5,
+      lastMessagePreview: "Older reply",
+      runState: { status: "complete" },
+      jobActivity: { queued: 0, starting: 0, running: 2 },
+    });
+    storeMock.current!.threads = [running];
+    const { rerender } = render(<ThreadSidebar />);
+    const row = screen.getByRole("button", { name: "Open Background work" });
+    expect(row).toHaveTextContent("2 background jobs running");
+    expect(within(row).getByRole("img", { name: "2 background jobs running" })).toBeVisible();
+    expect(row).not.toHaveTextContent("Older reply");
+    expect(row).not.toHaveTextContent("5 messages");
+
+    storeMock.current!.threads = [{
+      ...running,
+      jobActivity: { queued: 0, starting: 0, running: 0, latestTerminal: {
+        state: "succeeded", completedAt: "2026-09-07T10:00:00.000Z", replyPreview: "Results are ready",
+      } },
+    }];
+    rerender(<ThreadSidebar />);
+    expect(row).toHaveTextContent("Results are ready");
+    expect(within(row).queryByRole("img")).toBeNull();
+  });
+
+  it("shows cancellation status in archived conversations", () => {
+    storeMock.current!.showArchived = true;
+    storeMock.current!.threads = [thread("cancelled", "agent-one", {
+      archivedAt: "2026-09-07T10:00:00.000Z",
+      runState: { status: "cancelled" },
+      lastMessagePreview: "Previous reply",
+      messageCount: 4,
+    })];
+    render(<ThreadSidebar />);
+    const row = screen.getByRole("button", { name: "Open cancelled" });
+    expect(row).toHaveTextContent("Cancelled");
+    expect(row).not.toHaveTextContent("Previous reply");
+    expect(within(row).queryByRole("img")).toBeNull();
+  });
 });
 
 describe("ThreadSidebar search", () => {

@@ -267,6 +267,18 @@ export interface WebRunState {
   readonly attribution?: WebRunAttribution;
 }
 
+/** Bounded activity derived from every retained process-job card in a thread. */
+export interface WebJobActivity {
+  readonly queued: number;
+  readonly starting: number;
+  readonly running: number;
+  readonly latestTerminal?: {
+    readonly state: Exclude<ProcessJobProjection["state"], "queued" | "starting" | "running">;
+    readonly completedAt: string;
+    readonly replyPreview?: string;
+  };
+}
+
 export interface WebThread {
   readonly id: string;
   readonly sourceId: string;
@@ -279,6 +291,7 @@ export interface WebThread {
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
   readonly runState: WebRunState;
+  readonly jobActivity?: WebJobActivity;
   readonly canSend: boolean;
   readonly canUpload: boolean;
   /** Per-conversation model override, or null when the agent default applies. */

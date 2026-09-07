@@ -116,6 +116,7 @@ export type {
   WebSkillRegistry,
   WebSkillUnavailableReason,
   WebThread,
+  WebJobActivity,
   WebThreadChangedPayload,
   WebThreadDetail,
   WebThreadSearchHit,

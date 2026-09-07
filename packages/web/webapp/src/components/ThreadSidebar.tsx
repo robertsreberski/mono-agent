@@ -6,6 +6,7 @@ import {
 import { useMemo, useState } from "react";
 import { useConsoleStore } from "../console-store";
 import { MIN_SEARCH_QUERY, useThreadSearch } from "../thread-search";
+import { threadPresentation } from "../thread-presentation";
 import type { ThreadSummary } from "../types";
 import { DataModeIndicator } from "./DataModeIndicator";
 import { Icon } from "./Icon";
@@ -22,7 +23,7 @@ function ThreadListItem({
   const isActive = useAuiState(
     (state) => state.threads.mainThreadId === state.threadListItem.id,
   );
-  const running = thread.runState.status === "running";
+  const presentation = threadPresentation(thread);
   return (
     <ThreadListItemPrimitive.Root
       className={`thread-item${isActive ? " is-active" : ""}`}
@@ -43,9 +44,9 @@ function ThreadListItem({
           <time dateTime={thread.updatedAt}>{relativeTime(thread.updatedAt)}</time>
         </span>
         <span className="thread-preview">
-          {running && <i className="thread-running" aria-label="Agent is responding" />}
-          <span className="thread-preview-text">
-            {thread.lastMessagePreview || (thread.messageCount ? `${thread.messageCount} messages` : "New conversation")}
+          {presentation.active && <i className="thread-running" role="img" aria-label={presentation.text} />}
+          <span className="thread-preview-text" title={presentation.text}>
+            {presentation.text}
           </span>
         </span>
       </ThreadListItemPrimitive.Trigger>

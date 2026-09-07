@@ -375,6 +375,18 @@ export interface RunState {
   readonly attribution?: RunAttribution;
 }
 
+/** Summary of retained jobs, independent of the loaded transcript page. */
+export interface JobActivity {
+  readonly queued: number;
+  readonly starting: number;
+  readonly running: number;
+  readonly latestTerminal?: {
+    readonly state: Exclude<ProcessJobState, "queued" | "starting" | "running">;
+    readonly completedAt: string;
+    readonly replyPreview?: string;
+  };
+}
+
 export interface ThreadSummary {
   readonly id: string;
   readonly sourceId: string;
@@ -389,6 +401,7 @@ export interface ThreadSummary {
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
   readonly runState: RunState;
+  readonly jobActivity?: JobActivity;
   readonly canSend: boolean;
   readonly canUpload: boolean;
   /** Per-conversation model override, or null when the agent default applies. */
