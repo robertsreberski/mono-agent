@@ -266,6 +266,33 @@ describe("coalesceMonitorWakeMessages", () => {
 });
 
 describe("convertWebMessage", () => {
+  it("derives transient run-attribution visibility from the selected model", () => {
+    const requested = {
+      requested: { model: "provider:requested" },
+      attempted: { model: "provider:executed" },
+      executed: { model: "provider:executed" },
+      disposition: "requested" as const,
+      transitions: [],
+      retries: [],
+    };
+    const attributed = message({ role: "assistant", attribution: requested });
+
+    expect(convertWebMessage(
+      attributed,
+      { selectedModel: "provider:selected" },
+    ).metadata?.custom?.showRunAttribution).toBe(true);
+    expect(convertWebMessage(
+      attributed,
+      { selectedModel: "provider:executed" },
+    ).metadata?.custom?.showRunAttribution).toBe(false);
+    expect(convertWebMessage(attributed).metadata?.custom?.showRunAttribution).toBe(false);
+    expect(convertWebMessage(message()).metadata?.custom?.showRunAttribution).toBe(false);
+    expect(convertWebMessage(message({
+      role: "assistant",
+      attribution: { ...requested, disposition: "fallback" },
+    })).metadata?.custom?.showRunAttribution).toBe(true);
+  });
+
   it("maps a retained process job and rich reply siblings into named data parts", () => {
     const job = processJob();
     const converted = convertWebMessage(message({
