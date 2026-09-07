@@ -334,6 +334,12 @@ export interface RuntimeLiveInputMessage {
   readonly body: string;
   readonly id?: string;
   readonly receivedAt?: string;
+  /**
+   * Optional opaque in-process identity shared by fresh callback leases for
+   * this same logical message. Later same-id values without this exact object
+   * remain invalid duplicate owners.
+   */
+  readonly logicalOwner?: object;
   /** Called after the provider's native queue accepts this exact attempt. */
   readonly accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown;
   /** Called only after exact native transcript consumption is proved. */

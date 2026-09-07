@@ -87,7 +87,10 @@ their exact delivery key. Never-leased or proved-removed input settles as
 Once handoff may have occurred, a failed, cancelled, or end-of-turn race settles
 as `uncertain` and is not retried. Mailbox settlement is a one-way
 compare-and-set: late evidence returns `ignored` and cannot rewrite applied
-history after the mailbox seals.
+history after the mailbox seals. Each replay also receives a distinct mailbox
+lease, so a custom runtime's stale callback cannot settle a newer attempt. The
+opaque logical-owner identity lets the standard runtime refresh that lease
+without granting callback ownership to an unrelated same-ID duplicate.
 
 For `append-host-summary` and `capture` write modes, a memory store that implements
 `persistCompletedTurn` receives one awaited, run-idempotent admission before the successful turn

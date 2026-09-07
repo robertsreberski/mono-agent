@@ -185,6 +185,66 @@ describe("pi-native live input", () => {
     expect(uncertain).not.toHaveBeenCalled();
   });
 
+  it("keeps exact duplicate evidence idempotent when the unique-event buffer is full", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    epoch.register("entry-100", { acknowledge, uncertain });
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    for (let index = 0; index <= 100; index += 1) {
+      subscriber({
+        type: "message_end",
+        lane: "main",
+        runId: "run",
+        entryId: `entry-${index}`,
+        message: { role: "user" },
+      });
+    }
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run",
+      entryId: "entry-100",
+      message: { role: "user" },
+    });
+    epoch.finish("run");
+
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(uncertain).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it("still invalidates a genuinely new evidence tuple beyond capacity", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    epoch.register("entry-100", { acknowledge, uncertain });
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    for (let index = 0; index <= 101; index += 1) {
+      subscriber({
+        type: "message_end",
+        lane: "main",
+        runId: "run",
+        entryId: `entry-${index}`,
+        message: { role: "user" },
+      });
+    }
+    epoch.finish("run");
+
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(uncertain).toHaveBeenCalledTimes(1);
+    expect(warnings).toContainEqual(expect.objectContaining({
+      warning_kind: "live_input_correlation_invalid",
+      reason: "event_buffer_overflow",
+    }));
+  });
+
   it("invalidates correlation on a second distinct main-lane run_start", () => {
     let subscriber;
     const acknowledge = vi.fn();

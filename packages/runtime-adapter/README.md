@@ -133,7 +133,11 @@ transcript consumption (`acknowledge`), uncertain terminal delivery
 types are `unknown` for source compatibility; only exact synchronous
 `recorded` and `ignored` literals confirm host handling. Thenables are never
 awaited. Stable nonblank IDs enable replay across route attempts; anonymous
-input remains legal but is never replayed.
+input remains legal but is never replayed. A host that independently fences
+callback leases may attach one opaque `logicalOwner` object to every fresh
+lease of the same message. The runtime keeps the first occurrence's immutable
+body and ID, refreshes callbacks only when that exact object matches, and still
+suppresses unrelated same-ID callback owners.
 
 ### Package structure
 

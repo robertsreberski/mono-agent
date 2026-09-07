@@ -1,7 +1,9 @@
 // Metadata-only live-input lifecycle instrumentation and logical-run replay fencing.
 // Stable ids identify one logical delivery across provider retries. The first
-// occurrence owns the body and callbacks; later same-id occurrences are invalid
-// duplicates. Anonymous input remains legal but is never replayed.
+// occurrence owns the body and identity; later same-id occurrences are invalid
+// duplicates unless an exact opaque logical-owner token proves they carry a new
+// callback lease for that first owner. Anonymous input remains legal but is
+// never replayed.
 
 // @ts-check
 
@@ -11,8 +13,8 @@ const MAX_DIAGNOSTICS_PER_KIND = 100;
 /**
  * @typedef {{providerEntryId?: string, providerRunId?: string}} RuntimeLiveInputEvidence
  * @typedef {{reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}} RuntimeLiveInputUncertainty
- * @typedef {{body: string, id?: string, receivedAt?: string, accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown, acknowledge?: (evidence?: RuntimeLiveInputEvidence) => unknown, uncertain?: (details: RuntimeLiveInputUncertainty) => unknown, reject?: (reason?: unknown) => unknown}} RuntimeLiveInputMessage
- * @typedef {{message: RuntimeLiveInputMessage, inputId: string, receivedAt?: string, phase: "available"|"leased"|"native_accepted"|"consumed"|"uncertain", attempt: number, generation: number}} LiveInputOwner
+ * @typedef {{body: string, id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown, acknowledge?: (evidence?: RuntimeLiveInputEvidence) => unknown, uncertain?: (details: RuntimeLiveInputUncertainty) => unknown, reject?: (reason?: unknown) => unknown}} RuntimeLiveInputMessage
+ * @typedef {{message: RuntimeLiveInputMessage, callbackMessage: RuntimeLiveInputMessage, logicalOwner?: object, inputId: string, receivedAt?: string, phase: "available"|"leased"|"native_accepted"|"consumed"|"uncertain", attempt: number, generation: number}} LiveInputOwner
  * @typedef {{type: string, [key: string]: unknown}} LiveInputEvent
  */
 
@@ -81,9 +83,17 @@ export function instrumentLiveInputAppliedEvents(liveInput, onEvent) {
             ) {
               // Suppress the later occurrence itself. It merely reveals that the
               // first owner is present in this replay generation; replay the
-              // first owner's immutable body and callbacks.
+              // first owner's immutable body and identity.
               yieldedIds.add(stableId);
               existing.generation = iteratorGeneration;
+              if (
+                existing.logicalOwner !== undefined
+                && existing.logicalOwner === validLogicalOwner(message?.logicalOwner)
+              ) {
+                // The logical owner remains the first occurrence. This is only
+                // its fresh, independently fenced host callback lease.
+                existing.callbackMessage = message;
+              }
               return { done: false, value: lease(existing) };
             }
           }
@@ -106,8 +116,11 @@ export function instrumentLiveInputAppliedEvents(liveInput, onEvent) {
   /** @param {RuntimeLiveInputMessage} message @param {string} inputId @param {number} ownerGeneration */
   function createOwner(message, inputId, ownerGeneration) {
     const receivedAt = validString(message?.receivedAt);
+    const logicalOwner = validLogicalOwner(message?.logicalOwner);
     return {
       message,
+      callbackMessage: message,
+      ...(logicalOwner === undefined ? {} : { logicalOwner }),
       inputId,
       ...(receivedAt === undefined ? {} : { receivedAt }),
       phase: /** @type {const} */ ("available"),
@@ -121,7 +134,7 @@ export function instrumentLiveInputAppliedEvents(liveInput, onEvent) {
     owner.phase = "leased";
     owner.attempt += 1;
     const attempt = owner.attempt;
-    const host = owner.message;
+    const host = owner.callbackMessage;
     const base = eventBase(owner);
 
     /** @type {RuntimeLiveInputMessage} */
@@ -180,8 +193,12 @@ export function instrumentLiveInputAppliedEvents(liveInput, onEvent) {
         if (owner.phase === "native_accepted" && !isNativeQueueRemoved(reason)) {
           return wrapped.uncertain?.({ reason: "delivery_uncertain" });
         }
-        owner.phase = "available";
         const disposition = callHost(host.reject, host, reason);
+        // "ignored" is affirmative host evidence that this attempt no longer
+        // owns settlement (normally because the mailbox already sealed it).
+        // Legacy void and thrown callbacks remain replay-compatible because
+        // native removal still proves the provider did not consume the input.
+        owner.phase = disposition === "ignored" ? "uncertain" : "available";
         return publicDisposition(disposition);
       },
     };
@@ -234,6 +251,13 @@ function isCurrent(owner, attempt, ...phases) {
 /** @param {unknown} value */
 function normalizedStableId(value) {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/** @param {unknown} value */
+function validLogicalOwner(value) {
+  return value !== null && (typeof value === "object" || typeof value === "function")
+    ? value
+    : undefined;
 }
 
 /** @param {unknown} value */

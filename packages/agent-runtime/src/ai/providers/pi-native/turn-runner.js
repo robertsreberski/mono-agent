@@ -500,13 +500,15 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
       || typeof event.runId !== "string"
       || event.runId.length === 0
     ) return;
+    if (buffered.some((item) => item.entryId === event.entryId && item.runId === event.runId)) {
+      consumeBuffered();
+      return;
+    }
     if (buffered.length >= BUFFER_LIMIT) {
       invalidate("event_buffer_overflow");
       return;
     }
-    if (!buffered.some((item) => item.entryId === event.entryId && item.runId === event.runId)) {
-      buffered.push({ entryId: event.entryId, runId: event.runId });
-    }
+    buffered.push({ entryId: event.entryId, runId: event.runId });
     consumeBuffered();
   });
 

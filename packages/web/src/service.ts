@@ -1760,7 +1760,10 @@ export class WebService {
       turn.controller.abort(new WebTurnCancellation("shutdown", "Web service is stopping."));
     }
     for (const [id, input] of activeLiveInputs) {
-      this.store.queueLiveInput(id);
+      // Dispatch has already crossed the durable marker boundary. Seal it as
+      // uncertain before abort so a crash at any later shutdown cut-point can
+      // never recover it into the automatic next-turn queue.
+      this.store.markLiveInputUncertain(id);
       input.controller.abort(new WebTurnCancellation("shutdown", "Web service is stopping."));
     }
     await Promise.allSettled(active.map((turn) => turn.completion));

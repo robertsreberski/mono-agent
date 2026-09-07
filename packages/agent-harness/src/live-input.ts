@@ -27,6 +27,8 @@ interface LiveInputEntry {
   readonly request: AgentLiveInputRequest;
   readonly settled: Promise<AgentLiveInputSettlement>;
   readonly resolve: (settlement: AgentLiveInputSettlement) => void;
+  readonly logicalOwner: object;
+  lease: number;
   phase: "queued" | "leased" | "native_accepted" | "applied" | "uncertain" | "requeue" | "discarded";
 }
 
@@ -51,27 +53,34 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
     return "recorded";
   };
 
-  const runtimeMessage = (entry: LiveInputEntry): RuntimeLiveInputMessage => ({
+  const runtimeMessage = (entry: LiveInputEntry, lease: number): RuntimeLiveInputMessage => ({
     body: entry.request.text,
     id: entry.request.id,
     receivedAt: entry.request.receivedAt,
+    logicalOwner: entry.logicalOwner,
     accepted: () => {
-      if (entry.phase !== "leased") return "ignored";
+      if (entry.lease !== lease || entry.phase !== "leased") return "ignored";
       entry.phase = "native_accepted";
       return "recorded";
     },
     acknowledge: () => {
-      if (entry.phase !== "leased" && entry.phase !== "native_accepted") return "ignored";
+      if (entry.lease !== lease || (entry.phase !== "leased" && entry.phase !== "native_accepted")) {
+        return "ignored";
+      }
       return settle(entry, { status: "applied", runId });
     },
     uncertain: () => {
-      if (entry.phase !== "leased" && entry.phase !== "native_accepted") return "ignored";
+      if (entry.lease !== lease || (entry.phase !== "leased" && entry.phase !== "native_accepted")) {
+        return "ignored";
+      }
       return settle(entry, { status: "uncertain", reason: "delivery_uncertain" });
     },
     // A rejection belongs to one provider attempt. The entry stays available
     // to a later iterator so router failover/resume replay cannot lose it.
     reject: () => {
-      if (entry.phase !== "leased" && entry.phase !== "native_accepted") return "ignored";
+      if (entry.lease !== lease || (entry.phase !== "leased" && entry.phase !== "native_accepted")) {
+        return "ignored";
+      }
       entry.phase = "queued";
       return "recorded";
     },
@@ -84,7 +93,8 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
       consumer.cursor += 1;
       if (entry === undefined || entry.phase !== "queued") continue;
       entry.phase = "leased";
-      return { done: false, value: runtimeMessage(entry) };
+      entry.lease += 1;
+      return { done: false, value: runtimeMessage(entry, entry.lease) };
     }
     return state === "open" ? undefined : { done: true, value: undefined };
   };
@@ -160,6 +170,8 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
         request,
         settled,
         resolve,
+        logicalOwner: {},
+        lease: 0,
         phase: "queued",
       };
       entries.push(entry);

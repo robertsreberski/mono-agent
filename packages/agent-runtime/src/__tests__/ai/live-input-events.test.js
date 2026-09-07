@@ -78,6 +78,8 @@ describe("instrumentLiveInputAppliedEvents", () => {
   });
 
   it("replays only the first stable-id owner after a safe rejection", async () => {
+    const firstLogicalOwner = {};
+    const duplicateLogicalOwner = {};
     const ownerReject = vi.fn(() => "recorded");
     const ownerAcknowledge = vi.fn(() => "recorded");
     const duplicateAcknowledge = vi.fn(() => "recorded");
@@ -85,6 +87,7 @@ describe("instrumentLiveInputAppliedEvents", () => {
     const stream = instrumentLiveInputAppliedEvents(replayableLiveInput((generation) => [{
       body: generation === 0 ? "original" : "invalid duplicate body",
       id: "same",
+      logicalOwner: generation === 0 ? firstLogicalOwner : duplicateLogicalOwner,
       reject: generation === 0 ? ownerReject : vi.fn(),
       acknowledge: generation === 0 ? ownerAcknowledge : duplicateAcknowledge,
     }]), (event) => events.push(event));
@@ -99,6 +102,20 @@ describe("instrumentLiveInputAppliedEvents", () => {
     expect(ownerAcknowledge).toHaveBeenCalledTimes(1);
     expect(duplicateAcknowledge).not.toHaveBeenCalled();
     expect(events.some((event) => event.type === "live_input_duplicate_suppressed")).toBe(true);
+  });
+
+  it("keeps a legacy void safe rejection replayable", async () => {
+    const acknowledge = vi.fn(() => "recorded");
+    const stream = instrumentLiveInputAppliedEvents(
+      replayableLiveInput([{ body: "guide", id: "one", reject: () => undefined, acknowledge }]),
+      vi.fn(),
+    );
+    const first = await stream[Symbol.asyncIterator]().next();
+    expect(first.value.reject({ code: "native_queue_removed" })).toBeUndefined();
+    const replay = await stream[Symbol.asyncIterator]().next();
+    expect(replay.value.body).toBe("guide");
+    expect(replay.value.acknowledge()).toBe("recorded");
+    expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 
   it.each(["leased", "native_accepted", "consumed", "uncertain"])(
@@ -180,6 +197,22 @@ describe("instrumentLiveInputAppliedEvents", () => {
     expect(first.value.acknowledge()).toBe("ignored");
     expect(replay.value.acknowledge()).toBe("recorded");
     expect(acknowledge).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reopen replay when the host says a safe rejection was ignored", async () => {
+    const reject = vi.fn(() => "ignored");
+    const stream = instrumentLiveInputAppliedEvents(
+      replayableLiveInput([{ body: "guide", id: "one", reject }]),
+      vi.fn(),
+    );
+    const first = await stream[Symbol.asyncIterator]().next();
+    expect(first.value.reject({ code: "native_queue_removed" })).toBe("ignored");
+
+    await expect(stream[Symbol.asyncIterator]().next()).resolves.toEqual({
+      done: true,
+      value: undefined,
+    });
+    expect(reject).toHaveBeenCalledTimes(1);
   });
 
   it("delegates iterator teardown and does not replace an already-instrumented stream", async () => {

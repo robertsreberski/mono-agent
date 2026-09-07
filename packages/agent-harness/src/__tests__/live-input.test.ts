@@ -75,6 +75,29 @@ describe("live input mailbox", () => {
     expect(mailbox.applied()).toHaveLength(1);
   });
 
+  it("fences every stale custom-runtime callback after a replacement lease begins", async () => {
+    const mailbox = createLiveInputMailbox("run-leases");
+    const offered = mailbox.offer(request("leased", "Retry me safely"));
+    expect(offered.status).toBe("accepted");
+    if (offered.status !== "accepted") return;
+
+    const attemptOne = await mailbox[Symbol.asyncIterator]().next();
+    expect(attemptOne.value?.reject?.({ code: "native_queue_removed" })).toBe("recorded");
+    const attemptTwo = await mailbox[Symbol.asyncIterator]().next();
+
+    expect(attemptOne.value?.accepted?.({ providerEntryId: "stale" })).toBe("ignored");
+    expect(attemptOne.value?.acknowledge?.({ providerEntryId: "stale" })).toBe("ignored");
+    expect(attemptOne.value?.uncertain?.({ reason: "delivery_uncertain" })).toBe("ignored");
+    expect(attemptOne.value?.reject?.({ code: "native_queue_removed" })).toBe("ignored");
+    expect(attemptTwo.value?.acknowledge?.({ providerEntryId: "current" })).toBe("recorded");
+    await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-leases" });
+    expect(mailbox.applied()).toEqual([{
+      id: "leased",
+      text: "Retry me safely",
+      receivedAt: "2026-07-21T10:00:00.000Z",
+    }]);
+  });
+
   it("settles leased entries uncertain and ignores every late callback", async () => {
     const mailbox = createLiveInputMailbox("run-late");
     const offered = mailbox.offer(request("late", "Do this"));
