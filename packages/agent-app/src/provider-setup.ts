@@ -1683,6 +1683,9 @@ async function promotePiAuthStoreWithoutClobber(
       await rename(targetPath, backupPath);
       backupCreated = true;
       targetMutationStarted = true;
+      // Renaming the existing target is the first credential mutation, even
+      // if a later validation fails and recovery restores that same inode.
+      onCredentialStoreMutation?.();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
@@ -1739,7 +1742,6 @@ async function promotePiAuthStoreWithoutClobber(
       preserveConcurrentBackup = false;
       throw new Error(`Pi auth file ${targetPath} changed during credential setup; the newer file was preserved.`);
     }
-    onCredentialStoreMutation?.();
     try {
       await hooks.afterPiAuthLink?.(targetPath, stagedPath);
       await assertPromotedPiAuthStore(intended, stagedPath, targetPath, ownerUid);

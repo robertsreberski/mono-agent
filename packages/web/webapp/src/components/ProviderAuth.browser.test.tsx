@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { page, userEvent } from "@vitest/browser/context";
 import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -74,6 +74,40 @@ beforeEach(() => {
 });
 
 describe("provider authentication controls in Chromium", () => {
+  it.each([
+    { width: 1_440, height: 900, kind: "auth" },
+    { width: 390, height: 844, kind: "auth" },
+    { width: 1_440, height: 900, kind: "check" },
+    { width: 390, height: 844, kind: "check" },
+  ])("cancels only the closed owner's late $kind admission at width $width", async ({ width, height, kind }) => {
+    await page.viewport(width, height);
+    const pending = deferred<Record<string, unknown>>();
+    const begin = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    begin.mockReturnValueOnce(pending.promise);
+    const props = { onClose: () => undefined, dialogRef: createRef<HTMLElement>() };
+    const view = render(<AgentSettingsDialog open {...props} />);
+    const name = kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers";
+    await userEvent.click((await screen.findAllByRole("button", { name }))[0]!);
+    view.rerender(<AgentSettingsDialog open={false} {...props} />);
+    view.rerender(<AgentSettingsDialog open {...props} />);
+    expect(await screen.findAllByText("Not verified")).toHaveLength(3);
+    await act(async () => pending.resolve(kind === "auth" ? {
+      schema: "mono-agent.provider-auth-session.v1", id: "late-closed-auth", providerId: "fixture-pass",
+      authType: "api_key", strategy: "api_key_prompt", state: "pending", progress: "STALE CLOSED FLOW",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
+    } : {
+      schema: "mono-agent.provider-auth-check.v1", id: "late-closed-check", state: "running", results: [],
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z", expiresAt: "2026-09-06T12:10:00.000Z",
+    }));
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", `late-closed-${kind}`, expect.any(AbortSignal));
+    expect(screen.queryByText("STALE CLOSED FLOW")).not.toBeInTheDocument();
+    const run = screen.getByRole("button", { name: "Run live checks for all displayed providers" });
+    expect(run).toBeEnabled();
+    expect(run.getBoundingClientRect().height).toBeGreaterThanOrEqual(38);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+
   it("keeps recovery normal-size and neutral while one explicit faux batch reports distinct outcomes", async () => {
     render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
 

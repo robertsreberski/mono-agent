@@ -173,6 +173,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const sessionRef = useRef<ProviderAuthSessionSnapshot | null>(null);
   const checkRef = useRef<ProviderAuthCheckSessionSnapshot | null>(null);
   const mountedRef = useRef(true);
+  const lifecycleRef = useRef(0);
   const requestSequenceRef = useRef(0);
   const latestSessionRequestRef = useRef(0);
   const latestSuccessfulStartRef = useRef(0);
@@ -211,6 +212,13 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const adoptCheck = (next: ProviderAuthCheckSessionSnapshot | null) => {
     checkRef.current = next;
     setCheck(next);
+  };
+
+  // Keep admission POSTs observable until they return their resource ID. If
+  // this owner has gone away, cancel only that returned resource, best effort.
+  const cancelUnownedAdmission = (kind: "auth" | "check", id: string) => {
+    const cancel = kind === "auth" ? api.cancelProviderAuth : api.cancelProviderAuthCheck;
+    void cancel(sourceId, id, AbortSignal.timeout(2_000)).catch(() => undefined);
   };
 
   const invalidateStatusRefreshes = () => {
@@ -259,6 +267,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      lifecycleRef.current += 1;
       requestSequenceRef.current += 1;
       const current = sessionRef.current;
       if (current !== null && !terminal(current.state)) {
@@ -291,12 +300,12 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     const poll = () => {
       timer = window.setTimeout(() => {
         void api.providerAuthSession(sourceId, expectedSessionId, controller.signal).then((next) => {
-          if (controller.signal.aborted || scopeRef.current !== expectedScope || sessionRef.current?.id !== expectedSessionId) return;
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || sessionRef.current?.id !== expectedSessionId || terminal(sessionRef.current.state)) return;
           setAuthError(null);
           adoptSession(next);
           if (!terminal(next.state)) poll();
         }).catch((caught) => {
-          if (controller.signal.aborted || scopeRef.current !== expectedScope || sessionRef.current?.id !== expectedSessionId) return;
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || sessionRef.current?.id !== expectedSessionId || terminal(sessionRef.current.state)) return;
           if (providerAuthResourceAbsent(caught)) {
             adoptSession(null);
             setSessionProvider(null);
@@ -330,12 +339,12 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     const poll = () => {
       timer = window.setTimeout(() => {
         void api.providerAuthCheck(sourceId, expectedCheckId, controller.signal).then((next) => {
-          if (controller.signal.aborted || scopeRef.current !== expectedScope || checkRef.current?.id !== expectedCheckId) return;
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || checkRef.current?.id !== expectedCheckId || checkTerminal(checkRef.current.state)) return;
           setAuthError(null);
           adoptCheck(next);
           if (!checkTerminal(next.state)) poll();
         }).catch((caught) => {
-          if (controller.signal.aborted || scopeRef.current !== expectedScope || checkRef.current?.id !== expectedCheckId) return;
+          if (controller.signal.aborted || scopeRef.current !== expectedScope || checkRef.current?.id !== expectedCheckId || checkTerminal(checkRef.current.state)) return;
           if (providerAuthResourceAbsent(caught)) {
             adoptCheck(null);
             setAuthError(null);
@@ -365,10 +374,15 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     const replacing = sessionRef.current !== null && !terminal(sessionRef.current.state);
     const requestId = beginOperation(true, replacing);
     const requestScope = scopeKey;
+    const lifecycle = lifecycleRef.current;
     setAuthError(null);
     setMethodProvider(null);
     try {
       const next = await api.beginProviderAuth(sourceId, provider.providerId, method);
+      if (!mountedRef.current || lifecycleRef.current !== lifecycle || scopeRef.current !== requestScope) {
+        if (!terminal(next.state)) cancelUnownedAdmission("auth", next.id);
+        return;
+      }
       if (scopeRef.current === requestScope && requestId > latestSuccessfulStartRef.current) {
         latestSuccessfulStartRef.current = requestId;
         adoptAuthenticatedSession(next);
@@ -377,7 +391,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
         setAuthError(null);
       }
     } catch (caught) {
-      if (scopeRef.current === requestScope
+      if (mountedRef.current && lifecycleRef.current === lifecycle && scopeRef.current === requestScope
         && requestId === latestSessionRequestRef.current
         && requestId > latestSuccessfulStartRef.current) {
         setAuthError(caught instanceof Error ? caught.message : String(caught));
@@ -390,13 +404,18 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const startCheck = async () => {
     const requestId = beginOperation();
     const requestScope = scopeKey;
+    const lifecycle = lifecycleRef.current;
     setAuthError(null);
     setMethodProvider(null);
     try {
       const next = await api.beginProviderAuthCheck(sourceId, crypto.randomUUID());
-      if (scopeRef.current === requestScope) adoptCheck(next);
+      if (!mountedRef.current || lifecycleRef.current !== lifecycle || scopeRef.current !== requestScope) {
+        if (!checkTerminal(next.state)) cancelUnownedAdmission("check", next.id);
+        return;
+      }
+      adoptCheck(next);
     } catch (caught) {
-      if (scopeRef.current === requestScope) setAuthError(caught instanceof Error ? caught.message : String(caught));
+      if (mountedRef.current && lifecycleRef.current === lifecycle && scopeRef.current === requestScope) setAuthError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       finishOperation(requestId, requestScope);
     }

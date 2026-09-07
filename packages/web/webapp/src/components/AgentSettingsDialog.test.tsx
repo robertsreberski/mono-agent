@@ -66,6 +66,93 @@ beforeEach(() => {
 });
 
 describe("AgentSettingsDialog", () => {
+  it.each(["auth", "check"] as const)("cancels a late %s admission after its dialog closes without losing the response ID", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const admission = deferred<Record<string, unknown>>();
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    start.mockReturnValueOnce(admission.promise);
+    const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const view = render(<AgentSettingsDialog open {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" }));
+    view.rerender(<AgentSettingsDialog open={false} {...props} />);
+    expect(cancel).not.toHaveBeenCalled();
+    const snapshot = kind === "auth" ? sessionSnapshot("late-admission", "LATE FLOW") : { ...completedProviderAuthCheck(), id: "late-admission", state: "running" };
+    await act(async () => admission.resolve(snapshot));
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "late-admission", expect.any(AbortSignal));
+    expect(screen.queryByText("LATE FLOW")).not.toBeInTheDocument();
+  });
+
+  it.each(["auth", "check"] as const)("keeps a new scope's %s while cancelling only the old late admission", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", generation: "generation-1", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const old = deferred<Record<string, unknown>>();
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    const snapshot = (id: string) => kind === "auth" ? sessionSnapshot(id, id) : { ...completedProviderAuthCheck(), id, state: "running" };
+    start.mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot("NEW OWNED FLOW"));
+    // Model a cancellation transport that ignores abort and never settles.
+    cancel.mockReturnValueOnce(new Promise(() => undefined));
+    const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
+    const view = render(<AgentSettingsDialog open {...props} />);
+    const action = kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers";
+    fireEvent.click(await screen.findByRole("button", { name: action }));
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", generation: "generation-2", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    view.rerender(<AgentSettingsDialog open {...props} />);
+    fireEvent.click(await screen.findByRole("button", { name: action }));
+    await act(async () => await Promise.resolve());
+    await act(async () => old.resolve(snapshot("OLD UNOWNED FLOW")));
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "OLD UNOWNED FLOW", expect.any(AbortSignal));
+    expect(screen.queryByText("OLD UNOWNED FLOW")).not.toBeInTheDocument();
+    if (kind === "auth") expect(screen.getByText("NEW OWNED FLOW")).toBeVisible();
+    else expect(screen.getByRole("button", { name: "Cancel live provider checks" })).toBeEnabled();
+    view.unmount();
+    expect(cancel).toHaveBeenLastCalledWith("alpha", "NEW OWNED FLOW", expect.any(AbortSignal));
+  });
+
+  it.each(["auth", "check"] as const)("does not cancel an already-terminal late %s admission", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const late = deferred<Record<string, unknown>>();
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    start.mockReturnValueOnce(late.promise);
+    const view = render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    fireEvent.click(await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" }));
+    view.unmount();
+    await act(async () => late.resolve(kind === "auth" ? successfulProviderAuthSession() : completedProviderAuthCheck()));
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it.each(["auth", "check"] as const)("does not revive a cancelled %s from a same-ID poll before effect cleanup", async (kind) => {
+    storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
+    apiMock.providerAuthStatus.mockResolvedValue(providerAuthStatusSnapshot("not_verified"));
+    const active = kind === "auth" ? sessionSnapshot("active", "ACTIVE FLOW") : { ...completedProviderAuthCheck(), id: "active", state: "running" };
+    const start = kind === "auth" ? apiMock.beginProviderAuth : apiMock.beginProviderAuthCheck;
+    const get = kind === "auth" ? apiMock.providerAuthSession : apiMock.providerAuthCheck;
+    const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
+    const poll = deferred<Record<string, unknown>>();
+    const deletion = deferred<void>();
+    start.mockResolvedValueOnce(active);
+    get.mockReturnValueOnce(poll.promise);
+    cancel.mockReturnValueOnce(deletion.promise);
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+    fireEvent.click(await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" }));
+    await vi.waitFor(() => expect(get).toHaveBeenCalledOnce(), { timeout: 1_500 });
+    fireEvent.click(screen.getByRole("button", { name: kind === "auth" ? "Cancel authentication" : "Cancel live provider checks" }));
+    await act(async () => {
+      deletion.resolve();
+      // Run the DELETE continuation, but keep React effects batched until
+      // after the same-ID GET response has also been delivered.
+      await Promise.resolve();
+      poll.resolve(active);
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("button", { name: kind === "auth" ? "Cancel authentication" : "Cancel live provider checks" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run live checks for all displayed providers" })).toBeEnabled();
+  });
+
   it("labels current config sources and saves only future-conversation defaults", async () => {
     const close = vi.fn();
     render(<AgentSettingsDialog open onClose={close} dialogRef={createRef<HTMLElement>()} />);
