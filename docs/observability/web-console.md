@@ -170,7 +170,11 @@ once per conversation per second; the subscribed conversation's own hints and
 reconciliation hints are never throttled. `Last-Event-ID` is
 deliberately ignored: a reconnect's `ready` event means resync, not replay. Any
 sequence gap is repaired with `GET /api/v1/threads/:id/messages/:messageId`, and
-after a gap the browser revalidates what it holds with `If-None-Match`, marks
+the first `ready` also conditionally revalidates the selected conversation once
+the mount snapshot establishes its selection. This closes the interval between
+sampling that snapshot and registering the stream without reloading the whole
+bootstrap. After a later gap the browser revalidates what it holds with
+`If-None-Match`, marks
 kept conversations stale, refreshes the sidebar only after a real drop, and never
 reloads the bootstrap. Coming back from an iOS suspend — `visibilitychange`,
 `pageshow`, or `online` — takes the same path. Up to eight conversations are held

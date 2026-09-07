@@ -1037,6 +1037,27 @@ describe("createThreadCache", () => {
     expect(cache.get("alpha-thread")?.stale).toBe(true);
   });
 
+  it("keeps a terminal run state when an equal-revision read was overtaken", () => {
+    const cache = createThreadCache();
+    const running = thread("alpha-thread", "alpha", {
+      revision: 2,
+      runState: { status: "running", id: "turn-1" },
+    });
+    cache.upsertFull({ ...detail([message("m1")]), thread: running });
+    const issuedAt = cache.clock();
+
+    cache.patchRunState("alpha-thread", { status: "complete", id: "turn-1" });
+    const terminal = cache.get("alpha-thread")?.thread;
+    const landed = cache.upsertFull(
+      { ...detail([message("m1")]), thread: running },
+      { issuedAt },
+    );
+
+    expect(landed?.stale).toBe(true);
+    expect(landed?.thread).toBe(terminal);
+    expect(landed?.thread.runState).toEqual({ status: "complete", id: "turn-1" });
+  });
+
   it("confirms nothing about a conversation it is not holding", () => {
     const cache = createThreadCache();
     expect(cache.confirmFresh("alpha-thread", 0)).toBe(false);
