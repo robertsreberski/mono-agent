@@ -68,8 +68,8 @@ async function makeManagedSkillsStale(path: string): Promise<void> {
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function isConfigureSkillPath(path: string): boolean {
-  return basename(path) === "SKILL.md" && basename(dirname(path)) === "mono-agent-configure";
+function isMemorySkillPath(path: string): boolean {
+  return basename(path) === "SKILL.md" && basename(dirname(path)) === "mono-agent-memory";
 }
 
 async function expectFifoRejectionWithoutBlocking(
@@ -314,11 +314,11 @@ describe("shared security primitives", () => {
   it.skipIf(process.platform === "win32")("rejects FIFO swaps without blocking managed target validation", async () => {
     const dir = await agentRoot();
     await makeManagedSkillsStale(dir);
-    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const path = join(dir, "skills", "mono-agent-memory", "SKILL.md");
     let injected = false;
     const replacement = updateManagedProjectSkills(dir, {
       beforeTargetClaim: async (target) => {
-        if (injected || !isConfigureSkillPath(target)) return;
+        if (injected || !isMemorySkillPath(target)) return;
         injected = true;
         await rm(target);
         await execFileAsync("mkfifo", [target]);
@@ -331,7 +331,7 @@ describe("shared security primitives", () => {
 
   it.skipIf(process.platform === "win32")("rejects FIFO swaps without blocking managed rollback", async () => {
     const dir = await agentRoot();
-    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const path = join(dir, "skills", "mono-agent-memory", "SKILL.md");
     await rm(path);
     let activations = 0;
     const replacement = updateManagedProjectSkills(dir, {
@@ -459,14 +459,14 @@ describe("shared security primitives", () => {
 
   it("preserves a managed skill created at the exclusive publication boundary", async () => {
     const dir = await agentRoot();
-    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const path = join(dir, "skills", "mono-agent-memory", "SKILL.md");
     await rm(path);
     const operatorCopy = "# operator-created skill\n";
     let injected = false;
 
     await expect(updateManagedProjectSkills(dir, {
       beforePublish: async (target) => {
-        if (injected || !isConfigureSkillPath(target)) return;
+        if (injected || !isMemorySkillPath(target)) return;
         injected = true;
         await writeFile(target, operatorCopy, { mode: 0o600 });
       },
@@ -479,13 +479,13 @@ describe("shared security primitives", () => {
   it("restores an operator edit raced into the managed target-claim boundary", async () => {
     const dir = await agentRoot();
     await makeManagedSkillsStale(dir);
-    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const path = join(dir, "skills", "mono-agent-memory", "SKILL.md");
     const operatorEdit = "# operator edit at target claim\n";
     let injected = false;
 
     await expect(updateManagedProjectSkills(dir, {
       beforeTargetClaim: async (target) => {
-        if (injected || !isConfigureSkillPath(target)) return;
+        if (injected || !isMemorySkillPath(target)) return;
         injected = true;
         await writeFile(target, operatorEdit, { mode: 0o600 });
       },
@@ -498,18 +498,18 @@ describe("shared security primitives", () => {
   it("restores an operator edit written through an fd retained across target claim", async () => {
     const dir = await agentRoot();
     await makeManagedSkillsStale(dir);
-    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const path = join(dir, "skills", "mono-agent-memory", "SKILL.md");
     const operatorEdit = "# operator edit through retained descriptor\n";
     let retained: FileHandle | undefined;
 
     try {
       await expect(updateManagedProjectSkills(dir, {
         beforeTargetClaim: async (target) => {
-          if (retained !== undefined || !isConfigureSkillPath(target)) return;
+          if (retained !== undefined || !isMemorySkillPath(target)) return;
           retained = await open(target, "r+");
         },
         beforePublish: async (target) => {
-          if (retained === undefined || !isConfigureSkillPath(target)) return;
+          if (retained === undefined || !isMemorySkillPath(target)) return;
           await retained.truncate(0);
           await retained.writeFile(operatorEdit);
           await retained.sync();
@@ -526,13 +526,13 @@ describe("shared security primitives", () => {
   it("restores the prior managed skill when the staged inode changes after proof", async () => {
     const dir = await agentRoot();
     await makeManagedSkillsStale(dir);
-    const path = join(dir, "skills", "mono-agent-configure", "SKILL.md");
+    const path = join(dir, "skills", "mono-agent-memory", "SKILL.md");
     const prior = await readFile(path, "utf8");
     let injected = false;
 
     await expect(updateManagedProjectSkills(dir, {
       beforePublish: async (target, temporary) => {
-        if (injected || !isConfigureSkillPath(target)) return;
+        if (injected || !isMemorySkillPath(target)) return;
         injected = true;
         const intended = await readFile(temporary);
         await rename(temporary, `${temporary}.displaced`);

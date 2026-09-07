@@ -131,8 +131,6 @@ export interface ParsedCliArgs {
   readonly conversation?: string;
   /** tui: build the current-folder responder in-process. */
   readonly local?: boolean;
-  /** tui: start with the conversational configuration invitation. */
-  readonly configure?: boolean;
   /** install-skill: operate on the current agent's managed project skills. */
   readonly project?: boolean;
   /** install-skill --project: report drift without writing. */
@@ -279,7 +277,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   let agent: string | undefined;
   let conversation: string | undefined;
   let local = false;
-  let configure = false;
   let project = false;
   let check = false;
   let update = false;
@@ -356,9 +353,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
         break;
       case "--local":
         local = true;
-        break;
-      case "--configure":
-        configure = true;
         break;
       case "--project":
         project = true;
@@ -625,11 +619,8 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
   if (consumerPath !== undefined && cmd !== "validate" && cmd !== "runs") {
     throw new Error("--consumer is only supported for `mono-agent validate` and `mono-agent runs`.");
   }
-  if ((local || configure) && cmd !== "tui") {
-    throw new Error("--local and --configure are only supported for `mono-agent tui`.");
-  }
-  if (configure && local) {
-    throw new Error("--configure attaches to the authoritative background agent; omit --local.");
+  if (local && cmd !== "tui") {
+    throw new Error("--local is only supported for `mono-agent tui`.");
   }
   if (project && cmd !== "install-skill") {
     throw new Error("--project is only supported for `mono-agent install-skill`.");
@@ -850,7 +841,6 @@ export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
     ...(agent === undefined ? {} : { agent }),
     ...(conversation === undefined ? {} : { conversation }),
     ...(local ? { local } : {}),
-    ...(configure ? { configure } : {}),
     ...(project ? { project } : {}),
     ...(check ? { check } : {}),
     ...(update ? { update } : {}),

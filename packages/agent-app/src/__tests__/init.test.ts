@@ -70,7 +70,7 @@ describe("initMonoAgentFolder", () => {
     expect(config.context.identityPath).toBe("./IDENTITY.md");
     expect(config.context).toMatchObject({
       skillsRoot: "./skills",
-      selectedSkills: ["mono-agent-configure", "mono-agent-memory"],
+      selectedSkills: ["mono-agent-memory"],
       skillDisclosure: "index",
     });
     expect(config.webhook.enabled).toBe(true);

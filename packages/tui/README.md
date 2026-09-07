@@ -40,20 +40,8 @@ mono-agent tui --conversation ops
 ```
 
 With one running agent, discovery connects directly; with several, it opens the
-picker. Open the managed macOS agent's dedicated self-configuration session
-from that agent's project directory:
-
-```bash
-mono-agent tui --configure
-```
-
-`--configure` is a host-owned mode. `@mono-agent/agent-app` supplies the
-configuration controller, validates a proposed config or Role edit, owns the
-approval card's consequences, writes atomically, restarts the background agent,
-checks readiness, and rolls back on failure. This package only keeps the
-`[SELF-CONFIG]` boundary visible and renders/sequences that controller. An
-embedded responder and `--local` are ordinary chat paths and cannot acquire
-configuration authority.
+picker. Edit `mono-agent.config.json` or `IDENTITY.md`, run `mono-agent validate`,
+and restart the agent before opening the ordinary console to apply changes.
 
 Install the package directly only when building a custom terminal host:
 
@@ -103,8 +91,8 @@ Important slash commands:
 - `/new [label]` inserts a visual transcript break. It does not change the
   configured conversation id or erase durable history.
 - `/exit` and `/quit` close this console only; they do not stop the background
-  agent. In self-config, those commands or `ctrl+c` twice are the only exits.
-- `/agents`, `/replay`, `/config`, `/configure`, `/cancel`, and `/thinking`
+  agent.
+- `/agents`, `/replay`, `/config`, `/cancel`, and `/thinking`
   navigate or control the corresponding surface.
 
 ## Architecture
@@ -123,9 +111,6 @@ Important slash commands:
    display and is not a canonical lifecycle source.
 4. Replay readers load bounded terminal artifacts directly. Config readers build
    a redacted source summary directly from the selected agent's config path.
-5. In managed self-config, the host-provided controller owns every mutation,
-   restart, readiness check, and rollback; the UI gates input while that
-   transaction settles.
 
 ### Package structure
 
@@ -134,7 +119,7 @@ Important slash commands:
 | [`remote/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/tui/src/remote) | Conversational operator-protocol client. |
 | [`data/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/tui/src/data) | Running-agent discovery and recorded-run replay readers. |
 | [`config/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/tui/src/config) | Redacted, source-annotated config summaries. |
-| [`ui/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/tui/src/ui) | pi-tui application, views, presentation, safe terminal text, and configuration boundary. |
+| [`ui/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/tui/src/ui) | pi-tui application, views, presentation, and safe terminal text. |
 | [`runtime/start.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/tui/src/runtime/start.ts) | Validates one connection mode and starts/stops the console. |
 | [`bin/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/tui/src/bin) | Low-level `mono-agent-tui` executable for custom hosts. |
 
@@ -164,8 +149,6 @@ AgentRequestLike
 AgentResponderLike
 AgentResponseLike
 BuildTuiConfigSummaryInput
-ConfigurationProposalCard
-ConfigurationProposalResult
 CreateInMemoryTuiHistoryOptions
 DiscoverInstancesOptions
 DiscoveredInstance
@@ -188,7 +171,6 @@ TuiAppLogger
 TuiConfigFieldSource
 TuiConfigFieldSummary
 TuiConfigSummarySection
-TuiConfigurationController
 TuiHistoryMessage
 TuiHistoryRole
 TuiHistoryStatus
@@ -224,14 +206,8 @@ agent-contracts), or host composition code.
 
 It does not boot a harness, run models, persist conversations (its history
 store is display-only), serve the stream endpoint (that is
-`@mono-agent/operator-adapter`), write run artifacts/config, validate proposals,
-or register agents in the trace-source registry. The config view remains
-read-only. `@mono-agent/agent-app` owns the managed configuration capability,
-proposal validation, atomic writes, approval consequences, background restart,
-readiness check, and rollback; the supplied controller only lets this package
-render and sequence that host-owned lifecycle. Ordinary turns submitted during
-that boundary remain gated until a fresh or recovered endpoint is proven; an
-unrecovered error cancels them and disconnects the unverified endpoint.
+`@mono-agent/operator-adapter`), write run artifacts/config, or register agents
+in the trace-source registry. The config view remains read-only.
 
 ## Related Documentation
 

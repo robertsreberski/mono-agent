@@ -279,7 +279,7 @@ afterEach(async () => {
 });
 
 describe("guided init state transitions", () => {
-  it("keeps an absent default dotenv implicit for the launchd worker and configuration TUI", async () => {
+  it("keeps an absent default dotenv implicit and ends guided init with manual next steps", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: defaultAnswers(),
@@ -294,12 +294,12 @@ describe("guided init state transitions", () => {
       args: { configPath: join(process.cwd(), "mono-agent.config.json") },
     }));
     expect(mocks.resolveInstanceTarget.mock.calls[0]?.[0]?.args).not.toHaveProperty("envFile");
-    expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
-      configPath: join(process.cwd(), "mono-agent.config.json"),
-      agent: "mono-agent-ready-source",
-      configure: true,
-    }));
-    expect(mocks.runTui.mock.calls[0]?.[0]).not.toHaveProperty("envFile");
+    expect(mocks.runTui).not.toHaveBeenCalled();
+    const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
+    expect(output).toContain("Agent ready");
+    expect(output).toContain("mono-agent validate --config");
+    expect(output).toContain("mono-agent restart --config");
+    expect(output).toContain("mono-agent tui --config");
     await expect(access(join(process.cwd(), ".env"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -324,38 +324,26 @@ describe("guided init state transitions", () => {
     expect(await readFile(envPath, "utf8")).toBe("MONO_AGENT_TELEGRAM_BOT_TOKEN=operator-value\n");
     expect((await stat(envPath)).mode & 0o777).toBe(0o600);
     expect(mocks.runAllRouteReadinessProbe).toHaveBeenCalledOnce();
-    expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
-      configPath: join(process.cwd(), "mono-agent.config.json"),
-      cwd: process.cwd(),
-      envFile: join(process.cwd(), ".env"),
-      agent: "mono-agent-ready-source",
-      configure: true,
-    }));
-    expect(mocks.runTui.mock.calls[0]?.[0]).not.toHaveProperty("local");
+    expect(mocks.runTui).not.toHaveBeenCalled();
     expect(mocks.ensureBackgroundReady).toHaveBeenCalledOnce();
     const backgroundResolution = mocks.resolveInstanceTarget.mock.calls[0]?.[0] as {
       readonly env: Readonly<Record<string, string | undefined>>;
     };
     expect(backgroundResolution.env.MONO_AGENT_TELEGRAM_BOT_TOKEN).toBe("operator-value");
     expect(backgroundResolution.env).not.toHaveProperty("MONO_AGENT_PI_AUTH_PATH");
-    const configurationEnvironment = mocks.runTui.mock.calls[0]?.[0]?.env as
-      | Readonly<Record<string, string | undefined>>
-      | undefined;
-    expect(configurationEnvironment?.MONO_AGENT_TELEGRAM_BOT_TOKEN).toBe("operator-value");
-    expect(configurationEnvironment).not.toHaveProperty("MONO_AGENT_PI_AUTH_PATH");
   });
 
-  it("passes an explicit env file through ordinary TUI dispatch for later managed restarts", async () => {
+  it("resolves an explicit env file before ordinary TUI dispatch", async () => {
     await expect(runCli(["tui", "--env-file", ".env.operator"])).resolves.toBe(0);
 
     expect(mocks.runTui).toHaveBeenCalledWith(expect.objectContaining({
       configPath: join(process.cwd(), "mono-agent.config.json"),
       cwd: process.cwd(),
-      envFile: ".env.operator",
+      env: expect.any(Object),
     }));
   });
 
-  it("preserves committed files and skips configuration chat when background readiness fails", async () => {
+  it("preserves committed files when background readiness fails", async () => {
     mocks.runInitWizard.mockResolvedValue({
       status: "answers",
       answers: defaultAnswers(),
@@ -371,7 +359,7 @@ describe("guided init state transitions", () => {
     expect(mocks.runTui).not.toHaveBeenCalled();
     const diagnostic = vi.mocked(process.stderr.write).mock.calls.map(([chunk]) => String(chunk)).join("");
     expect(diagnostic).toContain("files were preserved");
-    expect(diagnostic).toContain("configuration chat was not opened");
+    expect(diagnostic).toContain("background agent is not ready");
   });
 
   it("prints exact recovery commands when background target resolution throws unexpectedly", async () => {
@@ -415,11 +403,10 @@ describe("guided init state transitions", () => {
     expect(mocks.ensureBackgroundReady).not.toHaveBeenCalled();
     expect(mocks.runTui).not.toHaveBeenCalled();
     const output = vi.mocked(process.stdout.write).mock.calls.map(([chunk]) => String(chunk)).join("");
-    expect(output).toContain("Automatic background start and configuration chat require macOS launchd");
-    expect(output).toContain("mono-agent start --foreground --config");
+    expect(output).toContain("Guided init does not start the Linux systemd user service automatically");
+    expect(output).toContain("mono-agent start --config");
     expect(output).toContain("Configure manually:");
     expect(output).toContain("mono-agent tui --config");
-    expect(output).toContain("Conversational configuration requires the managed macOS background lifecycle");
     expect(output).not.toContain("mono-agent tui --configure");
     expect(output).not.toContain("--env-file");
     expect(output).toContain("readiness is not claimed");

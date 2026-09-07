@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-This page walks the macOS happy path: complete the guided `mono-agent init` wizard, let it start the durable background agent, and use the dedicated SELF-CONFIG conversation to explore capabilities and shape the agent's workflow. A real model reply still requires provider credentials or a configured local provider.
+This page walks the macOS happy path: complete the guided `mono-agent init` wizard, let it start the durable background agent, then edit, validate, restart, and open the ordinary TUI. A real model reply still requires provider credentials or a configured local provider.
 
 ## The shortest working path
 
@@ -19,7 +19,7 @@ mono-agent status      # guided macOS init starts the agent
 # Otherwise: mono-agent start --foreground
 ```
 
-The wizard reviews the files before writing, proves each selected runtime route, validates the committed folder, and opens `[SELF-CONFIG]` on macOS. If you use flags, non-TTY input, Linux, or another platform, init creates the scaffold without claiming readiness; run `mono-agent validate`, then `mono-agent start --foreground` yourself. The rest of this page explains those branches and their safety contracts.
+The wizard reviews the files before writing, proves each selected runtime route, validates the committed folder, and starts the managed agent on macOS. If you use flags, non-TTY input, Linux, or another platform, init creates the scaffold without claiming readiness; run `mono-agent validate`, then start the service or foreground process yourself. The rest of this page explains those branches and their safety contracts.
 
 ## Prerequisites
 
@@ -88,7 +88,7 @@ mono-agent init \
 
 - **`mono-agent.config.json`** — the single config file that declares the whole agent. It enables the **webhook channel** (`webhook.enabled: true`) as the zero-credential smoke channel so you can get a response immediately, and wires `artifacts`, `traceability`, and `context.identityPath` to the scaffolded paths.
 - **`IDENTITY.md`** — the reviewed Role is stored only as the body of `## Role`, alongside boundaries and a Knowledge section that references any `AGENTS.md`, `CLAUDE.md`, `README.md`, or `SOUL.md` already present in the folder. An existing file is preserved byte-for-byte; in that case the entered Role is not written, and you add or edit its `## Role` section later. See [Identity and Soul](/context/identity-and-soul/).
-- **`skills/mono-agent-configure` and `skills/mono-agent-memory`** — versioned project-local skills selected with index disclosure. `ReadSkill` loads their bodies only when needed. `skills/.mono-agent-managed.json` records their hashes for safe drift checks and updates.
+- **`skills/mono-agent-memory`** — the versioned project-local memory skill selected with index disclosure. `ReadSkill` loads its body only when needed. `skills/.mono-agent-managed.json` records its hash for safe drift checks and updates.
 - **`.mono-agent/`** — working directories: `.mono-agent/artifacts` (run output) and `.mono-agent/workspace`.
 
 When a fresh init selects built-in Journal or BuJo memory, init also creates one empty managed generation without indexing content. Guided setup has already made its separate fixed, non-user readiness probe; flag/non-TTY scaffolding makes no provider call and no readiness claim. Init never adopts or changes a pre-existing memory root; stop the agent and use the explicit `mono-agent memory rebuild` path for an existing root. Fresh managed init rejects environment overrides for memory backend, mode, path, and embedding provider/model/dimension; put that identity in the generated config. Credential and endpoint environment values remain valid inputs.
@@ -109,7 +109,7 @@ The generated config (with canonical `--fallback` routes and `--memory bujo`) lo
   "context": {
     "identityPath": "./IDENTITY.md",
     "skillsRoot": "./skills",
-    "selectedSkills": ["mono-agent-configure", "mono-agent-memory"],
+    "selectedSkills": ["mono-agent-memory"],
     "skillDisclosure": "index"
   },
   "tools": {
@@ -146,25 +146,20 @@ Every field has a `MONO_AGENT_*` env override (env > JSON > defaults) — for ex
 
 For selected channel secrets, the guided wizard never shows values in config, examples, review output, or logs. Existing non-empty dotenv assignments and comments are preserved, and a shell-only value cannot make a later background start appear durable. Automatic persistence fails closed when the agent folder, dotenv, ignore rules, or a concurrent update cannot be verified safely; unsupported platforms receive manual instructions. The complete ownership, locking, promotion, race-recovery, and provider-auth-store rules live in [Setup security and managed runtime](/reference/setup-security/). Never copy `.env.example` over an already populated `.env`.
 
-## 2. Build the workflow in SELF-CONFIG (`cli`)
+## 2. Configure and apply (`cli`)
 
-After a successful guided readiness proof on macOS, init starts the background agent, waits for its ready trace source, and opens this remote mode automatically:
+Edit `mono-agent.config.json` and `IDENTITY.md` directly. Then validate the
+resolved configuration, restart the agent, and open the ordinary console:
 
 ```bash
-mono-agent tui --configure
+mono-agent validate
+mono-agent restart
+mono-agent tui
 ```
 
-The console carries a persistent `[SELF-CONFIG]` marker and exit hint. The opening guide maps identity/knowledge, runtime/models, skills/tools/MCP/plugins, memory, channels/APIs/A2A, automation, security, observability/operations, and acceptance criteria once, then lets you choose where to start. It helps build the workflow from trigger → context/data → tools/actions → delivery → memory → safety/operations → success checks, one focused question at a time. Do not enter secrets. The agent may prepare one minimal RFC 6902 proposal for a decision-complete checkpoint, but it cannot apply anything. The local host validates the candidate, shows a separate approve/reject review, and writes only after your confirmation.
-
-Approval, rejection, proposal-free turns, `done`, and `no changes` all keep SELF-CONFIG active with the same conversation id and a freshly rotated proposal capability. A fixed host-outcome summary tells the next turn what actually happened. Every non-command message remains configuration-marked; `/configure` simply reports that the session is already active. Only `/quit`, `/exit`, or `ctrl+c` twice exits self-configuration, and quitting does not stop the background agent.
-
-The conversational patch surface is intentionally small: public name; effort, turn/session UX; selected project skills and disclosure; memory size or MemoryRecall enablement; semantic tool-policy tightening; and the separately validated `## Role` body in the identity file resolved from `context.identityPath`. Paths, memory tier/capture behavior, secrets, model/provider or runtime-permission changes, external MCP servers/plugins, channels and cron/proactive jobs, exporters or embeddings/LLM endpoints, sandbox/network policy, and unknown future fields are refused for direct application and handed to an explicit guided flow. During the configuration conversation, ordinary action tools and configured MCP servers are replaced by `ReadSkill`, `MemoryRecall`, and the inert proposal server.
-
-After approval, the host commits the files, restarts the launchd agent, waits for its new ready trace source, swaps the TUI endpoint, and continues SELF-CONFIG against the verified agent. If the new configuration cannot start, it restores the prior files, restarts the previous agent, reports the recovery, and continues without assuming the rejected change is active. Text submitted while a turn or host transaction is settling remains in the editor until you explicitly submit it after readiness; it is never sent as ordinary chat. If rollback or recovery restart fails, the marker remains visible, the unverified endpoint disconnects, and the console reports manual recovery instead of claiming success. Use `mono-agent status`, `mono-agent logs --follow`, `mono-agent restart`, and `mono-agent stop` to inspect or recover the managed instance, then quit and reopen SELF-CONFIG.
-
-Existing agents may have managed skill version `1.1.0`, whose instructions describe the old one-shot exchange. Startup does not rewrite project skills. Check and explicitly refresh an unchanged managed copy with `mono-agent install-skill --project --check` and `mono-agent install-skill --project --update`; modified copies require manual reconciliation.
-
-Conversational configuration is unavailable off macOS because it depends on managed restart, readiness, and rollback. The wizard preserves the files without a readiness claim. Edit `mono-agent.config.json` and `IDENTITY.md` manually, run `mono-agent validate`, then run `mono-agent start --foreground` in Terminal 1 and ordinary `mono-agent tui` in Terminal 2.
+Do not put secrets in JSON or identity files. Keep them in the documented
+owner-only dotenv or provider authentication store, and do not claim a change
+is active until validation and restart have succeeded.
 
 ## 3. Validate (`cli`)
 

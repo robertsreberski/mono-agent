@@ -15,7 +15,7 @@ vi.mock("../configured-agent.js", async (importOriginal) => ({
 }));
 
 const { initMonoAgentFolder } = await import("../init.js");
-const { createLocalConfigurationSession } = await import("../local-configuration.js");
+const { createLocalTuiSession } = await import("../local-tui-session.js");
 const { defaultAnswers } = await import("../wizard/answers.js");
 
 const temporaryDirectories: string[] = [];
@@ -40,11 +40,10 @@ describe("local TUI agent-root protection", () => {
       dispose: responderState.dispose,
     });
 
-    const session = await createLocalConfigurationSession({
+    const session = await createLocalTuiSession({
       cwd: dir,
       configPath: initialized.configPath,
       env: {},
-      configure: false,
     });
 
     expect(responderState.create).toHaveBeenCalledWith(

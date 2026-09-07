@@ -712,6 +712,7 @@ describe("parseCliArgs", () => {
     const tuiDetail = helpTopicText("tui");
     expect(tuiDetail).toContain("live chat with structured");
     expect(tuiDetail).not.toContain("live chat with full");
+    expect(tuiDetail).not.toContain("--configure");
 
     const webDetail = helpTopicText("web");
     expect(webDetail).toContain("web reset --all --yes");

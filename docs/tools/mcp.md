@@ -238,7 +238,7 @@ still recognized. Only `*_ENV`, `*_ENV_VAR`, `*_PATH`, `*_FILE`, and `*_DIR`
 names are skipped, because those hold a variable name or a location rather than
 a secret.
 Names such as `SERVICE_API_TOKENS` are deliberately **not** skipped: the same
-helper backs the SELF-CONFIG proposal guard, so a broader carve-out would weaken
+helper backs other persistence guards, so a broader carve-out would weaken
 two surfaces at once. The accepted cost is a false rejection — a
 credential-named budget like `..._KEEP_RECENT_TOKENS=8000` makes the literal
 `8000` unstorable through this tool.

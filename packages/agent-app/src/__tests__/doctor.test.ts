@@ -1770,6 +1770,49 @@ describe("validateMonoAgentFolder", () => {
     expect(sectionById(report, "context").details.join("\n")).toContain("missing-skill");
   });
 
+  it("treats the retired configuration selector as nonfatal waiting without loading a skills root", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: {
+        identityPath: "./IDENTITY.md",
+        selectedSkills: ["MONO-AGENT-CONFIGURE"],
+        skillDisclosure: "index",
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    expect(report.ok).toBe(true);
+    const context = sectionById(report, "context");
+    expect(context.status).toBe("waiting");
+    expect(context.details.join("\n")).toContain("is retired and ignored");
+    expect(context.details.join("\n")).toContain(
+      "Skill disclosure runs as `full` until the retired selector is removed.",
+    );
+  });
+
+  it("validates active skills while ignoring a stale installed retired body", async () => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    await mkdir(join(dir, "skills", "mono-agent-memory"), { recursive: true });
+    await mkdir(join(dir, "skills", "mono-agent-configure"), { recursive: true });
+    await writeFile(join(dir, "skills", "mono-agent-memory", "SKILL.md"), "# Memory\n");
+    await writeFile(join(dir, "skills", "mono-agent-configure", "SKILL.md"), "RETIRED_BODY_MUST_NOT_LOAD\n");
+    const configPath = await writeConfig({
+      runtime: { model: "openai-codex:gpt-5.5" },
+      context: {
+        identityPath: "./IDENTITY.md",
+        skillsRoot: "./skills",
+        selectedSkills: ["mono-agent-configure", "mono-agent-memory"],
+      },
+    });
+
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
+
+    expect(report.ok).toBe(true);
+    expect(sectionById(report, "context").status).toBe("waiting");
+  });
+
   it("reports core config errors without throwing", async () => {
     const configPath = await writeConfig({ context: { identityPath: "./IDENTITY.md" } });
 

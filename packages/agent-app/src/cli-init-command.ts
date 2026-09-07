@@ -573,7 +573,7 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
             printUnsupportedGuidedInitHandoff(result.configPath, backgroundEnvFile);
             return 0;
           }
-          process.stdout.write(ui.hint("Starting the authoritative background agent before configuration chat…"));
+          process.stdout.write(ui.hint("Starting the managed background agent…"));
           let background: BackgroundLaunchResult;
           try {
             const resolvedBackgroundTarget = await resolveInstanceTarget({
@@ -584,7 +584,6 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
               env: { ...committedBackgroundEnvironment },
               cwd,
               cliPath: fileURLToPath(new URL("./cli.js", import.meta.url)),
-              requireTui: true,
             });
             const backgroundTarget = {
               ...resolvedBackgroundTarget,
@@ -600,23 +599,15 @@ export async function runInit(args: ParsedCliArgs, environment: RunInitEnvironme
           }
           if (!background.ok) {
             process.stderr.write(ui.hint(
-              "The validated agent files were preserved, but configuration chat was not opened because the background agent is not ready.",
+              "The validated agent files were preserved, but the background agent is not ready.",
             ));
             return 1;
           }
-          process.stdout.write(
-            ui.badge("ok") + ui.style.green("Agent ready — the background process reported startup complete.\n") +
-            ui.badge("ok") + ui.style.green("Opening configuration chat on the authoritative background agent.\n"),
-          );
-          const { runTui } = await import("./tui-command.js");
-          return await withExactProcessEnvironment(committedBackgroundEnvironment, () => runTui({
-            configPath: result.configPath,
-            cwd,
-            env: committedBackgroundEnvironment,
-            ...(backgroundEnvFile === undefined ? {} : { envFile: backgroundEnvFile }),
-            agent: background.source.sourceId,
-            configure: true,
-          }));
+          process.stdout.write(ui.badge("ok") + ui.style.green(
+            "Agent ready — the background process reported startup complete.\n",
+          ));
+          printReadyAgentHandoff(result.configPath, backgroundEnvFile);
+          return 0;
         }
         configurationRecoveryStep = focusedConfigurationRepairStep(stagedGate.failedSectionIds);
         invalidPlanStage = "final_readiness";
@@ -2157,11 +2148,9 @@ function printSecretsChecklist(
 
 function printNextSteps(configPath: string): void {
   const startCommand = process.platform === "darwin" || process.platform === "linux" ? "mono-agent start" : "mono-agent start --foreground";
-  const tuiCommand = process.platform === "darwin"
-    ? `mono-agent tui --configure ${ui.style.dim("(after the agent reports ready)")}`
-    : process.platform === "linux"
-      ? `mono-agent tui ${ui.style.dim("(chat with the running background agent; edit config files manually)")}`
-    : `mono-agent tui ${ui.style.dim("(ordinary chat after foreground startup; edit config files manually)")}`;
+  const tuiCommand = process.platform === "darwin" || process.platform === "linux"
+    ? `mono-agent tui ${ui.style.dim("(chat with the running background agent)")}`
+    : `mono-agent tui ${ui.style.dim("(ordinary chat after foreground startup)")}`;
   process.stdout.write(
     "\n" +
       ui.heading("Next steps") +
@@ -2174,15 +2163,31 @@ function printNextSteps(configPath: string): void {
 
 function printUnsupportedGuidedInitHandoff(configPath: string, envFile?: string): void {
   const flags = guidedHandoffFlags(configPath, envFile);
+  const backgroundSupported = process.platform === "linux";
+  const startCommand = backgroundSupported ? "mono-agent start" : "mono-agent start --foreground";
   process.stdout.write(
     "\n" +
       ui.heading("Manual start required") +
-      ui.style.yellow("Automatic background start and configuration chat require macOS launchd.\n") +
+      ui.style.yellow(backgroundSupported
+        ? "Guided init does not start the Linux systemd user service automatically.\n"
+        : "Automatic background start requires macOS launchd or Linux systemd.\n") +
       ui.style.dim("The validated agent files were preserved, but no agent process was started and readiness is not claimed.\n") +
       `  ${ui.style.bold("Configure manually:")} edit ${configPath} and IDENTITY.md, then run mono-agent validate${flags}\n` +
-      `  ${ui.style.bold("Terminal 1:")} mono-agent start --foreground${flags}\n` +
+      `  ${ui.style.bold("Start:")} ${startCommand}${flags}\n` +
       `  ${ui.style.bold("Terminal 2:")} mono-agent tui${flags} ${ui.style.dim("(ordinary chat after startup completes)")}\n` +
-      ui.style.dim("Conversational configuration requires the managed macOS background lifecycle.\n"),
+      (backgroundSupported ? "" : ui.style.dim("Keep the foreground process running while using the TUI.\n")),
+  );
+}
+
+function printReadyAgentHandoff(configPath: string, envFile?: string): void {
+  const flags = guidedHandoffFlags(configPath, envFile);
+  process.stdout.write(
+    "\n" +
+      ui.heading("Configure and use the agent") +
+      `  ${ui.style.bold("1.")} Edit ${configPath} and the configured identity document.\n` +
+      `  ${ui.style.bold("2.")} mono-agent validate${flags}\n` +
+      `  ${ui.style.bold("3.")} mono-agent restart${flags} ${ui.style.dim("(after configuration changes)")}\n` +
+      `  ${ui.style.bold("4.")} mono-agent tui${flags} ${ui.style.dim("(ordinary chat with the running agent)")}\n`,
   );
 }
 
@@ -2193,7 +2198,7 @@ function printUnexpectedGuidedBackgroundFailure(configPath: string, envFile: str
     `The background lifecycle failed unexpectedly: ${error instanceof Error ? error.message : String(error)}`,
   ));
   process.stderr.write(ui.style.dim(
-    "The validated agent files were preserved, but configuration chat was not opened. Retry or inspect with:\n",
+    "The validated agent files were preserved, but the background agent is not ready. Retry or inspect with:\n",
   ));
   process.stderr.write(
     `  ${ui.style.gray("logs:  ")} ${paths.stderrPath}\n` +

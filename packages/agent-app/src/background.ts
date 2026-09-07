@@ -170,8 +170,6 @@ export interface InstanceTarget {
   readonly expectedSnapshot?: BackgroundSnapshot;
   /** Opaque proof that the selected managed runtime was finalized and verified. */
   readonly managedRuntimeLaunchProof?: string;
-  /** Guided/configuration handoffs additionally require a usable TUI endpoint. */
-  readonly requireTui?: boolean;
 }
 
 export interface ResolveInstanceTargetInput {
@@ -180,7 +178,6 @@ export interface ResolveInstanceTargetInput {
   readonly cwd: string;
   /** Absolute path to the running cli.js, baked into the plist. */
   readonly cliPath: string;
-  readonly requireTui?: boolean;
 }
 
 /** Exact non-secret environment materialised into a managed LaunchAgent. */
@@ -241,7 +238,6 @@ export async function resolveInstanceTarget(input: ResolveInstanceTargetInput): 
     ...(input.args.envFile === undefined ? {} : { envFile: resolve(cwd, input.args.envFile) }),
     configurationEnvironment: { ...input.env },
     environment: managedBackgroundEnvironment(input.env),
-    ...(input.requireTui === true ? { requireTui: true } : {}),
   };
 }
 
@@ -339,8 +335,6 @@ export interface BackgroundDeps {
   ) => Promise<(() => Promise<void>) | undefined>;
   /** Hold KeepAlive respawns until the replacement runtime and plist are committed. */
   readonly acquireRuntimePublicationBarrier?: (target: BackgroundLifecycleTarget) => Promise<OwnerPrivateLock | undefined>;
-  /** Prove a metadata-advertised TUI endpoint is actually reachable. */
-  readonly probeTui: (source: TraceSourceListItem) => Promise<boolean>;
   readonly captureSnapshot?: (target: InstanceTarget) => Promise<BackgroundSnapshot>;
   readonly stdout: (text: string) => void;
   readonly stderr: (text: string) => void;
@@ -401,7 +395,6 @@ export function defaultBackgroundDeps(): BackgroundDeps {
       label: target.label,
       managedRoot: dirname(target.paths.logDir),
     }),
-    probeTui: probeTuiEndpoint,
     stdout: (text) => void process.stdout.write(text),
     stderr: (text) => void process.stderr.write(text),
     spawnTail: (args) =>
@@ -416,7 +409,6 @@ export function defaultBackgroundDeps(): BackgroundDeps {
 export interface ReadyPollOptions extends PollOptions {
   /** Only accept a worker that started at or after this time (restart safety). */
   readonly sinceMs: number;
-  readonly requireTui?: boolean;
 }
 
 const DEFAULT_CONTROL_POLL: PollOptions = { timeoutMs: 18_000, intervalMs: 400 };
@@ -520,7 +512,7 @@ async function maintainLaunchdControllerWithLifecycleLease(
       && worker.pid !== undefined
       && deps.isAlive(worker.pid)
       && source !== undefined
-      && isReady(source, false)
+      && isReady(source)
       && snapshotMetadataMatches(source, target.expectedSnapshot)
       && durableSnapshotStillMatches;
     const definitionMatches = worker.definition !== undefined
@@ -923,7 +915,6 @@ async function ensureBackgroundReadyAfterPublicationBarrier(
     ready = await pollInstanceReady(launchTarget, deps, {
       ...readinessPoll,
       sinceMs,
-      ...(launchTarget.requireTui === true ? { requireTui: true } : {}),
     });
   } catch (error) {
     reportReadinessException(deps, error);
@@ -1718,11 +1709,10 @@ export async function pollInstanceReady(
       const matches = await findInstances(target, deps);
       const match = matches.find((source) => source.pid === service.pid);
       if (match !== undefined
-        && isReady(match, options.requireTui === true)
+        && isReady(match)
         && startedAtMs(match) >= options.sinceMs
         && snapshotMetadataMatches(match, target.expectedSnapshot)
-        && await snapshotStillMatches(target, deps)
-        && (options.requireTui !== true || await deps.probeTui(match))) {
+        && await snapshotStillMatches(target, deps)) {
         return match;
       }
     }
@@ -2011,15 +2001,12 @@ async function matchesConfig(source: TraceSourceListItem, configPath: string): P
   return await canonicalBackgroundConfigPath(process.cwd(), source.configPath) === configPath;
 }
 
-function isReady(source: TraceSourceListItem, requireTui: boolean): boolean {
+function isReady(source: TraceSourceListItem): boolean {
   if (source.health !== "running" || !hasCompletedManagedStartup(source)) return false;
   if (source.memoryHealth?.status === "unhealthy") return false;
   const channels = channelRecords(source);
   if (channels.some((channel) => channel.kind === "failed")) return false;
-  if (!requireTui) return true;
-  if (channels.some((channel) => typeof channel.kind === "string"
-    && ["failed", "degraded", "waiting_for_config"].includes(channel.kind))) return false;
-  return tuiEndpoint(source) !== undefined;
+  return true;
 }
 
 function channelRecords(source: TraceSourceListItem): readonly Record<string, unknown>[] {
@@ -2211,45 +2198,6 @@ function commandFlags(target: InstanceTarget): string {
 
 function shellCommandArgument(value: string): string {
   return /^[a-zA-Z0-9_./:@%+=,-]+$/u.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
-async function probeTuiEndpoint(source: TraceSourceListItem): Promise<boolean> {
-  const baseUrl = tuiEndpoint(source);
-  if (baseUrl === undefined) return false;
-  let url: URL;
-  try {
-    url = new URL(`${baseUrl.replace(/\/+$/u, "")}/v1/info`);
-  } catch {
-    return false;
-  }
-  if (url.protocol !== "http:" || !isLoopbackHostname(url.hostname)) return false;
-  try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-    // Authenticated adapters return 401/403 without the secret. That still
-    // proves the advertised loopback listener is reachable; an open endpoint
-    // additionally proves it belongs to the expected worker pid.
-    if (response.status === 401 || response.status === 403) return true;
-    if (!response.ok) return false;
-    const body = await response.json() as { pid?: unknown };
-    return typeof source.pid === "number" && body.pid === source.pid;
-  } catch {
-    return false;
-  }
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === "127.0.0.1" || hostname === "::1" || hostname === "localhost";
-}
-
-function tuiEndpoint(source: TraceSourceListItem): string | undefined {
-  const channels = source.metadata?.channels;
-  if (channels === null || typeof channels !== "object") return undefined;
-  const tui = (channels as Record<string, unknown>).tui;
-  if (tui === null || typeof tui !== "object") return undefined;
-  const record = tui as Record<string, unknown>;
-  return record.kind === "running" && typeof record.baseUrl === "string" && record.baseUrl.trim().length > 0
-    ? record.baseUrl
-    : undefined;
 }
 
 function formatChannels(source: TraceSourceListItem): ReturnType<typeof formatHumanChannelSections> {

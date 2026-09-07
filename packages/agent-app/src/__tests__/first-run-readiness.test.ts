@@ -751,8 +751,6 @@ describe("complete readiness gate", () => {
         stagedCwd = options.cwd;
         await access(options.configPath);
         await access(join(options.cwd, "IDENTITY.md"));
-        expect(await readFile(join(options.cwd, "skills", "mono-agent-configure", "SKILL.md"), "utf8"))
-          .toContain("ProposeAgentConfiguration");
         expect(await readFile(join(options.cwd, "skills", "mono-agent-memory", "SKILL.md"), "utf8"))
           .toContain("# Configure memory");
         expect(options.allowFilesystemWrites).toBe(true);

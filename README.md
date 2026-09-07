@@ -32,7 +32,7 @@ cd my-agent
 mono-agent init
 ```
 
-Bare `init` on a TTY opens the guided wizard: name the agent, write its Role, choose a model and capabilities, review the result, and complete any provider setup. On macOS, a successful guided run proves the selected routes, starts the background agent, and opens a dedicated `[SELF-CONFIG]` session that maps the framework and helps build the user's workflow conversationally. Approval, rejection, and no-change turns keep that session active; only quitting it exits self-configuration. Any flag or non-TTY invocation is scaffold-only; on other platforms, continue with the foreground start below.
+Bare `init` on a TTY opens the guided wizard: name the agent, write its Role, choose a model and capabilities, review the result, and complete any provider setup. On macOS, a successful guided run proves the selected routes, starts the background agent, and prints the manual edit → `validate` → `restart` → ordinary `tui` workflow. Any flag or non-TTY invocation is scaffold-only; on other platforms, continue with the start instructions below.
 
 The complete wizard, non-interactive flags, generated files, and provider-specific setup are documented in [Your First Agent](./docs/getting-started/quickstart.md).
 
@@ -105,7 +105,7 @@ mono-agent install-skill   # copies the skill and pairs mono-agent-docs for avai
 Use `--no-docs-mcp` only for an intentional file-only install. An unmanaged MCP
 entry named `mono-agent-docs` is never overwritten, including with `--force`.
 
-This authoring-oriented composer is not auto-selected inside generated agents. New agents instead select the narrower `mono-agent-configure` and `mono-agent-memory` project skills with index disclosure. Check or safely refresh their managed copies with `mono-agent install-skill --project --check` / `--update`; canonical non-symlink parent checks, an owner lock, compare-and-swap activation, and guarded rollback never write outside the agent or overwrite modified/concurrently edited copies.
+This authoring-oriented composer is not auto-selected inside generated agents. New agents instead select the narrower `mono-agent-memory` project skill with index disclosure. Check or safely refresh its managed copy with `mono-agent install-skill --project --check` / `--update`; the updater also retires an exact manifest-owned legacy `mono-agent-configure` copy. Canonical non-symlink parent checks, an owner lock, compare-and-swap activation, and guarded rollback never write outside the agent or overwrite modified/concurrently edited copies.
 
 To use it as a selected mono-agent skill instead, point `context.skillsRoot` at `./packages/agent-app/skills` and add `mono-agent-composer` to `context.selectedSkills`.
 

@@ -1,6 +1,6 @@
 ---
 title: "Terminal UI (mono-agent tui)"
-description: "Use the terminal console for structured live chat, recorded-run replay, config inspection, and host-approved self-configuration."
+description: "Use the terminal console for structured live chat, recorded-run replay, and config inspection."
 sidebar:
   order: 4
 ---
@@ -20,7 +20,6 @@ Remote mode is a **separate process** from the agent. `mono-agent start` runs th
 mono-agent tui                        # discover + connect from anywhere
 mono-agent tui --agent personal-agent # pick a specific instance
 mono-agent tui --conversation ops     # chat under a stable conversation id
-mono-agent tui --configure            # managed macOS configuration conversation
 mono-agent tui --local                # ordinary current-folder chat, no daemon
 ```
 
@@ -76,32 +75,8 @@ The input editor autocompletes slash commands:
   the conversation id or clear durable agent history.
 - `/exit` is an alias of `/quit`: both close only this console and leave the
   background agent running.
-- `/help`, `/agents`, `/replay`, `/config`, `/configure`, `/cancel`, and
+- `/help`, `/agents`, `/replay`, `/config`, `/cancel`, and
   `/thinking` expose the remaining navigation and turn controls.
-
-In a configured console, `/configure` reports that SELF-CONFIG is already
-active; it does not restart the guide.
-
-## Managed conversational configuration
-
-`mono-agent tui --configure` attaches to the authoritative macOS background instance and opens a dedicated **SELF-CONFIG** session. Do not combine it with `--local`. A persistent `[SELF-CONFIG]` header and bottom exit hint make the boundary visible. The host makes the purpose and stop condition explicit:
-
-> Dedicated self-configuration session: map the agent's identity/knowledge, runtime/models, skills/tools/MCP/plugins, memory, channels/APIs/A2A, automation, security, observability/operations, and acceptance criteria. Build the chosen workflow by conversation. Do not enter secrets. Nothing changes until the host shows a separate approval. Approval, rejection, done, and no changes keep SELF-CONFIG active. Only /quit, /exit, or ctrl+c twice exits this session; the background agent keeps running.
-
-The configuration conversation id stays stable for the life of the console, including across verified restarts. A proposal-free turn, `done`, or `no changes` reports that no files changed and rearms SELF-CONFIG with a fresh opaque proposal capability. Rejection reports **Proposal rejected; no files changed. Self-configuration remains active.** Every non-command message stays configuration-marked. `/quit` closes only the console, while the background process and its channels continue running.
-
-The ownership boundary is intentionally narrow: `@mono-agent/tui` renders the
-marked conversation, review card, and controller state, but
-`@mono-agent/agent-app` supplies that controller and owns attestation,
-validation, approval consequences, atomic writes, restart/readiness, and
-rollback. The terminal package cannot grant those powers to an embedded
-responder or an ordinary `--local` session.
-
-Before granting configuration authority, the host matches the registry record to one live launchd PID, the exact config/dotenv/Identity/Soul/MCP-authority/operational-environment snapshot, and a reachable TUI endpoint. The request-scoped `ProposeAgentConfiguration` tool exists only in that marked conversation. The background responder replaces ordinary action tools and configured MCP servers with `ReadSkill`, `MemoryRecall`, and the inert proposal server. The proposal records one RFC 6902 config patch and optional replacement for the `## Role` body in the identity file resolved from `context.identityPath`; the model cannot write files. The host accepts only public name, effort/turn/session UX, selected project skills/disclosure, memory size/MemoryRecall enablement, and semantic tool-policy tightening. It rejects stale, secret-bearing, environment-shadowed (including JSON Patch source paths), path-bearing, authority/network/provider, unknown-field, terminal-control, and bidi-control candidates before validation and a separate approve/reject card. Long Role bodies are paged while the decision controls remain visible. Memory tiers/capture, secrets, runtime/model/provider posture, external MCP/plugins, channels or proactive jobs, exporters/endpoints, and sandbox/network policy are handed to explicit guided flows.
-
-Approval commits the candidate under an owner-only transaction, restarts the managed background agent, waits for a fresh ready trace source, swaps the console endpoint, and reports **Configuration applied and the background agent restarted successfully. Self-configuration remains active.** If the candidate cannot start, the host restores the approved files, restarts the previous background agent, swaps to the recovered endpoint, and keeps SELF-CONFIG active without assuming the rejected change landed. The next turn receives a fixed, non-secret host-outcome summary. A fast follow-up submitted while the model, review, restart, or recovery is settling remains in the editor and must be submitted again after readiness; it never becomes ordinary chat or reaches a stale endpoint. A failed rollback or recovery restart is never hidden: the `[SELF-CONFIG]` marker remains visible, the unverified endpoint is disconnected, and the draft stays retained while manual recovery is required. If the fresh endpoint is already proven but proposal-capability rotation fails afterward, the endpoint swap and applied result are preserved while continuation is disabled for that console. Inspect or recover with `mono-agent status`, `mono-agent logs --follow`, `mono-agent restart`, and `mono-agent stop` (add the same `--config` when using a non-default config), then quit and reopen SELF-CONFIG.
-
-Conversational configuration is unavailable off macOS because safe apply depends on managed restart, readiness, and rollback. Edit `mono-agent.config.json` and `IDENTITY.md` manually, run `mono-agent validate`, start `mono-agent start --foreground` in one terminal, and open ordinary `mono-agent tui` in another.
 
 ## Embedded mode (custom hosts)
 

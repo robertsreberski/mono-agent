@@ -670,12 +670,15 @@ cron channels rebuild from the running agents.
 
 The web console covers discovery, hostname identity, curated host themes, persistent multi-conversation chat, first-class cron channels, marked webhook notification conversations, structured `AskUser` forms, quoting, durable Web Push with a page-notification fallback, model/effort selection, streamed reasoning and tools, internal telemetry-backed context usage, cancellation, and attachments. It is responsive down to narrow phone widths and installable as a host-named PWA when served from a secure browser context.
 
-General recorded-run replay, source-annotated configuration, and managed conversational configuration remain in the TUI for now. Use:
+General recorded-run replay and source-annotated configuration remain in the TUI. Use:
 
 ```bash
 mono-agent tui
-mono-agent tui --configure
 ```
+
+To change an agent, edit `mono-agent.config.json` or `IDENTITY.md`, run
+`mono-agent validate`, restart the agent, and open the ordinary TUI if you want
+to continue chatting.
 
 ## Session Recorder removed
 
@@ -686,6 +689,6 @@ The `mono-agent sessions` command that launched the read-only Session Recorder w
 ## Related
 
 - [CLI command reference](/observability/cli-reference/#web) — lifecycle and flags.
-- [Terminal UI](/observability/tui/) — replay, config view, and managed configuration.
+- [Terminal UI](/observability/tui/) — replay, live chat, and the config view.
 - [TUI stream endpoint](/channels/tui/) — the default-on agent endpoint used for web chat.
 - [Sessions and concurrency](/runtime/sessions-concurrency/) — how web threads map to harness conversations and provider sessions.

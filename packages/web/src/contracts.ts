@@ -153,24 +153,15 @@ export interface WebAgentSummary {
   readonly health?: string;
   readonly supportsAttachments: boolean;
   /**
-   * True only when this web host can grant an owner-local SELF-CONFIG capability.
-   *
-   * Projected, never persisted, like `supportsProviderAuth`: the console's own
-   * state database has no column for either, so they are added when a summary
-   * is answered to a client (`decorateProjectedCapabilities`) and must stay off
-   * the summaries discovery hands to `replaceAgents` -- a field the store
-   * cannot store makes every heartbeat look like a fleet change, and is dropped
-   * on write so it never reaches the browser anyway. The other half of that
-   * trade: a field parked at the projection moves without any `agents.changed`,
-   * so its transitions have to be announced explicitly (`refreshAgentsOnce`
-   * tracks both in `projectedCapabilities`).
-   */
-  readonly supportsConfiguration?: true;
-  /**
    * Agent operator exposes bearer-protected Pi provider authentication v1.
    *
-   * Projected from the live connection's `/v1/info`, never persisted -- see
-   * `supportsConfiguration` above for why that distinction matters.
+   * Projected from the live connection's `/v1/info` by
+   * `decorateProjectedCapabilities`, never persisted: the console's state
+   * database has no column for it, so it must stay off the summaries discovery
+   * hands to `replaceAgents`. A field the store cannot retain would make every
+   * heartbeat look like a fleet change and would still be dropped on write.
+   * Its real transitions are announced explicitly by `refreshAgentsOnce`
+   * through `projectedCapabilities`.
    */
   readonly supportsProviderAuth?: true;
   readonly models?: readonly string[];
@@ -203,29 +194,6 @@ export type {
   ProviderAuthStatusSnapshot,
   ProviderAuthUsage,
 } from "@mono-agent/agent-contracts";
-
-export interface WebConfigurationProposal {
-  readonly id: string;
-  readonly title: string;
-  readonly rationale: string;
-  readonly details: readonly string[];
-  readonly role?: { readonly location: string; readonly proposedBody: string };
-}
-
-export interface WebConfigurationMessage {
-  readonly role: "operator" | "assistant" | "host";
-  readonly text: string;
-}
-
-export interface WebConfigurationSession {
-  readonly id: string;
-  readonly sourceId: string;
-  readonly roleLocation: string;
-  readonly status: "active" | "proposal" | "applying";
-  readonly messages: readonly WebConfigurationMessage[];
-  readonly proposal?: WebConfigurationProposal;
-}
-
 export type WebSkillAvailability = "inlined" | "on-demand" | "unavailable";
 export type WebSkillUnavailableReason = "not-selected" | "read-skill-disabled" | "unsupported-name";
 

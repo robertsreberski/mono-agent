@@ -302,7 +302,7 @@ describe("wizard composer — default parity with today's scaffold", () => {
     expect(config.runtime?.model).toBe("openai-codex:gpt-5.6-terra");
     expect(config.runtime?.workspace).toBe(".");
     expect(config.context?.identityPath).toBe("./IDENTITY.md");
-    expect(config.context?.selectedSkills).toEqual(["mono-agent-configure", "mono-agent-memory"]);
+    expect(config.context?.selectedSkills).toEqual(["mono-agent-memory"]);
     expect(config.context?.skillsRoot).toBe("./skills");
     expect(config.context?.skillDisclosure).toBe("index");
     expect((config as Record<string, { enabled?: boolean }>).webhook?.enabled).toBe(true);

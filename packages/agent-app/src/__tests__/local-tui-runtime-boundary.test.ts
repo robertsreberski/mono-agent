@@ -40,7 +40,7 @@ vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
   };
 });
 
-const { createLocalConfigurationSession } = await import("../local-configuration.js");
+const { createLocalTuiSession } = await import("../local-tui-session.js");
 
 const temporaryDirectories: string[] = [];
 
@@ -69,7 +69,7 @@ describe("local TUI configured runtime boundary", () => {
   it("attests unresolved clear-sessions recovery before the local provider boundary", async () => {
     const fixture = await localFixture();
     await writeFile(join(fixture.registryRoot, "pending"), "unresolved\n", { mode: 0o600 });
-    const session = await createLocalConfigurationSession({
+    const session = await createLocalTuiSession({
       cwd: fixture.cwd,
       configPath: fixture.configPath,
       env: {},
@@ -87,7 +87,7 @@ describe("local TUI configured runtime boundary", () => {
 
   it("protects both private roots while preserving ordinary local TUI tools", async () => {
     const fixture = await localFixture();
-    const session = await createLocalConfigurationSession({
+    const session = await createLocalTuiSession({
       cwd: fixture.cwd,
       configPath: fixture.configPath,
       env: {},
@@ -120,7 +120,7 @@ describe("local TUI configured runtime boundary", () => {
       unsafe: true,
       fallback: "ollama:qwen3:8b",
     });
-    const session = await createLocalConfigurationSession({
+    const session = await createLocalTuiSession({
       cwd: fixture.cwd,
       configPath: fixture.configPath,
       env: {},
