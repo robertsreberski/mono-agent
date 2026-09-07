@@ -120,6 +120,15 @@ The web service only proxies short-lived, no-store session projections and never
 persists submitted values. This feature does not inspect or modify Codex CLI
 credentials such as `~/.codex/auth.json`.
 
+A valid repeated login replaces the current login with a fresh session after
+provider/method validation; invalid requests do not cancel a usable prompt.
+Cancellation fences late prompts, events, results, and pre-promotion credential
+writes. A credential promotion that has already changed filesystem state must
+finish or recover under the existing atomic transaction. The replacement waits
+up to two seconds for that safe drain and otherwise fails with
+`replacement_timeout` without starting a competing write. Provider checks are
+not cancelled implicitly.
+
 The agent routes are keyless when its operator endpoint has no API key and
 otherwise retain the endpoint's normal bearer requirement. No additional auth
 configuration is required to make the surface available.

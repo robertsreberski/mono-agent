@@ -26,6 +26,7 @@ import { providerAuthStatusSnapshot, type ProviderAuthStatusOptions } from "./pr
 
 const SESSION_TTL_MS = 20 * 60 * 1_000;
 const TERMINAL_RETENTION_MS = 10 * 60 * 1_000;
+const AUTH_REPLACEMENT_DRAIN_MS = 2_000;
 
 interface PendingPrompt {
   readonly id: string;
@@ -37,12 +38,23 @@ interface PendingPrompt {
 }
 
 interface LiveSession {
+  readonly sequence: number;
   snapshot: ProviderAuthSessionSnapshot;
   readonly abort: AbortController;
   prompt: PendingPrompt | undefined;
   run?: Promise<void>;
   timeout?: ReturnType<typeof setTimeout>;
   retention?: ReturnType<typeof setTimeout>;
+}
+
+interface PendingLoginAdmission {
+  readonly sequence: number;
+  readonly input: ProviderAuthSessionStartInput;
+  readonly abort: AbortController;
+  readonly promise: Promise<ProviderAuthSessionSnapshot>;
+  readonly resolve: (snapshot: ProviderAuthSessionSnapshot) => void;
+  readonly reject: (error: unknown) => void;
+  task?: Promise<void>;
 }
 
 export interface CreateProviderAuthOperatorOptions extends ProviderAuthStatusOptions {
@@ -60,11 +72,16 @@ export interface CreateProviderAuthOperatorOptions extends ProviderAuthStatusOpt
 
 export function createProviderAuthOperator(options: CreateProviderAuthOperatorOptions): ProviderAuthOperator {
   const sessions = new Map<string, LiveSession>();
+  const pendingAdmissions = new Map<number, PendingLoginAdmission>();
+  const activePersistences = new Set<Promise<void>>();
   const now = options.now ?? Date.now;
   let stopping = false;
-  let loginAdmission = false;
-  const loginActive = () => loginAdmission
-    || [...sessions.values()].some((candidate) => !isTerminal(candidate.snapshot.state));
+  let nextSequence = 0;
+  let newestValidSequence = 0;
+  let currentSession: LiveSession | undefined;
+  const loginActive = () => pendingAdmissions.size > 0
+    || activePersistences.size > 0
+    || currentSession !== undefined && !isTerminal(currentSession.snapshot.state);
   const statusSnapshot = async () => await (options.statusSnapshot?.() ?? providerAuthStatusSnapshot(options));
   const checks = createProviderAuthCheckManager({
     ...options,
@@ -80,162 +97,258 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
     session.prompt = undefined;
     if (session.timeout !== undefined) clearTimeout(session.timeout);
     session.snapshot = update(session.snapshot, { state, ...(error === undefined ? {} : { error }) }, true);
-    session.retention = setTimeout(() => sessions.delete(session.snapshot.id), TERMINAL_RETENTION_MS);
+    session.retention = setTimeout(() => {
+      sessions.delete(session.snapshot.id);
+      if (currentSession === session) currentSession = undefined;
+    }, TERMINAL_RETENTION_MS);
     session.retention.unref?.();
   };
 
-  const startRun = (session: LiveSession) => {
+  const isCurrent = (session: LiveSession) => currentSession === session;
+
+  const startRun = (session: LiveSession, priorPersistences: readonly Promise<void>[]) => {
     const input = session.snapshot;
     const login = options.login ?? loginPiProviderAuth;
     const persist = options.persist ?? persistPiProviderCredential;
-    session.run = persist({
-      authPath: options.config.providers?.piAuthPath ?? "",
-      provider: input.providerId,
-      ...(options.platform === undefined ? {} : { platform: options.platform }),
-      abortSignal: session.abort.signal,
-      resolveCredential: async () => await login(input.providerId, input.authType, {
-        signal: session.abort.signal,
-        prompt: async (prompt) => {
-          if (input.providerId === "openai-codex" && prompt.type === "select") {
-            const selected = input.strategy === "device_code" ? "device_code" : "browser";
-            if (!prompt.options?.some((option) => option.id === selected)) {
-              throw new Error("Selected OpenAI login strategy is unavailable.");
-            }
-            return selected;
-          }
-          if (!isPromptType(prompt.type)) {
-            throw new Error("Provider returned an invalid authentication prompt.");
-          }
-          if (!nonEmpty(prompt.message)) {
-            throw new Error("Provider returned an empty authentication prompt.");
-          }
-          return await new Promise<string>((resolve, reject) => {
-            if (session.abort.signal.aborted || prompt.signal?.aborted === true) {
-              reject(new Error("Provider authentication was cancelled."));
-              return;
-            }
-            const promptId = randomUUID();
-            if (prompt.options !== undefined && prompt.options.length > MAX_PROVIDER_AUTH_OPTIONS) {
-              reject(new Error("Provider returned too many authentication options."));
-              return;
-            }
-            const projectedOptions = prompt.options?.map((option) => {
-              if (!boundedExact(option.id) || !boundedExact(option.label)
-                || option.description !== undefined && !boundedExact(option.description)) {
-                throw new Error("Provider returned an invalid authentication option.");
-              }
-              return {
-                id: option.id,
-                label: bounded(option.label),
-                ...(option.description === undefined ? {} : { description: bounded(option.description) }),
-              };
-            });
-            const projected: ProviderAuthPrompt = {
-              id: promptId,
-              type: prompt.type,
-              message: bounded(prompt.message),
-              ...(nonEmpty(prompt.placeholder) ? { placeholder: bounded(prompt.placeholder) } : {}),
-              ...(prompt.type === "text" && prompt.allowEmpty === true ? { allowEmpty: true } : {}),
-              ...(projectedOptions === undefined ? {} : { options: projectedOptions }),
-            };
-            const pending: PendingPrompt = {
-              id: promptId,
-              type: prompt.type,
-              allowEmpty: prompt.type === "text" && prompt.allowEmpty === true,
-              ...(projectedOptions === undefined ? {} : { options: projectedOptions }),
-              resolve,
-              reject,
-            };
-            session.prompt = pending;
-            session.snapshot = update(session.snapshot, { state: "awaiting_input", prompt: projected });
-            const cancel = () => {
-              if (session.prompt !== pending) return;
-              session.prompt = undefined;
-              session.snapshot = update(session.snapshot, {}, true);
-              reject(new Error("Provider prompt was cancelled."));
-            };
-            prompt.signal?.addEventListener("abort", cancel, { once: true });
-            session.abort.signal.addEventListener("abort", cancel, { once: true });
+    session.run = (async () => {
+      if (priorPersistences.length > 0) {
+        const drain = await waitForPersistenceDrain(
+          priorPersistences,
+          session.abort.signal,
+          AUTH_REPLACEMENT_DRAIN_MS,
+        );
+        if (drain === "aborted" || !isCurrent(session)) {
+          terminal(session, "cancelled");
+          return;
+        }
+        if (drain === "timeout") {
+          terminal(session, "failed", {
+            code: "replacement_timeout",
+            message: "The previous authentication did not stop safely. Retry after it finishes.",
           });
-        },
-        notify: (event: unknown) => {
-          const deviceTtlMs = applyEvent(session, event, now);
-          if (deviceTtlMs !== undefined && deviceTtlMs < SESSION_TTL_MS) {
-            if (session.timeout !== undefined) clearTimeout(session.timeout);
-            session.timeout = setTimeout(() => {
-              session.abort.abort(new Error("Provider device code expired."));
-              terminal(session, "failed", { code: "timed_out", message: "Provider device code expired." });
-            }, deviceTtlMs);
-            session.timeout.unref?.();
-          }
-        },
-      }),
-    }).then(() => {
-      checks.credentialPersisted(input.providerId);
-      options.observations.credentialPersisted(input.providerId);
-      terminal(session, "succeeded");
-    }).catch((error: unknown) => {
-      if (session.abort.signal.aborted) {
+          return;
+        }
+      }
+      if (session.abort.signal.aborted || !isCurrent(session)) {
+        terminal(session, "cancelled");
+        return;
+      }
+
+      const persistence = Promise.resolve().then(async () => await persist({
+        authPath: options.config.providers?.piAuthPath ?? "",
+        provider: input.providerId,
+        ...(options.platform === undefined ? {} : { platform: options.platform }),
+        abortSignal: session.abort.signal,
+        resolveCredential: async () => await login(input.providerId, input.authType, {
+          signal: session.abort.signal,
+          prompt: async (prompt) => {
+            if (session.abort.signal.aborted || !isCurrent(session)) {
+              throw new Error("Provider authentication was cancelled.");
+            }
+            if (input.providerId === "openai-codex" && prompt.type === "select") {
+              const selected = input.strategy === "device_code" ? "device_code" : "browser";
+              if (!prompt.options?.some((option) => option.id === selected)) {
+                throw new Error("Selected OpenAI login strategy is unavailable.");
+              }
+              return selected;
+            }
+            if (!isPromptType(prompt.type)) {
+              throw new Error("Provider returned an invalid authentication prompt.");
+            }
+            if (!nonEmpty(prompt.message)) {
+              throw new Error("Provider returned an empty authentication prompt.");
+            }
+            return await new Promise<string>((resolve, reject) => {
+              if (session.abort.signal.aborted || prompt.signal?.aborted === true || !isCurrent(session)) {
+                reject(new Error("Provider authentication was cancelled."));
+                return;
+              }
+              const promptId = randomUUID();
+              if (prompt.options !== undefined && prompt.options.length > MAX_PROVIDER_AUTH_OPTIONS) {
+                reject(new Error("Provider returned too many authentication options."));
+                return;
+              }
+              const projectedOptions = prompt.options?.map((option) => {
+                if (!boundedExact(option.id) || !boundedExact(option.label)
+                  || option.description !== undefined && !boundedExact(option.description)) {
+                  throw new Error("Provider returned an invalid authentication option.");
+                }
+                return {
+                  id: option.id,
+                  label: bounded(option.label),
+                  ...(option.description === undefined ? {} : { description: bounded(option.description) }),
+                };
+              });
+              const projected: ProviderAuthPrompt = {
+                id: promptId,
+                type: prompt.type,
+                message: bounded(prompt.message),
+                ...(nonEmpty(prompt.placeholder) ? { placeholder: bounded(prompt.placeholder) } : {}),
+                ...(prompt.type === "text" && prompt.allowEmpty === true ? { allowEmpty: true } : {}),
+                ...(projectedOptions === undefined ? {} : { options: projectedOptions }),
+              };
+              const pending: PendingPrompt = {
+                id: promptId,
+                type: prompt.type,
+                allowEmpty: prompt.type === "text" && prompt.allowEmpty === true,
+                ...(projectedOptions === undefined ? {} : { options: projectedOptions }),
+                resolve,
+                reject,
+              };
+              session.prompt = pending;
+              session.snapshot = update(session.snapshot, { state: "awaiting_input", prompt: projected });
+              const cancel = () => {
+                if (session.prompt !== pending) return;
+                session.prompt = undefined;
+                session.snapshot = update(session.snapshot, {}, true);
+                reject(new Error("Provider prompt was cancelled."));
+              };
+              prompt.signal?.addEventListener("abort", cancel, { once: true });
+              session.abort.signal.addEventListener("abort", cancel, { once: true });
+            });
+          },
+          notify: (event: unknown) => {
+            const deviceTtlMs = applyEvent(session, event, now, () => isCurrent(session));
+            if (deviceTtlMs !== undefined && deviceTtlMs < SESSION_TTL_MS) {
+              if (session.timeout !== undefined) clearTimeout(session.timeout);
+              session.timeout = setTimeout(() => {
+                if (!isCurrent(session)) return;
+                session.abort.abort(new Error("Provider device code expired."));
+                terminal(session, "failed", { code: "timed_out", message: "Provider device code expired." });
+              }, deviceTtlMs);
+              session.timeout.unref?.();
+            }
+          },
+        }),
+      }));
+      activePersistences.add(persistence);
+      persistence.then(
+        () => activePersistences.delete(persistence),
+        () => activePersistences.delete(persistence),
+      );
+      try {
+        await raceWithAbort(persistence, session.abort.signal);
+        if (session.abort.signal.aborted || !isCurrent(session)) {
+          terminal(session, "cancelled");
+          return;
+        }
+        checks.credentialPersisted(input.providerId);
+        options.observations.credentialPersisted(input.providerId);
+        terminal(session, "succeeded");
+      } catch (error) {
+        if (session.abort.signal.aborted || !isCurrent(session)) {
+          terminal(session, "cancelled");
+        } else {
+          terminal(session, "failed", safeError(error));
+        }
+      }
+    })().catch(() => {
+      if (session.abort.signal.aborted || !isCurrent(session)) {
         terminal(session, "cancelled");
       } else {
-        terminal(session, "failed", safeError(error));
+        terminal(session, "failed", { code: "provider_auth_failed", message: "Provider authentication failed. Retry or use the mono-agent auth login command on the host." });
       }
     });
+  };
+
+  const prepareAdmission = async (admission: PendingLoginAdmission): Promise<void> => {
+    try {
+      const status = await raceWithAbort(statusSnapshot(), admission.abort.signal);
+      if (stopping) {
+        throw new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409);
+      }
+      if (checks.isActive()) {
+        throw new ProviderAuthOperationError("provider_auth_conflict", "Provider live checks are active. Cancel them before authenticating.", 409);
+      }
+      const provider = status.providers.find((candidate) => candidate.providerId === admission.input.providerId);
+      if (provider === undefined) throw new ProviderAuthOperationError("provider_auth_invalid_request", "Provider is not used by this agent.", 400);
+      if (!provider.methods.some((method) => method.authType === admission.input.authType && method.strategy === admission.input.strategy)) {
+        throw new ProviderAuthOperationError("provider_auth_conflict", "The selected authentication method is unavailable.", 409);
+      }
+      if (options.config.providers?.piAuthPath === undefined) {
+        throw new ProviderAuthOperationError("provider_auth_unavailable", "The Pi auth store is not configured.", 503);
+      }
+      if (admission.sequence < newestValidSequence) {
+        throw replacedAdmissionError();
+      }
+
+      newestValidSequence = admission.sequence;
+      for (const candidate of pendingAdmissions.values()) {
+        if (candidate.sequence < admission.sequence) candidate.abort.abort(replacedAdmissionError());
+      }
+
+      const previous = currentSession;
+      if (previous !== undefined && !isTerminal(previous.snapshot.state)) {
+        previous.abort.abort(new Error("Provider authentication was replaced."));
+        terminal(previous, "cancelled");
+      }
+      const createdAt = new Date(now()).toISOString();
+      const snapshot: ProviderAuthSessionSnapshot = {
+        schema: PROVIDER_AUTH_SESSION_SCHEMA,
+        id: randomUUID(),
+        providerId: admission.input.providerId,
+        authType: admission.input.authType,
+        strategy: admission.input.strategy,
+        state: "pending",
+        createdAt,
+        updatedAt: createdAt,
+        expiresAt: new Date(now() + SESSION_TTL_MS).toISOString(),
+      };
+      const session: LiveSession = {
+        sequence: admission.sequence,
+        snapshot,
+        abort: admission.abort,
+        prompt: undefined,
+      };
+      sessions.set(snapshot.id, session);
+      currentSession = session;
+      session.timeout = setTimeout(() => {
+        if (!isCurrent(session)) return;
+        session.abort.abort(new Error("Provider authentication timed out."));
+        terminal(session, "failed", { code: "timed_out", message: "Provider authentication timed out." });
+      }, SESSION_TTL_MS);
+      session.timeout.unref?.();
+      startRun(session, [...activePersistences]);
+      await Promise.resolve();
+      admission.resolve(session.snapshot);
+    } catch (error) {
+      admission.reject(error);
+    } finally {
+      pendingAdmissions.delete(admission.sequence);
+    }
   };
 
   return {
     async status() {
       return await statusSnapshot();
     },
-    async start(input) {
-      if (stopping) throw new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409);
-      if (loginActive() || checks.isActive()) {
-        throw new ProviderAuthOperationError("provider_auth_conflict", "Another provider authentication is already active.", 409);
+    start(input) {
+      if (stopping) return Promise.reject(new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409));
+      if (checks.isActive()) {
+        return Promise.reject(new ProviderAuthOperationError(
+          "provider_auth_conflict",
+          "Provider live checks are active. Cancel them before authenticating.",
+          409,
+        ));
       }
-      loginAdmission = true;
-      try {
-        const status = await statusSnapshot();
-        if (stopping) {
-          throw new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409);
-        }
-        if (checks.isActive()) {
-          throw new ProviderAuthOperationError("provider_auth_conflict", "Another provider authentication is already active.", 409);
-        }
-        const provider = status.providers.find((candidate) => candidate.providerId === input.providerId);
-        if (provider === undefined) throw new ProviderAuthOperationError("provider_auth_invalid_request", "Provider is not used by this agent.", 400);
-        if (!provider.methods.some((method) => method.authType === input.authType && method.strategy === input.strategy)) {
-          throw new ProviderAuthOperationError("provider_auth_conflict", "The selected authentication method is unavailable.", 409);
-        }
-        if (options.config.providers?.piAuthPath === undefined) {
-          throw new ProviderAuthOperationError("provider_auth_unavailable", "The Pi auth store is not configured.", 503);
-        }
-        const createdAt = new Date(now()).toISOString();
-        const expiresAt = new Date(now() + SESSION_TTL_MS).toISOString();
-        const snapshot: ProviderAuthSessionSnapshot = {
-          schema: PROVIDER_AUTH_SESSION_SCHEMA,
-          id: randomUUID(),
-          providerId: input.providerId,
-          authType: input.authType,
-          strategy: input.strategy,
-          state: "pending",
-          createdAt,
-          updatedAt: createdAt,
-          expiresAt,
-        };
-        const session: LiveSession = { snapshot, abort: new AbortController(), prompt: undefined };
-        sessions.set(snapshot.id, session);
-        loginAdmission = false;
-        session.timeout = setTimeout(() => {
-          session.abort.abort(new Error("Provider authentication timed out."));
-          terminal(session, "failed", { code: "timed_out", message: "Provider authentication timed out." });
-        }, SESSION_TTL_MS);
-        session.timeout.unref?.();
-        startRun(session);
-        await Promise.resolve();
-        return session.snapshot;
-      } finally {
-        loginAdmission = false;
-      }
+      const sequence = ++nextSequence;
+      let resolve!: PendingLoginAdmission["resolve"];
+      let reject!: PendingLoginAdmission["reject"];
+      const promise = new Promise<ProviderAuthSessionSnapshot>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      });
+      const admission: PendingLoginAdmission = {
+        sequence,
+        input,
+        abort: new AbortController(),
+        promise,
+        resolve,
+        reject,
+      };
+      pendingAdmissions.set(sequence, admission);
+      admission.task = prepareAdmission(admission);
+      return promise;
     },
     async get(sessionId) {
       return sessions.get(sessionId)?.snapshot;
@@ -261,28 +374,108 @@ export function createProviderAuthOperator(options: CreateProviderAuthOperatorOp
       if (!isTerminal(session.snapshot.state)) {
         session.abort.abort(new Error("Provider authentication was cancelled."));
         terminal(session, "cancelled");
-        await session.run?.catch(() => undefined);
+        await settleWithin(session.run, AUTH_REPLACEMENT_DRAIN_MS);
       }
     },
     checks,
     async stop() {
       stopping = true;
+      const stopError = new ProviderAuthOperationError("provider_auth_conflict", "Provider authentication is stopping.", 409);
+      const admissionTasks = [...pendingAdmissions.values()].map((admission) => {
+        admission.abort.abort(stopError);
+        return admission.task;
+      });
       await checks.stop();
-      await Promise.all([...sessions.values()].map(async (session) => {
+      const sessionRuns = [...sessions.values()].map(async (session) => {
         if (!isTerminal(session.snapshot.state)) {
           session.abort.abort(new Error("Provider authentication service stopped."));
           terminal(session, "cancelled");
-          await session.run?.catch(() => undefined);
         }
+        await session.run?.catch(() => undefined);
         if (session.retention !== undefined) clearTimeout(session.retention);
-      }));
+      });
+      await Promise.all([...admissionTasks, ...sessionRuns]);
+      while (activePersistences.size > 0) {
+        await Promise.allSettled([...activePersistences]);
+      }
       sessions.clear();
+      pendingAdmissions.clear();
+      currentSession = undefined;
     },
   };
 }
 
-function applyEvent(session: LiveSession, event: unknown, now: () => number): number | undefined {
-  if (!record(event) || typeof event.type !== "string" || isTerminal(session.snapshot.state)) return undefined;
+function replacedAdmissionError(): ProviderAuthOperationError {
+  return new ProviderAuthOperationError(
+    "provider_auth_conflict",
+    "Provider authentication request was replaced by a newer valid request.",
+    409,
+  );
+}
+
+async function raceWithAbort<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw signal.reason ?? new Error("Provider authentication was cancelled.");
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", abort);
+      callback();
+    };
+    const abort = () => finish(() => reject(signal.reason ?? new Error("Provider authentication was cancelled.")));
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    pending.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
+async function waitForPersistenceDrain(
+  persistences: readonly Promise<void>[],
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<"drained" | "timeout" | "aborted"> {
+  if (signal.aborted) return "aborted";
+  return await new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => finish("timeout"), timeoutMs);
+    timer.unref?.();
+    const finish = (result: "drained" | "timeout" | "aborted") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      resolve(result);
+    };
+    const abort = () => finish("aborted");
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    void Promise.allSettled(persistences).then(() => finish("drained"));
+  });
+}
+
+async function settleWithin(pending: Promise<void> | undefined, timeoutMs: number): Promise<void> {
+  if (pending === undefined) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+    void pending.then(
+      () => { clearTimeout(timer); resolve(); },
+      () => { clearTimeout(timer); resolve(); },
+    );
+  });
+}
+
+function applyEvent(
+  session: LiveSession,
+  event: unknown,
+  now: () => number,
+  isCurrent: () => boolean,
+): number | undefined {
+  if (!isCurrent() || !record(event) || typeof event.type !== "string" || isTerminal(session.snapshot.state)) return undefined;
   if (event.type === "auth_url" && !httpUrl(event.url)) {
     throw new Error("Provider returned an invalid authentication URL.");
   }

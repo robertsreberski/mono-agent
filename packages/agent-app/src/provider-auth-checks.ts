@@ -206,7 +206,7 @@ export function createProviderAuthCheckManager(
     finish(session, session.cancelled ? "cancelled" : "completed");
   };
 
-  const conflict = (message = "Another provider authentication operation is already active.") =>
+  const conflict = (message = "Provider live checks are already active.") =>
     new ProviderAuthOperationError("provider_auth_conflict", message, 409);
 
   const prepare = async (admission: PendingCheckAdmission) => {
@@ -215,7 +215,10 @@ export function createProviderAuthCheckManager(
       if (admission.cancelled || stopping || pendingAdmission !== admission) {
         throw conflict("Provider authentication is stopping.");
       }
-      if (options.isLoginActive() || current() !== undefined) throw conflict();
+      if (options.isLoginActive()) {
+        throw conflict("Provider authentication is active. Finish or cancel it before running live checks.");
+      }
+      if (current() !== undefined) throw conflict();
       const resolvedProviders = resolveConfiguredProviders(options.config);
       const configuredRoutes = status.providers.flatMap((provider) => provider.usages.flatMap((usage) => {
         try { return [parseMonoRuntimeModelReference(usage.model)]; } catch { return []; }
@@ -292,9 +295,10 @@ export function createProviderAuthCheckManager(
           ? pendingAdmission.promise
           : Promise.reject(conflict());
       }
-      if (options.isLoginActive() || current() !== undefined) {
-        return Promise.reject(conflict());
+      if (options.isLoginActive()) {
+        return Promise.reject(conflict("Provider authentication is active. Finish or cancel it before running live checks."));
       }
+      if (current() !== undefined) return Promise.reject(conflict());
       if (now() - lastTerminalAt < cooldownMs) {
         const remainingMs = cooldownMs - (now() - lastTerminalAt);
         return Promise.reject(new ProviderAuthOperationError(

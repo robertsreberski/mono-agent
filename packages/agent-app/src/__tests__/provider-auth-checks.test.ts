@@ -167,7 +167,10 @@ describe("provider auth checks", () => {
       cooldownMs: 0,
     });
     loginActive = true;
-    await expect(manager.start({ idempotencyKey: "login-active" })).rejects.toMatchObject({ status: 409 });
+    await expect(manager.start({ idempotencyKey: "login-active" })).rejects.toMatchObject({
+      status: 409,
+      message: "Provider authentication is active. Finish or cancel it before running live checks.",
+    });
     loginActive = false;
 
     const started = await manager.start({ idempotencyKey: "cancel" });

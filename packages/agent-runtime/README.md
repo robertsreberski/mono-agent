@@ -676,7 +676,10 @@ or ambient credential detection without refreshing or making a model request,
 and `loginPiProviderAuth()` to relay Pi's typed prompts and events. The last
 function returns a credential to its caller but does not persist it; the owning
 application must apply its own safe-store transaction and must never serialize
-prompt answers into an operator projection.
+prompt answers into an operator projection. Abort can close supported Pi flows
+and discard an uncooperative provider's late result, but it cannot undo a
+provider-side grant or a filesystem mutation that already began; the owning app
+must fence pre-mutation persistence and safely drain atomic promotion/cleanup.
 
 Returns:
 

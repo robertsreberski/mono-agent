@@ -176,6 +176,11 @@ export interface ProviderAuthCheckOperator {
 
 export interface ProviderAuthOperator {
   status(): Promise<ProviderAuthStatusSnapshot>;
+  /**
+   * A semantically valid start replaces the active authentication session.
+   * Invalid starts leave an existing session untouched; live checks remain a
+   * separate conflict that callers must cancel explicitly.
+   */
   start(input: ProviderAuthSessionStartInput): Promise<ProviderAuthSessionSnapshot>;
   get(sessionId: string): Promise<ProviderAuthSessionSnapshot | undefined>;
   submit(sessionId: string, input: ProviderAuthSessionInput): Promise<ProviderAuthSessionSnapshot>;

@@ -9,11 +9,230 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createProviderAuthObservationTracker } from "../provider-auth-observations.js";
 import { createProviderAuthOperator } from "../provider-auth-operator.js";
+import { persistPiProviderCredential } from "../provider-setup.js";
 
 const tempDirs: string[] = [];
 afterEach(async () => await Promise.all(tempDirs.splice(0).map(async (dir) => await rm(dir, { recursive: true, force: true }))));
 
 describe("provider auth operator", () => {
+  it("replaces an active valid login, rejects its old prompt, and ignores its late events", async () => {
+    const observations = createProviderAuthObservationTracker();
+    const persisted = vi.spyOn(observations, "credentialPersisted");
+    const interactions: Array<{ notify(event: unknown): void }> = [];
+    const operator = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations,
+      login: (async (_provider: string, _type: string, interaction: {
+        prompt(input: unknown): Promise<string>;
+        notify(event: unknown): void;
+      }) => {
+        interactions.push(interaction);
+        return { type: "api_key", key: await interaction.prompt({ type: "secret", message: "API key" }) };
+      }) as never,
+      persist: (async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); }) as never,
+    });
+
+    const first = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    expect(first).toMatchObject({ state: "awaiting_input", prompt: { type: "secret" } });
+    const second = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    expect(second.id).not.toBe(first.id);
+    expect(await operator.get(first.id)).toMatchObject({ state: "cancelled" });
+    await expect(operator.submit(first.id, { promptId: first.prompt!.id, value: "old" }))
+      .rejects.toMatchObject({ status: 409 });
+
+    await vi.waitFor(async () => expect(await operator.get(second.id)).toMatchObject({
+      state: "awaiting_input",
+      prompt: { type: "secret" },
+    }));
+    const secondPrompt = (await operator.get(second.id))!.prompt!;
+
+    interactions[0]!.notify({ type: "auth_url", url: "https://stale.example.invalid/callback" });
+    expect(await operator.get(second.id)).not.toHaveProperty("authUrl");
+    await operator.submit(second.id, { promptId: secondPrompt.id, value: "new" });
+    await vi.waitFor(async () => expect((await operator.get(second.id))?.state).toBe("succeeded"));
+    expect(persisted).toHaveBeenCalledOnce();
+    await operator.stop();
+  });
+
+  it("validates replacement requests before disturbing the active session", async () => {
+    const status = operatorStatus();
+    const statusSnapshot = vi.fn()
+      .mockResolvedValueOnce(status)
+      .mockRejectedValueOnce(new Error("fixture status unavailable"))
+      .mockResolvedValue(status);
+    const configured = config();
+    const operator = createProviderAuthOperator({
+      config: configured, env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+      statusSnapshot,
+      login: (async (_provider: string, _type: string, interaction: { prompt(input: unknown): Promise<string> }) => ({
+        type: "api_key", key: await interaction.prompt({ type: "secret", message: "API key" }),
+      })) as never,
+      persist: (async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); }) as never,
+    });
+
+    const active = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    await expect(operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }))
+      .rejects.toThrow("fixture status unavailable");
+    await expect(operator.start({ providerId: "unknown", authType: "api_key", strategy: "api_key_prompt" }))
+      .rejects.toMatchObject({ code: "provider_auth_invalid_request", status: 400 });
+    await expect(operator.start({ providerId: "opencode-go", authType: "oauth", strategy: "paste_back" }))
+      .rejects.toMatchObject({ code: "provider_auth_conflict", status: 409 });
+    delete (configured.providers as { piAuthPath?: string }).piAuthPath;
+    await expect(operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }))
+      .rejects.toMatchObject({ code: "provider_auth_unavailable", status: 503 });
+    (configured.providers as { piAuthPath?: string }).piAuthPath = "/tmp/mono-agent-provider-auth-test.json";
+    expect(await operator.get(active.id)).toMatchObject({ state: "awaiting_input", prompt: { id: active.prompt!.id } });
+
+    await operator.submit(active.id, { promptId: active.prompt!.id, value: "still-valid" });
+    await vi.waitFor(async () => expect((await operator.get(active.id))?.state).toBe("succeeded"));
+    await operator.stop();
+  });
+
+  it("makes the newest valid concurrent admission win independent of status completion order", async () => {
+    const releases: Array<(status: ProviderAuthStatusSnapshot) => void> = [];
+    const statusSnapshot = vi.fn(async () => await new Promise<ProviderAuthStatusSnapshot>((resolve) => releases.push(resolve)));
+    const persist = vi.fn(async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); });
+    const operator = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(), statusSnapshot,
+      login: (async () => ({ type: "api_key", key: "fake" })) as never,
+      persist: persist as never,
+    });
+
+    const older = operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    const olderRejected = expect(older).rejects.toMatchObject({ code: "provider_auth_conflict", status: 409 });
+    const newer = operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    expect(releases).toHaveLength(2);
+    releases[1]!(operatorStatus());
+    const winner = await newer;
+    releases[0]!(operatorStatus());
+    await olderRejected;
+    await vi.waitFor(async () => expect((await operator.get(winner.id))?.state).toBe("succeeded"));
+    expect(persist).toHaveBeenCalledOnce();
+    await operator.stop();
+
+    const secondReleases: Array<(status: ProviderAuthStatusSnapshot) => void> = [];
+    const second = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+      statusSnapshot: async () => await new Promise<ProviderAuthStatusSnapshot>((resolve) => secondReleases.push(resolve)),
+      login: (async () => ({ type: "api_key", key: "fake" })) as never,
+      persist: (async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); }) as never,
+    });
+    const validOlder = second.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    const invalidNewer = second.start({ providerId: "unknown", authType: "api_key", strategy: "api_key_prompt" });
+    secondReleases[1]!(operatorStatus());
+    await expect(invalidNewer).rejects.toMatchObject({ code: "provider_auth_invalid_request", status: 400 });
+    secondReleases[0]!(operatorStatus());
+    const surviving = await validOlder;
+    await vi.waitFor(async () => expect((await second.get(surviving.id))?.state).toBe("succeeded"));
+    await second.stop();
+  });
+
+  it("fails a replacement after the two-second safe-drain bound without starting a second writer", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseFirst!: () => void;
+      const firstPending = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      const persist = vi.fn()
+        .mockImplementationOnce(async () => await firstPending)
+        .mockImplementation(async (input: { resolveCredential(): Promise<unknown> }) => { await input.resolveCredential(); });
+      const operator = createProviderAuthOperator({
+        config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+        observations: createProviderAuthObservationTracker(), statusSnapshot: async () => operatorStatus(),
+        login: (async () => ({ type: "api_key", key: "fake" })) as never,
+        persist: persist as never,
+      });
+
+      const first = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+      const replacement = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+      expect(await operator.get(first.id)).toMatchObject({ state: "cancelled" });
+      expect(replacement.state).toBe("pending");
+      expect(persist).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(await operator.get(replacement.id)).toMatchObject({
+        state: "failed",
+        error: {
+          code: "replacement_timeout",
+          message: "The previous authentication did not stop safely. Retry after it finishes.",
+        },
+      });
+      expect(persist).toHaveBeenCalledOnce();
+
+      releaseFirst();
+      await vi.advanceTimersByTimeAsync(0);
+      const retry = await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await operator.get(retry.id)).toMatchObject({ state: "succeeded" });
+      expect(persist).toHaveBeenCalledTimes(2);
+      await operator.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops and fences a login whose status preparation has not settled", async () => {
+    let releaseStatus!: (status: ProviderAuthStatusSnapshot) => void;
+    const persist = vi.fn();
+    const operator = createProviderAuthOperator({
+      config: config(), env: {}, drivers: [], input: { cwd: "/tmp", configPath: "/tmp/config.json", env: {} },
+      observations: createProviderAuthObservationTracker(),
+      statusSnapshot: async () => await new Promise<ProviderAuthStatusSnapshot>((resolve) => { releaseStatus = resolve; }),
+      persist: persist as never,
+    });
+    const pending = operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+    const rejected = expect(pending).rejects.toMatchObject({ code: "provider_auth_conflict", status: 409 });
+
+    await operator.stop();
+    await rejected;
+    releaseStatus(operatorStatus());
+    await Promise.resolve();
+    expect(persist).not.toHaveBeenCalled();
+  });
+
+  it.each(["beforePiAuthPostMutationSync", "beforePiAuthTempCleanup"] as const)(
+    "waits for non-cancellable credential %s before adapter stop completes",
+    async (hookName) => {
+      const dir = await mkdtemp(join(tmpdir(), "mono-agent-provider-auth-stop-"));
+      tempDirs.push(dir);
+      const authPath = join(dir, "auth.json");
+      await writeFile(authPath, `${JSON.stringify({ openai: { type: "api_key", key: "sibling" } })}\n`, { mode: 0o600 });
+      let enterHook!: () => void;
+      const hookEntered = new Promise<void>((resolve) => { enterHook = resolve; });
+      let releaseHook!: () => void;
+      const hookRelease = new Promise<void>((resolve) => { releaseHook = resolve; });
+      const operator = createProviderAuthOperator({
+        config: { ...config(), providers: { piAuthPath: authPath } } as unknown as MonoAgentConfig,
+        env: {}, drivers: [], input: { cwd: dir, configPath: join(dir, "config.json"), env: {} },
+        observations: createProviderAuthObservationTracker(), statusSnapshot: async () => operatorStatus(),
+        login: (async () => ({ type: "api_key", key: "fake-replacement" })) as never,
+        persist: (async (input: Parameters<typeof persistPiProviderCredential>[0]) => await persistPiProviderCredential({
+          ...input,
+          [hookName]: async () => {
+            enterHook();
+            await hookRelease;
+          },
+        })) as never,
+      });
+
+      await operator.start({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" });
+      await hookEntered;
+      let stopped = false;
+      const stopping = operator.stop().then(() => { stopped = true; });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      releaseHook();
+      await stopping;
+      expect(JSON.parse(await readFile(authPath, "utf8"))).toEqual({
+        openai: { type: "api_key", key: "sibling" },
+        "opencode-go": { type: "api_key", key: "fake-replacement" },
+      });
+      expect((await readdir(dir)).filter((name) => name.includes("mono-agent"))).toEqual([]);
+    },
+  );
+
   it("excludes login and check preparation in both start orderings", async () => {
     let releaseCheckStatus: ((status: ProviderAuthStatusSnapshot) => void) | undefined;
     const status = operatorStatus();
@@ -33,7 +252,11 @@ describe("provider auth operator", () => {
     const preparingCheck = checkFirst.checks!.start({ idempotencyKey: "check-first" });
     await expect(checkFirst.start({
       providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
-    })).rejects.toMatchObject({ code: "provider_auth_conflict", status: 409 });
+    })).rejects.toMatchObject({
+      code: "provider_auth_conflict",
+      status: 409,
+      message: "Provider live checks are active. Cancel them before authenticating.",
+    });
     releaseCheckStatus?.(status);
     await preparingCheck;
     await checkFirst.stop();
@@ -54,7 +277,11 @@ describe("provider auth operator", () => {
       providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
     });
     await expect(loginFirst.checks!.start({ idempotencyKey: "login-first" }))
-      .rejects.toMatchObject({ code: "provider_auth_conflict", status: 409 });
+      .rejects.toMatchObject({
+        code: "provider_auth_conflict",
+        status: 409,
+        message: "Provider authentication is active. Finish or cancel it before running live checks.",
+      });
     releaseLoginStatus?.(status);
     await preparingLogin;
     await loginFirst.stop();

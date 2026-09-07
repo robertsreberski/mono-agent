@@ -80,7 +80,10 @@ Keep bearer values out of source config when possible. Set
   endpoint has no API key and otherwise require its normal bearer. Strict
   responses are secret-free and set `Cache-Control: private, no-store,
   max-age=0`. The adapter never resolves an auth-store path or persists
-  session/input data.
+  session/input data. Repeating a semantically valid session POST replaces the
+  host's current login and returns a fresh session; invalid POST bodies are
+  rejected before the operator is called, and an active live check remains an
+  explicit conflict.
   When the operator also exposes checks, the nested additive
   `providerAuth.checks.version = 1` capability enables check start, poll, and
   cancel routes under `/v1/provider-auth/checks`. A check is an explicit

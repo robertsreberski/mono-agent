@@ -15,6 +15,7 @@ import {
   piAuthPathForSetup,
   piAuthRecoveryCommand,
   planProviderSetup,
+  persistPiProviderCredential,
   repairStalePiAuthLock,
   runBoundedProviderCommand,
 } from "../provider-setup.js";
@@ -27,6 +28,51 @@ afterEach(async () => {
 });
 
 describe("Pi provider setup safety", () => {
+  it("abandons an abort-ignoring credential resolver without committing its late result", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    const controller = new AbortController();
+    let resolveCredential!: (value: unknown) => void;
+    const credential = new Promise<unknown>((resolve) => { resolveCredential = resolve; });
+    const pending = persistPiProviderCredential({
+      authPath,
+      provider: "opencode-go",
+      abortSignal: controller.signal,
+      resolveCredential: async () => await credential,
+    });
+    await vi.waitFor(async () => expect(await readdir(dir)).toContain("auth.json.mono-agent.lock"));
+
+    controller.abort(new Error("cancelled"));
+    const settled = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    expect(settled).toBe("rejected");
+    await expect(readFile(`${authPath}.mono-agent.lock`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    resolveCredential({ type: "api_key", key: "late-fake-key" });
+    await Promise.resolve();
+    await expect(readFile(authPath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("checks abort again immediately before credential promotion", async () => {
+    const dir = await tempDir();
+    const authPath = join(dir, "auth.json");
+    const original = `${JSON.stringify({ openai: { type: "api_key", key: "sibling" } })}\n`;
+    await writeFile(authPath, original, { mode: 0o600 });
+    const controller = new AbortController();
+
+    await expect(persistPiProviderCredential({
+      authPath,
+      provider: "opencode-go",
+      abortSignal: controller.signal,
+      resolveCredential: async () => ({ type: "api_key", key: "fake-replacement" }),
+      beforePiAuthPromotion: () => controller.abort(new Error("cancelled before promotion")),
+    })).rejects.toThrow("cancelled before promotion");
+
+    expect(await readFile(authPath, "utf8")).toBe(original);
+    expect((await readdir(dir)).filter((name) => name.includes("mono-agent"))).toEqual([]);
+  });
+
   it("hard-kills a provider probe that traps SIGTERM", async () => {
     if (process.platform === "win32") return;
     const startedAt = Date.now();

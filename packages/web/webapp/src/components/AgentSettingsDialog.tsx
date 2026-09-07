@@ -163,14 +163,43 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   const [status, setStatus] = useState<ProviderAuthStatusSnapshot | null>(null);
   const [session, setSession] = useState<ProviderAuthSessionSnapshot | null>(null);
   const [check, setCheck] = useState<ProviderAuthCheckSessionSnapshot | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<ProviderAuthProviderStatus | null>(null);
+  const [sessionProvider, setSessionProvider] = useState<ProviderAuthProviderStatus | null>(null);
+  const [methodProvider, setMethodProvider] = useState<ProviderAuthProviderStatus | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [busy, setBusy] = useState(false);
+  const [restarting, setRestarting] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null>(null);
   const sessionRef = useRef<ProviderAuthSessionSnapshot | null>(null);
   const checkRef = useRef<ProviderAuthCheckSessionSnapshot | null>(null);
+  const mountedRef = useRef(true);
+  const requestSequenceRef = useRef(0);
+  const latestSessionRequestRef = useRef(0);
+  const latestSuccessfulStartRef = useRef(0);
+  const pendingOperationsRef = useRef(new Set<number>());
+  const replacementOperationsRef = useRef(new Set<number>());
   const sourceId = agent.sourceId;
+  const scopeKey = `${sourceId}:${agent.generation ?? "unknown"}`;
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
+
+  const beginOperation = (sessionRequest = false, replacement = false) => {
+    const requestId = ++requestSequenceRef.current;
+    pendingOperationsRef.current.add(requestId);
+    if (sessionRequest) latestSessionRequestRef.current = requestId;
+    if (replacement) replacementOperationsRef.current.add(requestId);
+    setBusy(true);
+    if (replacement) setRestarting(true);
+    return requestId;
+  };
+
+  const finishOperation = (requestId: number, requestScope: string) => {
+    pendingOperationsRef.current.delete(requestId);
+    replacementOperationsRef.current.delete(requestId);
+    if (!mountedRef.current || scopeRef.current !== requestScope) return;
+    setBusy(pendingOperationsRef.current.size > 0);
+    setRestarting(replacementOperationsRef.current.size > 0);
+  };
 
   const adoptSession = (next: ProviderAuthSessionSnapshot | null) => {
     sessionRef.current = next;
@@ -195,17 +224,24 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
     return () => controller.abort();
   }, [sourceId, agent.generation, agent.status, agent.supportsProviderAuth]);
 
-  useEffect(() => () => {
-    const current = sessionRef.current;
-    if (current !== null && !terminal(current.state)) {
-      void api.cancelProviderAuth(sourceId, current.id, AbortSignal.timeout(2_000)).catch(() => undefined);
-    }
-    const currentCheck = checkRef.current;
-    if (currentCheck !== null && !checkTerminal(currentCheck.state)) {
-      void api.cancelProviderAuthCheck(sourceId, currentCheck.id, AbortSignal.timeout(2_000)).catch(() => undefined);
-    }
-    sessionRef.current = null;
-    checkRef.current = null;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      requestSequenceRef.current += 1;
+      const current = sessionRef.current;
+      if (current !== null && !terminal(current.state)) {
+        void api.cancelProviderAuth(sourceId, current.id, AbortSignal.timeout(2_000)).catch(() => undefined);
+      }
+      const currentCheck = checkRef.current;
+      if (currentCheck !== null && !checkTerminal(currentCheck.state)) {
+        void api.cancelProviderAuthCheck(sourceId, currentCheck.id, AbortSignal.timeout(2_000)).catch(() => undefined);
+      }
+      sessionRef.current = null;
+      checkRef.current = null;
+      pendingOperationsRef.current.clear();
+      replacementOperationsRef.current.clear();
+    };
   }, [sourceId, agent.generation]);
 
   useEffect(() => {
@@ -216,11 +252,15 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
       return;
     }
     const controller = new AbortController();
+    const expectedSessionId = session.id;
+    const expectedScope = scopeKey;
     const timer = window.setTimeout(() => {
-      void api.providerAuthSession(sourceId, session.id, controller.signal).then((next) => {
-        if (!controller.signal.aborted) adoptSession(next);
+      void api.providerAuthSession(sourceId, expectedSessionId, controller.signal).then((next) => {
+        if (!controller.signal.aborted && scopeRef.current === expectedScope && sessionRef.current?.id === expectedSessionId) adoptSession(next);
       }).catch((caught) => {
-        if (!controller.signal.aborted) setAuthError(caught instanceof Error ? caught.message : String(caught));
+        if (!controller.signal.aborted && scopeRef.current === expectedScope && sessionRef.current?.id === expectedSessionId) {
+          setAuthError(caught instanceof Error ? caught.message : String(caught));
+        }
       });
     }, 1_000);
     return () => {
@@ -267,48 +307,67 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
   }
 
   const start = async (provider: ProviderAuthProviderStatus, method: ProviderAuthMethod) => {
-    setBusy(true);
+    const replacing = sessionRef.current !== null && !terminal(sessionRef.current.state);
+    const requestId = beginOperation(true, replacing);
+    const requestScope = scopeKey;
     setAuthError(null);
-    setInputValue("");
+    setMethodProvider(null);
     try {
-      adoptSession(await api.beginProviderAuth(sourceId, provider.providerId, method));
-      setSelectedProvider(provider);
+      const next = await api.beginProviderAuth(sourceId, provider.providerId, method);
+      if (scopeRef.current === requestScope && requestId > latestSuccessfulStartRef.current) {
+        latestSuccessfulStartRef.current = requestId;
+        adoptSession(next);
+        setSessionProvider(provider);
+        setInputValue("");
+        setAuthError(null);
+      }
     } catch (caught) {
-      setAuthError(caught instanceof Error ? caught.message : String(caught));
+      if (scopeRef.current === requestScope
+        && requestId === latestSessionRequestRef.current
+        && requestId > latestSuccessfulStartRef.current) {
+        setAuthError(caught instanceof Error ? caught.message : String(caught));
+      }
     } finally {
-      setBusy(false);
+      finishOperation(requestId, requestScope);
     }
   };
 
   const startCheck = async () => {
-    setBusy(true);
+    const requestId = beginOperation();
+    const requestScope = scopeKey;
     setAuthError(null);
-    if (sessionRef.current === null) setSelectedProvider(null);
+    setMethodProvider(null);
     try {
-      adoptCheck(await api.beginProviderAuthCheck(sourceId, crypto.randomUUID()));
+      const next = await api.beginProviderAuthCheck(sourceId, crypto.randomUUID());
+      if (scopeRef.current === requestScope) adoptCheck(next);
     } catch (caught) {
-      setAuthError(caught instanceof Error ? caught.message : String(caught));
+      if (scopeRef.current === requestScope) setAuthError(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setBusy(false);
+      finishOperation(requestId, requestScope);
     }
   };
 
   const cancelCheck = async () => {
     if (check === null) return;
-    setBusy(true);
+    const requestId = beginOperation();
+    const requestScope = scopeKey;
     setAuthError(null);
     try {
       await api.cancelProviderAuthCheck(sourceId, check.id);
-      adoptCheck({ ...check, state: "cancelled", updatedAt: new Date().toISOString() });
+      if (scopeRef.current === requestScope && checkRef.current?.id === check.id) {
+        adoptCheck({ ...check, state: "cancelled", updatedAt: new Date().toISOString() });
+      }
     } catch (caught) {
-      setAuthError(caught instanceof Error ? caught.message : String(caught));
+      if (scopeRef.current === requestScope && checkRef.current?.id === check.id) {
+        setAuthError(caught instanceof Error ? caught.message : String(caught));
+      }
     } finally {
-      setBusy(false);
+      finishOperation(requestId, requestScope);
     }
   };
 
   const openFlow = (provider: ProviderAuthProviderStatus) => {
-    setSelectedProvider(provider);
+    setMethodProvider(provider);
     setAuthError(null);
     const recommended = provider.methods.find((method) => method.recommended);
     if (provider.methods.length === 1 || provider.providerId === "openai-codex" && recommended !== undefined) {
@@ -318,30 +377,51 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
 
   const submit = async () => {
     if (session?.prompt === undefined || inputValue.length === 0 && session.prompt.allowEmpty !== true) return;
+    const expectedSessionId = session.id;
+    const requestId = beginOperation(true);
+    const requestScope = scopeKey;
     const value = inputValue;
     if (inputRef.current !== null) inputRef.current.value = "";
     setInputValue("");
-    setBusy(true);
     setAuthError(null);
     try {
-      adoptSession(await api.submitProviderAuth(sourceId, session.id, { promptId: session.prompt.id, value }));
+      const next = await api.submitProviderAuth(sourceId, expectedSessionId, { promptId: session.prompt.id, value });
+      if (scopeRef.current === requestScope
+        && requestId === latestSessionRequestRef.current
+        && sessionRef.current?.id === expectedSessionId) {
+        adoptSession(next);
+      }
     } catch (caught) {
-      setAuthError(caught instanceof Error ? caught.message : String(caught));
+      if (scopeRef.current === requestScope
+        && requestId === latestSessionRequestRef.current
+        && sessionRef.current?.id === expectedSessionId) {
+        setAuthError(caught instanceof Error ? caught.message : String(caught));
+      }
     } finally {
-      setBusy(false);
+      finishOperation(requestId, requestScope);
     }
   };
 
   const cancel = async () => {
     if (session === null) return;
-    setBusy(true);
+    const expectedSessionId = session.id;
+    const requestId = beginOperation(true);
+    const requestScope = scopeKey;
     try {
-      await api.cancelProviderAuth(sourceId, session.id);
-      adoptSession({ ...session, state: "cancelled", updatedAt: new Date().toISOString() });
+      await api.cancelProviderAuth(sourceId, expectedSessionId);
+      if (scopeRef.current === requestScope
+        && requestId === latestSessionRequestRef.current
+        && sessionRef.current?.id === expectedSessionId) {
+        adoptSession({ ...session, state: "cancelled", updatedAt: new Date().toISOString() });
+      }
     } catch (caught) {
-      setAuthError(caught instanceof Error ? caught.message : String(caught));
+      if (scopeRef.current === requestScope
+        && requestId === latestSessionRequestRef.current
+        && sessionRef.current?.id === expectedSessionId) {
+        setAuthError(caught instanceof Error ? caught.message : String(caught));
+      }
     } finally {
-      setBusy(false);
+      finishOperation(requestId, requestScope);
     }
   };
 
@@ -398,7 +478,7 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
                 </span>
               </div>
               {actionable && (
-                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={busy || session !== null && !terminal(session.state) || checkActive} onClick={() => openFlow(provider)}>
+                <button type="button" className="secondary-button provider-auth-neutral-button" disabled={busy || checkActive} onClick={() => openFlow(provider)}>
                   {provider.state === "missing" ? "Authenticate" : "Re-authenticate"}
                 </button>
               )}
@@ -406,15 +486,16 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
           );
         })}
       </div>
-      {selectedProvider !== null && session === null && selectedProvider.methods.length > 1 && !checkActive && (
+      {methodProvider !== null && methodProvider.methods.length > 1 && !checkActive && (
         <div className="provider-auth-flow">
-          {selectedProvider.methods.map((method) => (
-            <button key={method.authType + ":" + method.strategy} type="button" className="secondary-button" disabled={busy || checkActive} onClick={() => void start(selectedProvider, method)}>
+          {methodProvider.methods.map((method) => (
+            <button key={method.authType + ":" + method.strategy} type="button" className="secondary-button" disabled={busy || checkActive} onClick={() => void start(methodProvider, method)}>
               {method.label}
             </button>
           ))}
         </div>
       )}
+      {restarting && <p aria-live="polite">Restarting authentication…</p>}
       {session !== null && (
         <div className="provider-auth-flow" aria-live="polite">
           {session.authUrl !== undefined && (
@@ -447,16 +528,16 @@ function ProviderAuthSection({ agent }: { readonly agent: AgentSummary }) {
             </form>
           )}
           {session.error !== undefined && <p className="agent-settings-error">{session.error.message}</p>}
-          {session.error?.code === "device_code_unavailable" && selectedProvider !== null && (() => {
-            const pasteBack = selectedProvider.methods.find((method) => method.strategy === "paste_back");
+          {session.error?.code === "device_code_unavailable" && sessionProvider !== null && (() => {
+            const pasteBack = sessionProvider.methods.find((method) => method.strategy === "paste_back");
             return pasteBack === undefined ? null : (
-              <button type="button" className="secondary-button" disabled={busy || checkActive} onClick={() => void start(selectedProvider, pasteBack)}>
+              <button type="button" className="secondary-button" disabled={busy || checkActive} onClick={() => void start(sessionProvider, pasteBack)}>
                 Retry with browser paste-back
               </button>
             );
           })()}
           {!terminal(session.state) && <button type="button" className="secondary-button" disabled={busy} onClick={() => void cancel()}>Cancel authentication</button>}
-          {terminal(session.state) && <button type="button" className="secondary-button" onClick={() => { adoptSession(null); setSelectedProvider(null); }}>Close authentication</button>}
+          {terminal(session.state) && <button type="button" className="secondary-button" onClick={() => { adoptSession(null); setSessionProvider(null); setMethodProvider(null); }}>Close authentication</button>}
         </div>
       )}
       {check !== null && (

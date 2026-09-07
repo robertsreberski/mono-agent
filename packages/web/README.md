@@ -226,7 +226,12 @@ check** button; it checks only the displayed providers, reports partial fixed
 outcomes inline, and never runs on settings reads or polling. GitHub Copilot and
 OpenAI Codex expose Pi device-code flows;
 Anthropic accepts the final redirect URL/code; API-key providers use masked
-provider-owned prompts. Secret input is cleared before submission. The web
+provider-owned prompts. Re-authentication remains available during an active
+login: a valid choice replaces it, while the compact flow stays visible until
+the fresh session arrives. Stale start, poll, input, and cancel responses cannot
+restore the old session. A replacement whose prior credential transaction
+cannot drain safely within two seconds reports `replacement_timeout`. Secret
+input is cleared before submission. The web
 server requires exact origin, proxies through the agent's ordinary operator
 connection, marks responses no-store, and never reads the Pi auth path. The
 operator request is keyless when that agent has no API key and uses its bearer
@@ -237,7 +242,8 @@ trusted-network single-user surface, not a per-human authenticated application.
 Live checks are explicit side effects: each selected provider receives one tiny
 no-fallback request, which may consume quota, trigger minimum billing, or refresh
 OAuth. Check sessions and observations are process-local, expire from memory,
-and are not persisted by the web service.
+and are not persisted by the web service. They must be cancelled explicitly
+before starting authentication.
 
 Standalone process-job and Monitor revival turns in an existing web conversation
 read that conversation's model/effort snapshot immediately before admission. A

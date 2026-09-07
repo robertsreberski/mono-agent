@@ -134,7 +134,18 @@ Anthropic device-code flow. API-key providers such as OpenCode-Go use masked,
 provider-owned prompts. There is no `--device-auth` CLI flag.
 The neutral recovery action remains available at its normal button size whenever
 the provider exposes a supported login method, even when the row says **OK** or
-**Not verified**.
+**Not verified**. Starting another valid login cancels the current session and
+begins again with a fresh session ID; a malformed or unavailable method leaves
+the current prompt usable. Live checks are separate consented operations and
+must be cancelled before authentication can start.
+
+Cancelled prompts, progress, callback completions, and late provider results are
+discarded. If the prior credential transaction has already entered atomic
+promotion or cleanup, the replacement waits up to two seconds for it to finish
+safely. A longer drain fails the fresh session with `replacement_timeout`
+without starting another writer; retry after the prior transaction finishes.
+An already-open provider page may still complete remotely, but its stale local
+callback cannot update the replacement session or auth store.
 
 **Run check** is one explicit section-level action for all provider rows already
 displayed. It sends one tiny request to each provider's deterministically chosen

@@ -50,7 +50,9 @@ describe("provider auth routes", () => {
   it("keeps every route bearer-protected when the operator endpoint has an API key", async () => {
     const operator: ProviderAuthOperator = {
       status: vi.fn(async () => status),
-      start: vi.fn(async () => session),
+      start: vi.fn()
+        .mockResolvedValueOnce(session)
+        .mockResolvedValueOnce({ ...session, id: "session-2", prompt: { ...session.prompt!, id: "prompt-2" } }),
       get: vi.fn(async () => session),
       submit: vi.fn(async () => ({ ...session, state: "succeeded", prompt: undefined } as never)),
       cancel: vi.fn(async () => undefined),
@@ -80,6 +82,13 @@ describe("provider auth routes", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
     })).status).toBe(401);
+    const invalid = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt", extra: true }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(operator.start).not.toHaveBeenCalled();
     const listed = await fetch(`${server.baseUrl}/v1/provider-auth`, { headers });
     expect(listed.status).toBe(200);
     expect(listed.headers.get("cache-control")).toContain("no-store");
@@ -93,6 +102,14 @@ describe("provider auth routes", () => {
     expect(created.status).toBe(201);
     expect(created.headers.get("cache-control")).toContain("no-store");
     expect(await created.json()).toEqual(session);
+    const replacement = await fetch(`${server.baseUrl}/v1/provider-auth/sessions`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({ providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt" }),
+    });
+    expect(replacement.status).toBe(201);
+    expect(await replacement.json()).toMatchObject({ id: "session-2", prompt: { id: "prompt-2" } });
+    expect(operator.start).toHaveBeenCalledTimes(2);
     expect((await fetch(`${server.baseUrl}/v1/provider-auth/sessions/session-1`, {
       headers: { authorization: "Bearer wrong" },
     })).status).toBe(401);

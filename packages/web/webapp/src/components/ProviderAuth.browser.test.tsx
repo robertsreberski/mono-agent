@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { userEvent } from "@vitest/browser/context";
+import { page, userEvent } from "@vitest/browser/context";
 import { createRef } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -96,4 +96,57 @@ describe("provider authentication controls in Chromium", () => {
     expect(screen.getByText("Checks complete: 1 of 3 passed.")).toBeVisible();
     expect(apiMock.providerAuthCheck).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { width: 1_440, height: 900, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
+  ])("restarts a long-running flow compactly at the $label viewport", async ({ width, height }) => {
+    await page.viewport(width, height);
+    const methods = [
+      { authType: "oauth", strategy: "paste_back", label: "OAuth paste-back", recommended: true },
+      { authType: "api_key", strategy: "api_key_prompt", label: "API key", recommended: false },
+    ] as const;
+    apiMock.providerAuthStatus.mockResolvedValue({
+      schema: "mono-agent.provider-auth.v1",
+      generatedAt: "2026-09-06T12:00:00.000Z",
+      providers: [{
+        providerId: "fixture-auth", label: "Fixture auth",
+        usages: [{ kind: "primary", model: "fixture-auth:cheap", label: "Model" }],
+        state: "present", source: "stored", verification: "not_verified", methods,
+      }],
+    });
+    const active = {
+      schema: "mono-agent.provider-auth-session.v1", id: "old-session", providerId: "fixture-auth",
+      authType: "oauth", strategy: "paste_back", state: "awaiting_user",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:00.000Z",
+      expiresAt: "2026-09-06T12:20:00.000Z", progress: "OLD FLOW ACTIVE",
+    } as const;
+    const replacement = deferred<Record<string, unknown>>();
+    apiMock.beginProviderAuth.mockResolvedValueOnce(active).mockImplementationOnce(async () => await replacement.promise);
+    const rendered = render(<AgentSettingsDialog open onClose={() => undefined} dialogRef={createRef<HTMLElement>()} />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Re-authenticate" }));
+    await userEvent.click(screen.getByRole("button", { name: "OAuth paste-back" }));
+    expect(await screen.findByText("OLD FLOW ACTIVE")).toBeVisible();
+    const restart = screen.getByRole("button", { name: "Re-authenticate" });
+    expect(restart.getBoundingClientRect().height).toBeGreaterThanOrEqual(38);
+    expect(restart.classList.contains("provider-auth-neutral-button")).toBe(true);
+
+    await userEvent.click(restart);
+    expect(screen.getByRole("button", { name: "OAuth paste-back" })).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "API key" }));
+    expect(screen.getByText("Restarting authentication…")).toBeVisible();
+    expect(screen.getByText("OLD FLOW ACTIVE")).toBeVisible();
+    replacement.resolve({ ...active, id: "new-session", authType: "api_key", strategy: "api_key_prompt", progress: "NEW FLOW ACTIVE" });
+    expect(await screen.findByText("NEW FLOW ACTIVE")).toBeVisible();
+    expect(screen.queryByText("OLD FLOW ACTIVE")).not.toBeInTheDocument();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    rendered.unmount();
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}

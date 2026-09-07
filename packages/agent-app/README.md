@@ -464,7 +464,11 @@ Copilot and OpenAI Codex use Pi's native device-code flow; Anthropic uses the
 existing manual-code redirect callback; API-key providers use masked
 provider-owned prompts. Returned credentials pass through the same owner-private,
 cross-process-locked, sibling-preserving, no-clobber Pi-store transaction as
-the CLI API-key flow. Sessions, submitted values, URLs, and codes are never
+the CLI API-key flow. A valid repeated login replaces the current session only
+after validation. Late provider work is discarded before promotion; a mutation
+already in atomic promotion or cleanup drains before another writer starts. If
+that drain exceeds two seconds, the fresh session fails closed with
+`replacement_timeout`. Sessions, submitted values, URLs, and codes are never
 written to agent history. The service covers `providers.piAuthPath` only, not
 Codex CLI credentials.
 
