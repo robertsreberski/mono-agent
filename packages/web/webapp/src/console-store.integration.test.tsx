@@ -5247,6 +5247,257 @@ describe("ConsoleStoreProvider integration", () => {
       act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
     };
 
+    it("repairs an idle snapshot when a turn starts before the first stream subscribes", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alpha.id }));
+      seedTwo([]);
+      const store = await openedOnAlpha();
+
+      // The stored selection lets the first socket subscribe to Alpha before
+      // the bootstrap answers. No subscription rebuild may accidentally turn
+      // this into the already-covered reconnect path.
+      expect(FakeEventSource.instances).toHaveLength(1);
+      expect(liveUrl()).toBe(`/api/v1/events?thread=${encodeURIComponent(alpha.id)}`);
+      expect(store.current.selectedThread?.runState.status).toBe("idle");
+
+      // Another client starts the turn after the idle snapshot was sampled but
+      // before this socket registers. SSE has no replay, so the browser sees no
+      // start event; its first `ready` is the only proof the subscription now
+      // covers future transitions.
+      const running = thread(alpha.id, "alpha", {
+        revision: 2,
+        updatedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+        runState: { status: "running", id: "turn-1" },
+      });
+      vi.mocked(api.threadIfChanged).mockResolvedValue({
+        thread: running,
+        messages: [held("m1", "Working")],
+        etag: 'W/"alpha-2"',
+      });
+
+      emit("ready", { payload: { version: 1 } });
+
+      await waitFor(() => expect(api.threadIfChanged)
+        .toHaveBeenCalledWith(alpha.id, 'W/"alpha-1"', expect.any(AbortSignal)));
+      await waitFor(() => expect(store.current.selectedThread?.runState)
+        .toEqual({ status: "running", id: "turn-1" }));
+      expect(store.current.visibleThreads.find((item) => item.id === alpha.id)?.runState)
+        .toEqual({ status: "running", id: "turn-1" });
+      expect(store.current.detail?.thread.runState)
+        .toEqual({ status: "running", id: "turn-1" });
+      expect(store.current.hasRunningThread).toBe(true);
+
+      const reads = vi.mocked(api.threadIfChanged).mock.calls.length;
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+      expect(api.threadIfChanged).toHaveBeenCalledTimes(reads);
+    });
+
+    it("repairs a running snapshot when a turn finishes before the first stream subscribes", async () => {
+      const running = thread(alpha.id, "alpha", {
+        revision: 2,
+        runState: { status: "running", id: "turn-1" },
+      });
+      const complete = thread(alpha.id, "alpha", {
+        revision: 3,
+        updatedAt: "2026-08-14T09:00:00.000Z",
+        runState: { status: "complete", id: "turn-1" },
+      });
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alpha.id }));
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [running, beta],
+      ));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [running, beta] });
+      vi.mocked(api.thread).mockResolvedValue({ thread: running, messages: [], etag: 'W/"alpha-2"' });
+      vi.mocked(api.threadIfChanged).mockResolvedValue({
+        thread: complete,
+        messages: [],
+        etag: 'W/"alpha-3"',
+      });
+      const store = await openedOnAlpha();
+      expect(store.current.hasRunningThread).toBe(true);
+
+      emit("ready", { payload: { version: 1 } });
+
+      await waitFor(() => expect(store.current.selectedThread?.runState.status).toBe("complete"));
+      expect(store.current.detail?.thread.runState.status).toBe("complete");
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("defers first-ready repair until bootstrap and repairs past its opening read", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alpha.id }));
+      const running = thread(alpha.id, "alpha", {
+        revision: 2,
+        runState: { status: "running", id: "turn-1" },
+      });
+      let releaseBootstrap: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        releaseBootstrap = () => resolve(bootstrap(
+          [agent("alpha", { label: "Alpha" })],
+          [alpha, beta],
+        ));
+      }));
+      let releaseOpeningRead: () => void = () => undefined;
+      vi.mocked(api.thread)
+        .mockImplementationOnce(() => new Promise((resolve) => {
+          releaseOpeningRead = () => resolve({ thread: alpha, messages: [], etag: 'W/"alpha-1"' });
+        }))
+        .mockResolvedValue({ thread: running, messages: [], etag: 'W/"alpha-2"' });
+
+      let current: Store | undefined;
+      const onChange = (store: Store) => { current = store; };
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={onChange} />
+        </ConsoleStoreProvider>,
+      );
+      await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
+      emit("ready", { payload: { version: 1 } });
+      expect(api.thread).not.toHaveBeenCalled();
+
+      act(() => { releaseBootstrap(); });
+      await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(2));
+      await waitFor(() => expect(current?.selectedThread?.runState.status).toBe("running"));
+
+      act(() => { releaseOpeningRead(); });
+      await quiet();
+      expect(current?.selectedThread?.runState.status).toBe("running");
+      expect(current?.detail?.thread.runState.status).toBe("running");
+    });
+
+    it("coalesces a reconnect during first-ready repair into one trailing read", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alpha.id }));
+      seedTwo([]);
+      await openedOnAlpha();
+      let releaseRepair: () => void = () => undefined;
+      vi.mocked(api.threadIfChanged)
+        .mockImplementationOnce(() => new Promise((resolve) => {
+          releaseRepair = () => resolve(NOT_MODIFIED);
+        }))
+        .mockResolvedValue(NOT_MODIFIED);
+
+      emit("ready", { payload: { version: 1 } });
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(1));
+      dropAndReopen();
+      emit("ready", { payload: { version: 1 } });
+      expect(api.threadIfChanged).toHaveBeenCalledTimes(1);
+
+      act(() => { releaseRepair(); });
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(2));
+      await quiet();
+      expect(api.threadIfChanged).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not let first-ready repair undo a terminal turn event", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alpha.id }));
+      seedTwo([]);
+      const store = await openedOnAlpha();
+      const lateRunning = thread(alpha.id, "alpha", {
+        revision: alpha.revision,
+        runState: { status: "running", id: "turn-1" },
+      });
+      let releaseRepair: () => void = () => undefined;
+      vi.mocked(api.threadIfChanged)
+        .mockImplementationOnce(() => new Promise((resolve) => {
+          releaseRepair = () => resolve({
+            thread: lateRunning,
+            messages: [],
+            etag: 'W/"alpha-race"',
+          });
+        }))
+        .mockResolvedValue(NOT_MODIFIED);
+
+      emit("ready", { payload: { version: 1 } });
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(1));
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { status: "complete", id: "turn-1" } },
+      });
+      act(() => { releaseRepair(); });
+
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(2));
+      await quiet();
+      expect(store.current.selectedThread?.runState)
+        .toEqual({ status: "complete", id: "turn-1" });
+      expect(store.current.detail?.thread.runState)
+        .toEqual({ status: "complete", id: "turn-1" });
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("does not resurrect a conversation removed during first-ready repair", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alpha.id }));
+      seedTwo([]);
+      const store = await openedOnAlpha();
+      let releaseRepair: () => void = () => undefined;
+      vi.mocked(api.threadIfChanged).mockImplementationOnce(() => new Promise((resolve) => {
+        releaseRepair = () => resolve({
+          thread: { ...alpha, revision: 2 },
+          messages: [],
+          etag: 'W/"alpha-2"',
+        });
+      }));
+
+      emit("ready", { payload: { version: 1 } });
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(1));
+      emit("thread.changed", { threadId: alpha.id, payload: { removed: true } });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(beta.id));
+      act(() => { releaseRepair(); });
+      await quiet();
+
+      expect(store.current.threads.some((item) => item.id === alpha.id)).toBe(false);
+      expect(store.current.detail?.thread.id).toBe(beta.id);
+    });
+
+    it("spends first ready without a detail request when no conversation is selected", async () => {
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [],
+      ));
+      const store = await renderStore();
+
+      emit("ready", { payload: { version: 1 } });
+      await quiet();
+
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(api.thread).not.toHaveBeenCalled();
+      expect(api.threadIfChanged).not.toHaveBeenCalled();
+      expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains first-ready repair through a failed mount bootstrap", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alpha.id }));
+      const running = thread(alpha.id, "alpha", {
+        revision: 2,
+        runState: { status: "running", id: "turn-1" },
+      });
+      vi.mocked(api.bootstrap)
+        .mockRejectedValueOnce(new Error("snapshot unavailable"))
+        .mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [alpha, beta]));
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: running,
+        messages: [],
+        etag: 'W/"alpha-2"',
+      });
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      const store = await renderStore();
+      expect(store.current.hasServerSnapshot).toBe(false);
+
+      emit("ready", { payload: { version: 1 } });
+
+      await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.selectedThread?.runState.status).toBe("running"));
+      expect(store.current.hasServerSnapshot).toBe(true);
+      expect(store.current.connection).toBe("live");
+    });
+
     it("names the conversation on screen on the stream itself", async () => {
       seedTwo();
       const store = await openedOnAlpha();
@@ -6076,6 +6327,38 @@ describe("ConsoleStoreProvider integration", () => {
         },
       };
     };
+
+    it("repairs a device-restored idle row after the first stream subscribes", async () => {
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      const running = thread(alpha.id, "alpha", {
+        revision: 2,
+        runState: { status: "running", id: "turn-1" },
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged)
+        .mockResolvedValueOnce(NOT_MODIFIED)
+        .mockResolvedValue({
+          thread: running,
+          messages: [kept("m1", "kept transcript")],
+          etag: 'W/"alpha-2"',
+        });
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(1));
+
+      emit("ready", { payload: { version: 1 } });
+
+      await waitFor(() => expect(api.threadIfChanged).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.selectedThread?.runState.status).toBe("running"));
+      expect(store.current.detail?.thread.runState.status).toBe("running");
+      expect(store.current.hasRunningThread).toBe(true);
+    });
 
     it("takes the listing as the server speaking for every conversation it holds", async () => {
       // A conversation this tab is NOT subscribed to gets no `message.delta`,

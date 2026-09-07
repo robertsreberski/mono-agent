@@ -1095,7 +1095,13 @@ export const createThreadCache = (
       const pagedIn = [...held.pagedInIds].filter((id) => surviving.has(id));
       const entry = withCursor(
         {
-          thread: newerProjection(held.thread, detail.thread),
+          // An observation after this read was issued may have moved runState
+          // without moving the thread revision. At an equal revision the held
+          // summary is therefore newer evidence; a strictly newer response is
+          // still safe to adopt while the trailing repair settles the rest.
+          thread: stale && detail.thread.revision <= held.thread.revision
+            ? held.thread
+            : newerProjection(held.thread, detail.thread),
           messages,
           stale,
           syncedAt: now(),
@@ -1177,10 +1183,16 @@ export const createThreadCache = (
     // though it moves no run state. The news there is not what the run state is
     // but that the SERVER said it -- which is exactly what a restored entry was
     // missing.
-    patchRunState: (threadId, runState) => committed(patchWithSummary(threadId, (entry) =>
-      (sameRunState(entry.thread.runState, runState)
-        ? entry
-        : { ...entry, thread: { ...entry.thread, runState } }))),
+    patchRunState: (threadId, runState) => {
+      // Even a restatement is an observation a read already on the wire could
+      // not have seen. Fence that answer before applying the event so an equal
+      // revision cannot put a terminal turn back into a running state.
+      observe(threadId);
+      return committed(patchWithSummary(threadId, (entry) =>
+        (sameRunState(entry.thread.runState, runState)
+          ? entry
+          : { ...entry, thread: { ...entry.thread, runState } })));
+    },
     applyDelta: (threadId, delta) => {
       const entry = entries.get(threadId);
       if (entry === undefined) return "unheld";

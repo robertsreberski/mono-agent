@@ -1601,6 +1601,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
   /** Whether the bootstrap this component asked for on mount has answered. */
   const initialBootstrapRef = useRef<"pending" | "answered">("pending");
+  /** Whether any stream owned by this mounted provider has reached `ready`. */
+  const initialStreamReadyRef = useRef(false);
+  /** The first ready owes one read issued after the subscription exists. */
+  const initialStreamSyncOwedRef = useRef(false);
+  const dischargeInitialStreamSyncRef = useRef<() => void>(() => undefined);
   /** Whether this store is still mounted. See `scheduleRefresh`. */
   const mountedRef = useRef(true);
   /**
@@ -2167,6 +2172,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         persistThreadId(selection.agentId, selected.archivedAt ? null : selected.id);
       }
     }
+    // A stream can register while this snapshot is still on the wire. Its
+    // first `ready` records the obligation; the snapshot establishes which
+    // server-confirmed selection that post-subscription read must repair.
+    dischargeInitialStreamSyncRef.current();
   }, [applyConnection, discardOtherHostData, reconcileCronRevision]);
 
   /**
@@ -2381,16 +2390,35 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     return true;
   }, [publishDetail]);
 
+  /** Bring an existing listing row to the selected cache's safe projection. */
+  const reconcileSelectedListing = useCallback((entry: ThreadCacheEntry) => {
+    setBootstrap((current) => {
+      if (current === null) return current;
+      const index = current.threads.findIndex((thread) => thread.id === entry.thread.id);
+      if (index < 0) return current;
+      const held = current.threads[index];
+      if (held === undefined) return current;
+      const reconciled = newerProjection(held, entry.thread);
+      if (reconciled === held) return current;
+      const threads = [...current.threads];
+      threads[index] = reconciled;
+      threads.sort(byMostRecent);
+      return { ...current, threads };
+    });
+  }, []);
+
   /**
    * Apply a 304 to the conversation it was asked about.
    *
-   * Nothing is replaced -- every message comes back by reference -- and only
-   * the suspicion is answered, and only when nothing was observed while the
-   * read was on the wire. When something WAS, `confirmFresh` refuses and this
-   * buys exactly one more read: the 304 described a state the console already
-   * knows it has moved past, and nothing else is going to answer for it.
+   * Nothing in the cache is replaced -- every message comes back by reference
+   * -- and only the suspicion is answered. A synchronization repair may then
+   * project that confirmed cache summary into the existing listing row.
    */
-  const confirmConversation = useCallback((threadId: string, issuedAt: number) => {
+  const confirmConversation = useCallback((
+    threadId: string,
+    issuedAt: number,
+    reconcileListing = false,
+  ) => {
     const cache = threadCacheRef.current;
     cache.confirmFresh(threadId, issuedAt);
     // `confirmFresh` deliberately does not announce a commit -- a reconnect
@@ -2398,10 +2426,41 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // the store derives from the held set is recomputed here. A 304 is what
     // turns a restored entry into a confirmed one.
     noteHeldRunStateRef.current();
-    if (cache.get(threadId)?.stale === true && selectedThreadRef.current === threadId) {
+    const entry = cache.get(threadId);
+    if (entry?.stale === true && selectedThreadRef.current === threadId) {
       scheduleRefreshRef.current({ detail: true });
+      return;
     }
-  }, []);
+    if (reconcileListing && entry !== undefined) reconcileSelectedListing(entry);
+  }, [reconcileSelectedListing]);
+
+  /**
+   * Apply one admitted read of the selected conversation.
+   *
+   * Opening reads update the cache and detail only. Synchronization repairs
+   * additionally update an existing listing row, but only when no event
+   * overtook the request; that keeps the listing and detail aligned without
+   * reintroducing an equal-revision run-state rollback.
+   */
+  const applySelectedThreadDetail = useCallback((
+    next: ReadThreadDetail,
+    observedAt: number,
+    reconcileListing: boolean,
+  ) => {
+    if (selectedThreadRef.current !== next.thread.id) return;
+    const entry = threadCacheRef.current.upsertFull(next, {
+      reset: true,
+      issuedAt: observedAt,
+      ...(next.etag === undefined ? {} : { etag: next.etag }),
+    });
+    publishDetail(next.thread.id);
+    if (entry?.stale === true) {
+      scheduleRefreshRef.current({ detail: true });
+      return;
+    }
+    if (!reconcileListing || entry === undefined) return;
+    reconcileSelectedListing(entry);
+  }, [publishDetail, reconcileSelectedListing]);
 
   /**
    * Read one conversation in full and put it into the cache.
@@ -2456,23 +2515,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // A WINDOW read: it carries the newest page of the transcript, so the
       // pages this tab walked back to survive it and anything inside the window
       // it no longer carries was deleted. See `mergeMessages`.
-      const entry = threadCacheRef.current.upsertFull(next, {
-        reset: true,
-        issuedAt: observedAt,
-        // The validator this response was served with, so a reconnect can quote
-        // it and be answered with a status line instead of a transcript.
-        ...(next.etag === undefined ? {} : { etag: next.etag }),
-      });
-      publishDetail(threadId);
-      // Something moved while this read was out -- a delta that arrived before
-      // there was anything to apply it to, above all. The answer is already
-      // behind, so it costs exactly one more read rather than leaving a
-      // transcript on screen that looks settled and is not.
-      // Through the ref, not the callback: this runs before `scheduleRefresh`
-      // is defined, and it is async so the ref is always assigned by then.
-      if (entry?.stale === true && selectedThreadRef.current === threadId) {
-        scheduleRefreshRef.current({ detail: true });
-      }
+      applySelectedThreadDetail(next, observedAt, false);
     } catch (loadError) {
       if (signal.aborted) return;
       if (loadError instanceof ApiError
@@ -2486,7 +2529,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       if (selectedThreadRef.current === threadId) setDetailLoading(false);
     }
-  }, [closeMissingThread, confirmConversation, leaveRestoredArchivedThread, publishDetail]);
+  }, [applySelectedThreadDetail, closeMissingThread, confirmConversation, leaveRestoredArchivedThread]);
 
   useEffect(() => {
     const cache = threadCacheRef.current;
@@ -2539,58 +2582,56 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (!scope.bootstrap && !scope.detail) return;
     refreshScopeRef.current = NOTHING_TO_REFRESH;
     refreshInFlightRef.current = true;
+    let selectedForRefresh: string | null = null;
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const observedAt = threadCacheRef.current.clock();
-      const selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
+      selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
+      const refreshThreadId = selectedForRefresh;
       const bucket = bootstrapScope();
       // CONDITIONAL, exactly as `loadThread` and the gap resync are: this is
       // the path a beaten 304 schedules its follow-up on, and an ordinary
       // switch to a conversation kept across a gap reaches it, so an
       // unconditional read here put a whole transcript back on the wire for a
       // conversation that had usually not moved at all.
-      const heldEtag = selectedForRefresh === null
+      const heldEtag = refreshThreadId === null
         ? undefined
-        : threadCacheRef.current.get(selectedForRefresh)?.etag;
+        : threadCacheRef.current.get(refreshThreadId)?.etag;
       const [nextBootstrap, nextDetail] = await Promise.all([
         scope.bootstrap
           ? boundedRequest((signal) => api.bootstrap(signal, bucket), THREAD_READ_TIMEOUT_MS)
           : Promise.resolve(null),
-        selectedForRefresh
+        refreshThreadId
           ? boundedRequest(
-              (signal) => readConversation(selectedForRefresh, heldEtag, signal),
+              (signal) => readConversation(refreshThreadId, heldEtag, signal),
               THREAD_READ_TIMEOUT_MS,
             )
           : Promise.resolve(null),
       ]);
       if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
       if (nextDetail === NOT_MODIFIED) {
-        if (selectedForRefresh !== null) confirmConversation(selectedForRefresh, observedAt);
+        if (selectedForRefresh !== null) {
+          confirmConversation(selectedForRefresh, observedAt, !scope.bootstrap);
+        }
       } else if (
         nextDetail
         && admitThread(removedThreadsRef.current, nextDetail.thread, issuedAt)
         && selectedThreadRef.current === nextDetail.thread.id
-      // Deliberately only the detail. The detail answer carries a summary of
-      // the same row the listing carries, and the two reads are not ordered
-      // against each other: merging it let a detail response overwrite a
-      // FRESHER listing row it had no way to compare itself to. The sidebar row
-      // is the listing's business, and `threads.changed` carries a new summary
-      // when the server has one.
       ) {
-        const entry = threadCacheRef.current.upsertFull(
-          nextDetail,
-          {
-            reset: true,
-            issuedAt: observedAt,
-            ...(nextDetail.etag === undefined ? {} : { etag: nextDetail.etag }),
-          },
-        );
-        publishDetail(nextDetail.thread.id);
-        // See `loadThread`: an answer overtaken by an observation is already
-        // behind, and one more read is what settles it.
-        if (entry?.stale === true) scheduleRefreshRef.current({ detail: true });
+        // A detail read paired with a bootstrap cannot order its summary
+        // against that snapshot, so only a detail-only synchronization repair
+        // may reconcile the existing listing row too.
+        applySelectedThreadDetail(nextDetail, observedAt, !scope.bootstrap);
       }
     } catch (refreshError) {
+      if (refreshError instanceof ApiError
+        && refreshError.status === 404
+        && selectedForRefresh !== null
+        && selectedThreadRef.current === selectedForRefresh) {
+        restoredSelectionRef.current = null;
+        closeMissingThread(selectedForRefresh);
+        return;
+      }
       setActionError(errorMessage(refreshError));
     } finally {
       refreshInFlightRef.current = false;
@@ -2599,7 +2640,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         scheduleRefreshRef.current({});
       }
     }
-  }, [applyBootstrap, bootstrapScope, confirmConversation, publishDetail]);
+  }, [applyBootstrap, applySelectedThreadDetail, bootstrapScope, closeMissingThread, confirmConversation]);
 
   const scheduleRefresh = useCallback((scope: Partial<RefreshScope>) => {
     // A refresh that settles after the tree is gone re-queues through the
@@ -2624,6 +2665,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // Assigned during render: `refreshNow` re-queues through this ref, and an
   // effect would leave it pointing at the previous commit's closure.
   scheduleRefreshRef.current = scheduleRefresh;
+
+  /** Spend the first-ready obligation only against a server-confirmed view. */
+  const dischargeInitialStreamSync = useCallback(() => {
+    if (!initialStreamSyncOwedRef.current || !hasServerSnapshotRef.current) return;
+    initialStreamSyncOwedRef.current = false;
+    const threadId = selectedThreadRef.current;
+    if (threadId === null) return;
+    // This also fences an opening read that went out before the subscription
+    // existed. The bounded refresh below is issued afterwards and therefore
+    // can authoritatively close the snapshot/SSE gap.
+    threadCacheRef.current.markStale(threadId);
+    scheduleRefresh({ detail: true });
+  }, [scheduleRefresh]);
+  // Assigned during render because `applyBootstrap` is declared before this
+  // callback and may settle in the same task as the first stream frame.
+  dischargeInitialStreamSyncRef.current = dischargeInitialStreamSync;
 
   /**
    * Everything this tab knows is stale: the listing, the selection it resolves
@@ -2704,57 +2761,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [loadThreadBucket, rememberUnlistedThread]);
 
   /**
-   * Re-read the open conversation CONDITIONALLY, quoting what it was last
-   * served with.
-   *
-   * The answer to a gap in the stream. `304` is the server saying the
-   * transcript on screen IS the current one: nothing is replaced, no message
-   * object loses its identity, and the read costs a status line rather than the
-   * whole conversation -- which is what makes an app-switch resume free. A
-   * conversation with no validator yet (nothing has read it since this tab
-   * loaded) falls back to the ordinary read, and stores one for next time.
-   */
-  const revalidateSelectedThread = useCallback(async (
-    threadId: string,
-    etag: string | undefined,
-  ) => {
-    const cache = threadCacheRef.current;
-    const issuedAt = removedThreadsRef.current.epoch();
-    const observedAt = cache.clock();
-    try {
-      const answer = await boundedRequest(
-        (signal) => readConversation(threadId, etag, signal),
-        THREAD_READ_TIMEOUT_MS,
-      );
-      if (answer === NOT_MODIFIED) {
-        confirmConversation(threadId, observedAt);
-        return;
-      }
-      if (!admitThread(removedThreadsRef.current, answer.thread, issuedAt)) return;
-      if (selectedThreadRef.current !== answer.thread.id) return;
-      const entry = cache.upsertFull(answer, {
-        reset: true,
-        issuedAt: observedAt,
-        ...(answer.etag === undefined ? {} : { etag: answer.etag }),
-      });
-      publishDetail(answer.thread.id);
-      if (entry?.stale === true) scheduleRefreshRef.current({ detail: true });
-    } catch (resyncError) {
-      if (resyncError instanceof ApiError
-        && resyncError.status === 404
-        && selectedThreadRef.current === threadId) {
-        restoredSelectionRef.current = null;
-        closeMissingThread(threadId);
-        return;
-      }
-      // The resync could not answer, so what is held cannot claim to be
-      // current: the ordinary refresh is the fallback, and it is debounced.
-      cache.markStale(threadId);
-      if (selectedThreadRef.current === threadId) refreshSelectedThread();
-    }
-  }, [closeMissingThread, confirmConversation, publishDetail, refreshSelectedThread]);
-
-  /**
    * A `ready` with a gap behind it.
    *
    * The events that would have told this tab what changed are exactly the ones
@@ -2786,17 +2792,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     const threadId = selectedThreadRef.current;
     if (threadId === null) return;
-    const entry = threadCacheRef.current.get(threadId);
-    if (entry === undefined) {
+    if (threadCacheRef.current.get(threadId) === undefined) {
       // Not held, so there is nothing to re-read and nowhere to land an answer.
       // The observation is what makes the cold read already on the wire -- the
       // selection effect's -- land stale and go round once more, instead of
       // settling on a transcript from before the gap.
       threadCacheRef.current.markStale(threadId);
-      return;
     }
-    void revalidateSelectedThread(threadId, entry.etag);
-  }, [loadAgents, revalidateBucket, revalidateSelectedThread]);
+    // The same single-flight queue pays the initial synchronization debt and
+    // every later gap. A reconnect during an active repair therefore records
+    // at most one trailing read instead of opening a parallel request.
+    scheduleRefreshRef.current({ detail: true });
+  }, [loadAgents, revalidateBucket]);
 
   /**
    * Apply the run state a `turn.changed` already carries.
@@ -3160,16 +3167,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // EVERY stream after the first has a gap behind it, a re-point
           // included: closing one socket and registering the next loses a round
           // trip of events, and `thread.changed` is broadcast to every
-          // connection. Only the FIRST `ready` costs nothing -- it arrives
-          // beside the snapshot this component already asked for on mount, so
-          // answering it with another bootstrap doubled every page load. Only a
-          // mount load that answered with NOTHING is worth asking again for.
+          // connection. The FIRST `ready` buys one conditional read of the
+          // selected conversation after the subscription exists. It never buys
+          // another bootstrap, and if the mount snapshot is still pending the
+          // obligation waits until that snapshot establishes the selection.
+          const firstReady = !initialStreamReadyRef.current;
+          if (firstReady) {
+            initialStreamReadyRef.current = true;
+            initialStreamSyncOwedRef.current = true;
+          }
           const gapped = resyncOnReadyRef.current;
           resyncOnReadyRef.current = false;
           if (gapped) resyncAfterGap();
           else if (initialBootstrapRef.current === "answered" && !hasBootstrapRef.current) {
             queueRefresh();
           }
+          if (firstReady) dischargeInitialStreamSyncRef.current();
           // No skills bump. A dropped stream takes `connection` off "live",
           // which is a dependency of the skills effect, so coming back to
           // "live" refetches the registry on its own -- and a registry marked
