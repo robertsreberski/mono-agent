@@ -259,14 +259,23 @@ blockquote context; it does not rewrite the visible message text. The public
 turn DTO exposes this as `quote: { text, messageId }`, and the source message
 must belong to the same thread.
 
-The composer remains sendable while a response is running. A text-only send is
-persisted immediately and offered to the active provider as live guidance. Its
-message shows `pending`, `applied`, `queued`, or `cancelled`; an unsupported
-provider, delivery failure, end-of-turn race, or web-service restart queues it
-as the next normal turn instead of dropping it. Attachments keep the ordinary
-turn path, and cancelling the active turn also cancels its pending or queued
-live follow-ups. Live follow-ups are capped at 8,000 characters and 100
-unsettled messages per thread.
+The composer remains sendable while a response is running. A normal text-only
+send is persisted immediately and offered to the active provider as live
+guidance. Every existing interactive conversation also shows a secondary
+**Steer** action; it offers the text through the same server-authoritative path
+even when the browser currently appears idle. Use **Control/Command + Shift +
+Enter** for the same explicit action. With no active turn, the service queues
+the message as exactly one normal turn using the conversation route captured
+when it was offered.
+
+The message shows `pending`, `applied`, `queued`, or `cancelled`; an unsupported
+provider, delivery failure, end-of-turn race, idle conversation, or web-service
+restart queues it as the next normal turn instead of dropping it. Steering is
+text-only: the Steer button is disabled when attachments are present, and the
+shortcut fails closed before either send endpoint while restoring the draft,
+quote, and attachments. Attachments retain the ordinary turn path. Cancelling
+the active turn also cancels its pending or queued live follow-ups. Live
+follow-ups are capped at 8,000 characters and 100 unsettled messages per thread.
 
 Once the provider applies a follow-up, the assistant's Activity disclosure also
 receives one completed `↪️ Steered: “<safe preview>”` tool row with result

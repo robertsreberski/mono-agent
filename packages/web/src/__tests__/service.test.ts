@@ -3574,6 +3574,34 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("promotes idle live input exactly once with the thread's captured route", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    const thread = service.createThread("agent-one");
+    service.patchThread(thread.id, { model: "provider/fallback", effort: "high" });
+
+    const receipt = service.submitLiveInput(thread.id, "Run this from an idle projection");
+    expect(receipt).toMatchObject({ disposition: "queued", message: { liveInputStatus: "queued" } });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+    expect(turnBodies).toHaveLength(1);
+    expect(turnBodies[0]).toMatchObject({
+      text: "Run this from an idle projection",
+      metadata: { web: { model: "provider/fallback", effort: "high" } },
+    });
+    expect(service.thread(thread.id).messages.find((message) => message.id === receipt.message.id))
+      .toMatchObject({
+        role: "user",
+        turnId: expect.any(String),
+        parts: [{ type: "text", text: "Run this from an idle projection" }],
+      });
+    expect(service.thread(thread.id).messages.find((message) => message.id === receipt.message.id)?.liveInputStatus)
+      .toBeUndefined();
+    await service.stop();
+  });
+
   it("queues a follow-up as the next turn when the active operator lacks live input", async () => {
     const encoder = new TextEncoder();
     let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
