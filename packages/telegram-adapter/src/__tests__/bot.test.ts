@@ -873,6 +873,31 @@ describe("createTelegramBot", () => {
     expect(texts(calls, "sendMessage")).toEqual([]);
   });
 
+  it("does not run a process-job fallback when live-input delivery is uncertain", async () => {
+    const respond = vi.fn(async () => ({ text: "duplicate fallback" }));
+    const { controller, calls } = buildTestBot({
+      responder: {
+        respond,
+        offerLiveInput: vi.fn(() => ({
+          status: "accepted" as const,
+          settled: Promise.resolve({ status: "uncertain" as const, reason: "delivery_uncertain" as const }),
+        })),
+      },
+    });
+
+    await expect(controller.notify(42, "job finished", {
+      deliveryKey: "process-job:uncertain",
+      steerActive: true,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "delivery_uncertain",
+      retryable: false,
+      ambiguous: true,
+    });
+    expect(respond).not.toHaveBeenCalled();
+    expect(texts(calls, "sendMessage")).toEqual([]);
+  });
+
   it("shows tool activity in the reserved process-job fallback turn", async () => {
     const { controller, calls } = buildTestBot({
       stream: { editDebounceMs: 0 },

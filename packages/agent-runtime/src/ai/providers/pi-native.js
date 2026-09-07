@@ -78,6 +78,7 @@ import {
   activateTurnHarness,
   buildTurnHarness,
   buildTurnTools,
+  createLiveInputPromptEpoch,
   runHarnessPrompt,
   startLiveInput,
   thinkingLevelForEffort,
@@ -566,11 +567,6 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       reference,
     });
 
-    // Live steering: consume follow-up messages and steer the harness mid-run.
-    // The consumer is tied to run completion so it stops steering once the run
-    // finishes and does not swallow messages meant for a later turn.
-    const liveInput = startLiveInput({ harness, options, onEvent });
-
     // Re-check abort right before issuing the provider request. The abort
     // handler is only installed at ~:639, AFTER a long stretch of awaited setup
     // (reopen, create, MCP init, buildContext, appendMessage, getLeafId). If
@@ -612,6 +608,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       runtimeWarnings,
     });
 
+    // Arm the main-prompt epoch after proactive compaction so compaction and
+    // transcript seeding cannot be mistaken for live-input consumption.
+    const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
+    const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch });
+
     // Report the live harness value, not a downstream recreation of Pi's
     // thinking-level normalization. This also captures any future adapter-side
     // adjustment between construction and the provider request.
@@ -633,11 +634,16 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       timestamp: Date.now(),
     });
 
-    let { runError } = await runHarnessPrompt(harness, promptText, promptImages);
-
-    // The run is done: stop the live-steering consumer so it cannot steer a
-    // finished harness or swallow a follow-up meant for the next turn.
-    await liveInput.stop();
+    let runError;
+    try {
+      const promptResult = await runHarnessPrompt(harness, promptText, promptImages);
+      runError = promptResult.runError;
+      liveInputEpoch.finish(promptResult.operationId);
+    } finally {
+      // Stop joins unresolved native enqueue and reconciles every returned
+      // entry before the exact-operation subscription is removed.
+      try { await liveInput.stop(); } finally { liveInputEpoch.close(); }
+    }
 
     runState.externalAbort ||= !!options.abortSignal?.aborted;
 

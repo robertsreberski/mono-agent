@@ -40,32 +40,183 @@ import {
   PI_CONTEXT,
 } from "../../ai/providers/pi-native/harness-adapter.js";
 import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/pi-native/result-builder.js";
-import { startLiveInput } from "../../ai/providers/pi-native/turn-runner.js";
+import {
+  createLiveInputPromptEpoch,
+  startLiveInput,
+} from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
 describe("pi-native live input", () => {
-  it("acknowledges a follow-up only after native harness steering accepts it", async () => {
+  it("acknowledges only after the exact entry is consumed by the owned prompt operation", async () => {
+    let subscriber;
     const acknowledge = vi.fn();
+    const accepted = vi.fn();
     const reject = vi.fn();
-    const steer = vi.fn(async () => undefined);
+    const uncertain = vi.fn();
+    const steer = vi.fn(async () => "entry-1");
     const warnings = [];
     const liveInput = (async function* () {
-      yield { body: "Use the new limit", id: "input-1", acknowledge, reject };
+      yield { body: "Use the new limit", id: "input-1", accepted, acknowledge, uncertain, reject };
     })();
+    const harness = {
+      steer,
+      cancelQueued: vi.fn(async () => ({ kind: "already_consumed" })),
+      subscribe(handler) { subscriber = handler; return vi.fn(); },
+    };
+    const promptEpoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
     const consumer = startLiveInput({
-      harness: { steer },
+      harness,
       options: { liveInput },
       onEvent: (event) => warnings.push(event),
+      promptEpoch,
     });
 
     await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+    subscriber({ type: "run_start", lane: "main", runId: "run-1" });
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run-1",
+      entryId: "entry-1",
+      message: { role: "user" },
+    });
+    expect(acknowledge).not.toHaveBeenCalled();
+    promptEpoch.finish("run-1");
     await consumer.stop();
     expect(steer.mock.calls[0]?.[0]).toContain("Use the new limit");
+    expect(accepted).toHaveBeenCalledWith({ providerEntryId: "entry-1" });
     expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge).toHaveBeenCalledWith({ providerEntryId: "entry-1", providerRunId: "run-1" });
+    expect(uncertain).not.toHaveBeenCalled();
     expect(reject).not.toHaveBeenCalled();
     expect(warnings).toEqual([]);
+  });
+
+  it("keeps stop pending for unresolved steer then proves cancellation before safe rejection", async () => {
+    let resolveSteer;
+    const steer = vi.fn(() => new Promise((resolve) => { resolveSteer = resolve; }));
+    const reject = vi.fn();
+    const uncertain = vi.fn();
+    const accepted = vi.fn();
+    const consumer = startLiveInput({
+      harness: { steer, cancelQueued: vi.fn(async () => ({ kind: "cancelled" })) },
+      options: { liveInput: (async function* () { yield { body: "guide", accepted, reject, uncertain }; })() },
+      onEvent: vi.fn(),
+    });
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = consumer.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    resolveSteer("entry-late");
+    await stopping;
+    expect(accepted).toHaveBeenCalledWith({ providerEntryId: "entry-late" });
+    expect(reject).toHaveBeenCalledWith({ code: "native_queue_removed" });
+    expect(uncertain).not.toHaveBeenCalled();
+  });
+
+  it.each(["already_consumed", "not_found"])(
+    "settles %s without matching operation evidence as uncertain",
+    async (kind) => {
+      const uncertain = vi.fn();
+      const steer = vi.fn(async () => "entry");
+      const consumer = startLiveInput({
+        harness: {
+          steer,
+          cancelQueued: vi.fn(async () => ({ kind })),
+        },
+        options: { liveInput: (async function* () { yield { body: "guide", uncertain }; })() },
+        onEvent: vi.fn(),
+      });
+      await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+      await consumer.stop();
+      expect(uncertain).toHaveBeenCalledWith({
+        reason: "delivery_uncertain",
+        providerEntryId: "entry",
+      });
+    },
+  );
+
+  it("makes mismatched, runless, stale, and non-user events unable to prove consumption", async () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
+    const message = { acknowledge, uncertain };
+    epoch.register("entry", message);
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "entry", message: { role: "user" } });
+    subscriber({ type: "run_start", lane: "other", runId: "run" });
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    subscriber({ type: "message_end", lane: "main", entryId: "entry", message: { role: "user" } });
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "wrong", message: { role: "user" } });
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "entry", message: { role: "assistant" } });
+    subscriber({ type: "run_end", lane: "main", runId: "run" });
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "entry", message: { role: "user" } });
+    epoch.finish("wrong-operation");
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(uncertain).toHaveBeenCalledTimes(1);
+  });
+
+  it("buffers owned message evidence until steer resolves its entry id", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
+
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run",
+      entryId: "entry-late-register",
+      message: { role: "user" },
+    });
+    epoch.finish("run");
+    epoch.register("entry-late-register", { acknowledge, uncertain });
+
+    expect(acknowledge).toHaveBeenCalledWith({
+      providerEntryId: "entry-late-register",
+      providerRunId: "run",
+    });
+    expect(uncertain).not.toHaveBeenCalled();
+  });
+
+  it("invalidates correlation on a second distinct main-lane run_start", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    epoch.register("entry", { acknowledge, uncertain });
+
+    subscriber({ type: "run_start", lane: "main", runId: "run-one" });
+    subscriber({ type: "run_start", lane: "main", runId: "run-one" });
+    subscriber({ type: "run_start", lane: "main", runId: "run-two" });
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run-one",
+      entryId: "entry",
+      message: { role: "user" },
+    });
+    epoch.finish("run-one");
+
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(uncertain).toHaveBeenCalledWith({
+      reason: "delivery_uncertain",
+      providerEntryId: "entry",
+      providerRunId: "run-one",
+    });
+    expect(warnings).toContainEqual(expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "live_input_correlation_invalid",
+      reason: "multiple_run_start",
+    }));
   });
 
   it("stops without waiting for a third-party iterator return that never settles", async () => {

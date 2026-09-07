@@ -3604,6 +3604,41 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it.each([
+    ["explicit uncertainty", async () => ({ status: "uncertain", reason: "delivery_uncertain" })],
+    ["rejected settlement", async () => { throw new Error("connection ended after dispatch"); }],
+  ])("does not retry live input after %s", async (_label, onLiveInput) => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turns: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        onTurn(body) { turns.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+            controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`));
+          },
+        }),
+        onLiveInput,
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const receipt = service.submitLiveInput(thread.id, "Do not duplicate this");
+
+    await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "uncertain");
+    expect(service.store.queuedLiveInputThreadIds()).toEqual([]);
+    expect(turns).toHaveLength(1);
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(turns).toHaveLength(1);
+    await service.stop();
+  });
+
   it("promotes idle live input exactly once with the thread's captured route", async () => {
     const turnBodies: Record<string, unknown>[] = [];
     const service = await createService({

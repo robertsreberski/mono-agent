@@ -872,7 +872,8 @@ export type AgentLiveInputUnavailableReason =
 export type AgentLiveInputSettlement =
   | { readonly status: "applied"; readonly runId: string }
   | { readonly status: "requeue"; readonly reason: "unsupported" | "closed" | "failed" }
-  | { readonly status: "discarded"; readonly reason: "cancelled" };
+  | { readonly status: "discarded"; readonly reason: "cancelled" }
+  | { readonly status: "uncertain"; readonly reason: "delivery_uncertain" };
 
 /**
  * Immediate ownership result for a live follow-up. An accepted offer remains

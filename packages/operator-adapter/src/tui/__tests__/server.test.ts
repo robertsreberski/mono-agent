@@ -1190,6 +1190,28 @@ describe("startTuiAdapter", () => {
     expect(await response.json()).toEqual({ status: "unavailable", reason: "unsupported" });
   });
 
+  it("serializes rejected accepted-settlement promises as uncertainty", async () => {
+    running = await startTuiAdapter({
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        offerLiveInput() {
+          return { status: "accepted", settled: Promise.reject(new Error("private host failure")) };
+        },
+      },
+    });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-1",
+        text: "Follow up",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+  });
+
   it("validates verbatim history append and reports unsupported responders", async () => {
     running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
     const url = `${running.baseUrl}/v1/conversations/web%3Aone/verbatim`;

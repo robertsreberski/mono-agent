@@ -281,18 +281,20 @@ uses the same server-authoritative live-input path regardless of the browser's
 displayed state. With no active turn, the service queues the message as exactly
 one normal turn using the conversation route captured when it was offered.
 
-The message shows `pending`, `applied`, `queued`, or `cancelled`; an unsupported
-provider, delivery failure, end-of-turn race, idle conversation, or web-service
-restart queues it as the next normal turn instead of dropping it. Steering is
+The message shows `pending`, `applied`, `queued`, `cancelled`, or `uncertain`.
+`applied` means exact owned-operation transcript consumption, not provider
+receipt or answer adherence. Unsupported or proved-safe removal queues one
+normal turn; a post-dispatch failure, end-of-turn race, cancellation, or restart
+is permanently uncertain and is not retried automatically. Steering is
 text-only: the Steer button is disabled when attachments are present, and the
 shortcut fails closed before either send endpoint while restoring the draft,
 quote, and attachments. Attachments retain the ordinary turn path. Cancelling
 the active turn also cancels its pending or queued live follow-ups. Live
 follow-ups are capped at 8,000 characters and 100 unsettled messages per thread.
 
-Once the provider applies a follow-up, the assistant's Activity disclosure also
+Once exact consumption is host-confirmed, the assistant's Activity disclosure also
 receives one completed `↪️ Steered: “<safe preview>”` tool row with result
-`Applied to current run`. The original follow-up remains the full human message;
+`Consumed by current run`. The original follow-up remains the full human message;
 the synthetic activity carries only a one-line, redacted, 40-code-point preview.
 
 The header bell explicitly enables standards-based Web Push. Permission and
@@ -702,6 +704,17 @@ The additive `WebBootstrap.console` object carries the server-derived
 `POST /threads/:id/live-input` accepts `{ text }` and returns a persisted message
 with `disposition: "pending" | "queued"`; SSE invalidation exposes its later
 `liveInputStatus` settlement.
+
+Schema 22 adds a nullable `live_inputs.dispatch_started_at` marker committed
+before the operator request. On restart, an unmarked offered row is safe to
+queue once; a marked row becomes `uncertain` and non-promotable. Existing
+schema-21 rows migrate with a null marker, so their earlier dispatch history is
+not reconstructible. Stop the Web service and make a compatible database backup
+before migration. A schema-21 binary refuses a schema-22 database; rollback
+requires restoring that compatible backup and loses writes made afterward.
+Upgrade every in-repo consumer before enabling the new producer result, and do
+not send `uncertain` to an older external Web consumer. Deployment remains a
+separate operation.
 Permanent deletion is limited to archived, inactive conversations. It removes
 database descendants transactionally and deletes committed attachment files;
 startup and scheduled cleanup remove any file orphaned by a crash or transient

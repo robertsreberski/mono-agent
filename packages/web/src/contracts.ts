@@ -496,7 +496,7 @@ export interface WebMessage {
    */
   readonly finishedAt?: string;
   readonly status: WebMessageStatus;
-  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled" | "uncertain";
   readonly attribution?: WebRunAttribution;
   /**
    * How many times this message's parts have been persisted, counted from the

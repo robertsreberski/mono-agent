@@ -172,7 +172,7 @@ Long file paths keep both their leading location and trailing filename; long
 commands keep a balanced prefix and suffix. Every preview remains capped at 40
 Unicode code points after secret redaction.
 
-Applied live guidance adds a completed `↪️ Steered: “<safe preview>”` entry. If
+Consumed live guidance adds a completed `↪️ Steered: “<safe preview>”` entry. If
 a confirmed ledger already exists, Telegram best-effort deletes and reposts the
 same cumulative ledger so it becomes the newest bot message after the human
 follow-up. A failed delete edits the existing ledger in place; neither path can
@@ -195,23 +195,23 @@ existing post-restart fallback contract is unchanged. Ordinary proactive
 
 The app-owned completion wake uses `notify` with a stable delivery key and
 `steerActive: true`. It reserves the chat's normal queue position first,
-targets only the exact active run, and reports `steered` after provider
-acknowledgement. Every explicit non-applied settlement runs the reserved normal
-turn with visible thinking and tool activity; an unknown outcome is not
-silently reported as success.
+targets only the exact active run, and reports `steered` after confirmed
+transcript consumption. Only `requeue` runs the reserved normal turn. Discarded,
+uncertain, rejected, and unknown settlements release the reservation with an
+ambiguous non-retryable result instead of duplicating delivery.
 
 ### Live follow-up steering
 
 When the responder exposes live input, another plain-text message in the same
 Telegram chat while a turn is running is offered to that active provider run.
 With reactions enabled it moves from the configured working reaction to the
-done reaction after provider acknowledgement. Commands, pending `AskUser`
+done reaction after confirmed exact transcript consumption. Commands, pending `AskUser`
 replies, and messages with attachments keep their existing behavior. The
-adapter reserves the normal per-chat queue position first, so an unsupported
-provider, failed delivery, or end-of-turn race runs the exact message next as a
-normal turn. Applied guidance does not create a second assistant response;
-provider acknowledgement adds the completed `↪️ Steered` activity described
-above.
+adapter reserves the normal per-chat queue position first. Unsupported or
+proved-safe removal runs the exact message next as a normal turn. Once native
+handoff may have occurred, delivery ambiguity does not retry automatically.
+Confirmed consumption does not create a second assistant response and adds the
+completed `↪️ Steered` activity described above.
 
 ### Per-chat runtime controls
 

@@ -818,7 +818,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }
     void offer.settled.then((settlement) => {
       res.status(200).json(settlement);
-    }).catch(next);
+    }).catch(() => {
+      res.status(200).json({ status: "uncertain", reason: "delivery_uncertain" });
+    });
   });
 
   app.get(askPath, (req, res) => {

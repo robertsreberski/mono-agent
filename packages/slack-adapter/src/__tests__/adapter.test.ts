@@ -1105,6 +1105,34 @@ describe("SlackAdapter", () => {
     expect(api.postMessageCalls).toEqual([]);
   });
 
+  it("does not run a process-job fallback when live-input delivery is uncertain", async () => {
+    const api = new FakeSlackApi();
+    const respond = vi.fn(async () => ({ text: "duplicate fallback" }));
+    const adapter = new SlackAdapter({
+      api,
+      allowAllChannels: true,
+      responder: {
+        respond,
+        offerLiveInput: vi.fn(() => ({
+          status: "accepted" as const,
+          settled: Promise.resolve({ status: "uncertain" as const, reason: "delivery_uncertain" as const }),
+        })),
+      },
+    });
+
+    await expect(adapter.notify("C1", "171.5", "job finished", {
+      deliveryKey: "process-job:uncertain",
+      steerActive: true,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "delivery_uncertain",
+      retryable: false,
+      ambiguous: true,
+    });
+    expect(respond).not.toHaveBeenCalled();
+    expect(api.postMessageCalls).toEqual([]);
+  });
+
   it("shows tool activity in the reserved process-job fallback turn", async () => {
     const api = new FakeSlackApi();
     const adapter = new SlackAdapter({

@@ -1065,7 +1065,7 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("persists live follow-ups on the active turn and marks provider acknowledgement", async () => {
+  it("persists live follow-ups on the active turn and records proven consumption", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -1173,6 +1173,65 @@ describe("WebStore", () => {
       .toMatchObject({ liveInputStatus: "queued", parts: [{ type: "text", text: "Do not lose this" }] });
     expect(reopened.queuedLiveInputThreadIds()).toEqual([thread.id]);
     reopened.close();
+  });
+
+  it("recovers a dispatch-marked follow-up as uncertain without promotion", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Still running", attachmentIds: [] });
+    const live = store.reserveLiveInput(thread.id, "Maybe delivered");
+    expect(store.markLiveInputDispatchStarted(live.input.id, "wrong-turn")).toBe(false);
+    expect(store.markLiveInputDispatchStarted(live.input.id, turn.turnId)).toBe(true);
+    expect(store.markLiveInputDispatchStarted(live.input.id, turn.turnId)).toBe(false);
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.find((message) => message.id === live.message.id))
+      .toMatchObject({ liveInputStatus: "uncertain", parts: [{ type: "text", text: "Maybe delivered" }] });
+    expect(reopened.queuedLiveInputThreadIds()).toEqual([]);
+    reopened.close();
+  });
+
+  it("clears a dispatch marker only in the proved-safe requeue transaction", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Still running", attachmentIds: [] });
+    const live = store.reserveLiveInput(thread.id, "Safely removed");
+    expect(store.markLiveInputDispatchStarted(live.input.id, turn.turnId)).toBe(true);
+    expect(store.queueLiveInput(live.input.id)?.liveInputStatus).toBe("queued");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getMessage(live.message.id)?.liveInputStatus).toBe("queued");
+    expect(reopened.queuedLiveInputThreadIds()).toEqual([thread.id]);
+    reopened.close();
+  });
+
+  it("cancels unmarked live input but permanently marks dispatch-started input uncertain", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Still running", attachmentIds: [] });
+    const unmarked = store.reserveLiveInput(thread.id, "Definitely not dispatched");
+    const marked = store.reserveLiveInput(thread.id, "Dispatch may have started");
+    expect(store.markLiveInputDispatchStarted(marked.input.id, turn.turnId)).toBe(true);
+
+    const cancelled = store.cancelLiveInputs(thread.id);
+
+    expect(cancelled.find((message) => message.id === unmarked.message.id)?.liveInputStatus).toBe("cancelled");
+    expect(cancelled.find((message) => message.id === marked.message.id)?.liveInputStatus).toBe("uncertain");
+    expect(store.queuedLiveInputThreadIds()).toEqual([]);
+    store.close();
   });
 
   it("round-trips persisted and deferred canonical history metadata on the same rendered tool record", async () => {
@@ -2922,7 +2981,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 22");
+    future.exec("PRAGMA user_version = 23");
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

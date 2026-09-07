@@ -382,17 +382,18 @@ guidance. An existing non-cron conversation provides a secondary **Steer**
 action only while a turn is running. **Control/Command + Shift + Enter** uses
 the same live-input route regardless of whether the browser currently displays
 the conversation as running or idle; the service decides whether an active turn
-can accept it. The message displays one of four delivery states:
+can accept it. The message displays one of five delivery states:
 
 - **Steering current run…** while the provider settlement is pending;
-- **Applied to current run** after the provider accepts it;
-- **Queued as next turn** when the provider is unsupported, delivery fails, or
-  the active turn finishes first;
+- **Consumed by current run** after exact transcript-consumption evidence and
+  confirmed host settlement;
+- **Queued as next turn** only when non-delivery is proved safe;
+- **Delivery uncertain — not retried** when native delivery may have happened;
 - **Cancelled** when the active turn is explicitly cancelled before settlement.
 
-After the provider accepts the follow-up, the assistant's Activity disclosure
+After exact consumption is confirmed, the assistant's Activity disclosure
 also shows one completed `↪️ Steered: “<safe preview>”` tool row with result
-`Applied to current run`. This synthetic row carries only a one-line,
+`Consumed by current run`. This synthetic row carries only a one-line,
 secret-redacted, path-collapsed preview capped at 40 Unicode code points; the
 full follow-up stays in its human message. Queued, unavailable, and cancelled
 guidance does not create the row.
@@ -402,10 +403,15 @@ settles, or immediately when an explicit Steer finds the conversation idle. It
 uses the conversation's model and effort captured when the message was
 offered; a follow-up offered during a turn retains that active turn's route.
 Pending delivery and queue state live in the service's owner-private SQLite
-store rather than the browser tab. A web-service restart converts any uncertain
-pending offer to queued and drains it after agent discovery, so it is not
-silently lost. Each live follow-up is limited to 8,000 characters, with at most
-100 unsettled entries per thread.
+store rather than the browser tab. Schema 22 persists a dispatch marker before
+the operator request. On restart, unmarked offers recover queued while marked
+offers become uncertain and non-promotable, preventing automatic duplicate
+fallback. Back up the database before upgrading: schema-21 Web refuses a
+schema-22 database, and rollback requires restoring a compatible backup, losing
+later writes. Existing offered rows migrate with a null marker, so their old
+dispatch history remains ambiguous. Deploy consumers before producers and do
+not send the new result to an old external Web consumer. Each live follow-up is
+limited to 8,000 characters, with at most 100 unsettled entries per thread.
 
 Steering is text-only. The explicit button is disabled when attachments are
 present, and the shortcut fails closed before either send endpoint while

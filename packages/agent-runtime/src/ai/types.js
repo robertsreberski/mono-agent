@@ -195,7 +195,7 @@
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
- * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, acknowledge?: () => void, reject?: (error?: unknown) => void}>} [liveInput] Stream of in-flight user messages for steering an active run. Providers acknowledge only after accepting a message into the active turn.
+ * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, accepted?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, acknowledge?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, uncertain?: (details: {reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}) => unknown, reject?: (error?: unknown) => unknown}>} [liveInput] Stream of in-flight user messages for steering an active run. Native acceptance, exact transcript consumption, and uncertain delivery are distinct synchronous callbacks; thenables are never awaited as settlement confirmation.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
  * @property {boolean} [promptCacheDiagnostics] Emit metadata-only prompt-cache request fingerprints.

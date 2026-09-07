@@ -315,15 +315,33 @@ export interface RuntimePromptOverrides {
   readonly liveInputGuidance?: (body: string) => string;
 }
 
+/** Exact native identifiers that can correlate a live follow-up to one provider run. */
+export interface RuntimeLiveInputEvidence {
+  readonly providerEntryId?: string;
+  readonly providerRunId?: string;
+}
+
+/** A handed-off follow-up whose absence from the active provider run cannot be proved. */
+export interface RuntimeLiveInputUncertainty extends RuntimeLiveInputEvidence {
+  readonly reason: "delivery_uncertain";
+}
+
+/** Recognized synchronous host-settlement confirmation values. */
+export type RuntimeLiveInputCallbackDisposition = "recorded" | "ignored";
+
 /** One live follow-up delivered to a provider bridge. */
 export interface RuntimeLiveInputMessage {
   readonly body: string;
   readonly id?: string;
   readonly receivedAt?: string;
-  /** Called only after the provider's native steering boundary accepts it. */
-  readonly acknowledge?: () => void;
-  /** Per-attempt rejection; a later provider attempt may still replay it. */
-  readonly reject?: (reason?: unknown) => void;
+  /** Called after the provider's native queue accepts this exact attempt. */
+  readonly accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown;
+  /** Called only after exact native transcript consumption is proved. */
+  readonly acknowledge?: (evidence?: RuntimeLiveInputEvidence) => unknown;
+  /** Called when delivery cannot be proved absent and must not be retried. */
+  readonly uncertain?: (details: RuntimeLiveInputUncertainty) => unknown;
+  /** Per-attempt safe rejection; a later provider attempt may still replay it. */
+  readonly reject?: (reason?: unknown) => unknown;
 }
 
 /** Provider transport requested for Pi-native runs. Unsupported providers ignore it. */

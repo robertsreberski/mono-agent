@@ -27,8 +27,7 @@ interface LiveInputEntry {
   readonly request: AgentLiveInputRequest;
   readonly settled: Promise<AgentLiveInputSettlement>;
   readonly resolve: (settlement: AgentLiveInputSettlement) => void;
-  applied: boolean;
-  settledFlag: boolean;
+  phase: "queued" | "leased" | "native_accepted" | "applied" | "uncertain" | "requeue" | "discarded";
 }
 
 interface MailboxConsumer {
@@ -45,32 +44,46 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
   const consumers = new Set<MailboxConsumer>();
   let state: MailboxState = "open";
 
-  const settle = (entry: LiveInputEntry, result: AgentLiveInputSettlement): void => {
-    if (entry.settledFlag) return;
-    entry.settledFlag = true;
+  const settle = (entry: LiveInputEntry, result: AgentLiveInputSettlement): "recorded" | "ignored" => {
+    if (isTerminal(entry.phase)) return "ignored";
+    entry.phase = result.status === "requeue" ? "requeue" : result.status;
     entry.resolve(result);
+    return "recorded";
   };
 
   const runtimeMessage = (entry: LiveInputEntry): RuntimeLiveInputMessage => ({
     body: entry.request.text,
     id: entry.request.id,
     receivedAt: entry.request.receivedAt,
+    accepted: () => {
+      if (entry.phase !== "leased") return "ignored";
+      entry.phase = "native_accepted";
+      return "recorded";
+    },
     acknowledge: () => {
-      if (!entry.applied) {
-        entry.applied = true;
-        settle(entry, { status: "applied", runId });
-      }
+      if (entry.phase !== "leased" && entry.phase !== "native_accepted") return "ignored";
+      return settle(entry, { status: "applied", runId });
+    },
+    uncertain: () => {
+      if (entry.phase !== "leased" && entry.phase !== "native_accepted") return "ignored";
+      return settle(entry, { status: "uncertain", reason: "delivery_uncertain" });
     },
     // A rejection belongs to one provider attempt. The entry stays available
     // to a later iterator so router failover/resume replay cannot lose it.
-    reject: () => undefined,
+    reject: () => {
+      if (entry.phase !== "leased" && entry.phase !== "native_accepted") return "ignored";
+      entry.phase = "queued";
+      return "recorded";
+    },
   });
 
   const nextFor = (consumer: MailboxConsumer): IteratorResult<RuntimeLiveInputMessage> | undefined => {
     if (consumer.closed) return { done: true, value: undefined };
-    const entry = entries[consumer.cursor];
-    if (entry !== undefined) {
+    while (consumer.cursor < entries.length) {
+      const entry = entries[consumer.cursor];
       consumer.cursor += 1;
+      if (entry === undefined || entry.phase !== "queued") continue;
+      entry.phase = "leased";
       return { done: false, value: runtimeMessage(entry) };
     }
     return state === "open" ? undefined : { done: true, value: undefined };
@@ -91,7 +104,11 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
     if (state !== "open") return;
     state = nextState;
     for (const entry of entries) {
-      if (entry.applied) continue;
+      if (isTerminal(entry.phase)) continue;
+      if (entry.phase === "leased" || entry.phase === "native_accepted") {
+        settle(entry, { status: "uncertain", reason: "delivery_uncertain" });
+        continue;
+      }
       if (nextState === "cancelled") {
         settle(entry, { status: "discarded", reason: "cancelled" });
       } else {
@@ -143,8 +160,7 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
         request,
         settled,
         resolve,
-        applied: false,
-        settledFlag: false,
+        phase: "queued",
       };
       entries.push(entry);
       entriesById.set(request.id, entry);
@@ -162,7 +178,7 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
     },
     applied(): readonly AppliedLiveInput[] {
       return entries
-        .filter((entry) => entry.applied)
+        .filter((entry) => entry.phase === "applied")
         .map((entry) => ({
           id: entry.request.id,
           text: entry.request.text,
@@ -192,4 +208,8 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
       };
     },
   };
+}
+
+function isTerminal(phase: LiveInputEntry["phase"]): boolean {
+  return phase === "applied" || phase === "uncertain" || phase === "requeue" || phase === "discarded";
 }

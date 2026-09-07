@@ -1574,6 +1574,15 @@ export class WebService {
       return { message: queued, disposition: "queued" };
     }
 
+    if (!this.store.markLiveInputDispatchStarted(reserved.input.id, active.turnId)) {
+      // A concurrent terminal transition won before the request boundary. Do
+      // not dispatch and do not recreate a fallback from stale in-memory state.
+      return {
+        message: this.store.getMessage(reserved.message.id) ?? reserved.message,
+        disposition: "pending",
+      };
+    }
+
     const controller = new AbortController();
     const completion = this.deliverLiveInput(
       reserved.input.id,
@@ -1902,15 +1911,16 @@ export class WebService {
         changedMessage = this.store.markLiveInputApplied(id);
       } else if (result.status === "discarded") {
         changedMessage = this.store.cancelLiveInput(id);
-      } else {
+      } else if (result.status === "requeue" || result.status === "unavailable") {
         changedMessage = this.store.queueLiveInput(id);
         queued = changedMessage !== undefined;
+      } else {
+        changedMessage = this.store.markLiveInputUncertain(id);
       }
     } catch (error) {
-      changedMessage = this.store.queueLiveInput(id);
-      queued = changedMessage !== undefined;
+      changedMessage = this.store.markLiveInputUncertain(id);
       if (!controller.signal.aborted) {
-        this.options.logger?.debug?.("Web live-input delivery failed; queued as a turn.", {
+        this.options.logger?.debug?.("Web live-input delivery outcome is uncertain; automatic fallback is suppressed.", {
           threadId,
           error: errorMessage(error),
         });
@@ -2020,6 +2030,15 @@ export class WebService {
               this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
             }
             return { delivered: true, disposition: "steered" };
+          }
+          if (settlement.status !== "requeue" && settlement.status !== "unavailable") {
+            this.store.releaseProcessJobWakeTurn(input.deliveryKey, active.turnId);
+            return {
+              delivered: false,
+              code: "process_job_wake_ambiguous",
+              retryable: false,
+              ambiguous: true,
+            };
           }
           this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId, false);
         } catch (error) {
@@ -2220,6 +2239,14 @@ export class WebService {
               this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
             }
             return { delivered: true, disposition: "steered" };
+          }
+          if (settlement.status !== "requeue" && settlement.status !== "unavailable") {
+            return {
+              delivered: false,
+              code: "monitor_wake_ambiguous",
+              retryable: false,
+              ambiguous: true,
+            };
           }
           this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, false);
         } catch (error) {

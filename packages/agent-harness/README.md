@@ -73,8 +73,8 @@ through `ReadSkill`; full disclosure does not emit guidance for that tool.
 
 `createAgentResponder()` exposes `offerLiveInput()` for an ordinary active turn.
 Its bounded mailbox delivers follow-ups only when the selected backend supports
-native steering. The provider acknowledges each message only after its native
-steering boundary accepts it. Applied human follow-ups and ProcessJob wakes are
+native steering. Native queue acceptance and exact owned-operation transcript
+consumption are separate. Applied human follow-ups and ProcessJob wakes are
 then recorded as ordered user history and included in memory persistence.
 Host-owned Monitor inputs, identified by their `monitor:` delivery key, are
 applied to the provider run but excluded from canonical user history and memory
@@ -82,9 +82,12 @@ persistence. The responder
 correlates the acknowledgement to the pending input and emits one completed
 synthetic tool lifecycle; human follow-ups use
 `↪️ Steered: “<safe preview>”`, while consumers correlate host-owned receipts by
-their exact delivery key. Unsupported, failed, or
-end-of-turn races settle as `requeue`, allowing Slack, Telegram, and the web
-console to run the reserved message as the next normal turn instead of losing it.
+their exact delivery key. Never-leased or proved-removed input settles as
+`requeue`, allowing the reserved message to run once as the next normal turn.
+Once handoff may have occurred, a failed, cancelled, or end-of-turn race settles
+as `uncertain` and is not retried. Mailbox settlement is a one-way
+compare-and-set: late evidence returns `ignored` and cannot rewrite applied
+history after the mailbox seals.
 
 For `append-host-summary` and `capture` write modes, a memory store that implements
 `persistCompletedTurn` receives one awaited, run-idempotent admission before the successful turn
@@ -149,7 +152,7 @@ The harness is the request-to-runtime composition boundary:
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
 | `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
-| `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, provider acknowledgement, failover replay, and settlement |
+| `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, native acceptance/consumption callbacks, safe failover replay, and uncertain settlement |
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
 | `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |

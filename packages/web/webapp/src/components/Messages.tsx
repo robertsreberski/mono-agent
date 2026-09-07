@@ -190,16 +190,18 @@ function MarkdownText() {
 
 function LiveInputStatus() {
   const status = useAuiState((state) => state.message.metadata.custom?.liveInputStatus);
-  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled") {
+  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled" && status !== "uncertain") {
     return null;
   }
   const label = status === "pending"
     ? "Steering current run…"
     : status === "applied"
-      ? "Applied to current run"
+      ? "Consumed by current run"
       : status === "queued"
         ? "Queued as next turn"
-        : "Cancelled";
+        : status === "uncertain"
+          ? "Delivery uncertain — not retried"
+          : "Cancelled";
   return <span className={`live-input-status is-${status}`} role="status">{label}</span>;
 }
 

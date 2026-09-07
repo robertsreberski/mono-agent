@@ -119,9 +119,10 @@ quote the sentinel are unaffected. Pending pushes wait for the exact steering
 receipt, and old affected messages are normalized when read without a database
 migration. Web SQLite retains the Monitor delivery identity and payload hash for duplicate
 suppression plus the secret-free Monitor projection used by the activity row;
-the fenced event text remains memory-only. Host-owned Monitor input steered into
-an active run is applied to that provider run but excluded from canonical user
-history and memory persistence.
+the fenced event text remains memory-only. Host-owned Monitor input with exact
+transcript-consumption evidence is excluded from canonical user history and
+memory persistence. Uncertain delivery is never replayed automatically and does
+not claim provider receipt or adherence.
 Deleting that web conversation clears the ledger's thread reference but retains
 the delivery tombstone, so the same key can never name different content later.
 
