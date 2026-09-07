@@ -1039,22 +1039,43 @@ describe("ensureManagedBackgroundRuntime", () => {
     const homeDir = await homeFixture();
     let unblock!: () => void;
     let started!: () => void;
+    let publishedUnderLock!: () => void;
+    let installFinished = false;
+    let parked = false;
     const installStarted = new Promise<void>((resolvePromise) => { started = resolvePromise; });
     const holdInstall = new Promise<void>((resolvePromise) => { unblock = resolvePromise; });
+    // The installer's launch-boundary wait is the exact window in which the
+    // runtime is already fast-verifiable and the install lock is still held.
+    // Both sides synchronize on it instead of racing simulated waiter time
+    // against the installer's real publication and release work.
+    const publishedWhileLocked = new Promise<void>((resolvePromise) => { publishedUnderLock = resolvePromise; });
+    let waiterSettled: Promise<unknown> = Promise.resolve();
+    const firstBase = fakeInstallerDeps(async (input) => {
+      started();
+      await holdInstall;
+      await materializeInstalledPackage(input, await readFile(source.cliPath));
+      installFinished = true;
+    });
     const first = ensureManagedBackgroundRuntime({
       currentCliPath: source.cliPath,
       nodePath: process.execPath,
       homeDir,
-    }, fakeInstallerDeps(async (input) => {
-      started();
-      await holdInstall;
-      await materializeInstalledPackage(input, await readFile(source.cliPath));
-    }));
+    }, {
+      ...firstBase,
+      sleep: async (ms) => {
+        await firstBase.sleep(ms);
+        if (!installFinished || parked) return;
+        parked = true;
+        publishedUnderLock();
+        await waiterSettled;
+      },
+    });
     await installStarted;
 
     let elapsed = 0;
     let now = 1_000_000;
     let secondInstalls = 0;
+    let releaseRequested = false;
     const secondBase = fakeInstallerDeps(async () => { secondInstalls += 1; });
     const second = ensureManagedBackgroundRuntime({
       currentCliPath: source.cliPath,
@@ -1066,10 +1087,18 @@ describe("ensureManagedBackgroundRuntime", () => {
       sleep: async (ms) => {
         elapsed += ms;
         now += ms;
-        if (elapsed >= 90_000) unblock();
-        await Promise.resolve();
+        if (elapsed < 90_000) {
+          await Promise.resolve();
+          return;
+        }
+        if (!releaseRequested) {
+          releaseRequested = true;
+          unblock();
+        }
+        await publishedWhileLocked;
       },
     });
+    waiterSettled = second.then(() => undefined, () => undefined);
 
     await expect(first).resolves.toMatchObject({ verificationMode: "installed" });
     await expect(second).resolves.toMatchObject({ verificationMode: "fast-reuse" });
