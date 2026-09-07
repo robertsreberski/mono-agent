@@ -14,6 +14,9 @@ import { monitorToolRun } from "../packages/agent-runtime/src/agent/tools/monito
 // provider-facing wake sink is a fixture: this proves pre-inference transport,
 // not paid-model response behavior or an adopted consumer runtime.
 const stateDir = await mkdtemp(join(tmpdir(), "mono-monitor-efficiency-smoke-"));
+// The production host owns server handles; a standalone smoke needs its own
+// referenced handle while the service's intentionally unref'ed retry timers run.
+const keepAlive = setInterval(() => {}, 1000);
 const wakes = [];
 const wakeTimes = new Map();
 let service;
@@ -119,6 +122,10 @@ try {
     paidModelCalls: 0, redraw, exitOnly, interval,
   }));
 } finally {
-  await service?.stop();
-  await rm(stateDir, { recursive: true, force: true });
+  try {
+    await service?.stop();
+    await rm(stateDir, { recursive: true, force: true });
+  } finally {
+    clearInterval(keepAlive);
+  }
 }
