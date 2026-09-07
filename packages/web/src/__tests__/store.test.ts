@@ -63,7 +63,7 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
-  it("persists the protected provider-auth capability in agent projections", async () => {
+  it("persists the provider-auth capability in agent projections", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });

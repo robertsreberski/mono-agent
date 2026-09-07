@@ -83,8 +83,8 @@ A route that names a provider in none of `providers`, Pi's built-in catalog, nor
 
 ### Provider authentication in Agent Settings
 
-When a running agent advertises the protected provider-auth capability, the web
-console's **Agent settings** dialog lists only providers used by its effective
+Every current app-owned running agent advertises provider auth by default. The
+web console's **Agent settings** dialog lists only providers used by its effective
 primary/fallback routes, agent-host memory LLM, and enabled static cron/webhook
 overrides. Each row distinguishes credential detection (`present`, `expired`,
 `missing`, or keyless `not applicable`) from proof by a successful live model
@@ -111,6 +111,10 @@ owner-only, locked, no-clobber promotion path as `auth login --api-key-stdin`.
 The web service only proxies short-lived, no-store session projections and never
 persists submitted values. This feature does not inspect or modify Codex CLI
 credentials such as `~/.codex/auth.json`.
+
+The agent routes are keyless when its operator endpoint has no API key and
+otherwise retain the endpoint's normal bearer requirement. No additional auth
+configuration is required to make the surface available.
 
 ## OpenCode request attribution
 

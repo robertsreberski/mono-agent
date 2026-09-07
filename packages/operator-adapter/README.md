@@ -76,10 +76,11 @@ Keep bearer values out of source config when possible. Set
 - `GET {basePath}/v1/provider-auth` plus the paired session create, poll,
   input, and delete routes expose a host-injected `ProviderAuthOperator`.
   `capabilities.providerAuth = { version: 1 }` and every route are available
-  only when both that service and the normal operator API key are present.
-  Requests use the normal bearer; strict responses are secret-free and set
-  `Cache-Control: private, no-store, max-age=0`. The adapter never resolves an
-  auth-store path or persists session/input data.
+  whenever that service is present. Routes are keyless when the operator
+  endpoint has no API key and otherwise require its normal bearer. Strict
+  responses are secret-free and set `Cache-Control: private, no-store,
+  max-age=0`. The adapter never resolves an auth-store path or persists
+  session/input data.
 - `POST {basePath}/v1/turns` accepts
   `{ conversationId, text, attachments?, metadata? }`; attachment-only web
   turns are valid. Web model/effort metadata is preserved and mirrored into the
@@ -175,7 +176,7 @@ cannot become prompt, history, or JSON wire content.
 
 | Source module | Responsibility |
 | --- | --- |
-| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, owner-authenticated provider-auth and process-job projection/cancel, attachment, and NDJSON framing routes. |
+| [`tui/server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/server.ts) | Conversational info, turn, live-input, cancel, pending/submitted `AskUser`, history-append, conditionally bearer-protected provider-auth and owner-authenticated process-job projection/cancel, attachment, and NDJSON framing routes. |
 | [`tui/config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/tui/config.ts) | `tui.*` JSON/env layering, validation, and secret redaction. |
 | [`index.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/operator-adapter/src/index.ts) | Supported public package surface for the operator endpoint. |
 
