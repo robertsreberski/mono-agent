@@ -428,26 +428,8 @@ export class BujoMemoryStore implements MemoryStore {
     return await this.runAdmittedOperation(async (abortSignal) => {
       abortSignal.throwIfAborted();
       const snapshot = this.db.browseJournal(input);
-      const records = snapshot.records.filter((record) => {
-        const file = record.source.file;
-        if (file === undefined) return false;
-        try {
-          assertCanonicalDailySourcePath(file);
-          return true;
-        } catch {
-          return false;
-        }
-      });
       abortSignal.throwIfAborted();
-      const nonJournalProvenanceExcluded = records.length !== snapshot.records.length;
-      const last = records.at(-1);
-      const { lastIncluded: _unfilteredLast, ...bounded } = snapshot;
-      return {
-        ...bounded,
-        records,
-        ...(last === undefined ? {} : { lastIncluded: { createdAt: last.createdAt, id: last.id } }),
-        nonJournalProvenanceExcluded,
-      };
+      return snapshot;
     });
   }
 

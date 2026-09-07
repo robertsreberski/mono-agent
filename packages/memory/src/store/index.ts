@@ -30,6 +30,7 @@ export type {
   SimilarHit,
 } from "./types.js";
 export { DEFAULT_VEC_DIM, MEMORY_STATUSES, MEMORY_TYPES } from "./types.js";
+export { isCanonicalDailySourcePath } from "./journal-source.js";
 export {
   MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES,
   MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES,

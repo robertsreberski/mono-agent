@@ -100,6 +100,8 @@ describe("toolHintFor", () => {
   it("derives a hint from the tool segment of an MCP tool name", () => {
     expect(toolHintFor("mcp__gws__calendar_list_events")).toBe("Checking the calendar…");
     expect(toolHintFor("mcp__todoist__add_task")).toBe("Checking your tasks…");
+    expect(toolHintFor("MemoryJournal")).toBe("Browsing memory journal…");
+    expect(toolHintFor("mcp__mono-agent-memory-journal__MemoryJournal")).toBe("Browsing memory journal…");
   });
 
   it("falls back to a generic hint for unknown tools (never a raw name)", () => {

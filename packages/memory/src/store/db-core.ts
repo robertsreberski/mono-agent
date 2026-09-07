@@ -27,6 +27,7 @@ import {
   type SimilarHit,
 } from "./types.js";
 import { lexicalEvidence, relevanceTokens } from "./db-relation-evidence.js";
+import { isCanonicalDailySourcePath } from "./journal-source.js";
 import type { EmbeddingProvider } from "../search/index.js";
 
 const MIN_SEMANTIC_SIMILARITY = 0.5;
@@ -61,6 +62,11 @@ export class MemoryDbCore {
     // SQLITE_BUSY. open.test.ts pins this
     // invariant — if an upgrade ever drops the default, the test fails and we set it explicitly here.
     loadVec(this.db);
+    this.db.function(
+      "mono_agent_is_canonical_daily_source",
+      { deterministic: true },
+      (value: unknown) => isCanonicalDailySourcePath(value) ? 1 : 0,
+    );
     if (options.readOnly !== true) {
       for (const statement of migrations(vecDim)) this.db.exec(statement);
       // SQLite created the database and its WAL sidecars under the process umask; restore the
@@ -469,7 +475,8 @@ export class MemoryDbCore {
    *
    * The query compares parsed instants rather than timestamp strings so valid
    * RFC 3339 offsets retain their real ordering. It never changes recall access
-   * telemetry and deliberately leaves canonical-source policy to BuJoMemoryStore.
+   * telemetry. Canonical daily provenance is filtered in SQLite before either
+   * the eligible-entry limit or serialized-record byte budget is consumed.
    */
   browseJournal(input: JournalBrowseInput): JournalBrowseSnapshot {
     const fromMs = Date.parse(input.fromInclusive);
@@ -490,12 +497,25 @@ export class MemoryDbCore {
       );
     }
 
+    const provenance = this.db.prepare(
+      `SELECT EXISTS(
+         SELECT 1 FROM memories
+         WHERE status <> 'dropped'
+           AND julianday(created_at) IS NOT NULL
+           AND julianday(created_at) >= julianday(?)
+           AND julianday(created_at) < julianday(?)
+           AND mono_agent_is_canonical_daily_source(source_file) = 0
+         LIMIT 1
+       ) AS excluded`,
+    ).get(input.fromInclusive, input.toExclusive) as { excluded: number };
+
     const rows = this.db.prepare(
       `SELECT * FROM memories
        WHERE status <> 'dropped'
          AND julianday(created_at) IS NOT NULL
          AND julianday(created_at) >= julianday(?)
          AND julianday(created_at) < julianday(?)
+         AND mono_agent_is_canonical_daily_source(source_file) = 1
        ORDER BY julianday(created_at) ASC, id ASC
        LIMIT ?`,
     ).iterate(input.fromInclusive, input.toExclusive, input.maxEntries + 1) as Iterable<Record<string, unknown>>;
@@ -524,7 +544,7 @@ export class MemoryDbCore {
       rangeScanComplete: truncatedBy.length === 0,
       truncatedBy,
       ...(last === undefined ? {} : { lastIncluded: { createdAt: last.createdAt, id: last.id } }),
-      nonJournalProvenanceExcluded: false,
+      nonJournalProvenanceExcluded: provenance.excluded === 1,
     };
   }
 

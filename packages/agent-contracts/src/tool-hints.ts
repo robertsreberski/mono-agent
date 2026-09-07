@@ -26,6 +26,7 @@ const BUILTIN_HINTS: Readonly<Record<string, string>> = {
   edit: "Editing a file…",
   glob: "Looking through files…",
   grep: "Searching the workspace…",
+  memoryjournal: "Browsing memory journal…",
 };
 
 // Keyword hints matched against the tool segment of MCP tool names

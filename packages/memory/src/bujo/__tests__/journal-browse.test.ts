@@ -165,4 +165,78 @@ describe("BujoMemoryStore journal browse capability", () => {
       await store.close();
     }
   });
+
+  it("applies the entry budget only after excluding a saturated unsafe provenance prefix", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "memory-journal-entry-eligibility-"));
+    roots.push(parent);
+    const configuredRoot = join(parent, "memory");
+    mkdirSync(configuredRoot, { mode: 0o700 });
+    const root = realpathSync(configuredRoot);
+    const dbPath = join(root, "memory.db");
+    const db = openMemoryDb({ path: dbPath });
+    await db.upsertMany([
+      ...Array.from({ length: 1_000 }, (_, index) => record(
+        `unsafe-${String(index).padStart(4, "0")}`,
+        { file: "audit/2026-09-01.md" },
+        { createdAt: new Date(Date.UTC(2026, 8, 1, 0, 0, 0, index)).toISOString() },
+      )),
+      record("eligible", { file: "daily/2026-09-01.md" }, { createdAt: "2026-09-01T01:00:00.000Z" }),
+    ]);
+    db.checkpoint();
+    db.close();
+
+    const store = createBujoMemoryStore({ root, dbPath, tier: "lite", readOnly: true });
+    try {
+      const snapshot = await store.browseJournal({
+        ...RANGE,
+        maxEntries: 1_000,
+        maxBytes: 2 * 1024 * 1024,
+      });
+      expect(snapshot.records.map(({ id }) => id)).toEqual(["eligible"]);
+      expect(snapshot).toMatchObject({
+        rangeScanComplete: true,
+        truncatedBy: [],
+        nonJournalProvenanceExcluded: true,
+        lastIncluded: { id: "eligible" },
+      });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("does not charge an oversized unsafe row against the eligible byte budget", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "memory-journal-byte-eligibility-"));
+    roots.push(parent);
+    const configuredRoot = join(parent, "memory");
+    mkdirSync(configuredRoot, { mode: 0o700 });
+    const root = realpathSync(configuredRoot);
+    const dbPath = join(root, "memory.db");
+    const db = openMemoryDb({ path: dbPath });
+    await db.upsertMany([
+      record("unsafe-oversized", { file: "../private.md" }, {
+        createdAt: "2026-09-01T00:30:00.000Z",
+        text: "x".repeat(20_000),
+      }),
+      record("eligible-after-oversized", { file: "daily/2026-09-01.md" }, {
+        createdAt: "2026-09-01T01:00:00.000Z",
+      }),
+    ]);
+    db.checkpoint();
+    db.close();
+
+    const store = createBujoMemoryStore({ root, dbPath, tier: "lite", readOnly: true });
+    try {
+      const snapshot = await store.browseJournal({ ...RANGE, maxBytes: 1_000 });
+      expect(snapshot.records.map(({ id }) => id)).toEqual(["eligible-after-oversized"]);
+      expect(snapshot).toMatchObject({
+        rangeScanComplete: true,
+        truncatedBy: [],
+        nonJournalProvenanceExcluded: true,
+        lastIncluded: { id: "eligible-after-oversized" },
+      });
+      expect(JSON.stringify(snapshot)).not.toContain("x".repeat(1_000));
+    } finally {
+      await store.close();
+    }
+  });
 });

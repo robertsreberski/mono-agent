@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Server } from "node:http";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -6,6 +6,7 @@ import type { ToolPolicyInput } from "@mono-agent/agent-harness";
 import {
   MEMORY_JOURNAL_SNAPSHOT_MAX_BYTES,
   MEMORY_JOURNAL_SNAPSHOT_MAX_ENTRIES,
+  isCanonicalDailySourcePath,
   type JournalBrowseCapableStore,
   type JournalBrowseInput,
   type JournalBrowseSnapshot,
@@ -115,6 +116,7 @@ interface MemoryJournalSnapshotState {
 
 interface MemoryJournalRequestState {
   readonly runId: string;
+  readonly cursorAuthenticationKey: Buffer;
   readonly secrets: readonly string[];
   readonly clock: () => Date;
   readonly snapshots: Map<string, MemoryJournalSnapshotState>;
@@ -354,7 +356,19 @@ async function handleMemoryJournalRequest(
     capturedAt,
     pageSize,
   ]);
-  const entries = coverage.records.map((record) => projectMemoryJournalEntry(record, capturedAt, state.secrets));
+  let nonJournalProvenanceExcluded = coverage.nonJournalProvenanceExcluded;
+  const eligibleRecords = coverage.records.filter((record) => {
+    if (record.status === "dropped") return false;
+    if (isCanonicalDailySourcePath(record.source?.file)) return true;
+    nonJournalProvenanceExcluded = true;
+    return false;
+  });
+  coverage = {
+    ...coverage,
+    records: eligibleRecords,
+    nonJournalProvenanceExcluded,
+  };
+  const entries = eligibleRecords.map((record) => projectMemoryJournalEntry(record, capturedAt, state.secrets));
   const withheldEntries = entries.reduce((count, entry) => count + Number(entry.textWithheld), 0);
   const snapshot: MemoryJournalSnapshotState = {
     id,
@@ -368,7 +382,7 @@ async function handleMemoryJournalRequest(
     withheldEntries,
   };
   state.snapshots.set(id, snapshot);
-  return memoryJournalPage(snapshot, state.secrets, 0);
+  return memoryJournalPage(snapshot, state, 0);
 }
 
 function continueMemoryJournalSnapshot(state: MemoryJournalRequestState, cursor: string) {
@@ -380,18 +394,18 @@ function continueMemoryJournalSnapshot(state: MemoryJournalRequestState, cursor:
   if (
     snapshot === undefined
     || decoded.version !== CURSOR_VERSION
-    || decoded.digest !== snapshot.digest
     || decoded.offset < 0
     || decoded.offset >= snapshot.entries.length
+    || !memoryJournalCursorDigestMatches(state, snapshot, decoded)
   ) {
     return memoryJournalError("invalid_cursor", "The continuation cursor is unavailable or expired.");
   }
-  return memoryJournalPage(snapshot, state.secrets, decoded.offset);
+  return memoryJournalPage(snapshot, state, decoded.offset);
 }
 
 function memoryJournalPage(
   snapshot: MemoryJournalSnapshotState,
-  secrets: readonly string[],
+  state: MemoryJournalRequestState,
   offset: number,
 ) {
   const entries: ProjectedMemoryJournalEntry[] = [];
@@ -411,7 +425,7 @@ function memoryJournalPage(
         version: CURSOR_VERSION,
         snapshotId: snapshot.id,
         offset: nextOffset,
-        digest: snapshot.digest,
+        digest: memoryJournalCursorDigest(state, snapshot, nextOffset),
       })
     : undefined;
   const lastIncluded = snapshot.coverage.lastIncluded;
@@ -456,7 +470,7 @@ function memoryJournalPage(
       ...(snapshot.coverage.rangeScanComplete || lastIncluded === undefined ? {} : {
         lastIncluded: {
           createdAt: safeTimestamp(lastIncluded.createdAt) ?? "invalid",
-          recordRef: safeReference(lastIncluded.id, secrets),
+          recordRef: safeReference(lastIncluded.id, state.secrets),
         },
       }),
       withheldEntries: snapshot.withheldEntries,
@@ -595,6 +609,33 @@ function decodeMemoryJournalCursor(cursor: string): MemoryJournalCursor | undefi
   return { version, snapshotId, offset: offset as number, digest };
 }
 
+function memoryJournalCursorDigest(
+  state: MemoryJournalRequestState,
+  snapshot: MemoryJournalSnapshotState,
+  offset: number,
+): string {
+  return createHmac("sha256", state.cursorAuthenticationKey)
+    .update(JSON.stringify([
+      CURSOR_VERSION,
+      state.runId,
+      snapshot.id,
+      snapshot.digest,
+      offset,
+    ]))
+    .digest("base64url")
+    .slice(0, 24);
+}
+
+function memoryJournalCursorDigestMatches(
+  state: MemoryJournalRequestState,
+  snapshot: MemoryJournalSnapshotState,
+  cursor: MemoryJournalCursor,
+): boolean {
+  const expected = Buffer.from(memoryJournalCursorDigest(state, snapshot, cursor.offset), "utf8");
+  const actual = Buffer.from(cursor.digest, "utf8");
+  return actual.byteLength === expected.byteLength && timingSafeEqual(actual, expected);
+}
+
 function memoryJournalError(code: MemoryJournalErrorCode, message: string) {
   return {
     content: [{ type: "text" as const, text: message }],
@@ -618,6 +659,7 @@ class MemoryJournalInputError extends Error {
 function createMemoryJournalRequestState(binding: MemoryJournalBinding): MemoryJournalRequestState {
   return {
     runId: binding.runId,
+    cursorAuthenticationKey: randomBytes(32),
     secrets: knownEnvironmentSecretValues(binding.env ?? process.env),
     clock: binding.clock ?? (() => new Date()),
     snapshots: new Map(),

@@ -97,6 +97,11 @@ function structured(result: Awaited<ReturnType<Client["callTool"]>>): Record<str
   return result.structuredContent as Record<string, any>;
 }
 
+function cursorWithOffset(cursor: string, offset: number): string {
+  const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Record<string, unknown>;
+  return Buffer.from(JSON.stringify({ ...decoded, offset }), "utf8").toString("base64url");
+}
+
 describe("MemoryJournal calendar range", () => {
   it.each([
     ["UTC", "2026-09-01", "2026-09-01", "2026-09-01T00:00:00.000Z", "2026-09-02T00:00:00.000Z"],
@@ -276,12 +281,26 @@ describe("MemoryJournal MCP contract", () => {
         arguments: { cursor },
       });
       expect(structured(stable).entries[0]).toMatchObject({ recordRef: "before-b", status: "open" });
+      const secondCursor = structured(stable).page.nextCursor as string;
+      const replay = await firstConnection.client.callTool({
+        name: MEMORY_JOURNAL_TOOL_NAME,
+        arguments: { cursor },
+      });
+      expect(structured(replay)).toEqual(structured(stable));
       for (const args of [
         { cursor: `${cursor}x` },
-        { cursor, limit: 2 },
+        { cursor: cursorWithOffset(cursor, 2) },
+        { cursor: cursorWithOffset(secondCursor, 1) },
       ]) {
         const result = await firstConnection.client.callTool({ name: MEMORY_JOURNAL_TOOL_NAME, arguments: args });
-        expect(structured(result)).toMatchObject({ status: "error" });
+        expect(structured(result)).toMatchObject({ status: "error", code: "invalid_cursor" });
+      }
+      for (const args of [
+        { cursor, limit: 2 },
+        { cursor, fromDate: "2026-09-02" },
+      ]) {
+        const result = await firstConnection.client.callTool({ name: MEMORY_JOURNAL_TOOL_NAME, arguments: args });
+        expect(structured(result)).toMatchObject({ status: "error", code: "invalid_request" });
       }
     } finally {
       await firstConnection.close();
@@ -329,6 +348,31 @@ describe("MemoryJournal MCP contract", () => {
       expect(JSON.stringify(result)).not.toContain(configuredSecret);
       expect(JSON.stringify(result)).not.toContain("/Users/example");
       expect(Buffer.byteLength(JSON.stringify(entries), "utf8")).toBeLessThanOrEqual(MEMORY_JOURNAL_PAGE_MAX_BYTES);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("defensively removes dropped and unsafe-provenance rows from an affirmative custom store", async () => {
+    const connection = await connectJournal(fakeJournalStore([
+      memoryRecord("dropped", { status: "dropped", text: "dropped private value" }),
+      memoryRecord("unsafe", { source: { file: "../private.md" }, text: "unsafe private value" }),
+      memoryRecord("eligible"),
+    ]));
+    try {
+      const result = await connection.client.callTool({
+        name: MEMORY_JOURNAL_TOOL_NAME,
+        arguments: firstPageArguments(),
+      });
+      expect(structured(result)).toMatchObject({
+        status: "ok",
+        entries: [{ recordRef: "eligible", source: { file: "daily/2026-09-01.md" } }],
+        coverage: {
+          nonJournalProvenanceExcluded: true,
+          droppedEntriesExcluded: true,
+        },
+      });
+      expect(JSON.stringify(result)).not.toMatch(/dropped private|unsafe private|\.\.\/private/iu);
     } finally {
       await connection.close();
     }

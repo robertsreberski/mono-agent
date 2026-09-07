@@ -460,4 +460,4 @@ removal remains the explicit two-phase `mono-agent memory forget` workflow.
 ## References
 
 - [Memory quality benchmark](/memory/benchmarking/) — disposable offline quality and efficiency gate
-- Feature registry rows: `docs/reference/feature-registry.md` — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`
+- [Feature registry](/reference/feature-registry/) rows — `memory.lite`, `memory.journal`, `memory.bujo`, `memory.write-mode`, `memory.per-turn-capture`, `memory.recall-tool`, `memory.journal-browse`

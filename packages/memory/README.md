@@ -138,11 +138,12 @@ entry and UTF-8 byte budgets. Results are ordered by parsed `createdAt` instant,
 then id, and report whether the scan was complete.
 
 Only indexed records with canonical `daily/YYYY-MM-DD.md` or supported legacy
-`YYYY-MM-DD.md` provenance survive the BuJo wrapper. Missing or unsafe
-provenance is excluded and disclosed, `dropped` records are excluded in SQL,
-and raw `audit/` observations are never read. The app-owned `MemoryJournal` tool
-adds local calendar/time-zone resolution, ephemeral pagination, privacy
-projection, and policy; this package does not expose arbitrary file browsing.
+`YYYY-MM-DD.md` provenance enter eligible entry and byte accounting. Missing or
+unsafe provenance is excluded and disclosed by the SQLite scan, `dropped` records
+are excluded in SQL, and raw `audit/` observations are never read. The app-owned
+`MemoryJournal` tool adds local calendar/time-zone resolution, ephemeral
+pagination, privacy projection, and policy; this package does not expose
+arbitrary file browsing.
 
 ### Strong completed-turn boundary
 
@@ -348,6 +349,7 @@ supersede or merge records, rewrite canonical memories, or call a chat model.
 | --- | --- | --- |
 | `@mono-agent/memory/bujo` | `createBujoMemoryStore` | Construct a Lite, Journal, or BuJo store for direct embedding. |
 | `@mono-agent/memory/bujo` | `JournalBrowseCapableStore`, `JournalBrowseInput`, `JournalBrowseSnapshot` | Read a bounded curated local chronology without changing the shared `MemoryStore` contract. |
+| `@mono-agent/memory/store` | `isCanonicalDailySourcePath` | Apply the same pure canonical daily-source eligibility check used before chronological entry/byte accounting. |
 | `@mono-agent/memory/bujo` | `auditBujoMemoryHealth` | Produce the closed, provider-free built-in health report. |
 | `@mono-agent/memory/bujo` | `safeRebuildMemoryIndex` | Build and activate a validated side-by-side index generation. |
 | `@mono-agent/memory/search` | `createEmbeddingProvider` | Construct one Ollama, LM Studio, or OpenAI embedding provider. |
@@ -591,6 +593,7 @@ RecallHit
 RecallOptions
 RecallWeights
 SimilarHit
+isCanonicalDailySourcePath
 openMemoryDb
 ```
 

@@ -627,7 +627,8 @@ tool policy allows it. Supermemory has search but no chronological capability.
 A first call requires `fromDate`, `throughDate`, and an IANA `timeZone`; the
 inclusive range is capped at 31 calendar days. Pages default to 10 and cap at
 25 entries, 8 KiB projected data, and 2 KiB per entry text. The frozen snapshot
-caps at 1,000 entries/2 MiB and continues only with its opaque run-bound cursor.
+caps at 1,000 entries/2 MiB and continues only with its request-private authenticated,
+run-bound cursor at the exact issued offset.
 It returns curated daily-source provenance and lifecycle state, excludes raw
 audit observations and dropped records, and labels content untrusted. A clean
 empty range, unsupported composition, and backend failure remain distinct.

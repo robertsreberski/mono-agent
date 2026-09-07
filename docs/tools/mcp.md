@@ -191,8 +191,9 @@ Dates are inclusive local calendar dates in the named IANA zone and resolve to
 `[fromDate 00:00, day-after-throughDate 00:00)` UTC instants. The range is at most
 31 calendar days; `limit` defaults to 10 and caps at 25. Invalid, reversed, skipped,
 or non-representable boundaries fail closed instead of falling back to the host zone.
-A continuation accepts only `{ "cursor": "..." }`; the opaque cursor is bound to the
-run, range, zone, snapshot, page size, and offset.
+A continuation accepts only `{ "cursor": "..." }`; the opaque cursor authenticates
+the exact issued offset against request-private state and is bound to the run, range,
+zone, snapshot, and page size.
 
 One first call freezes a request-local snapshot of at most 1,000 eligible entries and
 2 MiB of UTF-8 record data; at most four snapshots may exist in one run. Entry text is

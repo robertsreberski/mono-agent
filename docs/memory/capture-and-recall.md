@@ -329,8 +329,9 @@ Dates are inclusive local civil dates in the explicit IANA zone. The resolver
 echoes the resulting half-open UTC instant interval, rejects nonexistent dates
 or zones and ranges over 31 days, and never guesses the host zone or defaults
 to UTC. `limit` defaults to 10 and caps at 25. Continue a frozen per-run
-snapshot only with `{ "cursor": "..." }`; range and limit overrides are not
-accepted on continuation.
+snapshot only with `{ "cursor": "..." }`; the request-private authenticated cursor
+accepts only its exact issued offset, and range or limit overrides are not accepted
+on continuation.
 
 Each request can hold four ephemeral snapshots. A snapshot caps at 1,000
 entries and 2 MiB; each page caps at 25 entries/8 KiB and each text at 2 KiB.
