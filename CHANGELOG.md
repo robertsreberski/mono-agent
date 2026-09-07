@@ -8,7 +8,9 @@
   `mono-agent-configure` skill no longer exist. Edit `mono-agent.config.json` or
   `IDENTITY.md`, run `mono-agent validate`, restart, and use the ordinary TUI.
   Existing `mono-agent-configure` selections are ignored at runtime and reported
-  as waiting by validation so running consumers do not break; run
+  as waiting by validation so running consumers do not break. With index
+  disclosure, active selected skill bodies load in full without `ReadSkill`
+  until the retired selector is removed. Run
   `mono-agent install-skill --project --check`, then `--update` to retire exact
   manifest-owned legacy state. Modified or colliding copies are preserved and
   require operator resolution.

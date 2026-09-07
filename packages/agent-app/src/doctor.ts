@@ -980,7 +980,10 @@ async function contextSection(config: MonoAgentConfig, cwd: string): Promise<Val
     if (status === "ok") status = "waiting";
     details.push(
       `Skill \`${skill}\` is retired and ignored. Remove it from context.selectedSkills or ` +
-      "MONO_AGENT_SELECTED_SKILLS, then run `mono-agent install-skill --project --check`.",
+      "MONO_AGENT_SELECTED_SKILLS, then run `mono-agent install-skill --project --check`." +
+      (config.context.skillDisclosure === "index"
+        ? " Skill disclosure runs as `full` until the retired selector is removed."
+        : ""),
     );
   }
 

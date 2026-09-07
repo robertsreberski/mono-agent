@@ -46,7 +46,9 @@ Generated agents use `skillDisclosure: "index"`, so their names/descriptions ent
 
 Bundle version `2.0.0` retires the former `mono-agent-configure` skill. A stale
 selector is reported as nonfatal `waiting` and ignored at startup; unrelated
-missing selected skills remain errors. `install-skill --project --check` reports
+missing selected skills remain errors. With index disclosure, active selected
+skill bodies load in full without `ReadSkill` until the retired selector is
+removed. `install-skill --project --check` reports
 retired managed, missing, modified, and collision states. Explicit `--update`
 removes only a manifest-owned byte-identical legacy file inside the normal
 lock/backup/rollback transaction. Modified or unmanaged copies are preserved

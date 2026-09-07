@@ -600,6 +600,48 @@ describe("agent host composition helpers", () => {
     expect(fake.calls[0]?.options.skills).toBeUndefined();
   });
 
+  it("falls back from index to full disclosure while filtering a retired selected skill", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const skillsRoot = join(dir, "skills");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    await mkdir(join(skillsRoot, "mono-agent-configure"), { recursive: true });
+    await mkdir(join(skillsRoot, "incident-response"), { recursive: true });
+    await writeFile(
+      join(skillsRoot, "mono-agent-configure", "SKILL.md"),
+      "---\nname: mono-agent-configure\ndescription: Retired project skill.\n---\n\nRETIRED_CONFIGURATION_SKILL_MUST_NOT_LOAD",
+      "utf8",
+    );
+    await writeFile(
+      join(skillsRoot, "incident-response", "SKILL.md"),
+      "---\nname: incident-response\ndescription: Active project skill.\n---\n\nACTIVE_INCIDENT_RESPONSE_SKILL_BODY",
+      "utf8",
+    );
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const responder = await createConfiguredAgentResponder({
+      config: monoConfig({
+        dir,
+        identityPath,
+        skillsRoot,
+        selectedSkills: ["mono-agent-configure", "incident-response"],
+        skillDisclosure: "index",
+        artifactDir,
+      }),
+      runtime: fake.runtime,
+    });
+
+    await responder.respond(
+      { conversationId: "c", text: "hi", abortSignal: new AbortController().signal },
+      { append: async () => {} },
+    );
+
+    expect(fake.calls[0]?.prompt).not.toContain("RETIRED_CONFIGURATION_SKILL_MUST_NOT_LOAD");
+    expect(fake.calls[0]?.prompt).toContain("ACTIVE_INCIDENT_RESPONSE_SKILL_BODY");
+    expect(fake.calls[0]?.prompt).not.toContain("ReadSkill");
+    expect(fake.calls[0]?.options.skills).toBeUndefined();
+  });
+
   it("fails closed when tools.mcpConfigPath points at a missing file", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -1876,6 +1918,7 @@ function monoConfig(input: {
   readonly memoryLlm?: NonNullable<MonoAgentConfig["memory"]>["llm"];
   readonly skillsRoot?: string;
   readonly selectedSkills?: readonly string[];
+  readonly skillDisclosure?: "index" | "full";
   readonly skillMaxBytes?: number;
   readonly artifactDir: string;
   readonly mcpConfigPath?: string;
@@ -1909,6 +1952,7 @@ function monoConfig(input: {
       identityPath: input.identityPath,
       selectedSkills: input.selectedSkills ?? [],
       ...(input.skillsRoot === undefined ? {} : { skillsRoot: input.skillsRoot }),
+      ...(input.skillDisclosure === undefined ? {} : { skillDisclosure: input.skillDisclosure }),
       ...(input.skillMaxBytes === undefined ? {} : { skillMaxBytes: input.skillMaxBytes }),
     },
     ...(input.memoryPath === undefined

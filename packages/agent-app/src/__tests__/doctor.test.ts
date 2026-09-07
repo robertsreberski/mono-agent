@@ -1774,7 +1774,11 @@ describe("validateMonoAgentFolder", () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const configPath = await writeConfig({
       runtime: { model: "openai-codex:gpt-5.5" },
-      context: { identityPath: "./IDENTITY.md", selectedSkills: ["MONO-AGENT-CONFIGURE"] },
+      context: {
+        identityPath: "./IDENTITY.md",
+        selectedSkills: ["MONO-AGENT-CONFIGURE"],
+        skillDisclosure: "index",
+      },
     });
 
     const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath });
@@ -1783,6 +1787,9 @@ describe("validateMonoAgentFolder", () => {
     const context = sectionById(report, "context");
     expect(context.status).toBe("waiting");
     expect(context.details.join("\n")).toContain("is retired and ignored");
+    expect(context.details.join("\n")).toContain(
+      "Skill disclosure runs as `full` until the retired selector is removed.",
+    );
   });
 
   it("validates active skills while ignoring a stale installed retired body", async () => {
