@@ -506,6 +506,11 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("2 updates · running")).toBeVisible();
     expect(screen.getByText("1 update · exited")).toBeVisible();
     expect(screen.getAllByText("Observed")).toHaveLength(2);
+    expect(screen.getAllByText("Suppressed lines")).toHaveLength(2);
+    expect(screen.getAllByText("Suppressed batches")).toHaveLength(2);
+    expect(screen.getAllByText("Follow-up wakes")).toHaveLength(2);
+    expect(screen.getAllByText("Steered wakes")).toHaveLength(2);
+    expect(screen.getAllByText("Unknown disposition wakes")).toHaveLength(2);
     expect(screen.getByText("Both watches were handled.")).toBeVisible();
   });
 

@@ -6,7 +6,7 @@ import type { ChannelDriver, ChannelId, RunningChannel } from "../channels.js";
 import { routeMonitorWake } from "../monitor-channel-routing.js";
 
 const MONITOR: MonitorProjection = {
-  schema: "mono-agent.monitor-projection.v1",
+    schema: "mono-agent.monitor-projection.v2",
   monitorId: "mon-1",
   state: "running",
   description: "Watching a pane",
@@ -23,8 +23,8 @@ const MONITOR: MonitorProjection = {
     lastEventAt: null,
     completedAt: null,
   },
-  limits: { maxRuntimeMs: 60_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
-  counters: { seq: 1, batchesDelivered: 0, linesObserved: 1, linesDelivered: 0, droppedLines: 0, pendingLines: 0 },
+  limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0, maxRuntimeMs: 60_000, coalesceMs: 200, maxBatchLines: 200, maxBatchBytes: 65_536, chainDepth: 0 },
+  counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0, seq: 1, batchesDelivered: 0, linesObserved: 1, linesDelivered: 0, droppedLines: 0, pendingLines: 0 },
   exitCode: null,
   signal: null,
   cancelRequested: false,

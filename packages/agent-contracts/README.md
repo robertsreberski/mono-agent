@@ -23,6 +23,11 @@ channel-driver, process-job projection, provider-auth projection, and memory con
 small dependency-free helpers for settings JSON, JSON-to-env mapping, safe
 network binding, bearer tokens, attachments, and stream framing.
 
+Monitor projections use v2 policy and suppression/delivery counters.
+`parseMonitorProjection` also accepts historical v1 projections, supplying
+compatible policy defaults and classifying historical delivered batches as
+unknown wake dispositions. New v2 records are validated strictly.
+
 ## Install / Usage
 
 Process-job projections distinguish terminal wake outcomes: `delivered`,

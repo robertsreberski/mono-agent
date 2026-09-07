@@ -79,6 +79,12 @@ See [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-rep
 
 ## Architecture
 
+The injected Pi-native `Monitor` tool supports `wake_on: "batch" | "exit"`,
+`dedupe: "none" | "batch"`, and `min_wake_interval_ms` (defaults batch/none/0).
+The start receipt reports the host's effective policy, including interval
+clamping. Terminal delivery bypasses batch suppression and timing. A cancelled
+watch is intentionally stopped and must not be automatically recreated.
+
 The package uses a fixed registry of bridge descriptors and loads provider code
 only after a run selects a matching model reference and execution mode:
 
