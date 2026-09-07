@@ -3045,7 +3045,14 @@ describe("composite failure recording", () => {
       expect(exporter.fail.mock.calls[0]?.[1]).toBe(originalError);
       expect(persisted).toMatchObject({ status: "failed", failureKind: "TypeError", diagnostics: { error: { message: originalError.message } } });
       expect(prepare).toHaveBeenCalledTimes(outcome === "prepare-rejection" ? 1 : 0);
-      expect(await historyStore.load("web:recorded")).toEqual([]);
+      const failedHistory = await historyStore.load("web:recorded");
+      expect(failedHistory).toHaveLength(2);
+      expect(failedHistory[0]).toMatchObject({ role: "user", content: "current-question-marker" });
+      expect(failedHistory[1]).toMatchObject({
+        role: "assistant",
+        idempotencyKey: "failed-turn:v1:composite-recording",
+      });
+      expect(failedHistory[1]?.content).toContain('<failed_turn_history version="1">');
       // Failure bypasses the composite's memoized rejected preparePromise and
       // remains terminal/idempotent; another fail cannot export a second frame.
       expect(await recorder.fail(new Error("later"))).toEqual(persisted);

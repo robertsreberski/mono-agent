@@ -49,10 +49,10 @@ with different bytes fails closed. An admission failure does not replace the pro
 but it emits an explicit memory-degradation warning instead of pretending the turn was saved.
 
 Only a turn that reaches the successful commit boundary qualifies. A cancelled
-interactive turn may publish a bounded continuity account into canonical
-conversation history, but neither that account nor its partial assistant/tool
-content is admitted to `append-host-summary` or `capture`. Failed, interrupted,
-isolated, and never-started turns remain excluded as well.
+or failed non-isolated turn may publish a bounded continuity account into
+canonical conversation history, but neither account nor its partial
+assistant/tool content is admitted to `append-host-summary` or `capture`.
+Hard-interrupted, isolated, and never-started turns remain excluded as well.
 
 The admitted record is the restart boundary. It contains the bounded deterministic summary and,
 for `writeMode: "capture"`, the bounded host-approved capture text. Projection and BuJo curation

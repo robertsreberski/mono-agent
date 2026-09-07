@@ -394,6 +394,50 @@ describe("SessionHistory request handler", () => {
     expect(second.resultId).toMatch(/^sth1_/u);
   });
 
+  it("keeps failed-run tool evidence discoverable through the existing public contract", async () => {
+    const root = await tempRoot();
+    const writer = await openStorageTestWriter({ root });
+    const failed = await writeCall(writer, binding("failed-run"), "failed-call", {
+      toolName: "Bash",
+      state: "error",
+      content: "command terminated",
+    });
+    await writer.close();
+
+    const requestBinding = {
+      reader: new ToolHistoryReader(root),
+      conversationId: "chat:42#2026-08-14",
+      logicalConversationId: "chat:42",
+      runId: "current-run",
+    };
+    const search = body<{
+      readonly items: ReadonlyArray<{
+        readonly runId: string;
+        readonly toolCallId: string;
+        readonly state: string;
+      }>;
+    }>(handleSessionHistoryRequest(requestBinding, {
+      action: "search",
+      runIds: ["failed-run"],
+      states: ["error"],
+    }));
+    expect(search.items).toEqual([
+      expect.objectContaining({ runId: "failed-run", toolCallId: "failed-call", state: "error" }),
+    ]);
+    expect(body(handleSessionHistoryRequest(requestBinding, {
+      action: "get",
+      recordId: failed.resultId,
+    }))).toMatchObject({
+      record: {
+        runId: "failed-run",
+        toolCallId: "failed-call",
+        phase: "result",
+        state: "error",
+      },
+      untrusted: true,
+    });
+  });
+
   it("guides exact isolated search results to distinct invocation and paged result records", async () => {
     const root = await tempRoot();
     const writer = await openStorageTestWriter({ root });
