@@ -9,6 +9,7 @@ import {
   parseProcessJobProjection,
   parseProviderAuthSessionSnapshot,
   parseProviderAuthStatusSnapshot,
+  parseProviderAuthCheckSessionSnapshot,
   parseAgentStreamFrame,
   MAX_INFO_BODY_BYTES,
   MAX_INFO_PROVIDER_ID_BYTES,
@@ -31,6 +32,8 @@ import {
   type ProviderAuthSessionSnapshot,
   type ProviderAuthSessionStartInput,
   type ProviderAuthStatusSnapshot,
+  type ProviderAuthCheckSessionSnapshot,
+  type ProviderAuthCheckStartInput,
 } from "@mono-agent/agent-contracts";
 
 import type {
@@ -69,6 +72,7 @@ const PRESERVED_PROVIDER_AUTH_ERRORS = new Map<string, number>([
   ["provider_auth_not_found", 404],
   ["provider_auth_conflict", 409],
   ["provider_auth_too_large", 413],
+  ["provider_auth_rate_limited", 429],
   ["provider_auth_upstream", 502],
   ["provider_auth_unavailable", 503],
 ]);
@@ -130,6 +134,7 @@ export interface OperatorInfo {
   readonly cron?: { readonly read: true; readonly actions: boolean };
   readonly supportsJobs?: boolean;
   readonly supportsProviderAuth?: true;
+  readonly supportsProviderAuthChecks?: true;
 }
 
 export type OperatorLiveInputResult =
@@ -234,6 +239,9 @@ export class OperatorClient {
       ...(cron?.read === true ? { cron: { read: true, actions: cron.actions === true } } : {}),
       ...(capabilities?.jobs === true ? { supportsJobs: true } : {}),
       ...(record(capabilities?.providerAuth)?.version === 1 ? { supportsProviderAuth: true } : {}),
+      ...(record(record(capabilities?.providerAuth)?.checks)?.version === 1
+        ? { supportsProviderAuthChecks: true }
+        : {}),
     };
   }
 
@@ -290,6 +298,40 @@ export class OperatorClient {
 
   async cancelProviderAuth(sessionId: string, signal?: AbortSignal): Promise<void> {
     const response = await this.request(`${this.baseUrl}/v1/provider-auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "DELETE",
+      headers: this.headers(false),
+      ...(signal === undefined ? {} : { signal }),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    await response.body?.cancel().catch(() => undefined);
+  }
+
+  async startProviderAuthCheck(
+    input: ProviderAuthCheckStartInput,
+    signal?: AbortSignal,
+  ): Promise<ProviderAuthCheckSessionSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth/checks`, {
+      method: "POST",
+      headers: this.headers(true),
+      ...(signal === undefined ? {} : { signal }),
+      body: JSON.stringify(input),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    return parseProviderAuthCheckSessionSnapshot(
+      JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_provider_auth_too_large")),
+    );
+  }
+
+  async providerAuthCheck(checkId: string, signal?: AbortSignal): Promise<ProviderAuthCheckSessionSnapshot> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth/checks/${encodeURIComponent(checkId)}`, {
+      headers: this.headers(false),
+      ...(signal === undefined ? {} : { signal }),
+    }, PRESERVED_PROVIDER_AUTH_ERRORS);
+    return parseProviderAuthCheckSessionSnapshot(
+      JSON.parse(await readBoundedBody(response, MAX_INFO_BODY_BYTES, "operator_provider_auth_too_large")),
+    );
+  }
+
+  async cancelProviderAuthCheck(checkId: string, signal?: AbortSignal): Promise<void> {
+    const response = await this.request(`${this.baseUrl}/v1/provider-auth/checks/${encodeURIComponent(checkId)}`, {
       method: "DELETE",
       headers: this.headers(false),
       ...(signal === undefined ? {} : { signal }),
@@ -778,7 +820,16 @@ export class OperatorClient {
         ? undefined
         : preservedOperatorError(detail, response.status, preservedErrors);
       if (preserved !== undefined) {
-        throw new WebConsoleError(preserved.code, preserved.message, response.status);
+        const retryAfter = response.headers.get("Retry-After");
+        const retryAfterSeconds = retryAfter === null ? undefined : Number(retryAfter);
+        throw new WebConsoleError(
+          preserved.code,
+          preserved.message,
+          response.status,
+          typeof retryAfterSeconds === "number" && Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0
+            ? { retryAfterSeconds }
+            : undefined,
+        );
       }
       throw new WebConsoleError(
         response.status === 401 ? "agent_unauthorized" : "agent_http_error",

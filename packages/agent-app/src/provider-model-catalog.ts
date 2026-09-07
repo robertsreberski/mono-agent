@@ -145,6 +145,108 @@ export interface ProviderModelCatalog {
   describe(refs: readonly RuntimeModelReference[]): Record<string, TuiModelOption>;
 }
 
+export interface ProviderAuthCheckModelSelection {
+  readonly kind: "selected";
+  readonly model: RuntimeModelReference;
+  readonly selectionBasis: "catalog_pricing" | "subscription_zero_price" | "sole_candidate_unknown_price";
+}
+
+export interface ProviderAuthCheckModelUnavailable {
+  readonly kind: "unavailable";
+  readonly code: "provider_unsupported" | "no_eligible_model" | "pricing_unavailable";
+  readonly message: string;
+}
+
+/**
+ * Select one cheapest text-generation model without network discovery. Missing
+ * prices are deliberately incomparable unless there is exactly one candidate.
+ */
+export function selectProviderAuthCheckModel(
+  providerId: string,
+  input: Pick<ProviderModelCatalogInput, "providers" | "configuredRoutes" | "listBuiltinModels"> = {},
+): ProviderAuthCheckModelSelection | ProviderAuthCheckModelUnavailable {
+  const providers = input.providers ?? [];
+  const configuredRoutes = input.configuredRoutes ?? [];
+  const configured = providers.find((provider) => provider.id === providerId);
+  if (configured?.enabled === false) {
+    return { kind: "unavailable", code: "provider_unsupported", message: "Provider is disabled." };
+  }
+  const routeOrder = configuredRoutes
+    .filter((ref) => ref.provider === providerId)
+    .map((ref) => configured?.models?.find(
+      (model) => model.name === ref.model || model.alias === ref.model,
+    )?.name ?? ref.model);
+  const declaredModels = configured?.models;
+  const narrowed = declaredModels !== undefined && declaredModels.length > 0;
+  const allowed = declaredModels?.filter((model) => model.enabled !== false
+    && !(model.capabilities?.advertised_capabilities?.includes("embedding")
+      && !model.capabilities.advertised_capabilities.includes("completion")));
+  if (narrowed && allowed?.length === 0) {
+    return { kind: "unavailable", code: "no_eligible_model", message: "No eligible text model is configured." };
+  }
+  const candidates: Array<{ model: RuntimeModelReference; cost?: number }> = [];
+  const isLocal = configured?.type !== undefined || providerId === "ollama" || providerId === "lmstudio";
+  if (isLocal) {
+    for (const model of allowed ?? []) {
+      const cost = boundedProbeCost(model.pricing?.input_per_million, model.pricing?.output_per_million);
+      candidates.push({
+        model: { provider: providerId, model: model.name, reference: `${providerId}:${model.name}` },
+        ...(cost === undefined ? {} : { cost }),
+      });
+    }
+  } else {
+    const listBuiltin = input.listBuiltinModels ?? listPiBuiltinModels;
+    let snapshots: readonly PiBuiltinModelSnapshot[];
+    try {
+      snapshots = listBuiltin(providerId);
+    } catch {
+      return { kind: "unavailable", code: "provider_unsupported", message: "Provider model catalog is unavailable." };
+    }
+    const allowedNames = !narrowed
+      ? undefined
+      : new Set((allowed ?? []).map((model) => model.name));
+    for (const snapshot of snapshots) {
+      if (allowedNames !== undefined && !allowedNames.has(snapshot.id)) continue;
+      if (!snapshot.input.includes("text")) continue;
+      const cost = boundedProbeCost(snapshot.cost?.input, snapshot.cost?.output);
+      candidates.push({
+        model: { provider: providerId, model: snapshot.id, reference: `${providerId}:${snapshot.id}` },
+        ...(cost === undefined ? {} : { cost }),
+      });
+    }
+  }
+  if (candidates.length === 0) {
+    return { kind: "unavailable", code: "no_eligible_model", message: "No eligible text model is configured." };
+  }
+  if (candidates.length === 1 && candidates[0]!.cost === undefined) {
+    return { kind: "selected", model: candidates[0]!.model, selectionBasis: "sole_candidate_unknown_price" };
+  }
+  if (candidates.some((candidate) => candidate.cost === undefined)) {
+    return { kind: "unavailable", code: "pricing_unavailable", message: "Model prices are not comparable." };
+  }
+  candidates.sort((left, right) => {
+    const cost = (left.cost as number) - (right.cost as number);
+    if (cost !== 0) return cost;
+    const leftRoute = routeOrder.indexOf(left.model.model);
+    const rightRoute = routeOrder.indexOf(right.model.model);
+    const leftRank = leftRoute === -1 ? Number.MAX_SAFE_INTEGER : leftRoute;
+    const rightRank = rightRoute === -1 ? Number.MAX_SAFE_INTEGER : rightRoute;
+    return leftRank - rightRank || left.model.model.localeCompare(right.model.model);
+  });
+  const selected = candidates[0]!;
+  return {
+    kind: "selected",
+    model: selected.model,
+    selectionBasis: selected.cost === 0 ? "subscription_zero_price" : "catalog_pricing",
+  };
+}
+
+function boundedProbeCost(input: unknown, output: unknown): number | undefined {
+  if (typeof input !== "number" || !Number.isFinite(input) || input < 0
+    || typeof output !== "number" || !Number.isFinite(output) || output < 0) return undefined;
+  return input * 64 / 1_000_000 + output * 4 / 1_000_000;
+}
+
 interface ProviderModelEntry {
   readonly info: TuiProviderInfo;
   /** Frozen, deterministic, capped. Sorted by `localeCompare` on id (or allowlist order). */

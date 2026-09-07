@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_PROVIDER_AUTH_INPUT_BYTES,
+  parseProviderAuthCheckSessionSnapshot,
+  parseProviderAuthCheckStartInput,
   parseProviderAuthSessionInput,
   parseProviderAuthSessionSnapshot,
   parseProviderAuthStatusSnapshot,
@@ -46,10 +48,32 @@ const session = () => ({
   },
 });
 
+const check = () => ({
+  schema: "mono-agent.provider-auth-check.v1",
+  id: "check-one",
+  state: "completed",
+  createdAt: "2026-09-06T12:00:00.000Z",
+  updatedAt: "2026-09-06T12:00:01.000Z",
+  expiresAt: "2026-09-06T12:10:01.000Z",
+  results: [{
+    providerId: "openai-codex",
+    label: "OpenAI Codex",
+    state: "auth_failed",
+    model: "openai-codex:gpt-5.6-sol",
+    selectionBasis: "subscription_zero_price",
+    checkedAt: "2026-09-06T12:00:01.000Z",
+    code: "credential_rejected",
+    message: "Provider rejected the configured credential.",
+  }],
+});
+
 describe("provider auth contracts", () => {
   it("strictly parses bounded status and session snapshots", () => {
     expect(parseProviderAuthStatusSnapshot(status())).toEqual(status());
     expect(parseProviderAuthSessionSnapshot(session())).toEqual(session());
+    expect(parseProviderAuthCheckSessionSnapshot(check())).toEqual(check());
+    expect(parseProviderAuthCheckStartInput({ idempotencyKey: "browser-click-one" }))
+      .toEqual({ idempotencyKey: "browser-click-one" });
   });
 
   it("rejects unknown fields and non-http auth URLs", () => {
@@ -58,6 +82,52 @@ describe("provider auth contracts", () => {
       ...session(),
       deviceCode: { ...session().deviceCode, verificationUri: "javascript:alert(1)" },
     })).toThrow(/Invalid provider device code/u);
+    expect(() => parseProviderAuthCheckSessionSnapshot({ ...check(), token: "secret" }))
+      .toThrow(/Invalid provider auth check session/u);
+    expect(() => parseProviderAuthCheckSessionSnapshot({
+      ...check(),
+      results: [{ ...check().results[0], state: "healthy_enough" }],
+    })).toThrow(/Invalid provider auth check result/u);
+    expect(() => parseProviderAuthCheckSessionSnapshot({
+      ...check(),
+      results: [{ ...check().results[0], code: "provider_dump", message: "RAW_PROVIDER_SECRET_SENTINEL" }],
+    })).toThrow(/Invalid provider auth check result/u);
+    expect(() => parseProviderAuthCheckSessionSnapshot({
+      ...check(),
+      results: [{ ...check().results[0], message: "Credential rejected: RAW_PROVIDER_SECRET_SENTINEL" }],
+    })).toThrow(/Invalid provider auth check result/u);
+  });
+
+  it("accepts every fixed manager and runtime check outcome", () => {
+    const checkedAt = "2026-09-06T12:00:01.000Z";
+    const results = [
+      { state: "pending" },
+      { state: "running" },
+      { state: "passed", code: "passed", message: "Provider request succeeded." },
+      { state: "auth_failed", code: "credential_rejected", message: "Provider rejected the configured credential." },
+      { state: "network_failed", code: "provider_unavailable", message: "The provider could not be reached." },
+      { state: "quota_limited", code: "quota_limited", message: "Provider quota or rate limit prevented the check." },
+      { state: "model_not_entitled", code: "model_not_entitled", message: "The credential could not use the selected model." },
+      { state: "inconclusive", code: "forbidden", message: "The provider refused the check for an unspecified reason." },
+      { state: "inconclusive", code: "inconclusive", message: "The provider check failed without a safe diagnosis." },
+      { state: "inconclusive", code: "cancelled", message: "The provider check did not complete." },
+      { state: "unsupported", code: "provider_unsupported", message: "Provider is disabled." },
+      { state: "unsupported", code: "provider_unsupported", message: "Provider model catalog is unavailable." },
+      { state: "unsupported", code: "no_eligible_model", message: "No eligible text model is configured." },
+      { state: "unsupported", code: "pricing_unavailable", message: "Model prices are not comparable." },
+      { state: "timeout", code: "timeout", message: "The provider check timed out." },
+      { state: "cancelled", code: "cancelled", message: "The provider check was cancelled." },
+      { state: "stale", code: "stale", message: "Credential changed before the check completed." },
+      { state: "not_run", code: "not_run", message: "The provider check did not start before the batch deadline." },
+    ].map((result, index) => ({
+      providerId: `provider-${index}`,
+      label: `Provider ${index}`,
+      ...result,
+      ...(result.state === "pending" || result.state === "running" ? {} : { checkedAt }),
+    }));
+    const snapshot = { ...check(), results };
+
+    expect(parseProviderAuthCheckSessionSnapshot(snapshot)).toEqual(snapshot);
   });
 
   it("accepts a secret input without echoing it through a projection", () => {
@@ -65,6 +135,7 @@ describe("provider auth contracts", () => {
     expect(parseProviderAuthSessionInput({ promptId: "prompt-one", value })).toEqual({ promptId: "prompt-one", value });
     expect(JSON.stringify(session())).not.toContain(value);
     expect(JSON.stringify(status())).not.toContain(value);
+    expect(JSON.stringify(check())).not.toContain(value);
     expect(parseProviderAuthSessionInput({ promptId: "prompt-one", value: "" })).toEqual({ promptId: "prompt-one", value: "" });
   });
 

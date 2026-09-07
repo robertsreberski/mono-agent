@@ -968,13 +968,21 @@ describe("web HTTP server", () => {
       id: "session-1", providerId: "opencode-go", authType: "api_key", strategy: "api_key_prompt",
       state: "succeeded", createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:20:00.000Z",
     };
+    const providerAuthCheckSession = {
+      schema: "mono-agent.provider-auth-check.v1",
+      id: "check-1", state: "completed",
+      createdAt: "2026-09-06T12:00:00.000Z", updatedAt: "2026-09-06T12:00:01.000Z", expiresAt: "2026-09-06T12:10:01.000Z",
+      results: [{ providerId: "opencode-go", label: "OpenCode Go", state: "passed", model: "opencode-go:kimi-k2.6", selectionBasis: "catalog_pricing", checkedAt: "2026-09-06T12:00:01.000Z", code: "passed", message: "Provider request succeeded." }],
+    };
     const forwarded: { readonly url: string; readonly body?: string }[] = [];
     const { baseUrl, handle } = await start({
       host: "127.0.0.1",
       fetchImpl: operatorFetch({
         supportsProviderAuth: true,
+        supportsProviderAuthChecks: true,
         providerAuthStatus,
         providerAuthSession,
+        providerAuthCheckSession,
         onProviderAuthRequest: (url, init) => forwarded.push({ url, ...(typeof init?.body === "string" ? { body: init.body } : {}) }),
       }),
     });
@@ -1001,6 +1009,20 @@ describe("web HTTP server", () => {
     expect(submittedText).not.toContain(secret);
     expect(forwarded.at(-1)?.body).toContain(secret);
     expect((await readFile(join(handle.stateDir, "state.sqlite"))).includes(Buffer.from(secret))).toBe(false);
+
+    const checksPath = `${baseUrl}/api/v1/agents/agent-one/provider-auth/checks`;
+    expect((await fetch(checksPath, { method: "POST", headers: { origin: "https://evil.example", "content-type": "application/json" }, body: JSON.stringify({ idempotencyKey: "click" }) })).status).toBe(403);
+    const checked = await fetch(checksPath, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl },
+      body: JSON.stringify({ idempotencyKey: "click" }),
+    });
+    expect(checked.status).toBe(201);
+    expect(checked.headers.get("cache-control")).toContain("no-store");
+    expect(await checked.json()).toEqual(providerAuthCheckSession);
+    expect(await (await fetch(`${checksPath}/check-1`, { headers: { "X-Mono-Agent-Web-Origin": baseUrl } })).json())
+      .toEqual(providerAuthCheckSession);
+    expect((await fetch(`${checksPath}/check-1`, { method: "DELETE", headers: { "X-Mono-Agent-Web-Origin": baseUrl } })).status).toBe(204);
   });
 
   it("authenticates the owner-private notification ingress before reading a large body", async () => {

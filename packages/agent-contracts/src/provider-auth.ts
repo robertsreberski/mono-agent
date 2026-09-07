@@ -1,5 +1,6 @@
 export const PROVIDER_AUTH_STATUS_SCHEMA = "mono-agent.provider-auth.v1" as const;
 export const PROVIDER_AUTH_SESSION_SCHEMA = "mono-agent.provider-auth-session.v1" as const;
+export const PROVIDER_AUTH_CHECK_SCHEMA = "mono-agent.provider-auth-check.v1" as const;
 
 export const MAX_PROVIDER_AUTH_BODY_BYTES = 128 * 1024;
 export const MAX_PROVIDER_AUTH_INPUT_BYTES = 65_536;
@@ -21,6 +22,40 @@ export type ProviderAuthSessionState =
   | "succeeded"
   | "failed"
   | "cancelled";
+export type ProviderAuthCheckSessionState = "running" | "completed" | "cancelled";
+export type ProviderAuthCheckResultState =
+  | "pending"
+  | "running"
+  | "passed"
+  | "auth_failed"
+  | "network_failed"
+  | "quota_limited"
+  | "model_not_entitled"
+  | "inconclusive"
+  | "unsupported"
+  | "timeout"
+  | "cancelled"
+  | "stale"
+  | "not_run";
+export type ProviderAuthCheckSelectionBasis =
+  | "catalog_pricing"
+  | "subscription_zero_price"
+  | "sole_candidate_unknown_price";
+export type ProviderAuthCheckResultCode =
+  | "passed"
+  | "credential_rejected"
+  | "provider_unavailable"
+  | "quota_limited"
+  | "model_not_entitled"
+  | "forbidden"
+  | "inconclusive"
+  | "cancelled"
+  | "provider_unsupported"
+  | "no_eligible_model"
+  | "pricing_unavailable"
+  | "timeout"
+  | "stale"
+  | "not_run";
 
 export interface ProviderAuthUsage {
   readonly kind: "primary" | "fallback" | "memory_llm" | "cron" | "webhook";
@@ -108,12 +143,49 @@ export interface ProviderAuthSessionInput {
   readonly value: string;
 }
 
+export interface ProviderAuthCheckStartInput {
+  readonly idempotencyKey: string;
+}
+
+export interface ProviderAuthCheckResult {
+  readonly providerId: string;
+  readonly label: string;
+  readonly state: ProviderAuthCheckResultState;
+  readonly model?: string;
+  readonly selectionBasis?: ProviderAuthCheckSelectionBasis;
+  readonly checkedAt?: string;
+  readonly code?: ProviderAuthCheckResultCode;
+  readonly message?: string;
+}
+
+export interface ProviderAuthCheckSessionSnapshot {
+  readonly schema: typeof PROVIDER_AUTH_CHECK_SCHEMA;
+  readonly id: string;
+  readonly state: ProviderAuthCheckSessionState;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly expiresAt: string;
+  readonly results: readonly ProviderAuthCheckResult[];
+}
+
+export interface ProviderAuthCheckOperator {
+  start(input: ProviderAuthCheckStartInput): Promise<ProviderAuthCheckSessionSnapshot>;
+  get(checkId: string): Promise<ProviderAuthCheckSessionSnapshot | undefined>;
+  cancel(checkId: string): Promise<void>;
+}
+
 export interface ProviderAuthOperator {
   status(): Promise<ProviderAuthStatusSnapshot>;
+  /**
+   * A semantically valid start replaces the active authentication session.
+   * Invalid starts leave an existing session untouched; live checks remain a
+   * separate conflict that callers must cancel explicitly.
+   */
   start(input: ProviderAuthSessionStartInput): Promise<ProviderAuthSessionSnapshot>;
   get(sessionId: string): Promise<ProviderAuthSessionSnapshot | undefined>;
   submit(sessionId: string, input: ProviderAuthSessionInput): Promise<ProviderAuthSessionSnapshot>;
   cancel(sessionId: string): Promise<void>;
+  readonly checks?: ProviderAuthCheckOperator;
   stop(): Promise<void>;
 }
 
@@ -122,18 +194,26 @@ export type ProviderAuthErrorCode =
   | "provider_auth_not_found"
   | "provider_auth_conflict"
   | "provider_auth_too_large"
+  | "provider_auth_rate_limited"
   | "provider_auth_upstream"
   | "provider_auth_unavailable";
 
 export class ProviderAuthOperationError extends Error {
   readonly code: ProviderAuthErrorCode;
-  readonly status: 400 | 404 | 409 | 413 | 502 | 503;
+  readonly status: 400 | 404 | 409 | 413 | 429 | 502 | 503;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: ProviderAuthErrorCode, message: string, status: ProviderAuthOperationError["status"]) {
+  constructor(
+    code: ProviderAuthErrorCode,
+    message: string,
+    status: ProviderAuthOperationError["status"],
+    retryAfterSeconds?: number,
+  ) {
     super(message);
     this.name = "ProviderAuthOperationError";
     this.code = code;
     this.status = status;
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -197,6 +277,34 @@ export function parseProviderAuthSessionInput(value: unknown): ProviderAuthSessi
     throw new ProviderAuthOperationError("provider_auth_too_large", "Provider authentication input is invalid or too large.", 413);
   }
   return { promptId: root.promptId, value: root.value };
+}
+
+export function parseProviderAuthCheckStartInput(value: unknown): ProviderAuthCheckStartInput {
+  const root = exactRecord(value, ["idempotencyKey"], "provider auth check start");
+  if (!boundedString(root.idempotencyKey)) invalid("provider auth check start");
+  return { idempotencyKey: root.idempotencyKey };
+}
+
+export function parseProviderAuthCheckSessionSnapshot(value: unknown): ProviderAuthCheckSessionSnapshot {
+  const root = exactRecord(value, [
+    "schema", "id", "state", "createdAt", "updatedAt", "expiresAt", "results",
+  ], "provider auth check session");
+  if (root.schema !== PROVIDER_AUTH_CHECK_SCHEMA
+    || !boundedString(root.id)
+    || !checkSessionState(root.state)
+    || !isoDate(root.createdAt)
+    || !isoDate(root.updatedAt)
+    || !isoDate(root.expiresAt)) invalid("provider auth check session");
+  return {
+    schema: PROVIDER_AUTH_CHECK_SCHEMA,
+    id: root.id,
+    state: root.state,
+    createdAt: root.createdAt,
+    updatedAt: root.updatedAt,
+    expiresAt: root.expiresAt,
+    results: boundedArray(root.results, MAX_PROVIDER_AUTH_ITEMS, "provider auth check results")
+      .map(parseCheckResult),
+  };
 }
 
 function parseProviderStatus(value: unknown): ProviderAuthProviderStatus {
@@ -303,6 +411,73 @@ function parseFailure(value: unknown): NonNullable<ProviderAuthProviderStatus["l
   return root as unknown as NonNullable<ProviderAuthProviderStatus["lastFailure"]>;
 }
 
+function parseCheckResult(value: unknown): ProviderAuthCheckResult {
+  const root = exactRecord(value, [
+    "providerId", "label", "state", "model", "selectionBasis", "checkedAt", "code", "message",
+  ], "provider auth check result", true);
+  if (!boundedString(root.providerId) || !boundedString(root.label) || !checkResultState(root.state)) {
+    invalid("provider auth check result");
+  }
+  if (root.model !== undefined && !boundedString(root.model)) invalid("provider auth check model");
+  if (root.selectionBasis !== undefined && !checkSelectionBasis(root.selectionBasis)) {
+    invalid("provider auth check selection basis");
+  }
+  if (root.checkedAt !== undefined && !isoDate(root.checkedAt)) invalid("provider auth check time");
+  if (root.code !== undefined && !boundedString(root.code)) invalid("provider auth check code");
+  if (root.message !== undefined && !boundedString(root.message)) invalid("provider auth check message");
+  if ((root.code === undefined) !== (root.message === undefined)) invalid("provider auth check result");
+  if (root.code !== undefined && root.message !== undefined
+    && !validCheckResultProjection(root.state, root.code, root.message)) {
+    invalid("provider auth check result");
+  }
+  return {
+    providerId: root.providerId,
+    label: root.label,
+    state: root.state,
+    ...(root.model === undefined ? {} : { model: root.model }),
+    ...(root.selectionBasis === undefined ? {} : { selectionBasis: root.selectionBasis }),
+    ...(root.checkedAt === undefined ? {} : { checkedAt: root.checkedAt }),
+    ...(root.code === undefined ? {} : { code: root.code as ProviderAuthCheckResultCode }),
+    ...(root.message === undefined ? {} : { message: root.message }),
+  };
+}
+
+const CHECK_RESULT_MESSAGES: Readonly<Record<
+  ProviderAuthCheckResultState,
+  Readonly<Partial<Record<ProviderAuthCheckResultCode, readonly string[]>>>
+>> = {
+  pending: {},
+  running: {},
+  passed: { passed: ["Provider request succeeded."] },
+  auth_failed: { credential_rejected: ["Provider rejected the configured credential."] },
+  network_failed: { provider_unavailable: ["The provider could not be reached."] },
+  quota_limited: { quota_limited: ["Provider quota or rate limit prevented the check."] },
+  model_not_entitled: { model_not_entitled: ["The credential could not use the selected model."] },
+  inconclusive: {
+    forbidden: ["The provider refused the check for an unspecified reason."],
+    inconclusive: ["The provider check failed without a safe diagnosis."],
+    cancelled: ["The provider check did not complete."],
+  },
+  unsupported: {
+    provider_unsupported: ["Provider is disabled.", "Provider model catalog is unavailable."],
+    no_eligible_model: ["No eligible text model is configured."],
+    pricing_unavailable: ["Model prices are not comparable."],
+  },
+  timeout: { timeout: ["The provider check timed out."] },
+  cancelled: { cancelled: ["The provider check was cancelled."] },
+  stale: { stale: ["Credential changed before the check completed."] },
+  not_run: { not_run: ["The provider check did not start before the batch deadline."] },
+};
+
+function validCheckResultProjection(
+  state: ProviderAuthCheckResultState,
+  code: string,
+  message: string,
+): boolean {
+  const messages = CHECK_RESULT_MESSAGES[state][code as ProviderAuthCheckResultCode];
+  return messages?.includes(message) === true;
+}
+
 function exactRecord(value: unknown, keys: readonly string[], label: string, optional = false): Record<string, unknown> {
   if (!record(value)) invalid(label);
   const allowed = new Set(keys);
@@ -368,6 +543,22 @@ function verification(value: unknown): value is ProviderAuthVerification {
 function sessionState(value: unknown): value is ProviderAuthSessionState {
   return value === "pending" || value === "awaiting_input" || value === "awaiting_user"
     || value === "succeeded" || value === "failed" || value === "cancelled";
+}
+
+function checkSessionState(value: unknown): value is ProviderAuthCheckSessionState {
+  return value === "running" || value === "completed" || value === "cancelled";
+}
+
+function checkResultState(value: unknown): value is ProviderAuthCheckResultState {
+  return value === "pending" || value === "running" || value === "passed"
+    || value === "auth_failed" || value === "network_failed" || value === "quota_limited"
+    || value === "model_not_entitled" || value === "inconclusive" || value === "unsupported"
+    || value === "timeout" || value === "cancelled" || value === "stale" || value === "not_run";
+}
+
+function checkSelectionBasis(value: unknown): value is ProviderAuthCheckSelectionBasis {
+  return value === "catalog_pricing" || value === "subscription_zero_price"
+    || value === "sole_candidate_unknown_price";
 }
 
 function invalid(label: string): never {

@@ -412,11 +412,12 @@ export async function buildResponder(
     wrapHistoryStore: postedReplyHistory.wrapHistoryStore,
     // Follow the local JSONL source of truth, not outer exporter work:
     // exporter start/finish may still be pending after the summary commits.
-    onRunArtifactCommitted: ({ conversationId, summary }) => {
+    onRunArtifactCommitted: ({ phase, runId, conversationId, summary }) => {
       if (isNotifyDestinationConversationId(conversationId)) {
         controller.seenNotifyDestinations.invalidate();
       }
-      if (summary !== undefined) controller.providerAuthObservations?.observe(summary);
+      if (phase === "started") controller.providerAuthObservations?.runStarted(runId);
+      else if (summary !== undefined) controller.providerAuthObservations?.observe(summary);
     },
   });
   const replyResponder = replyArtifacts.wrapResponder(responder);

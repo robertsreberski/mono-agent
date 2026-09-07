@@ -248,10 +248,13 @@ describe("projected web capabilities", () => {
 });
 
 describe("WebService", () => {
-  it("includes a current live agent's provider-auth capability in bootstrap", async () => {
-    const service = await createService({ fetchImpl: operatorFetch() });
+  it("includes a current live agent's provider-auth capabilities in bootstrap", async () => {
+    const service = await createService({ fetchImpl: operatorFetch({ supportsProviderAuthChecks: true }) });
     try {
-      expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+      expect((await service.bootstrap()).agents[0]).toMatchObject({
+        supportsProviderAuth: true,
+        supportsProviderAuthChecks: true,
+      });
     } finally {
       await service.stop();
     }
