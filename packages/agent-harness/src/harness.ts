@@ -54,6 +54,7 @@ import {
 import { buildSuccessfulTurn, persistSuccessfulMemory } from "./harness/memory-persistence.js";
 import {
   createDefaultRunId,
+  interactiveModelOverrideCanOwnLiveInput,
   isCronRequest,
   requestOverridesModel,
   runSourceFromRequest,
@@ -259,6 +260,10 @@ export class MonoAgentHarness implements AgentHarness {
     const modelOverrideIsolated = requestOverridesModel(request, this.options.model);
     const continuationIsolated = request.continuation !== undefined;
     const isolated = proactiveIsolated || modelOverrideIsolated || continuationIsolated;
+    const mailboxEligible = !isolated || (
+      modelOverrideIsolated
+      && interactiveModelOverrideCanOwnLiveInput(request, this.options.model)
+    );
     const turnContinuityCollector = new UncommittedTurnCollector();
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
@@ -314,7 +319,7 @@ export class MonoAgentHarness implements AgentHarness {
         return { metadata: responseMetadata(runId, request, undefined, summary), failure };
       }
     }
-    liveInputMailbox = isolated || this.activeLiveInputs.has(request.conversationId)
+    liveInputMailbox = !mailboxEligible || this.activeLiveInputs.has(request.conversationId)
       ? undefined
       : createLiveInputMailbox(runId);
     if (liveInputMailbox !== undefined) {

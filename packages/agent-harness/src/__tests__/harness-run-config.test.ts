@@ -11,6 +11,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import { createAgentHarness } from "../index.js";
 import { requestOverridesModel, runSourceFromRequest } from "../harness.js";
+import { interactiveModelOverrideCanOwnLiveInput } from "../harness/request-routing.js";
 import type { AgentHarnessRecorderFactoryInput, AgentHarnessRequest } from "../types.js";
 
 const tempDirs: string[] = [];
@@ -161,6 +162,138 @@ describe("requestOverridesModel", () => {
   it("still honors webhook and cron overrides alongside tui", () => {
     expect(requestOverridesModel(req({ webhook: { model: "openai-codex:gpt-5.5" } }), defaultModel)).toBe(true);
     expect(requestOverridesModel(req({ cron: { model: "openai-codex:gpt-5.5" } }), defaultModel)).toBe(true);
+  });
+});
+
+describe("interactiveModelOverrideCanOwnLiveInput", () => {
+  const defaultModel = parseMonoRuntimeModelReference("anthropic:claude-fable-5");
+  const differentModel = "anthropic:claude-opus-4-8";
+  const hostWakeSymbol = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
+  const req = (
+    metadata?: Record<string, unknown>,
+    continuation?: AgentHarnessRequest["continuation"],
+  ): AgentHarnessRequest => ({
+    conversationId: "c",
+    userMessage: "hi",
+    abortSignal: new AbortController().signal,
+    ...(metadata === undefined ? {} : { metadata }),
+    ...(continuation === undefined ? {} : { continuation }),
+  });
+
+  it.each([
+    ["web", { source: "web", web: { model: differentModel } }],
+    ["tui", { source: "tui", tui: { model: differentModel } }],
+    ["telegram", { telegram: { model: differentModel } }],
+    ["telegram with source", { source: "telegram", telegram: { model: differentModel } }],
+    ["slack", { slack: { model: differentModel } }],
+    ["slack with source", { source: "slack", slack: { model: differentModel } }],
+  ])("admits an actual interactive %s model override", (_name, metadata) => {
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(true);
+  });
+
+  it.each([
+    ["same model", { source: "web", web: { model: defaultModel.reference } }],
+    ["effort only", { source: "web", web: { effort: "high" } }],
+    ["invalid model", { source: "web", web: { model: "not a model" } }],
+    ["bare web source", { source: "web" }],
+    ["conflicting web source", { source: "tui", web: { model: differentModel } }],
+    ["conflicting Telegram source", { source: "web", telegram: { model: differentModel } }],
+    ["ACP", { source: "acp", tui: { model: differentModel } }],
+    ["WhatsApp", { whatsapp: { model: differentModel } }],
+  ])("rejects %s", (_name, metadata) => {
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
+  });
+
+  it("preserves precedence when a higher-priority block has no model", () => {
+    const metadata = {
+      webhook: { effort: "high" },
+      web: { model: differentModel },
+      source: "web",
+    };
+    expect(requestOverridesModel(req(metadata), defaultModel)).toBe(false);
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
+  });
+
+  it.each([
+    ["cron", { source: "web", web: { model: differentModel }, cron: { model: differentModel } }],
+    ["webhook", { source: "web", web: { model: differentModel }, webhook: { model: differentModel } }],
+  ])("rejects mixed interactive + %s metadata", (_name, metadata) => {
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
+  });
+
+  it("rejects a continuation with interactive-looking metadata", () => {
+    expect(interactiveModelOverrideCanOwnLiveInput(req(
+      { source: "web", web: { model: differentModel } },
+      {
+        continuationId: "continuation-1",
+        originRunId: "run-origin",
+        toolsDisabled: true,
+        deferHistoryCommit: true,
+        originContextPolicy: "detached_latest",
+      },
+    ), defaultModel)).toBe(false);
+  });
+
+  it.each([
+    ["enumerable ProcessJob", true, "process-job:one:1"],
+    ["non-enumerable Monitor", false, "monitor:one:1"],
+  ])("rejects an %s host-wake data descriptor", (_name, enumerable, value) => {
+    const metadata: Record<PropertyKey, unknown> = {
+      source: "web",
+      web: { model: differentModel },
+    };
+    Object.defineProperty(metadata, hostWakeSymbol, { enumerable, configurable: true, value });
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata as Record<string, unknown>), defaultModel)).toBe(false);
+  });
+
+  it("rejects a host-wake accessor descriptor without executing its getter", () => {
+    let getterCalls = 0;
+    const metadata: Record<PropertyKey, unknown> = {
+      source: "web",
+      web: { model: differentModel },
+    };
+    Object.defineProperty(metadata, hostWakeSymbol, {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        getterCalls += 1;
+        return "must-not-be-read";
+      },
+    });
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata as Record<string, unknown>), defaultModel)).toBe(false);
+    expect(getterCalls).toBe(0);
+  });
+
+  it.each(["cron", "webhook"] as const)("rejects an accessor %s marker without executing its getter", (property) => {
+    let getterCalls = 0;
+    const metadata: Record<string, unknown> = {
+      source: "web",
+      web: { model: differentModel },
+    };
+    Object.defineProperty(metadata, property, {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        getterCalls += 1;
+        return undefined;
+      },
+    });
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
+    expect(getterCalls).toBe(0);
+  });
+
+  it.each(["cron", "webhook", "host wake"] as const)("fails closed when %s descriptor inspection throws", (kind) => {
+    const key: PropertyKey = kind === "host wake" ? hostWakeSymbol : kind;
+    const metadata = new Proxy<Record<string, unknown>>({
+      source: "web",
+      web: { model: differentModel },
+    }, {
+      getOwnPropertyDescriptor(target, property) {
+        if (property === key) throw new Error("descriptor trap");
+        return Reflect.getOwnPropertyDescriptor(target, property);
+      },
+    });
+    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
   });
 });
 

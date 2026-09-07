@@ -8,6 +8,18 @@ import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 import type { AgentHarnessRequest } from "../types.js";
 import { isRecord } from "./value-utils.js";
 
+type ModelOverrideOrigin = "webhook" | "cron" | "web" | "tui" | "telegram" | "slack";
+
+interface ModelOverrideDeclaration {
+  readonly origin: ModelOverrideOrigin;
+  readonly value: Record<string, unknown>;
+}
+
+// Existing host-owned producer convention. Operator writes a non-enumerable
+// descriptor; Slack, Telegram, and WhatsApp use enumerable symbol properties.
+// Presence alone marks proactive work: never read or expose the value here.
+const HOST_WAKE_DELIVERY_METADATA = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
+
 export function createDefaultRunId(): string {
   return `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -87,31 +99,84 @@ export function isCronRequest(request: AgentHarnessRequest): boolean {
  * `@mono-agent/agent-app`, which resolves the runtime options used below.
  */
 export function requestOverridesModel(request: AgentHarnessRequest, defaultModel: RuntimeModelReference): boolean {
+  const declaration = modelOverrideDeclaration(request.metadata);
+  if (declaration === undefined) {
+    return false;
+  }
+  return overridesDefaultModel(declaration.value, defaultModel);
+}
+
+/** @internal Whether an isolated different-model request is genuinely interactive. */
+export function interactiveModelOverrideCanOwnLiveInput(
+  request: AgentHarnessRequest,
+  defaultModel: RuntimeModelReference,
+): boolean {
   const metadata = request.metadata;
-  if (!isRecord(metadata)) {
+  if (!isRecord(metadata) || request.continuation !== undefined) return false;
+
+  const cronPresent = ownPropertyPresent(metadata, "cron");
+  const webhookPresent = ownPropertyPresent(metadata, "webhook");
+  const hostWakePresent = ownPropertyPresent(metadata, HOST_WAKE_DELIVERY_METADATA);
+  if (
+    cronPresent !== false
+    || webhookPresent !== false
+    || hostWakePresent !== false
+  ) {
     return false;
   }
-  const source = isRecord(metadata.webhook)
-    ? metadata.webhook
+
+  const declaration = modelOverrideDeclaration(metadata);
+  if (declaration === undefined || !overridesDefaultModel(declaration.value, defaultModel)) return false;
+
+  try {
+    switch (declaration.origin) {
+      case "web": return metadata.source === "web";
+      case "tui": return metadata.source === "tui";
+      case "telegram": return metadata.source === undefined || metadata.source === "telegram";
+      case "slack": return metadata.source === undefined || metadata.source === "slack";
+      case "webhook":
+      case "cron":
+        return false;
+    }
+  } catch {
+    return false;
+  }
+}
+
+function modelOverrideDeclaration(metadata: AgentHarnessRequest["metadata"]): ModelOverrideDeclaration | undefined {
+  if (!isRecord(metadata)) return undefined;
+  return isRecord(metadata.webhook)
+    ? { origin: "webhook", value: metadata.webhook }
     : isRecord(metadata.cron)
-      ? metadata.cron
+      ? { origin: "cron", value: metadata.cron }
       : isRecord(metadata.web)
-        ? metadata.web
+        ? { origin: "web", value: metadata.web }
         : isRecord(metadata.tui)
-          ? metadata.tui
+          ? { origin: "tui", value: metadata.tui }
           : isRecord(metadata.telegram)
-            ? metadata.telegram
+            ? { origin: "telegram", value: metadata.telegram }
             : isRecord(metadata.slack)
-              ? metadata.slack
+              ? { origin: "slack", value: metadata.slack }
               : undefined;
-  if (source === undefined || typeof source.model !== "string" || source.model.trim().length === 0) {
-    return false;
-  }
+}
+
+function overridesDefaultModel(source: Record<string, unknown>, defaultModel: RuntimeModelReference): boolean {
+  if (typeof source.model !== "string" || source.model.trim().length === 0) return false;
   try {
     return modelReferenceKey(parseMonoRuntimeModelReference(source.model)) !== modelReferenceKey(defaultModel);
   } catch {
     // An unparseable override is warned-and-ignored downstream, so the turn runs
     // on the default model — i.e. no model change, no isolation.
     return false;
+  }
+}
+
+function ownPropertyPresent(value: object, property: PropertyKey): boolean | undefined {
+  try {
+    return Object.getOwnPropertyDescriptor(value, property) !== undefined;
+  } catch {
+    // A hostile/exceptional metadata object cannot qualify for the new isolated
+    // mailbox exception. This does not change the existing metadata readers.
+    return undefined;
   }
 }
