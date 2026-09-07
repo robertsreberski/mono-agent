@@ -311,6 +311,147 @@ describe("AgentHarness", () => {
     ]);
   });
 
+  it.each(["cancel", "failure"] as const)(
+    "releases an isolated interactive owner after run-local %s and admits a later owner",
+    async (outcome) => {
+      const dir = await tempDir();
+      const identityPath = join(dir, "IDENTITY.md");
+      await writeFile(identityPath, "You are Mono.", "utf8");
+      const overrideModel = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
+      const conversationId = `web:owner-${outcome}`;
+      const ownerRunId = `run-owner-${outcome}`;
+      const laterRunId = `run-later-${outcome}`;
+      let ownerStarted!: () => void;
+      let ownerConsumed!: () => void;
+      let laterStarted!: () => void;
+      let releaseFailure!: () => void;
+      const ownerReady = new Promise<void>((resolve) => { ownerStarted = resolve; });
+      const ownerInputReady = new Promise<void>((resolve) => { ownerConsumed = resolve; });
+      const laterReady = new Promise<void>((resolve) => { laterStarted = resolve; });
+      const failureRelease = new Promise<void>((resolve) => { releaseFailure = resolve; });
+      const consumed: Array<{ readonly run: string; readonly id: string | undefined }> = [];
+      let runtimeCall = 0;
+      const runtime = {
+        async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          runtimeCall += 1;
+          if (runtimeCall === 1) ownerStarted();
+          else laterStarted();
+          const iterator = options.liveInput?.[Symbol.asyncIterator]();
+          if (iterator === undefined) throw new Error("Eligible isolated owner did not receive a mailbox.");
+          if (runtimeCall === 1) {
+            const next = await iterator.next();
+            if (next.done) throw new Error("Owner mailbox closed before pending input delivery.");
+            consumed.push({ run: ownerRunId, id: next.value.id });
+            ownerConsumed();
+            if (outcome === "failure") {
+              await failureRelease;
+              throw new Error("isolated owner runtime failure");
+            }
+            await new Promise<void>((resolve) => {
+              if (options.abortSignal.aborted) resolve();
+              else options.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+            });
+            return { text: "cancelled owner returned" };
+          }
+          const next = await iterator.next();
+          if (next.done) throw new Error("Later owner mailbox closed before delivery.");
+          consumed.push({ run: laterRunId, id: next.value.id });
+          next.value.acknowledge?.();
+          return { text: "later owner complete" };
+        },
+      };
+      const runIds = [ownerRunId, laterRunId];
+      const harness = createAgentHarness({
+        identityPath,
+        runtime,
+        model,
+        runtimeForModel: () => runtime,
+        runtimeOptionsForRequest: () => ({ runtimeOptions: { model: overrideModel } }),
+        createRunId: () => runIds.shift() ?? "unexpected-run",
+      });
+      const request = (userMessage: string, abortSignal: AbortSignal) => ({
+        conversationId,
+        userMessage,
+        abortSignal,
+        metadata: { source: "web", web: { model: overrideModel.reference } },
+      });
+      const ownerController = new AbortController();
+      const laterController = new AbortController();
+      const owner = harness.run(request("owner", ownerController.signal));
+      let later: Promise<Awaited<ReturnType<typeof harness.run>>> | undefined;
+
+      try {
+        await ownerReady;
+        const ownerOffer = harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: ownerRunId,
+          id: `input-owner-${outcome}`,
+          text: `pending owner input ${outcome}`,
+          receivedAt: "2026-09-07T14:33:00.000Z",
+        });
+        expect(ownerOffer?.status).toBe("accepted");
+        if (ownerOffer?.status !== "accepted") throw new Error("Owner offer was not accepted.");
+        let ownerOfferSettled = false;
+        void ownerOffer.settled.then(() => { ownerOfferSettled = true; });
+        await ownerInputReady;
+        await Promise.resolve();
+        expect(ownerOfferSettled).toBe(false);
+
+        if (outcome === "cancel") ownerController.abort(new Error("run-local owner abort"));
+        else releaseFailure();
+        const ownerResponse = await owner;
+        expect(ownerResponse.failure).toMatchObject(
+          outcome === "cancel" ? { kind: "cancelled" } : { kind: "Error" },
+        );
+        await expect(ownerOffer.settled).resolves.toEqual({ status: "requeue", reason: "failed" });
+        expect(harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: ownerRunId,
+          id: `after-owner-${outcome}`,
+          text: "old owner must be inactive",
+          receivedAt: "2026-09-07T14:33:01.000Z",
+        })).toEqual({ status: "unavailable", reason: "inactive" });
+
+        later = harness.run(request("later", laterController.signal));
+        await laterReady;
+        const laterOffer = harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: laterRunId,
+          id: `input-later-${outcome}`,
+          text: `later owner input ${outcome}`,
+          receivedAt: "2026-09-07T14:33:02.000Z",
+        });
+        expect(laterOffer?.status).toBe("accepted");
+        if (laterOffer?.status !== "accepted") throw new Error("Later owner offer was not accepted.");
+        await expect(later).resolves.toMatchObject({ text: "later owner complete" });
+        await expect(laterOffer.settled).resolves.toEqual({ status: "applied", runId: laterRunId });
+        expect(consumed).toEqual([
+          { run: ownerRunId, id: `input-owner-${outcome}` },
+          { run: laterRunId, id: `input-later-${outcome}` },
+        ]);
+      } finally {
+        ownerController.abort(new Error("owner test cleanup"));
+        releaseFailure();
+        harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: ownerRunId,
+          id: `cleanup-owner-${outcome}`,
+          text: "cleanup owner",
+          receivedAt: "2026-09-07T14:33:03.000Z",
+        });
+        laterController.abort(new Error("later test cleanup"));
+        harness.offerLiveInput?.({
+          conversationId,
+          targetRunId: laterRunId,
+          id: `cleanup-later-${outcome}`,
+          text: "cleanup later",
+          receivedAt: "2026-09-07T14:33:04.000Z",
+        });
+        await Promise.allSettled(later === undefined ? [owner] : [owner, later]);
+      }
+    },
+  );
+
   it("excludes a Monitor wake while preserving a ProcessJob wake in history and memory", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
