@@ -1464,10 +1464,13 @@ describe("WebService", () => {
     }
     // Forty messages later, the card is nowhere near the page a read answers with.
     expect(service.thread(thread.id).messages.some((message) => message.id === cardId)).toBe(false);
+    expect(service.thread(thread.id).thread.jobActivity).toEqual({ queued: 0, starting: 0, running: 1 });
 
     const invalidations: unknown[] = [];
+    const summaries: unknown[] = [];
     const unsubscribe = service.subscribe((event) => {
       if (event.type === "message.changed") invalidations.push(event.payload);
+      if (event.type === "thread.changed" || event.type === "threads.changed") summaries.push(event.payload);
     });
     const terminal = fakeProcessJob({
       conversationId: `web:${thread.id}`,
@@ -1486,6 +1489,16 @@ describe("WebService", () => {
     expect(invalidations).toEqual([
       { messageId: cardId, updatedAt: expect.any(String) },
     ]);
+    expect(summaries).toHaveLength(2);
+    for (const summary of summaries) {
+      expect(summary).toMatchObject({ thread: {
+        id: thread.id,
+        jobActivity: {
+          queued: 0, starting: 0, running: 0,
+          latestTerminal: { state: "succeeded", replyPreview: "Completed normally." },
+        },
+      } });
+    }
     unsubscribe();
     await service.stop();
   });
