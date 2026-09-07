@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
-import { createAgentHarness } from "../index.js";
-import type { AgentHarnessSessionOptions } from "../index.js";
+import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
+import type { AgentHarnessRequest, AgentHarnessSessionEvent, AgentHarnessSessionOptions } from "../index.js";
 
 const tempDirs: string[] = [];
 const defaultModel = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" } as const;
@@ -285,7 +285,207 @@ function slackOverrideRequest(conversationId: string, model: string) {
   };
 }
 
+function hostWakeMetadata(
+  metadata: Record<string, unknown>,
+  deliveryKey: string,
+  enumerable: boolean,
+): Record<string, unknown> {
+  Object.defineProperty(metadata, Symbol.for("mono-agent.process-job-wake.delivery-key.v1"), {
+    value: deliveryKey,
+    enumerable,
+    configurable: true,
+  });
+  return metadata;
+}
+
 describe("AgentHarness per-request override session isolation", () => {
+  it("gives an interactive different-model run same-run live input without joining the default session", async () => {
+    const identityPath = await identityFixture();
+    const historyStore = createInMemoryHistoryStore({ maxMessages: 20 });
+    const sessionEvents: AgentHarnessSessionEvent[] = [];
+    const base = createSessionFakeRuntime(async (call) => ({
+      text: `base-${String(call)}`,
+      providerSessionId: `base-session-${String(call)}`,
+    }));
+    const overrideCalls: FakeRuntimeCall[] = [];
+    const consumed: Array<{ readonly id: string | undefined; readonly body: string }> = [];
+    let overrideStarted!: () => void;
+    const started = new Promise<void>((resolve) => { overrideStarted = resolve; });
+    const overrideRuntime = {
+      async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        overrideCalls.push({ prompt, options });
+        overrideStarted();
+        const iterator = options.liveInput?.[Symbol.asyncIterator]();
+        if (iterator === undefined) throw new Error("Expected an isolated interactive mailbox.");
+        const next = await iterator.next();
+        if (next.done) throw new Error("Isolated interactive mailbox closed before delivery.");
+        consumed.push({ id: next.value.id, body: next.value.body });
+        next.value.acknowledge?.();
+        return { text: "override answer", providerSessionId: "override-session" };
+      },
+    };
+    let runNumber = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: defaultModel,
+      session: {
+        ...continuousSession,
+        onSessionEvent: (event) => { sessionEvents.push(event); },
+      },
+      historyStore,
+      runtimeForModel: () => overrideRuntime,
+      runtimeOptionsForRequest: ({ request: activeRequest }) => {
+        const web = (activeRequest.metadata as { web?: { model?: string } } | undefined)?.web;
+        return { runtimeOptions: web?.model === undefined ? {} : { model: claudeModel } };
+      },
+      createRunId: () => `run-${String(++runNumber)}`,
+    });
+
+    await harness.run(request("conv", "warm default"));
+    const running = harness.run({
+      conversationId: "conv",
+      userMessage: "different-model request",
+      abortSignal: new AbortController().signal,
+      metadata: { source: "web", web: { model: claudeModel.reference } },
+    });
+    await started;
+
+    const offer = harness.offerLiveInput?.({
+      conversationId: "conv",
+      targetRunId: "run-2",
+      id: "input-override-1",
+      text: "same-run constraint",
+      receivedAt: "2026-09-07T14:30:00.000Z",
+    });
+    expect(offer?.status).toBe("accepted");
+    await expect(running).resolves.toMatchObject({
+      text: "override answer",
+      metadata: { runId: "run-2" },
+    });
+    if (offer?.status === "accepted") {
+      await expect(offer.settled).resolves.toEqual({ status: "applied", runId: "run-2" });
+    }
+
+    expect(consumed).toEqual([{ id: "input-override-1", body: "same-run constraint" }]);
+    expect(overrideCalls).toHaveLength(1);
+    expect(overrideCalls[0]?.options).toMatchObject({ model: claudeModel });
+    expect(overrideCalls[0]?.options.sessionId).toBeUndefined();
+    expect(overrideCalls[0]?.options.providerSessionId).toBeUndefined();
+    expect(overrideCalls[0]?.options.sessionKeepAlive).toBeUndefined();
+    expect(overrideCalls[0]?.options.piSessionsRoot).toBeUndefined();
+    expect(sessionEvents).toContainEqual(expect.objectContaining({
+      kind: "isolated",
+      conversationId: "conv",
+      reason: "model_override",
+    }));
+    expect((await historyStore.load("conv")).filter((message) => message.runId === "run-2")).toMatchObject([
+      { role: "user", content: "different-model request", runId: "run-2" },
+      { role: "user", content: "same-run constraint", runId: "run-2" },
+      { role: "assistant", content: "override answer", runId: "run-2" },
+    ]);
+
+    await harness.run(request("conv", "resume default"));
+    expect(base.calls[1]?.options.sessionId).toBe("base-session-1");
+    expect(base.calls[1]?.options.providerSessionId).toBe("base-session-1");
+    expect(JSON.stringify(base.calls[1]?.options.messages)).not.toContain("same-run constraint");
+  });
+
+  it.each([
+    ["cron", () => ({ metadata: { cron: { model: claudeModel.reference } } })],
+    ["webhook", () => ({ metadata: { webhook: { model: claudeModel.reference } } })],
+    ["mixed web + cron", () => ({
+      metadata: {
+        source: "web",
+        web: { model: claudeModel.reference },
+        cron: { model: claudeModel.reference },
+      },
+    })],
+    ["mixed web + webhook", () => ({
+      metadata: {
+        source: "web",
+        web: { model: claudeModel.reference },
+        webhook: { model: claudeModel.reference },
+      },
+    })],
+    ["continuation", () => ({
+      metadata: { source: "web", web: { model: claudeModel.reference } },
+      continuation: {
+        continuationId: "continuation-1",
+        originRunId: "origin-run",
+        toolsDisabled: true as const,
+        deferHistoryCommit: true as const,
+        originContextPolicy: "detached_latest" as const,
+      },
+    })],
+    ["non-enumerable Web ProcessJob wake", () => ({
+      metadata: hostWakeMetadata(
+        { source: "web", web: { model: claudeModel.reference } },
+        "process-job:one:1",
+        false,
+      ),
+    })],
+    ["enumerable Slack Monitor wake", () => ({
+      metadata: hostWakeMetadata(
+        { slack: { model: claudeModel.reference } },
+        "monitor:one:1",
+        true,
+      ),
+    })],
+    ["enumerable Telegram ProcessJob wake", () => ({
+      metadata: hostWakeMetadata(
+        { telegram: { model: claudeModel.reference } },
+        "process-job:two:1",
+        true,
+      ),
+    })],
+  ] satisfies ReadonlyArray<readonly [string, () => Pick<AgentHarnessRequest, "metadata" | "continuation">]>)(
+    "keeps %s isolated model work mailbox-ineligible",
+    async (_name, requestFields) => {
+      const identityPath = await identityFixture();
+      let runtimeStarted!: () => void;
+      let releaseRuntime!: () => void;
+      const started = new Promise<void>((resolve) => { runtimeStarted = resolve; });
+      const release = new Promise<void>((resolve) => { releaseRuntime = resolve; });
+      const calls: FakeRuntimeCall[] = [];
+      const runtime = {
+        async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+          calls.push({ prompt, options });
+          runtimeStarted();
+          await release;
+          return { text: "isolated result" };
+        },
+      };
+      const harness = createAgentHarness({
+        identityPath,
+        runtime,
+        model: defaultModel,
+        runtimeForModel: () => runtime,
+        runtimeOptionsForRequest: () => ({ runtimeOptions: { model: claudeModel } }),
+        createRunId: () => "run-excluded",
+      });
+      const running = harness.run({
+        conversationId: "conv-excluded",
+        userMessage: "isolated work",
+        abortSignal: new AbortController().signal,
+        ...requestFields(),
+      });
+      await started;
+
+      expect(calls[0]?.options.liveInput).toBeUndefined();
+      expect(harness.offerLiveInput?.({
+        conversationId: "conv-excluded",
+        targetRunId: "run-excluded",
+        id: "input-excluded",
+        text: "must not be delivered",
+        receivedAt: "2026-09-07T14:31:00.000Z",
+      })).toEqual({ status: "unavailable", reason: "inactive" });
+
+      releaseRuntime();
+      await expect(running).resolves.toMatchObject({ text: "isolated result" });
+    },
+  );
+
   it("a model-override turn neither resumes nor persists the shared session", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
