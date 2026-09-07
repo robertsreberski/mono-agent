@@ -17,7 +17,9 @@ Network-facing defaults and guards differ by surface:
 | A2A provider | Loopback by default; public use should add bearer auth and TLS at a reverse proxy. |
 | Always-on web console | Binds `0.0.0.0:5050` by default and intentionally has no application login. |
 
-The web console's unauthenticated LAN/tailnet behavior is an explicit v1 product decision. It is an owner-equivalent operator surface: anyone who can reach it can read retained conversations, upload files, cancel turns, and instruct discovered agents. Use it only on a trusted LAN or tailnet, or start it with `mono-agent web start --loopback`. Host and Origin checks reduce browser request confusion but are not authentication, and plain LAN HTTP is not encrypted. Do not publish the port directly to the internet.
+The web console's unauthenticated LAN/tailnet behavior is an explicit v1 product decision. It is an owner-equivalent operator surface: anyone who can reach it can read retained conversations, upload files, cancel turns, instruct discovered agents, and operate provider-authentication flows. Use it only on a trusted LAN or tailnet, or start it with `mono-agent web start --loopback`. Host and Origin checks reduce browser request confusion but are not authentication, and plain LAN HTTP is not encrypted. Do not publish the port directly to the internet.
+
+Provider-auth routes are keyless when the addressed operator endpoint has no API key and otherwise require that endpoint's bearer. A network-reachable operator can inspect credential status, start or cancel login sessions, read device codes and authorization URLs, submit paste-back callbacks or API keys, and bind or replace a real provider credential in the agent's Pi auth store. That can change the account and billing identity used by the agent or disrupt provider access. This authority is accepted only under the owner-equivalent trusted-network boundary above; it is not a per-human authentication scheme.
 
 See [`docs/reference/setup-security.md`](./docs/reference/setup-security.md) for managed-runtime, secret-persistence, sandbox, and readiness guarantees.
 
