@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { NotifyDeliveryResult } from "@mono-agent/agent-contracts";
+import type { HostWakeDeliveryResult } from "@mono-agent/agent-contracts";
 import type {
   MonitorProcessHandle,
   MonitorProcessResult,
@@ -22,6 +22,7 @@ import {
   type MonitorWakeInput,
   type MonitorsServiceHandle,
 } from "../monitors-service.js";
+import { bindMonitorWakeContextToResponder, runWithMonitorWakeContext } from "../monitors-context.js";
 import { readMonitorStore, writeMonitorStore, type DurableMonitorRecord } from "../monitors-store.js";
 import type { ProcessJobOriginRecord } from "../process-jobs-store.js";
 
@@ -57,6 +58,7 @@ function settings(overrides: Partial<MonitorsSettings> = {}): MonitorsSettings {
     maxBatchBytes: MONITORS_DEFAULTS.maxBatchBytes,
     maxLineBytes: MONITORS_DEFAULTS.maxLineBytes,
     maxChainDepth: MONITORS_DEFAULTS.maxChainDepth,
+    maxWakeIntervalMs: MONITORS_DEFAULTS.maxWakeIntervalMs,
     rateLimit: { ...MONITORS_DEFAULTS.rateLimit },
     ...overrides,
   };
@@ -176,7 +178,7 @@ function fakeRequest(options: {
 describe("monitors service", () => {
   let stateDir: string;
   let wakes: MonitorWakeInput[];
-  let wakeResult: (input: MonitorWakeInput) => NotifyDeliveryResult;
+  let wakeResult: (input: MonitorWakeInput) => HostWakeDeliveryResult;
   let holdFirstWake: Promise<void> | undefined;
   let warnings: string[];
   let service: MonitorsServiceHandle | undefined;
@@ -311,6 +313,9 @@ describe("monitors service", () => {
       startedAt: now.toISOString(),
       maxRuntimeMs: 120_000,
       persistent: false,
+      wakeOn: "batch",
+      dedupe: "none",
+      minWakeIntervalMs: 0,
     });
     expect(wakes).toHaveLength(0);
   });
@@ -343,6 +348,202 @@ describe("monitors service", () => {
     expect(body.events).toEqual(["first", "second"]);
     expect(body.seq).toBe(1);
     expect(wakes[0]!.deliveryKey).toBe("monitor:mon-1:1");
+  });
+
+  it("clamps and reports the effective wake interval and rejects exit-only combinations", async () => {
+    const handle = await open({ maxWakeIntervalMs: 500 });
+    const fake = fakeRequest();
+    expect(await handle.controller(origin(), 0).start({
+      ...fake.request, dedupe: "batch", minWakeIntervalMs: 99_999,
+    })).toMatchObject({ wakeOn: "batch", dedupe: "batch", minWakeIntervalMs: 500 });
+    for (const policy of [{ wakeOn: "exit", dedupe: "batch" }, { wakeOn: "exit", minWakeIntervalMs: 1 }]) {
+      const invalid = fakeRequest();
+      await expect(handle.controller(origin("telegram:43"), 0).start({
+        ...invalid.request, ...policy,
+      } as MonitorStartRequest)).rejects.toMatchObject({ code: "monitor_invalid" });
+      expect(invalid.cleanupCalls()).toBe(1);
+    }
+  });
+
+  it("suppresses ANSI-equivalent consecutive batches before inference while preserving meaningful changes", async () => {
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch" });
+    fake.process().emit("\u001b[31mready\u001b[0m\n");
+    await waitForWakes(1);
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.batchesDelivered).toBe(1));
+    fake.process().emit("\u001b]0;title\u0007\u001b[2Kready\n");
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.batchesSuppressed).toBe(1));
+    expect(wakes).toHaveLength(1);
+    for (const changed of ["ready ", " ready", "ready 12:00:01", "ready 12:00:02", "changed"]) {
+      const count = wakes.length + 1;
+      fake.process().emit(changed + "\n");
+      await waitForWakes(count);
+      await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.batchesDelivered).toBe(count));
+    }
+    const persisted = await readFile(join(stateDir, "monitors-v1.json"), "utf8");
+    expect(persisted).not.toContain("fingerprint");
+    expect(persisted).not.toContain("ready");
+    expect((await readMonitorStore(stateDir)).snapshot.records[0]).toMatchObject({
+      schemaVersion: 2, batchesSuppressed: 1, linesSuppressed: 1,
+    });
+  });
+
+  it.each([1, 200])("retains one representative of an interval-delayed duplicate at line cap %s; terminal bypasses the floor", async (maxBatchLines) => {
+    const handle = await open({ maxBatchLines }, { now: () => new Date() });
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch", minWakeIntervalMs: 10_000 });
+    fake.process().emit("first\n");
+    await waitForWakes(1);
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.batchesDelivered).toBe(1));
+    fake.process().emit("second\n");
+    await pause(TEST_COALESCE_MS * 3);
+    fake.process().emit("second\n");
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(1));
+    expect(wakes).toHaveLength(1);
+    await fake.process().finish();
+    await waitForWakes(2);
+    expect(wakes[1]!.projection.state).toBe("exited");
+    expect(JSON.parse(fenced(wakes[1]!.prompt)).events).toEqual(["second"]);
+    expect(JSON.parse(fenced(wakes[1]!.prompt))).toMatchObject({ batchesSuppressed: 1, linesSuppressed: 1 });
+    await vi.waitFor(async () => {
+      const counters = (await handle.get("mon-1"))!.counters;
+      expect(counters.linesDelivered + counters.linesSuppressed + counters.droppedLines + counters.pendingLines)
+        .toBe(counters.linesObserved);
+    });
+  });
+
+  it("accumulates distinct coalesced candidates into the next permitted wake", async () => {
+    const handle = await open({}, { now: () => new Date() });
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, minWakeIntervalMs: 250 });
+    fake.process().emit("first\n");
+    await waitForWakes(1);
+    fake.process().emit("second-a\nsecond-b\n");
+    await pause(TEST_COALESCE_MS * 3);
+    fake.process().emit("third\n");
+    await pause(TEST_COALESCE_MS * 3);
+    expect(wakes).toHaveLength(1);
+    await waitForWakes(2);
+    expect(JSON.parse(fenced(wakes[1]!.prompt)).events).toEqual(["second-a", "second-b", "third"]);
+    await pause(300);
+    expect(wakes).toHaveLength(2);
+  });
+
+  it.each([false, true])("failed or ambiguous delivery does not seed suppression (ambiguous=%s)", async (ambiguous) => {
+    wakeResult = () => ({ delivered: false, retryable: false, ambiguous });
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch" });
+    fake.process().emit("repeat\n");
+    await waitForWakes(1);
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.droppedLines).toBe(1));
+    fake.process().emit("repeat\n");
+    await waitForWakes(2);
+    expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(0);
+  });
+
+  it("does not suppress against a delivery whose outcome is still unknown", async () => {
+    let release!: () => void;
+    holdFirstWake = new Promise<void>((resolve) => { release = resolve; });
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch" });
+    fake.process().emit("repeat\n");
+    await waitForWakes(1);
+    fake.process().emit("repeat\n");
+    await pause(TEST_COALESCE_MS * 3);
+    expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(0);
+    release();
+    await waitForWakes(2);
+  });
+
+  it("retains a dedupe representative across a refused or unpersisted dispatch", async () => {
+    let persistDispatch = false;
+    const handle = await open({}, {
+      writeStore: async (root, records) => {
+        if (!persistDispatch && records.some((record) => record.seq > 0)) throw new Error("blocked write");
+        await writeMonitorStore(root, records);
+      },
+    });
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch" });
+    fake.process().emit("repeat\n");
+    await vi.waitFor(() => expect(warnings.some((warning) => warning.includes("withheld"))).toBe(true));
+    fake.process().emit("repeat\n");
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(1));
+    expect(wakes).toHaveLength(0);
+    wakeResult = () => ({ delivered: false, code: "conversation_busy", retryable: true });
+    persistDispatch = true;
+    await waitUntil(() => wakes.length > 0);
+    await pause(50);
+    fake.process().emit("repeat\n");
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(2));
+    wakeResult = () => ({ delivered: true, disposition: "follow_up" });
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesDelivered).toBe(1));
+    const counters = (await handle.get("mon-1"))!.counters;
+    expect(counters.droppedLines).toBe(0);
+    expect(counters.linesObserved).toBe(3);
+  });
+
+  it("a verified silently consumed batch can suppress its next duplicate", async () => {
+    const handle = await open({}, {
+      wake: async (input) => {
+        wakes.push(input);
+        const responder = bindMonitorWakeContextToResponder({
+          respond: async () => ({ text: "NOTHING_TO_REPORT" }),
+        });
+        await runWithMonitorWakeContext({ monitorId: input.projection.monitorId, chainDepth: input.chainDepth },
+          async () => await responder.respond({
+            conversationId: input.conversationId, userMessage: input.prompt, metadata: {},
+          } as never, {} as never), input.deliveryKey);
+        return { delivered: false, reason: "agent produced no answer", disposition: "follow_up" };
+      },
+    });
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch" });
+    fake.process().emit("unchanged\n");
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesDelivered).toBe(1));
+    fake.process().emit("unchanged\n");
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(1));
+    expect(wakes).toHaveLength(1);
+  });
+
+  it.each(["exited", "timed_out", "cancelled"] as const)("exit-only has one bounded terminal wake on %s", async (state) => {
+    const handle = await open({ maxBatchLines: 2 });
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, wakeOn: "exit" });
+    fake.process().emit("old\nlast-a\nlast-b\n");
+    fake.process().emitStderr("diagnostic");
+    await pause(TEST_COALESCE_MS * 3);
+    expect(wakes).toHaveLength(0);
+    if (state === "cancelled") await handle.cancel("mon-1");
+    else await fake.process().finish(state === "timed_out" ? { timedOut: true } : { code: 7 });
+    await waitForWakes(1);
+    const body = JSON.parse(fenced(wakes[0]!.prompt));
+    expect(body).toMatchObject({ state, events: ["last-a", "last-b"], droppedLines: 1, stderrTail: "diagnostic" });
+    if (state === "cancelled") expect(wakes[0]!.prompt).toContain("Do not automatically recreate it");
+  });
+
+  it("persists honest wake dispositions without treating batches as model turns", async () => {
+    const dispositions = ["steered", "follow_up", undefined] as const;
+    wakeResult = (input) => {
+      const disposition = dispositions[input.projection.counters.seq - 1];
+      return { delivered: true, ...(disposition === undefined ? {} : { disposition }) };
+    };
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start(fake.request);
+    for (let index = 0; index < 3; index += 1) {
+      fake.process().emit(String(index) + "\n");
+      await waitForWakes(index + 1);
+    }
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters).toMatchObject({
+      steeredWakes: 1, followUpWakes: 1, unknownDispositionWakes: 1,
+    }));
+    await vi.waitFor(async () => expect((await readMonitorStore(stateDir)).snapshot.records[0]).toMatchObject({
+      steeredWakes: 1, followUpWakes: 1, unknownDispositionWakes: 1,
+    }));
   });
 
   it("holds a partial line until its newline arrives", async () => {
@@ -791,12 +992,20 @@ describe("monitors service", () => {
 
   it("does not replay a terminal wake that already settled before the restart", async () => {
     const record: DurableMonitorRecord = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       monitorId: "old-1",
       state: "exited",
       description: "Watching something that already ended",
       summary: "Monitor command (1 characters; content redacted)",
       persistent: false,
+      wakeOn: "batch",
+      dedupe: "none",
+      minWakeIntervalMs: 0,
+      batchesSuppressed: 0,
+      linesSuppressed: 0,
+      followUpWakes: 0,
+      steeredWakes: 0,
+      unknownDispositionWakes: 1,
       origin: origin(),
       chainDepth: 0,
       agentIncarnation: AGENT_INCARNATION,
@@ -821,12 +1030,70 @@ describe("monitors service", () => {
       droppedLines: 0,
       pendingLines: 0,
       terminalWakePending: false,
+      inFlightWakeLines: null,
       lastError: null,
     };
     await writeMonitorStore(stateDir, [record]);
     const handle = await open();
     expect(wakes).toHaveLength(0);
     expect(await handle.list()).toHaveLength(0);
+  });
+
+  it("migrates the v1 state filename to v2 defaults and rejects malformed v2", async () => {
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start(fake.request);
+    fake.process().emit("event\n");
+    await waitForWakes(1);
+    await handle.stop();
+    service = undefined;
+    const file = join(stateDir, "monitors-v1.json");
+    const raw = JSON.parse(await readFile(file, "utf8"));
+    for (const record of raw.records) {
+      record.schemaVersion = 1;
+      for (const key of ["wakeOn", "dedupe", "minWakeIntervalMs", "batchesSuppressed", "linesSuppressed",
+        "followUpWakes", "steeredWakes", "unknownDispositionWakes", "inFlightWakeLines"]) delete record[key];
+    }
+    raw.schemaVersion = 1;
+    await writeFile(file, JSON.stringify(raw), { mode: 0o600 });
+    const migrated = await readMonitorStore(stateDir);
+    expect(migrated.corrupt, JSON.stringify({ reason: migrated.reason, records: raw.records })).toBe(false);
+    expect(migrated.snapshot.schemaVersion).toBe(2);
+    expect(migrated.snapshot.records[0]).toMatchObject({
+      wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0, batchesSuppressed: 0, linesSuppressed: 0,
+      followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: raw.records[0].batchesDelivered,
+    });
+    await writeMonitorStore(stateDir, migrated.snapshot.records);
+    const v2 = JSON.parse(await readFile(file, "utf8"));
+    delete v2.records[0].linesSuppressed;
+    await writeFile(file, JSON.stringify(v2), { mode: 0o600 });
+    expect((await readMonitorStore(stateDir)).corrupt).toBe(true);
+  });
+
+  it("recovers an unresolved v2 dispatch as unknown without replaying transient output", async () => {
+    let release!: () => void;
+    holdFirstWake = new Promise<void>((resolve) => { release = resolve; });
+    const handle = await open();
+    const fake = fakeRequest();
+    await handle.controller(origin(), 0).start({ ...fake.request, dedupe: "batch" });
+    fake.process().emit("transient\n");
+    await waitForWakes(1);
+    const path = join(stateDir, "monitors-v1.json");
+    const crashSnapshot = await readFile(path, "utf8");
+    expect(JSON.parse(crashSnapshot).records[0].inFlightWakeLines).toBe(1);
+    await handle.stop();
+    release();
+    service = undefined;
+    await writeFile(path, crashSnapshot, { mode: 0o600 });
+    const recovered = await reopen();
+    expect((await recovered.get("mon-1"))?.counters).toMatchObject({
+      unknownDispositionWakes: 1, droppedLines: 1, linesDelivered: 0,
+    });
+    await recovered.activateWakes();
+    await waitForWakes(2);
+    expect(wakes[1]!.projection.state).toBe("interrupted");
+    expect(JSON.parse(fenced(wakes[1]!.prompt)).events).toEqual([]);
+    expect(wakes[1]!.prompt).not.toContain("transient");
   });
 
   it("refuses to open on unreadable state, and keeps refusing until it is resolved", async () => {

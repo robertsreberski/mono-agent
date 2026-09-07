@@ -504,6 +504,11 @@ ledger; postconditions check the required effects.
    repeated steering cards. The browser may be closed, but the web service must
    remain running.
 
+Monitor activity shows suppressed lines/batches and follow-up, steered, or
+unknown wake dispositions. These are host delivery counts, not model-turn or
+cost estimates. Historical v1 Monitor projections in SQLite and browser caches
+remain readable alongside v2 projections.
+
 ### Package structure
 
 | Source area | Responsibility |

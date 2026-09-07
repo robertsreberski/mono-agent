@@ -63,11 +63,18 @@ export interface MonitorStartRequest {
   readonly timeoutMs?: number;
   /** Run until MonitorStop, agent restart, or the host persistent ceiling. */
   readonly persistent?: boolean;
+  readonly wakeOn?: "batch" | "exit";
+  readonly dedupe?: "none" | "batch";
+  readonly minWakeIntervalMs?: number;
   /** One-shot launcher bound to the exact prepared command and POSIX group wait. */
   readonly launch: (options?: MonitorLaunchOptions) => MonitorProcessHandle;
 }
 
 export interface MonitorStartResult {
+  /** Effective policy after the host clamps the requested interval. */
+  readonly wakeOn: "batch" | "exit";
+  readonly dedupe: "none" | "batch";
+  readonly minWakeIntervalMs: number;
   readonly monitorId: string;
   readonly state: Extract<MonitorState, "starting" | "running">;
   readonly startedAt: string;
@@ -93,6 +100,7 @@ export interface MonitorControllerLimits {
   /** Ceiling for a persistent monitor. */
   readonly persistentMaxRuntimeMs: number;
   readonly maxActivePerConversation: number;
+  readonly maxWakeIntervalMs?: number;
 }
 
 /** Request-scoped host controller injected only into the Pi-native Monitor tools. */
@@ -136,7 +144,11 @@ function bridgedLimits(
   if (!positive(maxRuntimeMs) || !positive(persistentMaxRuntimeMs) || !positive(maxActivePerConversation)) {
     return undefined;
   }
-  return Object.freeze({ maxRuntimeMs, persistentMaxRuntimeMs, maxActivePerConversation });
+  const maxWakeIntervalMs = limits.maxWakeIntervalMs;
+  return Object.freeze({
+    maxRuntimeMs, persistentMaxRuntimeMs, maxActivePerConversation,
+    ...(positive(maxWakeIntervalMs) && maxWakeIntervalMs <= 300_000 ? { maxWakeIntervalMs } : {}),
+  });
 }
 
 function positive(value: unknown): value is number {
@@ -157,6 +169,12 @@ function assertKernelStartRequest(request: MonitorStartRequest): void {
     || typeof request.prepared.cwd !== "string"
     || typeof request.prepared.sandboxed !== "boolean"
     || (request.persistent !== undefined && typeof request.persistent !== "boolean")
+    || (request.wakeOn !== undefined && !["batch", "exit"].includes(request.wakeOn))
+    || (request.dedupe !== undefined && !["none", "batch"].includes(request.dedupe))
+    || (request.minWakeIntervalMs !== undefined
+      && (!Number.isSafeInteger(request.minWakeIntervalMs) || request.minWakeIntervalMs < 0))
+    || (request.wakeOn === "exit"
+      && ((request.dedupe ?? "none") !== "none" || (request.minWakeIntervalMs ?? 0) !== 0))
     || (request.timeoutMs !== undefined
       && (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0))) {
     throw new TypeError("Kernel monitor start request is invalid.");

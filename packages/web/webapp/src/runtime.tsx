@@ -162,7 +162,7 @@ const monitorIdForMessage = (message: WebMessage): string | undefined => {
       if (projection === null || typeof projection !== "object" || Array.isArray(projection)) return undefined;
       const record = projection as Record<string, unknown>;
       const candidate = record.monitorId;
-      if (record.schema !== "mono-agent.monitor-projection.v1"
+      if ((record.schema !== "mono-agent.monitor-projection.v1" && record.schema !== "mono-agent.monitor-projection.v2")
         || typeof candidate !== "string"
         || candidate.trim().length === 0
         || new TextEncoder().encode(candidate).byteLength > MONITOR_ID_MAX_BYTES) {

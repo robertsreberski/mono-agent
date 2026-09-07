@@ -180,17 +180,27 @@ function renderHuman(
 ): string {
   if (action !== "list") {
     const monitor = result as MonitorProjection;
-    return `${monitor.monitorId}: ${monitor.state}${monitor.persistent ? " (persistent)" : ""} ${monitor.description}\n`;
+    return [
+      `${monitor.monitorId}: ${monitor.state}${monitor.persistent ? " (persistent)" : ""} ${monitor.description}`,
+      `Wake policy: ${monitor.limits.wakeOn}, dedupe ${monitor.limits.dedupe}, minimum interval ${String(monitor.limits.minWakeIntervalMs)} ms`,
+      `Suppressed: ${String(monitor.counters.batchesSuppressed)} batches / ${String(monitor.counters.linesSuppressed)} lines`,
+      `Wakes: ${String(monitor.counters.followUpWakes)} follow-up / ${String(monitor.counters.steeredWakes)} steered / ${String(monitor.counters.unknownDispositionWakes)} unknown disposition`,
+      "",
+    ].join("\n");
   }
   const monitors = (result as { readonly monitors: readonly MonitorProjection[] }).monitors;
   if (monitors.length === 0) return "No monitors recorded.\n";
   return [
-    "MONITOR                              STATE        SEQ   DROPPED  STARTED                  DESCRIPTION",
+    "MONITOR                              STATE        SEQ   DROPPED  SUPPRESSED  FOLLOW-UP STEERED UNKNOWN  STARTED                  DESCRIPTION",
     ...monitors.map((monitor) => [
       monitor.monitorId.padEnd(36),
       monitor.state.padEnd(12),
       String(monitor.counters.seq).padEnd(5),
       String(monitor.counters.droppedLines).padEnd(8),
+      String(monitor.counters.linesSuppressed).padEnd(11),
+      String(monitor.counters.followUpWakes).padEnd(9),
+      String(monitor.counters.steeredWakes).padEnd(7),
+      String(monitor.counters.unknownDispositionWakes).padEnd(8),
       monitor.timestamps.startedAt.padEnd(24),
       monitor.description,
     ].join(" ")),

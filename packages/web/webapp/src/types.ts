@@ -98,7 +98,7 @@ export type MonitorState =
 
 /** Secret-free Monitor state retained by the Web console for activity display. */
 export interface MonitorProjection {
-  readonly schema: "mono-agent.monitor-projection.v1";
+  readonly schema: "mono-agent.monitor-projection.v1" | "mono-agent.monitor-projection.v2";
   readonly monitorId: string;
   readonly state: MonitorState;
   readonly description: string;
@@ -116,6 +116,9 @@ export interface MonitorProjection {
     readonly completedAt: string | null;
   };
   readonly limits: {
+    readonly wakeOn?: "batch" | "exit";
+    readonly dedupe?: "none" | "batch";
+    readonly minWakeIntervalMs?: number;
     readonly maxRuntimeMs: number;
     readonly coalesceMs: number;
     readonly maxBatchLines: number;
@@ -123,6 +126,11 @@ export interface MonitorProjection {
     readonly chainDepth: number;
   };
   readonly counters: {
+    readonly batchesSuppressed?: number;
+    readonly linesSuppressed?: number;
+    readonly followUpWakes?: number;
+    readonly steeredWakes?: number;
+    readonly unknownDispositionWakes?: number;
     readonly seq: number;
     readonly batchesDelivered: number;
     readonly linesObserved: number;

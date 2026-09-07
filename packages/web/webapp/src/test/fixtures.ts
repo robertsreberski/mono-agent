@@ -117,7 +117,7 @@ export const processJob = (
 export const monitor = (
   overrides: Partial<MonitorProjection> = {},
 ): MonitorProjection => ({
-  schema: "mono-agent.monitor-projection.v1",
+    schema: "mono-agent.monitor-projection.v2",
   monitorId: "22222222-2222-4222-8222-222222222222",
   state: "running",
   description: "Watch the worker queue",
@@ -134,14 +134,14 @@ export const monitor = (
     lastEventAt: "2026-07-17T10:00:03.000Z",
     completedAt: null,
   },
-  limits: {
+  limits: { wakeOn: "batch", dedupe: "none", minWakeIntervalMs: 0,
     maxRuntimeMs: 1_800_000,
     coalesceMs: 200,
     maxBatchLines: 100,
     maxBatchBytes: 16_384,
     chainDepth: 0,
   },
-  counters: {
+  counters: { batchesSuppressed: 0, linesSuppressed: 0, followUpWakes: 0, steeredWakes: 0, unknownDispositionWakes: 0,
     seq: 2,
     batchesDelivered: 2,
     linesObserved: 4,

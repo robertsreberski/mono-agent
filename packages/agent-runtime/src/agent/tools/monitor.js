@@ -37,11 +37,11 @@ export function normalizeMonitorTimeoutMs(value, fallback = DEFAULT_MONITOR_TIME
  * cleaned startup environment, and the same sandbox `prepareCommand` seam. A
  * monitor must never be a way to run a command Bash could not.
  *
- * @param {{command?: string, description?: string, timeout_ms?: number, persistent?: boolean, workdir?: string}} params
+ * @param {{command?: string, description?: string, timeout_ms?: number, persistent?: boolean, workdir?: string, wake_on?: "batch"|"exit", dedupe?: "none"|"batch", min_wake_interval_ms?: number}} params
  * @param {{signal?: AbortSignal, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, monitorsController?: import("./shared/monitors.js").MonitorsController}} [options]
  */
 export async function monitorToolRun(
-  { command, description, timeout_ms, persistent, workdir },
+  { command, description, timeout_ms, persistent, workdir, wake_on = "batch", dedupe = "none", min_wake_interval_ms = 0 },
   { sandboxPolicy, sandboxEngine, ctx, monitorsController } = {},
 ) {
   const startedAt = Date.now();
@@ -56,6 +56,12 @@ export async function monitorToolRun(
   }
   if (typeof description !== "string" || description.trim().length === 0) {
     return failed("Error: Monitor description is required.", "monitor_invalid", startedAt);
+  }
+  if (!["batch", "exit"].includes(wake_on)
+    || !["none", "batch"].includes(dedupe)
+    || !Number.isSafeInteger(min_wake_interval_ms) || min_wake_interval_ms < 0
+    || (wake_on === "exit" && (dedupe !== "none" || min_wake_interval_ms !== 0))) {
+    return failed("Error: Invalid Monitor wake policy; exit-only requires dedupe none and interval 0.", "monitor_invalid", startedAt);
   }
   const resolvedCtx = ctx ?? readToolRuntime();
   const sandbox = resolvedCtx.sandbox ?? passthroughSandbox;
@@ -98,6 +104,9 @@ export async function monitorToolRun(
     // an ignored field look honoured in the durable record.
     ...(isPersistent ? {} : { timeoutMs: normalizeMonitorTimeoutMs(timeout_ms) }),
     persistent: isPersistent,
+    wakeOn: wake_on,
+    dedupe,
+    minWakeIntervalMs: min_wake_interval_ms,
     startedAt,
     failed,
   });
