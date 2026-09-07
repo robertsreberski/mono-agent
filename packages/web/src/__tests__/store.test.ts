@@ -1101,17 +1101,23 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("promotes a queued follow-up into the next durable turn", async () => {
+  it("promotes a queued follow-up with the idle thread's captured route", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
     store.replaceAgents([agent()]);
     const thread = store.createThread("agent-one");
+    store.patchThread(thread.id, { model: "provider/queued", effort: "high" });
     const reserved = store.reserveLiveInput(thread.id, "Run after the current work");
     expect(reserved).toMatchObject({ offered: false, message: { liveInputStatus: "queued" } });
 
     const promoted = store.promoteNextQueuedLiveInput(thread.id);
     expect(promoted).toMatchObject({ text: "Run after the current work", userMessageId: reserved.message.id });
+    expect(promoted?.thread.runState).toMatchObject({
+      status: "running",
+      model: "provider/queued",
+      effort: "high",
+    });
     expect(store.getThreadDetail(thread.id)?.messages).toEqual([
       expect.objectContaining({
         id: reserved.message.id,
@@ -1121,6 +1127,31 @@ describe("WebStore", () => {
       }),
       expect.objectContaining({ role: "assistant", status: "running" }),
     ]);
+    if (promoted !== undefined) store.completeTurn(promoted.turnId, "Done");
+    store.close();
+  });
+
+  it("keeps an active default-routed turn's null route when its follow-up is promoted", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    store.patchThread(thread.id, { model: "provider/thread", effort: "high" });
+    const active = store.beginTurn({
+      threadId: thread.id,
+      text: "Use the agent defaults for this turn",
+      attachmentIds: [],
+    });
+    const reserved = store.reserveLiveInput(thread.id, "Keep the active route");
+    expect(reserved.offered).toBe(true);
+    expect(store.queueLiveInput(reserved.input.id)?.liveInputStatus).toBe("queued");
+    store.completeTurn(active.turnId, "Done");
+
+    const promoted = store.promoteNextQueuedLiveInput(thread.id);
+    expect(promoted?.thread.runState.status).toBe("running");
+    expect(promoted?.thread.runState.model).toBeUndefined();
+    expect(promoted?.thread.runState.effort).toBeUndefined();
     if (promoted !== undefined) store.completeTurn(promoted.turnId, "Done");
     store.close();
   });

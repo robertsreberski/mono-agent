@@ -5030,24 +5030,30 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [patchRunState, publishDetail, refreshSelectedThread, selectedThreadId]);
 
   const sendLiveInput = useCallback(async (text: string) => {
-    if (!selectedThreadId) throw new Error("Select a conversation before sending a follow-up.");
+    const threadId = selectedThreadId;
+    if (!threadId) throw new Error("Select a conversation before sending a follow-up.");
     try {
-      const receipt = await api.liveInput(selectedThreadId, text);
+      // A forced steer can be queued into an idle conversation and promoted as
+      // an ordinary turn. Hold it behind any route write the operator issued
+      // first, exactly as sendTurn does, and keep its destination even if the
+      // operator changes conversations while this wait is outstanding.
+      await settleThreadWrites(threadId);
+      const receipt = await api.liveInput(threadId, text);
       // Merged by version like any other projection. `replace` is for an answer
       // that is authoritative WITHOUT being newer -- the cron activity read --
       // and this is not one: a repair that landed while this receipt was on the
       // wire is a later version of the same row, and forcing this one over it
       // walked the transcript backwards.
-      if (threadCacheRef.current.upsertMessage(selectedThreadId, receipt.message)) {
-        publishDetail(selectedThreadId);
+      if (threadCacheRef.current.upsertMessage(threadId, receipt.message)) {
+        publishDetail(threadId);
       }
       setActionError(null);
-      refreshSelectedThread();
+      if (selectedThreadRef.current === threadId) refreshSelectedThread();
     } catch (liveInputError) {
       setActionError(errorMessage(liveInputError));
       throw liveInputError;
     }
-  }, [publishDetail, refreshSelectedThread, selectedThreadId]);
+  }, [publishDetail, refreshSelectedThread, selectedThreadId, settleThreadWrites]);
 
   const value = useMemo<ConsoleStoreValue>(
     () => ({
