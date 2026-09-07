@@ -68,6 +68,7 @@ import type {
   WebMessage,
 } from "./types";
 import { WebRuntimeProvider } from "./runtime";
+import { threadPresentation } from "./thread-presentation";
 import { NotificationsProvider } from "./notifications";
 import { AgentRail } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
@@ -3872,6 +3873,56 @@ describe("ConsoleStoreProvider integration", () => {
       expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
     });
 
+    it("updates background job status in a closed conversation and rejects stale summaries", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+      const running = { ...other, revision: 2, jobActivity: { queued: 0, starting: 0, running: 2 } };
+      const row = () => store.current.threads.find((item) => item.id === other.id)!;
+      emit("threads.changed", { threadId: other.id, payload: { thread: running } });
+      await waitFor(() => expect(threadPresentation(row())).toEqual({
+        text: "2 background jobs running", active: true,
+      }));
+      const complete = { ...running, revision: 3, jobActivity: {
+        queued: 0, starting: 0, running: 0,
+        latestTerminal: { state: "succeeded" as const, completedAt: "2026-08-14T09:00:00.000Z",
+          replyPreview: "Background results" },
+      } };
+      emit("thread.changed", { threadId: other.id, payload: { thread: complete } });
+      await waitFor(() => expect(threadPresentation(row())).toEqual({
+        text: "Background results", active: false,
+      }));
+      emit("threads.changed", { threadId: other.id, payload: { thread: running } });
+      emit("thread.changed", { threadId: other.id, payload: { thread: running } });
+      await quiet();
+      expect(row().revision).toBe(3);
+      expect(threadPresentation(row())).toEqual({ text: "Background results", active: false });
+      expect(store.current.selectedThreadId).toBe(selected.id);
+      expect(vi.mocked(api.thread).mock.calls.length).toBe(detailReads);
+      expect(api.threads).not.toHaveBeenCalled();
+    });
+
+    it("repairs closed-conversation job status after a stream gap", async () => {
+      seedTwoThreads();
+      const store = await openedOnAlpha();
+      const running = { ...other, revision: 2, jobActivity: { queued: 0, starting: 0, running: 1 } };
+      emit("thread.changed", { threadId: other.id, payload: { thread: running } });
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === other.id)?.jobActivity?.running).toBe(1));
+      const complete = { ...running, revision: 3, jobActivity: {
+        queued: 0, starting: 0, running: 0,
+        latestTerminal: { state: "cancelled" as const, completedAt: "2026-08-14T09:00:00.000Z" },
+      } };
+      vi.mocked(api.threads).mockResolvedValue({ threads: [selected, complete] });
+      vi.mocked(api.threadIfChanged).mockResolvedValue(detail(selected, "hello"));
+      act(() => FakeEventSource.latest?.onerror?.(new Event("error")));
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      emit("ready", { payload: { version: 1 } });
+      await quiet(THREAD_LIST_REVALIDATE_DEBOUNCE_MS + 200);
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === other.id)?.revision).toBe(3));
+      expect(threadPresentation(store.current.threads.find((item) => item.id === other.id)!))
+        .toEqual({ text: "Background job cancelled", active: false });
+    });
+
     it("merges the conversation an event already carries rather than refetching it", async () => {
       seedTwoThreads();
       const store = await openedOnAlpha();
@@ -6549,6 +6600,31 @@ describe("ConsoleStoreProvider integration", () => {
         },
       };
     };
+
+    it("replaces device-restored background activity with the current server outcome", async () => {
+      const running = { ...beta, revision: 2, jobActivity: { queued: 0, starting: 0, running: 1 } };
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")])],
+        listing: [alpha, running], openedOn: alpha.id,
+      });
+      let release!: () => void;
+      const complete = { ...running, revision: 3, jobActivity: {
+        queued: 0, starting: 0, running: 0,
+        latestTerminal: { state: "succeeded" as const, completedAt: "2026-08-14T09:00:00.000Z",
+          replyPreview: "Finished while away" },
+      } };
+      vi.mocked(api.bootstrap).mockImplementation(() => new Promise((resolve) => {
+        release = () => resolve(bootstrap(agents, [alpha, complete], undefined, { threadsSourceId: "alpha" }));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue({ thread: alpha, messages: [kept("m1", "kept transcript")] });
+      const store = openConsole();
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === beta.id)?.jobActivity?.running).toBe(1));
+      act(() => release());
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await waitFor(() => expect(store.current.threads.find((item) => item.id === beta.id)?.revision).toBe(3));
+      expect(threadPresentation(store.current.threads.find((item) => item.id === beta.id)!))
+        .toEqual({ text: "Finished while away", active: false });
+    });
 
     it("repairs a device-restored idle row after the first stream subscribes", async () => {
       await previousVisit({

@@ -51,6 +51,7 @@ import {
   type WebRunSelection,
   type WebRunTransition,
   type WebThread,
+  type WebJobActivity,
   type WebToolCall,
   type WebThreadDetail,
   type WebThreadPage,
@@ -4640,6 +4641,7 @@ export class WebStore {
   private mapThread(row: ThreadRow): WebThread {
     const runState = this.latestRunState(row.id);
     const preview = this.lastMessagePreview(row.id);
+    const jobActivity = this.jobActivity(row.id);
     return {
       id: row.id,
       sourceId: row.source_id,
@@ -4662,6 +4664,7 @@ export class WebStore {
       ...(preview === undefined ? {} : { lastMessagePreview: preview }),
       messageCount: row.message_count,
       runState,
+      ...(jobActivity === undefined ? {} : { jobActivity }),
       canSend: row.can_send === 1,
       canUpload: row.can_upload === 1,
       runModel: row.run_model,
@@ -4850,12 +4853,59 @@ export class WebStore {
       .get(threadId) as unknown as MessageRow | undefined;
     if (row === undefined) return undefined;
     const text = this.mapMessage(row).parts
-      .filter((part): part is Extract<WebMessagePart, { type: "text" | "reasoning" }> => part.type === "text" || part.type === "reasoning")
-      .map((part) => part.text)
+      .flatMap((part) => part.type === "text" ? [part.text]
+        : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
       .join(" ")
       .replace(/\s+/gu, " ")
       .trim();
     return text.length === 0 ? undefined : text.slice(0, 160);
+  }
+
+  private jobActivity(threadId: string): WebJobActivity | undefined {
+    // Read only retained job cards, including those behind the message page.
+    // Aggregate in SQLite so neither transcripts nor output tails are loaded
+    // into the listing. These rows already advance the thread's revision.
+    const row = this.database.prepare(`
+      WITH jobs AS (
+        SELECT json_extract(part.value, '$.job.state') AS state,
+               json_extract(part.value, '$.job.timestamps.completedAt') AS completed_at,
+               c.response_text, m.rowid AS ordinal
+        FROM messages m
+        JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
+        JOIN json_each(m.parts_json) part
+        WHERE m.thread_id = ? AND json_extract(part.value, '$.type') = 'process-job'
+      )
+      SELECT count(*) AS total,
+             count(*) FILTER (WHERE state = 'queued') AS queued,
+             count(*) FILTER (WHERE state = 'starting') AS starting,
+             count(*) FILTER (WHERE state = 'running') AS running,
+             (SELECT json_object('state', state, 'completedAt', completed_at, 'reply', response_text)
+              FROM jobs WHERE completed_at IS NOT NULL
+              ORDER BY julianday(completed_at) DESC, (state <> 'succeeded') DESC, ordinal DESC
+              LIMIT 1) AS latest_terminal
+      FROM jobs
+    `).get(threadId) as unknown as {
+      total: number; queued: number; starting: number; running: number; latest_terminal: string | null;
+    };
+    if (row.total === 0) return undefined;
+    const terminal = row.latest_terminal === null ? undefined : JSON.parse(row.latest_terminal) as {
+      state: NonNullable<WebJobActivity["latestTerminal"]>["state"];
+      completedAt: string;
+      reply: string | null;
+    };
+    const replyPreview = terminal?.reply?.replace(/\s+/gu, " ").trim().slice(0, 160);
+    return {
+      queued: row.queued,
+      starting: row.starting,
+      running: row.running,
+      ...(terminal === undefined ? {} : {
+        latestTerminal: {
+          state: terminal.state,
+          completedAt: terminal.completedAt,
+          ...(replyPreview ? { replyPreview } : {}),
+        },
+      }),
+    };
   }
 
   private cronChannel(sourceId: string, jobId: string): CronChannelRow | undefined {

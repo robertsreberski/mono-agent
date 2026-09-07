@@ -42,6 +42,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Keep an upstream turn running when a browser reloads or disconnects, and expose
   content deltas plus rate-limited change hints over SSE so any connected browser
   can catch up without reloading what it already holds.
+- Project foreground outcomes and retained background-job activity into conversation
+  rows. Current work and failures take priority over reply previews, including for
+  closed conversations and job cards outside the loaded message page.
 - Shape projected transcripts at the service boundary — drop non-allowlisted
   telemetry payloads, and preview oversized tool arguments/results with their
   byte count and a digest — while serving the whole part from message-bound
@@ -599,6 +602,7 @@ WebConsoleError
 WebConsoleIdentity
 WebEvent
 WebEventType
+WebJobActivity
 WebLiveInputReceipt
 WebMessage
 WebMessageDelta
