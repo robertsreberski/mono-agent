@@ -194,6 +194,7 @@ const chatStore = (
     selectedThreadId,
     loading: false,
     detailLoading,
+    selectionLoading: detailLoading,
     connection: "live" as const,
     model: "",
     effort: "",
@@ -217,6 +218,24 @@ const chatTree = () => (
     <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />
   </WebRuntimeProvider>
 );
+
+it("shows an owned loading surface instead of a false new-conversation state", () => {
+  const prior = thread("thread-a", "agent");
+  storeMock.current = {
+    ...chatStore(prior, null),
+    selectedThread: null,
+    selectedThreadId: null,
+    detail: null,
+    selectionLoading: true,
+  };
+
+  render(chatTree());
+
+  expect(screen.getByRole("button", { name: "Loading conversation…" })).toBeDisabled();
+  expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+  expect(screen.getAllByRole("status").some((item) => item.textContent?.includes("Loading"))).toBe(true);
+});
 
 describe("Chat conversation viewport", () => {
   it("places one loaded job stack after transcript messages and before the footer", () => {

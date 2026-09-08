@@ -89,17 +89,22 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
   const [selection, setSelection] = useState({ start: composer.value.length, end: composer.value.length });
   const savedBrowseSelection = useRef(selection);
   const isRunning = useAuiState((state) => state.thread.isRunning);
-  const canUpload = !isRunning && canUploadInConsole(connection, selectedAgent, selectedThread);
+  const canUpload = !store.selectionLoading
+    && !isRunning
+    && canUploadInConsole(connection, selectedAgent, selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
-  const canOfferSteer = isRunning && selectedThread !== null && selectedThread.trigger?.kind !== "cron";
+  const canOfferSteer = !store.selectionLoading
+    && isRunning
+    && selectedThread !== null
+    && selectedThread.trigger?.kind !== "cron";
   const steerDisabled = !canSend || attachmentCount > 0 || composer.value.trim().length === 0;
   const steerHelp = attachmentCount > 0
     ? "Steering is text-only."
     : "Offer to the active run.";
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
-    hasAgent: selectedAgent !== null,
+    hasAgent: selectedAgent !== null && !store.selectionLoading,
     hasRunSettings: store.modelOptions.length > 0 || store.effortOptions.length > 0,
     isRunning,
     createConversation: () => void store.createThread().catch(() => undefined),

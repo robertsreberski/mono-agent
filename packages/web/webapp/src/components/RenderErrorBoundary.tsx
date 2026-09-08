@@ -47,9 +47,13 @@ export class RenderErrorBoundary extends Component<
     (this.props.reporter ?? reportRenderError)(this.props.scope, error, info);
   }
 
-  componentDidUpdate(previous: RenderErrorBoundaryProps): void {
+  componentDidUpdate(
+    previous: RenderErrorBoundaryProps,
+    previousState: RenderErrorBoundaryState,
+  ): void {
     if (
       this.state.error !== null &&
+      previousState.error !== null &&
       previous.resetKey !== this.props.resetKey
     ) {
       this.setState({ error: null });

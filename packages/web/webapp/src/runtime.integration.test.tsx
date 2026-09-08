@@ -54,6 +54,7 @@ const createStore = (
   selectedThreadId: idleThread.id,
   loading: false,
   detailLoading: false,
+  selectionLoading: false,
   error: null,
   actionError: null,
   connection: "live",

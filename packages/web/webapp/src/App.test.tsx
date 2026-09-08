@@ -8,6 +8,7 @@ import {
   registerServiceWorkerUpdates,
   resetServiceWorkerUpdates,
 } from "./service-worker-update";
+import { agent } from "./test/fixtures";
 import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ const storeMock = vi.hoisted(() => ({
   agents: [],
   visibleAgents: [],
   selectedAgent: null,
+  selectionLoading: false,
   selectedThread: null,
   hasRunningThread: false,
   showArchived: false,
@@ -85,6 +87,35 @@ import { App } from "./App";
 beforeEach(() => {
   localStorage.clear();
   document.title = "mono-agent";
+  storeMock.selectionLoading = false;
+  storeMock.selectedAgent = null;
+  storeMock.createThread.mockReset().mockResolvedValue(undefined);
+});
+
+describe("App new-conversation shortcut", () => {
+  afterEach(() => {
+    storeMock.selectedAgent = null;
+    storeMock.selectionLoading = false;
+  });
+
+  it("does not bypass an unresolved selection", () => {
+    storeMock.selectedAgent = agent("beta", { label: "Beta" }) as never;
+    storeMock.selectionLoading = true;
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+
+    expect(storeMock.createThread).not.toHaveBeenCalled();
+  });
+
+  it("still opens a conversation once selection has settled", () => {
+    storeMock.selectedAgent = agent("beta", { label: "Beta" }) as never;
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+
+    expect(storeMock.createThread).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("App agent sidebar toggle", () => {

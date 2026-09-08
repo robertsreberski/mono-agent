@@ -165,7 +165,7 @@ function OpenCommandPalette({ onClose }: { readonly onClose: () => void }) {
         label: "New conversation",
         hint: "⌘⇧O",
         icon: "new",
-        disabled: !store.selectedAgent,
+        disabled: !store.selectedAgent || store.selectionLoading,
         run: () => void store.createThread().catch(() => undefined),
       },
       {
@@ -599,7 +599,9 @@ export function App() {
   const store = useConsoleStore();
   useEffect(() => {
     const onNewThread = () => {
-      if (store.selectedAgent) void store.createThread().catch(() => undefined);
+      if (store.selectedAgent && !store.selectionLoading) {
+        void store.createThread().catch(() => undefined);
+      }
     };
     window.addEventListener("mono-agent:new-thread", onNewThread);
     return () => window.removeEventListener("mono-agent:new-thread", onNewThread);

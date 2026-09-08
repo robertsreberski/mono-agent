@@ -62,6 +62,7 @@ beforeEach(() => {
     selectedThreadId: null,
     threads: [thread("loaded", "agent-one")],
     showArchived: false,
+    selectionLoading: false,
     setShowArchived: vi.fn(),
     hasMoreThreads: true,
     loadMoreThreads: vi.fn().mockResolvedValue(undefined),
@@ -74,6 +75,17 @@ afterEach(() => {
 });
 
 describe("ThreadSidebar conversation rows", () => {
+  it("shows loading instead of claiming a cold agent has no conversations", () => {
+    storeMock.current!.threads = [];
+    storeMock.current!.selectionLoading = true;
+
+    render(<ThreadSidebar />);
+
+    expect(screen.getByText("Loading conversations…")).toBeVisible();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
+    expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
+  });
+
   it("renders active jobs on an unselected conversation and clears activity at completion", () => {
     const running = thread("worker", "agent-one", {
       title: "Background work",

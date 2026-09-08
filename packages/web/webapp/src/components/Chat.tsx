@@ -147,7 +147,7 @@ export function ConnectionBanner({ connection }: { readonly connection: Connecti
 }
 
 function ConversationTitle() {
-  const { selectedThread, renameThread } = useConsoleStore();
+  const { selectedThread, renameThread, selectionLoading } = useConsoleStore();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(selectedThread?.title ?? "New conversation");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -213,7 +213,7 @@ function ConversationTitle() {
         disabled={!selectedThread}
         title={selectedThread ? "Rename conversation" : undefined}
       >
-        {selectedThread?.title ?? "New conversation"}
+        {selectionLoading ? "Loading conversation…" : selectedThread?.title ?? "New conversation"}
       </button>
       {triggerBadge}
     </div>
@@ -342,7 +342,7 @@ function ConversationActions() {
 }
 
 function EmptyConversation() {
-  const { selectedAgent, createThread, selectedThread } = useConsoleStore();
+  const { selectedAgent, createThread, selectedThread, selectionLoading } = useConsoleStore();
   const cron = selectedThread?.trigger?.kind === "cron";
   return (
     <ThreadPrimitive.Empty>
@@ -352,15 +352,25 @@ function EmptyConversation() {
           <Icon name="spark" size={22} />
         </div>
         <span className="eyebrow">{selectedAgent?.label ?? "mono-agent"}</span>
-        <h2>{cron ? "No cron runs recorded yet" : selectedThread ? "What should we work on?" : "Start a new conversation"}</h2>
+        <h2>
+          {selectionLoading
+            ? "Loading conversation…"
+            : cron
+              ? "No cron runs recorded yet"
+              : selectedThread
+                ? "What should we work on?"
+                : "Start a new conversation"}
+        </h2>
         <p>
-          {cron
+          {selectionLoading
+            ? "Resolving the conversation you selected."
+            : cron
             ? "Runs will appear here chronologically after the agent admits them."
             : selectedAgent
             ? "Messages, reasoning, tool calls, and files stay together in this conversation."
             : "No agents have been discovered yet. Start an agent and it will appear here automatically."}
         </p>
-        {selectedAgent && !selectedThread && !cron && (
+        {selectedAgent && !selectedThread && !cron && !selectionLoading && (
           <button
             type="button"
             className="primary-button"
@@ -388,6 +398,7 @@ export function Chat({
     selectedThreadId,
     connection,
     detailLoading,
+    selectionLoading,
     unarchiveThread,
     hasOlderMessages,
     loadOlderMessages,
@@ -400,7 +411,9 @@ export function Chat({
     runStatus === "cancelled" ||
     runStatus === "interrupted";
   const status =
-    selectedAgent?.status === "offline"
+    selectionLoading
+      ? "Loading"
+      : selectedAgent?.status === "offline"
       ? "Offline"
       : connection === "offline"
         ? "Browser offline"
@@ -490,7 +503,11 @@ export function Chat({
                 <Icon name="arrow-down" size={16} />
               </ThreadPrimitive.ScrollToBottom>
               <ThreadPrimitive.ViewportFooter className="thread-footer">
-                {selectedThread?.archivedAt ? (
+                {selectionLoading ? (
+                  <div className="cron-readonly-footer" role="status">
+                    Loading the selected conversation…
+                  </div>
+                ) : selectedThread?.archivedAt ? (
                   <div className="archived-footer">
                     <span>This conversation is archived.</span>
                     <button
@@ -512,7 +529,7 @@ export function Chat({
                 )}
               </ThreadPrimitive.ViewportFooter>
             </ThreadPrimitive.Viewport>
-            {detailLoading && selectedThread && (
+            {(selectionLoading || (detailLoading && selectedThread)) && (
               <div className="detail-loading" role="status" aria-label="Loading conversation">
                 <span />
               </div>

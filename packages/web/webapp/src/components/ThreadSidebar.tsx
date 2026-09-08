@@ -78,6 +78,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     threads,
     selectedAgentId,
     showArchived,
+    selectionLoading,
     setShowArchived,
     hasMoreThreads,
     loadMoreThreads,
@@ -122,7 +123,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
             aria-label="New conversation"
             title="New conversation (⌘⇧O)"
             onClick={onSelect}
-            disabled={!selectedAgent}
+            disabled={!selectedAgent || selectionLoading}
           >
             <Icon name="new" size={18} />
           </ThreadListPrimitive.New>
@@ -161,7 +162,11 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
                 <div className="thread-list-empty">
                   <Icon name={showArchived ? "archive" : "threads"} size={19} />
                   <span>
-                    {showArchived ? "No archived conversations" : "Start a conversation"}
+                    {selectionLoading
+                      ? "Loading conversations…"
+                      : showArchived
+                        ? "No archived conversations"
+                        : "Start a conversation"}
                   </span>
                 </div>
               )}
