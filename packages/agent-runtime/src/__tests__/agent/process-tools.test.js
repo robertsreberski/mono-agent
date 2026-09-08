@@ -882,13 +882,22 @@ describe("Exec", () => {
       processJobsController: { start },
     }).find((tool) => tool.name === "Bash");
 
-    await bash.execute("job-legacy", {
+    const result = await bash.execute("job-legacy", {
       command: `"${process.execPath}" --version`,
       timeout: 500,
       background: true,
     });
 
     expect(start.mock.calls[0][0]).toMatchObject({ timeoutMs: 500_000 });
+    expect(result.details).toMatchObject({
+      tool: "Bash",
+      outcome: {
+        status: "ok",
+        code: "background_started",
+        job_id: "pj_legacy",
+        legacyTimeoutUsed: true,
+      },
+    });
   });
 
   it("reports the runtime budget the host actually granted", async () => {

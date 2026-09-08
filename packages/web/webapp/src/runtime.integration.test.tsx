@@ -215,6 +215,61 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(presentation?.historyIsBounded).toBe(true);
   });
 
+  it("updates lifecycle events on the exact launch response while retaining one stack entry", async () => {
+    const runningJob = processJob({
+      state: "running",
+      timestamps: { ...processJob().timestamps, completedAt: null },
+      durationMs: null,
+      exitCode: null,
+      wake: { ...processJob().wake, state: "pending", attempts: 0, lastAttemptAt: null },
+    });
+    const receipt = {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: runningJob.jobId,
+      tool: runningJob.tool,
+      state: "running",
+      startedAt: runningJob.timestamps.startedAt,
+    } as const;
+    const origin: WebMessage = {
+      id: "origin", threadId: idleThread.id, role: "assistant", status: "complete",
+      createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", attachments: [],
+      parts: [{ type: "tool-call", toolCallId: "launch", toolName: "Exec", status: "complete", structuredResult: receipt }],
+    };
+    const carrier = (job: ReturnType<typeof processJob>): WebMessage => ({
+      ...origin,
+      id: "job-card",
+      parts: [{ type: "process-job", job }],
+    });
+    storeMock.current = createStore(vi.fn(), {
+      detail: { thread: idleThread, messages: [origin, carrier(runningJob)] },
+    });
+    let presentation: ReturnType<typeof useProcessJobPresentation> | undefined;
+    function PresentationCapture() {
+      presentation = useProcessJobPresentation();
+      return null;
+    }
+    let runtime: AssistantRuntime | undefined;
+    const tree = () => (
+      <WebRuntimeProvider>
+        <RuntimeCapture onReady={(value) => { runtime = value; }} />
+        <PresentationCapture />
+      </WebRuntimeProvider>
+    );
+    const view = render(tree());
+    await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
+      .toEqual(["tool-call", "data"]));
+    expect(presentation?.jobs).toHaveLength(1);
+
+    storeMock.current = createStore(vi.fn(), {
+      detail: { thread: idleThread, messages: [origin, carrier(processJob())] },
+    });
+    view.rerender(tree());
+    await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
+      .toEqual(["tool-call", "data", "data"]));
+    expect(runtime?.thread.getState().messages[0]?.id).toBe("origin");
+    expect(presentation?.jobs).toHaveLength(1);
+  });
+
   it("restores a rejected turn as a retryable composer draft without an unhandled rejection", async () => {
     let rejectTurn!: (reason: Error) => void;
     const sendTurn = vi
