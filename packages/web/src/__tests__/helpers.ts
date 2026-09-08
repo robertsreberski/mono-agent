@@ -148,6 +148,7 @@ export function operatorFetch(options: {
     string | ReadableStream<Uint8Array> | Promise<string | ReadableStream<Uint8Array>>;
   readonly supportsAttachments?: boolean;
   readonly supportsHistoryAppend?: boolean;
+  readonly supportsContextImport?: boolean;
   readonly supportsAskUser?: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput?: boolean;
@@ -181,6 +182,10 @@ export function operatorFetch(options: {
     body: Record<string, unknown>,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   readonly onVerbatim?: (conversationId: string, body: Record<string, unknown>) => void | Promise<void>;
+  readonly onContextImport?: (
+    conversationId: string,
+    body: Record<string, unknown>,
+  ) => Record<string, unknown> | Response | Promise<Record<string, unknown> | Response>;
   readonly onReplyArtifact?: (url: string, init?: RequestInit) => Response | Promise<Response>;
   readonly onMcpAppResource?: (url: string, init?: RequestInit) => Record<string, unknown>;
   readonly onMcpAppRequest?: (
@@ -210,6 +215,9 @@ export function operatorFetch(options: {
         capabilities: {
           attachments: options.supportsAttachments ?? true,
           ...(options.supportsHistoryAppend === true ? { historyAppend: true } : {}),
+          ...(options.supportsContextImport === true
+            ? { contextImport: { version: 1, maxTextBytes: 32 * 1024 } }
+            : {}),
           askUser: options.supportsAskUser ?? false,
           ...(options.supportsAskById === true ? { askById: true } : {}),
           liveInput: options.supportsLiveInput ?? false,
@@ -331,6 +339,17 @@ export function operatorFetch(options: {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       await options.onVerbatim?.(decodeURIComponent(encodedConversationId), body);
       return Response.json({ recorded: true }, { status: 200 });
+    }
+    if (url.includes("/v1/conversations/") && url.endsWith("/context-imports")) {
+      const encodedConversationId = url.slice(
+        url.lastIndexOf("/v1/conversations/") + "/v1/conversations/".length,
+        -"/context-imports".length,
+      );
+      const conversationId = decodeURIComponent(encodedConversationId);
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const result = await options.onContextImport?.(conversationId, body)
+        ?? { imported: true, status: "appended", conversationId };
+      return result instanceof Response ? result : Response.json(result);
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/ask")) {
       if (init?.method === "POST") {

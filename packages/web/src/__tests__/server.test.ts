@@ -912,6 +912,85 @@ describe("web HTTP server", () => {
     });
   });
 
+  it("creates and replays a cron Reply only through the exact source-qualified same-origin route", async () => {
+    const summary = {
+      projection: "summary",
+      runId: "cron:digest:2026-09-08T10:00:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-09-08T10:00:00.000Z",
+      orderedAt: "2026-09-08T10:00:01.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      text: "Synthetic result",
+      eventCount: 0,
+    };
+    const imports: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: {
+          generatedAt: "2026-09-08T10:00:00.000Z",
+          actionsEnabled: false,
+          jobs: [{
+            jobId: "digest",
+            expression: "*/5 * * * *",
+            timezone: "UTC",
+            conversationId: "cron:digest",
+            configured: true,
+            declaredEnabled: true,
+            effectiveEnabled: true,
+            health: "healthy",
+            lastRun: summary,
+          }],
+        },
+        cronRuns: { runs: [summary] },
+        onContextImport: (conversationId, body) => {
+          imports.push({ conversationId, body });
+          return { imported: true, status: "appended", conversationId };
+        },
+      }),
+    });
+    await fetch(`${baseUrl}/api/v1/agents/agent-one/cron/jobs/digest/runs?limit=100`);
+    const operationId = "55555555-5555-4555-8555-555555555555";
+    const endpoint = `${baseUrl}/api/v1/agents/agent-one/cron/jobs/digest/runs/${encodeURIComponent(summary.runId)}/reply-threads`;
+    const post = () => fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Mono-Agent-Web-Origin": baseUrl,
+      },
+      body: JSON.stringify({ operationId, snapshotKind: "summary" }),
+    });
+
+    const created = await post();
+    expect(created.status).toBe(201);
+    expect(await json(created)).toMatchObject({
+      operationId,
+      duplicate: false,
+      sourceId: "agent-one",
+      jobId: "digest",
+      runId: summary.runId,
+      messages: [{ role: "system" }, { role: "assistant" }],
+    });
+    const replay = await post();
+    expect(replay.status).toBe(200);
+    expect(await json(replay)).toMatchObject({ operationId, duplicate: true });
+    expect(imports).toHaveLength(1);
+    expect(imports[0]?.body).toMatchObject({
+      text: expect.stringContaining("Synthetic result"),
+      idempotencyKey: expect.stringMatching(/^web-cron-reply:v1:/u),
+    });
+
+    const invalid = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl },
+      body: JSON.stringify({ operationId, snapshotKind: "summary", extra: true }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await json(invalid)).toMatchObject({ error: { code: "invalid_request" } });
+  });
+
   it("rejects DNS-rebinding hosts and cross-origin mutations while accepting the exact configured hostname", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
     expect(isAllowedWebHostname("mickey.home.arpa", "mickey.home.arpa", "mickey")).toBe(true);

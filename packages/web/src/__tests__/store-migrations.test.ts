@@ -44,7 +44,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["agents", "threads", "turns", "messages", "live_inputs", "web_submissions", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["agents", "threads", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -290,7 +290,7 @@ describe("web storage migration history", () => {
       try { expect(store.getThread("fixture-thread")).toBeUndefined(); } finally { store.close(); }
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 24 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         for (const [index, columns] of Object.entries(readIndexes)) expect(indexColumns(inspected, index)).toEqual(columns);
         expect(inspected.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
       } finally { inspected.close(); }
@@ -311,6 +311,31 @@ describe("web storage migration history", () => {
       expect(plan("SELECT 1 FROM messages m WHERE m.turn_id = 'x' AND m.role = 'user'"))
         .toContain("USING INDEX messages_by_turn (turn_id=?)");
     } finally { database.close(); }
+  });
+
+  it("migrates schema 24 by provisioning cron Reply operations and reopens idempotently", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP TABLE cron_reply_operations; PRAGMA user_version = 24");
+    database.close();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      store.close();
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 25 });
+        expect(inspected.prepare("PRAGMA table_info(cron_reply_operations)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "operation_id", type: "TEXT", notnull: 0 }),
+          expect.objectContaining({ name: "snapshot_text", type: "TEXT", notnull: 0 }),
+          expect.objectContaining({ name: "state", type: "TEXT", notnull: 1 }),
+        ]));
+        expect(indexColumns(inspected, "cron_reply_operations_one_pending_run"))
+          .toEqual(["source_id", "job_id", "run_id"]);
+      } finally { inspected.close(); }
+    }
   });
 
   it("rolls the stamp and the read indexes back together when migration 24 fails", async () => {
@@ -342,8 +367,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 24 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(24);
+  it("is immutable and derives schema 25 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(25);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);

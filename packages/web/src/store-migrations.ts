@@ -112,6 +112,14 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     // every mapped thread; without these, long histories dominate list/detail.
     for (const [index, expected] of THREAD_READ_INDEXES) assertIndex(database, index, expected);
   } },
+  { version: 25, name: "cron-reply-operations", up: ({ database }) => {
+    assertColumns(database, "cron_reply_operations", [
+      "operation_id", "source_id", "job_id", "run_id", "thread_id", "conversation_id",
+      "provenance_message_id", "result_message_id", "idempotency_key", "state", "snapshot_kind",
+      "snapshot_text", "snapshot_sha256", "title", "run_model", "run_effort", "canonical_status",
+      "failure_reason", "created_at", "completed_at", "failed_at", "tombstoned_at",
+    ]);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -170,6 +178,10 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
       ],
+      cron_reply_operations: [
+        "operation_id", "source_id", "job_id", "run_id", "thread_id", "conversation_id",
+        "idempotency_key", "state", "snapshot_kind", "snapshot_text", "snapshot_sha256",
+      ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
@@ -204,6 +216,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["monitor_wake_deliveries_by_thread", ["thread_id", "created_at"]],
       ["notification_deliveries_by_thread", ["thread_id"]],
       ...THREAD_READ_INDEXES,
+      ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
     ] as const) assertIndex(database, index, expected);
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],

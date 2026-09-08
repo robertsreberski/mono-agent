@@ -11,15 +11,24 @@ import type { WebMessage } from "../types";
 import "../styles.css";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
 
-vi.mock("../console-store", () => ({
-  useConsoleStore: () => ({
+const consoleStoreMock = vi.hoisted(() => ({
+  current: {
     connection: "live",
+    cronReplyState: vi.fn(() => ({ status: "idle" as const })),
     effectiveModel: "provider:primary",
     loadCronRunActivity: vi.fn(),
+    replyToCronRun: vi.fn().mockResolvedValue(undefined),
     selectedAgent: null,
-    selectedThread: null,
+    selectedThread: null as null | {
+      sourceId: string;
+      trigger: { kind: "cron"; jobId: string; configured: boolean };
+    },
     transcriptMovedAt: 0,
-  }),
+  },
+}));
+
+vi.mock("../console-store", () => ({
+  useConsoleStore: () => consoleStoreMock.current,
   useUploadLimits: () => ({
     maxFileBytes: 20,
     maxFilesPerTurn: 10,
@@ -39,6 +48,32 @@ const message = (id: string, liveInputStatus: "applied" | "uncertain"): WebMessa
   attachments: [],
   parts: [{ type: "text", text: `Follow-up ${id}` }],
 });
+
+const cronMessage: WebMessage = {
+  id: "cron-result",
+  threadId: "cron-thread",
+  role: "assistant",
+  createdAt: "2026-09-08T10:00:00.000Z",
+  updatedAt: "2026-09-08T10:00:02.000Z",
+  status: "complete",
+  attachments: [],
+  parts: [{
+    type: "telemetry",
+    event: "cron_run",
+    data: {
+      projection: "summary",
+      runId: "cron:daily:report:one",
+      jobId: "daily:report",
+      scheduledAt: "2026-09-08T10:00:00.000Z",
+      orderedAt: "2026-09-08T10:00:01.000Z",
+      sequence: 1,
+      trigger: "scheduled",
+      status: "succeeded",
+      eventCount: 1,
+      conversationId: "cron:daily:report",
+    },
+  }],
+};
 
 function Harness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
@@ -129,6 +164,23 @@ function ActivityHarness({ width }: { readonly width: number }) {
   );
 }
 
+function CronHarness({ width }: { readonly width: number }) {
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages: [cronMessage],
+    convertMessage: (value) => convertWebMessage(value, { selectedModel: "provider:primary" }),
+    onNew: async () => undefined,
+  });
+  return (
+    <div style={{ width, minHeight: 200 }}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ThreadPrimitive.Root>
+          <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
+        </ThreadPrimitive.Root>
+      </AssistantRuntimeProvider>
+    </div>
+  );
+}
+
 describe("live-input settlement labels in Chromium", () => {
   it.each([
     [1440, "desktop"],
@@ -162,5 +214,34 @@ describe("process-job response Activity in Chromium", () => {
     }
     expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
     expect(screen.getAllByRole("button", { name: "Copy response" })).toHaveLength(1);
+  });
+});
+
+describe("cron Reply footer in Chromium", () => {
+  it.each([760, 360] as const)("keeps Reply, status, and time visible with accessible Details at %ipx", (width) => {
+    consoleStoreMock.current.selectedThread = {
+      sourceId: "alpha",
+      trigger: { kind: "cron", jobId: "daily:report", configured: true },
+    };
+    const { container } = render(<CronHarness width={width} />);
+
+    const reply = screen.getByRole("button", { name: "Reply" });
+    expect(reply).toBeVisible();
+    expect(screen.getByText("scheduled · completed")).toBeVisible();
+    expect(container.querySelector("time")).toBeVisible();
+    const details = screen.getByText("Details");
+    expect(details).toBeVisible();
+    fireEvent.click(details);
+    expect(screen.getByRole("button", { name: /Copy originating session/ })).toBeVisible();
+    fireEvent.click(reply);
+    expect(consoleStoreMock.current.replyToCronRun).toHaveBeenCalledWith({
+      sourceId: "alpha",
+      jobId: "daily:report",
+      runId: "cron:daily:report:one",
+      snapshotKind: "summary",
+    });
+    const row = screen.getByRole("group", { name: /Cron run/ });
+    expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
   });
 });

@@ -1,8 +1,12 @@
+import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
+
+import { AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/agent-contracts";
 
 import type { WebAgentSummary, WebCronRun, WebCronRunSummary } from "../contracts.js";
 import { WebStore } from "../store.js";
@@ -1080,6 +1084,17 @@ describe("WebStore first-class cron channels", () => {
     const afterDetail = store.getThread(threadId)!.revision;
     expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [summary]).changed).toBe(false);
     expect(store.getThread(threadId)!.revision).toBe(afterDetail);
+    expect(store.captureCronReplySnapshot(
+      "agent-one",
+      "daily:brief",
+      summary.runId,
+      "detail",
+    )).toMatchObject({
+      snapshotKind: "detail",
+      text: "Full selected run text",
+      sourceFieldsTruncated: ["text"],
+      sourceTruncationKnown: true,
+    });
 
     const assertPersisted = (messageParts: readonly unknown[]) => {
       expect(messageParts).toContainEqual(expect.objectContaining({
@@ -1288,5 +1303,189 @@ describe("silent cron projections", () => {
       try { expect(database.prepare("SELECT cron_suppressed, COUNT(*) AS count FROM messages GROUP BY cron_suppressed ORDER BY cron_suppressed").all()).toEqual([{ cron_suppressed: 0, count: 500 }, { cron_suppressed: 1, count: 500 }]); }
       finally { database.close(); }
     } finally { store.close(); }
+  });
+});
+
+describe("cron Reply operation storage", () => {
+  const operationId = "11111111-1111-4111-8111-111111111111";
+  const runId = "cron:daily%3Abrief:2026-09-08T10:00:00.000Z";
+
+  async function replyFixture() {
+    const root = await temporaryRoot("cron-reply-");
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    syncCronJob(store);
+    store.reconcileCronRuns("agent-one", "daily:brief", [cronRun({
+      runId,
+      sequence: 9,
+      status: "succeeded",
+      text: "Captured result",
+      fieldsTruncated: ["text"],
+    })]);
+    return { stateDir, store };
+  }
+
+  it("reserves the exact summary before import and materializes one normal immutable conversation", async () => {
+    const { store } = await replyFixture();
+    try {
+      const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+      const reserved = store.reserveCronReplyOperation(operationId, captured);
+      expect(reserved).toMatchObject({
+        kind: "reserved",
+        operation: { operationId, snapshotKind: "summary", state: "pending" },
+      });
+      if (reserved.kind !== "reserved") throw new Error("expected reservation");
+      expect(reserved.operation.snapshotText).toContain("Captured result");
+      expect(reserved.operation.snapshotText).toContain('"sourceFieldsTruncated":["text"]');
+
+      // A later projection must not retarget or rewrite what activation captured.
+      store.reconcileCronRuns("agent-one", "daily:brief", [cronRun({
+        runId,
+        sequence: 9,
+        status: "succeeded",
+        text: "Later result",
+      })]);
+      const completed = store.completeCronReplyOperation(operationId, "appended");
+      expect(completed.kind).toBe("completed");
+      if (completed.kind !== "completed") throw new Error("expected completion");
+      expect(completed.receipt.duplicate).toBe(false);
+      expect(completed.receipt.thread).toMatchObject({
+        sourceId: "agent-one",
+        messageCount: 2,
+      });
+      expect(completed.receipt.thread).not.toHaveProperty("trigger");
+      expect(completed.receipt.messages).toMatchObject([
+        { role: "system", parts: [{ type: "text", text: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE }] },
+        { role: "assistant", parts: [{ type: "text", text: expect.stringContaining("Captured result") }] },
+      ]);
+      expect(JSON.stringify(completed.receipt.messages)).not.toContain("Later result");
+    } finally { store.close(); }
+  });
+
+  it("serializes overlapping processes, replays terminal completion, and fences deletion from late settlement", async () => {
+    const { stateDir, store: first } = await replyFixture();
+    const second = await WebStore.open({ stateDir });
+    try {
+      const captured = first.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+      expect(first.reserveCronReplyOperation(operationId, captured).kind).toBe("reserved");
+      expect(second.reserveCronReplyOperation(
+        "22222222-2222-4222-8222-222222222222",
+        captured,
+      )).toMatchObject({ kind: "pending", operation: { operationId } });
+
+      const won = second.completeCronReplyOperation(operationId, "duplicate");
+      expect(won).toMatchObject({ kind: "completed", receipt: { duplicate: false } });
+      expect(first.failCronReplyOperation(operationId, "late_conflict"))
+        .toMatchObject({ kind: "completed", receipt: { duplicate: true } });
+      if (won.kind !== "completed") throw new Error("expected completion");
+      first.patchThread(won.receipt.thread.id, { archived: true });
+      await first.deleteArchivedThread(won.receipt.thread.id);
+      expect(second.completeCronReplyOperation(operationId, "appended"))
+        .toMatchObject({ kind: "tombstoned", operation: { failureReason: "thread_deleted" } });
+      expect(first.getThread(won.receipt.thread.id)).toBeUndefined();
+    } finally {
+      second.close();
+      first.close();
+    }
+  });
+
+  it("reads a completed receipt coherently while another process deletes its archived thread", async () => {
+    const { stateDir, store } = await replyFixture();
+    const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+    expect(store.reserveCronReplyOperation(
+      operationId,
+      captured,
+    )).toMatchObject({ kind: "reserved" });
+    const completed = store.completeCronReplyOperation(operationId, "appended");
+    if (completed.kind !== "completed") throw new Error("expected completion");
+    const threadId = completed.receipt.thread.id;
+    store.patchThread(threadId, { archived: true });
+
+    const releasePath = join(stateDir, "cron-reply-read-release");
+    const attemptedPath = join(stateDir, "cron-reply-delete-attempted");
+    const committedPath = join(stateDir, "cron-reply-delete-committed");
+    const child = spawn(process.execPath, ["-e", `
+      const { existsSync, writeFileSync } = require("node:fs");
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1], { timeout: 5000 });
+      db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL");
+      console.log("ready");
+      while (!existsSync(process.argv[3])) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+      writeFileSync(process.argv[4], "attempted", { mode: 0o600 });
+      db.exec("BEGIN IMMEDIATE");
+      const now = new Date().toISOString();
+      db.prepare(\`
+        UPDATE cron_reply_operations SET state = 'tombstoned', provenance_message_id = NULL,
+          result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, completed_at = NULL,
+          failure_reason = 'thread_deleted', tombstoned_at = ?
+        WHERE thread_id = ? AND state = 'completed'
+      \`).run(now, process.argv[2]);
+      db.prepare("DELETE FROM revisions WHERE entity_kind = 'thread' AND entity_id = ?").run(process.argv[2]);
+      db.prepare("DELETE FROM threads WHERE id = ?").run(process.argv[2]);
+      db.prepare("DELETE FROM settings WHERE key = 'current_thread_id' AND value = ?").run(process.argv[2]);
+      db.exec("COMMIT");
+      writeFileSync(process.argv[5], "committed", { mode: 0o600 });
+      db.close();
+    `, store.paths.database, threadId, releasePath, attemptedPath, committedPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const exited = new Promise<number | null>((resolve) => { child.on("exit", resolve); });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (chunk.toString("utf8").includes("ready")) resolve();
+      });
+      child.on("exit", () => reject(new Error(
+        `the deleting process exited before the read: ${Buffer.concat(stderr).toString("utf8")}`,
+      )));
+    });
+
+    const getThread = store.getThread.bind(store);
+    let held = false;
+    Object.defineProperty(store, "getThread", {
+      configurable: true,
+      value: (id: string) => {
+        if (!held && id === threadId) {
+          held = true;
+          writeFileSync(releasePath, "release", { mode: 0o600 });
+          const attemptedDeadline = Date.now() + 1_000;
+          while (!existsSync(attemptedPath) && Date.now() < attemptedDeadline) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+          }
+          if (!existsSync(attemptedPath)) throw new Error("the deleting process did not attempt its transaction");
+          // Without a read transaction, the delete commits during this window
+          // and the following projection reads falsely report storage_corrupt.
+          const raceDeadline = Date.now() + 400;
+          while (!existsSync(committedPath) && Date.now() < raceDeadline) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+          }
+        }
+        return getThread(id);
+      },
+    });
+
+    let firstRead: ReturnType<WebStore["cronReplyOperation"]> | undefined;
+    let firstReadError: unknown;
+    try {
+      firstRead = store.cronReplyOperation(operationId);
+    } catch (error) {
+      firstReadError = error;
+    }
+    expect(await exited).toBe(0);
+    expect(Buffer.concat(stderr).toString("utf8")).toBe("");
+    expect(firstReadError).toBeUndefined();
+    expect(firstRead).toMatchObject({
+      kind: "completed",
+      receipt: { operationId, thread: { id: threadId } },
+    });
+    expect(store.cronReplyOperation(operationId))
+      .toMatchObject({ kind: "tombstoned", operation: { operationId, failureReason: "thread_deleted" } });
+    store.close();
   });
 });

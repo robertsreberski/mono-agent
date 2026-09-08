@@ -143,6 +143,15 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
     noteComposerAttachments(attachmentCount > 0);
   }, [attachmentCount, composer.value, draftContextKey, selectedAgentId, selectedThreadId]);
 
+  useEffect(() => {
+    if (selectedThreadId === null || store.composerFocusThreadId !== selectedThreadId) return;
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+      store.consumeComposerFocus(selectedThreadId);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedThreadId, store.composerFocusThreadId, store.consumeComposerFocus]);
+
   const captureSelection = useCallback((input = inputRef.current) => {
     if (input === null) return;
     const next = {

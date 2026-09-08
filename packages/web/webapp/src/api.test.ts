@@ -306,6 +306,50 @@ describe("provider authentication", () => {
   });
 });
 
+describe("cron Reply API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the exact captured identity with an exact-origin operation body", async () => {
+    const receipt = { operationId: "one", messages: [] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(receipt, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.cronReply("agent/one", "job/one", "run/one", {
+      operationId: "11111111-1111-4111-8111-111111111111",
+      snapshotKind: "detail",
+    })).resolves.toEqual(receipt);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/agents/agent%2Fone/cron/jobs/job%2Fone/runs/run%2Fone/reply-threads",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+        body: JSON.stringify({
+          operationId: "11111111-1111-4111-8111-111111111111",
+          snapshotKind: "detail",
+        }),
+      }),
+    );
+  });
+
+  it("retains a server-owned pending operation id from nested error details", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: {
+        code: "cron_reply_pending",
+        message: "A Reply is already pending.",
+        details: { operationId: "77777777-7777-4777-8777-777777777777" },
+      },
+    }, { status: 409 })));
+
+    await expect(api.cronReply("agent", "job", "run", {
+      operationId: "88888888-8888-4888-8888-888888888888",
+      snapshotKind: "summary",
+    })).rejects.toMatchObject({
+      code: "cron_reply_pending",
+      details: { operationId: "77777777-7777-4777-8777-777777777777" },
+    });
+  });
+});
+
 describe("process-job API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

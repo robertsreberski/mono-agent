@@ -814,6 +814,18 @@ export interface CronRunPage {
   readonly messages?: readonly WebMessage[];
 }
 
+export type CronReplySnapshotKind = "summary" | "detail";
+
+export interface CronReplyReceipt {
+  readonly operationId: string;
+  readonly sourceId: string;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly duplicate: boolean;
+  readonly thread: ThreadSummary;
+  readonly messages: readonly [WebMessage, WebMessage];
+}
+
 export interface UploadLimits {
   readonly maxFileBytes: number;
   readonly maxFilesPerTurn: number;

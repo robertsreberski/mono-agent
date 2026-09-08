@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import {
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   MAX_INFO_PROVIDER_ID_BYTES,
   MAX_INFO_PROVIDER_ITEMS,
 } from "@mono-agent/agent-contracts";
@@ -44,6 +45,53 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("accepts only a sufficient v1 context-import capability", async () => {
+    const info = async (contextImport: unknown) => await new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        capabilities: { contextImport },
+      })) as typeof fetch,
+    }).info();
+
+    await expect(info({ version: 1, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES }))
+      .resolves.toMatchObject({ contextImport: { version: 1, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } });
+    await expect(info({ version: 2, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES }))
+      .resolves.not.toHaveProperty("contextImport");
+    await expect(info({ version: 1, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES - 1 }))
+      .resolves.not.toHaveProperty("contextImport");
+  });
+
+  it("posts canonical context import and preserves bounded conflict reasons", async () => {
+    const requests: Array<{ url: string; body: string }> = [];
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async (input, init) => {
+        const url = String(input);
+        requests.push({ url, body: String(init?.body) });
+        if (url.includes("conflict")) {
+          return Response.json({
+            error: { code: "context_import_conflict", message: "Import conflicts.", reason: "conversation_not_empty" },
+          }, { status: 409 });
+        }
+        return Response.json({ imported: true, status: "appended", conversationId: "web:one" });
+      }) as typeof fetch,
+    });
+
+    await expect(client.recordContextImport("web:one", "snapshot", "operation:one"))
+      .resolves.toBe("appended");
+    expect(requests[0]).toEqual({
+      url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aone/context-imports",
+      body: JSON.stringify({ text: "snapshot", idempotencyKey: "operation:one" }),
+    });
+    await expect(client.recordContextImport("conflict", "snapshot", "operation:two"))
+      .rejects.toMatchObject({
+        code: "context_import_conflict",
+        status: 409,
+        details: { reason: "conversation_not_empty" },
+      });
+  });
+
   it("keeps status, login, and check routes keyless without an agent key and sends the bearer when configured", async () => {
     const requests: { url: string; authorization: string | null; body?: string }[] = [];
     const baseStatus = {

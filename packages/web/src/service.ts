@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
 import {
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
@@ -40,6 +41,7 @@ import {
   WEB_MAX_TURN_ATTACHMENT_BYTES,
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
+  type CreateWebCronReplyInput,
   type CreateWebThreadInput,
   type PatchWebAgentInput,
   type PatchWebThreadInput,
@@ -57,6 +59,7 @@ import {
   type WebCronOverview,
   type WebCronRunSummary,
   type WebCronRunPage,
+  type WebCronReplyReceipt,
   type WebEvent,
   type WebEventType,
   type WebLiveInputReceipt,
@@ -112,6 +115,7 @@ import {
   type StoredTurnExecution,
   type BeginStoredTurnResult,
   type StoredWebSubmission,
+  type CronReplyReservationResult,
   type StoredWebPushEvent,
   type WebPushIdentity,
 } from "./store.js";
@@ -617,6 +621,12 @@ export class WebService {
   private readonly drainingLiveInputThreads = new Set<string>();
   private readonly activeUploads = new Map<string, number>();
   private readonly activeNotifications = new Map<string, Promise<DeliverWebNotificationResult>>();
+  private readonly activeCronReplies = new Map<string, {
+    readonly sourceId: string;
+    readonly jobId: string;
+    readonly runId: string;
+    readonly promise: Promise<WebCronReplyReceipt>;
+  }>();
   /** One serialization lane shared by queued user input and every host wake kind. */
   private readonly hostWakeTails = new Map<string, Promise<void>>();
   private readonly hostWakeReservations = new Map<string, number>();
@@ -1322,6 +1332,161 @@ export class WebService {
       throw new WebConsoleError("invalid_operator_cron", "Cron detail did not reconcile a message.", 502);
     }
     return this.shapeMessage(message);
+  }
+
+  createCronReplyThread(
+    sourceId: string,
+    jobId: string,
+    runId: string,
+    input: CreateWebCronReplyInput,
+  ): Promise<WebCronReplyReceipt> {
+    const running = this.activeCronReplies.get(input.operationId);
+    if (running !== undefined) {
+      if (running.sourceId !== sourceId || running.jobId !== jobId || running.runId !== runId) {
+        return Promise.reject(new WebConsoleError(
+          "cron_reply_operation_conflict",
+          "Cron reply operation id was used for another run.",
+          409,
+        ));
+      }
+      return running.promise;
+    }
+    const operation = this.createCronReplyThreadOnce(sourceId, jobId, runId, input);
+    this.activeCronReplies.set(input.operationId, { sourceId, jobId, runId, promise: operation });
+    const release = (): void => {
+      if (this.activeCronReplies.get(input.operationId)?.promise === operation) {
+        this.activeCronReplies.delete(input.operationId);
+      }
+    };
+    void operation.then(release, release);
+    return operation;
+  }
+
+  private async createCronReplyThreadOnce(
+    sourceId: string,
+    jobId: string,
+    runId: string,
+    input: CreateWebCronReplyInput,
+  ): Promise<WebCronReplyReceipt> {
+    let state = this.store.cronReplyOperation(input.operationId);
+    if (state !== undefined) {
+      this.assertCronReplyStateIdentity(state, sourceId, jobId, runId);
+      const terminal = this.cronReplyTerminalResult(state);
+      if (terminal !== undefined) return terminal;
+    }
+
+    const candidate = state === undefined
+      ? this.store.captureCronReplySnapshot(sourceId, jobId, runId, input.snapshotKind)
+      : undefined;
+    const connection = this.connections.get(sourceId);
+    if (connection === undefined) {
+      throw new WebConsoleError("cron_reply_agent_offline", "This agent is offline; Reply was not started.", 503);
+    }
+    if (connection.info.contextImport?.version !== 1
+      || connection.info.contextImport.maxTextBytes < AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES) {
+      throw new WebConsoleError(
+        "cron_reply_unsupported",
+        "This agent does not support canonical cron-result Reply.",
+        503,
+      );
+    }
+
+    if (state === undefined) {
+      state = this.store.reserveCronReplyOperation(input.operationId, candidate!);
+      this.assertCronReplyStateIdentity(state, sourceId, jobId, runId);
+      const terminal = this.cronReplyTerminalResult(state);
+      if (terminal !== undefined) return terminal;
+      if (state.kind === "pending" && state.operation.operationId !== input.operationId) {
+        throw new WebConsoleError(
+          "cron_reply_pending",
+          "A Reply for this cron result is already pending. Retry it explicitly.",
+          409,
+          { operationId: state.operation.operationId },
+        );
+      }
+    }
+    if (state.kind !== "reserved" && state.kind !== "pending") {
+      throw new WebConsoleError("cron_reply_operation_conflict", "Cron reply operation cannot continue.", 409);
+    }
+    const reservation = state.operation;
+    if (reservation.snapshotText === undefined) {
+      throw new WebConsoleError("storage_corrupt", "Pending cron reply lost its immutable snapshot.", 500);
+    }
+
+    let canonicalStatus: "appended" | "duplicate";
+    try {
+      canonicalStatus = await connection.client.recordContextImport(
+        reservation.conversationId,
+        reservation.snapshotText,
+        reservation.idempotencyKey,
+      );
+    } catch (error) {
+      if (error instanceof WebConsoleError
+        && (error.code === "context_import_conflict"
+          || error.code === "context_import_failed"
+          || error.code === "context_import_unsupported")) {
+        const failed = this.store.failCronReplyOperation(
+          input.operationId,
+          typeof error.details?.reason === "string" ? error.details.reason : error.code,
+        );
+        const wonRace = this.cronReplyTerminalResult(failed);
+        if (wonRace !== undefined) return wonRace;
+        throw new WebConsoleError(
+          error.code === "context_import_conflict"
+            ? "cron_reply_conflict"
+            : error.code === "context_import_unsupported"
+              ? "cron_reply_unsupported"
+              : "cron_reply_failed",
+          error.message,
+          error.code === "context_import_conflict" ? 409 : error.code === "context_import_unsupported" ? 503 : 502,
+        );
+      }
+      throw new WebConsoleError(
+        "cron_reply_outcome_unknown",
+        "Cron Reply may have reached the agent. Retry explicitly to resolve it.",
+        504,
+        { operationId: input.operationId },
+      );
+    }
+
+    const completed = this.store.completeCronReplyOperation(input.operationId, canonicalStatus);
+    const receipt = this.cronReplyTerminalResult(completed);
+    if (receipt === undefined) {
+      throw new WebConsoleError("cron_reply_operation_conflict", "Cron reply operation did not complete.", 409);
+    }
+    if (!receipt.duplicate) {
+      for (const message of receipt.messages) {
+        this.emit("message.changed", receipt.thread.id, { messageId: message.id, updatedAt: message.updatedAt });
+      }
+      this.emitThread("threads.changed", { thread: receipt.thread });
+      this.emitThread("thread.changed", { thread: receipt.thread });
+    }
+    return receipt;
+  }
+
+  private assertCronReplyStateIdentity(
+    state: CronReplyReservationResult,
+    sourceId: string,
+    jobId: string,
+    runId: string,
+  ): void {
+    const identity = state.kind === "completed" ? state.receipt : state.operation;
+    if (identity.sourceId !== sourceId || identity.jobId !== jobId || identity.runId !== runId) {
+      throw new WebConsoleError("cron_reply_operation_conflict", "Cron reply operation id was used for another run.", 409);
+    }
+  }
+
+  private cronReplyTerminalResult(state: CronReplyReservationResult): WebCronReplyReceipt | undefined {
+    if (state.kind === "completed") return state.receipt;
+    if (state.kind === "tombstoned") {
+      throw new WebConsoleError("cron_reply_gone", "This imported conversation was deleted.", 410);
+    }
+    if (state.kind === "failed") {
+      throw new WebConsoleError("cron_reply_failed", "This cron Reply failed definitively; start a new Reply to try again.", 409, {
+        ...(state.operation.failureReason === undefined ? {} : { reason: state.operation.failureReason }),
+      });
+    }
+    return undefined;
   }
 
   async agentModels(sourceId: string, input: {

@@ -586,6 +586,24 @@ export interface WebCronRunPage extends CronOperatorRunPage {
   readonly messages?: readonly WebMessage[];
 }
 
+export type WebCronReplySnapshotKind = "summary" | "detail";
+
+export interface CreateWebCronReplyInput {
+  readonly operationId: string;
+  readonly snapshotKind: WebCronReplySnapshotKind;
+}
+
+/** One durable, server-owned import receipt. `duplicate` means local replay. */
+export interface WebCronReplyReceipt {
+  readonly operationId: string;
+  readonly sourceId: string;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly duplicate: boolean;
+  readonly thread: WebThread;
+  readonly messages: readonly [WebMessage, WebMessage];
+}
+
 /** One provider an agent advertises as supported. */
 export interface WebAgentProvider {
   readonly id: string;

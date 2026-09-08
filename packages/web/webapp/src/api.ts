@@ -6,6 +6,8 @@ import type {
   AskSubmissionResult,
   Bootstrap,
   CronOverview,
+  CronReplyReceipt,
+  CronReplySnapshotKind,
   CronRunPage,
   LiveInputReceipt,
   McpAppPart,
@@ -34,12 +36,19 @@ import { recordEstimatedUsage, recordResponsePayload, recordTransferredBody } fr
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
+  readonly details?: Readonly<Record<string, unknown>>;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    details?: Readonly<Record<string, unknown>>,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -60,23 +69,33 @@ const readJson = async <T>(response: Response): Promise<T> => {
 const readError = async (response: Response): Promise<ApiError> => {
   let message = `${response.status} ${response.statusText}`.trim();
   let code: string | undefined;
+  let details: Readonly<Record<string, unknown>> | undefined;
   try {
     const payload = await readJson<{
-      error?: string | { message?: string; code?: string };
+      error?: string | { message?: string; code?: string; details?: unknown };
       message?: string;
       code?: string;
+      details?: unknown;
     }>(response);
     if (typeof payload.error === "string") message = payload.error;
     if (payload.error && typeof payload.error === "object") {
       message = payload.error.message ?? message;
       code = payload.error.code;
+      if (payload.error.details !== null
+        && typeof payload.error.details === "object"
+        && !Array.isArray(payload.error.details)) {
+        details = payload.error.details as Readonly<Record<string, unknown>>;
+      }
     }
     message = payload.message ?? message;
     code = payload.code ?? code;
+    if (payload.details !== null && typeof payload.details === "object" && !Array.isArray(payload.details)) {
+      details = payload.details as Readonly<Record<string, unknown>>;
+    }
   } catch {
     // The status line is still useful when the response is not JSON.
   }
-  return new ApiError(message, response.status, code);
+  return new ApiError(message, response.status, code, details);
 };
 
 /**
@@ -494,6 +513,27 @@ export const api = {
     });
     return result.thread;
   },
+
+  cronReply: (
+    sourceId: string,
+    jobId: string,
+    runId: string,
+    input: {
+      readonly operationId: string;
+      readonly snapshotKind: CronReplySnapshotKind;
+    },
+    signal?: AbortSignal,
+  ) => request<CronReplyReceipt>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}`
+      + `/cron/jobs/${encodeURIComponent(jobId)}`
+      + `/runs/${encodeURIComponent(runId)}/reply-threads`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
 
   patchAgent: async (sourceId: string, pinned: boolean) => {
     const result = await request<{ agent: AgentSummary }>(
