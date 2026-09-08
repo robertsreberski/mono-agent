@@ -498,8 +498,9 @@ interface ActiveTurn {
   readonly controller: AbortController;
   readonly client: OperatorClient;
   readonly completion: Promise<void>;
-  readonly admitted: Promise<void>;
-  readonly resolveAdmitted: () => void;
+  /** Resolves `true` once the operator returned a turn stream, `false` if the turn settled first. */
+  readonly admitted: Promise<boolean>;
+  readonly resolveAdmitted: (admitted: boolean) => void;
 }
 
 interface ActiveLiveInput {
@@ -2024,20 +2025,22 @@ export class WebService {
     client: OperatorClient,
     operatorText: string,
     hostWakeDeliveryKey?: string,
-  ): Promise<void> {
+  ): { readonly completion: Promise<void>; readonly admitted: Promise<boolean> } {
     const threadId = started.thread.id;
     const controller = new AbortController();
-    let resolveAdmitted!: () => void;
-    const admitted = new Promise<void>((resolve) => { resolveAdmitted = resolve; });
+    let resolveAdmitted!: (admitted: boolean) => void;
+    const admitted = new Promise<boolean>((resolve) => { resolveAdmitted = resolve; });
     const completion = this.runTurn(
       started,
       client,
       controller,
       operatorText,
       hostWakeDeliveryKey,
-      resolveAdmitted,
+      () => { resolveAdmitted(true); },
     ).finally(() => {
-      resolveAdmitted();
+      // Inert once admission already resolved; the turn settled without the
+      // operator ever returning a stream when it did not.
+      resolveAdmitted(false);
       const active = this.activeTurns.get(threadId);
       if (active?.turnId === started.turnId) this.activeTurns.delete(threadId);
       if (!this.stopped && !this.hostWakeReservations.has(threadId)) {
@@ -2052,7 +2055,7 @@ export class WebService {
       admitted,
       resolveAdmitted,
     });
-    return completion;
+    return { completion, admitted };
   }
 
   private submissionReceipt(submission: StoredWebSubmission): WebSubmissionReceipt {
@@ -2349,7 +2352,7 @@ export class WebService {
         };
       }
       this.store.associateProcessJobWakeTurn(input.deliveryKey, started.turnId);
-      const completion = this.launchTurn(
+      const { completion, admitted } = this.launchTurn(
         started,
         refreshedConnection.client,
         input.wakePrompt,
@@ -2358,7 +2361,9 @@ export class WebService {
       // Receipt ownership moves to the durable turn below. The turn remains
       // owned by `activeTurns`, but its completion is no longer part of the
       // notification request and an unexpected terminal-store failure must not
-      // become an unhandled rejection after the receipt has returned.
+      // become an unhandled rejection after the receipt has returned. Attached
+      // before the admission wait below, so a rejection in that window cannot
+      // escape either.
       void completion.catch((error: unknown) => {
         try {
           this.options.logger?.error?.("Web process-job follow-up turn settlement failed after admission.", {
@@ -2370,6 +2375,30 @@ export class WebService {
           // A caller-provided logger cannot be allowed to re-detach the failure.
         }
       });
+      // Announced before the wait: this row exists either way, and a turn that
+      // never reaches the operator still has to be visible as the failure it is.
+      this.emit("message.changed", input.threadId, {
+        messageId: started.assistantMessageId,
+        updatedAt: started.thread.updatedAt,
+      });
+      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
+      this.emitThread("threads.changed", { thread: started.thread });
+      // The wake's host-owned capability — chain depth and remaining background
+      // starts — is bound to this exact request by the agent when it accepts the
+      // turn. Receipting earlier ends the wake route on the agent side and
+      // strips that capability from the very turn the wake raised, so the
+      // follow-up can no longer start the next job. This waits for admission
+      // only; the model turn itself stays detached above.
+      if (!await admitted) {
+        // The request may still have reached the agent, so the accepted claim
+        // stays put: no abandon, no replay, and any retry fails closed.
+        return {
+          delivered: false,
+          code: "process_job_wake_ambiguous",
+          retryable: false,
+          ambiguous: true,
+        };
+      }
       const message = this.store.completeProcessJobWake({
         sourceId: input.sourceId,
         jobId: input.processJob.jobId,
@@ -2380,12 +2409,6 @@ export class WebService {
       if (message !== undefined) {
         this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
       }
-      this.emit("message.changed", input.threadId, {
-        messageId: started.assistantMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emitThread("threads.changed", { thread: started.thread });
       return { delivered: true, disposition: "follow_up" };
     });
     const tail = delivery.then(() => undefined, () => undefined);
@@ -2552,7 +2575,7 @@ export class WebService {
           retryable: false,
         };
       }
-      const completion = this.launchTurn(
+      const { completion } = this.launchTurn(
         started,
         refreshedConnection.client,
         input.wakePrompt,
