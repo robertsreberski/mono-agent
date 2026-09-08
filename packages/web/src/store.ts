@@ -1946,6 +1946,11 @@ export class WebStore {
     return { kind: "new" };
   }
 
+  /**
+   * Confirm the wake's delivery path, independently of the associated turn's
+   * eventual outcome. `completed/follow_up` means the exact turn was durably
+   * admitted; it does not mean that turn completed successfully.
+   */
   completeProcessJobWake(input: {
     readonly sourceId: string;
     readonly jobId: string;
@@ -2012,16 +2017,17 @@ export class WebStore {
     `).run(deliveryKey, turnId);
   }
 
-  /** Release a reservation only while no operator delivery has begun. */
+  /** Release a reservation only while no operator delivery has begun, proving the exact claim was removed. */
   abandonProcessJobWake(input: {
     readonly sourceId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
-  }): void {
-    this.database.prepare(`
+  }): boolean {
+    const result = this.database.prepare(`
       DELETE FROM process_job_wake_deliveries
       WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
     `).run(input.sourceId, input.jobId, input.deliveryKey);
+    return result.changes === 1;
   }
 
   /** Durably claim one Monitor wake before touching the operator. */

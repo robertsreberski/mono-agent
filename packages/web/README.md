@@ -101,8 +101,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 Process-job completion replies suppress only an exact sentinel-only terminal
 message with a verified wake association; narration and rich replies remain
-visible. Silent replies create no response push. Job cards distinguish an
-unknown wake receipt from failure and explain that replay was suppressed.
+visible. Silent replies create no response push. A web wake receipt confirms
+that steering was applied or the exact follow-up turn was durably admitted; the
+turn's later model outcome remains separate. Job cards distinguish an unknown
+pre-confirmation receipt from failure and explain that replay was suppressed.
 
 `@mono-agent/agent-app` provides the normal managed-service lifecycle:
 
@@ -545,11 +547,12 @@ ledger; postconditions check the required effects.
    first appends the result to agent history, then atomically exposes an
    idempotent assistant-only thread. A process-job delivery instead updates one
    source/thread-bound durable card; its normal wake turn owns the single agent
-   history entry. A Monitor delivery is steered into an active run or becomes an
-   assistant-only follow-up in the exact existing web thread; exact host-owned
-   receipts update one compact, secret-free activity row rather than creating
-   repeated steering cards. The browser may be closed, but the web service must
-   remain running.
+   history entry. Its receipt returns once that exact follow-up is durably
+   admitted rather than waiting for model completion. A Monitor delivery is
+   steered into an active run or becomes an assistant-only follow-up in the exact
+   existing web thread; exact host-owned receipts update one compact, secret-free
+   activity row rather than creating repeated steering cards. The browser may be
+   closed, but the web service must remain running.
 
 Monitor activity shows suppressed lines/batches and follow-up, steered, or
 unknown wake dispositions. These are host delivery counts, not model-turn or

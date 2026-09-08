@@ -129,7 +129,9 @@ Process-job chains keep the default depth budget of 4 and allow a configured
 ceiling of 64. Request diagnostics remain visible when the budget is exhausted.
 Background Exec/Bash accepts `wake_on_completion: false` for helpers that only
 need terminal card updates. Exact sentinel-only wakes suppress delivery; a
-receipt timeout settles as unknown and never automatically replays.
+receipt timeout before the destination confirms steering or durable follow-up
+admission settles as unknown and never automatically replays. A confirmed web
+follow-up receipt does not wait for that turn's later model outcome.
 
 ```bash
 # Install the scoped CLI host directly:
