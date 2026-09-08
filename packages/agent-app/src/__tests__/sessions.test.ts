@@ -239,6 +239,31 @@ describe("standalone purge process-root protection", () => {
 });
 
 describe("purgeConversationState", () => {
+  it("clear-sessions removes bound history fences and transcripts for every model", async () => {
+    const configPath = await writeConfig({ artifacts: { dir: "./.state/artifacts" },
+      providers: { piNative: { piSessionsRoot: "./.state/sessions" } } });
+    const sessionsRoot = join(dir, ".state/sessions");
+    const historyRoot = join(dir, ".state/history");
+    await mkdir(sessionsRoot, { recursive: true });
+    await mkdir(join(historyRoot, ".locks"), { recursive: true });
+    for (const name of ["base", "override"]) {
+      await writeFile(join(sessionsRoot, `${name}.jsonl`), JSON.stringify({ type: "session", id: name }));
+      await writeFile(join(historyRoot, `${name}.history.json`), JSON.stringify({ version: 2, conversationId: name,
+        messages: [], providerSession: { epoch: "a".repeat(64), revision: 1, modelKey: `faux:${name}` } }));
+    }
+    await writeFile(join(historyRoot, ".locks/bound.dirty.json"), JSON.stringify({ version: 4,
+      conversationKey: "a".repeat(64), logicalConversationKey: "a".repeat(64), epoch: "b".repeat(64),
+      providerSessionId: "c".repeat(64), revision: 0, runIdDigest: "d".repeat(64), modelKey: "faux:override" }));
+    const sentinel = join(dir, "unrelated.txt");
+    await writeFile(sentinel, "preserved");
+    const result = await purgeConversationState(inputFor(configPath));
+    expect(result.sessions.removed).toBe(true);
+    expect(result.history.removed).toBe(true);
+    await expect(stat(sessionsRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(historyRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(sentinel, "utf8")).toBe("preserved");
+  });
+
   it("refuses a dormant retained-root overlap before deleting any conversation state", async () => {
     const configPath = await writeConfig({
       artifacts: { dir: "./.state/artifacts" },

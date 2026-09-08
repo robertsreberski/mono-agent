@@ -967,3 +967,12 @@ describe("ReplayView detail mode", () => {
     expect(view.back()).toBe(false);
   });
 });
+
+it("renders model-change replay boundaries and historical isolated overrides", () => {
+  const direct = { type: "session_boundary", kind: "resume_replay", reason: "model_change", providerSessionId: "new-id" };
+  expect(renderDetailCell(runtimeTimelineItem(0, direct))).toBe("i session boundary: resume replay · model change · provider new-id");
+  expect(sessionBoundaryNotice({ type: "runtime_telemetry", kind: "session_boundary", data: direct }))
+    .toBe("session boundary: resume replay · model change · provider new-id");
+  expect(renderDetailCell(runtimeTimelineItem(1, { type: "session_boundary", kind: "isolated", reason: "model_override" })))
+    .toBe("i session boundary: isolated · model override");
+});
