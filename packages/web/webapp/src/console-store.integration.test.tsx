@@ -1233,8 +1233,9 @@ describe("ConsoleStoreProvider integration", () => {
       </ConsoleStoreProvider>,
     );
 
-    expect(await screen.findByRole("button", { name: /Background jobs.*1 loaded/u }))
+    expect(await screen.findByRole("button", { name: "Show background job history" }))
       .toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
     expect(api.cronRuns).toHaveBeenCalled();
   });
 

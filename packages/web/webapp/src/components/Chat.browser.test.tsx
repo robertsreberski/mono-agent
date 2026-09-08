@@ -1,10 +1,11 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { userEvent } from "@vitest/browser/context";
 import type { ReactNode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../api";
 import { WebRuntimeProvider } from "../runtime";
 import { agent, processJob, thread } from "../test/fixtures";
-import type { ThreadDetail, ThreadSummary, WebMessage } from "../types";
+import type { ProcessJobProjection, ThreadDetail, ThreadSummary, WebMessage } from "../types";
 import "../styles.css";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
@@ -175,22 +176,41 @@ beforeEach(() => {
   document.body.style.margin = "0";
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("Chat conversation viewport in Chromium", () => {
   it("follows stack disclosure at bottom and preserves an operator reading above", async () => {
     const selectedThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
     const base = chatDetail(selectedThread, messageIds(18));
-    const job = processJob({
+    const terminal = processJob({
+      jobId: "terminal-job",
       origin: {
         ...processJob().origin,
         conversationId: `web:${selectedThread.id}`,
         historyBoundary: `web:${selectedThread.id}`,
       },
     });
+    const running = processJob({
+      jobId: "running-job",
+      state: "running",
+      origin: terminal.origin,
+      timestamps: { ...terminal.timestamps, completedAt: null },
+      output: { ...terminal.output, stdoutBytes: 0, preview: "", stdoutRef: null, stderrRef: null },
+      wake: { ...terminal.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
     const detail: ThreadDetail = {
       ...base,
       messages: [...base.messages, {
         ...chatMessage("job-only", selectedThread.id),
-        parts: [{ type: "process-job", job }],
+        parts: [
+          { type: "process-job", job: running },
+          { type: "process-job", job: terminal },
+        ],
       }],
     };
     storeMock.current = chatStore(selectedThread, detail);
@@ -201,10 +221,13 @@ describe("Chat conversation viewport in Chromium", () => {
     await waitForBottom(viewport);
     const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector(".process-job-stack-item:not([hidden]) .is-running")).not.toBeNull();
+    expect(container.querySelector(".process-job-stack-item[hidden] .is-complete")).not.toBeNull();
 
     toggle.focus();
     await userEvent.keyboard("{Enter}");
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector(".process-job-stack-item[hidden]")).toBeNull();
     await waitForFrames(3);
     expect(Math.abs(gapFromBottom(viewport))).toBeLessThanOrEqual(1);
 
@@ -237,9 +260,25 @@ describe("Chat conversation viewport in Chromium", () => {
       thread: selectedThread,
       messages: [{
         ...chatMessage("job-only", selectedThread.id),
-        parts: [{ type: "process-job", job }],
+        parts: [
+          { type: "process-job", job },
+          {
+            type: "process-job",
+            job: {
+              ...job,
+              jobId: "running-job",
+              state: "running",
+              timestamps: { ...job.timestamps, completedAt: null },
+              output: { ...job.output, stdoutBytes: 0, preview: "", stdoutRef: null, stderrRef: null },
+              wake: { ...job.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+              exitCode: null,
+              durationMs: null,
+            },
+          },
+        ],
       }],
     };
+    vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
     storeMock.current = chatStore(selectedThread, detail);
 
     const { container } = render(chatTree(360));
@@ -255,6 +294,56 @@ describe("Chat conversation viewport in Chromium", () => {
     expect(stack.getBoundingClientRect().left).toBeGreaterThanOrEqual(column.getBoundingClientRect().left);
     expect(stack.getBoundingClientRect().right).toBeLessThanOrEqual(column.getBoundingClientRect().right);
     expect(getViewport(container).scrollWidth).toBeLessThanOrEqual(getViewport(container).clientWidth);
+  });
+
+  it("hides a newly terminal card by the first browser frame", async () => {
+    const selectedThread = thread("thread-a", "agent");
+    const complete = processJob({
+      jobId: "live-job",
+      origin: {
+        ...processJob().origin,
+        conversationId: `web:${selectedThread.id}`,
+        historyBoundary: `web:${selectedThread.id}`,
+      },
+    });
+    const running: ProcessJobProjection = {
+      ...complete,
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      output: { ...complete.output, stdoutBytes: 0, preview: "", stdoutRef: null, stderrRef: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    };
+    let finish!: (job: ProcessJobProjection) => void;
+    vi.spyOn(api, "threadJob").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    storeMock.current = chatStore(selectedThread, {
+      thread: selectedThread,
+      messages: [{
+        ...chatMessage("job-only", selectedThread.id),
+        parts: [{ type: "process-job", job: running }],
+      }],
+    });
+
+    const { container } = render(chatTree());
+    await waitFor(() => expect(api.threadJob).toHaveBeenCalledOnce());
+    const item = container.querySelector<HTMLElement>(".process-job-stack-item")!;
+    const row = item.querySelector<HTMLElement>(".activity-row.is-job")!;
+    expect(item).not.toHaveAttribute("hidden");
+
+    await act(async () => { finish(complete); });
+    await new Promise<void>((resolve, reject) => {
+      requestAnimationFrame(() => {
+        try {
+          expect(item).toHaveAttribute("hidden");
+          expect(item.querySelector(".activity-row.is-job")).toBe(row);
+          expect(row).toHaveClass("is-complete");
+          resolve();
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    });
   });
 
   it("pins a short ordinary conversation's composer footer to the viewport bottom", async () => {

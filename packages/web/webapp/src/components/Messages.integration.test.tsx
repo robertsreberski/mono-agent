@@ -1222,13 +1222,14 @@ describe("message actions", () => {
       ],
     }} />);
 
-    // Terminal-only stacks start collapsed; rich siblings and their one copy
+    // Terminal history starts collapsed; rich siblings and their one copy
     // action remain in the message while the card lives outside that wrapper.
     expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
     expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The background report is ready.")).toBeVisible();
-    const stackToggle = screen.getByRole("button", { name: /Background jobs.*1 job/u });
+    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    const stackToggle = screen.getByRole("button", { name: "Show background job history" });
     expect(stackToggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(stackToggle);
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
@@ -1316,6 +1317,8 @@ describe("message actions", () => {
       await Promise.resolve();
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
+    expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
     // A closed <details> is "not visible" to jest-dom; its state is in the class and name.
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
 
@@ -1489,6 +1492,9 @@ describe("message actions", () => {
       ...assistantMessage("complete"),
       parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
     }} />);
+    await waitFor(() => expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible());
+    expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
     const settled = await screen.findByRole("group", { name: "Exec background job succeeded" });
     expect(settled.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
   });

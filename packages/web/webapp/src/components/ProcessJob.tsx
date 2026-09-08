@@ -216,7 +216,7 @@ export function ProcessJobCard({
    */
   const projectedRef = useRef({ signature: projectionSignature(initial), at: 0 });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setLive((current) => {
       if (initial === undefined || current === undefined || current.jobId !== initial.jobId) return initial;
       return processJobSupersedes(current, initial) ? initial : current;
@@ -234,7 +234,10 @@ export function ProcessJobCard({
     setOpen(false);
   }, [jobId, threadId]);
 
-  useEffect(() => {
+  // The stack hides terminal history from its parent projection. Report a poll
+  // or message refresh before paint so a settled row cannot spend one frame in
+  // the always-visible active list. Direct adapter cards omit this callback.
+  useLayoutEffect(() => {
     if (live !== undefined) onProjectionChange?.(live);
   }, [live, onProjectionChange]);
 

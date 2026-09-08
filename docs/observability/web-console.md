@@ -581,13 +581,14 @@ Parent and child routing attribution stay independent.
 
 Every Activity row is one line at every width: the tool name and status hold their place and a long argument is truncated with an ellipsis, so a list of rows stays scannable rather than reflowing into a ragged block on a phone. Expanding a row reveals the full value. The nesting rails narrow below 560px and the settled Activity list scrolls with the page instead of inside its own box. Individual tool payloads stay height-capped and selectable so their output can still be copied on a phone, and they wrap within the panel rather than extending past it.
 
-Background `Exec` and `Bash` jobs appear once in a collapsible stack after the
-loaded transcript. A stack with active work opens by default; a terminal-only
-stack starts collapsed. An explicit choice is remembered per conversation for
-the browser session, and the header keeps loaded, active, and failed-terminal
-counts current while collapsed because its cards remain mounted. If older
-messages are available, the stack says its count covers loaded messages and
-points to **Load earlier messages** rather than claiming a whole-history total.
+Background `Exec` and `Bash` jobs appear once in a stack after the loaded
+transcript. Queued, starting, and running cards stay visible by default. Every
+terminal outcome is hidden until the operator expands history; that choice is
+remembered per conversation for the browser session. The header keeps neutral
+active and history counts current because every loaded card remains mounted. If
+older messages are available, the stack says its count covers loaded messages
+and expanded history points to **Load earlier messages** rather than claiming a
+whole-history total.
 
 Each running card polls its exact source- and thread-bound projection once per
 second in Full data mode and at the slower two-second Lean cadence, and shows a
