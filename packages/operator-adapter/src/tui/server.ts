@@ -789,6 +789,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   app.post(
     contextImportPath,
+    (_req, res, next) => {
+      res.setHeader("Cache-Control", "private, no-store, max-age=0");
+      next();
+    },
     express.json({ limit: MAX_CONTEXT_IMPORT_BODY_BYTES, strict: true }),
     (req, res, next) => {
       if (!authorize(req, res, apiKey)) return;

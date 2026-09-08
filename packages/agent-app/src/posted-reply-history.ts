@@ -88,17 +88,21 @@ function wrapHistoryStore(
   scopes: AsyncLocalStorage<PostedReplyScope>,
   options: SlackPostedReplyHistoryOptions,
 ): ConversationHistoryStore {
+  const providerSessionRetirement = store.providerSessionRetirement;
+  const contextImport = store.contextImport;
   return {
-    ...(store.providerSessionRetirement === undefined
+    ...(providerSessionRetirement === undefined
       ? {}
-      : { providerSessionRetirement: store.providerSessionRetirement }),
-    ...(store.contextImport === undefined
+      : { providerSessionRetirement }),
+    ...(contextImport === undefined
       ? {}
       : {
         contextImport: {
-          ...store.contextImport,
+          version: contextImport.version,
+          maxTextBytes: contextImport.maxTextBytes,
+          providerState: contextImport.providerState,
           async beginExclusiveTurn(conversationId: string) {
-            const turn = await store.contextImport!.beginExclusiveTurn(conversationId);
+            const turn = await contextImport.beginExclusiveTurn(conversationId);
             const scope = scopes.getStore();
             if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
               return turn;
@@ -116,7 +120,7 @@ function wrapHistoryStore(
               abort: turn.abort.bind(turn),
             };
           },
-          prepareImport: (conversationId, request) => store.contextImport!.prepareImport(conversationId, request),
+          prepareImport: (conversationId, request) => contextImport.prepareImport(conversationId, request),
         },
       }),
     async load(conversationId) {

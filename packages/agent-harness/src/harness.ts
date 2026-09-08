@@ -234,16 +234,25 @@ export class MonoAgentHarness implements AgentHarness {
     request: AgentContextImportRequest,
   ): Promise<AgentContextImportResult> {
     this.assertAcceptingRuns();
-    const result = await importHarnessContext(
-      this.options,
-      conversationId,
-      request,
-      this.nowIso(),
-    );
-    if (result.status === "appended") {
-      await this.sessionStore?.evict(conversationId.trim(), "stale");
+    this.activeRuns += 1;
+    try {
+      const result = await importHarnessContext(
+        this.options,
+        conversationId,
+        request,
+        this.nowIso(),
+      );
+      if (result.status === "appended") {
+        await this.sessionStore?.evict(conversationId.trim(), "stale");
+      }
+      return result;
+    } finally {
+      this.activeRuns -= 1;
+      if (this.activeRuns === 0) {
+        for (const resolve of this.activeRunWaiters) resolve();
+        this.activeRunWaiters.clear();
+      }
     }
-    return result;
   }
 
   async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {

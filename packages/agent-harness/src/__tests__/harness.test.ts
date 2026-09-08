@@ -151,6 +151,90 @@ describe("AgentHarness", () => {
       .rejects.toThrow("idempotencyKey must not exceed 512 UTF-8 bytes");
   });
 
+  it.each([
+    { label: "successful", rejectImport: false },
+    { label: "failed", rejectImport: true },
+  ])("drains a $label admitted context import before disposing session resources", async ({ rejectImport }) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let history: readonly HistoryMessage[] = [];
+    let version = 0;
+    let releaseImport!: () => void;
+    const importReleased = new Promise<void>((resolve) => { releaseImport = resolve; });
+    let markImportPrepared!: () => void;
+    const importPrepared = new Promise<void>((resolve) => { markImportPrepared = resolve; });
+    const disposedSessions: string[] = [];
+    const store: ConversationHistoryStore = {
+      load: async () => history,
+      append: async (_conversationId, messages) => { history = [...history, ...messages]; },
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        async beginExclusiveTurn() {
+          const capturedVersion = `revision-${String(version)}`;
+          return {
+            history,
+            historyVersion: capturedVersion,
+            async prepareCommit(messages) {
+              const committedHistoryVersion = `revision-${String(version + 1)}`;
+              return {
+                append: {
+                  async commit() {
+                    history = [...history, ...messages];
+                    version += 1;
+                  },
+                  async abort() {},
+                },
+                committedHistoryVersion,
+              };
+            },
+            async abort() {},
+          };
+        },
+        async prepareImport() {
+          markImportPrepared();
+          await importReleased;
+          if (rejectImport) throw new Error("import preparation failed");
+          return {
+            result: { status: "appended" },
+            append: { commit: async () => undefined, abort: async () => undefined },
+          };
+        },
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run() { return { text: "seed", providerSessionId: "provider-session" }; },
+        async disposeSession(providerSessionId: string) {
+          disposedSessions.push(providerSessionId);
+          return true;
+        },
+      },
+      model,
+      historyStore: store,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    await harness.run({ conversationId: "c", userMessage: "seed", abortSignal: new AbortController().signal });
+
+    const importing = harness.importContext!("c", { text: "snapshot", idempotencyKey: "run:1" });
+    await importPrepared;
+    let disposeSettled = false;
+    const disposing = harness.dispose!().then(() => { disposeSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disposeSettled).toBe(false);
+    expect(disposedSessions).toEqual([]);
+
+    releaseImport();
+    if (rejectImport) await expect(importing).rejects.toThrow("import preparation failed");
+    else await expect(importing).resolves.toEqual({ status: "appended" });
+    await expect(disposing).resolves.toBeUndefined();
+    expect(disposeSettled).toBe(true);
+    expect(disposedSessions).toEqual(["provider-session"]);
+  });
+
   it("fails capability discovery closed for provider-ineligible and legacy stores", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

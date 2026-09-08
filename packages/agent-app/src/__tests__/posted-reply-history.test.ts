@@ -242,6 +242,62 @@ describe("createSlackPostedReplyHistory", () => {
     await expect(responder.respond(slackReplyRequest(), noopStream())).resolves.toEqual({ text: "ok" });
   });
 
+  it("preserves getter-backed capability fields and receiver-bound prototype methods", async () => {
+    const identityPath = await identityFixture();
+    const canonical = createInMemoryHistoryStore({ maxMessages: 64 });
+    let capability!: GetterBackedCapability;
+    class GetterBackedCapability {
+      get version(): 1 {
+        if (this !== capability) throw new Error("version receiver changed");
+        return 1;
+      }
+      get maxTextBytes(): number {
+        if (this !== capability) throw new Error("maxTextBytes receiver changed");
+        return 32_768;
+      }
+      get providerState(): "absent" {
+        if (this !== capability) throw new Error("providerState receiver changed");
+        return "absent";
+      }
+      async beginExclusiveTurn() {
+        if (this !== capability) throw new Error("beginExclusiveTurn receiver changed");
+        return {
+          history: [],
+          historyVersion: "revision-1",
+          prepareCommit: async () => ({
+            append: { commit: async () => undefined, abort: async () => undefined },
+            committedHistoryVersion: "revision-2",
+          }),
+          abort: async () => undefined,
+        };
+      }
+      async prepareImport() {
+        if (this !== capability) throw new Error("prepareImport receiver changed");
+        return { result: { status: "conflict" as const, reason: "conversation_not_empty" as const } };
+      }
+    }
+    capability = new GetterBackedCapability();
+    const store: ConversationHistoryStore = {
+      load: canonical.load.bind(canonical),
+      append: canonical.append.bind(canonical),
+      contextImport: capability,
+    };
+    const wrapped = createSlackPostedReplyHistory({ maxMessages: 64 }).wrapHistoryStore(store);
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: observingRuntime().runtime,
+      model: MODEL,
+      historyStore: wrapped,
+    });
+
+    expect(harness.importContext).toBeTypeOf("function");
+    await expect(harness.importContext!("c", { text: "snapshot", idempotencyKey: "run:1" }))
+      .resolves.toEqual({ status: "conflict", reason: "conversation_not_empty" });
+    const turn = await wrapped.contextImport!.beginExclusiveTurn("c");
+    await expect(turn.abort()).resolves.toBeUndefined();
+    await harness.dispose?.();
+  });
+
   it("adds the exact destination receipt once to a cold real replay without changing producer history", async () => {
     const identityPath = await identityFixture();
     const canonical = createInMemoryHistoryStore({ maxMessages: 64 });
