@@ -4016,6 +4016,7 @@ export class WebStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS turns_one_active_per_thread
         ON turns(thread_id) WHERE status = 'running';
+      CREATE INDEX IF NOT EXISTS turns_by_thread_started ON turns(thread_id, started_at);
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -4028,6 +4029,7 @@ export class WebStore {
         seq INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
+      CREATE INDEX IF NOT EXISTS messages_by_turn ON messages(turn_id);
       CREATE TABLE IF NOT EXISTS live_inputs (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
