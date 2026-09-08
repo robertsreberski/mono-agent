@@ -250,7 +250,70 @@ describe("Chat conversation viewport", () => {
     expect(column.lastElementChild).toBe(stack);
     expect(stack.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stack.querySelector(".message-actions")).toBeNull();
-    expect(screen.getByRole("button", { name: /1 loaded/u })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("isolates same-id job state while retaining history preference through the keyed viewport", () => {
+    const first = thread("thread-a", "agent");
+    const second = thread("thread-b", "agent");
+    const terminal = processJob({ jobId: "same-job" });
+    const running = processJob({
+      ...terminal,
+      state: "running",
+      origin: {
+        ...terminal.origin,
+        conversationId: `web:${first.id}`,
+        historyBoundary: `web:${first.id}`,
+      },
+      timestamps: { ...terminal.timestamps, completedAt: null },
+      output: { ...terminal.output, stdoutBytes: 0, preview: "", stdoutRef: null, stderrRef: null },
+      wake: { ...terminal.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const old = processJob({ jobId: "thread-a-history" });
+    const messageWith = (selected: ThreadSummary, jobs: readonly typeof terminal[]): WebMessage => ({
+      ...chatMessage(`${selected.id}-jobs`, selected.id),
+      parts: jobs.map((job) => ({ type: "process-job" as const, job })),
+    });
+    storeMock.current = chatStore(first, {
+      thread: first,
+      messages: [messageWith(first, [running, old])],
+    });
+
+    const view = render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
+
+    storeMock.current = chatStore(second, {
+      thread: second,
+      messages: [messageWith(second, [{
+        ...terminal,
+        origin: {
+          ...terminal.origin,
+          conversationId: `web:${second.id}`,
+          historyBoundary: `web:${second.id}`,
+        },
+      }])],
+    });
+    view.rerender(chatTree());
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
+
+    storeMock.current = chatStore(first, {
+      thread: first,
+      messages: [messageWith(first, [running, old])],
+    });
+    view.rerender(chatTree());
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
+    expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
   });
 
   it("contains one StrictMode message-row failure and reloads only the conversation pane", () => {

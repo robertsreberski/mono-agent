@@ -76,9 +76,10 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   ingress, update one durable job card in place without a verbatim-history
   append, and poll its bounded redacted live output tail through the agent's
   independent owner operator capability without persisting each output chunk.
-  The browser collects cards from the loaded message window in one collapsible
-  conversation-level stack after the transcript; collapsed running cards stay
-  mounted so their status counts and tails continue to update.
+  The browser collects cards from the loaded message window in one
+  conversation-level stack after the transcript. Queued, starting, and running
+  cards stay visible by default; terminal cards remain mounted behind
+  expandable history so status counts and live transitions stay current.
 - Accept exact-source/thread Monitor wakes through that private ingress, steer
   them into the active run or serialize one assistant-only follow-up, retain
   delivery identity plus a payload hash for fail-closed duplicate handling, and
