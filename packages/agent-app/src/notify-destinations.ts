@@ -2,7 +2,7 @@ import type { NotifyDestination } from "@mono-agent/agent-contracts";
 
 import type { MonoAgentAppConfigInput } from "./app-config.js";
 import type { ChannelId, MonoAgentAppLogger } from "./channels.js";
-import { channelIdForConversation } from "./proactive-notify.js";
+import { channelIdForConversation, isNotifyCapableChannel } from "./proactive-notify.js";
 import { listSeenNotifyDestinations } from "./seen-conversations.js";
 import type { SeenConversation } from "./seen-conversations.js";
 
@@ -22,8 +22,6 @@ const loadSlackModule = async (): Promise<SlackAdapterModule> =>
 const loadTelegramModule = async (): Promise<TelegramAdapterModule> =>
   (telegramModule ??= await import("@mono-agent/telegram-adapter"));
 
-/** Channels whose conversations can receive a proactive notification turn. */
-const NOTIFY_CAPABLE: ReadonlySet<ChannelId> = new Set<ChannelId>(["telegram", "slack"]);
 
 export interface ResolveNotifyDestinationsInput {
   readonly input: MonoAgentAppConfigInput;
@@ -43,7 +41,8 @@ export interface ResolveNotifyDestinationsInput {
  *    notify-capable + running channels, newest-first;
  *  - the adapter allowlist entries (when not allow-all), surfaced as candidates the agent
  *    can reach even before it has conversed there (covers a fresh single-user agent).
- * WhatsApp is excluded (no notify hook yet) so the agent never picks an undeliverable id.
+ * WhatsApp is excluded (no notify hook yet) so the agent never picks an undeliverable id;
+ * Messenger (plugin) conversations the agent has already handled are included.
  */
 export async function resolveNotifyDestinations(
   opts: ResolveNotifyDestinationsInput,
@@ -53,7 +52,7 @@ export async function resolveNotifyDestinations(
 
   const seen = opts.seenDestinations ?? await listSeenNotifyDestinations(opts.artifactDir);
   for (const sighting of seen) {
-    if (!NOTIFY_CAPABLE.has(sighting.channelId) || !opts.isRunning(sighting.channelId)) {
+    if (!isNotifyCapableChannel(sighting.channelId) || !opts.isRunning(sighting.channelId)) {
       continue;
     }
     out.push({
@@ -78,10 +77,10 @@ export async function resolveNotifyDestinations(
   return out;
 }
 
-/** Whether a run artifact can contribute a Telegram/Slack native-notify candidate. */
+/** Whether a run artifact can contribute a native-notify candidate (Telegram, Slack, Messenger). */
 export function isNotifyDestinationConversationId(conversationId: string | undefined): boolean {
   const channelId = conversationId === undefined ? undefined : channelIdForConversation(conversationId);
-  return channelId !== undefined && NOTIFY_CAPABLE.has(channelId);
+  return isNotifyCapableChannel(channelId);
 }
 
 function addAllowlisted(

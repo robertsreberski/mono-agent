@@ -23,6 +23,7 @@ Channels are how a mono-agent receives input and delivers replies. Core channels
 | Channel | Transport | Plugin package | Guide |
 | --- | --- | --- | --- |
 | WhatsApp | Baileys socket (QR login) | `@mono-agent/whatsapp-adapter` | [WhatsApp](/channels/whatsapp/) |
+| Facebook Messenger | Meta webhook + Send API | `@mono-agent/messenger-adapter` | [Messenger](/channels/messenger/) |
 | A2A | Agent-to-Agent provider/consumer | `@mono-agent/a2a-adapter` | [A2A](/channels/a2a/) |
 
 Channels are fully independent: enabling one neither requires nor affects another, and a misconfigured channel never blocks the rest of the host from starting.
@@ -69,7 +70,7 @@ Pick by who or what is on the other end:
 
 | You want… | Use | Why |
 | --- | --- | --- |
-| A human chatting interactively | [Telegram](/channels/telegram/), [Slack](/channels/slack/), or [WhatsApp](/channels/whatsapp/) | Conversational adapters with allowlists, working indicators, and final-answer delivery; WhatsApp is loaded as an external plugin |
+| A human chatting interactively | [Telegram](/channels/telegram/), [Slack](/channels/slack/), [WhatsApp](/channels/whatsapp/), or [Messenger](/channels/messenger/) | Conversational adapters with allowlists, working indicators, and final-answer delivery; WhatsApp and Messenger are loaded as external plugins |
 | Programmatic / pipeline invocation | [Webhook](/channels/webhook/) or [A2A](/channels/a2a/) | Webhook for plain HTTP POST (sync or async polling); A2A for agent-to-agent calls with Agent Card discovery and is loaded as an external plugin |
 | A chat UI (e.g. Open WebUI) | [OpenAI-compatible API](/channels/openai-api/) | Exposes `/v1/models` + `/v1/chat/completions` with token-by-token SSE streaming |
 | A first-party operator console | [Terminal console](/observability/tui/) or [web console](/observability/web-console/) | Connects through the loopback operator endpoint while keeping transport details out of user-facing chat |

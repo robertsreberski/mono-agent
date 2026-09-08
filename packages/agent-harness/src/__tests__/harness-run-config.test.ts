@@ -95,9 +95,10 @@ describe("runSourceFromRequest", () => {
     });
   });
 
-  it("derives 'slack' and 'telegram' from their metadata blocks", () => {
+  it("derives 'slack', 'telegram', and 'messenger' from their metadata blocks", () => {
     expect(runSourceFromRequest(req({ slack: { channel: "C1" } }))).toEqual({ source: "slack" });
     expect(runSourceFromRequest(req({ telegram: { chatId: 1 } }))).toEqual({ source: "telegram" });
+    expect(runSourceFromRequest(req({ messenger: { user: { id: "42" } } }))).toEqual({ source: "messenger" });
   });
 
   it("falls back to conversationId-prefix derivation for absent/unknown metadata", () => {
@@ -105,6 +106,7 @@ describe("runSourceFromRequest", () => {
     expect(runSourceFromRequest(req({ somethingElse: true }, "webhook:my-endpoint"))).toEqual({ source: "webhook" });
     expect(runSourceFromRequest(req(undefined, "tui-local"))).toEqual({ source: "tui" });
     expect(runSourceFromRequest(req(undefined, "openai-api:resp-123"))).toEqual({ source: "openai-api" });
+    expect(runSourceFromRequest(req(undefined, "messenger:42"))).toEqual({ source: "messenger" });
   });
 
   it("never throws on unusual metadata shapes", () => {

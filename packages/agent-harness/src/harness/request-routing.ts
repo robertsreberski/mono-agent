@@ -31,7 +31,8 @@ export function createDefaultRunId(): string {
  *  1. `metadata.source === "web"` or `"tui"` (the operator endpoint injects this)
  *  2. `metadata.cron` present → "cron", detail = `metadata.cron.jobId` (string)
  *  3. `metadata.webhook` present → "webhook", detail = `metadata.webhook.endpointName` (string)
- *  4. `metadata.slack` / `metadata.telegram` present → that channel name
+ *  4. `metadata.slack` / `metadata.telegram` / `metadata.messenger` present →
+ *     that channel name
  *  5. otherwise falls back to {@link deriveRunSource}'s conversationId-prefix
  *     derivation, so unrecognized/legacy metadata still gets a best-effort source.
  * Never throws — `metadata` is `Record<string, unknown> | undefined` and any
@@ -61,6 +62,9 @@ export function runSourceFromRequest(
     }
     if (isRecord(metadata.telegram)) {
       return { source: "telegram" };
+    }
+    if (isRecord(metadata.messenger)) {
+      return { source: "messenger" };
     }
   }
   return { source: deriveRunSource(request.conversationId) };

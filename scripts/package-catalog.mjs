@@ -208,6 +208,17 @@ export const packageCatalog = [
     publishable: true,
   },
   {
+    dir: "messenger-adapter",
+    name: "@mono-agent/messenger-adapter",
+    path: "extras/messenger-adapter",
+    category: "communication",
+    channelIds: ["messenger"],
+    responsibility: "Adapts Facebook Messenger webhook events to structural agent requests and delivers final-only replies through the Send API.",
+    allowedDependencyCategories: ["core"],
+    publishable: true,
+    tier: "plugin",
+  },
+  {
     dir: "whatsapp-adapter",
     name: "@mono-agent/whatsapp-adapter",
     path: "extras/whatsapp-adapter",
