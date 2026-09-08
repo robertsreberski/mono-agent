@@ -181,8 +181,10 @@ describe("AgentHarness", () => {
   it("revokes mailbox ownership and fails the request when the host observer rejects readiness", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
     await writeFile(identityPath, "You are Mono.", "utf8");
     let runtimeCalls = 0;
+    const observerError = new Error("ownership observer failed");
     const harness = createAgentHarness({
       identityPath,
       runtime: {
@@ -194,18 +196,20 @@ describe("AgentHarness", () => {
       model,
       cwd: dir,
       createRunId: () => "run-observer-failure",
+      recorderFactory: (input) => createJsonlRunRecorder({ ...input, artifactDir }),
     });
     const ownership: string[] = [];
 
-    await expect(harness.run({
+    const running = harness.run({
       conversationId: "web:observer-failure",
       userMessage: "Initial request",
       abortSignal: new AbortController().signal,
       onLiveInputOwnership(event) {
         ownership.push(event.status);
-        if (event.status === "ready") throw new Error("ownership observer failed");
+        if (event.status === "ready") throw observerError;
       },
-    })).rejects.toThrow("ownership observer failed");
+    });
+    await expect(running).rejects.toBe(observerError);
     expect(runtimeCalls).toBe(0);
     expect(ownership).toEqual(["ready", "closed"]);
     expect(harness.offerLiveInput?.({
@@ -214,6 +218,15 @@ describe("AgentHarness", () => {
       text: "Do not accept",
       receivedAt: "2026-07-21T09:00:00.000Z",
     })).toEqual({ status: "unavailable", reason: "inactive" });
+    const persisted = JSON.parse(await readFile(join(artifactDir, "run-observer-failure.summary.json"), "utf8")) as RunSummary;
+    expect(persisted).toMatchObject({
+      runId: "run-observer-failure",
+      conversationId: "web:observer-failure",
+      status: "failed",
+      failureKind: "Error",
+      diagnostics: { error: { message: observerError.message } },
+    });
+    await expect(harness.dispose!()).resolves.toBeUndefined();
   });
 
   it("preserves an already-aborted outcome when the terminal ownership observer throws", async () => {

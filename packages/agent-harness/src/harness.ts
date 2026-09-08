@@ -349,6 +349,7 @@ export class MonoAgentHarness implements AgentHarness {
         try { liveInputMailbox.close("failed"); } finally {
           this.activeLiveInputs.delete(request.conversationId);
         }
+        await safeRecorderFail(recorder, error);
         throw error;
       }
     } else {
