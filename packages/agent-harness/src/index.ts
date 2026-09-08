@@ -84,6 +84,8 @@ export type {
   AgentHarnessTurnHistoryEnricher,
   AgentSessionMode,
   ConversationHistoryProviderSessionTurn,
+  ConversationHistoryExclusiveTurn,
+  ConversationHistoryContextImport,
   ConversationHistoryStore,
   ExternalRunSummary,
   InMemoryHistoryStoreOptions,

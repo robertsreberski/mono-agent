@@ -873,20 +873,28 @@ describe("process-job request availability", () => {
       expect(this).toBe(owner);
       return { accepted: true };
     });
+    const importContext = vi.fn(async function (this: object) {
+      expect(this).toBe(owner);
+      return { status: "duplicate" as const };
+    });
     owner = {
       respond: async () => ({ text: "ok" }),
       openReplyArtifact,
       loadMcpApp,
       requestMcpApp,
+      importContext,
     };
     const responder = bindProcessJobWakeContextToResponder(owner as never);
 
     await expect(responder.openReplyArtifact?.({} as never)).resolves.toEqual({});
     await expect(responder.loadMcpApp?.({} as never)).resolves.toEqual({});
     await expect(responder.requestMcpApp?.({} as never)).resolves.toEqual({ accepted: true });
+    await expect(responder.importContext?.("c", { text: "snapshot", idempotencyKey: "run:1" }))
+      .resolves.toEqual({ status: "duplicate" });
     expect(openReplyArtifact).toHaveBeenCalledOnce();
     expect(loadMcpApp).toHaveBeenCalledOnce();
     expect(requestMcpApp).toHaveBeenCalledOnce();
+    expect(importContext).toHaveBeenCalledOnce();
   });
 
   it("fails closed when a host wake lacks the private request-identity seam", async () => {

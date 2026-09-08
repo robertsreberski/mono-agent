@@ -1213,6 +1213,53 @@ describe("agent host composition helpers", () => {
     }
   });
 
+  it("preserves a custom store's positive context-import contract through configured ownership", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, ".mono-agent", "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const runtime = createFakeRuntime(async () => ({ text: "must not run" }));
+    const committed: HistoryMessage[] = [];
+    const historyStore: ConversationHistoryStore = {
+      load: async () => committed,
+      append: async (_id, messages) => { committed.push(...messages); },
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        beginExclusiveTurn: async () => ({
+          history: committed,
+          historyVersion: "a".repeat(64),
+          prepareCommit: async () => ({
+            append: { commit: async () => undefined, abort: async () => undefined },
+            committedHistoryVersion: "b".repeat(64),
+          }),
+          abort: async () => undefined,
+        }),
+        prepareImport: async (_conversationId, request) => ({
+          result: { status: "appended" },
+          append: {
+            commit: async () => { committed.push({ role: "assistant", content: request.text }); },
+            abort: async () => undefined,
+          },
+        }),
+      },
+    };
+    const harness = await createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: runtime.runtime,
+      historyStore,
+    });
+    try {
+      await expect(harness.importContext?.("custom-store", { text: "snapshot", idempotencyKey: "run:1" }))
+        .resolves.toEqual({ status: "appended" });
+      expect(committed).toEqual([{ role: "assistant", content: "snapshot" }]);
+      expect(runtime.calls).toEqual([]);
+    } finally {
+      await harness.dispose?.();
+    }
+  });
+
   it("overrides the config model when supplied at composition time", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

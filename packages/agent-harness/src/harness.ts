@@ -1,5 +1,10 @@
 import type { RunSummary, RuntimeEventLike } from "@mono-agent/observability";
-import type { AgentLiveInputOffer, AgentLiveInputRequest } from "@mono-agent/agent-contracts";
+import type {
+  AgentContextImportRequest,
+  AgentContextImportResult,
+  AgentLiveInputOffer,
+  AgentLiveInputRequest,
+} from "@mono-agent/agent-contracts";
 import { randomUUID } from "node:crypto";
 import {
   monoRuntimeSupportsSessionResume,
@@ -28,6 +33,7 @@ import type {
   AgentHarnessResponse,
   AgentHarnessSessionEvent,
   ConversationHistoryProviderSessionTurn,
+  ConversationHistoryExclusiveTurn,
   PreparedHistoryAppend,
 } from "./types.js";
 import type { AgentHarnessContinuationClaimCapability } from "./types.js";
@@ -78,6 +84,7 @@ import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/
 import { retireRunResultSession } from "./harness/session-retirement.js";
 import { validateOptions, validateRequest } from "./harness/validation.js";
 import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
+import { eligibleContextImport, importHarnessContext } from "./harness/context-import.js";
 
 export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
@@ -221,6 +228,23 @@ export class MonoAgentHarness implements AgentHarness {
     await appendVerbatimHistoryTurn(this.options, this.sessionStore, conversationId, text, options);
   }
 
+  async performContextImport(
+    conversationId: string,
+    request: AgentContextImportRequest,
+  ): Promise<AgentContextImportResult> {
+    this.assertAcceptingRuns();
+    const result = await importHarnessContext(
+      this.options,
+      conversationId,
+      request,
+      this.nowIso(),
+    );
+    if (result.status !== "conflict") {
+      await this.sessionStore?.evict(conversationId.trim(), "stale");
+    }
+    return result;
+  }
+
   async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {
     this.assertAcceptingRuns();
     this.activeRuns += 1;
@@ -325,7 +349,7 @@ export class MonoAgentHarness implements AgentHarness {
     if (liveInputMailbox !== undefined) {
       this.activeLiveInputs.set(request.conversationId, liveInputMailbox);
     }
-    const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
+    let sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
       if (!turnContinuityCollector.observeRuntimeEvent(event)) return;
@@ -350,6 +374,10 @@ export class MonoAgentHarness implements AgentHarness {
     let continuationOriginSettled = false;
     let preparedHistoryAppend: PreparedHistoryAppend | undefined;
     let providerHistoryTurn: ConversationHistoryProviderSessionTurn | undefined;
+    let exclusiveHistoryTurn: ConversationHistoryExclusiveTurn | undefined;
+    let exclusiveCapturedHistory: readonly import("./context/index.js").HistoryMessage[] | undefined;
+    let exclusiveHistoryRequired = false;
+    let committedHistoryVersion: string | undefined;
     let coordinatedProviderSessionId: string | undefined;
     let coordinatedProviderSessionRevision: number | undefined;
     let providerHistoryOwnershipTransferred = false;
@@ -445,10 +473,18 @@ export class MonoAgentHarness implements AgentHarness {
         });
       let continuityAppend: PreparedHistoryAppend | undefined;
       const providerHistoryOwnsContinuity = providerHistoryTurn !== undefined;
+      const exclusiveHistoryOwnsContinuity = exclusiveHistoryTurn !== undefined;
       try {
         if (providerHistoryTurn !== undefined) {
           continuityAppend = await providerHistoryTurn.prepareCommit(messages, { providerSessionSynced: false });
           providerHistoryTurn = undefined;
+        } else if (exclusiveHistoryTurn !== undefined) {
+          const exclusiveCommit = await exclusiveHistoryTurn.prepareCommit(messages);
+          continuityAppend = exclusiveCommit.append;
+          committedHistoryVersion = exclusiveCommit.committedHistoryVersion;
+          exclusiveHistoryTurn = undefined;
+        } else if (exclusiveHistoryRequired) {
+          throw new Error("The required exclusive history turn was not acquired; unlocked continuity append is forbidden.");
         } else {
           continuityAppend = await this.options.historyStore?.prepareAppend?.(
             request.conversationId,
@@ -461,7 +497,7 @@ export class MonoAgentHarness implements AgentHarness {
         await continuityAppend?.abort().catch(() => undefined);
         throw error;
       }
-      if (providerHistoryOwnsContinuity) {
+      if (providerHistoryOwnsContinuity || exclusiveHistoryOwnsContinuity) {
         if (sessionRecord !== undefined) {
           await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
         }
@@ -608,6 +644,7 @@ export class MonoAgentHarness implements AgentHarness {
       // Custom history stores keep process-local warm sessions, but never receive
       // piSessionsRoot unless they implement this coordinator contract.
       const historyStore = this.options.historyStore;
+      const contextImportSupport = eligibleContextImport(this.options);
       const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
       const durableProviderSessionsEnabled = !isolated
         && this.sessionsEnabled()
@@ -627,6 +664,36 @@ export class MonoAgentHarness implements AgentHarness {
         }
         coordinatedProviderSessionId = begunProviderHistoryTurn.providerSessionId;
         coordinatedProviderSessionRevision = begunProviderHistoryTurn.providerSessionRevision;
+      } else if (
+        request.continuation?.originContext === undefined
+        && contextImportSupport !== undefined
+      ) {
+        exclusiveHistoryRequired = true;
+        // The new non-provider owner holds only logical/exact claims during the
+        // model call. Its physical SQLite shard transaction is acquired later,
+        // for the short version-check + staged-commit boundary. The existing
+        // durable-provider path above intentionally retains its older long-held
+        // shard transaction behavior.
+        const beginMutation = (async () => {
+          const acquired = await contextImportSupport.beginExclusiveTurn(request.conversationId);
+          exclusiveHistoryTurn = acquired;
+          exclusiveCapturedHistory = acquired.history;
+        })();
+        historyMutation = beginMutation.then(() => undefined, () => undefined);
+        await beginMutation;
+        throwIfCancellationOwned();
+        if (
+          sessionRecord !== undefined
+          && sessionRecord.historyVersion !== exclusiveHistoryTurn?.historyVersion
+        ) {
+          const stale = sessionRecord;
+          await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
+            request.conversationId,
+            stale,
+            stale.providerSessionId,
+          );
+          sessionRecord = undefined;
+        }
       }
 
       let resumeSessionId = providerHistoryTurn?.providerSessionId ?? sessionRecord?.providerSessionId;
@@ -635,6 +702,8 @@ export class MonoAgentHarness implements AgentHarness {
         : undefined;
       const confirmedWarmSession = sessionRecord !== undefined
         && sessionRecord.providerSessionId === resumeSessionId
+        && (exclusiveHistoryTurn === undefined
+          || sessionRecord.historyVersion === exclusiveHistoryTurn.historyVersion)
         && (providerHistoryTurn === undefined
           || sessionRecord.providerSessionRevision === providerHistoryTurn.providerSessionRevision);
 
@@ -696,6 +765,7 @@ export class MonoAgentHarness implements AgentHarness {
           ? "omitted"
           : "messages",
         turnId: runId,
+        ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
       }, emit);
       context = prepared.context;
       throwIfCancellationOwned();
@@ -764,6 +834,7 @@ export class MonoAgentHarness implements AgentHarness {
         prepared = await prepareHarnessContext(this.options, this.skillsCache, activeRequest, {
           historyMode: "messages",
           turnId: runId,
+          ...(exclusiveCapturedHistory === undefined ? {} : { historyOverride: exclusiveCapturedHistory }),
         }, emit);
         context = prepared.context;
         throwIfCancellationOwned();
@@ -1022,6 +1093,11 @@ export class MonoAgentHarness implements AgentHarness {
             );
             providerHistoryOwnershipTransferred = true;
             providerHistoryTurn = undefined;
+            } else if (exclusiveHistoryTurn !== undefined) {
+              const exclusiveCommit = await exclusiveHistoryTurn.prepareCommit(completedTurn.messages);
+              preparedHistoryAppend = exclusiveCommit.append;
+              committedHistoryVersion = exclusiveCommit.committedHistoryVersion;
+              exclusiveHistoryTurn = undefined;
             } else {
               preparedHistoryAppend = await this.options.historyStore?.prepareAppend?.(
                 request.conversationId,
@@ -1030,7 +1106,8 @@ export class MonoAgentHarness implements AgentHarness {
             }
             if (claimedContinuationCapabilities.length > 0) {
               const priorHistory = prepared.historyOmitted
-                ? await loadHarnessHistory(this.options, request.conversationId)
+                ? exclusiveCapturedHistory
+                  ?? await loadHarnessHistory(this.options, request.conversationId)
                 : prepared.history;
               await finalizeContinuationOriginContexts(
                 claimedContinuationCapabilities,
@@ -1117,6 +1194,7 @@ export class MonoAgentHarness implements AgentHarness {
           providerHistoryOwnershipTransferred && providerSessionSynced
             ? (coordinatedProviderSessionRevision as number) + 1
             : undefined,
+          providerHistoryOwnershipTransferred ? undefined : committedHistoryVersion,
         );
       }
 
@@ -1233,6 +1311,7 @@ export class MonoAgentHarness implements AgentHarness {
         // failure semantics, but must never strand mailbox/session cleanup.
         await preparedHistoryAppend?.abort().catch(() => undefined);
         await providerHistoryTurn?.abort().catch(() => undefined);
+        await exclusiveHistoryTurn?.abort().catch(() => undefined);
         if (!continuationOriginSettled && continuationCapabilities.length > 0) {
           await Promise.allSettled(continuationCapabilities.map(async (capability) => {
             await capability.abandonOriginContext();
@@ -1265,15 +1344,16 @@ export class MonoAgentHarness implements AgentHarness {
         // admission). No-op when onProviderStart already released it.
         leavePending();
         if (sessionRecord !== undefined) {
-          const released = this.sessionStore?.release(request.conversationId, sessionRecord);
+          const releasedRecord = sessionRecord;
+          const released = this.sessionStore?.release(request.conversationId, releasedRecord);
           if (released !== false) {
             const snapshot = this.sessionStoreSnapshot();
             const live = snapshot.find((entry) =>
-              entry.conversationId === sessionRecord.conversationId &&
-              entry.providerSessionId === sessionRecord.providerSessionId
+              entry.conversationId === releasedRecord.conversationId &&
+              entry.providerSessionId === releasedRecord.providerSessionId
             );
             if (live !== undefined || released === undefined) {
-              this.publishSessionEvent(sessionEventFromRecord("released", live ?? sessionRecord, undefined, snapshot));
+              this.publishSessionEvent(sessionEventFromRecord("released", live ?? releasedRecord, undefined, snapshot));
             }
           }
         }
@@ -1439,6 +1519,7 @@ export class MonoAgentHarness implements AgentHarness {
     providerSessionId: unknown,
     owner: RuntimeSessionRecord | undefined,
     providerSessionRevision?: number,
+    historyVersion?: string,
   ): void {
     if (!this.sessionsEnabled()) {
       return;
@@ -1446,7 +1527,7 @@ export class MonoAgentHarness implements AgentHarness {
     if (typeof providerSessionId !== "string" || providerSessionId.trim().length === 0) {
       return;
     }
-    this.sessionStore?.save(conversationId, providerSessionId, owner, providerSessionRevision);
+    this.sessionStore?.save(conversationId, providerSessionId, owner, providerSessionRevision, historyVersion);
     const snapshot = this.sessionStoreSnapshot();
     const saved = snapshot.find((entry) => entry.conversationId === conversationId && entry.providerSessionId === providerSessionId);
     if (saved !== undefined) {
@@ -1475,5 +1556,12 @@ export class MonoAgentHarness implements AgentHarness {
 }
 
 export function createAgentHarness(options: AgentHarnessOptions): AgentHarness {
-  return new MonoAgentHarness(options);
+  const harness = new MonoAgentHarness(options);
+  if (eligibleContextImport(options) === undefined) return harness;
+  return Object.assign(harness, {
+    importContext: async (
+      conversationId: string,
+      request: AgentContextImportRequest,
+    ): Promise<AgentContextImportResult> => await harness.performContextImport(conversationId, request),
+  });
 }

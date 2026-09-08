@@ -4,6 +4,10 @@ import { isAbsolute } from "node:path";
 
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
+  AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+  AGENT_CONTEXT_IMPORT_VERSION,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   MCP_APP_RESOURCE_MIME_TYPE,
@@ -29,6 +33,7 @@ import {
   parseProviderAuthStatusSnapshot,
   serializeAgentStreamFrame,
   type AgentAttachment,
+  type AgentContextImportRequest,
   type AgentMessageStream,
   type MonitorOperator,
   type AgentReplyAttachmentPart,
@@ -270,6 +275,9 @@ const MAX_MODEL_CATALOG_PROVIDER_BYTES = 256;
 const MAX_MODEL_CATALOG_QUERY_BYTES = 512;
 const MAX_MODEL_CATALOG_CURSOR_BYTES = 4 * 1024;
 const MAX_VERBATIM_BODY_BYTES = 2 * 1024 * 1024;
+// `{"idempotencyKey":"","text":""}` is 31 bytes. Each legal decoded
+// text/key byte can require a six-byte JSON escape; 31 + 6*(32768+512).
+const MAX_CONTEXT_IMPORT_BODY_BYTES = 199_711;
 const MAX_VERBATIM_TEXT_CHARACTERS = 200_000;
 const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
 const MAX_LIVE_INPUT_BODY_BYTES = 32 * 1024;
@@ -336,6 +344,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
+  const contextImportPath = `${basePath}/v1/conversations/:conversationId/context-imports`;
   const liveInputPath = `${basePath}/v1/conversations/:conversationId/live-input`;
   const replyArtifactPath = `${basePath}/v1/conversations/:conversationId/reply-artifacts/:artifactId`;
   const mcpAppPath = `${basePath}/v1/conversations/:conversationId/mcp-apps/:invocationId`;
@@ -401,6 +410,9 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
               : {}),
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
+            ...(typeof options.responder.importContext === "function"
+              ? { contextImport: { version: AGENT_CONTEXT_IMPORT_VERSION, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } }
+              : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
             ...(typeof options.interaction?.getAsk === "function" ? { askById: true } : {}),
             ...(cronState.kind === "absent"
@@ -774,6 +786,37 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       res.status(200).json({ recorded: true, conversationId: body.conversationId });
     }).catch(next);
   });
+
+  app.post(
+    contextImportPath,
+    express.json({ limit: MAX_CONTEXT_IMPORT_BODY_BYTES, strict: true }),
+    (req, res, next) => {
+      if (!authorize(req, res, apiKey)) return;
+      if (typeof options.responder.importContext !== "function") {
+        sendJsonError(
+          res,
+          501,
+          new TuiAdapterError("invalid_request", "This responder does not support canonical context import."),
+        );
+        return;
+      }
+      let normalized: { readonly conversationId: string; readonly request: AgentContextImportRequest };
+      try {
+        normalized = normalizeContextImportBody(req.params.conversationId, req.body);
+      } catch (error) {
+        next(error);
+        return;
+      }
+      void options.responder.importContext(normalized.conversationId, normalized.request).then((result) => {
+        res.setHeader("Cache-Control", "private, no-store, max-age=0");
+        if (result.status === "conflict") {
+          res.status(409).json({ imported: false, status: result.status, reason: result.reason });
+          return;
+        }
+        res.status(200).json({ imported: true, status: result.status, conversationId: normalized.conversationId });
+      }).catch(next);
+    },
+  );
 
   app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {
     if (!authorize(req, res, apiKey)) return;
@@ -1753,6 +1796,48 @@ interface NormalizedVerbatimBody {
   readonly conversationId: string;
   readonly text: string;
   readonly idempotencyKey: string;
+}
+
+function normalizeContextImportBody(
+  rawConversationId: string | string[] | undefined,
+  body: unknown,
+): { readonly conversationId: string; readonly request: AgentContextImportRequest } {
+  const conversationId = normalizeOptionalString(
+    typeof rawConversationId === "string" ? rawConversationId : undefined,
+  );
+  if (
+    conversationId === undefined
+    || Buffer.byteLength(conversationId, "utf8") > AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
+    || conversationId.includes("\0")
+  ) {
+    throw new TuiAdapterError("invalid_request", "A bounded conversationId is required.");
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new TuiAdapterError("invalid_request", "Request body must be a JSON object.");
+  }
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).sort().join("\0") !== ["idempotencyKey", "text"].join("\0")) {
+    throw new TuiAdapterError("invalid_request", "Request body must contain only text and idempotencyKey.");
+  }
+  if (
+    typeof record.text !== "string"
+    || record.text.length === 0
+    || Buffer.byteLength(record.text, "utf8") > AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+  ) {
+    throw new TuiAdapterError("invalid_request", "text must be a string within the context import byte limit.");
+  }
+  if (
+    typeof record.idempotencyKey !== "string"
+    || record.idempotencyKey.length === 0
+    || record.idempotencyKey.includes("\0")
+    || Buffer.byteLength(record.idempotencyKey, "utf8") > AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
+  ) {
+    throw new TuiAdapterError("invalid_request", "idempotencyKey must be a bounded non-empty UTF-8 string.");
+  }
+  return {
+    conversationId,
+    request: { text: record.text, idempotencyKey: record.idempotencyKey },
+  };
 }
 
 function normalizeVerbatimBody(rawConversationId: string | string[] | undefined, body: unknown): NormalizedVerbatimBody {

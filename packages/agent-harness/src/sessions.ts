@@ -4,6 +4,8 @@ export interface RuntimeSessionRecord {
   readonly conversationId: string;
   readonly providerSessionId: string;
   providerSessionRevision?: number;
+  /** Canonical host-history version this warm handle has consumed. */
+  historyVersion?: string;
   readonly createdAt: number;
   lastActivityAt: number;
   busy: boolean;
@@ -13,6 +15,7 @@ export interface RuntimeSessionSnapshot {
   readonly conversationId: string;
   readonly providerSessionId: string;
   readonly providerSessionRevision?: number;
+  readonly historyVersion?: string;
   readonly createdAt: number;
   readonly lastActivityAt: number;
   readonly busy: boolean;
@@ -45,6 +48,7 @@ export interface RuntimeSessionStore {
     providerSessionId: string,
     owner?: RuntimeSessionRecord,
     providerSessionRevision?: number,
+    historyVersion?: string,
   ): void;
   /**
    * When `providerSessionId` is given, evicts only if it still matches the
@@ -151,6 +155,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       providerSessionId: string,
       owner?: RuntimeSessionRecord,
       providerSessionRevision?: number,
+      historyVersion?: string,
     ): void {
       if (disposed) {
         return;
@@ -161,11 +166,16 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       ) {
         throw new TypeError("providerSessionRevision must be a non-negative safe integer when present.");
       }
+      if (historyVersion !== undefined && !/^[a-f0-9]{64}$/u.test(historyVersion)) {
+        throw new TypeError("historyVersion must be a 64-character lowercase hexadecimal digest when present.");
+      }
       const stored = entries.get(conversationId);
       if (stored !== undefined && stored.record.providerSessionId === providerSessionId) {
         stored.record.lastActivityAt = now();
         if (providerSessionRevision === undefined) delete stored.record.providerSessionRevision;
         else stored.record.providerSessionRevision = providerSessionRevision;
+        if (historyVersion === undefined) delete stored.record.historyVersion;
+        else stored.record.historyVersion = historyVersion;
         if (!stored.record.busy) {
           armTimer(conversationId, stored);
         }
@@ -185,6 +195,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
           conversationId,
           providerSessionId,
           ...(providerSessionRevision === undefined ? {} : { providerSessionRevision }),
+          ...(historyVersion === undefined ? {} : { historyVersion }),
           createdAt: timestamp,
           lastActivityAt: timestamp,
           busy: false,

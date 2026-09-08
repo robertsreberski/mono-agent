@@ -144,6 +144,9 @@ export function bindMonitorWakeContextToResponder(
     ...(responder.deliverVerbatim === undefined
       ? {}
       : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+    ...(responder.importContext === undefined
+      ? {}
+      : { importContext: responder.importContext.bind(responder) }),
     ...(responder.openReplyArtifact === undefined
       ? {}
       : { openReplyArtifact: responder.openReplyArtifact.bind(responder) }),

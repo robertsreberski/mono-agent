@@ -28,6 +28,29 @@ function baseRequest(conversationId = "c1") {
 }
 
 describe("createAgentResponder", () => {
+  it("positively exposes context import and serializes it onto the responder bucket", async () => {
+    const calls: Array<[string, string, string]> = [];
+    const responder = createAgentResponder({
+      harness: {
+        run: async (request) => okResponse(request.conversationId),
+        importContext: async (conversationId, request) => {
+          calls.push([conversationId, request.text, request.idempotencyKey]);
+          return { status: "appended" };
+        },
+      },
+      rollover: "daily",
+      rolloverTimezone: "UTC",
+      now: () => new Date("2026-09-08T10:00:00.000Z"),
+    });
+    await expect(responder.importContext?.("telegram:42", { text: "snapshot", idempotencyKey: "run:1" }))
+      .resolves.toEqual({ status: "appended" });
+    expect(calls).toEqual([["telegram:42#2026-09-08", "snapshot", "run:1"]]);
+
+    const legacy = createAgentResponder({ harness: { run: async (request) => okResponse(request.conversationId) } });
+    expect(legacy.importContext).toBeUndefined();
+    expect(legacy.deliverVerbatim).toBeTypeOf("function");
+  });
+
   it("maps live input onto the exact active daily bucket and closes the mapping after the turn", async () => {
     let start!: () => void;
     const started = new Promise<void>((resolve) => { start = resolve; });

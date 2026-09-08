@@ -2,6 +2,8 @@ import type {
   AgentLiveInputOffer,
   AgentLiveInputRequest,
   AgentAttachment,
+  AgentContextImportRequest,
+  AgentContextImportResult,
   AgentContinuationOriginContext,
   AgentContinuationTurn,
   AgentMessageSender,
@@ -57,12 +59,39 @@ export interface ConversationHistoryProviderSessionTurn {
   abort(): Promise<void>;
 }
 
+/** Short-transaction exclusive turn used outside durable provider-session mode. */
+export interface ConversationHistoryExclusiveTurn {
+  readonly history: readonly HistoryMessage[];
+  readonly historyVersion: string;
+  prepareCommit(messages: readonly HistoryMessage[]): Promise<{
+    readonly append: PreparedHistoryAppend;
+    readonly committedHistoryVersion: string;
+  }>;
+  abort(): Promise<void>;
+}
+
+export interface ConversationHistoryContextImport {
+  readonly version: 1;
+  readonly maxTextBytes: number;
+  readonly providerState: "absent" | "retire-fail-closed";
+  beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn>;
+  prepareImport(
+    conversationId: string,
+    request: AgentContextImportRequest & { readonly timestamp: string },
+  ): Promise<{
+    readonly result: AgentContextImportResult;
+    readonly append?: PreparedHistoryAppend;
+  }>;
+}
+
 export interface ConversationHistoryStore {
   /**
    * Present only when epoch rotation/retention can fail closed while removing
    * provider-owned durable transcripts that canonical history supersedes.
    */
   readonly providerSessionRetirement?: "fail-closed" | undefined;
+  /** Positive v1 support contract; legacy append existence does not imply support. */
+  readonly contextImport?: ConversationHistoryContextImport | undefined;
   load(conversationId: string): Promise<readonly HistoryMessage[]>;
   append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void>;
   /**
@@ -184,6 +213,11 @@ export interface AgentHarness {
     text: string,
     options?: { readonly idempotencyKey?: string },
   ): Promise<void>;
+  /** Import canonical provenance plus assistant context without a model turn. */
+  importContext?(
+    conversationId: string,
+    request: AgentContextImportRequest,
+  ): Promise<AgentContextImportResult>;
   /** Drain admitted work, retire live provider sessions, and permanently stop accepting turns. */
   dispose?(): Promise<void>;
 }
@@ -210,6 +244,8 @@ export interface AgentHarnessSessionSnapshot {
   readonly providerSessionId: string;
   /** Durable provider transcript revision held by this process, when coordinated. */
   readonly providerSessionRevision?: number;
+  /** Canonical host-history version consumed by this warm provider handle. */
+  readonly historyVersion?: string;
   readonly createdAt: number;
   readonly lastActivityAt: number;
   readonly busy: boolean;
@@ -220,6 +256,7 @@ export interface AgentHarnessSessionEvent {
   readonly conversationId: string;
   readonly providerSessionId?: string;
   readonly providerSessionRevision?: number;
+  readonly historyVersion?: string;
   readonly createdAt?: number;
   readonly lastActivityAt?: number;
   readonly busy?: boolean;

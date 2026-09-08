@@ -62,6 +62,9 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
         ...(responder.deliverVerbatim === undefined
           ? {}
           : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+        ...(responder.importContext === undefined
+          ? {}
+          : { importContext: responder.importContext.bind(responder) }),
         ...(responder.openReplyArtifact === undefined
           ? {}
           : { openReplyArtifact: responder.openReplyArtifact.bind(responder) }),
@@ -89,6 +92,28 @@ function wrapHistoryStore(
     ...(store.providerSessionRetirement === undefined
       ? {}
       : { providerSessionRetirement: store.providerSessionRetirement }),
+    ...(store.contextImport === undefined
+      ? {}
+      : {
+        contextImport: {
+          ...store.contextImport,
+          async beginExclusiveTurn(conversationId: string) {
+            const turn = await store.contextImport!.beginExclusiveTurn(conversationId);
+            const scope = scopes.getStore();
+            if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
+              return turn;
+            }
+            const delivery = await loadExactDelivery(store, scope, conversationId, options);
+            const deliveryKey = delivery.find((message) => message.role === "assistant")?.idempotencyKey;
+            const history = delivery.length === 0
+              || (deliveryKey !== undefined && turn.history.some((message) => message.idempotencyKey === deliveryKey))
+              ? turn.history
+              : mergeHistory(turn.history, delivery, options.maxMessages);
+            return { ...turn, history };
+          },
+          prepareImport: (conversationId, request) => store.contextImport!.prepareImport(conversationId, request),
+        },
+      }),
     async load(conversationId) {
       const canonical = await store.load(conversationId);
       const scope = scopes.getStore();

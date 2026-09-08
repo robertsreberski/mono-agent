@@ -223,6 +223,27 @@ On every cold durable Pi reopen, the harness loads canonical history and passes 
 
 When `piSessionsRoot` is unset, sessions are in-memory only. A programmatic custom `historyStore` also stays process-local unless it both implements `beginProviderSessionTurn` and advertises `providerSessionRetirement: "fail-closed"`; the harness withholds the durable path because fencing alone cannot reclaim cold JSONL after rotation or retention. Advertise that capability only when the store can durably fence before the provider, serialize the conversation across processes, expose a monotonic provider transcript revision, atomically publish the next revision or rotate the epoch with history commit, and prove exact-id provider transcript retirement before making an epoch unreachable.
 
+Canonical context import is a separate optional v1 contract; `append` or
+`deliverVerbatim` does not imply it. A store may advertise import only when a
+two-message provenance/assistant batch fits every retention and staging quota,
+and when durable provider state is explicitly absent or exact retirement is
+fail-closed. The default store serializes import with Send in continuous,
+per-message, and sessions-disabled modes. The new non-provider path holds only
+logical/exact claims during provider execution, then briefly acquires the
+physical shard to verify an opaque history version and publish. The existing
+durable-provider transaction still holds that shard for the full turn; this
+known same-shard blocking behavior is unchanged.
+
+An exact retained provenance/assistant pair is the bounded retry receipt. A
+same-key/same-text retry returns `duplicate`, including after a later Send while
+the pair remains retained; a changed payload conflicts. Retention never keeps
+half the pair. Explicit reset, corruption, or deletion of the whole canonical
+record also removes the receipt, so idempotency is not permanent across those
+boundaries. An empty replacement conversation can be seeded again; a nonempty
+conversation whose pair was evicted fails closed as `conversation_not_empty`.
+Warm process-local handles carry the canonical history version and are retired
+before the next Send when a reset/import advanced it.
+
 :::caution
 `mono-agent restart --clear-sessions` purges `piSessionsRoot`, canonical message-history files, the separate canonical tool-history sidecar, and ACP session authorizations, so the agent neither resumes a provider transcript nor replays or searches an earlier chat turn — a fresh start. Previously issued ACP session ids are revoked. Output reports message-history files/bytes separately from tool-history calls/records/bytes and ACP authorization counts. Durable memory under `memory.path`, recorded run artifacts, and process-job records/output remain untouched. Any nonterminal process job is interrupted by restart independently of the flag. A missing store is a no-op.
 :::

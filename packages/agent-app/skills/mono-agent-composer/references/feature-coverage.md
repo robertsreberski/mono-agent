@@ -2,6 +2,13 @@
 
 Every framework capability and how a composed agent reaches it. This table is the **authoritative, exhaustive** answer to "can the config do X?" — answer from it, do not grep the `@mono-agent` package source to confirm. `config` = declarable in `mono-agent.config.json`; config fields may be JSON-only. Environment-variable overrides are optional: only fields with a documented `MONO_AGENT_*` mapping accept one, so consult the generated config reference's `Env override` column (`--` means none, as for `channels.plugins`) instead of inferring one. `cli` = a `mono-agent` CLI flag/command, `auto` = always on when the app runs, `code` = programmatic escape hatch only, `dev` = development/test tooling. A capability that is absent here, or marked `code`, is not reachable through config — that is the answer, not a cue to read source. The final column maps config-bearing rows back to the repo's canonical registry; multiple ids in one row are an intentional aggregation. The repo's `docs/reference/feature-registry.md` (framework checkout only) and the documentation site at <https://mono-agent-docs.vercel.app/> are longer-form human-facing mirrors of this same table.
 
+The default configured agent may also advertise the operator-only v1
+`contextImport` capability. It is not a config toggle and must be detected from
+`GET /v1/info`; `historyAppend`/`deliverVerbatim` is a separate legacy surface
+and is not evidence of import support. Import performs no cron or model turn and
+accepts at most 32 KiB of decoded UTF-8 text with a source-qualified 512-byte
+idempotency key and a 4096-byte conversation id.
+
 ## Runtime
 
 | Capability | Coverage | Where | Registry config ids |

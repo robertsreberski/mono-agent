@@ -185,6 +185,9 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
     ...(responder.deliverVerbatim === undefined
       ? {}
       : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+    ...(responder.importContext === undefined
+      ? {}
+      : { importContext: responder.importContext.bind(responder) }),
     ...(responder.openReplyArtifact === undefined
       ? {}
       : { openReplyArtifact: responder.openReplyArtifact.bind(responder) }),

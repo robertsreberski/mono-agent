@@ -20,6 +20,7 @@ import {
   AgentHarnessFailureError,
   createAgentHarness,
   createAgentResponder,
+  createDurableHistoryStore,
   createInMemoryHistoryStore,
 } from "../index.js";
 import type { ExternalRunSummary } from "../index.js";
@@ -118,6 +119,128 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
 }
 
 describe("AgentHarness", () => {
+  it("imports canonical context without invoking the runtime and enforces direct byte limits", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const historyStore = createDurableHistoryStore({ root: join(dir, "history") });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+
+    expect(harness.importContext).toBeTypeOf("function");
+    await expect(harness.importContext!("web:cron:job-1", {
+      text: "summary with 東京",
+      idempotencyKey: "agent/source:job-1:run-1",
+    })).resolves.toEqual({ status: "appended" });
+    await expect(harness.importContext!("web:cron:job-1", {
+      text: "summary with 東京",
+      idempotencyKey: "agent/source:job-1:run-1",
+    })).resolves.toEqual({ status: "duplicate" });
+    expect(fake.calls).toEqual([]);
+    await expect(harness.importContext!("x".repeat(4_097), { text: "x", idempotencyKey: "k" }))
+      .rejects.toThrow("conversationId must not exceed 4096 UTF-8 bytes");
+    await expect(harness.importContext!("c", { text: "x", idempotencyKey: "é".repeat(257) }))
+      .rejects.toThrow("idempotencyKey must not exceed 512 UTF-8 bytes");
+  });
+
+  it("fails capability discovery closed for provider-ineligible and legacy stores", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const durableWithoutRetirement = createDurableHistoryStore({ root: join(dir, "history") });
+    expect(createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: durableWithoutRetirement,
+      piSessionsRoot: join(dir, "pi-sessions"),
+    }).importContext).toBeUndefined();
+    expect(createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: createInMemoryHistoryStore(),
+    }).importContext).toBeUndefined();
+  });
+
+  it("does not run or fall back to an unlocked append when the advertised lease fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const append = vi.fn(async () => undefined);
+    const prepareAppend = vi.fn(async () => ({ commit: async () => undefined, abort: async () => undefined }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: {
+        load: async () => [],
+        append,
+        prepareAppend,
+        contextImport: {
+          version: 1,
+          maxTextBytes: 32_768,
+          providerState: "absent",
+          beginExclusiveTurn: async () => { throw new Error("lease unavailable"); },
+          prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+        },
+      },
+    });
+    const response = await harness.run({
+      conversationId: "c",
+      userMessage: "hello",
+      abortSignal: new AbortController().signal,
+    });
+    expect(response.failure).toBeDefined();
+    expect(fake.calls).toEqual([]);
+    expect(append).not.toHaveBeenCalled();
+    expect(prepareAppend).not.toHaveBeenCalled();
+  });
+
+  it("cold-replays imported context when a stale warm handle observes a reset/import version", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const historyRoot = join(dir, "history");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: RuntimeRunOptions[] = [];
+    const retired: string[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return { text: `answer-${String(calls.length)}`, providerSessionId: "warm-provider-id" };
+      },
+      async disposeSession(id: string) { retired.push(id); return true; },
+    };
+    const storeA = createDurableHistoryStore({ root: historyRoot });
+    const harnessA = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      historyStore: storeA,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    await harnessA.run({ conversationId: "c", userMessage: "first", abortSignal: new AbortController().signal });
+    expect(calls[0]?.sessionId).toBeUndefined();
+
+    const storeB = createDurableHistoryStore({ root: historyRoot });
+    await storeB.reset("c");
+    const imported = await storeB.contextImport!.prepareImport("c", {
+      text: "background result",
+      idempotencyKey: "agent/source:job:run-2",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await imported.append!.commit();
+
+    await harnessA.run({ conversationId: "c", userMessage: "second", abortSignal: new AbortController().signal });
+    expect(retired).toContain("warm-provider-id");
+    expect(calls[1]?.sessionId).toBeUndefined();
+    expect(calls[1]?.messages?.map((message) => String(message.content)).join("\n"))
+      .toContain("background result");
+    await harnessA.dispose?.();
+  });
+
   it("feeds live follow-ups into the active runtime and commits them into durable history", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

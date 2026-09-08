@@ -143,20 +143,46 @@ describe("createSlackPostedReplyHistory", () => {
     const reset = vi.fn(async () => undefined);
     const resetLogicalConversation = vi.fn(async () => undefined);
     const startNewSession = vi.fn(async () => undefined);
+    const importContext = vi.fn(async () => ({ status: "appended" as const }));
+    const prepareImport = vi.fn(async () => ({ result: { status: "duplicate" as const } }));
+    const beginExclusiveTurn = vi.fn(async () => ({
+      history: [] as readonly HistoryMessage[],
+      historyVersion: "a".repeat(64),
+      prepareCommit: async () => ({
+        append: { commit: async () => undefined, abort: async () => undefined },
+        committedHistoryVersion: "b".repeat(64),
+      }),
+      abort: async () => undefined,
+    }));
     const bridge = createSlackPostedReplyHistory({ maxMessages: 64 });
     const history = bridge.wrapHistoryStore({
       load: async () => [],
       append: async () => undefined,
       reset,
       resetLogicalConversation,
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        beginExclusiveTurn,
+        prepareImport,
+      },
     });
     const responder = bridge.wrapResponder({
       respond: async () => ({ text: "ok" }),
       startNewSession,
+      importContext,
     } as AgentResponder & { startNewSession(conversationId: string): Promise<void> });
 
     await history.reset?.("telegram:42");
     await history.resetLogicalConversation?.("telegram:42");
+    await history.contextImport?.beginExclusiveTurn("telegram:42").then(async (turn) => await turn.abort());
+    await history.contextImport?.prepareImport("telegram:42", {
+      text: "snapshot",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await responder.importContext?.("telegram:42", { text: "snapshot", idempotencyKey: "run:1" });
     await (responder as AgentResponder & {
       startNewSession?: (conversationId: string) => Promise<void>;
     }).startNewSession?.("telegram:42");
@@ -164,6 +190,9 @@ describe("createSlackPostedReplyHistory", () => {
     expect(reset).toHaveBeenCalledWith("telegram:42");
     expect(resetLogicalConversation).toHaveBeenCalledWith("telegram:42");
     expect(startNewSession).toHaveBeenCalledWith("telegram:42");
+    expect(beginExclusiveTurn).toHaveBeenCalledWith("telegram:42");
+    expect(prepareImport).toHaveBeenCalledOnce();
+    expect(importContext).toHaveBeenCalledWith("telegram:42", { text: "snapshot", idempotencyKey: "run:1" });
   });
 
   it("adds the exact destination receipt once to a cold real replay without changing producer history", async () => {

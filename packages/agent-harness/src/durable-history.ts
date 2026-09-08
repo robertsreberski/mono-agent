@@ -5,9 +5,21 @@ import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+  AGENT_CONTEXT_IMPORT_VERSION,
+  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
+  type AgentContextImportRequest,
+  type AgentContextImportResult,
+} from "@mono-agent/agent-contracts";
+
 import type { HistoryMessage } from "./context/index.js";
 import type {
   ConversationHistoryProviderSessionTurn,
+  ConversationHistoryExclusiveTurn,
+  ConversationHistoryContextImport,
   ConversationHistoryStore,
   PreparedHistoryAppend,
   ProviderSessionTurnCommitOptions,
@@ -17,7 +29,6 @@ import { isProcessAlive } from "./history-process-liveness.js";
 const LEGACY_STORE_VERSION = 1;
 const STORE_VERSION = 2;
 const DEFAULT_MAX_MESSAGES = 64;
-const MAX_CONVERSATION_ID_BYTES = 4 * 1024;
 const MAX_MESSAGE_CONTENT_BYTES = 64 * 1024;
 const MAX_MESSAGE_ENVELOPE_BYTES = 16 * 1024;
 // JSON may encode one content byte as a six-byte escape (for example, NUL).
@@ -49,6 +60,13 @@ const DIRTY_FENCE_TEMP_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{24})\.d
 const MAX_ACTIVE_MARKER_BYTES = 4 * 1024;
 const MAX_DIRTY_FENCE_BYTES = 1024;
 const MAX_RUN_ID_BYTES = 4 * 1024;
+// JSON can escape every decoded byte as six bytes. The remaining allowance
+// covers both message envelopes, the fixed provenance, timestamp and v2 record.
+const MAX_CONTEXT_IMPORT_RECORD_BYTES = 6 * (
+  AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
+  + AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
+  + AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+) + (2 * MAX_MESSAGE_ENVELOPE_BYTES) + (64 * 1024);
 
 // Config reloads can briefly leave old and new harness instances alive in the
 // same owner process. Module-level queues serialize both same-conversation
@@ -186,6 +204,7 @@ interface CommittedEntry {
  */
 export class DurableConversationHistoryStore implements ConversationHistoryStore {
   readonly providerSessionRetirement: "fail-closed" | undefined;
+  readonly contextImport: ConversationHistoryContextImport | undefined;
   private readonly root: string;
   private readonly maxMessages: number;
   private readonly maxStoreBytes: number;
@@ -237,13 +256,25 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     this.now = options.now ?? Date.now;
     this.retireProviderSession = options.retireProviderSession;
     this.providerSessionRetirement = options.retireProviderSession === undefined ? undefined : "fail-closed";
+    this.contextImport = maxMessages >= 2
+      && maxStoreBytes >= MAX_CONTEXT_IMPORT_RECORD_BYTES
+      && maxStagedBytes >= MAX_CONTEXT_IMPORT_RECORD_BYTES
+      && maxConversations >= 1
+      ? {
+        version: AGENT_CONTEXT_IMPORT_VERSION,
+        maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+        providerState: options.retireProviderSession === undefined ? "absent" : "retire-fail-closed",
+        beginExclusiveTurn: async (conversationId) => await this.beginExclusiveTurn(conversationId),
+        prepareImport: async (conversationId, request) => await this.prepareContextImport(conversationId, request),
+      }
+      : undefined;
   }
 
   async load(conversationId: string): Promise<readonly HistoryMessage[]> {
     const normalizedId = normalizeConversationId(conversationId);
     const rootIdentity = await this.ensureRoot();
     const record = await this.readRecord(normalizedId, rootIdentity);
-    const retained = this.maxMessages === 0 ? [] : record.messages.slice(-this.maxMessages);
+    const retained = retainHistoryMessages(record.messages, this.maxMessages);
     return retained.map(cloneMessage);
   }
 
@@ -388,7 +419,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const existing = await this.readRecord(normalizedId, rootIdentity);
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
       const combined = [...existing.messages, ...admitted];
-      const retained = this.maxMessages === 0 ? [] : combined.slice(-this.maxMessages);
+      const retained = retainHistoryMessages(combined, this.maxMessages);
       const record: HistoryFileV2 = {
         version: STORE_VERSION,
         conversationId: normalizedId,
@@ -398,6 +429,160 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
       };
       return await this.prepareRecord(record, held, rootIdentity, undefined, retirementFence);
+    } catch (error) {
+      await this.releaseConversation(held, rootIdentity).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn> {
+    const normalizedId = normalizeConversationId(conversationId);
+    const heldLogical = await this.acquireLogicalConversation(logicalConversationIdForFence(normalizedId));
+    let heldExact: HeldExactConversationClaim | undefined;
+    let marker: ActiveMarker | undefined;
+    let settled = false;
+    let prepared = false;
+    let operation = Promise.resolve();
+    const serialize = <T>(action: () => Promise<T>): Promise<T> => {
+      const current = operation.then(action, action);
+      operation = current.then(() => undefined, () => undefined);
+      return current;
+    };
+    const releaseLease = async (): Promise<void> => {
+      if (settled) return;
+      const errors: unknown[] = [];
+      if (marker !== undefined) {
+        const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity).catch((error) => {
+          errors.push(error);
+          return undefined;
+        });
+        if (releaseRoot !== undefined) {
+          try {
+            await this.removeActiveMarker(marker).catch((error) => errors.push(error));
+          } finally {
+            await releaseRoot().catch((error) => errors.push(error));
+          }
+        }
+      }
+      await heldExact?.release().catch((error) => errors.push(error));
+      await heldLogical.release().catch((error) => errors.push(error));
+      settled = true;
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Exclusive history turn cleanup failed.");
+    };
+    try {
+      if (requiresExactConversationClaim(normalizedId)) {
+        heldExact = await this.acquireExactConversationClaim(normalizedId);
+      }
+      const locksIdentity = await this.ensureLocksRoot();
+      const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity);
+      try {
+        await this.retireInactiveDirtyFences(
+          heldLogical.rootIdentity,
+          locksIdentity,
+          historyKey(normalizedId),
+        );
+        marker = await this.createActiveMarker(historyKey(normalizedId), locksIdentity);
+      } finally {
+        await releaseRoot();
+      }
+      const existing = await this.readRecord(normalizedId, heldLogical.rootIdentity);
+      const historyVersion = historyRecordVersion(existing);
+      return {
+        history: existing.messages.map(cloneMessage),
+        historyVersion,
+        prepareCommit: async (messages) => await serialize(async () => {
+          if (settled) throw new Error("Exclusive history turn is already settled.");
+          if (prepared) throw new Error("Exclusive history turn already has a prepared commit.");
+          prepared = true;
+          const admitted = validateAppendMessages(messages);
+          let held: HeldConversation | undefined;
+          try {
+            held = await this.acquireConversation(normalizedId, heldLogical, heldExact);
+            const current = await this.readRecord(normalizedId, held.rootIdentity);
+            if (historyRecordVersion(current) !== historyVersion) {
+              throw new Error("Canonical conversation history changed during the exclusive turn.");
+            }
+            const retirementFence = await this.prepareProviderRetirement(current, held.rootIdentity);
+            const retained = retainHistoryMessages([...current.messages, ...admitted], this.maxMessages);
+            const record: HistoryFileV2 = {
+              version: STORE_VERSION,
+              conversationId: normalizedId,
+              messages: retained,
+              providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
+            };
+            const inner = await this.prepareRecord(record, held, held.rootIdentity, undefined, retirementFence);
+            held = undefined;
+            let appendState: "open" | "committed" | "aborted" = "open";
+            const append: PreparedHistoryAppend = {
+              commit: async () => {
+                if (appendState === "committed") return;
+                if (appendState === "aborted") throw new Error("Cannot commit an aborted history append.");
+                await inner.commit();
+                appendState = "committed";
+                await releaseLease();
+              },
+              abort: async () => {
+                if (appendState !== "open") return;
+                appendState = "aborted";
+                const errors: unknown[] = [];
+                await inner.abort().catch((error) => errors.push(error));
+                await releaseLease().catch((error) => errors.push(error));
+                if (errors.length === 1) throw errors[0];
+                if (errors.length > 1) throw new AggregateError(errors, "Exclusive history append abort failed.");
+              },
+            };
+            return { append, committedHistoryVersion: historyRecordVersion(record) };
+          } catch (error) {
+            if (held !== undefined) await this.releaseConversation(held, held.rootIdentity).catch(() => undefined);
+            await releaseLease().catch(() => undefined);
+            throw error;
+          }
+        }),
+        abort: async () => await serialize(releaseLease),
+      };
+    } catch (error) {
+      await releaseLease().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async prepareContextImport(
+    conversationId: string,
+    request: AgentContextImportRequest & { readonly timestamp: string },
+  ): Promise<{ readonly result: AgentContextImportResult; readonly append?: PreparedHistoryAppend }> {
+    if (this.contextImport === undefined) throw new Error("Canonical context import is unsupported by this store configuration.");
+    const normalizedId = normalizeConversationId(conversationId);
+    const normalized = validateContextImportRequest(request);
+    const held = await this.acquireConversation(normalizedId);
+    const rootIdentity = held.rootIdentity;
+    try {
+      const existing = await this.readRecord(normalizedId, rootIdentity, true);
+      const exactPair = findContextImportPair(existing.messages, normalized.idempotencyKey);
+      if (exactPair !== undefined) {
+        await this.releaseConversation(held, rootIdentity);
+        if (exactPair.valid && exactPair.text === normalized.text) return { result: { status: "duplicate" } };
+        return { result: { status: "conflict", reason: "idempotency_conflict" } };
+      }
+      if (existing.messages.length > 0) {
+        await this.releaseConversation(held, rootIdentity);
+        return { result: { status: "conflict", reason: "conversation_not_empty" } };
+      }
+      const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
+      const messages: readonly HistoryMessage[] = [
+        { role: "system", name: "context-import-provenance", content: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, timestamp: normalized.timestamp },
+        { role: "assistant", name: "context-import", content: normalized.text, timestamp: normalized.timestamp, idempotencyKey: normalized.idempotencyKey },
+      ];
+      const record: HistoryFileV2 = {
+        version: STORE_VERSION,
+        conversationId: normalizedId,
+        messages,
+        providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
+      };
+      return {
+        result: { status: "appended" },
+        append: await this.prepareRecord(record, held, rootIdentity, undefined, retirementFence),
+      };
     } catch (error) {
       await this.releaseConversation(held, rootIdentity).catch(() => undefined);
       throw error;
@@ -453,7 +638,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const projectedCleanRecord: HistoryFileV2 = {
           version: STORE_VERSION,
           conversationId: normalizedId,
-          messages: this.maxMessages === 0 ? [] : existing.messages.slice(-this.maxMessages),
+          messages: retainHistoryMessages(existing.messages, this.maxMessages),
           providerSession: { epoch, revision: revision + 1 },
         };
         await this.validateRetentionReservation(rootIdentity, [this.projectRecord(projectedCleanRecord)]);
@@ -497,7 +682,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             await this.retireProviderSessionIds([providerSessionId]);
           }
           const combined = [...turnBaseRecord.messages, ...admitted];
-          const retained = this.maxMessages === 0 ? [] : combined.slice(-this.maxMessages);
+          const retained = retainHistoryMessages(combined, this.maxMessages);
           const cleanRecord: HistoryFileV2 = {
             version: STORE_VERSION,
             conversationId: normalizedId,
@@ -1452,10 +1637,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
   }
 
-  private async readRecord(conversationId: string, rootIdentity: DirectoryIdentity): Promise<LoadedHistoryRecord> {
+  private async readRecord(
+    conversationId: string,
+    rootIdentity: DirectoryIdentity,
+    strict = false,
+  ): Promise<LoadedHistoryRecord> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.readRecordOnce(conversationId, rootIdentity);
+        return await this.readRecordOnce(conversationId, rootIdentity, strict);
       } catch (error) {
         if (attempt < 2 && (error instanceof ConcurrentHistoryMutationError || isErrno(error, "ENOENT"))) {
           continue;
@@ -1466,7 +1655,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     throw new Error("History record could not be read atomically.");
   }
 
-  private async readRecordOnce(conversationId: string, rootIdentity: DirectoryIdentity): Promise<LoadedHistoryRecord> {
+  private async readRecordOnce(
+    conversationId: string,
+    rootIdentity: DirectoryIdentity,
+    strict: boolean,
+  ): Promise<LoadedHistoryRecord> {
     await assertDirectoryIdentity(this.root, rootIdentity);
     const path = this.recordPath(conversationId);
     let before: Stats;
@@ -1499,7 +1692,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       try {
         record = parseHistoryFile(bytes, path);
       } catch (error) {
-        if (error instanceof TruncatedHistoryRecordError) {
+        if (!strict && error instanceof TruncatedHistoryRecordError) {
           // Atomic replacement means our own writes cannot publish a partial
           // record. If the filesystem nevertheless presents stable truncated
           // JSON, fail cold instead of poisoning every future turn. Keep the
@@ -1685,13 +1878,112 @@ function compareRetentionEntries(left: CommittedEntry, right: CommittedEntry): n
   return left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name);
 }
 
+function historyRecordVersion(record: LoadedHistoryRecord | HistoryFileV2): string {
+  return createHash("sha256")
+    .update("mono-agent-history-version-v1\0")
+    .update(JSON.stringify({
+      sourceVersion: "sourceVersion" in record ? record.sourceVersion : STORE_VERSION,
+      conversationId: record.conversationId,
+      messages: record.messages,
+      providerSession: record.providerSession,
+    }), "utf8")
+    .digest("hex");
+}
+
+function validateContextImportRequest(
+  request: AgentContextImportRequest & { readonly timestamp: string },
+): AgentContextImportRequest & { readonly timestamp: string } {
+  if (!isRecord(request)) throw new TypeError("context import request must be an object.");
+  const keys = Object.keys(request).sort();
+  if (keys.join("\0") !== ["idempotencyKey", "text", "timestamp"].join("\0")) {
+    throw new TypeError("context import request must contain only text, idempotencyKey, and timestamp.");
+  }
+  if (typeof request.text !== "string" || request.text.length === 0) {
+    throw new TypeError("context import text must be a non-empty string.");
+  }
+  if (Buffer.byteLength(request.text, "utf8") > AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES) {
+    throw new TypeError(`context import text must not exceed ${AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES} UTF-8 bytes.`);
+  }
+  if (typeof request.idempotencyKey !== "string" || request.idempotencyKey.length === 0) {
+    throw new TypeError("context import idempotencyKey must be a non-empty string.");
+  }
+  if (Buffer.byteLength(request.idempotencyKey, "utf8") > AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES) {
+    throw new TypeError(`context import idempotencyKey must not exceed ${AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES} UTF-8 bytes.`);
+  }
+  if (request.idempotencyKey.includes("\0")) {
+    throw new TypeError("context import idempotencyKey must not contain NUL bytes.");
+  }
+  if (typeof request.timestamp !== "string") throw new TypeError("context import timestamp must be a string.");
+  const parsed = new Date(request.timestamp);
+  if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString() !== request.timestamp) {
+    throw new TypeError("context import timestamp must be a canonical ISO-8601 timestamp.");
+  }
+  return { text: request.text, idempotencyKey: request.idempotencyKey, timestamp: request.timestamp };
+}
+
+function findContextImportPair(
+  messages: readonly HistoryMessage[],
+  idempotencyKey: string,
+): { readonly valid: boolean; readonly text: string } | undefined {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?.idempotencyKey !== idempotencyKey) continue;
+    const provenance = messages[index - 1];
+    if (
+      message.role === "assistant"
+      && message.name === "context-import"
+      && provenance?.role === "system"
+      && provenance.name === "context-import-provenance"
+      && provenance.content === AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE
+      && provenance.timestamp === message.timestamp
+    ) {
+      return { valid: true, text: message.content };
+    }
+    return { valid: false, text: "" };
+  }
+  return undefined;
+}
+
+function retainHistoryMessages(messages: readonly HistoryMessage[], maxMessages: number): readonly HistoryMessage[] {
+  if (maxMessages === 0 || messages.length === 0) return [];
+  const units: Array<readonly HistoryMessage[]> = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const first = messages[index]!;
+    const second = messages[index + 1];
+    if (
+      first.role === "system"
+      && first.name === "context-import-provenance"
+      && first.content === AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE
+      && second?.role === "assistant"
+      && second.name === "context-import"
+      && second.timestamp === first.timestamp
+      && second.idempotencyKey !== undefined
+    ) {
+      units.push([first, second]);
+      index += 1;
+    } else {
+      units.push([first]);
+    }
+  }
+  const retained: HistoryMessage[][] = [];
+  let remaining = maxMessages;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index]!;
+    if (unit.length > remaining) continue;
+    retained.unshift(unit.map(cloneMessage));
+    remaining -= unit.length;
+    if (remaining === 0) break;
+  }
+  return retained.flat();
+}
+
 function normalizeConversationId(conversationId: string): string {
   if (typeof conversationId !== "string") throw new TypeError("conversationId must be a non-empty string.");
   const normalized = conversationId.trim();
   const bytes = Buffer.byteLength(normalized, "utf8");
   if (bytes === 0) throw new TypeError("conversationId must be a non-empty string.");
-  if (bytes > MAX_CONVERSATION_ID_BYTES) {
-    throw new TypeError(`conversationId must not exceed ${MAX_CONVERSATION_ID_BYTES} UTF-8 bytes.`);
+  if (bytes > AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES) {
+    throw new TypeError(`conversationId must not exceed ${AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES} UTF-8 bytes.`);
   }
   if (normalized.includes("\0")) throw new TypeError("conversationId must not contain NUL bytes.");
   return normalized;

@@ -5,6 +5,11 @@ runtimes, channels, and operator clients. Use this package when two packages
 need to exchange a request, stream a reply, run a channel driver, or share safe
 configuration and HTTP primitives without depending on one another.
 
+Canonical context import uses the distinct optional `AgentResponder.importContext`
+capability. `AGENT_CONTEXT_IMPORT_VERSION` and the shared 32 KiB text, 512-byte
+idempotency-key, and 4096-byte conversation-id limits define legal programmatic
+requests; legacy `deliverVerbatim` support never implies this capability.
+
 ## Category
 
 <!-- package-metadata:start -->
@@ -227,6 +232,11 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/agent-contracts`**
 
 ```text
+AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
+AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
+AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE
+AGENT_CONTEXT_IMPORT_VERSION
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES
@@ -237,6 +247,9 @@ AGENT_PRECEDING_MESSAGES_MAX_COUNT
 AGENT_PRECEDING_MESSAGES_MAX_TOTAL_BYTES
 AGENT_PRECEDING_MESSAGE_MAX_TEXT_BYTES
 AgentAttachment
+AgentContextImportConflictReason
+AgentContextImportRequest
+AgentContextImportResult
 AgentContinuationContextMessage
 AgentContinuationOriginContext
 AgentContinuationTurn

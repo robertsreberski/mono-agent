@@ -20,6 +20,7 @@ export function sessionEventFromRecord(
     ...(record.providerSessionRevision === undefined
       ? {}
       : { providerSessionRevision: record.providerSessionRevision }),
+    ...(record.historyVersion === undefined ? {} : { historyVersion: record.historyVersion }),
     createdAt: record.createdAt,
     lastActivityAt: record.lastActivityAt,
     busy: record.busy,

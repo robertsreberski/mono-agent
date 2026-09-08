@@ -151,6 +151,15 @@ export function createAgentResponder(options: {
         cancellationReasonByBaseConversation.delete(serializationKey);
       }
     },
+    ...(options.harness.importContext === undefined
+      ? {}
+      : {
+        async importContext(conversationId: string, request) {
+          const serializationKey = responseSerializationKey(conversationId, options.rollover);
+          return await serializeByKey(responseTailsByBaseConversation, serializationKey, async () =>
+            await options.harness.importContext!(bucket(conversationId), request));
+        },
+      }),
     async deliverVerbatim(
       conversationId: string,
       text: string,

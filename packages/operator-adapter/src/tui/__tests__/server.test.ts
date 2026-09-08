@@ -1135,6 +1135,91 @@ describe("startTuiAdapter", () => {
     expect(recorded).toEqual([["web:notification-1", "Morning brief", "cron:job:one"]]);
   });
 
+  it("advertises, authorizes, validates, and maps canonical context import results", async () => {
+    const imported: Array<[string, string, string]> = [];
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        async importContext(conversationId, request) {
+          imported.push([conversationId, request.text, request.idempotencyKey]);
+          return request.idempotencyKey === "conflict"
+            ? { status: "conflict", reason: "conversation_not_empty" }
+            : request.idempotencyKey === "duplicate"
+              ? { status: "duplicate" }
+              : { status: "appended" };
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl, {
+      headers: { authorization: "Bearer fixture-secret" },
+    })).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).toMatchObject({ contextImport: { version: 1, maxTextBytes: 32_768 } });
+
+    const url = `${running.baseUrl}/v1/conversations/web%3Acron%3Ajob-1/context-imports`;
+    expect((await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "result", idempotencyKey: "run:1" }),
+    })).status).toBe(401);
+
+    const post = async (body: unknown) => await fetch(url, {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const appended = await post({ text: "quote \" slash \\ control \u0000 and 東京", idempotencyKey: "run:1" });
+    expect(appended.status).toBe(200);
+    expect(appended.headers.get("cache-control")).toContain("no-store");
+    expect(await appended.json()).toEqual({
+      imported: true,
+      status: "appended",
+      conversationId: "web:cron:job-1",
+    });
+    expect((await post({ text: "same", idempotencyKey: "duplicate" })).status).toBe(200);
+    const conflict = await post({ text: "other", idempotencyKey: "conflict" });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ imported: false, status: "conflict", reason: "conversation_not_empty" });
+    expect((await post({ text: "x", idempotencyKey: "k", extra: true })).status).toBe(400);
+    expect((await post({ text: "x".repeat(32_769), idempotencyKey: "k" })).status).toBe(400);
+    expect((await post({ text: "x", idempotencyKey: "é".repeat(257) })).status).toBe(400);
+    expect(imported[0]).toEqual(["web:cron:job-1", "quote \" slash \\ control \u0000 and 東京", "run:1"]);
+
+    const exactEscaped = JSON.stringify({ text: "\u0000".repeat(32_768), idempotencyKey: "\u0001".repeat(512) });
+    expect(Buffer.byteLength(exactEscaped, "utf8")).toBe(199_711);
+    const escapedResponse = await fetch(url, {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+      body: exactEscaped,
+    });
+    expect(escapedResponse.status).toBe(200);
+    expect((await post({ text: "é".repeat(16_384), idempotencyKey: "é".repeat(256) })).status).toBe(200);
+
+    const exactConversation = "é".repeat(2_048);
+    const exactConversationResponse = await fetch(
+      `${running.baseUrl}/v1/conversations/${encodeURIComponent(exactConversation)}/context-imports`,
+      {
+        method: "POST",
+        headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+        body: JSON.stringify({ text: "x", idempotencyKey: "boundary" }),
+      },
+    );
+    expect(exactConversationResponse.status).toBe(200);
+  });
+
+  it("keeps context import positively absent for legacy responders", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+    const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).not.toHaveProperty("contextImport");
+    const response = await fetch(`${running.baseUrl}/v1/conversations/c/context-imports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "x", idempotencyKey: "k" }),
+    });
+    expect(response.status).toBe(501);
+  });
+
   it("advertises live input and holds the request until the active run settles it", async () => {
     let markOffered!: (request: AgentLiveInputRequest) => void;
     const offered = new Promise<AgentLiveInputRequest>((resolve) => { markOffered = resolve; });

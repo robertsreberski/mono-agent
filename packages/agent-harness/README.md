@@ -157,7 +157,7 @@ The harness is the request-to-runtime composition boundary:
 | `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
 | `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, native acceptance/consumption callbacks, safe failover replay, and uncertain settlement |
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
-| `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history |
+| `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
 
 ## Public API
@@ -170,7 +170,7 @@ The harness is the request-to-runtime composition boundary:
 | `createAgentResponder()` | Expose a harness through the shared `AgentResponder` request/stream contract |
 | `createLiveInputMailbox()` | Build the provider-facing mailbox used to settle active-turn follow-ups without loss |
 | `createToolPolicy()` / `failClosedToolPolicy()` | Declare exactly which built-in and MCP tools may reach the runtime |
-| `createDurableHistoryStore()` | Persist canonical conversation history and coordinate durable provider-session retirement |
+| `createDurableHistoryStore()` | Persist canonical conversation history, coordinate provider-session retirement, and conditionally expose atomic v1 context import when a complete two-message batch fits |
 | `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
@@ -222,6 +222,8 @@ ContextValidationError
 ContextValidationErrorCode
 ContextValidationErrorDetails
 ContinuationMcpServerTransport
+ConversationHistoryContextImport
+ConversationHistoryExclusiveTurn
 ConversationHistoryProviderSessionTurn
 ConversationHistoryStore
 CreateSkillsCacheOptions
