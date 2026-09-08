@@ -144,12 +144,13 @@ describe("createRouterRuntime — fallback on retryable", () => {
   });
 
   it("reuses one instrumented live-input stream across failover without duplicate applied events", async () => {
-    const acknowledge = vi.fn();
+    const acknowledge = vi.fn(() => "recorded");
+    const reject = vi.fn(() => "recorded");
     const events = [];
     executeMock
       .mockImplementationOnce(async (_systemPrompt, options) => {
         const next = await options.liveInput[Symbol.asyncIterator]().next();
-        next.value.acknowledge();
+        next.value.reject(new Error("safe pre-acceptance failure"));
         return {
           text: null,
           error: "Connection error.",
@@ -177,6 +178,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
                 id: "follow-up-1",
                 receivedAt: "2026-07-22T08:30:00.000Z",
                 acknowledge,
+                reject,
               },
             };
           },
@@ -197,7 +199,8 @@ describe("createRouterRuntime — fallback on retryable", () => {
     });
 
     expect(result.text).toBe("recovered");
-    expect(acknowledge).toHaveBeenCalledTimes(2);
+    expect(reject).toHaveBeenCalledTimes(1);
+    expect(acknowledge).toHaveBeenCalledTimes(1);
     expect(events.filter((event) => event.type === "live_input_applied")).toEqual([{
       type: "live_input_applied",
       inputId: "follow-up-1",

@@ -26,6 +26,7 @@ import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
   RuntimeEventLike,
+  RuntimeLiveInputMessage,
   RuntimeModelReference,
   RuntimeResult,
   RuntimeRunOptions,
@@ -88,6 +89,18 @@ function assertAssignable<T>(_value: T): void {
 }
 
 describe("runtime-adapter facade / agent-runtime kernel structural contract", () => {
+  it("keeps live-input callbacks source-compatible with contextual-void expression returns", () => {
+    const calls: string[] = [];
+    const message: RuntimeLiveInputMessage = {
+      body: "guide",
+      accepted: () => calls.push("accepted"),
+      acknowledge: () => calls.push("acknowledge"),
+      uncertain: () => calls.push("uncertain"),
+      reject: () => calls.push("reject"),
+    };
+    expect(message.body).toBe("guide");
+  });
+
   it("excludes caller-owned sandbox implementations from createMonoRuntime options", () => {
     expectTypeOf<CreateMonoRuntimeOptions["sandbox"]>().toEqualTypeOf<undefined>();
     expectTypeOf<RuntimeRunOptions["sandbox"]>().toEqualTypeOf<undefined>();

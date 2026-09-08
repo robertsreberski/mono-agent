@@ -723,7 +723,7 @@ Per-call options (a non-exhaustive selection):
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
-| `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering the active run. The bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. Acknowledgement emits metadata-only `live_input_applied` telemetry. |
+| `liveInput` | `AsyncIterable<RuntimeLiveInputMessage>` | Stream of in-flight user messages. `accepted` reports native queue acceptance; `acknowledge` reports exact owned-operation transcript consumption; `uncertain` fences ambiguous delivery; proved-safe `reject` permits identified router replay. Stable nonblank IDs are required for cross-attempt replay. |
 | `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
@@ -738,15 +738,21 @@ The `"allow_all_only"` value survives for custom structural bridges that accept
 only an effective unrestricted policy; omission by such a bridge means the
 capability is unknown.
 
-Live input is native on the Pi bridge.
-After the bridge invokes `acknowledge()`, the runtime emits exactly one
-`{ type: "live_input_applied", inputId, receivedAt? }` event for that logical
-run. It deliberately omits the guidance body. A fallback router reuses the same
-instrumented input stream, so replay or duplicate acknowledgement cannot emit a
-second applied event. A throwing host `acknowledge` or `reject` callback cannot
-undo the steer that already reached the harness; it surfaces as a bounded
-`live_input_failed` runtime warning and ends that run's live-input consumer, so
-later guidance for the same run is no longer steered.
+Live input is native on the Pi bridge. Native acceptance is not consumption.
+Consumption requires the exact Pi entry's user `message_end` in the one
+main-lane prompt operation owned by the Mono run, plus the prompt result's
+matching operation ID. This proves transcript incorporation only—not provider
+receipt, answer use, or adherence. `live_input_consumed` records native
+evidence; legacy `live_input_applied` follows only when host acknowledgement
+returns exactly `recorded`. Void, `ignored`, throwing, or thenable callbacks
+produce settlement-unconfirmed diagnostics instead of false success.
+
+The logical-run fence keys stable IDs across retry and failover. The first
+occurrence owns its body and callbacks; later same-ID occurrences are suppressed
+as invalid duplicates. A proved pre-acceptance rejection or native queue removal
+can replay the original owner. Accepted, consumed, and uncertain IDs never
+replay. Missing IDs remain compatible but are exposed only in the first iterator
+generation. Diagnostics contain metadata only, never guidance bodies.
 
 ### Project instructions
 

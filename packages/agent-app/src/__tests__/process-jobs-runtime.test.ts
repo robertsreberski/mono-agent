@@ -657,18 +657,24 @@ describe("process-job request availability", () => {
     await flight;
   });
 
-  it("targets the exact active run and raises its controller depth only for applied wake steering", async () => {
-    const offers: Array<{ resolve(value: { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }): void }> = [];
+  it("targets the exact active run and keeps depth only for matching applied wake steering", async () => {
+    type Settlement =
+      | { status: "applied"; runId: string }
+      | { status: "requeue"; reason: "closed" }
+      | { status: "uncertain"; reason: "delivery_uncertain" };
+    const offers: Array<{ resolve(value: Settlement): void; reject(error: Error): void }> = [];
     const offeredRequests: Array<Record<string, unknown>> = [];
     const responder = bindProcessJobWakeContextToResponder({
       respond: async () => ({ text: "ok" }),
       offerLiveInput(request) {
         offeredRequests.push(request as unknown as Record<string, unknown>);
-        let resolve!: (value: { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }) => void;
-        const settled = new Promise<
-          { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }
-        >((resolvePromise) => { resolve = resolvePromise; });
-        offers.push({ resolve });
+        let resolve!: (value: Settlement) => void;
+        let reject!: (error: Error) => void;
+        const settled = new Promise<Settlement>((resolvePromise, rejectPromise) => {
+          resolve = resolvePromise;
+          reject = rejectPromise;
+        });
+        offers.push({ resolve, reject });
         return { status: "accepted", settled };
       },
     });
@@ -709,6 +715,36 @@ describe("process-job request availability", () => {
       if (applied.status !== "accepted") throw new Error("expected accepted offer");
       offers[1]!.resolve({ status: "applied", runId: "active-run" });
       await expect(applied.settled).resolves.toEqual({ status: "applied", runId: "active-run" });
+      expect(target.chainDepth()).toBe(3);
+
+      let wrongRun!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
+      await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 4 }, async () => {
+        wrongRun = responder.offerLiveInput!({
+          conversationId: "slack:C-exact:9.9",
+          id: "process-job:wrong-run",
+          text: "finished",
+          receivedAt: "2026-08-16T10:00:02.000Z",
+          deliveryKey: "process-job:wrong-run",
+        });
+      }, "process-job:wrong-run");
+      if (wrongRun.status !== "accepted") throw new Error("expected accepted offer");
+      offers[2]!.resolve({ status: "applied", runId: "different-run" });
+      await expect(wrongRun.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+      expect(target.chainDepth()).toBe(3);
+
+      let rejected!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
+      await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 5 }, async () => {
+        rejected = responder.offerLiveInput!({
+          conversationId: "slack:C-exact:9.9",
+          id: "process-job:rejected",
+          text: "finished",
+          receivedAt: "2026-08-16T10:00:03.000Z",
+          deliveryKey: "process-job:rejected",
+        });
+      }, "process-job:rejected");
+      if (rejected.status !== "accepted") throw new Error("expected accepted offer");
+      offers[3]!.reject(new Error("settlement lost"));
+      await expect(rejected.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
       expect(target.chainDepth()).toBe(3);
     } finally {
       target.release();

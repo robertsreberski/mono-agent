@@ -155,10 +155,12 @@ For per-request schemas in a hosted responder, set `outputSchema` from `runtimeO
 `RuntimeRunOptions.liveInput` accepts an async iterable of
 `RuntimeLiveInputMessage` values that inject additional user messages while a
 turn is running — useful for "stop, also do X" guidance from a host UI without
-cancelling and restarting the turn. An optional `acknowledge()` callback runs
-only after the provider's native steering boundary accepts the message;
-`reject(error)` reports a per-attempt failure so a router can replay it on a
-later capable route.
+cancelling and restarting the turn. Native queue acceptance and consumption are
+different facts: `accepted()` reports only the former, while `acknowledge()` is
+reserved for exact evidence that the owned Pi operation appended that entry to
+its transcript. This does not prove provider receipt, use, or adherence.
+`reject(error)` reports proved pre-consumption non-delivery; `uncertain()` fences
+delivery that may have happened and must not be retried automatically.
 
 `auto + code` — coverage type. See `runtime.live-input` in the [feature registry](/reference/feature-registry/).
 
@@ -175,7 +177,12 @@ async function* steeringMessages(): AsyncIterable<RuntimeLiveInputMessage> {
   yield {
     id: "steer-1",
     body: "Also list any unresolved questions.",
-    acknowledge: () => console.log("Applied to the active run."),
+    accepted: () => console.log("Accepted by the native queue."),
+    acknowledge: () => {
+      console.log("Consumed by the active run.");
+      return "recorded";
+    },
+    uncertain: () => "recorded",
   };
 }
 
@@ -194,25 +201,33 @@ A direct runtime call fails capability checks when the active provider cannot
 represent live input instead of silently dropping the stream; the Pi runtime
 supports it on every provider.
 
-After a capable bridge calls `acknowledge()`, the runtime publishes exactly one
-metadata-only `live_input_applied` event containing `inputId` and optional
-`receivedAt`. It never copies the guidance body into that event, and router
-replay or duplicate acknowledgement cannot publish it twice. The standard
-responder correlates the id to its pending human message and projects a normal
-completed tool lifecycle named `↪️ Steered: “<safe preview>”`, with result
-`Applied to current run`. The preview is one line, secret-redacted, path-collapsed,
-and capped at 40 Unicode code points; the full text remains the human message.
-Every structured stream therefore receives the same applied-steering activity
-without adding a new channel-specific event type.
+Exact consumption publishes one metadata-only `live_input_consumed` event.
+Only when the host callback returns the exact synchronous value `"recorded"`
+does the runtime also publish the compatible `live_input_applied` event. The
+standard responder then projects `↪️ Steered: “<safe preview>”`, with result
+`Consumed by current run`. Events never contain the guidance body. The preview
+is one line, secret-redacted, path-collapsed, and capped at 40 Unicode code
+points; the full text remains the human message.
 
 The standard agent responder owns that queue for ordinary interactive turns.
 Slack and Telegram reserve the incoming message's normal per-conversation queue
 position before offering it; the web console persists the same fallback in
-SQLite. If the selected provider is unsupported, delivery fails, or the active
-turn closes first, the message becomes the next normal turn. Once acknowledged,
-it is appended to canonical history in arrival order and included in memory
-persistence. Explicit cancellation discards unsettled guidance. Attachments,
-commands, and `AskUser` answers retain their existing non-steering paths.
+SQLite. Only proved non-delivery becomes the next normal turn. Once native
+delivery may have happened, uncertainty is permanent and no automatic fallback
+runs. Attachments, commands, and `AskUser` answers retain their existing
+non-steering paths.
+
+Stable, unique `id` values enable safe replay only after proved rejection. The
+first occurrence owns its body and callbacks; later occurrences of that ID are
+suppressed. A retryable first owner may be replayed when a later iterator exposes
+the same ID. Values without an ID are accepted only from the first iterator
+generation because a naive iterable cannot identify them safely across retries.
+
+Callbacks retain an `unknown` return type for source compatibility. The runtime
+recognizes only exact synchronous `"recorded"` and `"ignored"` values; `void`,
+promises/thenables, other values, and exceptions do not confirm host settlement
+and never reopen runtime replay. Hosts should return `"recorded"` only after an
+atomic settlement transition.
 
 ## Related
 

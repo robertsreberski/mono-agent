@@ -384,10 +384,11 @@ could duplicate a real first delivery.
 
 For an active turn in the exact originating conversation, the adapter first
 offers the completion as live input targeted to that run id. It reserves the
-normal follow-up position before making the offer. A confirmed provider
-acknowledgement keeps the completion in that turn; an explicit unavailable,
-discarded, or requeued settlement runs the reserved normal follow-up turn. An
-unknown settlement is ambiguous and never triggers an automatic duplicate.
+normal follow-up position before making the offer. Confirmed exact transcript
+consumption keeps the completion in that turn; only an explicit unavailable or
+requeued settlement runs the reserved normal follow-up turn. Discarded,
+uncertain, rejected, or unknown settlement is ambiguous and never triggers an
+automatic duplicate. Consumption does not prove provider receipt or adherence.
 Slack, Telegram, and WhatsApp use their ordinary visible thinking/tool/final
 stream for the fallback. The web console creates an assistant-only turn, emits
 the same NDJSON activity/tool frames, and never invents a user message.
@@ -398,7 +399,7 @@ claim returns its prior `steered` or `follow_up` receipt, while an accepted but
 unsettled claim fails closed as ambiguous. A wake is a genuine tool-capable
 turn, not continuation synthesis. The host raises the active controller to the
 parent job's chain depth plus one before any steered tool call can start; a
-non-applied offer rolls that provisional depth back, and the configured maximum
+non-consumed offer rolls that provisional depth back, and the configured maximum
 remains authoritative.
 
 A Slack or Telegram conversation that is already at its pre-turn admission cap

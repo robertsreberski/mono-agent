@@ -431,6 +431,9 @@ export class OperatorClient {
     if (body.status === "discarded" && body.reason === "cancelled") {
       return { status: "discarded", reason: "cancelled" };
     }
+    if (body.status === "uncertain" && body.reason === "delivery_uncertain") {
+      return { status: "uncertain", reason: "delivery_uncertain" };
+    }
     if (
       body.status === "requeue"
       && (body.reason === "unsupported" || body.reason === "closed" || body.reason === "failed")

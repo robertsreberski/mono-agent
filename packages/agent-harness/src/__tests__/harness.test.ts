@@ -403,7 +403,7 @@ describe("AgentHarness", () => {
         expect(ownerResponse.failure).toMatchObject(
           outcome === "cancel" ? { kind: "cancelled" } : { kind: "Error" },
         );
-        await expect(ownerOffer.settled).resolves.toEqual({ status: "requeue", reason: "failed" });
+        await expect(ownerOffer.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
         expect(harness.offerLiveInput?.({
           conversationId,
           targetRunId: ownerRunId,

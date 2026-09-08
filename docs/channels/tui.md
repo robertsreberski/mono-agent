@@ -67,12 +67,14 @@ the agent supports structured pending-question exchange and
   AskUser interaction.
 - `POST {basePath}/v1/conversations/:id/live-input` offers one bounded
   `{ id, text, receivedAt }` follow-up to the active run and waits for its
-  `applied`, `requeue`, or `discarded` settlement.
+  `applied`, `requeue`, `discarded`, or `uncertain` settlement.
 
-An `applied` settlement is also visible on the still-open turn stream as one
+An `applied` settlement confirms exact transcript consumption and is also visible on the still-open turn stream as one
 completed synthetic tool lifecycle named `↪️ Steered: “<safe preview>”`, with
-result `Applied to current run`. The full guidance text is not repeated in the
+result `Consumed by current run`. The full guidance text is not repeated in the
 event metadata or tool arguments. Other settlements emit no such lifecycle.
+`uncertain` means delivery may have happened and must not be retried
+automatically. It is distinct from provider receipt, use, or adherence.
 
 Ask submission is conversation-bound and rejects expired, completed, or
 mismatched interaction ids. The endpoint remains subject to the same loopback,
@@ -84,7 +86,7 @@ non-loopback opt-in, and optional bearer-key policy as streamed turns.
 | --- | --- |
 | `GET {basePath}/v1/info` | `{ schema, pid, capabilities:{attachments:true,liveInput?:true,historyAppend?:true,askUser?:true}, label?, model?, models?, modelOptions?, effort?, skills? }` — identity, additive transport support, model choices, a bounded live skill-registry snapshot, and wire-schema version for skew detection. `skills` is additive and absent on older agents; it reports `ready` items as `inlined`, `on-demand`, or `unavailable`, or an isolated `error` without failing the operator connection. `effort` is the statically configured reasoning-effort level; per-run overrides arrive via the `run_config` runtime_telemetry event instead. |
 | `POST {basePath}/v1/turns` | Body `{ conversationId, text, attachments?, metadata? }`. Responds with chunked `application/x-ndjson`, one frame per stream callback: `status`, `append`, `replace`, `event` (any `AgentStreamEvent`), then a terminal `finish` (final text + response metadata) or `error` (`cancelled` flagged). Attachment-only turns are accepted when advertised by `/v1/info`. A web client's `metadata.web.model` / `effort` values are preserved and mirrored into the shared `metadata.tui` request-override lane. Closing the socket aborts the in-flight turn. |
-| `POST {basePath}/v1/conversations/:id/live-input` | Authenticated body `{ id, text, receivedAt }`, with text capped at 8,000 characters. Returns `unavailable` immediately when there is no compatible active responder, otherwise holds the request until the offer settles as `applied`, `requeue`, or `discarded`. |
+| `POST {basePath}/v1/conversations/:id/live-input` | Authenticated body `{ id, text, receivedAt }`, with text capped at 8,000 characters. Returns `unavailable` immediately when there is no compatible active responder, otherwise holds the request until the offer settles as `applied`, `requeue`, `discarded`, or `uncertain`. A rejected settlement promise serializes as `uncertain`; it does not produce a retryable transport error. |
 | `POST {basePath}/v1/conversations/:id/cancel` | Explicit cancel (`202`; `501` if the responder has no cancel). |
 | `POST {basePath}/v1/conversations/:id/verbatim` | Authenticated body `{ text, idempotencyKey }`. Appends an already-delivered assistant message to durable history without a model turn (`200`; `501` if the responder has no history-append surface). Used by the web console's host-owned notification path. |
 

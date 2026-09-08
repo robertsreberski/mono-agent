@@ -520,6 +520,28 @@ describe("OperatorClient", () => {
     });
   });
 
+  it("parses explicit uncertain live-input settlement and rejects unknown statuses", async () => {
+    const responses = [
+      { status: "uncertain", reason: "delivery_uncertain" },
+      { status: "future_result", reason: "retry_me" },
+    ];
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json(responses.shift())) as typeof fetch,
+    });
+    const input = {
+      conversationId: "web:thread",
+      id: "input",
+      text: "Guide",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    };
+    await expect(client.liveInput(input)).resolves.toEqual({
+      status: "uncertain",
+      reason: "delivery_uncertain",
+    });
+    await expect(client.liveInput(input)).rejects.toMatchObject({ code: "invalid_operator_live_input" });
+  });
+
   it("reads and submits structured AskUser state on the encoded conversation route", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const snapshot = {

@@ -87,6 +87,9 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     addColumn(database, "turns", "effective_effort", "TEXT");
     addColumn(database, "turns", "routing_json", "TEXT NOT NULL DEFAULT '{\"transitions\":[],\"retries\":[]}'");
   } },
+  { version: 22, name: "live-input-dispatch-marker", up: ({ database }) => {
+    addColumn(database, "live_inputs", "dispatch_started_at", "TEXT");
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -141,6 +144,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
       turns: ["requested_model", "requested_effort", "effective_effort", "routing_json"],
+      live_inputs: ["dispatch_started_at"],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
@@ -162,6 +166,12 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     if (routing?.type !== "TEXT" || routing.notnull !== 1
        || routing.dflt_value !== `'${JSON.stringify({ transitions: [], retries: [] })}'`) {
       throw new Error("Invalid routing column.");
+    }
+    const dispatchStartedAt = (database.prepare("PRAGMA table_info(live_inputs)").all() as Array<{
+      name: string; type: string; notnull: number;
+    }>).find((column) => column.name === "dispatch_started_at");
+    if (dispatchStartedAt?.type !== "TEXT" || dispatchStartedAt.notnull !== 0) {
+      throw new Error("Invalid live-input dispatch marker.");
     }
     for (const [index, expected] of [
       ["messages_by_thread", ["thread_id", "created_at"]],

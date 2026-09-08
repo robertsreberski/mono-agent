@@ -134,7 +134,7 @@ deliveries suppress it. An acknowledged `/cancel`
 best-effort deletes the still-transient ledger and keeps the command's one
 `Cancelled.` acknowledgement.
 
-Applied live guidance adds a completed `↪️ Steered: “<safe preview>”` entry. If
+Consumed live guidance adds a completed `↪️ Steered: “<safe preview>”` entry. If
 a confirmed ledger already exists, Slack best-effort deletes and reposts the
 same cumulative ledger so it becomes the newest bot message after the human
 follow-up. A failed delete edits the existing ledger in place; neither path can
@@ -157,10 +157,10 @@ behavior is unchanged.
 
 The app-owned completion wake uses `notify` with a stable delivery key and
 `steerActive: true`. It reserves the thread's normal queue position first,
-targets only the exact active run, and reports `steered` after provider
-acknowledgement. Every explicit non-applied settlement runs the reserved normal
-turn with visible thinking and tool activity; an unknown outcome is not
-silently reported as success.
+targets only the exact active run, and reports `steered` after confirmed
+transcript consumption. Only `requeue` runs the reserved normal turn. Discarded,
+uncertain, rejected, and unknown settlements release the reservation with an
+ambiguous non-retryable result instead of duplicating delivery.
 
 ### Live follow-up steering
 
@@ -168,10 +168,11 @@ When the responder exposes live input, another plain-text message in the same
 Slack **thread** while a turn is running is offered to that active provider run
 and acknowledged with 👀. Commands, pending `AskUser` replies, and messages with
 files retain their existing paths. The adapter reserves the follow-up's ordinary
-queue position before offering it: if the provider is unsupported, the run ends
-first, or delivery fails, the exact message runs next as a normal turn. Applied
-guidance does not create a second assistant response. Provider acknowledgement
-adds the completed `↪️ Steered` activity described above.
+queue position before offering it. Unsupported or proved-safe removal runs the
+exact message next as a normal turn. Once native handoff may have occurred, an
+end-of-turn, cancellation, or delivery ambiguity does not retry automatically.
+Confirmed consumption does not create a second assistant response and adds the
+completed `↪️ Steered` activity described above.
 
 An offer is made only from the thread that owns the active run. Two physical
 threads can still resolve to one conversation — a threaded proactive post, or a

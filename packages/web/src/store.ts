@@ -225,6 +225,7 @@ interface LiveInputRow {
   model: string | null;
   effort: string | null;
   status: "offered" | "queued";
+  dispatch_started_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -3114,6 +3115,32 @@ export class WebStore {
     return this.requireMessage(row.message_id);
   }
 
+  markLiveInputUncertain(id: string): WebMessage | undefined {
+    const row = this.getLiveInput(id);
+    if (row === undefined) return undefined;
+    const message = this.requireMessage(row.message_id);
+    const now = this.now();
+    this.transaction(() => {
+      this.writeMessageParts(row.message_id, withLiveInputStatus(message.parts, "uncertain"), now, { turnId: null });
+      this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, row.thread_id);
+      this.recordThreadRevision(row.thread_id, "live_input_uncertain", now);
+    });
+    return this.requireMessage(row.message_id);
+  }
+
+  markLiveInputDispatchStarted(id: string, activeTurnId: string): boolean {
+    const now = this.now();
+    return this.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE live_inputs SET dispatch_started_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'offered' AND active_turn_id = ? AND dispatch_started_at IS NULL
+      `).run(now, now, id, activeTurnId);
+      return result.changes === 1;
+    });
+  }
+
   queueLiveInput(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
@@ -3121,7 +3148,9 @@ export class WebStore {
     const now = this.now();
     this.transaction(() => {
       this.database.prepare(`
-        UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
+        UPDATE live_inputs
+        SET status = 'queued', active_turn_id = NULL, dispatch_started_at = NULL, updated_at = ?
+        WHERE id = ?
       `).run(now, id);
       this.writeMessageParts(
         row.message_id,
@@ -3168,7 +3197,7 @@ export class WebStore {
         const message = this.requireMessage(row.message_id);
         this.writeMessageParts(
           row.message_id,
-          withLiveInputStatus(message.parts, "cancelled"),
+          withLiveInputStatus(message.parts, row.dispatch_started_at === null ? "cancelled" : "uncertain"),
           now,
           { turnId: null },
         );
@@ -3176,7 +3205,13 @@ export class WebStore {
       this.database.prepare("DELETE FROM live_inputs WHERE thread_id = ?").run(threadId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
-      this.recordThreadRevision(threadId, "live_inputs_cancelled", now);
+      this.recordThreadRevision(
+        threadId,
+        rows.some((row) => row.dispatch_started_at !== null)
+          ? "live_inputs_cancelled_with_uncertainty"
+          : "live_inputs_cancelled",
+        now,
+      );
     });
     return rows.map((row) => this.requireMessage(row.message_id));
   }
@@ -3924,6 +3959,7 @@ export class WebStore {
         model TEXT,
         effort TEXT,
         status TEXT NOT NULL CHECK (status IN ('offered', 'queued')),
+        dispatch_started_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -4520,7 +4556,9 @@ export class WebStore {
     const threadIds = new Set(rows.map((row) => row.thread_id));
     this.transaction(() => {
       const updateInput = this.database.prepare(`
-        UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
+        UPDATE live_inputs
+        SET status = 'queued', active_turn_id = NULL, dispatch_started_at = NULL, updated_at = ?
+        WHERE id = ?
       `);
       for (const row of rows) {
         const persisted = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
@@ -4528,13 +4566,23 @@ export class WebStore {
         if (persisted === undefined) {
           throw new WebConsoleError("storage_corrupt", `Live input ${row.id} has no message.`, 500);
         }
-        updateInput.run(now, row.id);
-        this.writeMessageParts(
-          row.message_id,
-          withLiveInputStatus(parseParts(persisted.parts_json), "queued"),
-          now,
-          { turnId: null },
-        );
+        if (row.dispatch_started_at === null) {
+          updateInput.run(now, row.id);
+          this.writeMessageParts(
+            row.message_id,
+            withLiveInputStatus(parseParts(persisted.parts_json), "queued"),
+            now,
+            { turnId: null },
+          );
+        } else {
+          this.writeMessageParts(
+            row.message_id,
+            withLiveInputStatus(parseParts(persisted.parts_json), "uncertain"),
+            now,
+            { turnId: null },
+          );
+          this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(row.id);
+        }
       }
       for (const threadId of threadIds) {
         this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
@@ -6729,7 +6777,7 @@ function liveInputStatusFromParts(parts: readonly WebMessagePart[]): WebLiveInpu
     throw new WebConsoleError("storage_corrupt", "Persisted live-input metadata is invalid.", 500);
   }
   const status = (data as Record<string, unknown>).status;
-  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled") {
+  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled" && status !== "uncertain") {
     throw new WebConsoleError("storage_corrupt", "Persisted live-input status is invalid.", 500);
   }
   return status;

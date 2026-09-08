@@ -143,6 +143,12 @@ An addressable driver may additionally declare one unique
 an honest `steered` or `follow_up` receipt for the completion turn. Drivers that
 do not opt in remain ineligible for background schemas and delivery.
 
+Accepted live input settles as `applied` only after exact provider transcript
+consumption is host-confirmed, as `requeue` only when automatic fallback is
+proved safe, as `discarded` on safe explicit cancellation, or as `uncertain`
+when delivery may have occurred. Unknown or rejected settlement values are
+neither retry permission nor success.
+
 ### Package structure
 
 Primary modules:

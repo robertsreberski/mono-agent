@@ -432,7 +432,10 @@ describe("AssistantMessage grouped parts", () => {
   it("shows the delivery state for live follow-up user messages", () => {
     render(<MessageHarness message={{ ...userMessage, liveInputStatus: "applied" }} />);
 
-    expect(screen.getByText("Applied to current run")).toBeVisible();
+    expect(screen.getByText("Consumed by current run")).toBeVisible();
+
+    render(<MessageHarness message={{ ...userMessage, id: "uncertain", liveInputStatus: "uncertain" }} />);
+    expect(screen.getByText("Delivery uncertain — not retried")).toBeVisible();
   });
 
   it("renders an applied live follow-up as a completed Steered tool activity", () => {
