@@ -195,6 +195,7 @@ const chatStore = (
     loading: false,
     detailLoading,
     selectionLoading: detailLoading,
+    creatingThread: false,
     selectionError: null,
     connection: "live" as const,
     model: "",
@@ -237,6 +238,24 @@ it("shows an owned loading surface instead of a false new-conversation state", (
   expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
   expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
   expect(screen.getAllByRole("status").some((item) => item.textContent?.includes("Loading"))).toBe(true);
+});
+
+it("shows conversation creation as pending while retaining the previous transcript", () => {
+  const prior = thread("thread-a", "agent", { title: "Prior conversation" });
+  storeMock.current = {
+    ...chatStore(prior, chatDetail(prior, 1)),
+    selectionLoading: true,
+    creatingThread: true,
+  };
+
+  render(chatTree());
+
+  expect(screen.getByRole("button", { name: "Creating conversation…" })).toBeDisabled();
+  expect(screen.getByRole("status", { name: "Creating conversation" })).toBeInTheDocument();
+  expect(screen.getAllByRole("status").some(
+    (item) => item.textContent?.includes("Creating conversation"),
+  )).toBe(true);
+  expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
 });
 
 it("keeps a failed selection explicit after its transient notice is gone", () => {

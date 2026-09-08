@@ -147,7 +147,13 @@ export function ConnectionBanner({ connection }: { readonly connection: Connecti
 }
 
 function ConversationTitle() {
-  const { selectedThread, renameThread, selectionLoading, selectionError } = useConsoleStore();
+  const {
+    selectedThread,
+    renameThread,
+    selectionLoading,
+    creatingThread,
+    selectionError,
+  } = useConsoleStore();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(selectedThread?.title ?? "New conversation");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -210,12 +216,14 @@ function ConversationTitle() {
         type="button"
         className="conversation-title"
         onClick={() => selectedThread && setEditing(true)}
-        disabled={!selectedThread}
+        disabled={!selectedThread || selectionLoading}
         title={selectedThread ? "Rename conversation" : undefined}
       >
         {selectionError !== null
           ? "Conversation unavailable"
-          : selectionLoading
+          : creatingThread
+            ? "Creating conversation…"
+            : selectionLoading
             ? "Loading conversation…"
             : selectedThread?.title ?? "New conversation"}
       </button>
@@ -352,6 +360,7 @@ function EmptyConversation() {
     retrySelection,
     selectedThread,
     selectionLoading,
+    creatingThread,
     selectionError,
   } = useConsoleStore();
   const cron = selectedThread?.trigger?.kind === "cron";
@@ -368,6 +377,8 @@ function EmptyConversation() {
         <h2>
           {selectionError !== null
             ? "Conversation could not be loaded"
+            : creatingThread
+            ? "Creating conversation…"
             : selectionLoading
             ? "Loading conversation…"
             : cron
@@ -379,6 +390,8 @@ function EmptyConversation() {
         <p>
           {selectionError !== null
             ? selectionError
+            : creatingThread
+            ? "Preparing an empty conversation."
             : selectionLoading
             ? "Resolving the conversation you selected."
             : cron
@@ -391,7 +404,7 @@ function EmptyConversation() {
           <button type="button" className="primary-button" onClick={retrySelection}>
             Retry conversation
           </button>
-        ) : selectedAgent && !selectedThread && !cron && !selectionLoading && (
+        ) : selectedAgent && !selectedThread && !cron && !selectionLoading && !creatingThread && (
           <button
             type="button"
             className="primary-button"
@@ -420,6 +433,7 @@ export function Chat({
     connection,
     detailLoading,
     selectionLoading,
+    creatingThread,
     selectionError,
     unarchiveThread,
     hasOlderMessages,
@@ -531,6 +545,10 @@ export function Chat({
                   <div className="cron-readonly-footer" role="status">
                     Retry this conversation or choose another one before sending.
                   </div>
+                ) : creatingThread ? (
+                  <div className="cron-readonly-footer" role="status">
+                    Creating conversation…
+                  </div>
                 ) : selectionLoading ? (
                   <div className="cron-readonly-footer" role="status">
                     Loading the selected conversation…
@@ -558,7 +576,11 @@ export function Chat({
               </ThreadPrimitive.ViewportFooter>
             </ThreadPrimitive.Viewport>
             {(selectionLoading || (detailLoading && selectedThread)) && (
-              <div className="detail-loading" role="status" aria-label="Loading conversation">
+              <div
+                className="detail-loading"
+                role="status"
+                aria-label={creatingThread ? "Creating conversation" : "Loading conversation"}
+              >
                 <span />
               </div>
             )}
