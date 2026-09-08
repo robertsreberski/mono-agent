@@ -898,9 +898,8 @@ function fallbackChainForConfig(
     // and the router never runs — so same-model retries would silently do
     // nothing for every agent with no configured backups. Build a retry-only
     // single-entry chain instead whenever the primary asks for more than one
-    // attempt. `hasConfiguredFallback` deliberately stays false for this shape,
-    // keeping `sessionOptions.supportsResume` true: the router only drops the
-    // provider session on the retry itself (retryIndex > 0).
+    // attempt. Both retry-only and multi-entry chains keep sessions on the
+    // primary's first attempt; the router makes later attempts stateless.
     if (primaryAttempts <= 1) {
       return {};
     }
@@ -1180,12 +1179,10 @@ async function createConfiguredAgentHarnessInternal(
   const sessionOptions: AgentHarnessSessionOptionsWithEvents = {
     mode: config.runtime.session.mode,
     idleTimeoutMs: config.runtime.session.idleTimeoutMs,
-    // Any fallback makes the logical run stateless. A provider-owned session
-    // cannot safely cross the route boundary, even when both bridges happen to
-    // expose resume support. History replay remains available to every attempt.
-    supportsResume: hasConfiguredFallback(config)
-      ? false
-      : supportsSessionResume(),
+    // Continuous sessions belong to the primary's first attempt. The router
+    // strips session state from retries and backups and withholds their resumable
+    // result id; an unsynchronized durable answer rotates the epoch before the next turn.
+    supportsResume: supportsSessionResume(),
     ...(config.runtime.session.isolateProactive === undefined
       ? {}
       : { isolateProactive: config.runtime.session.isolateProactive }),
@@ -1746,10 +1743,6 @@ async function createConfiguredAgentResponderInternal(
 
 /** @internal Shared only with app-local history decorators; absent from the package root. */
 export const DEFAULT_HISTORY_MAX_MESSAGES = 64;
-
-function hasConfiguredFallback(config: MonoAgentConfig): boolean {
-  return (config.runtime.fallbacks?.length ?? 0) > 0;
-}
 
 function supportsSessionResume(): boolean {
   try {
