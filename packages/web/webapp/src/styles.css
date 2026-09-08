@@ -1015,8 +1015,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-stack-history { margin: 0 4px 7px; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
 .process-job-stack-list { display: grid; gap: 7px; }
 .process-job-stack-item { min-width: 0; }
-.process-job-stack-item > .activity-row.is-job, .assistant-content > .activity-row.is-job { margin: 0; padding: 3px 4px; background: color-mix(in srgb, var(--accent) 6%, color-mix(in srgb, var(--panel) 32%, var(--surface))); border: 1px solid var(--line); border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 12px; }
-.process-job-stack-item > .activity-row.is-job.is-failed, .assistant-content > .activity-row.is-job.is-failed { background: color-mix(in srgb, var(--danger) 6%, color-mix(in srgb, var(--panel) 32%, var(--surface))); border-left-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.process-job-stack-item > .activity-row.is-job, .assistant-content > .activity-row.is-job { margin: 0; padding: 3px 4px; background: color-mix(in srgb, var(--panel) 32%, var(--surface)); border: 1px solid var(--line); border-radius: 12px; }
 .activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
 @media (max-width: 560px) {
   .model-controls-label { display: none; }
