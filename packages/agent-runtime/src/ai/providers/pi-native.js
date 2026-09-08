@@ -702,7 +702,11 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     let runError;
     try {
-      const promptResult = await runHarnessPrompt(harness, promptText, promptImages);
+      // Own the operation at admission so steers consumed mid-run settle as
+      // applied immediately; finish() re-checks the settled id at the end.
+      const promptResult = await runHarnessPrompt(harness, promptText, promptImages, {
+        onOperationAdmitted: (operationId) => liveInputEpoch.confirm(operationId),
+      });
       runError = promptResult.runError;
       liveInputEpoch.finish(promptResult.operationId);
     } finally {

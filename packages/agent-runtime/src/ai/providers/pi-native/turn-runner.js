@@ -474,6 +474,11 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
   const buffered = [];
   /** @type {Map<string, {message: any, observed: boolean, consumed: boolean}>} */
   const entries = new Map();
+  // The operation id Pi admitted for the main prompt (via confirm) or that the
+  // settled prompt reported (via finish). Consumption is only acknowledged once
+  // the observed main-lane run_start carries this exact id.
+  /** @type {string|undefined} */
+  let admittedOperationId;
   let operationConfirmed = false;
 
   const remove = harness.subscribe((event) => {
@@ -481,6 +486,11 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
     if (event.type === "run_start" && typeof event.runId === "string" && event.runId.length > 0) {
       if (runId === undefined) {
         runId = event.runId;
+        if (admittedOperationId !== undefined && admittedOperationId !== runId) {
+          invalidate("operation_mismatch");
+          return;
+        }
+        if (admittedOperationId !== undefined) operationConfirmed = true;
         consumeBuffered();
       } else if (runId !== event.runId) {
         invalidate("multiple_run_start");
@@ -523,16 +533,40 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
       consumeBuffered();
     },
     isConsumed: (entryId) => entries.get(entryId)?.consumed === true,
+    /**
+     * Own the admitted operation as soon as Pi reports its id, before the run
+     * settles, so entries consumed mid-run are acknowledged when their
+     * message_end arrives rather than in one batch at the end of the run.
+     * Safe in either order with run_start; a conflicting id invalidates.
+     */
+    confirm(operationId) {
+      if (invalid) return;
+      if (
+        typeof operationId !== "string"
+        || operationId.length === 0
+        || (admittedOperationId !== undefined && admittedOperationId !== operationId)
+        || (runId !== undefined && runId !== operationId)
+      ) {
+        invalidate("operation_mismatch");
+        return;
+      }
+      admittedOperationId = operationId;
+      if (runId === undefined) return;
+      operationConfirmed = true;
+      confirmObserved();
+    },
     finish(operationId) {
       if (
         typeof operationId !== "string"
         || operationId.length === 0
         || runId === undefined
         || operationId !== runId
+        || (admittedOperationId !== undefined && admittedOperationId !== operationId)
       ) {
         invalidate("operation_mismatch");
         return;
       }
+      admittedOperationId = operationId;
       operationConfirmed = true;
       confirmObserved();
     },
@@ -592,9 +626,12 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
  * @param {any} harness
  * @param {string} promptText
  * @param {Array<any>} promptImages
+ * @param {{onOperationAdmitted?: (operationId: string) => void}} [hooks]
+ *   `onOperationAdmitted` fires as soon as Pi admits the run, before any
+ *   provider request, so the live-input epoch can own the operation up front.
  * @returns {Promise<{runError: any, operationId?: string}>}
  */
-export async function runHarnessPrompt(harness, promptText, promptImages) {
+export async function runHarnessPrompt(harness, promptText, promptImages, hooks) {
   let runError = null;
   let operationId;
   try {
@@ -602,13 +639,16 @@ export async function runHarnessPrompt(harness, promptText, promptImages) {
     // model as image blocks rather than stringified text. AgentHarness.prompt
     // takes them under an options object (`{ images }`); a bare array would be
     // read as `options` and silently dropped (options?.images === undefined).
-    if (Array.isArray(promptImages) && promptImages.length > 0) {
-      const result = await harness.prompt(promptText, { images: promptImages });
-      operationId = result?.operationId;
-    } else {
-      const result = await harness.prompt(promptText);
-      operationId = result?.operationId;
-    }
+    const promptOptions = {
+      ...(Array.isArray(promptImages) && promptImages.length > 0 ? { images: promptImages } : {}),
+      ...(typeof hooks?.onOperationAdmitted === "function"
+        ? { onOperationAdmitted: hooks.onOperationAdmitted }
+        : {}),
+    };
+    const result = Object.keys(promptOptions).length > 0
+      ? await harness.prompt(promptText, promptOptions)
+      : await harness.prompt(promptText);
+    operationId = result?.operationId;
   } catch (err) {
     runError = err;
   }
