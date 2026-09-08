@@ -92,6 +92,7 @@ export type {
   MemoryWriteMode,
   PreparedHistoryAppend,
   ProviderSessionTurnCommitOptions,
+  ProviderSessionTurnBinding,
 } from "./types.js";
 export { buildAgentContext } from "./context/context-builder.js";
 export { DEFAULT_SOUL_TEXT } from "./context/default-soul.js";
@@ -149,3 +150,6 @@ export type {
   ToolPolicyInput,
   ToolPolicyRuntimeOptions,
 } from "./tool-policy/policy.js";
+
+export { createSessionRuntimeResolver } from "./session-runtime.js";
+export type { ProviderSessionHandle, SessionRuntimeResolver } from "./session-runtime.js";

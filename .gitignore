@@ -29,3 +29,6 @@ docs/superpowers/
 AGENTS.local.md
 .claude/settings.local.json
 .githooks/
+
+# Worktree-local dependency caches and verification artifacts
+.worklab-tmp/

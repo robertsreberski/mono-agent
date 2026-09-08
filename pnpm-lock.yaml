@@ -244,6 +244,10 @@ importers:
       '@mono-agent/runtime-adapter':
         specifier: workspace:0.20.14
         version: link:../runtime-adapter
+    devDependencies:
+      '@earendil-works/pi-ai':
+        specifier: 0.85.1
+        version: 0.85.1(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(supports-color@7.2.0)(zod@4.4.3))(supports-color@7.2.0)(ws@8.21.1)(zod@4.4.3)
 
   packages/agent-runtime:
     dependencies:

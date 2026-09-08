@@ -1,3 +1,5 @@
+import { assertSessionModelKey } from "./session-runtime.js";
+
 export type RuntimeSessionEvictReason = "idle_timeout" | "stale" | "replaced" | "disposed";
 
 /** Public upper bound for opaque canonical-history version tokens. */
@@ -13,6 +15,7 @@ export function assertConversationHistoryVersion(value: unknown): asserts value 
 }
 
 export interface RuntimeSessionRecord {
+  modelKey?: string;
   readonly conversationId: string;
   readonly providerSessionId: string;
   providerSessionRevision?: number;
@@ -24,6 +27,7 @@ export interface RuntimeSessionRecord {
 }
 
 export interface RuntimeSessionSnapshot {
+  readonly modelKey?: string;
   readonly conversationId: string;
   readonly providerSessionId: string;
   readonly providerSessionRevision?: number;
@@ -61,6 +65,7 @@ export interface RuntimeSessionStore {
     owner?: RuntimeSessionRecord,
     providerSessionRevision?: number,
     historyVersion?: string,
+    modelKey?: string,
   ): void;
   /**
    * When `providerSessionId` is given, evicts only if it still matches the
@@ -168,6 +173,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       owner?: RuntimeSessionRecord,
       providerSessionRevision?: number,
       historyVersion?: string,
+      modelKey?: string,
     ): void {
       if (disposed) {
         return;
@@ -179,8 +185,15 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
         throw new TypeError("providerSessionRevision must be a non-negative safe integer when present.");
       }
       if (historyVersion !== undefined) assertConversationHistoryVersion(historyVersion);
+      if (modelKey !== undefined) assertSessionModelKey(modelKey);
       const stored = entries.get(conversationId);
       if (stored !== undefined && stored.record.providerSessionId === providerSessionId) {
+        if (modelKey !== undefined) {
+          if (stored.record.modelKey !== undefined && stored.record.modelKey !== modelKey) {
+            throw new TypeError("Cannot rebind a provider session id to another model.");
+          }
+          stored.record.modelKey = modelKey;
+        }
         stored.record.lastActivityAt = now();
         if (providerSessionRevision === undefined) delete stored.record.providerSessionRevision;
         else stored.record.providerSessionRevision = providerSessionRevision;
@@ -204,6 +217,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
         record: {
           conversationId,
           providerSessionId,
+          ...(modelKey === undefined ? {} : { modelKey }),
           ...(providerSessionRevision === undefined ? {} : { providerSessionRevision }),
           ...(historyVersion === undefined ? {} : { historyVersion }),
           createdAt: timestamp,

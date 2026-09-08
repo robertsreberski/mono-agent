@@ -201,3 +201,27 @@ describe("createRuntimeSessionStore", () => {
     expect(() => store.release("conv-1", record!)).not.toThrow();
   });
 });
+
+describe("model-bound session records", () => {
+  it("retains model binding through acquire release snapshot and eviction", async () => {
+    const evicted: string[] = [];
+    const store = createRuntimeSessionStore({ idleTimeoutMs: 1000,
+      onEvict: (record) => { evicted.push(record.modelKey!); } });
+    store.save("c", "id", undefined, 1, undefined, "faux:override");
+    const record = store.acquire("c")!;
+    expect(record.modelKey).toBe("faux:override");
+    store.release("c", record);
+    expect(store.list()[0]?.modelKey).toBe("faux:override");
+    await store.disposeAll();
+    expect(evicted).toEqual(["faux:override"]);
+  });
+
+  it("rejects rebinding one provider id to a different model", async () => {
+    const store = createRuntimeSessionStore({ idleTimeoutMs: 1000 });
+    store.save("c", "id", undefined, undefined, undefined, "faux:base");
+    expect(() => store.save("c", "id", undefined, undefined, undefined, "faux:override")).toThrow("Cannot rebind");
+    store.save("c", "id");
+    expect(store.list()[0]?.modelKey).toBe("faux:base");
+    await store.disposeAll();
+  });
+});
