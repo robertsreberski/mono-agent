@@ -1,6 +1,9 @@
 import { CodedError } from "@mono-agent/agent-contracts";
 
 export type TuiAdapterErrorCode =
+  | "context_import_conflict"
+  | "context_import_failed"
+  | "context_import_unsupported"
   | "invalid_config"
   | "invalid_request"
   | "missing_required_config"

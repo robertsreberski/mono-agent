@@ -63,6 +63,9 @@ export function createSlackPostedReplyHistory(options: SlackPostedReplyHistoryOp
         ...(responder.deliverVerbatim === undefined
           ? {}
           : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+        ...(responder.importContext === undefined
+          ? {}
+          : { importContext: responder.importContext.bind(responder) }),
         ...(responder.openReplyArtifact === undefined
           ? {}
           : { openReplyArtifact: responder.openReplyArtifact.bind(responder) }),
@@ -86,10 +89,41 @@ function wrapHistoryStore(
   scopes: AsyncLocalStorage<PostedReplyScope>,
   options: SlackPostedReplyHistoryOptions,
 ): ConversationHistoryStore {
+  const providerSessionRetirement = store.providerSessionRetirement;
+  const contextImport = store.contextImport;
   return {
-    ...(store.providerSessionRetirement === undefined
+    ...(providerSessionRetirement === undefined
       ? {}
-      : { providerSessionRetirement: store.providerSessionRetirement }),
+      : { providerSessionRetirement }),
+    ...(contextImport === undefined
+      ? {}
+      : {
+        contextImport: {
+          version: contextImport.version,
+          maxTextBytes: contextImport.maxTextBytes,
+          providerState: contextImport.providerState,
+          async beginExclusiveTurn(conversationId: string) {
+            const turn = await contextImport.beginExclusiveTurn(conversationId);
+            const scope = scopes.getStore();
+            if (scope === undefined || !matchesProducerConversation(conversationId, scope.producerConversationId)) {
+              return turn;
+            }
+            const delivery = await loadExactDelivery(store, scope, conversationId, options);
+            const deliveryKey = delivery.find((message) => message.role === "assistant")?.idempotencyKey;
+            const history = delivery.length === 0
+              || (deliveryKey !== undefined && turn.history.some((message) => message.idempotencyKey === deliveryKey))
+              ? turn.history
+              : mergeHistory(turn.history, delivery, options.maxMessages);
+            return {
+              history,
+              historyVersion: turn.historyVersion,
+              prepareCommit: turn.prepareCommit.bind(turn),
+              abort: turn.abort.bind(turn),
+            };
+          },
+          prepareImport: (conversationId, request) => contextImport.prepareImport(conversationId, request),
+        },
+      }),
     async load(conversationId) {
       const canonical = await store.load(conversationId);
       const scope = scopes.getStore();

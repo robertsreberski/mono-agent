@@ -40,7 +40,7 @@ export type {
   ToolHistoryWriterOptions,
 } from "./tool-history-store.js";
 export { NoopRunRecorder } from "./recorder.js";
-export { createRuntimeSessionStore } from "./sessions.js";
+export { CONVERSATION_HISTORY_VERSION_MAX_BYTES, createRuntimeSessionStore } from "./sessions.js";
 export {
   classifyContinuationMcpServerTransport,
   isStdioMcpServerSpec,
@@ -84,6 +84,8 @@ export type {
   AgentHarnessTurnHistoryEnricher,
   AgentSessionMode,
   ConversationHistoryProviderSessionTurn,
+  ConversationHistoryExclusiveTurn,
+  ConversationHistoryContextImport,
   ConversationHistoryStore,
   ExternalRunSummary,
   InMemoryHistoryStoreOptions,

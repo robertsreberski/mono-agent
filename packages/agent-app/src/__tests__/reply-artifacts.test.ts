@@ -22,7 +22,7 @@ import {
   type AgentReplyAttachmentPart,
   type AgentResponder,
 } from "@mono-agent/agent-contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createReplyArtifactService,
@@ -128,6 +128,23 @@ describe("reply artifact policy", () => {
 });
 
 describe("reply artifact publication", () => {
+  it("preserves context import with its original responder binding", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const service = createReplyArtifactService({ artifactDir: join(root, "artifacts"), workspace });
+    let owner: AgentResponder;
+    const importContext = vi.fn(async function (this: AgentResponder) {
+      expect(this).toBe(owner);
+      return { status: "duplicate" as const };
+    });
+    owner = { respond: async () => ({ text: "ok" }), importContext };
+    const wrapped = service.wrapResponder(owner);
+    await expect(wrapped.importContext?.("c", { text: "snapshot", idempotencyKey: "run:1" }))
+      .resolves.toEqual({ status: "duplicate" });
+    expect(importContext).toHaveBeenCalledOnce();
+  });
+
   it("publishes duplicate names as isolated durable references and streams only to the owning conversation", async () => {
     const root = await tempDir();
     const workspace = join(root, "workspace");

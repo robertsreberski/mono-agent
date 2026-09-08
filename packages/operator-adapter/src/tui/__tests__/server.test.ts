@@ -1135,6 +1135,179 @@ describe("startTuiAdapter", () => {
     expect(recorded).toEqual([["web:notification-1", "Morning brief", "cron:job:one"]]);
   });
 
+  it("advertises, authorizes, validates, and maps canonical context import results", async () => {
+    const imported: Array<[string, string, string]> = [];
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        async importContext(conversationId, request) {
+          imported.push([conversationId, request.text, request.idempotencyKey]);
+          return request.idempotencyKey === "conflict"
+            ? { status: "conflict", reason: "conversation_not_empty" }
+            : request.idempotencyKey === "duplicate"
+              ? { status: "duplicate" }
+              : { status: "appended" };
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl, {
+      headers: { authorization: "Bearer fixture-secret" },
+    })).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).toMatchObject({ contextImport: { version: 1, maxTextBytes: 32_768 } });
+
+    const url = `${running.baseUrl}/v1/conversations/web%3Acron%3Ajob-1/context-imports`;
+    const unauthorized = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "result", idempotencyKey: "run:1" }),
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+
+    const post = async (body: unknown) => await fetch(url, {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const appended = await post({ text: "quote \" slash \\ control \u0000 and 東京", idempotencyKey: "run:1" });
+    expect(appended.status).toBe(200);
+    expect(appended.headers.get("cache-control")).toContain("no-store");
+    expect(await appended.json()).toEqual({
+      imported: true,
+      status: "appended",
+      conversationId: "web:cron:job-1",
+    });
+    expect((await post({ text: "same", idempotencyKey: "duplicate" })).status).toBe(200);
+    const conflict = await post({ text: "other", idempotencyKey: "conflict" });
+    expect(conflict.status).toBe(409);
+    expect(conflict.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await conflict.json()).toEqual({
+      error: {
+        code: "context_import_conflict",
+        message: "Canonical context import conflicts with existing history.",
+        reason: "conversation_not_empty",
+      },
+    });
+    const blankText = await post({ text: " \t\n", idempotencyKey: "k" });
+    expect(blankText.status).toBe(400);
+    expect(blankText.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await blankText.json()).toEqual({
+      error: { code: "invalid_request", message: "text must be a string within the context import byte limit." },
+    });
+    expect((await post({ text: "x", idempotencyKey: " \t\n" })).status).toBe(400);
+    expect((await post({ text: "  opaque  ", idempotencyKey: "  opaque-key  " })).status).toBe(200);
+    expect((await post({ text: "x", idempotencyKey: "k", extra: true })).status).toBe(400);
+    expect((await post({ text: "x".repeat(32_769), idempotencyKey: "k" })).status).toBe(400);
+    expect((await post({ text: "x", idempotencyKey: "é".repeat(257) })).status).toBe(400);
+    expect(imported[0]).toEqual(["web:cron:job-1", "quote \" slash \\ control \u0000 and 東京", "run:1"]);
+    expect(imported).toContainEqual(["web:cron:job-1", "  opaque  ", "  opaque-key  "]);
+
+    const exactEscaped = JSON.stringify({ text: "\u0000".repeat(32_768), idempotencyKey: "\u0001".repeat(512) });
+    expect(Buffer.byteLength(exactEscaped, "utf8")).toBe(199_711);
+    const escapedResponse = await fetch(url, {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+      body: exactEscaped,
+    });
+    expect(escapedResponse.status).toBe(200);
+    expect((await post({ text: "é".repeat(16_384), idempotencyKey: "é".repeat(256) })).status).toBe(200);
+
+    const exactConversation = "é".repeat(2_048);
+    const exactConversationResponse = await fetch(
+      `${running.baseUrl}/v1/conversations/${encodeURIComponent(exactConversation)}/context-imports`,
+      {
+        method: "POST",
+        headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+        body: JSON.stringify({ text: "x", idempotencyKey: "boundary" }),
+      },
+    );
+    expect(exactConversationResponse.status).toBe(200);
+  });
+
+  it("marks context import parser, authorization, and validation rejections private before parsing", async () => {
+    const importContext = vi.fn(async () => ({ status: "appended" as const }));
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: { ...scriptedResponder(async () => ({ text: "ok" })), importContext },
+    });
+    const url = `${running.baseUrl}/v1/conversations/c/context-imports`;
+    const request = async (body: string, authorization = true) => await fetch(url, {
+      method: "POST",
+      headers: {
+        ...(authorization ? { authorization: "Bearer fixture-secret" } : {}),
+        "content-type": "application/json",
+      },
+      body,
+    });
+    const cases = [
+      await request(JSON.stringify({ text: "snapshot", idempotencyKey: "run:1" }), false),
+      await request('{"text":'),
+      await request(JSON.stringify({ text: "x".repeat(200_000), idempotencyKey: "run:1" })),
+      await request(JSON.stringify({ text: " \t\n", idempotencyKey: "run:1" })),
+    ];
+
+    expect(cases.map((response) => response.status)).toEqual([401, 400, 413, 400]);
+    for (const response of cases) {
+      expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    }
+    expect(importContext).not.toHaveBeenCalled();
+  });
+
+  it("keeps context import positively absent for legacy responders", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+    const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).not.toHaveProperty("contextImport");
+    const response = await fetch(`${running.baseUrl}/v1/conversations/c/context-imports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "x", idempotencyKey: "k" }),
+    });
+    expect(response.status).toBe(501);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await response.json()).toEqual({
+      error: {
+        code: "context_import_unsupported",
+        message: "This responder does not support canonical context import.",
+        reason: "unsupported",
+      },
+    });
+  });
+
+  it("sanitizes context import operational failures while logging their detail", async () => {
+    const error = vi.fn();
+    running = await startTuiAdapter({
+      logger: { error },
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        async importContext() {
+          throw new Error("database failure at /srv/agent-secret/history.sqlite");
+        },
+      },
+    });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/c/context-imports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "snapshot", idempotencyKey: "run:1" }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    const body = await response.json();
+    expect(body).toEqual({
+      error: {
+        code: "context_import_failed",
+        message: "Canonical context import failed.",
+        reason: "operation_failed",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("/srv/agent-secret");
+    expect(error).toHaveBeenCalledWith("TUI context import failed.", {
+      error: "database failure at /srv/agent-secret/history.sqlite",
+    });
+  });
+
   it("advertises live input and holds the request until the active run settles it", async () => {
     let markOffered!: (request: AgentLiveInputRequest) => void;
     const offered = new Promise<AgentLiveInputRequest>((resolve) => { markOffered = resolve; });

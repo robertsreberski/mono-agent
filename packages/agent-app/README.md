@@ -697,6 +697,13 @@ title remains the fallback.
 
 ### Channel interactions and conversation history
 
+The configured agent preserves the harness's positive `importContext`
+capability through root-ownership, monitor, process-job, posted-reply, reply-file,
+and MCP-App decorators. The default durable store exposes it only when complete
+batch retention and provider-state retirement or absence are provable. Slack's
+posted-reply wrapper overlays destination history only on the leased Send view;
+the canonical import itself stays scope-free.
+
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for a targeted intentionally captured durable fact,
 `MemoryJournal` for a broad explicit-period curated retrospective, `RunHistory`

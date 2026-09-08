@@ -1362,6 +1362,9 @@ function harnessWithAgentRootOwnership(
     ...(harness.appendVerbatimTurn === undefined
       ? {}
       : { appendVerbatimTurn: harness.appendVerbatimTurn.bind(harness) }),
+    ...(harness.importContext === undefined
+      ? {}
+      : { importContext: harness.importContext.bind(harness) }),
     dispose: () => {
       disposePromise ??= Promise.resolve()
         .then(async () => await harness.dispose?.())

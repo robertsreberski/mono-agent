@@ -32,7 +32,9 @@ async function tempDir(): Promise<string> {
 async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const compiledPath = join(dir, "durable-history.mjs");
   const compilerOptions = { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } as const;
-  const durableSource = await readFile(new URL("../durable-history.ts", import.meta.url), "utf8");
+  const contractsUrl = new URL("../../../agent-contracts/dist/index.js", import.meta.url).href;
+  const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
+    .replace('"@mono-agent/agent-contracts"', JSON.stringify(contractsUrl));
   const livenessSource = await readFile(
     new URL("../history-process-liveness.ts", import.meta.url),
     "utf8",
@@ -53,6 +55,183 @@ afterEach(async () => {
 });
 
 describe("DurableConversationHistoryStore", () => {
+  it("imports one complete canonical pair and keeps retained retries idempotent", async () => {
+    const dir = await tempDir();
+    const store = createDurableHistoryStore({ root: join(dir, "history"), maxMessages: 2 });
+    expect(store.contextImport).toMatchObject({ version: 1, maxTextBytes: 32_768, providerState: "absent" });
+    const request = {
+      text: "quote \" slash \\ control \u0000 and 東京",
+      idempotencyKey: "cron:job-1:run-1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    };
+
+    await expect(store.contextImport!.prepareImport("blank-text", { ...request, text: " \t\n" }))
+      .rejects.toThrow("context import text must be a non-empty string");
+    await expect(store.contextImport!.prepareImport("blank-key", { ...request, idempotencyKey: " \t\n" }))
+      .rejects.toThrow("context import idempotencyKey must be a non-empty string");
+
+    const first = await store.contextImport!.prepareImport("web:cron:job-1", request);
+    expect(first.result).toEqual({ status: "appended" });
+    await first.append!.commit();
+    const history = await store.load("web:cron:job-1");
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({ role: "system", name: "context-import-provenance" });
+    expect(history[1]).toEqual({
+      role: "assistant",
+      name: "context-import",
+      content: request.text,
+      timestamp: request.timestamp,
+      idempotencyKey: request.idempotencyKey,
+    });
+
+    const duplicate = await store.contextImport!.prepareImport("web:cron:job-1", request);
+    expect(duplicate).toEqual({ result: { status: "duplicate" } });
+    expect(await store.load("web:cron:job-1")).toEqual(history);
+    expect((await store.contextImport!.prepareImport("web:cron:job-1", { ...request, text: "changed" })).result)
+      .toEqual({ status: "conflict", reason: "idempotency_conflict" });
+  });
+
+  it("advertises import only when a full pair fits and preserves bounded retry semantics", async () => {
+    const dir = await tempDir();
+    expect(createDurableHistoryStore({ root: join(dir, "too-short"), maxMessages: 1 }).contextImport).toBeUndefined();
+    expect(createDurableHistoryStore({ root: join(dir, "no-conversations"), maxConversations: 0 }).contextImport).toBeUndefined();
+
+    const store = createDurableHistoryStore({ root: join(dir, "history"), maxMessages: 2 });
+    const request = { text: "snapshot", idempotencyKey: "run:1", timestamp: "2026-09-08T10:00:00.000Z" };
+    const prepared = await store.contextImport!.prepareImport("c", request);
+    await prepared.append!.commit();
+    await expect(store.append("c", [{ role: "user", content: "later send" }])).resolves.toBeUndefined();
+    expect((await store.contextImport!.prepareImport("c", request)).result).toEqual({
+      status: "conflict",
+      reason: "conversation_not_empty",
+    });
+
+    await store.reset("c");
+    const afterDeletionBoundary = await store.contextImport!.prepareImport("c", request);
+    expect(afterDeletionBoundary.result).toEqual({ status: "appended" });
+    await afterDeletionBoundary.append!.abort();
+
+    const retainedStore = createDurableHistoryStore({ root: join(dir, "retained-history") });
+    const retainedImport = await retainedStore.contextImport!.prepareImport("c", request);
+    await retainedImport.append!.commit();
+    await retainedStore.append("c", [{ role: "user", content: "later send" }]);
+    expect((await retainedStore.contextImport!.prepareImport("c", request)).result)
+      .toEqual({ status: "duplicate" });
+  });
+
+  it("fails strict import closed on a stable truncated record while legacy load stays cold", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const store = createDurableHistoryStore({ root });
+    await store.load("corrupt");
+    const corruptPath = join(root, `${historyKeyForTest("corrupt")}.history.json`);
+    await writeFile(corruptPath, '{"version":2', { mode: 0o600 });
+    await expect(store.load("corrupt")).resolves.toEqual([]);
+    await expect(store.contextImport!.prepareImport("corrupt", {
+      text: "must not overwrite",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    })).rejects.toThrow();
+    expect(await readFile(corruptPath, "utf8")).toBe('{"version":2');
+  });
+
+  it("orders import behind a non-provider exclusive turn without holding a physical shard transaction", async () => {
+    const dir = await tempDir();
+    const store = createDurableHistoryStore({ root: join(dir, "history") });
+    const firstId = "short-lease-a";
+    let secondId = "";
+    for (let index = 0; index < 10_000; index += 1) {
+      const candidate = `short-lease-b-${String(index)}`;
+      if (conversationShardForTest(candidate) === conversationShardForTest(firstId)) {
+        secondId = candidate;
+        break;
+      }
+    }
+    expect(secondId).not.toBe("");
+    const turn = await store.contextImport!.beginExclusiveTurn(firstId);
+    const unrelated = await store.contextImport!.prepareImport(secondId, {
+      text: "same shard proceeds",
+      idempotencyKey: "run:2",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await unrelated.append!.commit();
+
+    let sameSettled = false;
+    const same = store.contextImport!.prepareImport(firstId, {
+      text: "waits",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    }).then((value) => { sameSettled = true; return value; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(sameSettled).toBe(false);
+    const commit = await turn.prepareCommit([{ role: "user", content: "send" }]);
+    await commit.append.commit();
+    const conflict = await same;
+    expect(conflict.result).toEqual({ status: "conflict", reason: "conversation_not_empty" });
+  });
+
+  it("recovers an independent-process exclusive lease after owner death without duplicating import", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    await compileDurableHistoryFixture(dir);
+    const workerPath = join(dir, "exclusive-lease-crash-worker.mjs");
+    await writeFile(workerPath, [
+      'import { createDurableHistoryStore } from "./durable-history.mjs";',
+      "const store = createDurableHistoryStore({ root: process.argv[2] });",
+      'await store.contextImport.beginExclusiveTurn("cross-process");',
+      'process.stdout.write("HELD\\n");',
+      "setInterval(() => undefined, 1000);",
+    ].join("\n"));
+    const child = spawn(process.execPath, [workerPath, root], { stdio: ["ignore", "pipe", "pipe"] });
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    const [held] = await once(child.stdout, "data") as [Buffer];
+    expect(held.toString("utf8")).toContain("HELD");
+
+    const store = createDurableHistoryStore({ root });
+    let settled = false;
+    const importing = store.contextImport!.prepareImport("cross-process", {
+      text: "one snapshot",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    }).then((value) => { settled = true; return value; });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(settled).toBe(false);
+    child.kill("SIGKILL");
+    await once(child, "exit");
+    const prepared = await importing;
+    expect(prepared.result).toEqual({ status: "appended" });
+    await prepared.append!.commit();
+    expect((await store.contextImport!.prepareImport("cross-process", {
+      text: "one snapshot",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    })).result).toEqual({ status: "duplicate" });
+    expect(Buffer.concat(stderr).toString("utf8")).toBe("");
+  }, 20_000);
+
+  it("retires provider state before importing when configured fail-closed", async () => {
+    const dir = await tempDir();
+    const retired: string[] = [];
+    const store = createDurableHistoryStore({
+      root: join(dir, "history"),
+      retireProviderSession: async (id) => { retired.push(id); },
+    });
+    expect(store.contextImport?.providerState).toBe("retire-fail-closed");
+    await store.append("c", []);
+    await store.reset("c");
+    retired.length = 0;
+    const imported = await store.contextImport!.prepareImport("c", {
+      text: "snapshot",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await imported.append!.commit();
+    expect(retired).toHaveLength(1);
+    await store.reset("c");
+    expect(retired.length).toBeGreaterThan(1);
+  });
+
   it("atomically resets one conversation and retires its provider epoch", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");

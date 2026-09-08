@@ -24,6 +24,8 @@ export async function prepareHarnessContext(
   contextOptions: {
     readonly historyMode: "messages" | "omitted";
     readonly turnId: string;
+    /** Canonical history captured under the store's conversation lease. */
+    readonly historyOverride?: readonly HistoryMessage[];
   },
   emit?: (event: RuntimeEventLike) => void,
 ): Promise<{
@@ -37,7 +39,8 @@ export async function prepareHarnessContext(
 }> {
     const history = contextOptions.historyMode === "omitted"
       ? []
-      : await loadHarnessHistory(options, request.conversationId, request.continuation);
+      : contextOptions.historyOverride?.map((message) => ({ ...message }))
+        ?? await loadHarnessHistory(options, request.conversationId, request.continuation);
     // Recall rides on the current user message on every turn. It remains outside
     // stable system instructions and never enters canonical history replay.
     const memory = request.continuation === undefined

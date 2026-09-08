@@ -61,6 +61,7 @@ Keep bearer values out of source config when possible. Set
 
 - `GET {basePath}/v1/info` returns the wire `schema`, process id, and attachment
   capability. `capabilities.liveInput`, `capabilities.historyAppend`,
+  `capabilities.contextImport`,
   `capabilities.askUser`, `capabilities.askById`, and `capabilities.cron` are
   advertised additively when their routes are supported. `capabilities.cron`
   reports `status: "ready" | "degraded"` and separates read support from
@@ -73,6 +74,17 @@ Keep bearer values out of source config when possible. Set
   expose a bounded `skills` snapshot with ready/error state and per-item
   inlined/on-demand/unavailable status. `info` may be a function so local-model
   choices and skills can refresh without restarting the endpoint.
+- `POST {basePath}/v1/conversations/:id/context-imports` is present only when
+  `capabilities.contextImport = { version: 1, maxTextBytes: 32768 }` is
+  advertised. Its exact `{ text, idempotencyKey }` body imports canonical
+  provenance plus assistant context without a model turn. The decoded
+  conversation id is capped at 4096 UTF-8 bytes, the key at 512, and the JSON
+  parser ceiling is 199711 bytes (the sixfold escaping maximum). Results are
+  `appended`/`duplicate` (`200`), `context_import_conflict` with a bounded
+  canonical reason (`409`), `context_import_unsupported` (`501`), or a
+  sanitized `context_import_failed` (`500`); responses are private and
+  non-cacheable. Whitespace-only text/keys are invalid, while accepted opaque
+  values retain their original whitespace.
 - `GET {basePath}/v1/provider-auth` plus the paired session create, poll,
   input, and delete routes expose a host-injected `ProviderAuthOperator`.
   `capabilities.providerAuth = { version: 1 }` and every route are available

@@ -624,6 +624,9 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
   function wrapResponder(responder: AgentResponder): AgentResponder {
     return {
       ...responder,
+      ...(responder.importContext === undefined
+        ? {}
+        : { importContext: responder.importContext.bind(responder) }),
       async respond(request, stream) {
         const context = { runIds: new Set<string>() };
         let retainedRunId: string | undefined;
