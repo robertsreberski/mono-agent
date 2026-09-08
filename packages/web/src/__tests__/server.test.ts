@@ -72,6 +72,14 @@ async function createThread(baseUrl: string, sourceId: string): Promise<string> 
   return ((await json(response)).thread as { id: string }).id;
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for server state.");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}
+
 interface ScopedBootstrap {
   readonly threads: readonly { readonly id: string; readonly sourceId: string }[];
   readonly threadsSourceId: string | null;
@@ -1693,6 +1701,91 @@ describe("web HTTP server", () => {
       expect.objectContaining({ type: "failure", id: "job-failure", code: "artifact_missing" }),
     ]);
     expect(JSON.stringify(message.parts)).not.toContain("mono-agent-artifact");
+  });
+
+  it("receipts a durably admitted process-job follow-up before its provider turn completes", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const { baseUrl, handle } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+      }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const processJob = fakeProcessJob({
+      conversationId: `web:${threadId}`,
+      state: "succeeded",
+    });
+    const notification = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: processJob.wake.deliveryKey,
+      threadId,
+      processJob,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    const delivery = deliverWebNotification(notification, {
+      stateDir: handle.stateDir,
+      timeoutMs: 100,
+    });
+
+    try {
+      await expect(delivery).resolves.toEqual({
+        threadId,
+        duplicate: false,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(stream).toBeDefined();
+      expect(turnBodies).toHaveLength(1);
+
+      const paths = await prepareWebStatePaths({ stateDir: handle.stateDir });
+      const raw = new DatabaseSync(paths.database, { readOnly: true });
+      const claim = raw.prepare(`
+        SELECT state, disposition, turn_id AS turnId
+        FROM process_job_wake_deliveries
+        WHERE source_id = ? AND job_id = ?
+      `).get("agent-one", processJob.jobId) as unknown as {
+        state: string;
+        disposition: string | null;
+        turnId: string | null;
+      };
+      const turnBeforeCompletion = raw.prepare("SELECT status FROM turns WHERE id = ?")
+        .get(claim.turnId) as unknown as { status: string };
+      raw.close();
+      expect(claim).toMatchObject({ state: "completed", disposition: "follow_up", turnId: expect.any(String) });
+      expect(turnBeforeCompletion).toEqual({ status: "running" });
+
+      await expect(deliverWebNotification(notification, {
+        stateDir: handle.stateDir,
+        timeoutMs: 100,
+      })).resolves.toEqual({
+        threadId,
+        duplicate: true,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Worker result processed" })}\n`));
+      stream?.close();
+      stream = undefined;
+      await waitFor(() => {
+        const database = new DatabaseSync(paths.database, { readOnly: true });
+        const turn = database.prepare("SELECT status FROM turns WHERE id = ?").get(claim.turnId) as unknown as {
+          status: string;
+        } | undefined;
+        database.close();
+        return turn?.status === "complete";
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      stream?.error(new Error("test cleanup"));
+      await delivery.catch(() => undefined);
+    }
   });
 
   it("accepts a live follow-up for the active web turn and exposes its applied status", async () => {
