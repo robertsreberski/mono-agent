@@ -49,7 +49,7 @@ The default-deny posture. It survives in two places: the **programmatic** harnes
 
 ## Fallback router
 
-The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover and safety history, keeps the chain provider-session-stateless, and carries bounded transcript context between attempts. Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); the legacy `runtime.fallbackModels` CSV form is retired and is now **rejected at load**, each surface naming its own repair: the JSON key fails with `` `runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ "model": "..." }]` ``, and `MONO_AGENT_FALLBACK_MODELS` fails with `` `MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON` ``.
+The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover history and keeps provider sessions only on the primary's first attempt. Retries and backups use bounded transcript snapshots; on warm failover they lack earlier conversation history. A retry/backup answer rotates the coordinated durable epoch and the next turn cold-reseeds; see [fallback sessions](/runtime/fallback/). Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); the legacy `runtime.fallbackModels` CSV form is retired and is now **rejected at load**, each surface naming its own repair: the JSON key fails with `` `runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ "model": "..." }]` ``, and `MONO_AGENT_FALLBACK_MODELS` fails with `` `MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON` ``.
 
 ```json
 {

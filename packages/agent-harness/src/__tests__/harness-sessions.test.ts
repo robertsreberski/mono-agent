@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -68,6 +68,7 @@ function createSessionFakeRuntime(
   const disposedSessions: string[] = [];
   const invalidatedSessions: string[] = [];
   const syncedSessions: string[] = [];
+  const retiredSessions: Array<{ providerSessionId: string; sessionsRoot: string }> = [];
   let disposedAll = 0;
   return {
     calls,
@@ -75,6 +76,7 @@ function createSessionFakeRuntime(
     disposedSessions,
     invalidatedSessions,
     syncedSessions,
+    retiredSessions,
     disposedAllCount: () => disposedAll,
     runtime: {
       async run(prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
@@ -91,6 +93,9 @@ function createSessionFakeRuntime(
       async invalidateSession(providerSessionId: string): Promise<boolean> {
         invalidatedSessions.push(providerSessionId);
         return true;
+      },
+      async retireDurableSession(providerSessionId: string, sessionsRoot: string): Promise<void> {
+        retiredSessions.push({ providerSessionId, sessionsRoot });
       },
       async syncSession(providerSessionId: string): Promise<boolean> {
         syncedSessions.push(providerSessionId);
@@ -124,6 +129,17 @@ function createCoordinatedDurableHistoryStore(
     ...options,
     retireProviderSession: options.retireProviderSession ?? (async () => undefined),
   });
+}
+
+async function readHistoryRecord(root: string, conversationId: string): Promise<{
+  providerSession: { epoch: string; revision: number };
+}> {
+  for (const name of await readdir(root)) {
+    if (!name.endsWith(".history.json")) continue;
+    const record = JSON.parse(await readFile(join(root, name), "utf8"));
+    if (record.conversationId === conversationId) return record;
+  }
+  throw new Error(`Missing history record for ${conversationId}`);
 }
 
 function createSpyHistoryStore() {
@@ -664,6 +680,137 @@ describe("AgentHarness continuous sessions", () => {
     await harness.run(request("conv-custom-history", "again"));
     expect(fake.calls[1]?.options.sessionId).toBe("warm-only");
     expect(fake.calls[1]?.options.piSessionsRoot).toBeUndefined();
+  });
+
+  it.each([
+    "backup without id", "backup with unrelated id", "primary failure then backup",
+    "primary retry", "skipped primary then backup",
+  ] as const)("retires and reseeds the durable epoch after a %s answer", async (outcome) => {
+    const identityPath = await identityFixture();
+    const root = join(identityPath, "..");
+    const historyRoot = join(root, "history");
+    const piSessionsRoot = join(root, "pi");
+    const conversationId = "fallback-epoch";
+    const fake = createSessionFakeRuntime(async (_prompt, options, call) => {
+      if (call !== 2) return { text: `primary-answer-${call}`, providerSessionId: options.sessionId as string };
+      // Model the router's final result, not a second harness invocation. Even
+      // after a primary started with the coordinated id, the answer cannot sync.
+      return {
+        text: "backup-answer",
+        ...(outcome === "backup with unrelated id" ? { providerSessionId: "unrelated-id" } : {}),
+        failoverHistory: [{ model,
+          failureKind: outcome === "skipped primary then backup" ? "skipped_capability_mismatch" : "provider_unavailable",
+          ...(outcome === "primary retry" ? { retryIndex: 1 } : {}),
+        }],
+      };
+    });
+    const historyStore = createCoordinatedDurableHistoryStore({
+      root: historyRoot,
+      retireProviderSession: async (id) => fake.runtime.retireDurableSession(id, piSessionsRoot),
+    });
+    await historyStore.append(conversationId, [{ role: "assistant", content: HISTORY_MARKER }]);
+    const sessionEvents: Array<{ kind: string; reason?: string }> = [];
+    const events: RuntimeEventLike[] = [];
+    const harness = createAgentHarness({
+      identityPath, runtime: fake.runtime, model, historyStore, piSessionsRoot,
+      session: { ...session, onSessionEvent: (event) => { sessionEvents.push(event); } },
+    });
+    const run = async (message: string) => await harness.run({
+      ...request(conversationId, message), onEvent: (event) => { events.push(event); },
+    });
+    try {
+      await run("first question");
+      const firstId = fake.calls[0]?.options.sessionId;
+      expect(typeof firstId).toBe("string");
+      const firstRecord = await readHistoryRecord(historyRoot, conversationId);
+      expect(firstRecord.providerSession.revision).toBe(1);
+      sessionEvents.length = 0;
+      expect((await run("second question")).text).toBe("backup-answer");
+      expect(fake.calls[1]?.options.sessionId).toBe(firstId);
+      expect(fake.syncedSessions).toEqual([firstId]);
+      expect(fake.invalidatedSessions).toContain(firstId);
+      expect(fake.disposedSessions).toContain(firstId);
+      expect(fake.retiredSessions).toContainEqual({ providerSessionId: firstId, sessionsRoot: piSessionsRoot });
+      expect(sessionEvents).toContainEqual(expect.objectContaining({ kind: "evicted", reason: "stale" }));
+      const rotated = await readHistoryRecord(historyRoot, conversationId);
+      expect(rotated.providerSession.epoch).not.toBe(firstRecord.providerSession.epoch);
+      expect(rotated.providerSession.revision).toBe(0);
+      expect((await historyStore.load(conversationId)).map((message) => message.content)).toEqual([
+        HISTORY_MARKER, "first question", "primary-answer-1", "second question", "backup-answer",
+      ]);
+
+      sessionEvents.length = 0;
+      await run("third question");
+      const newId = fake.calls[2]?.options.sessionId;
+      expect(typeof newId).toBe("string");
+      expect(newId).not.toBe(firstId);
+      expect(sessionEvents[0]?.kind).toBe("cold");
+      expect(fake.calls[2]?.options.messages).toEqual([
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining(HISTORY_MARKER) }),
+        expect.objectContaining({ role: "user", content: expect.stringContaining("first question") }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("primary-answer-1") }),
+        expect.objectContaining({ role: "user", content: expect.stringContaining("second question") }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("backup-answer") }),
+        { role: "user", content: expect.stringContaining("third question") },
+      ]);
+      expect((await readHistoryRecord(historyRoot, conversationId)).providerSession).toEqual({
+        epoch: rotated.providerSession.epoch, revision: 1,
+      });
+      await run("fourth question");
+      expect(fake.calls[3]?.options.sessionId).toBe(newId);
+      expect(fake.calls[3]?.options.messages).toEqual([{ role: "user", content: expect.stringContaining("fourth question") }]);
+      expect((await readHistoryRecord(historyRoot, conversationId)).providerSession).toEqual({
+        epoch: rotated.providerSession.epoch, revision: 2,
+      });
+      expect(events.filter((event) => event.type === "session_boundary")).toEqual([]);
+    } finally {
+      await harness.dispose?.();
+    }
+  });
+
+  it("increments the same durable epoch when the primary first attempt answers", async () => {
+    const identityPath = await identityFixture();
+    const historyRoot = join(identityPath, "..", "history");
+    const fake = createSessionFakeRuntime(async (_prompt, options) => ({ text: "primary", providerSessionId: options.sessionId as string }));
+    const historyStore = createCoordinatedDurableHistoryStore({ root: historyRoot });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, historyStore, session,
+      piSessionsRoot: join(identityPath, "..", "pi") });
+    try {
+      await harness.run(request("primary", "first"));
+      const first = await readHistoryRecord(historyRoot, "primary");
+      expect(first.providerSession.revision).toBe(1);
+      await harness.run(request("primary", "second"));
+      expect((await readHistoryRecord(historyRoot, "primary")).providerSession).toEqual({
+        epoch: first.providerSession.epoch, revision: 2,
+      });
+      expect(fake.calls[1]?.options.sessionId).toBe(fake.calls[0]?.options.sessionId);
+      expect(fake.calls[1]?.options.messages).toEqual([{ role: "user", content: expect.stringContaining("second") }]);
+      expect(fake.syncedSessions).toEqual([fake.calls[0]?.options.sessionId, fake.calls[0]?.options.sessionId]);
+      expect(fake.invalidatedSessions).toEqual([]);
+      expect(fake.retiredSessions).toEqual([]);
+      expect(fake.disposedSessions).toEqual([]);
+    } finally {
+      await harness.dispose?.();
+    }
+  });
+
+  it("disposes the coordinated id when unsynced retirement has no invalidate hook", async () => {
+    const identityPath = await identityFixture();
+    const fake = createSessionFakeRuntime(async () => ({ text: "backup" }));
+    const { invalidateSession: _invalidate, ...runtime } = fake.runtime;
+    const piSessionsRoot = join(identityPath, "..", "pi");
+    const historyStore = createCoordinatedDurableHistoryStore({ root: join(identityPath, "..", "history") });
+    const harness = createAgentHarness({ identityPath, runtime, model, historyStore, session, piSessionsRoot });
+    try {
+      await harness.run(request("cold-backup"));
+      const id = fake.calls[0]?.options.sessionId;
+      expect(typeof id).toBe("string");
+      expect(fake.disposedSessions).toContain(id);
+      expect(fake.retiredSessions).toContainEqual({ providerSessionId: id, sessionsRoot: piSessionsRoot });
+      expect(fake.syncedSessions).toEqual([]);
+    } finally {
+      await harness.dispose?.();
+    }
   });
 
   it("commits canonical history but rotates the durable epoch when provider transcript sync is not acknowledged", async () => {

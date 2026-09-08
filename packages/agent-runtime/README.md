@@ -835,7 +835,24 @@ JSON as `result.structuredResult`.
 
 ### Provider fallback router
 
-`createRouterRuntime({ host, chain, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. A chain is stateless across provider sessions. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
+`createRouterRuntime({ host, chain, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. Only the primary's first attempt can keep a provider session; retries and backups are stateless and their successful results withhold `providerSessionId`. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
+
+The primary's first attempt owns the provider session. Retries and failovers run
+stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+any answer from a retry or backup retires the primary epoch. The next turn
+cold-reseeds from canonical history; after a primary first-attempt success,
+subsequent turns resume the new session and are eligible for provider caching.
+
+On a warm turn whose primary attempt fails, the retry or backup attempt runs
+stateless with the current message and a bounded snapshot of the failed attempt,
+without the earlier conversation; the next turn reseeds from canonical history.
+
+Provider attribution remains stable across attempts even when the router withholds
+the resumable result id. Fresh stateless Pi calls use a private in-memory repository
+to avoid colliding with, or deleting, a primary transcript sharing that attribution.
+Lifecycle methods forward to the router's original inner runtime; a custom
+`resolveAttempt().runtime` must not assume those methods target its own independent
+session store.
 
 ```js
 import { createRouterRuntime, parseRuntimeModelReference } from "@mono-agent/agent-runtime";

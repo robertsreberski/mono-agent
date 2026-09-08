@@ -463,10 +463,11 @@ export async function resolveSession(runState, {
       }
     }
   } else {
-    // Fresh runs persist into the durable jsonl repo when piSessionsRoot is
-    // set, so a kept-alive session can be reopened from disk after the live
-    // entry is evicted; otherwise the in-memory repo is used.
-    runState.session = createPiSessionAdapter(await (durableRepo || nativeSessionRepo)
+    // Attribution may equal a live primary's id on a stateless retry/backup.
+    // A private ephemeral repo prevents both create collisions and cleanup of
+    // that primary's transcript. Only keep-alive calls use a shared repository.
+    if (options.sessionKeepAlive !== true) runState.ephemeralSessionRepo = new MemorySessionRepo();
+    runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
       .create({ id: providerSessionId, cwd: cwd || process.cwd() }, PI_CONTEXT));
   }
   return { done: false };
@@ -488,7 +489,7 @@ export async function discardUncommittedSession(runState, { durableRepo }) {
   if (runState.session && !runState.sessionEntry) {
     await closeAndDeleteSession(
       runState.session,
-      durableRepo || nativeSessionRepo,
+      runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo,
     );
   }
   // Drop the create-on-miss BUSY reservation too, else the busy placeholder
@@ -573,7 +574,7 @@ export async function commitSession(runState, {
     // (the success keep-alive path overwrites it with the finalized entry, so
     // it is only this drop branch that must clean it up).
     if (reservation) reservation.release();
-    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
+    await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);
   }
 }
 
@@ -594,8 +595,9 @@ export async function rollbackAbortedTurn(runState, { requestedSessionId, provid
     }
     nativeSessions.delete(requestedSessionId);
   } else {
-    nativeSessions.delete(providerSessionId);
-    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
+    // A stateless call never registered this id; it may belong to the primary.
+    if (!runState.ephemeralSessionRepo) nativeSessions.delete(providerSessionId);
+    await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);
   }
 }
 
@@ -618,7 +620,7 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
   // resumed user session here would be data loss) and never when the throw
   // preceded session create.
   if (session && !sessionEntry) {
-    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
+    await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);
   }
   // Drop a create-on-miss BUSY placeholder (R8) left in the registry by a throw
   // during/after the reservation — including a throw inside the create await

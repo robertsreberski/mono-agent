@@ -2,6 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeMock = vi.fn();
 const resolveRuntimeBridgeMock = vi.fn();
+const runtimeCapabilitiesMock = vi.fn();
+
+vi.mock("../../ai/runtime/capabilities.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    runtimeCapabilities: (...args) => runtimeCapabilitiesMock(...args) ?? actual.runtimeCapabilities(...args),
+  };
+});
 
 vi.mock("../../ai/runtime/registry.js", async () => {
   const actual = await vi.importActual("../../ai/runtime/registry.js");
@@ -23,6 +32,7 @@ function modelRef(provider, model) {
 
 beforeEach(() => {
   executeMock.mockReset();
+  runtimeCapabilitiesMock.mockReset();
   resolveRuntimeBridgeMock.mockReset();
   resolveRuntimeBridgeMock.mockResolvedValue({ id: "stub", execute: executeMock });
   resetToolRuntime();
@@ -419,7 +429,7 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("strips session state from every entry in a multi-provider Pi chain", async () => {
+  it("keeps primary session keys and strips backup session keys in a multi-provider Pi chain", async () => {
     executeMock
       .mockResolvedValueOnce({
         text: null,
@@ -436,20 +446,19 @@ describe("createRouterRuntime — fallback on retryable", () => {
       ],
     });
 
-    const result = await router.run("sys", {
-      messages: [],
+    const sessionKeys = {
       sessionId: "host-session",
       providerSessionId: "pi-provider-session",
-      providerAttributionSessionId: "conversation-epoch",
       sessionKeepAlive: true,
       sessionIdleTimeoutMs: 60_000,
-    });
+    };
+    const options = { messages: [], ...sessionKeys, providerAttributionSessionId: "conversation-epoch" };
+    const originalOptions = structuredClone(options);
+    const result = await router.run("sys", options);
 
     expect(result.text).toBe("recovered");
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sessionId");
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("providerSessionId");
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sessionKeepAlive");
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sessionIdleTimeoutMs");
+    expect(options).toEqual(originalOptions);
+    expect(executeMock.mock.calls[0][1]).toMatchObject(sessionKeys);
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionId");
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("providerSessionId");
     expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionKeepAlive");
@@ -733,29 +742,91 @@ describe("createRouterRuntime — production fallback contracts", () => {
     expect(executeMock.mock.calls[2][1].effort).toBe("ultra");
   });
 
-  it("makes the entire fallback chain stateless even when both routes support resume", async () => {
-    executeMock
-      .mockResolvedValueOnce({ text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false })
+  it("only the primary first attempt owns a session when both routes support resume", async () => {
+    const failure = { text: null, error: "Connection error.", failureKind: "provider_unavailable", events: [], cancelled: false };
+    executeMock.mockResolvedValueOnce(failure).mockResolvedValueOnce(failure).mockResolvedValueOnce(failure)
       .mockResolvedValueOnce({ text: "ok", events: [], failureKind: null });
     const router = createRouterRuntime({
       chain: [
-        modelRef("openai-codex", "primary"),
-        modelRef("anthropic", "fallback"),
+        { model: modelRef("openai-codex", "primary"), attempts: 2 },
+        { model: modelRef("anthropic", "fallback"), attempts: 2 },
       ],
+      retry: { backoffMs: 0, maxBackoffMs: 0 },
     });
+    const sessionKeys = {
+      sessionId: "host-session", providerSessionId: "provider-session",
+      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000,
+    };
+    await router.run("sys", { messages: [], ...sessionKeys, providerAttributionSessionId: "epoch" });
+    expect(executeMock).toHaveBeenCalledTimes(4);
+    expect(executeMock.mock.calls[0][1]).toMatchObject(sessionKeys);
+    for (const [, options] of executeMock.mock.calls.slice(1)) {
+      for (const key of Object.keys(sessionKeys)) expect(options).not.toHaveProperty(key);
+      expect(options.providerAttributionSessionId).toBe("epoch");
+    }
+  });
 
-    await router.run("sys", {
-      messages: [],
-      sessionId: "host-session",
-      providerSessionId: "provider-session",
-      sessionKeepAlive: true,
-      sessionIdleTimeoutMs: 60_000,
+  it.each(["primary retry", "backup", "skipped-primary backup"])(
+    "withholds the resumable result id after a %s answer", async (outcome) => {
+      const primary = modelRef("openai-codex", "primary");
+      const backup = modelRef("anthropic", "backup");
+      if (outcome !== "skipped-primary backup") {
+        executeMock.mockResolvedValueOnce({ error: "Connection error.", failureKind: "provider_unavailable", events: [] });
+      }
+      const diagnostics = { provider_session_id: "coordinated-id" };
+      const events = [{ type: "assistant", message: { content: [{ type: "text", text: "answer" }] } }];
+      executeMock.mockResolvedValueOnce({ text: "answer", providerSessionId: "coordinated-id", diagnostics, events });
+      const router = createRouterRuntime({
+        chain: [
+          { model: primary, attempts: outcome === "primary retry" ? 2 : 1,
+            ...(outcome === "skipped-primary backup" ? { requires: { supports_native_subagents: true } } : {}) },
+          { model: backup },
+        ],
+        retry: { backoffMs: 0, maxBackoffMs: 0 },
+      });
+      const result = await router.run("sys", {
+        messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
+        providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000,
+      });
+      expect(result.providerSessionId).toBeUndefined();
+      expect(result.text).toBe("answer");
+      expect(result.diagnostics).toMatchObject(diagnostics);
+      expect(result.events).toEqual(expect.arrayContaining(events));
+      const options = executeMock.mock.calls.at(-1)[1];
+      expect(options.model).toEqual(outcome === "primary retry" ? primary : backup);
+      expect(options.providerAttributionSessionId).toBe("coordinated-id");
+      for (const key of ["sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+        expect(options).not.toHaveProperty(key);
+      }
+      expect(result.failoverHistory).toHaveLength(1);
+      expect(result.failoverHistory[0].failureKind).toBe(
+        outcome === "skipped-primary backup" ? "skipped_capability_mismatch" : "provider_unavailable",
+      );
+    },
+  );
+
+  it("preserves the primary first-attempt result session id with fallbacks configured", async () => {
+    executeMock.mockResolvedValueOnce({ text: "ok", providerSessionId: "coordinated-id", events: [] });
+    const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
+    const result = await router.run("sys", { messages: [], sessionId: "coordinated-id", sessionKeepAlive: true });
+    expect(result.providerSessionId).toBe("coordinated-id");
+    expect(result.failoverHistory).toEqual([]);
+    expect(executeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("strips primary session state when resume capability is false", async () => {
+    const actual = await vi.importActual("../../ai/runtime/capabilities.js");
+    runtimeCapabilitiesMock.mockReturnValue({ ...actual.runtimeCapabilities(), supports_session_resume: false });
+    executeMock.mockResolvedValueOnce({ text: "ok", providerSessionId: "coordinated-id", events: [] });
+    const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
+    const result = await router.run("sys", {
+      messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
+      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000,
     });
-
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("providerSessionId");
-    expect(executeMock.mock.calls[0][1]).not.toHaveProperty("sessionKeepAlive");
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("providerSessionId");
-    expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionKeepAlive");
+    for (const key of ["sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+      expect(executeMock.mock.calls[0][1]).not.toHaveProperty(key);
+    }
+    expect(result.providerSessionId).toBeUndefined();
   });
 
   it("resolves private local-provider options for the actual attempted model without leaking them", async () => {
@@ -1179,10 +1250,11 @@ describe("createRouterRuntime — same-model retry", () => {
       chain: [{ model: OPUS, attempts: 2 }],
       retry: { backoffMs: 0, maxBackoffMs: 0 },
     });
-    await router.run("sys", { messages: [], sessionId: "sess-1" });
+    const sessionKeys = { sessionId: "sess-1", providerSessionId: "sess-1", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000 };
+    await router.run("sys", { messages: [], ...sessionKeys });
 
-    expect(executeMock.mock.calls[0][1].sessionId).toBe("sess-1");
-    expect(executeMock.mock.calls[1][1].sessionId).toBeUndefined();
+    expect(executeMock.mock.calls[0][1]).toMatchObject(sessionKeys);
+    for (const key of Object.keys(sessionKeys)) expect(executeMock.mock.calls[1][1]).not.toHaveProperty(key);
   });
 
   it("carries one merged resume snapshot across a same-model retry", async () => {

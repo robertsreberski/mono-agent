@@ -1542,7 +1542,7 @@ describe("agent host composition helpers", () => {
     expect(openaiApiHistory).not.toContain("TELEGRAM_FIRST");
   });
 
-  it("replays later-turn history for stateless fallbacks when maxTurns is unlimited", async () => {
+  it("replays later-turn history after a stateless fallback answer when maxTurns is unlimited", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -1550,7 +1550,6 @@ describe("agent host composition helpers", () => {
     let turn = 0;
     const fake = createFakeRuntime(async () => ({
       text: `answer-${++turn}`,
-      providerSessionId: "pi-provider-session",
     }));
     const base = monoConfig({ dir, identityPath, artifactDir });
     const harness = await createConfiguredAgentHarness({
@@ -1579,7 +1578,7 @@ describe("agent host composition helpers", () => {
     for (const call of fake.calls) {
       expect(call.options.sessionId).toBeUndefined();
       expect(call.options.providerSessionId).toBeUndefined();
-      expect(call.options.sessionKeepAlive).toBeUndefined();
+      expect(call.options.sessionKeepAlive).toBe(true);
     }
     expect(fake.calls[1]?.prompt).not.toContain("Conversation History");
     expect(fake.calls[1]?.prompt).toBe(fake.calls[0]?.prompt);
@@ -1588,7 +1587,7 @@ describe("agent host composition helpers", () => {
     expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("answer-1");
   });
 
-  it("keeps canonical fallback routes stateless even when every route supports resume", async () => {
+  it("resumes the primary across turns with canonical fallbacks configured", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -1620,14 +1619,16 @@ describe("agent host composition helpers", () => {
     await harness.run({ conversationId: "conv-canonical", userMessage: "first", abortSignal: new AbortController().signal });
     await harness.run({ conversationId: "conv-canonical", userMessage: "second", abortSignal: new AbortController().signal });
 
-    for (const call of fake.calls) {
-      expect(call.options.sessionId).toBeUndefined();
-      expect(call.options.providerSessionId).toBeUndefined();
-      expect(call.options.sessionKeepAlive).toBeUndefined();
-    }
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
+    expect(fake.calls[1]?.options.sessionId).toBe("resumable-provider-session");
+    expect(fake.calls[1]?.options.providerSessionId).toBe("resumable-provider-session");
+    expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
     expect(fake.calls[1]?.prompt).toBe(fake.calls[0]?.prompt);
-    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("first");
-    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("answer-1");
+    expect(fake.calls[1]?.options.messages).toEqual([
+      { role: "user", content: expect.stringContaining("second") },
+    ]);
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).not.toContain("answer-1");
   });
 
   it("never passes session keys in per-message mode", async () => {
