@@ -10,6 +10,7 @@ describe("channelIdForConversation", () => {
     expect(channelIdForConversation("telegram:42")).toBe("telegram");
     expect(channelIdForConversation("slack:C1:171.5")).toBe("slack");
     expect(channelIdForConversation("whatsapp:123@s.whatsapp.net")).toBe("whatsapp");
+    expect(channelIdForConversation("messenger:42")).toBe("messenger");
   });
 
   it("returns undefined for non-deliverable destinations", () => {
@@ -181,3 +182,78 @@ function jobProjection(
     lastError: null,
   };
 }
+
+describe("plugin conversation-scheme routing", () => {
+  const running = (entries: Record<string, Pick<RunningChannel, "notify">>) =>
+    new Map(Object.entries(entries) as [ChannelId, Pick<RunningChannel, "notify">][]);
+
+  it("routes a messenger destination to a plugin registered under its default id", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const result = await routeProactiveNotification({
+      conversationId: "messenger:42",
+      text: "brief",
+      running: running({ messenger: { notify } }),
+      drivers: [{ id: "messenger", processJobs: { conversationScheme: "messenger" } }],
+    });
+
+    expect(result.delivered).toBe(true);
+    expect(notify).toHaveBeenCalledWith({ conversationId: "messenger:42", text: "brief" });
+  });
+
+  it("routes a messenger destination to a plugin registered under a CUSTOM id", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const result = await routeProactiveNotification({
+      conversationId: "messenger:42",
+      text: "brief",
+      // The operator registered the plugin as `fb`; it still owns `messenger:`.
+      running: running({ fb: { notify } }),
+      drivers: [{ id: "fb", processJobs: { conversationScheme: "messenger" } }],
+    });
+
+    expect(result.delivered).toBe(true);
+    expect(notify).toHaveBeenCalledWith({ conversationId: "messenger:42", text: "brief" });
+  });
+
+  it("reports the custom id as unavailable when that plugin is not running", async () => {
+    const result = await routeProactiveNotification({
+      conversationId: "messenger:42",
+      text: "brief",
+      running: running({}),
+      drivers: [{ id: "fb", processJobs: { conversationScheme: "messenger" } }],
+    });
+
+    expect(result).toMatchObject({ delivered: false, code: "destination_channel_unavailable", retryable: true });
+    expect(result.reason).toContain("fb");
+  });
+
+  it("fails closed when two drivers claim the same conversation scheme", async () => {
+    const warn = vi.fn();
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const result = await routeProactiveNotification({
+      conversationId: "messenger:42",
+      text: "brief",
+      running: running({ fb: { notify }, messenger: { notify } }),
+      drivers: [
+        { id: "fb", processJobs: { conversationScheme: "messenger" } },
+        { id: "messenger", processJobs: { conversationScheme: "messenger" } },
+      ],
+      logger: { warn },
+    });
+
+    expect(result).toMatchObject({ delivered: false, code: "destination_channel_unsupported", retryable: false });
+    expect(notify).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it("keeps keying built-in channels by scheme when no driver declares one", async () => {
+    const notify = vi.fn(async () => ({ delivered: true }));
+    const result = await routeProactiveNotification({
+      conversationId: "telegram:42",
+      text: "brief",
+      running: running({ telegram: { notify } }),
+      drivers: [{ id: "telegram" }, { id: "fb", processJobs: { conversationScheme: "messenger" } }],
+    });
+
+    expect(result.delivered).toBe(true);
+  });
+});
