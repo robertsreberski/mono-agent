@@ -8,7 +8,11 @@ import {
   type MessengerNotifyOptions,
   type MessengerNotifyResult,
 } from "./adapter.js";
-import { MessengerAdapterConfigError, type MessengerAdapterConfig } from "./config.js";
+import {
+  assertValidMessengerAdapterConfig,
+  MessengerAdapterConfigError,
+  type MessengerAdapterConfig,
+} from "./config.js";
 import { MessengerGraphClient, type MessengerGraphClientLike } from "./graph-client.js";
 import {
   createMessengerWebhookServer,
@@ -57,6 +61,10 @@ export async function startMessengerAdapter(options: StartMessengerAdapterOption
   if (!config.enabled) {
     throw new MessengerAdapterConfigError("missing_required_config", "startMessengerAdapter requires an enabled config.");
   }
+  // The loader is not the only way to reach here: a caller can hand us a
+  // programmatically built config that never passed validation. Re-check the
+  // whole thing (secrets, allowlist, non-loopback opt-in, proactive tag).
+  assertValidMessengerAdapterConfig(config);
   const client = options.client ?? new MessengerGraphClient({
     pageAccessToken: config.pageAccessToken,
     apiVersion: config.apiVersion,
@@ -83,6 +91,7 @@ export async function startMessengerAdapter(options: StartMessengerAdapterOption
     webhookPath: config.webhookPath,
     verifyToken: config.verifyToken,
     appSecret: config.appSecret,
+    allowNonLoopback: config.allowNonLoopback,
     onPayload: (payload) => adapter.handleWebhookPayload(payload),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     ...(options.onServerError === undefined ? {} : { onServerError: options.onServerError }),

@@ -19,6 +19,7 @@ async function startServer(onPayload = vi.fn()): Promise<{ base: string; onPaylo
     webhookPath: "/messenger/webhook",
     verifyToken: "verify-me",
     appSecret,
+    allowNonLoopback: false,
     maxBodyBytes: 256,
     onPayload,
   });

@@ -104,7 +104,7 @@ liveness checks.
 | [`config.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/config.ts) | JSON/env layering, secret and allowlist validation, loopback guard, and redacted config metadata. |
 | [`server.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/server.ts) | Meta verification handshake, signature check, body limits, and health endpoint. |
 | [`adapter.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/adapter.ts) | Dedup, authorization, normalization, attachment ingest, per-user queue, commands, cancellation, responder invocation, and proactive delivery. |
-| [`graph-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/graph-client.ts) | Send API client for text chunks, attachment URLs, and sender actions with one bounded retry. |
+| [`graph-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/graph-client.ts) | Send API client for text chunks, attachment URLs, and sender actions. Replay-safe sender actions retry once; message POSTs retry only a `429` and surface every other unknown outcome as an ambiguous delivery. Graph errors are scrubbed of the configured token. |
 | [`message-stream.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/message-stream.ts) | Buffered final-only answer delivery with Markdown flattening. |
 | [`text.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/text.ts) | Signature verification, Markdown stripping, and code-point-safe chunking. |
 | [`start.ts`](https://github.com/robertsreberski/mono-agent/blob/main/extras/messenger-adapter/src/start.ts) | Composition root wiring client, adapter, and server into one start/stop handle. |
@@ -114,16 +114,16 @@ liveness checks.
 | Key | Env | Default | Purpose |
 | --- | --- | --- | --- |
 | `enabled` | `MONO_AGENT_MESSENGER_ENABLED` | `false` | Opt-in switch. |
-| `pageAccessToken` | `MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN` | — | Secret. Page token used for the Send API. |
-| `appSecret` | `MONO_AGENT_MESSENGER_APP_SECRET` | — | Secret. HMAC key for webhook signature verification. |
-| `verifyToken` | `MONO_AGENT_MESSENGER_VERIFY_TOKEN` | — | Secret. Expected `hub.verify_token` during webhook setup. |
+| — | `MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN` | — | Secret, **env-only**. Page token used for the Send API. Rejected in JSON. |
+| — | `MONO_AGENT_MESSENGER_APP_SECRET` | — | Secret, **env-only**. HMAC key for webhook signature verification. Rejected in JSON. |
+| — | `MONO_AGENT_MESSENGER_VERIFY_TOKEN` | — | Secret, **env-only**. Expected `hub.verify_token` during webhook setup. Rejected in JSON. |
 | `allowedUserIds` | `MONO_AGENT_MESSENGER_ALLOWED_USER_IDS` | `[]` | PSIDs allowed to talk to the agent. |
 | `allowAllUsers` | `MONO_AGENT_MESSENGER_ALLOW_ALL_USERS` | `false` | Allow every user (ignores the allowlist). |
 | `host` | `MONO_AGENT_MESSENGER_HOST` | `127.0.0.1` | Bind address. Non-loopback needs `allowNonLoopback`. |
 | `port` | `MONO_AGENT_MESSENGER_PORT` | `8650` | Bind port. |
 | `webhookPath` | `MONO_AGENT_MESSENGER_WEBHOOK_PATH` | `/messenger/webhook` | Webhook route; `/health` is appended for liveness. |
 | `apiVersion` | `MONO_AGENT_MESSENGER_API_VERSION` | `v21.0` | Graph API version. |
-| `allowNonLoopback` | `MONO_AGENT_MESSENGER_ALLOW_NON_LOOPBACK` | `false` | Explicit opt-in to bind a non-loopback host. |
+| `allowNonLoopback` | `MONO_AGENT_MESSENGER_ALLOW_NON_LOOPBACK` | `false` | Explicit opt-in to bind a non-loopback host, enforced at load, at `startMessengerAdapter`, and immediately before `listen()`. |
 | `proactiveMessagingType` | `MONO_AGENT_MESSENGER_PROACTIVE_MESSAGING_TYPE` | `RESPONSE` | `messaging_type` for cron/webhook deliveries (`RESPONSE`, `UPDATE`, `MESSAGE_TAG`). |
 | `proactiveTag` | `MONO_AGENT_MESSENGER_PROACTIVE_TAG` | — | Required with `MESSAGE_TAG`, e.g. `CONFIRMED_EVENT_UPDATE`. |
 
@@ -143,13 +143,20 @@ refused by the adapter.
 
 - Meta expects a 200 within seconds; the server acknowledges first and processes
   the payload afterwards. Duplicate deliveries are dropped by message id.
-- Messages from one user are handled in order. Up to four are queued while a
-  turn runs; beyond that the user gets a short busy reply.
-- `/cancel` aborts the active turn, `/help` and `/start` answer without a model
-  call.
-- Image and PDF/text attachments are downloaded from Meta's CDN (https only,
-  20 MiB cap) and passed to the agent as attachments; audio, video, and other
-  files are described in the request text with their URL.
+- Messages from one user are handled in order. Up to four wait behind the
+  active turn; beyond that the user gets a short busy reply.
+- `/cancel` aborts the active turn and retires every prompt already queued
+  behind it, so a withdrawn message never answers later; a message sent after
+  the cancel runs normally. `/help` and `/start` answer without a model call.
+- Image and PDF/text attachments are downloaded from Meta's CDN and passed to
+  the agent; audio, video, and other files are described in the request text
+  with their URL. Downloads are bounded by an explicit host policy (HTTPS on
+  `fbcdn.net` / `fbsbx.com` by default, configurable via
+  `attachments.allowedHostSuffixes`): redirects are followed manually with
+  every hop re-validated, hostnames must resolve entirely to public addresses,
+  and the 20 MiB cap is applied while streaming rather than after buffering.
+- A background wake reserves its per-user queue slot BEFORE offering live input
+  to the active turn, so a prompt arriving mid-offer cannot overtake it.
 - Replies are plain text: Markdown is flattened before sending.
 - Unauthorized senders receive a one-line denial and are logged; their text
   never reaches the agent.
@@ -184,12 +191,14 @@ AgentResponder
 AgentResponse
 DEFAULT_GRAPH_API_BASE_URL
 DEFAULT_MESSENGER_API_VERSION
+DEFAULT_MESSENGER_ATTACHMENT_HOST_SUFFIXES
 DEFAULT_MESSENGER_HOST
 DEFAULT_MESSENGER_PORT
 DEFAULT_MESSENGER_WEBHOOK_PATH
 LoadMessengerAdapterConfigInput
 MESSENGER_CHANNEL_ID
 MESSENGER_CONFIG_FIELDS
+MESSENGER_ENV_ONLY_SECRET_KEYS
 MESSENGER_MAX_MESSAGE_CHARS
 MESSENGER_MESSAGING_TYPES
 MessengerAdapter
@@ -202,6 +211,7 @@ MessengerAdapterMessages
 MessengerAdapterOptions
 MessengerAdapterStartLogger
 MessengerAdapterStartResult
+MessengerAmbiguousDeliveryError
 MessengerAttachmentIngestOptions
 MessengerChannelDriverConfig
 MessengerChannelDriverOptions
@@ -230,10 +240,16 @@ MessengerWebhookServerLogger
 MessengerWebhookServerOptions
 RedactedMessengerAdapterConfig
 StartMessengerAdapterOptions
+assertMessengerBindAllowed
+assertNoMessengerSecretsInJson
+assertValidMessengerAdapterConfig
+attachmentUrlPolicyRejection
 createChannelDriver
 createMessengerChannelDriver
 createMessengerWebhookServer
 isLoopbackHost
+isMessengerAmbiguousDeliveryError
+isPublicUnicastAddress
 isSafeAttachmentUrl
 loadMessengerAdapterConfig
 messengerConversationId

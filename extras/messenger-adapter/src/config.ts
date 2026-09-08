@@ -98,14 +98,45 @@ const missingRequiredConfig = (message: string, details?: Record<string, unknown
   new MessengerAdapterConfigError("missing_required_config", message, details);
 
 /**
+ * Credentials the adapter accepts ONLY from the environment. They are never
+ * layered from JSON, and a JSON section that carries one is rejected outright
+ * rather than silently ignored — an operator who put a Page token in a
+ * world-readable config file must be told, not quietly left unauthenticated.
+ */
+export const MESSENGER_ENV_ONLY_SECRET_KEYS = ["pageAccessToken", "appSecret", "verifyToken"] as const;
+
+const ENV_KEY_BY_SECRET_JSON_KEY: Readonly<Record<(typeof MESSENGER_ENV_ONLY_SECRET_KEYS)[number], string>> = {
+  pageAccessToken: "MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN",
+  appSecret: "MONO_AGENT_MESSENGER_APP_SECRET",
+  verifyToken: "MONO_AGENT_MESSENGER_VERIFY_TOKEN",
+};
+
+/**
+ * Reject any env-only credential supplied through inline or file JSON. Called
+ * before layering so JSON can never satisfy a required secret.
+ */
+export function assertNoMessengerSecretsInJson(section: Record<string, unknown>): void {
+  for (const key of MESSENGER_ENV_ONLY_SECRET_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(section, key) && section[key] !== undefined) {
+      throw invalidConfig(
+        `messenger.${key} cannot be set in JSON config; set ${ENV_KEY_BY_SECRET_JSON_KEY[key]} in the environment instead.`,
+        { field: `messenger.${key}`, env: ENV_KEY_BY_SECRET_JSON_KEY[key], reason: "env_only_secret" },
+      );
+    }
+  }
+}
+
+/**
  * The `messenger` section's field registry: the single source of truth for the
- * JSON→env layering and the app's config provenance view.
+ * JSON→env layering and the app's config provenance view. The three credentials
+ * read `undefined` from JSON by construction — see
+ * {@link MESSENGER_ENV_ONLY_SECRET_KEYS}.
  */
 export const MESSENGER_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "messenger.enabled", env: "MONO_AGENT_MESSENGER_ENABLED", kind: "boolean", fromJson: (s) => s.enabled },
-  { id: "messenger.pageAccessToken", env: "MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN", secret: true, fromJson: (s) => s.pageAccessToken },
-  { id: "messenger.appSecret", env: "MONO_AGENT_MESSENGER_APP_SECRET", secret: true, fromJson: (s) => s.appSecret },
-  { id: "messenger.verifyToken", env: "MONO_AGENT_MESSENGER_VERIFY_TOKEN", secret: true, fromJson: (s) => s.verifyToken },
+  { id: "messenger.pageAccessToken", env: "MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN", secret: true, fromJson: () => undefined },
+  { id: "messenger.appSecret", env: "MONO_AGENT_MESSENGER_APP_SECRET", secret: true, fromJson: () => undefined },
+  { id: "messenger.verifyToken", env: "MONO_AGENT_MESSENGER_VERIFY_TOKEN", secret: true, fromJson: () => undefined },
   { id: "messenger.allowedUserIds", env: "MONO_AGENT_MESSENGER_ALLOWED_USER_IDS", kind: "csv", fromJson: (s) => s.allowedUserIds },
   { id: "messenger.allowAllUsers", env: "MONO_AGENT_MESSENGER_ALLOW_ALL_USERS", kind: "boolean", fromJson: (s) => s.allowAllUsers },
   { id: "messenger.host", env: "MONO_AGENT_MESSENGER_HOST", fromJson: (s) => s.host },
@@ -121,7 +152,9 @@ export async function loadMessengerAdapterConfig(
   input: LoadMessengerAdapterConfigInput,
 ): Promise<MessengerAdapterConfig> {
   const json = input.json ?? (input.jsonPath === undefined ? {} : (await readSettingsJson(input.jsonPath)).json);
-  const env = layerJsonOntoEnv(input.env, fieldSpecMappings(readJsonSection(json, "messenger"), MESSENGER_CONFIG_FIELDS));
+  const section = readJsonSection(json, "messenger");
+  assertNoMessengerSecretsInJson(section);
+  const env = layerJsonOntoEnv(input.env, fieldSpecMappings(section, MESSENGER_CONFIG_FIELDS));
 
   const enabled = readBoolean(env.MONO_AGENT_MESSENGER_ENABLED, "MONO_AGENT_MESSENGER_ENABLED", false, invalidConfig);
   const pageAccessToken = normalizeOptionalString(env.MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN) ?? "";
@@ -164,35 +197,58 @@ export async function loadMessengerAdapterConfig(
   if (!enabled) {
     return config;
   }
+  assertValidMessengerAdapterConfig(config);
+  return config;
+}
 
+/**
+ * Validate a complete, enabled config. Split out of
+ * {@link loadMessengerAdapterConfig} so every entry point that can reach a bind
+ * — including a programmatically constructed config handed straight to
+ * `startMessengerAdapter` — enforces the same rules. A disabled config is not
+ * validated (nothing binds, nothing sends).
+ */
+export function assertValidMessengerAdapterConfig(config: MessengerAdapterConfig): void {
+  if (!config.enabled) {
+    return;
+  }
   for (const [value, name] of [
-    [pageAccessToken, "MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN"],
-    [appSecret, "MONO_AGENT_MESSENGER_APP_SECRET"],
-    [verifyToken, "MONO_AGENT_MESSENGER_VERIFY_TOKEN"],
+    [config.pageAccessToken, "MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN"],
+    [config.appSecret, "MONO_AGENT_MESSENGER_APP_SECRET"],
+    [config.verifyToken, "MONO_AGENT_MESSENGER_VERIFY_TOKEN"],
   ] as const) {
     if (value.length === 0) {
       throw missingRequiredConfig(`Messenger adapter requires ${name}.`, { env: name });
     }
   }
-  if (!allowAllUsers && allowedUserIds.length === 0) {
+  if (!config.allowAllUsers && config.allowedUserIds.length === 0) {
     throw missingRequiredConfig(
       "Messenger adapter requires MONO_AGENT_MESSENGER_ALLOWED_USER_IDS or MONO_AGENT_MESSENGER_ALLOW_ALL_USERS=true.",
       { env: "MONO_AGENT_MESSENGER_ALLOWED_USER_IDS" },
     );
   }
-  if (!allowNonLoopback && !isLoopbackHost(host)) {
-    throw invalidConfig(
-      `Messenger adapter host ${host} is not loopback; set MONO_AGENT_MESSENGER_ALLOW_NON_LOOPBACK=true to bind it (put it behind a TLS reverse proxy or tunnel).`,
-      { env: "MONO_AGENT_MESSENGER_HOST", reason: host },
-    );
-  }
-  if (proactiveMessagingType === "MESSAGE_TAG" && proactiveTag === undefined) {
+  assertMessengerBindAllowed(config.host, config.allowNonLoopback);
+  if (config.proactiveMessagingType === "MESSAGE_TAG" && config.proactiveTag === undefined) {
     throw invalidConfig(
       "Messenger adapter proactiveMessagingType MESSAGE_TAG requires MONO_AGENT_MESSENGER_PROACTIVE_TAG.",
       { env: "MONO_AGENT_MESSENGER_PROACTIVE_TAG" },
     );
   }
-  return config;
+}
+
+/**
+ * The single non-loopback gate. Called during config load, again in
+ * `startMessengerAdapter`, and once more immediately before `listen()`, so no
+ * construction path can reach a public bind without the explicit opt-in.
+ */
+export function assertMessengerBindAllowed(host: string, allowNonLoopback: boolean): void {
+  if (allowNonLoopback || isLoopbackHost(host)) {
+    return;
+  }
+  throw invalidConfig(
+    `Messenger adapter host ${host} is not loopback; set MONO_AGENT_MESSENGER_ALLOW_NON_LOOPBACK=true to bind it (put it behind a TLS reverse proxy or tunnel).`,
+    { env: "MONO_AGENT_MESSENGER_HOST", reason: host },
+  );
 }
 
 export function redactMessengerAdapterConfig(config: MessengerAdapterConfig): RedactedMessengerAdapterConfig {

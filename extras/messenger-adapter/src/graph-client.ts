@@ -4,6 +4,10 @@ import { splitForMessenger, MESSENGER_MAX_MESSAGE_CHARS } from "./text.js";
 export const DEFAULT_GRAPH_API_BASE_URL = "https://graph.facebook.com";
 const DEFAULT_TIMEOUT_MS = 20_000;
 const RETRY_DELAY_MS = 1_000;
+/** Upper bound on an honored `Retry-After`, so a hostile/typo'd header cannot park a turn. */
+const MAX_RETRY_AFTER_MS = 10_000;
+/** Cap on any retained error string, applied after redaction. */
+const MAX_DETAIL_CHARS = 2_000;
 
 export type MessengerSenderAction = "typing_on" | "typing_off" | "mark_seen";
 
@@ -47,17 +51,55 @@ export interface MessengerGraphClientLike {
 export class MessengerGraphError extends Error {
   readonly status: number;
   readonly detail: unknown;
+  /** Bounded `Retry-After` from the response, when the server sent a usable one. */
+  readonly retryAfterMs: number | undefined;
 
-  constructor(status: number, detail: unknown) {
+  constructor(status: number, detail: unknown, retryAfterMs?: number) {
     super(`Messenger Graph API request failed with HTTP ${status}.`);
     this.name = "MessengerGraphError";
     this.status = status;
     this.detail = detail;
+    this.retryAfterMs = retryAfterMs;
   }
 
   get retryable(): boolean {
     return this.status === 429 || this.status >= 500;
   }
+
+  /**
+   * True when the server definitively refused to act on the request. A 429 is
+   * a pre-processing rejection, so replaying it cannot duplicate a message; a
+   * 5xx may have been applied before the failure and is ambiguous instead.
+   */
+  get definitivelyRejected(): boolean {
+    return this.status === 429;
+  }
+}
+
+/**
+ * A non-idempotent Send API POST whose outcome is unknown: the request may have
+ * been accepted by Meta and only its response lost. It is deliberately NOT
+ * retried — a replay would deliver the message twice — and is surfaced so the
+ * caller can report an ambiguous delivery instead of silently duplicating or
+ * silently dropping it.
+ */
+export class MessengerAmbiguousDeliveryError extends Error {
+  readonly path: string;
+  readonly cause: unknown;
+  /** Chunks already confirmed delivered before the ambiguous one, in order. */
+  readonly deliveredMessageIds: readonly string[];
+
+  constructor(path: string, cause: unknown, deliveredMessageIds: readonly string[] = []) {
+    super(`Messenger Send API request to ${path} has an unknown outcome and was not retried.`);
+    this.name = "MessengerAmbiguousDeliveryError";
+    this.path = path;
+    this.cause = cause;
+    this.deliveredMessageIds = deliveredMessageIds;
+  }
+}
+
+export function isMessengerAmbiguousDeliveryError(error: unknown): error is MessengerAmbiguousDeliveryError {
+  return error instanceof MessengerAmbiguousDeliveryError;
 }
 
 /** Thin Send API client over global `fetch`; retries one transient failure per request. */
@@ -85,10 +127,12 @@ export class MessengerGraphClient implements MessengerGraphClientLike {
     const chunks = splitForMessenger(text, options?.maxMessageChars ?? MESSENGER_MAX_MESSAGE_CHARS);
     const messageIds: string[] = [];
     for (const chunk of chunks) {
-      const data = await this.post("/me/messages", {
+      // Report the chunks already on their way when a later one goes ambiguous,
+      // so the caller can describe a partial delivery instead of guessing.
+      const data = await this.postDelivery("/me/messages", {
         ...basePayload(recipientId, options),
         message: { text: chunk },
-      });
+      }, messageIds);
       const messageId = readMessageId(data);
       if (messageId !== undefined) {
         messageIds.push(messageId);
@@ -103,36 +147,87 @@ export class MessengerGraphClient implements MessengerGraphClientLike {
     url: string,
     options?: MessengerSendOptions,
   ): Promise<MessengerSendResult> {
-    const data = await this.post("/me/messages", {
+    const data = await this.postDelivery("/me/messages", {
       ...basePayload(recipientId, options),
       message: { attachment: { type: attachmentType, payload: { url, is_reusable: true } } },
-    });
+    }, []);
     const messageId = readMessageId(data);
     return { messageIds: messageId === undefined ? [] : [messageId] };
   }
 
   async senderAction(recipientId: string, action: MessengerSenderAction): Promise<void> {
-    await this.post("/me/messages", { recipient: { id: recipientId }, sender_action: action });
+    // Sender actions are replay-safe: `typing_on`/`typing_off`/`mark_seen` are
+    // state assignments, so a duplicate is a no-op rather than a second message.
+    await this.postReplaySafe("/me/messages", { recipient: { id: recipientId }, sender_action: action });
   }
 
-  private async post(path: string, payload: Record<string, unknown>): Promise<unknown> {
-    let attempt = 0;
-    for (;;) {
-      attempt += 1;
-      try {
-        return await this.postOnce(path, payload);
-      } catch (error) {
-        const retryable = error instanceof MessengerGraphError ? error.retryable : isNetworkError(error);
-        if (!retryable || attempt >= 2) {
-          throw error;
-        }
-        this.logger?.debug?.("Messenger Graph API request failed; retrying once.", {
-          path,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, RETRY_DELAY_MS));
+  /**
+   * A replay-safe POST: retried once on any transient failure, because a
+   * duplicate delivery of this request has no user-visible effect.
+   */
+  private async postReplaySafe(path: string, payload: Record<string, unknown>): Promise<unknown> {
+    try {
+      return await this.postOnce(path, payload);
+    } catch (error) {
+      const retryable = error instanceof MessengerGraphError ? error.retryable : isNetworkError(error);
+      if (!retryable) {
+        throw error;
       }
+      this.logger?.debug?.("Messenger Graph API request failed; retrying once.", {
+        path,
+        error: errorText(error),
+      });
+      await delay(retryDelayFor(error));
+      return await this.postOnce(path, payload);
     }
+  }
+
+  /**
+   * A message-bearing POST. Meta's Send API has no idempotency key, so the only
+   * safe retry is one the server definitively refused before acting (429).
+   * Every other transient outcome — timeout, transport failure, 5xx — may have
+   * been applied on Meta's side, and is surfaced as
+   * {@link MessengerAmbiguousDeliveryError} rather than replayed into a
+   * duplicate message.
+   */
+  private async postDelivery(
+    path: string,
+    payload: Record<string, unknown>,
+    deliveredMessageIds: readonly string[],
+  ): Promise<unknown> {
+    try {
+      return await this.postOnce(path, payload);
+    } catch (error) {
+      if (error instanceof MessengerGraphError && error.definitivelyRejected) {
+        this.logger?.debug?.("Messenger Send API rejected the request before delivery; retrying once.", {
+          path,
+          status: error.status,
+        });
+        await delay(retryDelayFor(error));
+        try {
+          return await this.postOnce(path, payload);
+        } catch (retryError) {
+          throw this.asDeliveryFailure(path, retryError, deliveredMessageIds);
+        }
+      }
+      throw this.asDeliveryFailure(path, error, deliveredMessageIds);
+    }
+  }
+
+  /** Classify a failed delivery POST as ambiguous (unknown outcome) or a clean rejection. */
+  private asDeliveryFailure(path: string, error: unknown, deliveredMessageIds: readonly string[]): unknown {
+    const ambiguous = error instanceof MessengerGraphError
+      ? error.status >= 500
+      : isNetworkError(error);
+    if (!ambiguous) {
+      return error;
+    }
+    this.logger?.warn?.("Messenger Send API outcome is unknown; not retrying a non-idempotent send.", {
+      path,
+      error: errorText(error),
+      deliveredMessageIds: deliveredMessageIds.length,
+    });
+    return new MessengerAmbiguousDeliveryError(path, error, [...deliveredMessageIds]);
   }
 
   private async postOnce(path: string, payload: Record<string, unknown>): Promise<unknown> {
@@ -156,13 +251,46 @@ export class MessengerGraphClient implements MessengerGraphClientLike {
         // Non-JSON error bodies are surfaced as text.
       }
       if (response.status >= 400) {
-        throw new MessengerGraphError(response.status, redactGraphError(data));
+        throw new MessengerGraphError(
+          response.status,
+          redactGraphError(data, this.pageAccessToken),
+          retryAfterMsFromHeader(response.headers.get("retry-after")),
+        );
       }
       return data;
     } finally {
       clearTimeout(timer);
     }
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+function retryDelayFor(error: unknown): number {
+  const advertised = error instanceof MessengerGraphError ? error.retryAfterMs : undefined;
+  return advertised ?? RETRY_DELAY_MS;
+}
+
+/** Parse `Retry-After` (delta-seconds or HTTP-date) into a bounded millisecond delay. */
+export function retryAfterMsFromHeader(header: string | null): number | undefined {
+  if (header === null) {
+    return undefined;
+  }
+  const trimmed = header.trim();
+  const seconds = Number(trimmed);
+  const ms = Number.isFinite(seconds) && trimmed.length > 0
+    ? seconds * 1_000
+    : Date.parse(trimmed) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return undefined;
+  }
+  return Math.min(ms, MAX_RETRY_AFTER_MS);
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function basePayload(recipientId: string, options: MessengerSendOptions | undefined): Record<string, unknown> {
@@ -186,18 +314,58 @@ function isNetworkError(error: unknown): boolean {
   return error instanceof Error && (error.name === "AbortError" || error.name === "TypeError");
 }
 
-/** Keep Graph error bodies inspectable but never echo tokens that Meta may reflect. */
-function redactGraphError(data: unknown): unknown {
+const REDACTED = "<redacted>";
+
+/**
+ * Keep Graph error bodies inspectable but never echo the configured credential.
+ *
+ * Meta reflects request content in some error messages, so every retained
+ * string is scrubbed of the exact configured token plus the usual bearer and
+ * query-parameter carriers. Structured bodies are reduced to an allowlist of
+ * scalar diagnostic fields — anything not on it is dropped rather than trusted,
+ * so a newly added Graph field cannot leak a credential by default.
+ */
+function redactGraphError(data: unknown, pageAccessToken: string): unknown {
   if (typeof data === "string") {
-    return data.replace(/access_token=[^&\s]+/gu, "access_token=<redacted>").slice(0, 2_000);
+    return sanitizeErrorString(data, pageAccessToken);
   }
   if (typeof data === "object" && data !== null && "error" in data) {
     const error = (data as { error: unknown }).error;
     if (typeof error === "object" && error !== null) {
-      const { message, type, code, error_subcode: subcode, fbtrace_id: traceId } = error as Record<string, unknown>;
-      return { message, type, code, error_subcode: subcode, fbtrace_id: traceId };
+      const source = error as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const key of ["message", "type", "code", "error_subcode", "fbtrace_id"] as const) {
+        const value = sanitizeScalar(source[key], pageAccessToken);
+        if (value !== undefined) {
+          out[key] = value;
+        }
+      }
+      return out;
     }
-    return { error };
+    return { error: sanitizeScalar(error, pageAccessToken) };
   }
-  return data;
+  return typeof data === "object" && data !== null ? {} : sanitizeScalar(data, pageAccessToken);
+}
+
+/** Retain only bounded scalars, redacted; everything else becomes `undefined`. */
+function sanitizeScalar(value: unknown, pageAccessToken: string): unknown {
+  if (typeof value === "string") {
+    return sanitizeErrorString(value, pageAccessToken);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return undefined;
+}
+
+function sanitizeErrorString(value: string, pageAccessToken: string): string {
+  let out = value;
+  // The configured credential first: a reflected token is the one value we know
+  // exactly, and it may appear with no surrounding `access_token=` marker.
+  if (pageAccessToken.length > 0) {
+    out = out.split(pageAccessToken).join(REDACTED);
+  }
+  out = out.replace(/access_token=[^&\s"']+/giu, `access_token=${REDACTED}`);
+  out = out.replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/giu, `Bearer ${REDACTED}`);
+  return out.slice(0, MAX_DETAIL_CHARS);
 }

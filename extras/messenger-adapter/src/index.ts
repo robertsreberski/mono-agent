@@ -16,8 +16,11 @@ export type {
   MessengerWebhookEvent,
 } from "./adapter.js";
 export {
+  DEFAULT_MESSENGER_ATTACHMENT_HOST_SUFFIXES,
   MESSENGER_CHANNEL_ID,
   MessengerAdapter,
+  attachmentUrlPolicyRejection,
+  isPublicUnicastAddress,
   isSafeAttachmentUrl,
   messengerConversationId,
   messengerUserIdFromConversation,
@@ -29,8 +32,12 @@ export {
   DEFAULT_MESSENGER_PORT,
   DEFAULT_MESSENGER_WEBHOOK_PATH,
   MESSENGER_CONFIG_FIELDS,
+  MESSENGER_ENV_ONLY_SECRET_KEYS,
   MESSENGER_MESSAGING_TYPES,
   MessengerAdapterConfigError,
+  assertMessengerBindAllowed,
+  assertNoMessengerSecretsInJson,
+  assertValidMessengerAdapterConfig,
   isLoopbackHost,
   loadMessengerAdapterConfig,
   redactMessengerAdapterConfig,
@@ -46,8 +53,10 @@ export type {
 
 export {
   DEFAULT_GRAPH_API_BASE_URL,
+  MessengerAmbiguousDeliveryError,
   MessengerGraphClient,
   MessengerGraphError,
+  isMessengerAmbiguousDeliveryError,
 } from "./graph-client.js";
 export type {
   MessengerGraphClientLike,
