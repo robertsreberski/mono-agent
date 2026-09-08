@@ -500,11 +500,60 @@ function memoryJournalPage(
   ].join("\n");
   return {
     content: [
-      { type: "text" as const, text: navigation.guidance },
+      ...memoryJournalNavigationTextContent(navigation, structuredContent.coverage, snapshot, entries.length, hasMore),
       ...splitRequestScopedModelText(evidence),
     ],
     structuredContent,
   };
+}
+
+interface MemoryJournalNavigation {
+  readonly guidance: string;
+  readonly nextActions: readonly {
+    readonly kind: string;
+    readonly description: string;
+    readonly tool: string;
+    readonly arguments: Readonly<Record<string, unknown>>;
+  }[];
+}
+
+interface MemoryJournalCoverageSummary {
+  readonly rangeScanComplete: boolean;
+  readonly truncatedBy: JournalBrowseSnapshot["truncatedBy"];
+  readonly lastIncluded?: { readonly createdAt: string; readonly recordRef: string };
+}
+
+/**
+ * The model only reads text content; structuredContent is not rendered by the
+ * runtime. Mirror RunHistory/SessionHistory: state the exact continuation call
+ * (including the cursor) and the coverage of this snapshot so the model can
+ * tell "more pages" from "range fully scanned" from "snapshot truncated".
+ */
+function memoryJournalNavigationTextContent(
+  navigation: MemoryJournalNavigation,
+  coverage: MemoryJournalCoverageSummary,
+  snapshot: MemoryJournalSnapshotState,
+  returned: number,
+  hasMore: boolean,
+): Array<{ readonly type: "text"; readonly text: string }> {
+  const actions = navigation.nextActions.map((action, index) =>
+    `${String(index + 1)}. ${action.description} Tool: ${action.tool}. Exact arguments: ${JSON.stringify(action.arguments)}`);
+  const coverageLine = [
+    `Coverage: ${snapshot.range.fromDate} through ${snapshot.range.throughDate} (${snapshot.range.timeZone}), captured ${snapshot.capturedAt}.`,
+    `This page returned ${String(returned)} of ${String(snapshot.entries.length)} snapshot entries; ${hasMore ? "more pages remain in this snapshot" : "this is the last page of this snapshot"}.`,
+    coverage.rangeScanComplete
+      ? "The requested range was fully scanned."
+      : `The requested range was NOT fully scanned (truncated by ${coverage.truncatedBy.length === 0 ? "unknown" : coverage.truncatedBy.join(", ")}${coverage.lastIncluded === undefined ? "" : `; last included entry ${coverage.lastIncluded.recordRef} at ${coverage.lastIncluded.createdAt}`}); request a narrower date range for later entries.`,
+  ].join(" ");
+  return [{
+    type: "text",
+    text: [
+      "MemoryJournal navigation (tool-authored guidance):",
+      navigation.guidance,
+      coverageLine,
+      ...(actions.length === 0 ? ["No follow-up MemoryJournal call is available for this snapshot."] : actions),
+    ].join("\n"),
+  }];
 }
 
 function projectMemoryJournalEntry(
