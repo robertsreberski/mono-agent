@@ -84,6 +84,7 @@ export type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
 
 type MonoAgentPiNativeProviderJson = {
   readonly transport?: PiTransport;
+  readonly promptCacheDiagnostics?: boolean;
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
   readonly piSessionsRoot?: string;

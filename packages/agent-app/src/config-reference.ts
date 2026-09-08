@@ -1379,6 +1379,7 @@ function inferType(id: string): ConfigReferenceType {
   ].includes(id)) {
     return "integer";
   }
+  if (id === "providers.piNative.promptCacheDiagnostics") return "boolean";
   if (id === "runtime.compaction.fixedOverheadEnabled") {
     return "boolean";
   }
@@ -1490,6 +1491,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "traceability.heartbeatMs": 10_000,
     "traceability.staleAfterMs": 30_000,
     "traceability.globalDiscovery": true,
+    "providers.piNative.promptCacheDiagnostics": false,
     "providers.piNative.piMaxRetries": 2,
     "providers.piNative.maxRetryDelayMs": 60_000,
     "providers.piNative.transport": "auto",
@@ -1620,6 +1622,7 @@ function exampleFor(id: string): SettingsJsonValue {
 }
 
 function descriptionFor(id: string): string {
+  if (id === "providers.piNative.promptCacheDiagnostics") return "Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials.";
   const section = id.split(".")[0] ?? "config";
   const name = id.split(".").slice(1).join(".");
   if (id === "providers") {

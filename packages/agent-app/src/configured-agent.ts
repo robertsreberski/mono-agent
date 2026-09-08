@@ -2396,6 +2396,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   if (
     permissionMode === undefined
     && piNative?.transport === undefined
+    && piNative?.promptCacheDiagnostics === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
     && compaction === undefined
@@ -2408,6 +2409,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   return {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
+    ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(compaction === undefined ? {} : { compaction }),
