@@ -2134,28 +2134,37 @@ export class WebService {
         input.wakePrompt,
         input.deliveryKey,
       );
-      this.emit("message.changed", input.threadId, {
-        messageId: started.assistantMessageId,
-        updatedAt: started.thread.updatedAt,
+      // Receipt ownership moves to the durable turn below. The turn remains
+      // owned by `activeTurns`, but its completion is no longer part of the
+      // notification request and an unexpected terminal-store failure must not
+      // become an unhandled rejection after the receipt has returned.
+      void completion.catch((error: unknown) => {
+        try {
+          this.options.logger?.error?.("Web process-job follow-up turn settlement failed after admission.", {
+            threadId: input.threadId,
+            turnId: started.turnId,
+            errorCode: errorCode(error) ?? "unknown",
+          });
+        } catch {
+          // A caller-provided logger cannot be allowed to re-detach the failure.
+        }
       });
-      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
-      this.emitThread("threads.changed", { thread: started.thread });
-      await completion;
-      if (this.store.turnStatus(started.turnId) !== "complete") {
-        return {
-          delivered: false,
-          code: "process_job_wake_failed",
-          retryable: false,
-          ambiguous: true,
-        };
-      }
-      this.store.completeProcessJobWake({
+      const message = this.store.completeProcessJobWake({
         sourceId: input.sourceId,
         jobId: input.processJob.jobId,
         deliveryKey: input.deliveryKey,
         disposition: "follow_up",
         turnId: started.turnId,
       });
+      if (message !== undefined) {
+        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
+      }
+      this.emit("message.changed", input.threadId, {
+        messageId: started.assistantMessageId,
+        updatedAt: started.thread.updatedAt,
+      });
+      this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
+      this.emitThread("threads.changed", { thread: started.thread });
       return { delivered: true, disposition: "follow_up" };
     });
     const tail = delivery.then(() => undefined, () => undefined);

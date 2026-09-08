@@ -1902,6 +1902,11 @@ export class WebStore {
     return { kind: "new" };
   }
 
+  /**
+   * Confirm the wake's delivery path, independently of the associated turn's
+   * eventual outcome. `completed/follow_up` means the exact turn was durably
+   * admitted; it does not mean that turn completed successfully.
+   */
   completeProcessJobWake(input: {
     readonly sourceId: string;
     readonly jobId: string;

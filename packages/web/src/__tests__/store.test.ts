@@ -2521,12 +2521,19 @@ describe("WebStore", () => {
         deliveryKey: processJob.wake.deliveryKey,
       })).toEqual({ kind: "new" });
     }
+    const admitted = store.beginAssistantTurn({
+      threadId: thread.id,
+      prompt: "Process the completed job",
+    });
+    store.associateProcessJobWakeTurn(completed.wake.deliveryKey, admitted.turnId);
     store.completeProcessJobWake({
       sourceId: "agent-one",
       jobId: completed.jobId,
       deliveryKey: completed.wake.deliveryKey,
       disposition: "follow_up",
+      turnId: admitted.turnId,
     });
+    expect(store.turnStatus(admitted.turnId)).toBe("running");
     store.close();
 
     const reopened = await WebStore.open({ stateDir });
@@ -2537,6 +2544,7 @@ describe("WebStore", () => {
       jobId: completed.jobId,
       deliveryKey: completed.wake.deliveryKey,
     })).toEqual({ kind: "completed", disposition: "follow_up" });
+    expect(reopened.turnStatus(admitted.turnId)).toBe("interrupted");
     expect(reopened.reserveProcessJobWake({
       sourceId: "agent-one",
       threadId: thread.id,
