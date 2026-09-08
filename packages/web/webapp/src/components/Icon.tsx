@@ -32,6 +32,7 @@ export type IconName =
   | "spark"
   | "star"
   | "stop"
+  | "terminal"
   | "trash"
   | "threads";
 
@@ -141,6 +142,7 @@ const paths: Record<IconName, React.ReactNode> = {
   spark: <path d="M12 2c.6 5.4 4.6 9.4 10 10-5.4.6-9.4 4.6-10 10-.6-5.4-4.6-9.4-10-10 5.4-.6 9.4-4.6 10-10z" />,
   star: <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" />,
   stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
+  terminal: <path d="m4 17 6-6-6-6M12 19h8" />,
   trash: (
     <>
       <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13" />

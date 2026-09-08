@@ -244,6 +244,8 @@ describe("ProcessJobActivityEventPart", () => {
     }));
     const row = screen.getByRole("group", { name: "Exec job started" });
     expect(row).toHaveClass("is-job", "is-complete");
+    expect(row.querySelector(".activity-job-icon")).toBeInTheDocument();
+    expect(row.querySelector(".activity-dot")).toBeNull();
     expect(row.querySelector("time")).toHaveAttribute("datetime", "2026-07-17T10:00:01.000Z");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -276,7 +278,8 @@ describe("ProcessJobPart", () => {
 
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
     expect(row).toHaveClass("activity-row", "is-job", "is-complete");
-    expect(row.querySelector(".activity-dot")).not.toBeNull();
+    expect(row.querySelector(".activity-job-icon")).toBeInTheDocument();
+    expect(row.querySelector(".activity-dot")).toBeNull();
     expect(within(row).getByText("Exec job")).toHaveClass("activity-row-label");
     expect(within(row).getByText("node worker.js --safe-summary")).toHaveClass("activity-row-summary");
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
