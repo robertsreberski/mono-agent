@@ -30,6 +30,14 @@ function wakeRequest(deliveryKey: string): AgentRequestBase {
 const stream = { push: async () => undefined, finish: async () => undefined } as never;
 
 describe("monitor wake context", () => {
+  it("preserves live-input ownership capability through the Monitor decorator", () => {
+    const bound = bindMonitorWakeContextToResponder({
+      liveInputOwnership: { version: 1 },
+      respond: async () => ({ text: "ok" }),
+    });
+    expect(bound.liveInputOwnership).toEqual({ version: 1 });
+  });
+
   it("resolves only its own delivery keys, never a process job's", async () => {
     await runWithMonitorWakeContext({ monitorId: "mon-1", chainDepth: 2 }, async () => {
       expect(monitorWakeContextForRequest(wakeRequest("monitor:mon-1:3")))

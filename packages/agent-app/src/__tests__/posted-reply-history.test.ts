@@ -139,6 +139,15 @@ function occurrences(haystack: string, needle: string): number {
 }
 
 describe("createSlackPostedReplyHistory", () => {
+  it("preserves live-input ownership capability through the posted-reply decorator", () => {
+    const bridge = createSlackPostedReplyHistory({ maxMessages: 64 });
+    const responder = bridge.wrapResponder({
+      liveInputOwnership: { version: 1 },
+      respond: async () => ({ text: "ok" }),
+    });
+    expect(responder.liveInputOwnership).toEqual({ version: 1 });
+  });
+
   it("forwards conversation reset controls through both decorators", async () => {
     const reset = vi.fn(async () => undefined);
     const resetLogicalConversation = vi.fn(async () => undefined);

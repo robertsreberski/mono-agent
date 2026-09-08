@@ -1048,7 +1048,60 @@ describe("WebStore", () => {
     await expect(store.deleteArchivedThread(used.id, { emptyOnly: true }))
       .rejects.toMatchObject({ code: "thread_not_empty" });
     expect(store.getThread(used.id)).toBeDefined();
+
+    const ledgerOnly = store.createThread("agent-one");
+    store.claimWebSubmission({
+      threadId: ledgerOnly.id,
+      submissionId: "11111111-1111-4111-8111-111111111111",
+      payloadSha256: "a".repeat(64),
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    });
+    store.patchThread(ledgerOnly.id, { archived: true });
+    await expect(store.deleteArchivedThread(ledgerOnly.id, { emptyOnly: true }))
+      .rejects.toMatchObject({ code: "thread_not_empty" });
+    await expect(store.deleteArchivedThread(ledgerOnly.id)).resolves.toEqual({ orphanedFiles: 0 });
+    expect(store.getThread(ledgerOnly.id)).toBeUndefined();
     store.close();
+  });
+
+  it("reopens and replays a durable submission ledger entry without recreating it", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    const payloadSha256 = "a".repeat(64);
+    expect(store.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    })).toMatchObject({ created: true });
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.webSubmission(thread.id, submissionId)).toEqual({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+    expect(reopened.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      create: () => { throw new Error("must not recreate"); },
+    })).toMatchObject({ created: false });
+    expect(() => reopened.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256: "b".repeat(64),
+      create: () => ({ outcome: "turn" }),
+    })).toThrowError(expect.objectContaining({ code: "submission_conflict" }));
+    reopened.close();
   });
 
   it("enforces one active turn per thread while allowing parallel threads", async () => {
@@ -2981,7 +3034,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 23");
+    future.exec(`PRAGMA user_version = ${String(WEB_STORAGE_SCHEMA_VERSION + 1)}`);
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

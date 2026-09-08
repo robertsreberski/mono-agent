@@ -1,5 +1,6 @@
 import type {
   AgentLiveInputOffer,
+  AgentLiveInputOwnership,
   AgentLiveInputRequest,
   AgentAttachment,
   AgentContinuationOriginContext,
@@ -103,6 +104,7 @@ export interface InMemoryHistoryStoreOptions {
 }
 
 export interface AgentHarnessRequest {
+  readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
   readonly conversationId: string;
   readonly userMessage: string;
   readonly abortSignal: AbortSignal;
@@ -158,6 +160,7 @@ export interface AgentHarnessResponse {
 }
 
 export interface AgentHarness {
+  readonly liveInputOwnership?: { readonly version: 1 };
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Offer user guidance to this conversation's active interactive turn. */
   offerLiveInput?(request: AgentLiveInputRequest): AgentLiveInputOffer;

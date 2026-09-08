@@ -90,6 +90,11 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
   { version: 22, name: "live-input-dispatch-marker", up: ({ database }) => {
     addColumn(database, "live_inputs", "dispatch_started_at", "TEXT");
   } },
+  { version: 23, name: "web-submission-ledger", up: ({ database }) => {
+    assertColumns(database, "web_submissions", [
+      "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
+    ]);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -145,6 +150,9 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       messages: ["seq", "cron_suppressed"],
       turns: ["requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
+      web_submissions: [
+        "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
+      ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
@@ -189,6 +197,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["monitor_wake_deliveries", "thread_id", "threads", "SET NULL"],
       ["monitor_wake_deliveries", "turn_id", "turns", "SET NULL"],
       ["cron_run_messages", "message_id", "messages", "CASCADE"],
+      ["web_submissions", "thread_id", "threads", "CASCADE"],
     ] as const) {
       const keys = database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
         from: string; table: string; to: string; on_delete: string;

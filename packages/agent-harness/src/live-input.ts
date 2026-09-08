@@ -40,7 +40,7 @@ interface MailboxConsumer {
 
 type MailboxState = "open" | "unsupported" | "closed" | "failed" | "cancelled";
 
-export function createLiveInputMailbox(runId: string): LiveInputMailbox {
+export function createLiveInputMailbox(runId: string, onClose?: () => void): LiveInputMailbox {
   const entries: LiveInputEntry[] = [];
   const entriesById = new Map<string, LiveInputEntry>();
   const consumers = new Set<MailboxConsumer>();
@@ -129,6 +129,11 @@ export function createLiveInputMailbox(runId: string): LiveInputMailbox {
       }
     }
     wakeConsumers();
+    try {
+      onClose?.();
+    } catch {
+      // Terminal ownership notification is best-effort and cannot block cleanup.
+    }
   };
 
   return {
