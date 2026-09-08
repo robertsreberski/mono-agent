@@ -401,8 +401,10 @@ does not fetch hidden detail, rerun cron, invoke a provider, submit the empty
 composer, include tools/files/config/neighbouring history, or continue the cron
 session. The agent must positively advertise context-import v1 with a sufficient
 byte limit. Unknown transport outcomes keep one operation for explicit Retry;
-they are never replayed on startup, while a later deliberate Reply after a
-definitive failure creates another operation and conversation.
+they are never replayed on startup. The page keeps unresolved identity in
+memory even when bounded session persistence is unavailable, and temporary
+offline/unsupported retry preflight does not discard it. A later deliberate
+Reply after a definitive failure creates another operation and conversation.
 
 The web HTTP config-view, run-now, and effective-enabled proxies remain available
 for operator clients. Mutations still require same-origin requests, source-qualified

@@ -4769,7 +4769,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       };
       if (connection !== "live") {
         const message = "The agent is offline. Reply was not started.";
-        setCronReplyStates((current) => ({ ...current, [key]: { status: "error", message } }));
+        setCronReplyStates((current) => ({
+          ...current,
+          [key]: { status: recovered === undefined ? "error" : "retry", message },
+        }));
         throw new Error(message);
       }
 
@@ -4844,7 +4847,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           forgetCronReplyRecoveryReference(reference.operationId);
           rememberCronReplyRecoveryReference({ ...reference, operationId: pendingOperationId });
         }
+        const preflightUnavailable = replyError instanceof ApiError
+          && (replyError.code === "cron_reply_agent_offline"
+            || replyError.code === "cron_reply_unsupported");
+        // Offline/unsupported proves a new operation was never reserved, but it
+        // does not settle an operation recovered from an earlier unknown POST.
+        // That earlier request may still complete, so retain and retry its exact
+        // identity rather than allowing the next click to create a duplicate.
+        const unresolvedPreflight = preflightUnavailable
+          && (recovered !== undefined || pendingOperationId !== undefined);
         const definitiveCode = replyError instanceof ApiError
+          && !unresolvedPreflight
           && (replyError.code === "cron_reply_agent_offline"
             || replyError.code === "cron_reply_conflict"
             || replyError.code === "cron_reply_failed"
@@ -4857,10 +4870,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // A transport failure, local deadline, malformed success receipt, or
         // generic server failure cannot prove whether canonical import landed.
         // Keep the same durable operation for an explicit retry.
-        const retryable = !definitiveCode && (!(replyError instanceof ApiError)
+        const retryable = unresolvedPreflight || (!definitiveCode && (!(replyError instanceof ApiError)
           || replyError.code === "cron_reply_outcome_unknown"
           || replyError.code === "cron_reply_pending"
-          || replyError.status >= 500);
+          || replyError.status >= 500));
         if (retryable) {
           const message = errorMessage(replyError);
           setCronReplyStates((current) => ({ ...current, [key]: { status: "retry", message } }));

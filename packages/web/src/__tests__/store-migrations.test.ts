@@ -313,6 +313,31 @@ describe("web storage migration history", () => {
     } finally { database.close(); }
   });
 
+  it("migrates schema 24 by provisioning cron Reply operations and reopens idempotently", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP TABLE cron_reply_operations; PRAGMA user_version = 24");
+    database.close();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      store.close();
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 25 });
+        expect(inspected.prepare("PRAGMA table_info(cron_reply_operations)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "operation_id", type: "TEXT", notnull: 0 }),
+          expect.objectContaining({ name: "snapshot_text", type: "TEXT", notnull: 0 }),
+          expect.objectContaining({ name: "state", type: "TEXT", notnull: 1 }),
+        ]));
+        expect(indexColumns(inspected, "cron_reply_operations_one_pending_run"))
+          .toEqual(["source_id", "job_id", "run_id"]);
+      } finally { inspected.close(); }
+    }
+  });
+
   it("rolls the stamp and the read indexes back together when migration 24 fails", async () => {
     const stateDir = await seeded(0);
     const initial = await WebStore.open({ stateDir });

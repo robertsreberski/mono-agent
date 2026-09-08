@@ -22,6 +22,7 @@ import {
   resetComposerDraft,
   writeComposerDraft,
 } from "./composer-draft";
+import { resetCronReplyRecoveryMemory } from "./cron-reply-recovery";
 import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
@@ -286,6 +287,7 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.cronReply).mockReset();
     localStorage.clear();
     sessionStorage.clear();
+    resetCronReplyRecoveryMemory();
     window.history.replaceState(null, "", "/");
     FakeEventSource.latest = undefined;
     FakeEventSource.instances = [];
@@ -8804,6 +8806,51 @@ describe("ConsoleStoreProvider integration", () => {
         { operationId, snapshotKind: source.snapshotKind },
         expect.any(AbortSignal),
       );
+    });
+
+    it("keeps one completed-server identity through refused storage and an offline retry", async () => {
+      let loseFirstResponse: ((error: unknown) => void) | undefined;
+      vi.spyOn(crypto, "randomUUID").mockReturnValue(operationId);
+      const setItem = Storage.prototype.setItem;
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+        if (this === sessionStorage && key === "mono-agent:web:cron-reply-recovery:v1") {
+          throw new DOMException("Synthetic quota exhausted.", "QuotaExceededError");
+        }
+        return setItem.call(this, key, value);
+      });
+      vi.mocked(api.cronReply)
+        .mockImplementationOnce(() => new Promise((_resolve, reject) => { loseFirstResponse = reject; }))
+        .mockRejectedValueOnce(new ApiError(
+          "This agent is offline; Reply was not started.",
+          503,
+          "cron_reply_agent_offline",
+        ))
+        .mockResolvedValueOnce({ ...receipt, duplicate: true });
+      const store = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+
+      const first = store.current.replyToCronRun(source);
+      expect(api.cronReply).toHaveBeenCalledTimes(1);
+      expect(sessionStorage.getItem("mono-agent:web:cron-reply-recovery:v1")).toBeNull();
+      await act(async () => {
+        loseFirstResponse?.(new TypeError("Synthetic response was lost after server completion."));
+        await expect(first).rejects.toThrow("response was lost");
+      });
+      expect(store.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+
+      await act(async () => {
+        await expect(store.current.replyToCronRun(source)).rejects.toMatchObject({
+          code: "cron_reply_agent_offline",
+        });
+      });
+      expect(store.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+
+      await act(async () => { await store.current.replyToCronRun(source); });
+      expect(vi.mocked(api.cronReply).mock.calls.map((call) => call[3].operationId))
+        .toEqual([operationId, operationId, operationId]);
+      expect(store.current.threads.filter((candidate) => candidate.id === imported.id)).toHaveLength(1);
+      expect(store.current.selectedThreadId).toBe(imported.id);
     });
 
     it("does not resurrect a reply conversation deleted while its POST response is late", async () => {

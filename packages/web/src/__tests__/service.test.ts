@@ -6054,6 +6054,51 @@ describe("cron Reply import orchestration", () => {
     } finally { await service.stop(); }
   });
 
+  it("keeps a pending operation unresolved across offline preflight and completes the same identity", async () => {
+    let online = true;
+    let attempts = 0;
+    const service = await createService({
+      discoverImpl: async () => {
+        const discovered = fakeDiscoveredAgent();
+        if (online) return [discovered];
+        const { baseUrl: _baseUrl, ...offline } = discovered;
+        return [offline];
+      },
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("synthetic lost response after canonical completion");
+          return { imported: true, status: "duplicate", conversationId };
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const input = { operationId, snapshotKind: "summary" as const };
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .rejects.toMatchObject({ code: "cron_reply_outcome_unknown", status: 504 });
+      const pending = service.store.cronReplyOperation(operationId);
+      expect(pending).toMatchObject({ kind: "pending" });
+
+      online = false;
+      await service.refreshAgents();
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .rejects.toMatchObject({ code: "cron_reply_agent_offline", status: 503 });
+      expect(service.store.cronReplyOperation(operationId)).toEqual(pending);
+      expect(attempts).toBe(1);
+
+      online = true;
+      await service.refreshAgents();
+      const receipt = await service.createCronReplyThread("agent-one", "digest", run.runId, input);
+      expect(receipt).toMatchObject({ operationId, duplicate: false, thread: { sourceId: "agent-one" } });
+      expect(service.store.cronReplyOperation(operationId)).toMatchObject({ kind: "completed" });
+      expect(attempts).toBe(2);
+    } finally { await service.stop(); }
+  });
+
   it("requires positive sufficient capability before durable reservation or network import", async () => {
     let imports = 0;
     const service = await createService({

@@ -189,8 +189,10 @@ excludes activity/tool payloads, files, artifacts, prompts/config, and adjacent
 history. Reply is unavailable without a live agent positively advertising
 context-import v1 and its full byte bound. If the request outcome is unknown,
 the console requires an explicit retry of the same operation and never replays
-it during startup. Status, time, and Reply stay visible while secondary run
-diagnostics remain available under **Details**.
+it during startup. The current page retains that unresolved identity even when
+session storage is unavailable, and a temporary offline/unsupported preflight
+on its retry does not replace it with a new operation. Status, time, and Reply
+stay visible while secondary run diagnostics remain available under **Details**.
 
 Operator control APIs require all three gates: `cron.operatorActions.enabled`, an operator API key, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
 
