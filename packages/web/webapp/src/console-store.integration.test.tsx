@@ -7907,7 +7907,13 @@ describe("ConsoleStoreProvider integration", () => {
         { timeout: HYDRATION_DEADLINE_MS + 3_000 },
       );
       await waitFor(
-        () => expect(screen.queryByTestId("kept-m1")).not.toBeNull(),
+        () => {
+          expect(screen.queryByTestId("kept-m1")).not.toBeNull();
+          // The transcript commits before StoreProbe's passive effect publishes
+          // the matching context value to this closure. Wait for both views of
+          // the same restored projection before making synchronous assertions.
+          expect(store.current.bootstrap).not.toBeNull();
+        },
         { timeout: HYDRATION_DEADLINE_MS + 3_000 },
       );
 
