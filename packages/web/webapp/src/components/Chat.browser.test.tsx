@@ -220,13 +220,13 @@ describe("Chat conversation viewport in Chromium", () => {
     const viewport = getViewport(container);
     await waitForBottom(viewport);
     const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
     expect(container.querySelector(".process-job-stack-item:not([hidden]) .is-running")).not.toBeNull();
     expect(container.querySelector(".process-job-stack-item[hidden] .is-complete")).not.toBeNull();
 
     toggle.focus();
     await userEvent.keyboard("{Enter}");
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelector(".process-job-stack-item[hidden]")).toBeNull();
     await waitForFrames(3);
     expect(Math.abs(gapFromBottom(viewport))).toBeLessThanOrEqual(1);
@@ -286,7 +286,7 @@ describe("Chat conversation viewport in Chromium", () => {
     const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
     toggle.focus();
     await userEvent.keyboard("{Space}");
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
     const column = getMessageColumn(container);
     const stack = container.querySelector<HTMLElement>(".process-job-stack")!;
     await waitForFrames(2);

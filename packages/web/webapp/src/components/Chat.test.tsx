@@ -251,8 +251,8 @@ describe("Chat conversation viewport", () => {
     expect(stack.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stack.querySelector(".message-actions")).toBeNull();
     expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Show background job history" }))
-      .toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
   });
 
   it("isolates same-id job state while retaining history preference through the keyed viewport", () => {
@@ -284,8 +284,9 @@ describe("Chat conversation viewport", () => {
     });
 
     const view = render(chatTree());
-    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
-    expect(screen.getByRole("button", { name: "Hide background job history" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
 
     storeMock.current = chatStore(second, {
@@ -300,7 +301,8 @@ describe("Chat conversation viewport", () => {
       }])],
     });
     view.rerender(chatTree());
-    expect(screen.getByRole("button", { name: "Show background job history" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
 
     storeMock.current = chatStore(first, {
@@ -308,7 +310,8 @@ describe("Chat conversation viewport", () => {
       messages: [messageWith(first, [running, old])],
     });
     view.rerender(chatTree());
-    expect(screen.getByRole("button", { name: "Hide background job history" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
   });

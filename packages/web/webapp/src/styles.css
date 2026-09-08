@@ -1004,7 +1004,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-stack-title { font-size: 12px; font-weight: 700; white-space: nowrap; }
 .process-job-stack-counts { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .process-job-stack-chevron { color: var(--text-muted); transition: transform 150ms ease; }
-.process-job-stack-toggle[aria-expanded="true"] .process-job-stack-chevron { transform: rotate(180deg); }
+.process-job-stack-toggle[aria-pressed="true"] .process-job-stack-chevron { transform: rotate(180deg); }
 .process-job-stack-body { padding: 0 8px 8px; }
 .process-job-stack-history { margin: 0 4px 7px; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
 .process-job-stack-list { display: grid; gap: 7px; }

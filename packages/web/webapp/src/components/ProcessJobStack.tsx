@@ -19,7 +19,7 @@ export function ProcessJobStack() {
     historyOpen,
     setHistoryOpen,
   } = useProcessJobPresentation();
-  const historyId = useId();
+  const stackId = useId();
   const [liveByJobId, setLiveByJobId] = useState<ReadonlyMap<string, ProcessJobProjection>>(
     () => new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
   );
@@ -63,9 +63,9 @@ export function ProcessJobStack() {
   if (threadId === null || jobs.length === 0) return null;
 
   return (
-    <section className="process-job-stack" aria-labelledby={`${historyId}-label`}>
+    <section className="process-job-stack" aria-labelledby={`${stackId}-label`}>
       <div className="process-job-stack-header">
-        <span id={`${historyId}-label`} className="process-job-stack-title">Background jobs</span>
+        <span id={`${stackId}-label`} className="process-job-stack-title">Background jobs</span>
         <span className="process-job-stack-counts" aria-live="polite" aria-atomic="true">
           {countLabel}
         </span>
@@ -73,9 +73,8 @@ export function ProcessJobStack() {
           <button
             type="button"
             className="process-job-stack-toggle"
-            aria-label={`${historyOpen ? "Hide" : "Show"} background job history`}
-            aria-expanded={historyOpen}
-            aria-controls={historyId}
+            aria-label="Background job history"
+            aria-pressed={historyOpen}
             onClick={() => setHistoryOpen(!historyOpen)}
           >
             <span>History</span>
@@ -83,7 +82,7 @@ export function ProcessJobStack() {
           </button>
         )}
       </div>
-      <div id={historyId} className="process-job-stack-body">
+      <div className="process-job-stack-body">
         {historyIsBounded && (
           <p className="process-job-stack-history" hidden={!historyOpen}>
             Showing jobs in loaded messages. Load earlier messages to reveal older jobs.

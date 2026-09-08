@@ -77,14 +77,15 @@ describe("ProcessJobStack", () => {
     expect(screen.queryByRole("group", { name: "Exec background job failed" })).toBeNull();
     expect(view.container.querySelectorAll(".process-job-stack-item[hidden]")).toHaveLength(2);
 
-    const toggle = screen.getByRole("button", { name: "Show background job history" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const toggle = screen.getByRole("button", { name: "Background job history" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(toggle);
 
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
     expect(screen.getByRole("group", { name: "Exec background job failed" })).toHaveClass("is-failed");
-    expect(toggle).toHaveAccessibleName("Hide background job history");
+    expect(toggle).toHaveAccessibleName("Background job history");
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
   });
 
   it.each(["queued", "starting", "running"] as const)(
@@ -116,7 +117,7 @@ describe("ProcessJobStack", () => {
 
     expect(view.container.querySelectorAll(".process-job-stack-item[hidden]")).toHaveLength(states.length);
     expect(screen.queryAllByRole("group")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     expect(screen.getAllByRole("group")).toHaveLength(states.length);
   });
 
@@ -145,38 +146,41 @@ describe("ProcessJobStack", () => {
     act(() => vi.advanceTimersByTime(20_000));
     expect(api.threadJob).toHaveBeenCalledOnce();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toBe(row);
   });
 
-  it("keeps bounded guidance inside the controlled history region even with active-only input", () => {
+  it("exposes bounded guidance from the history visibility toggle even with active-only input", () => {
     render(<StackHarness
       threadId="thread"
       jobs={[entry(activeJob("thread"))]}
       historyIsBounded
     />);
-    const toggle = screen.getByRole("button", { name: "Show background job history" });
-    const controlled = document.getElementById(toggle.getAttribute("aria-controls")!);
+    const toggle = screen.getByRole("button", { name: "Background job history" });
+    const stack = screen.getByRole("region", { name: "Background jobs" });
     const guidance = screen.getByText(/Load earlier messages to reveal older jobs/u);
     expect(screen.getByText("1 loaded · 1 active · 0 history")).toBeVisible();
-    expect(controlled).toContainElement(guidance);
+    expect(stack).toContainElement(guidance);
     expect(guidance).not.toBeVisible();
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).not.toHaveAttribute("aria-expanded");
+    expect(toggle).not.toHaveAttribute("aria-controls");
     fireEvent.click(toggle);
     expect(guidance).toBeVisible();
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
   });
 
   it("shows new active work without opening terminal history", () => {
     const failed = processJob({ jobId: "failed-job", state: "failed", exitCode: 1 });
     vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
     const view = render(<StackHarness threadId="thread" jobs={[entry(failed)]} />);
-    const toggle = screen.getByRole("button", { name: "Show background job history" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const toggle = screen.getByRole("button", { name: "Background job history" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
 
     const running = activeJob("thread", "running", { jobId: "running-job" });
     view.rerender(<StackHarness threadId="thread" jobs={[entry(failed), entry(running)]} />);
 
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.queryByRole("group", { name: "Exec background job failed" })).toBeNull();
     expect(screen.getByText("2 jobs · 1 active · 1 history")).toBeVisible();
@@ -200,22 +204,22 @@ describe("ProcessJobStack", () => {
       jobs={[entry(aRunning), entry(aHistory)]}
     />);
     await waitFor(() => expect(aSignal).toBeDefined());
-    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
-    expect(screen.getByRole("button", { name: "Hide background job history" }))
-      .toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
 
     view.rerender(<StackHarness threadId="thread-b" jobs={[entry(bTerminal)]} />);
     expect(aSignal?.aborted).toBe(true);
-    expect(screen.getByRole("button", { name: "Show background job history" }))
-      .toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
 
     view.rerender(<StackHarness
       threadId="thread-a"
       jobs={[entry(aRunning), entry(aHistory)]}
     />);
-    expect(screen.getByRole("button", { name: "Hide background job history" }))
-      .toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
   });

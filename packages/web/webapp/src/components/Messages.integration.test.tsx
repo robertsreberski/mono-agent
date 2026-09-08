@@ -1229,8 +1229,8 @@ describe("message actions", () => {
     expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
     expect(screen.getByText("The background report is ready.")).toBeVisible();
     expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
-    const stackToggle = screen.getByRole("button", { name: "Show background job history" });
-    expect(stackToggle).toHaveAttribute("aria-expanded", "false");
+    const stackToggle = screen.getByRole("button", { name: "Background job history" });
+    expect(stackToggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(stackToggle);
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
     expect(row).toHaveClass("activity-row", "is-job", "is-complete");
@@ -1318,7 +1318,7 @@ describe("message actions", () => {
     });
     expect(threadJob).toHaveBeenCalledTimes(3);
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     // A closed <details> is "not visible" to jest-dom; its state is in the class and name.
     expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
 
@@ -1494,7 +1494,7 @@ describe("message actions", () => {
     }} />);
     await waitFor(() => expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible());
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show background job history" }));
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
     const settled = await screen.findByRole("group", { name: "Exec background job succeeded" });
     expect(settled.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");
   });
