@@ -298,6 +298,80 @@ describe("process-job request availability", () => {
     }
   });
 
+  /**
+   * The web console receipts a job wake once the agent ACCEPTS the follow-up
+   * turn, not when that turn finishes, so its delivery route settles — and the
+   * flight is deregistered — while the very request it raised is still running.
+   * Capability must survive that, because the responder binds the flight to the
+   * request identity synchronously on entry, before the route can settle.
+   */
+  it("keeps a bound wake capable after its delivery route settles at admission", async () => {
+    const coreConfig = {
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    } as never;
+    const controller = vi.fn(() => ({ start: vi.fn(), stop: vi.fn() }));
+    const service = { settings: { maxChainDepth: 4 }, controller } as never;
+    const options = { service, coreConfig, channelId: "tui" as const, conversationScheme: "web" };
+    const extension = createProcessJobsRuntimeExtension({
+      ...processJobsBoundary(coreConfig), ...options, sandboxEngine: availableSandboxEngine,
+    });
+    const deliveryKey = "process-job:web-admission:1";
+    const request = {
+      conversationId: "web:thread-1",
+      text: "wake",
+      metadata: { source: "web", [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey },
+      abortSignal: new AbortController().signal,
+    };
+
+    let admitted!: () => void;
+    const admission = new Promise<void>((resolve) => { admitted = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let resolution: unknown;
+    let runtimeOptions: Record<string, unknown> | undefined;
+    let available: boolean | undefined;
+    const responder = bindProcessJobWakeContextToResponder({
+      respond: async (bound) => {
+        // The wrapper installed the binding before this body was entered.
+        admitted();
+        await gate;
+        resolution = processJobWakeContextForRequest(bound);
+        available = processJobsAvailableForRequest({ runId: "wake-run", request: bound } as never, options);
+        const result = await extension({ runId: "wake-run", request: bound } as never);
+        runtimeOptions = result.runtimeOptions as Record<string, unknown>;
+        await result.settleCleanup?.();
+        return { text: "ok" };
+      },
+    });
+
+    let turn!: Promise<unknown>;
+    await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 3 }, async () => {
+      turn = responder.respond(request as never, { append: async () => undefined });
+      await admission;
+    }, deliveryKey);
+
+    // The route has settled: an unbound request carrying the same key is denied.
+    const unbound = { metadata: { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey } };
+    expect(processJobWakeContextForRequest(unbound)).toEqual({ kind: "missed" });
+    expect(processJobsAvailableForRequest({
+      runId: "unbound-run",
+      request: { conversationId: "web:thread-1", text: "wake", ...unbound },
+    } as never, options)).toBe(false);
+
+    release();
+    await turn;
+    expect(resolution).toEqual({ kind: "resolved", context: { jobId: "parent", chainDepth: 3 } });
+    expect(available).toBe(true);
+    expect(runtimeOptions).toHaveProperty("processJobs");
+    expect(runtimeOptions?.processJobsAvailability).toEqual({
+      chainDepth: 3,
+      maxChainDepth: 4,
+      remainingStarts: 1,
+    });
+    expect(controller).toHaveBeenCalledTimes(1);
+  });
+
   it("injects for canonical provider turns", async () => {
     const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {

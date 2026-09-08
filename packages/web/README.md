@@ -102,9 +102,11 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 Process-job completion replies suppress only an exact sentinel-only terminal
 message with a verified wake association; narration and rich replies remain
 visible. Silent replies create no response push. A web wake receipt confirms
-that steering was applied or the exact follow-up turn was durably admitted; the
-turn's later model outcome remains separate. Job cards distinguish an unknown
-pre-confirmation receipt from failure and explain that replay was suppressed.
+that steering was applied or that the agent accepted the exact follow-up turn
+request, which is also when the wake's host-owned chain depth and background
+starts bind to it; the turn's later model outcome remains separate. Job cards
+distinguish an unknown pre-confirmation receipt from failure and explain that
+replay was suppressed.
 
 `@mono-agent/agent-app` provides the normal managed-service lifecycle:
 

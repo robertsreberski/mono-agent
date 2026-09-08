@@ -143,7 +143,9 @@ export function fakeMonitor(options: {
 }
 
 export function operatorFetch(options: {
-  readonly turns?: (body: Record<string, unknown>) => string | ReadableStream<Uint8Array>;
+  /** A promise defers the RESPONSE itself, which is what admission timing turns on. */
+  readonly turns?: (body: Record<string, unknown>) =>
+    string | ReadableStream<Uint8Array> | Promise<string | ReadableStream<Uint8Array>>;
   readonly supportsAttachments?: boolean;
   readonly supportsHistoryAppend?: boolean;
   readonly supportsAskUser?: boolean;
@@ -287,13 +289,13 @@ export function operatorFetch(options: {
     if (url.endsWith("/v1/turns")) {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       options.onTurn?.(body);
-      const responseBody = options.turns?.(body) ?? [
+      const responseBody = await (options.turns?.(body) ?? [
         JSON.stringify({ kind: "append", delta: "Hello " }),
         JSON.stringify({ kind: "event", event: { type: "assistant_thought", text: "Reasoning" } }),
         JSON.stringify({ kind: "append", delta: "world" }),
         JSON.stringify({ kind: "finish", finalText: "Hello world" }),
         "",
-      ].join("\n");
+      ].join("\n"));
       return new Response(responseBody, { status: 200, headers: { "content-type": "application/x-ndjson" } });
     }
     if (url.includes("/v1/conversations/") && url.endsWith("/cancel")) {
