@@ -118,7 +118,7 @@ latest envelope supersedes older copies; quoted surface labels, user/history,
 memory and tool output remain untrusted. Tool enforcement and delivery routes
 do not derive authority from envelope text.
 
-Every cold/stateless/stale-session retry supplies chronological canonical
+Every harness-prepared cold run and stale-session retry supplies chronological canonical
 messages with deterministic speaker/timestamp labels, then the bounded untrusted
 tool-history projection, then one current user message (envelope, existing
 speaker/preceding-message/user/attachment text, recall suffix). Legacy system/tool
@@ -126,6 +126,13 @@ history is labeled untrusted text, not system authority or native tool calls.
 Inspection, canonical history and provider transcripts remain distinct: the host
 never persists the envelope into canonical user text or memory capture and does
 not use it as a recall query. Configured last-64 retention is unchanged.
+
+Only the primary's first router attempt may retain a provider session. A retry or
+backup after a warm primary failure has the current message and bounded
+failed-attempt snapshot, without the earlier conversation. Its answer retires the
+coordinated durable epoch; the next turn reseeds from canonical history. Fresh
+stateless Pi calls use a private in-memory repository so their stable attribution
+id cannot collide with or delete the primary's transcript.
 
 ## Run Lifecycle
 

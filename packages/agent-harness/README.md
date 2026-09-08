@@ -339,7 +339,17 @@ toolPolicyToRuntimeOptions
 
 ### Continuous sessions
 
-With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every cold/fresh/stateless run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
+With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every harness-prepared cold/fresh run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
+
+The primary's first attempt owns the provider session. Retries and failovers run
+stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+any answer from a retry or backup retires the primary epoch. The next turn
+cold-reseeds from canonical history; after a primary first-attempt success,
+subsequent turns resume the new session and are eligible for provider caching.
+
+On a warm turn whose primary attempt fails, the retry or backup attempt runs
+stateless with the current message and a bounded snapshot of the failed attempt,
+without the earlier conversation; the next turn reseeds from canonical history.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next
