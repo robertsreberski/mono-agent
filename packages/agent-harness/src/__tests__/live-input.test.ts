@@ -12,7 +12,7 @@ const request = (id: string, text = id) => ({
 });
 
 describe("live input mailbox", () => {
-  it("delivers FIFO input, settles on provider acknowledgement, and records applied text", async () => {
+  it("delivers FIFO input, settles on host acknowledgement, and records applied text", async () => {
     const mailbox = createLiveInputMailbox("run-1");
     const first = mailbox.offer(request("one", "First"));
     const second = mailbox.offer(request("two", "Second"));
@@ -56,13 +56,15 @@ describe("live input mailbox", () => {
     if (offered.status !== "accepted") return;
 
     const attemptOne = mailbox[Symbol.asyncIterator]();
-    expect((await attemptOne.next()).value?.body).toBe("Steer this");
+    const firstAttempt = await attemptOne.next();
+    expect(firstAttempt.value?.body).toBe("Steer this");
+    expect(firstAttempt.value?.reject?.(new Error("retry"))).toBe("recorded");
     await attemptOne.return?.();
 
     const attemptTwo = mailbox[Symbol.asyncIterator]();
     const replay = await attemptTwo.next();
-    replay.value?.acknowledge?.();
-    replay.value?.acknowledge?.();
+    expect(replay.value?.acknowledge?.()).toBe("recorded");
+    expect(replay.value?.acknowledge?.()).toBe("ignored");
     await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-2" });
 
     const duplicate = mailbox.offer(request("same", "Ignored duplicate body"));
@@ -71,6 +73,61 @@ describe("live input mailbox", () => {
       await expect(duplicate.settled).resolves.toEqual({ status: "applied", runId: "run-2" });
     }
     expect(mailbox.applied()).toHaveLength(1);
+  });
+
+  it("fences every stale custom-runtime callback after a replacement lease begins", async () => {
+    const mailbox = createLiveInputMailbox("run-leases");
+    const offered = mailbox.offer(request("leased", "Retry me safely"));
+    expect(offered.status).toBe("accepted");
+    if (offered.status !== "accepted") return;
+
+    const attemptOne = await mailbox[Symbol.asyncIterator]().next();
+    expect(attemptOne.value?.reject?.({ code: "native_queue_removed" })).toBe("recorded");
+    const attemptTwo = await mailbox[Symbol.asyncIterator]().next();
+
+    expect(attemptOne.value?.accepted?.({ providerEntryId: "stale" })).toBe("ignored");
+    expect(attemptOne.value?.acknowledge?.({ providerEntryId: "stale" })).toBe("ignored");
+    expect(attemptOne.value?.uncertain?.({ reason: "delivery_uncertain" })).toBe("ignored");
+    expect(attemptOne.value?.reject?.({ code: "native_queue_removed" })).toBe("ignored");
+    expect(attemptTwo.value?.acknowledge?.({ providerEntryId: "current" })).toBe("recorded");
+    await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-leases" });
+    expect(mailbox.applied()).toEqual([{
+      id: "leased",
+      text: "Retry me safely",
+      receivedAt: "2026-07-21T10:00:00.000Z",
+    }]);
+  });
+
+  it("settles leased entries uncertain and ignores every late callback", async () => {
+    const mailbox = createLiveInputMailbox("run-late");
+    const offered = mailbox.offer(request("late", "Do this"));
+    expect(offered.status).toBe("accepted");
+    if (offered.status !== "accepted") return;
+    const item = await mailbox[Symbol.asyncIterator]().next();
+    expect(item.value?.accepted?.({ providerEntryId: "entry" })).toBe("recorded");
+
+    mailbox.cancel();
+    await expect(offered.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+    expect(item.value?.acknowledge?.({ providerEntryId: "entry", providerRunId: "run" })).toBe("ignored");
+    expect(item.value?.reject?.({ code: "native_queue_removed" })).toBe("ignored");
+    expect(item.value?.uncertain?.({ reason: "delivery_uncertain" })).toBe("ignored");
+    expect(mailbox.applied()).toEqual([]);
+  });
+
+  it("keeps never-leased cancellation discardable but seals leased close as uncertain", async () => {
+    const mailbox = createLiveInputMailbox("run-close");
+    const queued = mailbox.offer(request("queued"));
+    const leased = mailbox.offer(request("leased"));
+    const iterator = mailbox[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.next();
+    mailbox.close("failed");
+    if (queued.status === "accepted") {
+      await expect(queued.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+    }
+    if (leased.status === "accepted") {
+      await expect(leased.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+    }
   });
 
   it("requeues unacknowledged messages on close and discards them on explicit cancellation", async () => {

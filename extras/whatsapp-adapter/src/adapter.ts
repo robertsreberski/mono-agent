@@ -382,8 +382,25 @@ export class WhatsAppAdapter {
                 disposition: "steered",
               };
             }
+            if (settlement.status !== "requeue") {
+              return {
+                delivered: false,
+                code: "delivery_uncertain",
+                reason: "Live-input delivery is uncertain and was not retried.",
+                retryable: false,
+                ambiguous: true,
+                channelId: "whatsapp",
+              };
+            }
           } catch {
-            // The reserved fallback below owns every non-applied settlement.
+            return {
+              delivered: false,
+              code: "delivery_uncertain",
+              reason: "Live-input delivery is uncertain and was not retried.",
+              retryable: false,
+              ambiguous: true,
+              channelId: "whatsapp",
+            };
           }
         }
       }

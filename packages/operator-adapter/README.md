@@ -112,8 +112,9 @@ Keep bearer values out of source config when possible. Set
   when the responder has no `cancel`); pending AskUser state is cancelled too.
 - `POST {basePath}/v1/conversations/:id/live-input` - offer bounded
   `{ id, text, receivedAt }` guidance to the active turn. The response waits for
-  `applied`, `requeue`, or `discarded`; inactive/unsupported offers return
-  `unavailable` without inventing success.
+  `applied`, `requeue`, `discarded`, or `uncertain`; inactive/unsupported offers
+  return `unavailable`. A rejected accepted-settlement promise serializes as
+  `uncertain` rather than an untyped error or retry signal.
 - `POST {basePath}/v1/conversations/:id/verbatim` - authenticated
   `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
   when the responder has no `deliverVerbatim`).

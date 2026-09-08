@@ -657,7 +657,7 @@ export interface WebMessage {
    */
   readonly finishedAt?: string;
   readonly status: "running" | "complete" | "failed" | "cancelled" | "interrupted";
-  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled" | "uncertain";
   readonly attribution?: RunAttribution;
   /**
    * How many times the server has persisted this message's parts. It is what a

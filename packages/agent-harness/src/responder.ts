@@ -398,7 +398,7 @@ function liveInputActivityFromRuntimeEvent(
       type: "tool_call_completed",
       id,
       name,
-      content: "Applied to current run",
+      content: "Consumed by current run",
       metadata,
     },
   ];

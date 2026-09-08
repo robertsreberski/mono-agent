@@ -13,7 +13,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import type { WebEvent, WebMessageDelta, WebMessagePart } from "../contracts.js";
-import { applyDeltaOps, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
+import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -1565,7 +1565,7 @@ describe("WebService", () => {
     await service.stop();
   });
 
-  it.each(["TimeoutError", "Error"])("suppresses replay but releases ordinary response pushes after steering %s", async (errorName) => {
+  it.each(["TimeoutError", "Error", "uncertain"])("suppresses replay but releases ordinary response pushes after steering %s", async (errorName) => {
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const turnBodies: Record<string, unknown>[] = [];
     let now = new Date("2026-09-07T10:00:00.000Z");
@@ -1578,6 +1578,7 @@ describe("WebService", () => {
         }),
         onTurn(body) { turnBodies.push(body); },
         async onLiveInput() {
+          if (errorName === "uncertain") return { status: "uncertain", reason: "delivery_uncertain" };
           throw new DOMException("Steering receipt was lost after delivery", errorName);
         },
       }),
@@ -3605,6 +3606,102 @@ describe("WebService", () => {
     stream?.close();
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
     await service.stop();
+  });
+
+  it.each([
+    ["explicit uncertainty", async () => ({ status: "uncertain", reason: "delivery_uncertain" })],
+    ["rejected settlement", async () => { throw new Error("connection ended after dispatch"); }],
+  ])("does not retry live input after %s", async (_label, onLiveInput) => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turns: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        onTurn(body) { turns.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+            controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`));
+          },
+        }),
+        onLiveInput,
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const receipt = service.submitLiveInput(thread.id, "Do not duplicate this");
+
+    await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "uncertain");
+    expect(service.store.queuedLiveInputThreadIds()).toEqual([]);
+    expect(turns).toHaveLength(1);
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(turns).toHaveLength(1);
+    await service.stop();
+  });
+
+  it("persists dispatched live input as uncertain before the shutdown abort cut-point", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    let turnStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let resolveLiveInput: ((result: Record<string, unknown>) => void) | undefined;
+    const service = await createService({
+      stateDir,
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { turnStream = controller; },
+        }),
+        onLiveInput() {
+          return new Promise<Record<string, unknown>>((resolve) => { resolveLiveInput = resolve; });
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    await waitFor(() => turnStream !== undefined);
+    const receipt = service.submitLiveInput(thread.id, "Do not replay after shutdown");
+    await waitFor(() => resolveLiveInput !== undefined);
+
+    const internals = service as unknown as {
+      readonly activeTurns: Map<string, { readonly completion: Promise<void> }>;
+      readonly activeLiveInputs: Map<string, {
+        readonly controller: AbortController;
+        readonly completion: Promise<void>;
+      }>;
+      readonly pushDispatcher: { stopAndDrain(timeoutMs: number): Promise<void> };
+    };
+    const turnCompletion = [...internals.activeTurns.values()][0]?.completion;
+    const live = [...internals.activeLiveInputs.values()][0];
+    expect(live).toBeDefined();
+    const crash = new Error("simulated crash immediately before live-input abort");
+    let statusAtAbort: string | undefined;
+    live!.controller.abort = () => {
+      statusAtAbort = service.store.getMessage(receipt.message.id)?.liveInputStatus;
+      throw crash;
+    };
+
+    await expect(service.stop()).rejects.toBe(crash);
+    turnStream?.error(new Error("simulated process death"));
+    if (turnCompletion !== undefined) await Promise.allSettled([turnCompletion]);
+    await internals.pushDispatcher.stopAndDrain(5_000);
+    service.store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    const recoveredStatus = reopened.getMessage(receipt.message.id)?.liveInputStatus;
+    const queuedThreads = reopened.queuedLiveInputThreadIds();
+    reopened.close();
+    await (service as unknown as { readonly lease: { release(): Promise<void> } }).lease.release();
+    resolveLiveInput?.({ status: "uncertain", reason: "delivery_uncertain" });
+    if (live !== undefined) await Promise.allSettled([live.completion]);
+
+    expect(statusAtAbort).toBe("uncertain");
+    expect(recoveredStatus).toBe("uncertain");
+    expect(queuedThreads).toEqual([]);
   });
 
   it("promotes idle live input exactly once with the thread's captured route", async () => {

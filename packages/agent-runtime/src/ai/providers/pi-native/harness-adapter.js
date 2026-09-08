@@ -268,6 +268,9 @@ export async function createPiHarnessAdapter(session, options) {
     async steer(message) {
       return getOrThrow(await lane.steer(message, undefined, PI_CONTEXT));
     },
+    async cancelQueued(entryId) {
+      return getOrThrow(await lane.cancelQueued(entryId, PI_CONTEXT));
+    },
     async abort() {
       const result = await lane.abort(PI_CONTEXT);
       // Aborting an already-idle lane is a benign race with prompt settlement.

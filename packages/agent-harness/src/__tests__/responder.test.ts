@@ -140,7 +140,7 @@ describe("createAgentResponder", () => {
         type: "tool_call_completed",
         id: "live-input:follow-up-1",
         name: "↪️ Steered: “Use TOKEN=[redacted] then test the fall…”",
-        content: "Applied to current run",
+        content: "Consumed by current run",
         metadata,
       },
     ]);
