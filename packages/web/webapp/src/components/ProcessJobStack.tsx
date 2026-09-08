@@ -7,6 +7,7 @@ import {
   mergeProcessJobProjection,
   TERMINAL_PROCESS_JOB_STATES,
 } from "./ProcessJob";
+import { Icon } from "./Icon";
 
 const isActive = (job: ProcessJobProjection): boolean =>
   !TERMINAL_PROCESS_JOB_STATES.has(job.state);
@@ -79,7 +80,7 @@ export function ProcessJobStack() {
             onClick={() => setHistoryOpen(!historyOpen)}
           >
             <span>History</span>
-            <span className="process-job-stack-chevron" aria-hidden="true">⌄</span>
+            <Icon className="process-job-stack-chevron" name="chevron-down" size={13} />
           </button>
         )}
       </div>
