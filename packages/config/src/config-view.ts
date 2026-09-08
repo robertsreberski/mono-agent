@@ -170,6 +170,7 @@ export const CONFIG_ENV_KEYS = {
   "providers": "MONO_AGENT_PROVIDERS_JSON",
   "providers.piAuthPath": "MONO_AGENT_PI_AUTH_PATH",
   "providers.piNative.transport": "MONO_AGENT_PI_TRANSPORT",
+  "providers.piNative.promptCacheDiagnostics": "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS",
   "providers.piNative.piMaxRetries": "MONO_AGENT_PI_MAX_RETRIES",
   "providers.piNative.maxRetryDelayMs": "MONO_AGENT_MAX_RETRY_DELAY_MS",
   "providers.piNative.piSessionsRoot": "MONO_AGENT_PI_SESSIONS_ROOT",
@@ -1161,6 +1162,12 @@ function buildProvidersSection(input: BuildMonoAgentConfigViewInput): ConfigView
         label: "Pi transport",
         value: providers?.piNative?.transport ?? "auto",
         jsonPresent: json.providers?.piNative?.transport !== undefined,
+      }),
+      toField(env, {
+        id: "providers.piNative.promptCacheDiagnostics",
+        label: "Pi prompt cache diagnostics",
+        value: String(providers?.piNative?.promptCacheDiagnostics ?? false),
+        jsonPresent: json.providers?.piNative?.promptCacheDiagnostics !== undefined,
       }),
       toField(env, {
         id: "providers.piNative.piMaxRetries",

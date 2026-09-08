@@ -39,6 +39,11 @@ function section(sections: readonly ConfigViewSection[], id: string): ConfigView
 }
 
 describe("buildMonoAgentConfigView", () => {
+  it("shows prompt-cache diagnostics as false by default and tracks its JSON source", () => {
+    expect(field(buildView(baseEnv), "providers.piNative.promptCacheDiagnostics").value).toBe("false");
+    expect(field(buildView(baseEnv, { providers: { piNative: { promptCacheDiagnostics: true } } }), "providers.piNative.promptCacheDiagnostics").value).toBe("true");
+  });
+
   it("compares JSON object defaults structurally while preserving array order", () => {
     expect(sameJsonValue(
       { a: 1, b: { c: true, d: [1, { e: "x", f: "y" }] } },

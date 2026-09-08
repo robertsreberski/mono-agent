@@ -1,0 +1,3 @@
+{"type":"prompt_cache_diagnostic","requestOrdinal":1,"supported":true,"toolDefinitionsFingerprint":"tools-b","systemFingerprint":"system-b","inputInterpretation":"unavailable","logicalInputInterpretation":"full","inputInterpretationSource":"pre_transport_payload"}
+{"type":"context_usage","tokens":{"input":1,"cacheRead":2,"cacheCreation":3,"output":4}}
+{"type":"context_usage","tokens":{"input":20,"cacheRead":70,"cacheCreation":10,"output":5}}

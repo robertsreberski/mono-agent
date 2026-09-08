@@ -380,6 +380,21 @@ describe("loadMonoAgentConfig", () => {
     expect(config.runtime.permissionMode).toBeUndefined();
   });
 
+  it.each(["true", "false"])("loads prompt cache diagnostics %s without changing unset defaults", (value) => {
+    const unset = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv } });
+    expect(unset.providers?.piNative).toBeUndefined();
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: value } });
+    expect(config.providers?.piNative).toEqual({ promptCacheDiagnostics: value === "true" });
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "invalid" } })).toThrow();
+  });
+
+  it("loads prompt cache diagnostics from the provider JSON envelope", () => {
+    const env = { ...baseEnv, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { promptCacheDiagnostics: true } }) };
+    expect(loadMonoAgentConfig({ cwd: "/repo", env }).providers?.piNative).toEqual({ promptCacheDiagnostics: true });
+    expect(loadMonoAgentConfig({ cwd: "/repo", env: { ...env, MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" } }).providers?.piNative).toEqual({ promptCacheDiagnostics: false });
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_PROVIDERS_JSON: JSON.stringify({ piNative: { promptCacheDiagnostics: "true" } }) } })).toThrow("boolean");
+  });
+
   it("loads pi-native provider knobs from env", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",

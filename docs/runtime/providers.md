@@ -189,3 +189,7 @@ export MONO_AGENT_PROVIDERS_JSON='{"ollama": {"type": "ollama"}, "piAuthPath": "
 - [Local providers](/runtime/local-providers/) — the full local-provider and env reference for self-hosted endpoints.
 - [Fallback & failover](/runtime/fallback/) — ordered backup routes using the same providers.
 - [Environment variables](/config/env-vars/) — `MONO_AGENT_PROVIDERS_JSON` and friends.
+
+## Prompt-cache diagnostics
+
+`providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.

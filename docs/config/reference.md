@@ -131,6 +131,7 @@ Schema: `https://raw.githubusercontent.com/robertsreberski/mono-agent/main/packa
 | `providers.piNative.maxRetryDelayMs` | `integer` | `MONO_AGENT_MAX_RETRY_DELAY_MS` | 60000 | `60000` | Configures piNative.maxRetryDelayMs for the providers section. |
 | `providers.piNative.piMaxRetries` | `integer` | `MONO_AGENT_PI_MAX_RETRIES` | 2 | `2` | Configures piNative.piMaxRetries for the providers section. |
 | `providers.piNative.piSessionsRoot` | `string` | `MONO_AGENT_PI_SESSIONS_ROOT` | unset | `example` | Configures piNative.piSessionsRoot for the providers section. |
+| `providers.piNative.promptCacheDiagnostics` | `boolean` | `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` | false | `true` | Emit metadata-only prompt-cache request fingerprints into run artifacts; never prompt text, tool arguments, cache keys, endpoints or credentials. |
 | `providers.piNative.transport` | `string` | `MONO_AGENT_PI_TRANSPORT` | auto | `sse` | Preferred Pi provider transport: auto, sse, websocket, or websocket-cached. Providers without multiple transports ignore it. |
 | `runtime.compaction.contextWindowOverride` | `integer` | `MONO_AGENT_COMPACTION_CONTEXT_WINDOW_OVERRIDE` | auto-detected | `128000` | Persistent correction for inaccurate provider context-window metadata; learned overflow ceilings may lower it process-locally. |
 | `runtime.compaction.enabled` | `boolean` | `MONO_AGENT_COMPACTION_ENABLED` | true | `true` | Enables adaptive proactive compaction and one-shot reactive overflow recovery. |

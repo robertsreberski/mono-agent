@@ -2220,7 +2220,10 @@ function addConfiguredProvider(
 function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>> {
   const source = "providers.piNative";
   const record = readPlainObject(value, source);
-  const allowed = new Set(["transport", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
+  if (record.promptCacheDiagnostics !== undefined && typeof record.promptCacheDiagnostics !== "boolean") {
+    throw new MonoAgentConfigError("invalid_env", "providers.piNative.promptCacheDiagnostics must be a boolean.");
+  }
+  const allowed = new Set(["transport", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
   const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
   if (unknownKeys.length > 0) {
     throw new MonoAgentConfigError("invalid_env", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
@@ -2241,6 +2244,7 @@ function layerProviderReservedValuesOntoEnv(
   }
   const mappings = [
     ["transport", "MONO_AGENT_PI_TRANSPORT"],
+    ["promptCacheDiagnostics", "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS"],
     ["piMaxRetries", "MONO_AGENT_PI_MAX_RETRIES"],
     ["maxRetryDelayMs", "MONO_AGENT_MAX_RETRY_DELAY_MS"],
     ["piSessionsRoot", "MONO_AGENT_PI_SESSIONS_ROOT"],
@@ -2368,6 +2372,7 @@ function readPiNativeProviderConfig(
 ): PiNativeProviderConfig | undefined {
   const hasAny = [
     env.MONO_AGENT_PI_TRANSPORT,
+    env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS,
     env.MONO_AGENT_PI_MAX_RETRIES,
     env.MONO_AGENT_MAX_RETRY_DELAY_MS,
     env.MONO_AGENT_PI_SESSIONS_ROOT,
@@ -2384,11 +2389,15 @@ function readPiNativeProviderConfig(
         "auto",
         invalidEnv,
       );
+  const promptCacheDiagnostics = normalizeOptionalString(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS) === undefined
+    ? undefined
+    : readBoolean(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS, "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS", false, invalidEnv);
   const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
   const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
   return {
     ...(transport === undefined ? {} : { transport }),
+    ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
     ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
     ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
     ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),

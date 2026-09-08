@@ -127,6 +127,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   providers: "object",
   "providers.piAuthPath": "string",
   "providers.piNative.transport": "string",
+  "providers.piNative.promptCacheDiagnostics": "boolean",
   "providers.piNative.piMaxRetries": "integer",
   "providers.piNative.maxRetryDelayMs": "integer",
   "providers.piNative.piSessionsRoot": "string",

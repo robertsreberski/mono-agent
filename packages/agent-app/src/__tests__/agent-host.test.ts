@@ -944,6 +944,22 @@ describe("agent host composition helpers", () => {
     }
   });
 
+  it.each([undefined, false, true])("plumbs prompt cache diagnostics %s only when configured", async (enabled) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const base = monoConfig({ dir, identityPath, artifactDir });
+    const responder = await createConfiguredAgentResponder({
+      config: { ...base, ...(enabled === undefined ? {} : { providers: { ...base.providers, piNative: { promptCacheDiagnostics: enabled } } }) },
+      runtime: fake.runtime,
+    });
+    await responder.respond({ conversationId: "c", text: "hi", abortSignal: new AbortController().signal }, { append: async () => {} });
+    if (enabled === undefined) expect(fake.calls[0]?.options).not.toHaveProperty("promptCacheDiagnostics");
+    else expect(fake.calls[0]?.options.promptCacheDiagnostics).toBe(enabled);
+  });
+
   it("lets host runtimeOptions override config flags and carry code-only runtime controls", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
