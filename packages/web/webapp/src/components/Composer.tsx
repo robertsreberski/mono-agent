@@ -278,9 +278,12 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
                 <Icon name="send" size={16} />
               </ComposerPrimitive.Send>
               {isRunning && (
-                <ComposerPrimitive.Cancel className="composer-stop" aria-label="Stop response">
+                <ComposerPrimitive.Cancel
+                  className="composer-stop"
+                  aria-label="Stop response"
+                  title="Stop"
+                >
                   <Icon name="stop" size={14} />
-                  <span>Stop</span>
                 </ComposerPrimitive.Cancel>
               )}
             </div>
