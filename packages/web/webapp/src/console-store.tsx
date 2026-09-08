@@ -1437,11 +1437,33 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectionRequest, setSelectionRequestState] = useState<SelectionRequest | null>(null);
   const [selectionFailure, setSelectionFailureState] = useState<SelectionFailure | null>(null);
-  const [threadListFailure, setThreadListFailure] = useState<ThreadListFailure | null>(null);
+  const [threadListFailure, setThreadListFailureState] = useState<ThreadListFailure | null>(null);
   const [threadListRetryRevision, setThreadListRetryRevision] = useState(0);
   const [operatorSelectionGeneration, setOperatorSelectionGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionErrorState] = useState<string | null>(null);
+  // The durable list failure and its short-lived notice settle together only
+  // while that notice is still the one this request published. Any newer
+  // action error clears the notice owner without disturbing the list failure.
+  const threadListFailureRef = useRef<ThreadListFailure | null>(null);
+  const threadListActionErrorRef = useRef<ThreadListFailure | null>(null);
+  const setThreadListFailure = useCallback((failure: ThreadListFailure | null) => {
+    threadListFailureRef.current = failure;
+    setThreadListFailureState(failure);
+  }, []);
+  const setActionError = useCallback((message: string | null) => {
+    threadListActionErrorRef.current = null;
+    setActionErrorState(message);
+  }, []);
+  const setThreadListActionError = useCallback((failure: ThreadListFailure) => {
+    threadListActionErrorRef.current = failure;
+    setActionErrorState(failure.message);
+  }, []);
+  const clearThreadListActionError = useCallback((failure: ThreadListFailure) => {
+    if (threadListActionErrorRef.current !== failure) return;
+    threadListActionErrorRef.current = null;
+    setActionErrorState((current) => current === failure.message ? null : current);
+  }, []);
   const [connection, setConnectionState] = useState<ConnectionState>("connecting");
   /**
    * Whether a snapshot from the SERVER has landed.
@@ -2445,11 +2467,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     void loadThreadBucket(selectedAgentId, showArchived).then((page) => {
       if (operatorSelectionRef.current === generation
         && selectedAgentRef.current === selectedAgentId) {
-        setThreadListFailure((current) => current?.generation === generation
-          && current.sourceId === selectedAgentId
-          && current.archived === showArchived
-          ? null
-          : current);
+        const failure = threadListFailureRef.current;
+        if (failure?.generation === generation
+          && failure.sourceId === selectedAgentId
+          && failure.archived === showArchived) {
+          setThreadListFailure(null);
+          clearThreadListActionError(failure);
+        }
       }
       // A bootstrap carries ONE bucket, so switching agents lands on rows this
       // tab has never held: `selectAgent` resolves the conversation to open
@@ -2492,23 +2516,27 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         && selectionRequestRef.current === request;
       if (ownsDestination && failOwnedSelection(request, loadError)) return;
       const message = errorMessage(loadError);
-      setThreadListFailure({
+      const failure = {
         generation,
         sourceId: selectedAgentId,
         archived: showArchived,
         message,
-      });
-      setActionError(message);
+      } satisfies ThreadListFailure;
+      setThreadListFailure(failure);
+      setThreadListActionError(failure);
     });
   }, [
     error,
     hasBootstrap,
+    clearThreadListActionError,
     failOwnedSelection,
     loadThreadBucket,
     loading,
     operatorSelectionGeneration,
     selectedAgentId,
     setSelectionRequest,
+    setThreadListActionError,
+    setThreadListFailure,
     showArchived,
     threadListRetryRevision,
   ]);
@@ -4387,9 +4415,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const retryThreadList = useCallback(() => {
     if (currentThreadListFailure === null) return;
+    clearThreadListActionError(currentThreadListFailure);
     setThreadListFailure(null);
     setThreadListRetryRevision((revision) => revision + 1);
-  }, [currentThreadListFailure]);
+  }, [clearThreadListActionError, currentThreadListFailure, setThreadListFailure]);
 
   useEffect(() => {
     const route = cronRouteSelection();

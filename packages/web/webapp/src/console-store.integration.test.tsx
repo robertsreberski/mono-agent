@@ -3312,14 +3312,11 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.threadListError).toBe("beta conversations unavailable");
       expect(store.current.selectionLoading).toBe(false);
 
-      act(() => { store.current.clearActionError(); });
-      expect(store.current.actionError).toBeNull();
-      expect(store.current.threadListError).toBe("beta conversations unavailable");
-
       vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
       act(() => { store.current.retryThreadList(); });
       await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(store.current.actionError).toBeNull();
       expect(store.current.detail?.thread.id).toBe(betaThread.id);
       expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
         .toHaveLength(1);
@@ -3358,10 +3355,17 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.threadListError).toBe("beta conversations unavailable");
       expect(store.current.selectionLoading).toBe(false);
 
+      vi.mocked(api.patchAgent).mockRejectedValueOnce(new Error("newer pin failure"));
+      await act(async () => {
+        await expect(store.current.setAgentPinned("beta", true)).rejects.toThrow("newer pin failure");
+      });
+      expect(store.current.actionError).toBe("newer pin failure");
+
       vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
       act(() => { store.current.retryThreadList(); });
       await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(store.current.actionError).toBe("newer pin failure");
       expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
         .toHaveLength(1);
     });
