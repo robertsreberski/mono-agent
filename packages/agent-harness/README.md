@@ -108,6 +108,10 @@ Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
 
 ## Architecture
 
+Continuous provider sessions bind to the requested primary model. Repeated overrides stay warm; a model change retires the old owner's session and reseeds a new epoch from canonical history. `createSessionRuntimeResolver`, `SessionRuntimeResolver`, and `ProviderSessionHandle` preserve runtime ownership across cleanup paths; `ProviderSessionTurnBinding` is the durable coordinator's input. Without a runtime factory, all keys use the shared runtime with the effective per-run model.
+
+The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must advertise `providerSessionModelBinding: "v1"` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
+
 The harness is the request-to-runtime composition boundary:
 
 ### Data flow
@@ -259,12 +263,15 @@ MarkdownContextBlock
 MemoryWriteMode
 NoopRunRecorder
 PreparedHistoryAppend
+ProviderSessionHandle
+ProviderSessionTurnBinding
 ProviderSessionTurnCommitOptions
 RuntimeSessionEvictReason
 RuntimeSessionRecord
 RuntimeSessionSnapshot
 RuntimeSessionStore
 RuntimeSessionStoreOptions
+SessionRuntimeResolver
 SkillActivationError
 SkillIndexEntry
 SkillIndexSummary
@@ -313,6 +320,7 @@ createInMemoryHistoryStore
 createLiveInputMailbox
 createLiveSessionManager
 createRuntimeSessionStore
+createSessionRuntimeResolver
 createSkillsCache
 createToolPolicy
 failClosedToolPolicy

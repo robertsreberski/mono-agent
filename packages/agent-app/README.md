@@ -881,6 +881,8 @@ text; failures and non-suppressed output retain their existing truncation rules.
 
 ## Architecture
 
+Configured continuous sessions persist the requested primary model with their durable epoch. Per-model runtime factories are cached for the harness lifetime, and history retirement resolves the owning runtime. A model switch cold-seeds one new epoch; repeated overrides stay warm. Existing fallback and proactive-isolation policies continue to apply. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
+
 ### Data flow
 
 `@mono-agent/agent-app` is the composition root. A running host follows this

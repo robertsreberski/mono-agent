@@ -67,8 +67,9 @@ Remote event frames are capped at 256 KiB after UTF-8 NDJSON serialization, incl
 The input editor autocompletes slash commands:
 
 - `/model [ref|default]` applies or clears a session-scoped model override. Bare
-  `/model` opens the agent's advertised model list. A different model starts
-  each turn with a fresh provider session.
+  `/model` opens the agent's advertised model list. Changing models starts one
+  cold provider epoch and emits a `model_change` replay boundary. Subsequent
+  turns on that model stay warm when continuous sessions are enabled.
 - `/effort [level|default]` applies or clears a session-scoped effort override.
   Bare `/effort` opens options supported by the effective model.
 - `/new [label]` inserts a visual break in the transcript. It does not change

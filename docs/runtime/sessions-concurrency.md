@@ -25,7 +25,7 @@ Boundary rules:
 | --- | --- | --- | --- |
 | Daily rollover (`runtime.session.rollover: "daily"`) | The current day-bucket conversation id and its warm provider-session lineage, on every channel **except** the console (TUI + web) | Durable memory, old run artifacts, durable Pi transcripts for other ids, app process state, and every console thread | `session_boundary` with `kind: "rollover"` on the first turn of the new bucket |
 | Isolated proactive turn (`runtime.session.isolateProactive: true`) | Nothing shared; the proactive turn intentionally skips the conversation's warm provider session | Existing interactive warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "proactive"` |
-| Isolated model override | Nothing shared; the override turn uses a one-shot provider session for the alternate model | Existing default-model warm session, durable history, memory, and run artifacts | `session_boundary` with `kind: "isolated"` and `reason: "model_override"` |
+| Model change within a continuous conversation | The previous model-bound provider epoch; the new model starts from canonical history | Durable message and tool history, memory, and run artifacts | `session_boundary` with `kind: "resume_replay"` and `reason: "model_change"` |
 | Resume replay after stale/missing provider session | The stale provider session id | Durable history, memory, run artifacts, and the run itself, which retries once | `runtime_warning` `session_resume_retry` plus `session_boundary` with `kind: "resume_replay"` |
 | Host-only history append / unsynchronized provider result | The prior durable provider epoch | Canonical history, memory, and run artifacts | The next provider turn receives a fresh epoch id and replays canonical history |
 | Cancelled admitted interactive turn | The active provider epoch and unfinished turn | A bounded, redacted continuity account in canonical history, retained tool-history records, and run artifacts | The next provider turn receives a fresh epoch and sees the request, retained partial output/tool pairs, typed cancellation reason, and in-flight/omission markers |
@@ -52,6 +52,10 @@ subsequent turns resume the new session and are eligible for provider caching.
 On a warm turn whose primary attempt fails, the retry or backup attempt runs
 stateless with the current message and a bounded snapshot of the failed attempt,
 without the earlier conversation; the next turn reseeds from canonical history.
+
+A continuous conversation binds its provider session to the requested primary model, including a thread or channel model override. Repeating that model stays warm; changing it (including returning to the default) retires the old session on its owning runtime and starts a fresh epoch. The cold turn is seeded from canonical user/assistant text and the existing bounded tool-history projection; subsequent warm turns retain the native transcript, including tool results and signed reasoning. Effort-only and same-model overrides do not rotate the session. Continuations and opt-in proactive isolation keep their existing one-shot behavior. Configured retry/fallback behavior follows the [fallback session policy](/runtime/fallback/).
+
+With `providers.piNative.piSessionsRoot`, the durable history record and its recovery fence persist the model binding alongside the epoch. A restarted process resolves the session's owning runtime from that binding. Existing histories without a binding load normally but take one cold reseed before becoming bound. Older binaries reject the new bound history shape; downgrade does not automatically rotate or migrate those records.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
