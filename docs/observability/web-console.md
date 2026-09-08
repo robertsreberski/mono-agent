@@ -410,15 +410,15 @@ Choosing a result by keyboard, mouse, or touch inserts its exact `$skill-name` r
 
 The registry is scoped to the active agent and comes from that running agent's `skillsRoot`, disclosure mode, selected skills, and `ReadSkill` policy. The agent refreshes its in-memory snapshot every five seconds when installed skill files change; the web service never persists a second skill list. Agent switches, registry invalidations, and event-stream reconnects refetch the active snapshot. Loading, empty, unsupported, offline, refresh-error, and stale states leave ordinary composition usable; stale entries are visible but cannot be inserted until a live refresh succeeds.
 
-### Steer a running turn
+### Send while a turn is running
 
-The composer remains sendable while a response is running. A normal text-only
-send is persisted immediately and offered to the active provider as live
-guidance. An existing non-cron conversation provides a secondary **Steer**
-action only while a turn is running. **Control/Command + Shift + Enter** uses
-the same live-input route regardless of whether the browser currently displays
-the conversation as running or idle; the service decides whether an active turn
-can accept it. The message displays one of five delivery states:
+The composer keeps one **Send** action while a response is running. Button Send,
+desktop Enter, and **Control/Command + Shift + Enter** all submit the same
+immutable UUID-bearing payload; Shift+Enter and touch Enter remain newline. The
+browser does not choose between turn and live-input endpoints. The service reads
+authoritative state and either starts one normal turn or targets the exact active
+Web operation and its harness-owned mailbox. The message displays one of five
+delivery states:
 
 - **Steering current run…** while the provider settlement is pending;
 - **Consumed by current run** after exact transcript-consumption evidence and
@@ -435,25 +435,31 @@ full follow-up stays in its human message. Queued, unavailable, and cancelled
 guidance does not create the row.
 
 Queued guidance starts automatically as a normal turn after the current turn
-settles, or immediately when an explicit Steer finds the conversation idle. It
+settles. It
 uses the conversation's model and effort captured when the message was
 offered; a follow-up offered during a turn retains that active turn's route.
 Pending delivery and queue state live in the service's owner-private SQLite
 store rather than the browser tab. Schema 22 persists a dispatch marker before
 the operator request. On restart, unmarked offers recover queued while marked
 offers become uncertain and non-promotable, preventing automatic duplicate
-fallback. Back up the database before upgrading: schema-21 Web refuses a
-schema-22 database, and rollback requires restoring a compatible backup, losing
-later writes. Existing offered rows migrate with a null marker, so their old
-dispatch history remains ambiguous. Deploy consumers before producers and do
-not send the new result to an old external Web consumer. Each live follow-up is
-limited to 8,000 characters, with at most 100 unsettled entries per thread.
+fallback. Schema 23 adds a thread-scoped durable submission ledger: replaying
+the same UUID and payload returns the current receipt without redispatch, while
+conflicting reuse returns `409`. Browser recovery stores only the thread and
+submission UUID, then reads that receipt; it never persists draft/file content
+or automatically posts again. Back up the database before upgrading: a
+schema-22 Web binary refuses schema 23, and rollback requires restoring a
+compatible backup, losing later writes. Deploy the targeting-capable operator
+before Web. An older operator visibly queues `unsupported_targeting` instead of
+guessing a current run. Each live follow-up is limited to 8,000 characters,
+with at most 100 unsettled entries per thread.
 
-Steering is text-only. The explicit button is disabled when attachments are
-present, and the shortcut fails closed before either send endpoint while
-restoring the draft, quote, and attachments. Attachments otherwise keep the
-ordinary turn path. If a quote is present, the browser flattens its Markdown
-blockquote context into the live guidance before persistence and delivery.
+Live guidance is text-only. When attachments are staged during an active turn,
+the server durably rejects the submission before claiming or deleting uploads,
+and the browser restores the full authored text, structured quote, and staged
+files. Once the response finishes, an intentional new Send uses a new UUID and
+the ordinary attachment turn path. For quoted live guidance, the server formats
+the Markdown blockquote for the operator while retaining the structured quote
+and exact authored text in the transcript.
 
 ## Structured AskUser forms
 
@@ -695,7 +701,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 22. Schema 9 added the `message_search` FTS5
+The web state database is at schema 23. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
@@ -716,11 +722,14 @@ additive and transactional. Schema 22 adds the nullable
 marker before crossing the operator dispatch boundary: unmarked offers recover
 as queued, while marked offers recover as terminal uncertainty and cannot be
 promoted into an automatic next turn. Existing offered rows migrate with a NULL
-marker, so their earlier dispatch history remains ambiguous. Back up the
-database before upgrading. A schema-21 `@mono-agent/web` binary refuses the
-schema-22 database rather than reading it incorrectly; rollback requires
-restoring that compatible pre-upgrade backup and therefore loses subsequent
-writes.
+marker, so their earlier dispatch history remains ambiguous. Schema 23 adds the
+`web_submissions` idempotency ledger with payload digest, admitted kind,
+turn/message/input associations, and durable product rejection reason. The
+ledger survives archive and is removed only with permanent thread deletion.
+Back up the database before upgrading. A schema-22 `@mono-agent/web` binary
+refuses the schema-23 database rather than reading it incorrectly; rollback
+requires restoring that compatible pre-upgrade backup and therefore loses
+subsequent writes.
 
 ## Local state and reset
 

@@ -138,6 +138,7 @@ export function bindMonitorWakeContextToResponder(
       }
     },
     ...(responder.cancel === undefined ? {} : { cancel: responder.cancel.bind(responder) }),
+    ...(responder.liveInputOwnership === undefined ? {} : { liveInputOwnership: responder.liveInputOwnership }),
     ...(responder.offerLiveInput === undefined
       ? {}
       : { offerLiveInput: (request: AgentLiveInputRequest): AgentLiveInputOffer => responder.offerLiveInput!(request) }),

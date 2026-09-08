@@ -156,7 +156,7 @@ describe("turn overrides", () => {
         liveInputStatus: "pending" as const,
       },
     };
-    const fetchMock = vi.fn().mockResolvedValue(Response.json(receipt, { status: 202 }));
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json(receipt, { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(api.liveInput("thread/one", "Steer this run")).resolves.toEqual(receipt);
@@ -167,6 +167,38 @@ describe("turn overrides", () => {
         body: JSON.stringify({ text: "Steer this run" }),
       }),
     );
+  });
+
+  it("posts and recovers one UUID-bearing submission through encoded routes", async () => {
+    const receipt = {
+      submissionId: "11111111-1111-4111-8111-111111111111",
+      threadId: "thread/one",
+      outcome: "turn" as const,
+    };
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json(receipt, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.submit("thread/one", receipt.submissionId, {
+      text: "One send",
+      quote: { text: "Context", messageId: "message-1" },
+      attachmentIds: ["upload-1"],
+    })).resolves.toEqual(receipt);
+    await expect(api.submission("thread/one", receipt.submissionId)).resolves.toEqual(receipt);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/thread%2Fone/submissions");
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toEqual({
+      submissionId: receipt.submissionId,
+      text: "One send",
+      quote: { text: "Context", messageId: "message-1" },
+      attachmentIds: ["upload-1"],
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `/api/v1/threads/thread%2Fone/submissions/${receipt.submissionId}`,
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      headers: { Accept: "application/json" },
+    });
   });
 });
 

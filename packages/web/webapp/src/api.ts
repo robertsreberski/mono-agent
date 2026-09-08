@@ -20,6 +20,7 @@ import type {
   ProviderAuthStatusSnapshot,
   PushSubscriptionStatus,
   StartTurnInput,
+  SubmissionReceipt,
   ThreadDetail,
   ThreadPage,
   ThreadSearchPage,
@@ -701,6 +702,17 @@ export const api = {
     request<{ thread: ThreadSummary; turn: { id: string; status: string } }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/turns`,
       { method: "POST", body: JSON.stringify(input) },
+    ),
+
+  submit: async (threadId: string, submissionId: string, input: StartTurnInput) =>
+    request<SubmissionReceipt>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/submissions`,
+      { method: "POST", body: JSON.stringify({ submissionId, ...input }) },
+    ),
+
+  submission: async (threadId: string, submissionId: string) =>
+    request<SubmissionReceipt>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/submissions/${encodeURIComponent(submissionId)}`,
     ),
 
   liveInput: async (threadId: string, text: string) =>

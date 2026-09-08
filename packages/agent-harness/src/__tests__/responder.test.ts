@@ -28,6 +28,29 @@ function baseRequest(conversationId = "c1") {
 }
 
 describe("createAgentResponder", () => {
+  it("advertises harness ownership and forwards the host-only observer", async () => {
+    const seen: Array<{ status: string; runId?: string; reason?: string }> = [];
+    const harness: AgentHarness = {
+      liveInputOwnership: { version: 1 },
+      async run(request) {
+        request.onLiveInputOwnership?.({ status: "ready", runId: "run-owned" });
+        request.onLiveInputOwnership?.({ status: "closed", reason: "closed" });
+        return okResponse(request.conversationId);
+      },
+    };
+    const responder = createAgentResponder({ harness });
+
+    expect(responder.liveInputOwnership).toEqual({ version: 1 });
+    await responder.respond({
+      ...baseRequest(),
+      onLiveInputOwnership: (event) => seen.push(event),
+    }, noopStream());
+    expect(seen).toEqual([
+      { status: "ready", runId: "run-owned" },
+      { status: "closed", reason: "closed" },
+    ]);
+  });
+
   it("maps live input onto the exact active daily bucket and closes the mapping after the turn", async () => {
     let start!: () => void;
     const started = new Promise<void>((resolve) => { start = resolve; });

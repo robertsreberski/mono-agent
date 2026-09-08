@@ -127,8 +127,11 @@ The core turn boundary is deliberately structural:
 1. A channel normalizes transport input into an `AgentRequestBase`, including a
    required `AbortSignal`.
 2. The host calls `AgentResponder.respond(request, stream)`.
-3. While that response is active, the adapter may offer bounded live input and
-   retain normal-turn admission until the offer settles.
+3. A capable responder reports host-only live-input ownership as `ready` with
+   the exact harness run id, then `closed` before that mailbox can be replaced.
+   While ownership is active, the adapter may offer bounded live input and
+   retain normal-turn admission until the offer settles. These callbacks never
+   enter request metadata, prompts, history, or JSON transport.
 4. The responder sends deltas, replacement text, status, and telemetry through
    `AgentMessageStream` and returns an `AgentResponse` when the turn settles.
 5. A `ChannelDriver` combines config loading and the responder with a transport,
@@ -241,6 +244,7 @@ AgentContinuationContextMessage
 AgentContinuationOriginContext
 AgentContinuationTurn
 AgentLiveInputOffer
+AgentLiveInputOwnership
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason

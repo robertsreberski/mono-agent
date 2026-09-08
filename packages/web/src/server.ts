@@ -38,6 +38,7 @@ import {
   type PutWebAgentRunSettingsInput,
   type StartWebLiveInputInput,
   type StartWebTurnInput,
+  type StartWebSubmissionInput,
   type WebEvent,
   type WebConsoleIdentity,
   type WebMessageChangedPayload,
@@ -170,6 +171,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // Express answer an unchanged payload with a 304 instead of resending it.
   app.use("/api", (_req, res, next) => {
     res.setHeader("Cache-Control", "private, no-cache");
+    next();
+  });
+  app.use("/api/v1/threads/:id/submissions", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
     next();
   });
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
@@ -723,6 +728,28 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void trackOperation(service.startTurn(threadId, input), activeOperations)
       .then((started) => res.status(202).json(started))
       .catch(next);
+  });
+
+  app.post("/api/v1/threads/:id/submissions", (req, res, next) => {
+    try {
+      const input = parseSubmission(req.body);
+      const receipt = service.submit(pathParam(req.params.id), input);
+      res.status(receipt.outcome === "rejected" ? 409 : 202).json(receipt);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/threads/:id/submissions/:submissionId", (req, res, next) => {
+    try {
+      const receipt = service.submission(
+        pathParam(req.params.id),
+        parseSubmissionId(pathParam(req.params.submissionId)),
+      );
+      res.status(200).json(receipt);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/v1/threads/:id/live-input", (req, res, next) => {
@@ -1473,6 +1500,20 @@ function parseTurn(value: unknown): StartWebTurnInput {
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
   };
+}
+
+function parseSubmission(value: unknown): StartWebSubmissionInput {
+  const body = requireRecord(value);
+  const submissionId = parseSubmissionId(body.submissionId);
+  return { ...parseTurn(body), submissionId };
+}
+
+function parseSubmissionId(value: unknown): string {
+  const submissionId = requireString(value, "submissionId", 36);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(submissionId)) {
+    throw invalidBody("submissionId must be a canonical UUID.");
+  }
+  return submissionId.toLowerCase();
 }
 
 function parseLiveInput(value: unknown): StartWebLiveInputInput {

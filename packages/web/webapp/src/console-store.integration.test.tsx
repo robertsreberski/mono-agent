@@ -105,6 +105,8 @@ vi.mock("./api", async (importOriginal) => ({
     message: vi.fn(),
     threadIfChanged: vi.fn(),
     liveInput: vi.fn(),
+    submit: vi.fn(),
+    submission: vi.fn(),
     threadJob: vi.fn(),
   },
 }));
@@ -278,7 +280,10 @@ describe("ConsoleStoreProvider integration", () => {
     // Reset both; every case installs what it needs.
     vi.mocked(api.thread).mockReset();
     vi.mocked(api.threadIfChanged).mockReset();
+    vi.mocked(api.submit).mockReset();
+    vi.mocked(api.submission).mockReset();
     localStorage.clear();
+    sessionStorage.clear();
     window.history.replaceState(null, "", "/");
     FakeEventSource.latest = undefined;
     FakeEventSource.instances = [];
@@ -312,6 +317,25 @@ describe("ConsoleStoreProvider integration", () => {
     const drift = Date.now() - serverNow();
     expect(drift).toBeGreaterThanOrEqual(3_000);
     expect(drift).toBeLessThan(3_500);
+  });
+
+  it("recovers a persisted submission reference with GET only and clears it after a known receipt", async () => {
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    sessionStorage.setItem("mono-agent.web.pending-submissions", JSON.stringify([{
+      threadId: "thread-one",
+      submissionId,
+    }]));
+    vi.mocked(api.submission).mockResolvedValue({
+      submissionId,
+      threadId: "thread-one",
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+
+    await renderStore();
+    await waitFor(() => expect(api.submission).toHaveBeenCalledWith("thread-one", submissionId));
+    expect(api.submit).not.toHaveBeenCalled();
+    await waitFor(() => expect(sessionStorage.getItem("mono-agent.web.pending-submissions")).toBeNull());
   });
 
   it("keeps the real console shell mounted while switching agents and conversations", async () => {
@@ -1607,6 +1631,26 @@ describe("ConsoleStoreProvider integration", () => {
         await sent;
       });
       expect(order).toEqual(["start:0", "end:0", "startTurn"]);
+    });
+
+    it("reuses one submission UUID after an unknown transport result without persisting authored text", async () => {
+      seedOneThread();
+      vi.mocked(api.submit).mockRejectedValue(new Error("submission response lost"));
+      vi.mocked(api.submission).mockRejectedValue(new Error("receipt unavailable"));
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      const input = { text: "Do not persist this authored draft" };
+
+      await expect(store.current.sendSubmission(input)).rejects.toThrow("submission response lost");
+      await expect(store.current.sendSubmission(input)).rejects.toThrow("submission response lost");
+
+      expect(api.submit).toHaveBeenCalledTimes(2);
+      const submissionIds = vi.mocked(api.submit).mock.calls.map((call) => call[1]);
+      expect(new Set(submissionIds).size).toBe(1);
+      expect(vi.mocked(api.submission).mock.calls.map((call) => call[1])).toEqual(submissionIds);
+      const persisted = sessionStorage.getItem("mono-agent.web.pending-submissions") ?? "";
+      expect(persisted).toContain(submissionIds[0]!);
+      expect(persisted).not.toContain(input.text);
     });
 
     it("does not offer live input until prior writes land and keeps its captured conversation", async () => {

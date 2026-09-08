@@ -71,6 +71,7 @@ export function createAgentResponder(options: {
   const pendingLiveInputByBaseConversation = new Map<string, Map<string, PendingLiveInputActivity>>();
 
   return {
+    ...(options.harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: options.harness.liveInputOwnership }),
     async dispose(): Promise<void> {
       pendingLiveInputByBaseConversation.clear();
       await options.harness.dispose?.();
@@ -238,6 +239,7 @@ export function createAgentResponder(options: {
     const response = await invoke({
       conversationId: bucketed,
       userMessage: request.text,
+      ...(request.onLiveInputOwnership === undefined ? {} : { onLiveInputOwnership: request.onLiveInputOwnership }),
       abortSignal: request.abortSignal,
       ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
       ...(request.attachments === undefined ? {} : { attachments: request.attachments }),

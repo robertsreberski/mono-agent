@@ -149,6 +149,7 @@ export function operatorFetch(options: {
   readonly supportsAskUser?: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput?: boolean;
+  readonly supportsLiveInputTargeting?: boolean;
   readonly supportsReplyAttachments?: boolean;
   readonly supportsMcpApps?: boolean;
   readonly supportsJobs?: boolean;
@@ -210,6 +211,7 @@ export function operatorFetch(options: {
           askUser: options.supportsAskUser ?? false,
           ...(options.supportsAskById === true ? { askById: true } : {}),
           liveInput: options.supportsLiveInput ?? false,
+          ...(options.supportsLiveInputTargeting === true ? { liveInputTargeting: { version: 1 } } : {}),
           ...(options.supportsReplyAttachments === true
             ? { replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 } }
             : {}),

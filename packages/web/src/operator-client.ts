@@ -124,6 +124,7 @@ export interface OperatorInfo {
   readonly supportsAskUser: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput: boolean;
+  readonly supportsLiveInputTargeting?: true;
   readonly supportsToolEnvironment?: boolean;
   readonly replyAttachments?: { readonly version: 1; readonly maxBytes: number };
   readonly mcpApps?: {
@@ -147,6 +148,8 @@ export interface OperatorLiveInputInput {
   readonly text: string;
   readonly receivedAt: string;
   readonly deliveryKey?: string;
+  readonly targetTurnId?: string;
+  readonly targetRunId?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -160,6 +163,7 @@ export interface OperatorTurnInput {
   readonly toolEnvironment?: AgentToolEnvironment;
   readonly signal: AbortSignal;
   readonly onFrame: (frame: AgentStreamWireFrame) => void | Promise<void>;
+  readonly onAdmitted?: () => void;
 }
 
 export interface OperatorTurnResult {
@@ -233,6 +237,7 @@ export class OperatorClient {
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
+      ...(record(capabilities?.liveInputTargeting)?.version === 1 ? { supportsLiveInputTargeting: true } : {}),
       ...(capabilities?.toolEnvironment === true ? { supportsToolEnvironment: true } : {}),
       ...(replyAttachments === undefined ? {} : { replyAttachments }),
       ...(mcpApps === undefined ? {} : { mcpApps }),
@@ -368,6 +373,7 @@ export class OperatorClient {
     if (response.body === null) {
       throw new WebConsoleError("empty_operator_stream", "The agent returned an empty response stream.", 502);
     }
+    input.onAdmitted?.();
     try {
       for await (const line of readBoundedNdjsonLines(response.body, MAX_NDJSON_FRAME_BYTES)) {
         if (line.trim().length === 0) continue;
@@ -417,6 +423,8 @@ export class OperatorClient {
           id: input.id,
           text: input.text,
           receivedAt: input.receivedAt,
+          ...(input.targetTurnId === undefined ? {} : { targetTurnId: input.targetTurnId }),
+          ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),
           ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
         }),
       },

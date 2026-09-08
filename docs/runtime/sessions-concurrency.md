@@ -17,7 +17,7 @@ Mono-agent uses "session" for five related but different boundaries:
 | Provider session | Runtime backend / provider bridge | Warm runtime continuity: provider-side context, provider session id, busy state, and idle eviction | Idle eviction, stale/busy resume retry, provider session rotation, any cancelled or failed admitted non-isolated turn before success commit, harness disposal, or process restart when only in-memory |
 | Canonical logical-session history | Durable message-history files plus the separate `tool-history/tool-lifecycles.sqlite` sidecar | Cold context replay and retained, searchable managed-tool invocation/result evidence; settled failed/cancelled non-isolated turns have bounded message accounts, while tool records may still outlive isolated, never-started, or hard-crashed runs with no account | A conversation reset clears every message and tool-history bucket visible in that logical session; `mono-agent restart --clear-sessions` clears all persisted conversation state |
 | Durable Pi transcript | Pi-native JSONL store plus the canonical history record's random provider epoch and transcript revision | Crash-safe cross-restart and cross-process resume for Pi-native provider sessions | `mono-agent restart --clear-sessions`, deleting either store, a dirty fence or legacy/missing history record, host-only history append, failed provider sync, or leaving `piSessionsRoot` unset |
-| Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments/live follow-ups, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted, requeues only unmarked offers, and renders dispatch-marked live input uncertain without retry |
+| Web console thread | `mono-agent web` / `@mono-agent/web` | Persistent source-bound browser conversation, its messages/attachments/live follow-ups, durable submission receipts, and at most one active turn; different threads can run concurrently | Archive only hides it; `mono-agent web reset --all --yes` removes the entire stopped console store. Browser disconnect does not end its active turn; service restart marks that turn interrupted, requeues only unmarked offers, renders dispatch-marked live input uncertain without retry, and retains submission receipts for read-only recovery |
 
 Boundary rules:
 
@@ -35,7 +35,7 @@ Boundary rules:
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
 | `mono-agent restart --clear-sessions` / explicit purge | Durable Pi transcripts under `piSessionsRoot`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path`, recorded run artifacts, and process-job records/output; nonterminal jobs are interrupted by any restart | Restart/status output reports message-history and tool-history counts/bytes plus ACP authorization counts separately |
 | Browser disconnect or reload | Only that SSE/browser connection | Web service turn, source-bound thread, messages, committed attachments, provider/harness work | Reconnect receives current state and subsequent events |
-| Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; pending live offers become queued normal turns |
+| Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, submission receipts, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; unmarked live offers become queued normal turns, dispatch-marked offers become uncertain, and browsers recover a known submission with `GET` instead of repeating `POST` |
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
 | `mono-agent web-control reset` | Validated idle host admission, cooldown and quota metadata under `~/.mono-agent/web-control`; active requests prevent reset | Conversations, artifacts, documents and account quota; ordinary session resets and restarts preserve web-control state | CLI operational metadata only |
 
@@ -132,14 +132,21 @@ Env vars: `MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS`, `MONO_AGENT_CONCURRENCY_
 
 These bounds cover the harness run path (which begins at `responder.respond`). Channel adapters (Slack/Telegram) do per-conversation admission and attachment downloads *before* that boundary, so cross-conversation transport download IO is not covered here — per-file byte caps and timeouts apply to that instead. A plain-text same-conversation follow-up can be applied inside the active provider run; its reserved adapter queue slot is released after acknowledgement or becomes the next normal turn on an unsupported/failed/end-of-turn race. Adapter queues are drained and aborted on `/cancel` and stop.
 
-The web console separately admits only one active turn per thread. Text-only
-submissions during that turn use live provider steering when supported and a
-durable next-turn queue otherwise; they never create parallel responses in the
-same thread. Because each thread has its own permanent conversation id, distinct
-web threads and distinct agents can execute concurrently subject to the selected
-agent's ordinary harness limits. Closing the browser does not free a harness
-slot or cancel that turn; use the visible cancel action when cancellation is
-intended.
+The web console separately admits only one active turn per thread. Its one
+**Send** path carries a client-generated submission UUID, while the service
+chooses a normal turn or targets the exact active Web operation through
+harness-owned live-input ownership. A targeting-capable operator waits only for
+that operation's run id; a closed, disconnected, timed-out, or mismatched wait
+cannot drift into its successor. An older operator produces the visible,
+durable `unsupported_targeting` next-turn queue instead of guessing. Replaying
+the same UUID and immutable payload returns the durable receipt without another
+dispatch, and browser reload recovery reads that receipt without automatically
+posting authored content again. These submissions never create parallel
+responses in the same thread. Because each thread has its own permanent
+conversation id, distinct web threads and distinct agents can execute
+concurrently subject to the selected agent's ordinary harness limits. Closing
+the browser does not free a harness slot or cancel that turn; use the visible
+cancel action when cancellation is intended.
 
 Once an admitted, non-isolated run settles as cancelled or failed before success
 commit, the harness seals the accepted partial assistant/tool prefix, releases

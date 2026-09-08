@@ -70,6 +70,7 @@ const createStore = (
   archiveThread: vi.fn(),
   unarchiveThread: vi.fn(),
   sendTurn,
+  sendSubmission: sendTurn,
   sendLiveInput: vi.fn().mockResolvedValue(undefined),
   cancelTurn: vi.fn(),
   setShowArchived: vi.fn(),
@@ -315,7 +316,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     await waitFor(() => expect(composer.getState().text).toBe("second"));
   });
 
-  it("routes text submitted during a running turn to live input instead of starting another turn", async () => {
+  it("routes text submitted during a running turn through the unified server-authoritative action", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
@@ -335,12 +336,15 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       composer.send();
     });
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the smaller scope"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use the smaller scope" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(composer.getState().text).toBe("");
   });
 
-  it("offers explicit Steer on a running conversation and routes it to live input", async () => {
+  it("shows one Send action on a running conversation and no Steer action", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
@@ -354,23 +358,22 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     const { runtime } = await renderComposerRuntime();
     const input = screen.getByRole("combobox", { name: "Message" });
-    const steer = screen.getByRole("button", { name: "Steer this message" });
-
-    expect(steer).toBeDisabled();
-    expect(steer).toHaveAttribute(
-      "title",
-      "Offer to the active run.",
-    );
+    expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send).toBeDisabled();
     fireEvent.change(input, { target: { value: "Treat the browser state as stale" } });
-    await waitFor(() => expect(steer).toBeEnabled());
-    fireEvent.click(steer);
+    await waitFor(() => expect(send).toBeEnabled());
+    fireEvent.click(send);
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Treat the browser state as stale"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Treat the browser state as stale" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
-  it("forces live input from Ctrl+Shift+Enter while the conversation appears idle", async () => {
+  it("aliases Ctrl+Shift+Enter to the same Send action while the conversation appears idle", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     storeMock.current = createStore(sendTurn, { sendLiveInput });
@@ -385,13 +388,18 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       shiftKey: true,
     });
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the forced shortcut"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use the forced shortcut" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
-  it("fails a forced attachment closed and restores its text, quote, and upload", async () => {
-    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+  it("restores text, quote, and upload when an active attachment submission is rejected", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockRejectedValue(new Error(
+      "Files can be sent when this response finishes. Your draft and files are kept.",
+    ));
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
       runState: { id: "turn-running", status: "running" },
@@ -411,9 +419,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     act(() => composer.setQuote({ text: "quoted context", messageId: "source-message" }));
     fireEvent.change(input, { target: { value: "Do not drop this" } });
-    const steer = screen.getByRole("button", { name: "Steer this message" });
-    expect(steer).toBeDisabled();
-    expect(steer).toHaveAttribute("title", "Steering is text-only.");
+    expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
 
     fireEvent.keyDown(input, {
       key: "Enter",
@@ -428,8 +434,15 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       messageId: "source-message",
     });
     expect(composer.getState().attachments).toMatchObject([{ name: "keep.md" }]);
+    expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Do not drop this",
+        quote: { text: "quoted context", messageId: "source-message" },
+        attachmentIds: ["upload-1"],
+      }),
+      expect.any(Function),
+    );
     expect(sendLiveInput).not.toHaveBeenCalled();
-    expect(sendTurn).not.toHaveBeenCalled();
   });
 
   it("does not offer explicit Steer for an idle conversation, a new conversation, or cron channel", async () => {
@@ -477,15 +490,18 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     const { runtime } = await renderComposerRuntime();
     const input = screen.getByRole("combobox", { name: "Message" });
-    const send = screen.getByRole("button", { name: "Send live follow-up" });
+    const send = screen.getByRole("button", { name: "Send message" });
 
     expect(send).toBeDisabled();
     fireEvent.change(input, { target: { value: "Use the actual button" } });
     await waitFor(() => expect(send).toBeEnabled());
     fireEvent.click(send);
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the actual button"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use the actual button" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
@@ -510,8 +526,11 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(runtime.thread.composer.getState().text).toBe("Use Enter");
 
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use Enter"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use Enter" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
