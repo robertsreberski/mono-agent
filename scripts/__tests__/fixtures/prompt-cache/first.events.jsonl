@@ -1,0 +1,4 @@
+{"type":"prompt_cache_diagnostic","requestOrdinal":1,"supported":true,"toolDefinitionsFingerprint":"tools-a","systemFingerprint":"system-a","inputInterpretation":"full","logicalInputInterpretation":"full","inputInterpretationSource":"provider_payload"}
+{"type":"context_usage","tokens":{"input":10,"cacheRead":90,"cacheCreation":0,"output":2}}
+{"type":"prompt_cache_diagnostic","requestOrdinal":2,"supported":true,"toolDefinitionsFingerprint":"tools-b","systemFingerprint":"system-a","inputInterpretation":"delta","logicalInputInterpretation":"delta","inputInterpretationSource":"provider_payload"}
+{"type":"context_usage","tokens":{"input":900,"cacheRead":100,"cacheCreation":0,"output":3}}

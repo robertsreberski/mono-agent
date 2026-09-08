@@ -439,6 +439,11 @@ writeMonoAgentConfigJson
 
 It does not load Telegram, WhatsApp, Slack, or other adapter-specific credentials or allowlists. Adapter packages own those settings and their safety rules.
 
+Opt in to metadata-only prompt-cache request fingerprints with
+`providers.piNative.promptCacheDiagnostics` (default `false`) or
+`MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
+[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+
 ## Related Documentation
 
 - [Configuration overview](https://mono-agent-docs.vercel.app/config/)

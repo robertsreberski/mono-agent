@@ -1158,6 +1158,11 @@ compose communication adapters; adapters never depend on it.
   `@mono-agent/agent-harness` and `@mono-agent/runtime-adapter`).
 - Multi-agent orchestration (owned by `@mono-agent/agent-orchestrator`).
 
+Opt in to metadata-only prompt-cache request fingerprints with
+`providers.piNative.promptCacheDiagnostics` (default `false`) or
+`MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
+[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+
 ## Related Documentation
 
 - [Quickstart](https://mono-agent-docs.vercel.app/getting-started/quickstart/)
