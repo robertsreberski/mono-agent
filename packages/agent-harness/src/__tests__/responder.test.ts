@@ -1368,6 +1368,119 @@ describe("streamEventFromRuntimeEvent telemetry mapping", () => {
     ).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
   });
 
+  it("keeps the existing structuredContent size ceiling", () => {
+    expect(streamEventFromRuntimeEvent({
+      type: "user",
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "t1",
+        content: "x",
+        raw_result: { details: { raw: { structuredContent: { value: "x".repeat(16_001) } } } },
+      }] },
+    })).toEqual({ type: "tool_call_completed", id: "t1", content: "x" });
+  });
+
+  const backgroundOutcome = (overrides: Record<string, unknown> = {}) => ({
+    status: "ok",
+    code: "background_started",
+    retryable: false,
+    attempts: 1,
+    durationMs: 4,
+    bytes: 0,
+    truncated: false,
+    exitCode: null,
+    signal: null,
+    timedOut: false,
+    background: true,
+    job_id: "job-1",
+    state: "running",
+    started_at: "2026-09-08T10:00:00.000Z",
+    max_runtime_ms: 60_000,
+    ...overrides,
+  });
+
+  const completedBackgroundTool = (
+    name: string,
+    outcome: unknown,
+    detailsTool = name,
+  ) => {
+    const toolNames = new Map<string, string>();
+    streamEventFromRuntimeEvent({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "background-1", name, input: {} }] },
+    }, { toolNames });
+    return streamEventFromRuntimeEvent({
+      type: "user",
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "background-1",
+        content: "Background process job started.",
+        raw_result: { details: { tool: detailsTool, outcome } },
+      }] },
+    }, { toolNames });
+  };
+
+  it.each(["Exec", "Bash"])("lifts an exact %s background-start outcome into a canonical receipt", (name) => {
+    expect(completedBackgroundTool(name, backgroundOutcome())).toEqual({
+      type: "tool_call_completed",
+      id: "background-1",
+      name,
+      content: "Background process job started.",
+      structuredContent: {
+        schema: "mono-agent.process-job-start-receipt.v1",
+        jobId: "job-1",
+        tool: name,
+        state: "running",
+        startedAt: "2026-09-08T10:00:00.000Z",
+        maxRuntimeMs: 60_000,
+      },
+    });
+  });
+
+  it("accepts only Bash's exact legacy-timeout extension and omits it from the receipt", () => {
+    expect(completedBackgroundTool("Bash", backgroundOutcome({ legacyTimeoutUsed: true })))
+      .toMatchObject({ structuredContent: { schema: "mono-agent.process-job-start-receipt.v1", tool: "Bash" } });
+    expect(completedBackgroundTool("Bash", backgroundOutcome({ legacyTimeoutUsed: false })))
+      .not.toHaveProperty("structuredContent");
+    expect(completedBackgroundTool("Exec", backgroundOutcome({ legacyTimeoutUsed: true })))
+      .not.toHaveProperty("structuredContent");
+  });
+
+  it.each([
+    ["wrong tool", backgroundOutcome(), "Bash"],
+    ["wrong code", backgroundOutcome({ code: "ok" }), "Exec"],
+    ["extra field", backgroundOutcome({ invented: true }), "Exec"],
+    ["missing field", (() => { const { job_id: _omitted, ...value } = backgroundOutcome(); return value; })(), "Exec"],
+    ["empty id", backgroundOutcome({ job_id: " " }), "Exec"],
+    ["oversized id", backgroundOutcome({ job_id: "x".repeat(257) }), "Exec"],
+    ["bad timestamp", backgroundOutcome({ started_at: "2026-09-08" }), "Exec"],
+    ["bad state", backgroundOutcome({ state: "succeeded" }), "Exec"],
+    ["bad runtime", backgroundOutcome({ max_runtime_ms: 0 }), "Exec"],
+    ["bad duration", backgroundOutcome({ durationMs: -1 }), "Exec"],
+    ["truncated marker", { truncated: true, preview: "..." }, "Exec"],
+  ])("fails closed on a %s process-job outcome", (_case, outcome, detailsTool) => {
+    expect(completedBackgroundTool("Exec", outcome, detailsTool)).not.toHaveProperty("structuredContent");
+  });
+
+  it("fails closed on non-plain and hostile process-job outcome values", () => {
+    expect(completedBackgroundTool("Exec", Object.create(backgroundOutcome())))
+      .not.toHaveProperty("structuredContent");
+    const hostile = new Proxy({}, { getPrototypeOf: () => { throw new Error("blocked"); } });
+    expect(completedBackgroundTool("Exec", hostile)).not.toHaveProperty("structuredContent");
+  });
+
+  it("does not lift a receipt without an exact correlated launch tool", () => {
+    expect(streamEventFromRuntimeEvent({
+      type: "user",
+      message: { content: [{
+        type: "tool_result",
+        tool_use_id: "background-1",
+        content: "Background process job started.",
+        raw_result: { details: { tool: "Exec", outcome: backgroundOutcome() } },
+      }] },
+    })).not.toHaveProperty("structuredContent");
+  });
+
   it("omits executionMs when no timing was recorded for the tool call", () => {
     expect(
       streamEventFromRuntimeEvent(

@@ -5927,10 +5927,10 @@ function applyEvent(
       toolName: event.name ?? existingToolName(parts, event.id) ?? "Tool",
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
       ...(event.content === undefined ? {} : { result: event.content }),
-      // `result` is the model-facing text and cannot answer "what did this tool
-      // actually decide". The AskUser card needs `interactionId`/`answered` to
-      // re-render an answered question after a reload, so keep the structured
-      // payload beside the prose rather than reparsing the sentence.
+      // `result` is model-facing and cannot answer "what did this tool actually
+      // decide". Keep bounded MCP and canonical host outcomes beside the prose:
+      // AskUser needs its answer identity after reload, and process-job launches
+      // need their exact causal receipt rather than reparsing a sentence.
       ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
       ...(executionMs === undefined ? {} : { executionMs }),
       status,

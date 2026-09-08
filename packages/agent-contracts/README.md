@@ -68,6 +68,13 @@ write continued toward bounded run-finalization reconciliation; it is not a
 durability or loss claim. `failed` is an explicit definitive fail-soft
 diagnostic. Neither changes the tool's provider outcome.
 
+A completed tool event may also carry bounded `structuredContent`. This is an
+opaque machine-readable result from MCP or a canonical host tool outcome; it is
+not the model-facing prose. Consumers must recognize and validate the specific
+schema they use. An exact `Exec`/`Bash` process-job start receipt can therefore
+bind later lifecycle evidence to its launch without parsing text or comparing
+timestamps.
+
 Responders may also implement `offerLiveInput()`. An adapter can then offer one
 plain-text follow-up to the active conversation without starting a parallel
 turn. The immediate result says whether the active run accepted ownership; the

@@ -1668,6 +1668,30 @@ describe("startTuiAdapter", () => {
     expect(frames.at(-1)).toEqual({ kind: "finish", finalText: "done" });
   });
 
+  it("preserves a bounded process-job start receipt through operator framing", async () => {
+    const structuredContent = {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: "job-1",
+      tool: "Exec",
+      state: "running",
+      startedAt: "2026-09-08T10:00:00.000Z",
+    } as const;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "launch-1",
+          name: "Exec",
+          content: "Background process job started.",
+          structuredContent,
+        });
+        return { text: "done" };
+      }),
+    });
+    const frames = await readFrames(await postTurn(running.baseUrl, { conversationId: "c", text: "hi" }));
+    expect(frames[0]).toMatchObject({ kind: "event", event: { structuredContent } });
+  });
+
   it("splits oversized append frames without losing multibyte text", async () => {
     const huge = "🙂é".repeat(MAX_FRAME_BYTES);
     running = await startTuiAdapter({

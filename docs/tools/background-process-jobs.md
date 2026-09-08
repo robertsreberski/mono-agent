@@ -546,6 +546,17 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
+Successful background `Exec`/`Bash` completions carry a bounded versioned start
+receipt in their machine-readable tool result. The receipt records the exact job
+id, tool, admission state, and real start stamp when one exists; the human result
+text is not an identity source. The web console uses that causal receipt only
+when both the launching response and its card are loaded. Its response Activity
+then shows real start and terminal evidence, including failed, timed-out,
+cancelled, spawn-failed, queue-expired, and interrupted outcomes. Queued or
+starting jobs without a real start stamp do not gain a start row, and missing
+timestamps are never synthesized. Older launches without the receipt remain in
+the separate job stack only.
+
 An enabled local operator endpoint exposes bearer-protected
 `GET /gui/v1/jobs`, `GET /gui/v1/jobs/:jobId`, and
 `POST /gui/v1/jobs/:jobId/cancel`. Its info response advertises `jobs: true`
@@ -567,6 +578,10 @@ reads retain bounded backoff. Each nonterminal card polls only its
 exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
+
+The stack remains the only live card and poller. Response Activity rows do not
+poll, show output/artifacts/wake details, offer cancellation, or duplicate the
+completion response.
 
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and
