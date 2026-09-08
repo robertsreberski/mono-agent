@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@xmldom/xmldom': 0.9.12
   fast-uri: 3.1.7
   ip-address: 10.3.1
   protobufjs: 7.6.5
@@ -1693,10 +1694,9 @@ packages:
       link-preview-js:
         optional: true
 
-  '@xmldom/xmldom@0.9.10':
-    resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
+  '@xmldom/xmldom@0.9.12':
+    resolution: {integrity: sha512-5AXjrcMClTryPe9LgZrygpB1lj7s0S9E0+W+AHaVKAVyHanafK86iPSvG5xHVSp/jC+VH1UXu0TAEmY279xH7A==, tarball: https://registry.npmjs.org/@xmldom/xmldom/-/xmldom-0.9.12.tgz}
     engines: {node: '>=14.6'}
-    deprecated: this version has critical issues, please update to the latest version
 
   '@yarflam/potion-base-8m@1.0.4':
     resolution: {integrity: sha512-FnVnvuGhol1v5cH+ij0VkPmJFZotRwsJsvp4TB901S2eg8pKCttL3tIRklG9erbyDGBAfxpBh//TNEW7bxc7lw==}
@@ -4464,7 +4464,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@xmldom/xmldom@0.9.10':
+  '@xmldom/xmldom@0.9.12':
     optional: true
 
   '@yarflam/potion-base-8m@1.0.4': {}
@@ -5341,7 +5341,7 @@ snapshots:
 
   mathml-to-latex@1.8.0:
     dependencies:
-      '@xmldom/xmldom': 0.9.10
+      '@xmldom/xmldom': 0.9.12
     optional: true
 
   mdast-util-find-and-replace@1.1.1:
