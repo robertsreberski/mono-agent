@@ -88,7 +88,18 @@ type SelectionRequest =
       readonly threadId: string;
       /** `selectThread` owns this read, so the selection effect must stand aside. */
       readonly direct: boolean;
+    }
+  | {
+      readonly kind: "cron";
+      readonly generation: number;
+      readonly sourceId: string;
+      readonly jobId: string;
     };
+
+interface CreateThreadRequest {
+  readonly generation: number;
+  readonly sourceId: string;
+}
 
 interface SelectionFailure {
   readonly request: SelectionRequest;
@@ -117,6 +128,8 @@ interface ConsoleStoreValue {
   readonly detailLoading: boolean;
   /** An operator-selected agent or conversation has not resolved yet. */
   readonly selectionLoading: boolean;
+  /** A new conversation request still owns the currently displayed context. */
+  readonly creatingThread: boolean;
   /** The current operator-selected destination failed before it could resolve. */
   readonly selectionError: string | null;
   /** The current agent's visible conversation bucket could not be refreshed. */
@@ -1447,6 +1460,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectionRequest, setSelectionRequestState] = useState<SelectionRequest | null>(null);
+  const [createThreadRequest, setCreateThreadRequestState] = useState<CreateThreadRequest | null>(null);
   const [selectionFailure, setSelectionFailureState] = useState<SelectionFailure | null>(null);
   const [threadListFailure, setThreadListFailureState] = useState<ThreadListFailure | null>(null);
   const [threadListRetryRevision, setThreadListRetryRevision] = useState(0);
@@ -1563,6 +1577,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    */
   const operatorSelectionRef = useRef(0);
   const selectionRequestRef = useRef<SelectionRequest | null>(null);
+  const createThreadRequestRef = useRef<CreateThreadRequest | null>(null);
   const selectionFailureRef = useRef<SelectionFailure | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   /** The catalog scope a page walk was started under. See `catalogScope`. */
@@ -1790,6 +1805,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setSelectionRequestState(request);
   }, []);
 
+  const setCreateThreadRequest = useCallback((request: CreateThreadRequest | null) => {
+    createThreadRequestRef.current = request;
+    setCreateThreadRequestState(request);
+  }, []);
+
   const setSelectionFailure = useCallback((failure: SelectionFailure | null) => {
     selectionFailureRef.current = failure;
     setSelectionFailureState(failure);
@@ -1817,7 +1837,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     return generation;
   }, [setSelectionFailure, setSelectionRequest]);
 
-  const selectionLoading = selectionRequest !== null || detailLoading;
+  const creatingThread = createThreadRequest !== null
+    && createThreadRequest.generation === operatorSelectionGeneration
+    && createThreadRequest.sourceId === selectedAgentId;
+  const selectionLoading = selectionRequest !== null || detailLoading || creatingThread;
   const selectionError = selectionFailure?.message ?? null;
   const currentThreadListFailure = threadListFailure?.generation === operatorSelectionGeneration
     && threadListFailure.sourceId === selectedAgentId
@@ -1832,6 +1855,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     if (selectionFailureRef.current !== null) {
       throw new Error("Retry or switch conversations before starting new work.");
+    }
+    const createRequest = createThreadRequestRef.current;
+    if (createRequest !== null
+      && createRequest.generation === operatorSelectionRef.current
+      && createRequest.sourceId === selectedAgentRef.current) {
+      throw new Error("Wait for the new conversation to finish creating.");
     }
   }, []);
 
@@ -2121,11 +2150,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // stands behind yet. The stream's first `ready` clears it.
         applyConnection("reconnecting");
       }
-      // A cron URL is the operator's own instruction about what to open, and
-      // the cron effect resolves it once the overview lands.
-      if (selectedThreadRef.current !== null || cronRouteSelection() !== undefined) return;
+      // A cron URL is the operator's own instruction about what to open. Keep
+      // that unresolved instruction explicit in the SAME batch as the
+      // hydrated shell, so the shell cannot claim this is a new conversation
+      // while the cron overview is still resolving the route.
+      const route = cronRouteSelection();
+      if (route !== undefined) {
+        setSelectionRequest({
+          kind: "cron",
+          generation: operatorSelectionRef.current,
+          sourceId: route.sourceId,
+          jobId: route.jobId,
+        });
+        return;
+      }
+      if (selectedThreadRef.current !== null) return;
       const storedThreadId = agentId === null ? undefined : readPersistedThreadIds()[agentId];
-      if (storedThreadId === undefined || cache.get(storedThreadId) === undefined) return;
+      if (storedThreadId === undefined) return;
       // The same rule a snapshot applies: a selection the listing carries has
       // been confirmed by something, and one it does not is opened on trust --
       // which only a whole answer can settle. See `restoredSelectionRef`.
@@ -2136,13 +2177,27 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadRef.current = storedThreadId;
       cache.setSelected(storedThreadId);
       setSelectedThreadId(storedThreadId);
-      // In the SAME batch as the selection, so no commit ever draws the shell
-      // with a header and no transcript under it.
-      publishDetail(storedThreadId);
+      const cached = cache.get(storedThreadId);
+      if (cached === undefined) {
+        // The id is useful even when its transcript was evicted. Owning its
+        // detail read from this first hydrated commit keeps the UI honest until
+        // the server confirms or rejects the persisted destination.
+        setSelectionRequest({
+          kind: "thread",
+          generation: operatorSelectionRef.current,
+          threadId: storedThreadId,
+          direct: false,
+        });
+        setDetailLoading(true);
+      } else {
+        // In the SAME batch as the selection, so no commit ever draws the shell
+        // with a header and no transcript under it.
+        publishDetail(storedThreadId);
+      }
     })();
     hydrationRef.current = started;
     return started;
-  }, [applyConnection, publishDetail]);
+  }, [applyConnection, publishDetail, setSelectionRequest]);
 
   /**
    * The console answering is not the console that wrote what was restored.
@@ -2290,9 +2345,58 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           thread.sourceId === route.sourceId
           && thread.trigger?.kind === "cron"
           && thread.trigger.jobId === route.jobId);
-    const selection = routeThread === undefined
-      ? baseSelection
-      : { agentId: routeThread.sourceId, threadId: routeThread.id };
+    const heldRouteThread = route === undefined || selectedThreadRef.current === null
+      ? undefined
+      : threadCacheRef.current.get(selectedThreadRef.current)?.thread
+        ?? detailThreadRef.current ?? undefined;
+    const resolvedRouteThread = routeThread
+      ?? (route !== undefined
+        && heldRouteThread?.sourceId === route.sourceId
+        && heldRouteThread.trigger?.kind === "cron"
+        && heldRouteThread.trigger.jobId === route.jobId
+        ? heldRouteThread
+        : undefined);
+    let ownedRouteRequest = route === undefined
+      ? null
+      : selectionRequestRef.current?.kind === "cron"
+        && selectionRequestRef.current.generation === operatorSelectionRef.current
+        && selectionRequestRef.current.sourceId === route.sourceId
+        && selectionRequestRef.current.jobId === route.jobId
+        ? selectionRequestRef.current
+        : null;
+    // A route must own the shell before its overview can name the thread. A
+    // bootstrap often does not carry cron channels in its active 50-row
+    // bucket, and falling back to the persisted ordinary conversation here
+    // started a competing detail read and briefly rendered the wrong content.
+    if (route !== undefined && resolvedRouteThread === undefined && ownedRouteRequest === null) {
+      ownedRouteRequest = {
+        kind: "cron",
+        generation: operatorSelectionRef.current,
+        sourceId: route.sourceId,
+        jobId: route.jobId,
+      };
+      setSelectionRequest(ownedRouteRequest);
+    }
+    const selection = resolvedRouteThread !== undefined
+      ? { agentId: resolvedRouteThread.sourceId, threadId: resolvedRouteThread.id }
+      : ownedRouteRequest !== null && route !== undefined
+        ? { agentId: route.sourceId, threadId: null }
+        : baseSelection;
+    if (resolvedRouteThread !== undefined && ownedRouteRequest !== null) {
+      const cachedRoute = threadCacheRef.current.get(resolvedRouteThread.id);
+      if (cachedRoute === undefined) {
+        setSelectionRequest({
+          kind: "thread",
+          generation: ownedRouteRequest?.generation ?? operatorSelectionRef.current,
+          threadId: resolvedRouteThread.id,
+          direct: false,
+        });
+        setDetailLoading(true);
+      } else {
+        setSelectionRequest(null);
+        publishDetail(resolvedRouteThread.id);
+      }
+    }
     // Only a selection this answer CHANGED can be a restore, and only when the
     // answer does not carry it. A bootstrap re-apply is routine -- one lands on
     // every `agents.changed` -- and a conversation the operator opened from
@@ -2326,7 +2430,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // first `ready` records the obligation; the snapshot establishes which
     // server-confirmed selection that post-subscription read must repair.
     dischargeInitialStreamSyncRef.current();
-  }, [applyConnection, discardOtherHostData, reconcileCronRevision]);
+  }, [
+    applyConnection,
+    discardOtherHostData,
+    publishDetail,
+    reconcileCronRevision,
+    setSelectionRequest,
+  ]);
 
   /**
    * The bucket a bootstrap should carry: the one this tab is showing.
@@ -3993,6 +4103,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (sourceId === null || selectedAgent?.cron?.read !== true) {
       setCronOverview(null);
       setCronError(null);
+      const request = selectionRequestRef.current;
+      if (hasBootstrapRef.current
+        && request?.kind === "cron"
+        && request.sourceId === sourceId) {
+        failOwnedSelection(request, new Error(
+          sourceId === null
+            ? "The agent for this cron conversation was not found."
+            : "This agent does not expose cron conversations.",
+        ));
+      }
       return;
     }
     setCronLoading(true);
@@ -4017,11 +4137,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           : { ...current, [channelKey]: page.nextCursor ?? null });
       }
     } catch (cronError) {
-      setCronError(errorMessage(cronError));
+      const message = errorMessage(cronError);
+      setCronError(message);
+      const request = selectionRequestRef.current;
+      if (request?.kind === "cron" && request.sourceId === sourceId) {
+        failOwnedSelection(request, cronError);
+      }
     } finally {
       setCronLoading(false);
     }
-  }, [selectedAgent?.cron?.read, selectedAgentId, selectedCronJobId]);
+  }, [failOwnedSelection, selectedAgent?.cron?.read, selectedAgentId, selectedCronJobId]);
 
   const loadCronRunActivity = useCallback(async (runId: string) => {
     const sourceId = selectedAgentId;
@@ -4425,8 +4550,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectAgent(failure.request.sourceId);
       return;
     }
-    selectThread(failure.request.threadId);
-  }, [selectAgent, selectThread]);
+    if (failure.request.kind === "thread") {
+      selectThread(failure.request.threadId);
+      return;
+    }
+    const generation = beginOperatorSelection();
+    setSelectionRequest({ ...failure.request, generation });
+    setCronRefreshToken((revision) => revision + 1);
+  }, [beginOperatorSelection, selectAgent, selectThread, setSelectionRequest]);
 
   const retryThreadList = useCallback(() => {
     if (currentThreadListFailure === null) return;
@@ -4438,17 +4569,42 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => {
     const route = cronRouteSelection();
     if (route === undefined) return;
+    const request = selectionRequestRef.current;
+    if (request?.kind !== "cron"
+      || request.generation !== operatorSelectionRef.current
+      || request.sourceId !== route.sourceId
+      || request.jobId !== route.jobId
+      || route.sourceId !== selectedAgentId
+      || cronOverview === null) return;
     const job = cronOverview?.jobs.find(
       (candidate) => candidate.jobId === route.jobId,
     );
-    if (job === undefined || route.sourceId !== selectedAgentId) return;
+    if (job === undefined) {
+      failOwnedSelection(request, new Error(
+        cronOverview.jobsTruncated
+          ? "This cron conversation is not in the jobs loaded by the console. Retry after the cron overview changes."
+          : "This cron conversation was not found.",
+      ));
+      return;
+    }
     if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
-  }, [cronOverview, routeRevision, selectThread, selectedAgentId]);
+  }, [cronOverview, failOwnedSelection, routeRevision, selectThread, selectedAgentId]);
 
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
-    requireResolvedSelection();
-    const selectionAtRequest = operatorSelectionRef.current;
+    const unresolved = selectionRequestRef.current;
+    const supersedesRestoredRead = unresolved?.kind === "thread"
+      && restoredSelectionRef.current === unresolved.threadId;
+    // A restored read is not an operator choice. Keep the long-standing
+    // programmatic escape hatch that lets an explicit create replace it; UI
+    // entry points remain disabled by `selectionLoading`, while operator-owned
+    // bucket/thread/cron navigation still has to settle first.
+    if (!supersedesRestoredRead) requireResolvedSelection();
+    const request: CreateThreadRequest = {
+      generation: operatorSelectionRef.current,
+      sourceId: selectedAgentId,
+    };
+    setCreateThreadRequest(request);
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
@@ -4485,8 +4641,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         delete next[draftPreferenceKey];
         return next;
       });
-      const stillOwnsSelection = operatorSelectionRef.current === selectionAtRequest
-        && selectedAgentRef.current === selectedAgentId;
+      const stillOwnsSelection = operatorSelectionRef.current === request.generation
+        && selectedAgentRef.current === request.sourceId;
       if (stillOwnsSelection) {
         beginOperatorSelection();
         // See `restoredSelectionRef`: what the operator opens is theirs, and a
@@ -4508,10 +4664,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (stillOwnsSelection) setActionError(null);
       return thread;
     } catch (createError) {
-      if (operatorSelectionRef.current === selectionAtRequest) {
+      if (operatorSelectionRef.current === request.generation
+        && selectedAgentRef.current === request.sourceId) {
         setActionError(errorMessage(createError));
       }
       throw createError;
+    } finally {
+      // A superseded request may finish after a newer create has taken
+      // ownership. Object identity keeps that late completion from clearing
+      // the newer request's pending UI.
+      if (createThreadRequestRef.current === request) setCreateThreadRequest(null);
     }
   }, [
     beginOperatorSelection,
@@ -4520,6 +4682,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     publishDetail,
     requireResolvedSelection,
     selectedAgentId,
+    setCreateThreadRequest,
   ]);
 
   const applyAgentUpdate = useCallback((agent: AgentSummary) => {
@@ -5492,6 +5655,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loading,
       detailLoading,
       selectionLoading,
+      creatingThread,
       selectionError,
       threadListError,
       error,
@@ -5572,6 +5736,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       detail,
       detailLoading,
       selectionLoading,
+      creatingThread,
       selectionError,
       threadListError,
       deleteThread,

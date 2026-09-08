@@ -1,16 +1,18 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { page, userEvent } from "@vitest/browser/context";
 import { StrictMode, useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  cronChannelPath,
   SELECTED_AGENT_STORAGE_KEY,
   SELECTED_THREADS_STORAGE_KEY,
   ConsoleStoreProvider,
+  threadBucketKey,
 } from "./console-store";
 import { createThreadPersistence } from "./thread-persistence";
 import { WebRuntimeProvider } from "./runtime";
-import { agent, bootstrap, thread } from "./test/fixtures";
-import type { ThreadDetail, ThreadSummary, WebMessage } from "./types";
+import { agent, bootstrap, thread, uploadLimits } from "./test/fixtures";
+import type { CronOverview, ThreadDetail, ThreadSummary, WebMessage } from "./types";
 import "./styles.css";
 
 vi.mock("./api", async (importOriginal) => ({
@@ -77,6 +79,12 @@ const olderAlphaThread = thread("older-alpha-thread", "alpha", {
   messageCount: 1,
   updatedAt: "2026-09-07T08:00:00.000Z",
 });
+const cronThread = thread("cron-thread", "alpha", {
+  title: "Cron daily report",
+  trigger: { kind: "cron", jobId: "daily:report", configured: true },
+  canSend: false,
+  canUpload: false,
+});
 
 const detail = (summary: ThreadSummary, text: string): ThreadDetail => {
   const message: WebMessage = {
@@ -93,6 +101,40 @@ const detail = (summary: ThreadSummary, text: string): ThreadDetail => {
 };
 
 const persistence = createThreadPersistence();
+
+const saveHydratedShell = async (
+  listing: readonly ThreadSummary[],
+  agents = [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+) => {
+  await persistence.save({
+    entries: [],
+    snapshot: {
+      agents,
+      console: { hostName: "test-host", displayName: "test-host", theme: "evergreen" },
+      limits: uploadLimits,
+      push: {
+        applicationServerKey: "B".repeat(87),
+        keyFingerprint: "test-fingerprint",
+        serviceWorkerVersion: 2,
+      },
+    },
+    bucket: {
+      key: threadBucketKey("alpha", false),
+      threads: listing,
+      nextCursor: null,
+    },
+  });
+};
+
+const closeInitialMobileDrawer = async (mobile: boolean) => {
+  if (!mobile) return;
+  screen.getByRole("button", { name: "Close navigation" }).click();
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose agent" })).toBeNull());
+};
+
+const waitForLiveConsole = async () => {
+  expect(await screen.findByLabelText("Console connection: live")).toBeInTheDocument();
+};
 
 function ConversationSwitchFixture({
   width,
@@ -175,8 +217,12 @@ const expectNewConversationDisabled = async (mobile: boolean) => {
 beforeEach(async () => {
   await persistence.clearAll();
   vi.clearAllMocks();
+  vi.mocked(api.bootstrap).mockReset();
   vi.mocked(api.thread).mockReset();
   vi.mocked(api.threads).mockReset();
+  vi.mocked(api.createThread).mockReset();
+  vi.mocked(api.cronOverview).mockReset();
+  window.history.replaceState(null, "", "/");
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
   localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alphaThread.id }));
   vi.stubGlobal("EventSource", SyntheticEventSource);
@@ -194,7 +240,172 @@ beforeEach(async () => {
   vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
 });
 
+afterEach(async () => {
+  cleanup();
+  await persistence.clearAll();
+  localStorage.clear();
+  window.history.replaceState(null, "", "/");
+});
+
 describe("conversation switching through the real Chromium store and runtime", () => {
+  it.each([
+    { width: 1_280, height: 800, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
+  ])("shows pending creation before the create response at $label size", async ({ width, height, label }) => {
+    await page.viewport(width, height);
+    const mobile = label === "mobile";
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+
+    render(
+      <ConsoleStoreProvider>
+        <WebRuntimeProvider>
+          <ConversationSwitchFixture width={width} height={height} mobile={mobile} />
+        </WebRuntimeProvider>
+      </ConsoleStoreProvider>,
+    );
+    await closeInitialMobileDrawer(mobile);
+    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await waitForLiveConsole();
+
+    if (mobile) {
+      await userEvent.click(screen.getByRole("button", { name: "Open conversations" }));
+      const drawer = await screen.findByRole("dialog", { name: "Conversations" });
+      await userEvent.click(within(drawer).getByRole("button", { name: "New conversation" }));
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull());
+    } else {
+      await userEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    }
+
+    expect(await screen.findByRole("button", { name: "Creating conversation…" })).toBeDisabled();
+    expect(screen.getByRole("status", { name: "Creating conversation" })).toBeVisible();
+    expect(screen.queryByText("Start a new conversation")).toBeNull();
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolveCreate(thread("created-thread", "alpha")));
+    expect(await screen.findByRole("heading", { name: "What should we work on?" })).toBeVisible();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
+  });
+
+  it.each([
+    { width: 1_280, height: 800, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
+  ])("never paints new-conversation copy while an uncached persisted selection restores at $label size", async ({ width, height, label }) => {
+    await page.viewport(width, height);
+    const mobile = label === "mobile";
+    await saveHydratedShell([alphaThread]);
+    let resolveBootstrap!: () => void;
+    let resolveThread!: () => void;
+    vi.mocked(api.bootstrap).mockImplementation(() => new Promise((resolve) => {
+      resolveBootstrap = () => resolve(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [alphaThread],
+        alphaThread.id,
+        { threadsSourceId: "alpha" },
+      ));
+    }));
+    vi.mocked(api.thread).mockImplementation(() => new Promise((resolve) => {
+      resolveThread = () => resolve(detail(alphaThread, "Alpha restored transcript"));
+    }));
+
+    render(
+      <ConsoleStoreProvider>
+        <WebRuntimeProvider>
+          <ConversationSwitchFixture width={width} height={height} mobile={mobile} />
+        </WebRuntimeProvider>
+      </ConsoleStoreProvider>,
+    );
+    await closeInitialMobileDrawer(mobile);
+
+    expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
+    expect(screen.queryByText("Start a new conversation")).toBeNull();
+    expect(api.thread).toHaveBeenCalledWith(alphaThread.id, expect.any(AbortSignal));
+
+    await act(async () => {
+      resolveBootstrap();
+      resolveThread();
+    });
+    expect(await screen.findByText("Alpha restored transcript")).toBeVisible();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
+  });
+
+  it.each([
+    { width: 1_280, height: 800, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
+  ])("keeps a deferred cron route loading without opening the persisted fallback at $label size", async ({ width, height, label }) => {
+    await page.viewport(width, height);
+    const mobile = label === "mobile";
+    const cronAgent = agent("alpha", {
+      label: "Alpha",
+      cron: { read: true, actions: false },
+    });
+    await saveHydratedShell([alphaThread], [cronAgent, agent("beta", { label: "Beta" })]);
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    let resolveBootstrap!: () => void;
+    let resolveOverview!: (value: CronOverview) => void;
+    vi.mocked(api.bootstrap).mockImplementation(() => new Promise((resolve) => {
+      resolveBootstrap = () => resolve(bootstrap(
+        [cronAgent, agent("beta", { label: "Beta" })],
+        [alphaThread],
+        alphaThread.id,
+        { threadsSourceId: "alpha" },
+      ));
+    }));
+    vi.mocked(api.cronOverview).mockImplementation(() => new Promise((resolve) => {
+      resolveOverview = resolve;
+    }));
+    vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === cronThread.id
+      ? detail(cronThread, "Cron restored transcript")
+      : detail(alphaThread, "Wrong fallback transcript"));
+
+    render(
+      <ConsoleStoreProvider>
+        <WebRuntimeProvider>
+          <ConversationSwitchFixture width={width} height={height} mobile={mobile} />
+        </WebRuntimeProvider>
+      </ConsoleStoreProvider>,
+    );
+    await closeInitialMobileDrawer(mobile);
+
+    expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
+    expect(screen.queryByText("Start a new conversation")).toBeNull();
+    expect(api.thread).not.toHaveBeenCalled();
+    const overview: CronOverview = {
+      generatedAt: "2026-09-08T08:00:00.000Z",
+      actionsEnabled: false,
+      jobs: [{
+        jobId: "daily:report",
+        expression: "0 8 * * *",
+        timezone: "Europe/Amsterdam",
+        conversationId: "cron:daily:report",
+        configured: true,
+        declaredEnabled: true,
+        effectiveEnabled: true,
+        health: "healthy",
+        threadId: cronThread.id,
+      }],
+    };
+    if (mobile) {
+      // Exercise the opposite race too: a hydrated cron-capable agent can
+      // answer its overview before the live bootstrap. The bootstrap must
+      // recognize the already-resolved route instead of re-arming it.
+      await act(async () => resolveOverview(overview));
+      expect(await screen.findByText("Cron restored transcript")).toBeVisible();
+      await act(async () => resolveBootstrap());
+    } else {
+      await act(async () => resolveBootstrap());
+      expect(api.thread).not.toHaveBeenCalled();
+      expect(screen.queryByText("Wrong fallback transcript")).toBeNull();
+      await act(async () => resolveOverview(overview));
+    }
+    expect(await screen.findByText("Cron restored transcript")).toBeVisible();
+    expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).toEqual([cronThread.id]);
+    expect(screen.queryByText("Start a new conversation")).toBeNull();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
+  });
+
   it.each([
     { width: 1_280, height: 800, label: "desktop" },
     { width: 390, height: 844, label: "mobile" },
@@ -218,11 +429,13 @@ describe("conversation switching through the real Chromium store and runtime", (
     );
 
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await waitForLiveConsole();
     await chooseAgent("Beta", mobile);
     expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
     expect(screen.queryByText("Start a new conversation")).toBeNull();
     expect(screen.queryByText("Something went wrong")).toBeNull();
     await expectNewConversationDisabled(mobile);
+    await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
 
     await chooseAgent("Alpha", mobile);
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
@@ -279,6 +492,7 @@ describe("conversation switching through the real Chromium store and runtime", (
     );
 
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await waitForLiveConsole();
     let scope: HTMLElement = document.body;
     if (mobile) {
       screen.getByRole("button", { name: "Close navigation" }).click();
@@ -335,7 +549,9 @@ describe("conversation switching through the real Chromium store and runtime", (
     );
 
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await waitForLiveConsole();
     await chooseAgent("Beta", mobile);
+    await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
 
     const failure = await screen.findByRole("alert");
     expect(failure).toHaveTextContent("Conversation could not be loaded");

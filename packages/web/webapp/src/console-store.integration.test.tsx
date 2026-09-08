@@ -480,6 +480,202 @@ describe("ConsoleStoreProvider integration", () => {
     }
   });
 
+  it("publishes an owned pending create immediately and reconciles the server identity", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const prior = thread("prior", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" })],
+      [prior],
+      prior.id,
+    ));
+    vi.mocked(api.thread).mockResolvedValue(detail(prior, "prior transcript"));
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(prior.id));
+
+    const creating = store.current.createThread();
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    expect(store.current.selectionLoading).toBe(true);
+    expect(store.current.selectedThreadId).toBe(prior.id);
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    const created = thread("created", "alpha");
+    await act(async () => {
+      resolveCreate(created);
+      await creating;
+    });
+
+    expect(store.current.creatingThread).toBe(false);
+    expect(store.current.selectedThreadId).toBe(created.id);
+    expect(store.current.detail).toMatchObject({ thread: { id: created.id }, messages: [] });
+  });
+
+  it("coalesces a second create while the first still owns the current selection", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const store = await renderStore();
+
+    const first = store.current.createThread();
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    await expect(store.current.createThread()).rejects.toThrow(/finish creating/iu);
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveCreate(thread("created", "alpha"));
+      await first;
+    });
+  });
+
+  it("rolls a failed create back to the prior selection and reports the action error", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const prior = thread("prior", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" })],
+      [prior],
+      prior.id,
+    ));
+    vi.mocked(api.thread).mockResolvedValue(detail(prior, "prior transcript"));
+    let rejectCreate!: (reason: Error) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((_resolve, reject) => {
+      rejectCreate = reject;
+    }));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(prior.id));
+
+    const creating = store.current.createThread();
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    await act(async () => {
+      rejectCreate(new Error("create unavailable"));
+      await expect(creating).rejects.toThrow("create unavailable");
+    });
+
+    expect(store.current.creatingThread).toBe(false);
+    expect(store.current.selectedThreadId).toBe(prior.id);
+    expect(store.current.detail?.thread.id).toBe(prior.id);
+    expect(store.current.actionError).toBe("create unavailable");
+  });
+
+  it("times out a pending create and restores the prior selection", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const prior = thread("prior", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" })],
+      [prior],
+      prior.id,
+    ));
+    vi.mocked(api.thread).mockResolvedValue(detail(prior, "prior transcript"));
+    vi.mocked(api.createThread).mockImplementation(() => new Promise<never>(() => undefined));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(prior.id));
+
+    vi.useFakeTimers();
+    try {
+      const creating = store.current.createThread();
+      const timedOut = expect(creating).rejects.toThrow(/timed out/iu);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(store.current.creatingThread).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(THREAD_WRITE_TIMEOUT_MS);
+        await timedOut;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(store.current.creatingThread).toBe(false);
+    expect(store.current.selectedThreadId).toBe(prior.id);
+    expect(store.current.actionError).toMatch(/timed out/iu);
+  });
+
+  it("shows pending creation before an implicit legacy send and sends only after creation", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const created = thread("implicit-legacy", "alpha");
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    vi.mocked(api.startTurn).mockResolvedValue({
+      thread: created,
+      turn: { id: "turn-1", status: "running" },
+    });
+    const store = await renderStore();
+
+    const sending = store.current.sendTurn({ text: "hello" });
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.startTurn).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveCreate(created);
+      await sending;
+    });
+
+    expect(api.startTurn).toHaveBeenCalledWith(created.id, { text: "hello" });
+    expect(store.current.creatingThread).toBe(false);
+  });
+
+  it("does not legacy-send when its implicit create fails", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.createThread).mockRejectedValue(new Error("implicit create failed"));
+    const store = await renderStore();
+
+    await act(async () => {
+      await expect(store.current.sendTurn({ text: "hello" })).rejects.toThrow("implicit create failed");
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.startTurn).not.toHaveBeenCalled();
+    expect(store.current.actionError).toBe("implicit create failed");
+    expect(store.current.creatingThread).toBe(false);
+  });
+
+  it("shows pending creation before an implicit guarded submission", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const created = thread("implicit-guarded", "alpha");
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    vi.mocked(api.submit).mockImplementation(async (threadId, submissionId) => ({
+      submissionId,
+      threadId,
+      outcome: "turn",
+    }));
+    const store = await renderStore();
+
+    const sending = store.current.sendSubmission({ text: "hello" });
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.submit).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveCreate(created);
+      await sending;
+    });
+
+    expect(api.submit).toHaveBeenCalledWith(created.id, expect.any(String), { text: "hello" });
+    expect(store.current.creatingThread).toBe(false);
+  });
+
+  it("does not submit when its implicit guarded create fails", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.createThread).mockRejectedValue(new Error("guarded create failed"));
+    const store = await renderStore();
+
+    await act(async () => {
+      await expect(store.current.sendSubmission({ text: "hello" }))
+        .rejects.toThrow("guarded create failed");
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(store.current.actionError).toBe("guarded create failed");
+    expect(store.current.creatingThread).toBe(false);
+  });
+
   it("sends authored draft run choices atomically with thread creation", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
     vi.mocked(api.createThread).mockResolvedValue(thread("created", "alpha", {
@@ -950,6 +1146,7 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.selectedAgentId).toBe("alpha");
     expect(store.current.selectedThread?.canSend).toBe(false);
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).toEqual([cronThread.id]);
   });
 
   it("resolves a cron route whose channel is outside the bootstrap window", async () => {
@@ -957,14 +1154,43 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
       agent("alpha", { cron: { read: true, actions: false } }),
     ], []));
-    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
+    let resolveOverview!: (value: CronOverview) => void;
+    vi.mocked(api.cronOverview).mockImplementation(() => new Promise((resolve) => {
+      resolveOverview = resolve;
+    }));
     vi.mocked(api.thread).mockResolvedValue(detail());
 
     const store = await renderStore();
 
+    expect(store.current.selectedThreadId).toBeNull();
+    expect(store.current.selectionLoading).toBe(true);
+    expect(api.thread).not.toHaveBeenCalled();
+    await act(async () => resolveOverview(cronOverview({ actionsEnabled: false })));
+
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
     expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
+    expect(api.thread).toHaveBeenCalledTimes(1);
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+  });
+
+  it("reports a truncated cron overview honestly without selecting a bootstrap fallback", async () => {
+    const fallback = thread("fallback", "alpha");
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], [fallback], fallback.id));
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({
+      jobs: [],
+      jobsTruncated: true,
+    }));
+    vi.mocked(api.thread).mockResolvedValue(detail(fallback, "wrong fallback"));
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectionError).toMatch(/not in the jobs loaded/iu));
+    expect(store.current.selectedThreadId).toBeNull();
+    expect(store.current.selectionLoading).toBe(false);
+    expect(api.thread).not.toHaveBeenCalled();
   });
 
   it("fetches, archives, and conditionally removes an empty out-of-window thread", async () => {
@@ -2331,7 +2557,7 @@ describe("ConsoleStoreProvider integration", () => {
 
       const store = await renderStore();
       const pending = store.current.createThread();
-      await settle();
+      await waitFor(() => expect(store.current.creatingThread).toBe(true));
 
       vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [fresh]));
       vi.mocked(api.threads).mockResolvedValue({ threads: [fresh] });
@@ -2415,6 +2641,8 @@ describe("ConsoleStoreProvider integration", () => {
         await pending;
       });
       expect(store.current.threads.map((item) => item.id)).toEqual(["fresh-thread"]);
+      expect(store.current.selectedThreadId).toBe(fresh.id);
+      expect(store.current.creatingThread).toBe(false);
     });
   });
 
@@ -4013,6 +4241,43 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).toBe(betaThread.id);
       expect(store.current.detail?.thread.id).toBe(betaThread.id);
       expect(store.current.threads.some((item) => item.id === created.id)).toBe(true);
+    });
+
+    it("allows a new create after navigation while the superseded create is still pending", async () => {
+      const createdA = thread("created-alpha-late", "alpha");
+      const createdB = thread("created-beta", "beta");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveA!: (answer: ThreadSummary) => void;
+      let resolveB!: (answer: ThreadSummary) => void;
+      vi.mocked(api.createThread).mockImplementation((sourceId) => new Promise((resolve) => {
+        if (sourceId === "alpha") resolveA = resolve;
+        else resolveB = resolve;
+      }));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      const createA = store.current.createThread();
+      await waitFor(() => expect(store.current.creatingThread).toBe(true));
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.creatingThread).toBe(false);
+
+      const createB = store.current.createThread();
+      await waitFor(() => expect(api.createThread).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.creatingThread).toBe(true));
+      await act(async () => {
+        resolveB(createdB);
+        await createB;
+      });
+      expect(store.current.selectedThreadId).toBe(createdB.id);
+
+      await act(async () => {
+        resolveA(createdA);
+        await createA;
+      });
+      expect(store.current.selectedThreadId).toBe(createdB.id);
+      expect(store.current.threads.some((item) => item.id === createdA.id)).toBe(true);
+      expect(store.current.creatingThread).toBe(false);
     });
 
     it("opens the conversation the operator last had with the agent they switch to", async () => {
@@ -6420,9 +6685,12 @@ describe("ConsoleStoreProvider integration", () => {
           <StoreProbe onChange={onChange} />
         </ConsoleStoreProvider>,
       );
+      await waitFor(() => expect(api.thread).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
       emit("ready", { payload: { version: 1 } });
-      expect(api.thread).not.toHaveBeenCalled();
+      // Hydration starts the opening read immediately, but first-ready repair
+      // still waits until bootstrap establishes the server-owned selection.
+      expect(api.thread).toHaveBeenCalledTimes(1);
 
       act(() => { releaseBootstrap(); });
       await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(2));
@@ -7421,6 +7689,40 @@ describe("ConsoleStoreProvider integration", () => {
         },
       };
     };
+
+    it("owns an uncached persisted selection in the first hydrated shell commit", async () => {
+      await previousVisit({ entries: [], listing: [alpha], openedOn: alpha.id });
+      let releaseBootstrap!: () => void;
+      let releaseThread!: () => void;
+      vi.mocked(api.bootstrap).mockImplementation(() => new Promise((resolve) => {
+        releaseBootstrap = () => resolve(bootstrap(
+          agents,
+          [alpha],
+          undefined,
+          { threadsSourceId: "alpha" },
+        ));
+      }));
+      vi.mocked(api.thread).mockImplementation(() => new Promise((resolve) => {
+        releaseThread = () => resolve({
+          thread: alpha,
+          messages: [kept("restored", "restored transcript")],
+        });
+      }));
+
+      const store = openConsole();
+
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      expect(store.current.selectedThreadId).toBe(alpha.id);
+      expect(store.current.detail).toBeNull();
+      expect(api.thread).toHaveBeenCalledWith(alpha.id, expect.any(AbortSignal));
+
+      await act(async () => {
+        releaseBootstrap();
+        releaseThread();
+      });
+      await waitFor(() => expect(store.current.detail?.messages[0]?.parts)
+        .toEqual([{ type: "text", text: "restored transcript" }]));
+    });
 
     it("replaces device-restored background activity with the current server outcome", async () => {
       const running = { ...beta, revision: 2, jobActivity: { queued: 0, starting: 0, running: 1 } };
