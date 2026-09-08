@@ -244,7 +244,7 @@ describe("web storage migration history", () => {
       reopened.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 23 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         expect(inspected.prepare("PRAGMA table_info(web_submissions)").all()).toEqual(expect.arrayContaining([
           expect.objectContaining({ name: "thread_id", type: "TEXT", notnull: 1 }),
           expect.objectContaining({ name: "submission_id", type: "TEXT", notnull: 1 }),
@@ -253,12 +253,97 @@ describe("web storage migration history", () => {
       } finally { inspected.close(); }
     }
   });
+
+  const readIndexes = {
+    messages_by_turn: ["turn_id"],
+    turns_by_thread_started: ["thread_id", "started_at"],
+  } as const;
+  function indexColumns(database: DatabaseSync, index: string): string[] {
+    return (database.prepare(`PRAGMA index_info(${index})`).all() as Array<{ name: string }>).map((column) => column.name);
+  }
+
+  it.each([
+    "DROP INDEX messages_by_turn; CREATE INDEX messages_by_turn ON messages(thread_id)",
+    "DROP INDEX turns_by_thread_started; CREATE INDEX turns_by_thread_started ON turns(started_at, thread_id)",
+  ])("rejects a schema-24 stamp whose read index drifted: %s", async (sql) => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec(sql);
+    database.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: "storage_corrupt", message: "Web storage migration postconditions failed.",
+    });
+  });
+
+  it("migrates schema 23 by adding the thread read indexes and reopens idempotently", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP INDEX messages_by_turn; DROP INDEX turns_by_thread_started; PRAGMA user_version = 23");
+    database.close();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      try { expect(store.getThread("fixture-thread")).toBeUndefined(); } finally { store.close(); }
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 24 });
+        for (const [index, columns] of Object.entries(readIndexes)) expect(indexColumns(inspected, index)).toEqual(columns);
+        expect(inspected.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
+      } finally { inspected.close(); }
+    }
+  });
+
+  it("serves the run-state lookups from the thread read indexes on a fresh store", async () => {
+    const stateDir = await seeded(0);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      for (const [index, columns] of Object.entries(readIndexes)) expect(indexColumns(database, index)).toEqual(columns);
+      const plan = (sql: string): string => (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+        .map((row) => row.detail).join("\n");
+      expect(plan("SELECT * FROM turns WHERE thread_id = 'x' ORDER BY started_at DESC, rowid DESC LIMIT 1"))
+        .toContain("USING INDEX turns_by_thread_started (thread_id=?)");
+      expect(plan("SELECT 1 FROM messages m WHERE m.turn_id = 'x' AND m.role = 'user'"))
+        .toContain("USING INDEX messages_by_turn (turn_id=?)");
+    } finally { database.close(); }
+  });
+
+  it("rolls the stamp and the read indexes back together when migration 24 fails", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP INDEX messages_by_turn; DROP INDEX turns_by_thread_started; PRAGMA user_version = 23");
+    database.close();
+    const prepare = DatabaseSync.prototype.prepare;
+    let failures = 0;
+    vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (sql === "PRAGMA index_info(messages_by_turn)" && failures++ === 0) throw new Error("private stored content");
+      return prepare.call(this, sql);
+    });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: "storage_corrupt", message: "Web storage migration 24 (thread-read-indexes) failed.",
+    });
+    vi.restoreAllMocks();
+    const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 23 });
+      expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('messages_by_turn', 'turns_by_thread_started')").all()).toEqual([]);
+    } finally { inspected.close(); }
+    const recovered = await WebStore.open({ stateDir });
+    recovered.close();
+  });
 });
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 23 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(23);
+  it("is immutable and derives schema 24 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(24);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
