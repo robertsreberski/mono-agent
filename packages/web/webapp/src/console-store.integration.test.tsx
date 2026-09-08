@@ -22,6 +22,7 @@ import {
   resetComposerDraft,
   writeComposerDraft,
 } from "./composer-draft";
+import { resetCronReplyRecoveryMemory } from "./cron-reply-recovery";
 import { resetServerClock, serverNow } from "./server-clock";
 import {
   CATALOG_TTL_MS,
@@ -101,6 +102,7 @@ vi.mock("./api", async (importOriginal) => ({
     cronOverview: vi.fn(),
     cronRuns: vi.fn(),
     cronRun: vi.fn(),
+    cronReply: vi.fn(),
     toolCallPart: vi.fn(),
     message: vi.fn(),
     threadIfChanged: vi.fn(),
@@ -282,8 +284,10 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.threadIfChanged).mockReset();
     vi.mocked(api.submit).mockReset();
     vi.mocked(api.submission).mockReset();
+    vi.mocked(api.cronReply).mockReset();
     localStorage.clear();
     sessionStorage.clear();
+    resetCronReplyRecoveryMemory();
     window.history.replaceState(null, "", "/");
     FakeEventSource.latest = undefined;
     FakeEventSource.instances = [];
@@ -8705,6 +8709,181 @@ describe("ConsoleStoreProvider integration", () => {
       expect(stored?.host).toBe("test-host");
       expect(stored?.threads.flatMap((item) => item.messages.map((message) => message.id)))
         .toEqual(["m2"]);
+    });
+  });
+
+  describe("cron Reply navigation and recovery", () => {
+    const operationId = "44444444-4444-4444-8444-444444444444";
+    const imported = thread("reply-thread", "alpha", {
+      title: "Reply to daily:report · Run 1",
+      messageCount: 2,
+      lastMessagePreview: "Captured result",
+    });
+    const importedMessages: readonly [WebMessage, WebMessage] = [{
+      id: "reply-provenance",
+      threadId: imported.id,
+      role: "system",
+      parts: [{ type: "text", text: "Imported context provenance" }],
+      attachments: [],
+      createdAt: "2026-09-08T10:00:00.000Z",
+      updatedAt: "2026-09-08T10:00:00.000Z",
+      status: "complete",
+    }, {
+      id: "reply-result",
+      threadId: imported.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "Captured result" }],
+      attachments: [],
+      createdAt: "2026-09-08T10:00:00.000Z",
+      updatedAt: "2026-09-08T10:00:00.000Z",
+      status: "complete",
+    }];
+    const source = {
+      sourceId: "alpha",
+      jobId: "daily:report",
+      runId: "cron:daily:report:one",
+      snapshotKind: "summary" as const,
+    };
+    const receipt = {
+      operationId,
+      ...source,
+      duplicate: false,
+      thread: imported,
+      messages: importedMessages,
+    };
+
+    it("persists before network, coalesces double activation, and selects the captured source after navigation", async () => {
+      let answer: ((value: typeof receipt) => void) | undefined;
+      vi.mocked(api.cronReply).mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+      const store = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+
+      const first = store.current.replyToCronRun(source);
+      const second = store.current.replyToCronRun(source);
+      expect(second).toBe(first);
+      expect(api.cronReply).toHaveBeenCalledTimes(1);
+      expect(sessionStorage.getItem("mono-agent:web:cron-reply-recovery:v1")).toContain(source.runId);
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedAgentId).toBe("beta"));
+
+      await act(async () => {
+        const issuedOperationId = vi.mocked(api.cronReply).mock.calls[0]?.[3].operationId;
+        answer?.({ ...receipt, operationId: issuedOperationId ?? operationId });
+        await first;
+      });
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.selectedThreadId).toBe(imported.id);
+      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
+      expect(window.location.pathname).toBe("/");
+      expect(readComposerDraft("alpha", imported.id)).toBe("");
+      expect(store.current.composerFocusThreadId).toBe(imported.id);
+      expect(sessionStorage.getItem("mono-agent:web:cron-reply-recovery:v1")).toBeNull();
+    });
+
+    it("keeps an unknown outcome for explicit retry and reuses its operation after remount", async () => {
+      vi.mocked(api.cronReply).mockRejectedValueOnce(new TypeError("synthetic connection lost"));
+      vi.spyOn(crypto, "randomUUID").mockReturnValue(operationId);
+      const firstVisit = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(firstVisit.current.connection).toBe("live"));
+      await act(async () => {
+        await expect(firstVisit.current.replyToCronRun(source)).rejects.toThrow("connection lost");
+      });
+      expect(firstVisit.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+      cleanupDom();
+
+      vi.mocked(api.cronReply).mockResolvedValue(receipt);
+      const secondVisit = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(secondVisit.current.connection).toBe("live"));
+      expect(secondVisit.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+      await act(async () => { await secondVisit.current.replyToCronRun(source); });
+      expect(api.cronReply).toHaveBeenLastCalledWith(
+        source.sourceId,
+        source.jobId,
+        source.runId,
+        { operationId, snapshotKind: source.snapshotKind },
+        expect.any(AbortSignal),
+      );
+    });
+
+    it("keeps one completed-server identity through refused storage and an offline retry", async () => {
+      let loseFirstResponse: ((error: unknown) => void) | undefined;
+      vi.spyOn(crypto, "randomUUID").mockReturnValue(operationId);
+      const setItem = Storage.prototype.setItem;
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+        if (this === sessionStorage && key === "mono-agent:web:cron-reply-recovery:v1") {
+          throw new DOMException("Synthetic quota exhausted.", "QuotaExceededError");
+        }
+        return setItem.call(this, key, value);
+      });
+      vi.mocked(api.cronReply)
+        .mockImplementationOnce(() => new Promise((_resolve, reject) => { loseFirstResponse = reject; }))
+        .mockRejectedValueOnce(new ApiError(
+          "This agent is offline; Reply was not started.",
+          503,
+          "cron_reply_agent_offline",
+        ))
+        .mockResolvedValueOnce({ ...receipt, duplicate: true });
+      const store = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+
+      const first = store.current.replyToCronRun(source);
+      expect(api.cronReply).toHaveBeenCalledTimes(1);
+      expect(sessionStorage.getItem("mono-agent:web:cron-reply-recovery:v1")).toBeNull();
+      await act(async () => {
+        loseFirstResponse?.(new TypeError("Synthetic response was lost after server completion."));
+        await expect(first).rejects.toThrow("response was lost");
+      });
+      expect(store.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+
+      await act(async () => {
+        await expect(store.current.replyToCronRun(source)).rejects.toMatchObject({
+          code: "cron_reply_agent_offline",
+        });
+      });
+      expect(store.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+
+      await act(async () => { await store.current.replyToCronRun(source); });
+      expect(vi.mocked(api.cronReply).mock.calls.map((call) => call[3].operationId))
+        .toEqual([operationId, operationId, operationId]);
+      expect(store.current.threads.filter((candidate) => candidate.id === imported.id)).toHaveLength(1);
+      expect(store.current.selectedThreadId).toBe(imported.id);
+    });
+
+    it("does not resurrect a reply conversation deleted while its POST response is late", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: imported.id }));
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [imported],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockResolvedValue({ thread: imported, messages: importedMessages });
+      let answer: ((value: typeof receipt) => void) | undefined;
+      vi.mocked(api.cronReply).mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+      const archived = { ...imported, archivedAt: "2026-09-08T10:01:00.000Z", revision: imported.revision + 1 };
+      vi.mocked(api.patchThread).mockResolvedValue(archived);
+      vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(imported.id));
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+      const replying = store.current.replyToCronRun(source);
+      await act(async () => { await store.current.archiveThread(imported.id); });
+      await act(async () => { await store.current.deleteThread(imported.id); });
+
+      await act(async () => {
+        answer?.(receipt);
+        await expect(replying).rejects.toThrow("deleted");
+      });
+      expect(store.current.threads.some((candidate) => candidate.id === imported.id)).toBe(false);
+      expect(store.current.selectedThreadId).not.toBe(imported.id);
+      expect(store.current.detail?.thread.id).not.toBe(imported.id);
     });
   });
 });

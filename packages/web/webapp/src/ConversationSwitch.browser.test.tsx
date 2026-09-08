@@ -193,8 +193,14 @@ function ConversationSwitchFixture({
 }
 
 const chooseAgent = async (label: string, mobile: boolean) => {
-  if (mobile && screen.queryByRole("dialog", { name: "Choose agent" }) === null) {
-    await userEvent.click(screen.getByRole("button", { name: "Choose agent" }));
+  if (mobile) {
+    if (screen.queryByRole("dialog", { name: "Choose agent" }) === null) {
+      await userEvent.click(screen.getByRole("button", { name: "Choose agent" }));
+    }
+    const drawer = await screen.findByRole("dialog", { name: "Choose agent" });
+    await userEvent.click(within(drawer).getByRole("button", { name: `${label}, online` }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose agent" })).toBeNull());
+    return;
   }
   await userEvent.click(screen.getByRole("button", { name: `${label}, online` }));
 };

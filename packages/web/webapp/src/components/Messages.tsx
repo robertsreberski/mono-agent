@@ -915,7 +915,12 @@ export function CronRunPart({ data }: DataMessagePartProps) {
   const runId = typeof payload.runId === "string" ? payload.runId : undefined;
   const [copied, setCopied] = useState(false);
   const [activityLoading, setActivityLoading] = useState(false);
-  const { loadCronRunActivity } = useConsoleStore();
+  const {
+    cronReplyState,
+    loadCronRunActivity,
+    replyToCronRun,
+    selectedThread,
+  } = useConsoleStore();
   if (runId === undefined || (isSilentCronData(payload) && payload.hasVisibleContent !== true)) return null;
   const sequence = typeof payload.sequence === "number" ? payload.sequence : undefined;
   const status = typeof payload.status === "string" ? payload.status : "unknown";
@@ -933,6 +938,21 @@ export function CronRunPart({ data }: DataMessagePartProps) {
   const fieldsTruncated = Array.isArray(payload.fieldsTruncated)
     ? payload.fieldsTruncated.filter((field): field is string => typeof field === "string")
     : [];
+  const sourceId = selectedThread?.sourceId;
+  const jobId = selectedThread?.trigger?.kind === "cron" ? selectedThread.trigger.jobId : undefined;
+  const terminal = status === "succeeded"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "skipped_overlap"
+    || status === "dropped";
+  const replyState = sourceId !== undefined && jobId !== undefined
+    ? cronReplyState(sourceId, jobId, runId)
+    : { status: "idle" as const };
+  const hasDetails = artifactRunId !== undefined
+    || conversationId !== undefined
+    || eventCount > 0
+    || eventsTruncated
+    || fieldsTruncated.length > 0;
   return (
     <div
       id={cronRunAnchor(runId)}
@@ -945,47 +965,76 @@ export function CronRunPart({ data }: DataMessagePartProps) {
       </a>
       <span className="cron-run-state">{trigger} · {stateLabel}</span>
       {orderedAt !== undefined && <time dateTime={orderedAt}>{new Date(orderedAt).toLocaleString()}</time>}
-      {artifactRunId !== undefined && (
-        <span className="cron-artifact-link" title={artifactRunId}>Artifact <code>{artifactRunId}</code></span>
-      )}
-      {conversationId !== undefined && (
+      {terminal && sourceId !== undefined && jobId !== undefined && (
         <button
           type="button"
-          className="cron-session-button"
-          title={conversationId}
-          aria-label={copied ? "Originating session copied" : `Copy originating session ${conversationId}`}
+          className="cron-reply-button"
+          disabled={replyState.status === "importing"}
           onClick={() => {
-            void copyTextWithFallback(conversationId).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 2_000);
-            });
+            void replyToCronRun({
+              sourceId,
+              jobId,
+              runId,
+              snapshotKind: activityLoaded ? "detail" : "summary",
+            }).catch(() => undefined);
           }}
         >
-          <Icon name={copied ? "check" : "copy"} size={12} />
-          {copied ? "Session copied" : "Originating session"}
+          {replyState.status === "importing" ? "Importing…" : replyState.status === "retry" ? "Retry Reply" : "Reply"}
         </button>
       )}
-      {eventCount > 0 && (!activityLoaded || activityStale) && (
-        <button
-          type="button"
-          className="cron-activity-button"
-          disabled={activityLoading}
-          onClick={() => {
-            setActivityLoading(true);
-            void loadCronRunActivity(runId).finally(() => setActivityLoading(false));
-          }}
-        >
-          {activityLoading ? "Loading activity…" : activityStale ? "Refresh activity" : "Load activity"}
-        </button>
+      {hasDetails && (
+        <details className="cron-run-details">
+          <summary>Details</summary>
+          <div className="cron-run-details-body">
+            {artifactRunId !== undefined && (
+              <span className="cron-artifact-link" title={artifactRunId}>Artifact <code>{artifactRunId}</code></span>
+            )}
+            {conversationId !== undefined && (
+              <button
+                type="button"
+                className="cron-session-button"
+                title={conversationId}
+                aria-label={copied ? "Originating session copied" : `Copy originating session ${conversationId}`}
+                onClick={() => {
+                  void copyTextWithFallback(conversationId).then(() => {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 2_000);
+                  });
+                }}
+              >
+                <Icon name={copied ? "check" : "copy"} size={12} />
+                {copied ? "Session copied" : "Originating session"}
+              </button>
+            )}
+            {eventCount > 0 && (!activityLoaded || activityStale) && (
+              <button
+                type="button"
+                className="cron-activity-button"
+                disabled={activityLoading}
+                onClick={() => {
+                  setActivityLoading(true);
+                  void loadCronRunActivity(runId).finally(() => setActivityLoading(false));
+                }}
+              >
+                {activityLoading ? "Loading activity…" : activityStale ? "Refresh activity" : "Load activity"}
+              </button>
+            )}
+            {eventsTruncated && (
+              <span className="cron-activity-truncated" role="status">
+                Activity is truncated; retained and wire-bounded events are shown.
+              </span>
+            )}
+            {fieldsTruncated.length > 0 && (
+              <span className="cron-activity-truncated" role="status">
+                Run {fieldsTruncated.join(", ")} {fieldsTruncated.length === 1 ? "is" : "are"} truncated in this view.
+              </span>
+            )}
+          </div>
+        </details>
       )}
-      {eventsTruncated && (
-        <span className="cron-activity-truncated" role="status">
-          Activity is truncated; retained and wire-bounded events are shown.
-        </span>
-      )}
-      {fieldsTruncated.length > 0 && (
-        <span className="cron-activity-truncated" role="status">
-          Run {fieldsTruncated.join(", ")} {fieldsTruncated.length === 1 ? "is" : "are"} truncated in this view.
+      {(replyState.status === "retry" || replyState.status === "error") && (
+        <span className={`cron-reply-message is-${replyState.status}`} role="status">
+          {replyState.message}
         </span>
       )}
     </div>

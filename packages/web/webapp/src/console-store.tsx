@@ -22,6 +22,13 @@ import {
 } from "./api";
 import { clearRetainedReplyImages } from "./components/reply-image-cache";
 import { forgetComposerDraft, transferComposerDraft } from "./composer-draft";
+import {
+  findCronReplyRecoveryReference,
+  forgetCronReplyRecoveryReference,
+  readCronReplyRecoveryReferences,
+  rememberCronReplyRecoveryReference,
+  type CronReplyRecoveryReference,
+} from "./cron-reply-recovery";
 import { currentDataMode } from "./data-mode";
 import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
@@ -52,6 +59,7 @@ import type {
   Bootstrap,
   CatalogModel,
   CronOverview,
+  CronReplySnapshotKind,
   MessageDelta,
   MessagePart,
   RunState,
@@ -111,6 +119,19 @@ interface ThreadListFailure {
   readonly sourceId: string;
   readonly archived: boolean;
   readonly message: string;
+}
+
+export type CronReplyUiState =
+  | { readonly status: "idle" }
+  | { readonly status: "importing" }
+  | { readonly status: "retry"; readonly message: string }
+  | { readonly status: "error"; readonly message: string };
+
+export interface CronReplySource {
+  readonly sourceId: string;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly snapshotKind: CronReplySnapshotKind;
 }
 
 interface ConsoleStoreValue {
@@ -202,6 +223,10 @@ interface ConsoleStoreValue {
   readonly loadOlderMessages: () => Promise<void>;
   readonly refreshCron: () => Promise<void>;
   readonly loadCronRunActivity: (runId: string) => Promise<void>;
+  readonly cronReplyState: (sourceId: string, jobId: string, runId: string) => CronReplyUiState;
+  readonly replyToCronRun: (source: CronReplySource) => Promise<void>;
+  readonly composerFocusThreadId: string | null;
+  readonly consumeComposerFocus: (threadId: string) => void;
   /**
    * Replace one truncated tool call in the open conversation with its whole
    * body. Resolves to `true` when the transcript changed.
@@ -330,6 +355,16 @@ const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): 
   if (window.location.pathname === path) return;
   window.history[replace ? "replaceState" : "pushState"](window.history.state, "", path);
 };
+
+const cronReplyKey = (sourceId: string, jobId: string, runId: string): string =>
+  JSON.stringify([sourceId, jobId, runId]);
+
+const initialCronReplyStates = (): Record<string, CronReplyUiState> => Object.fromEntries(
+  readCronReplyRecoveryReferences().map((reference) => [
+    cronReplyKey(reference.sourceId, reference.jobId, reference.runId),
+    { status: "retry", message: "A previous Reply has an unknown outcome. Retry to resolve it." },
+  ]),
+);
 
 const cronRouteSelection = (): { readonly sourceId: string; readonly jobId: string } | undefined => {
   const match = /^\/agents\/([^/]+)\/cron\/([^/]+)\/?$/u.exec(window.location.pathname);
@@ -1512,6 +1547,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [cronOverview, setCronOverview] = useState<CronOverview | null>(null);
   const [cronLoading, setCronLoading] = useState(false);
   const [cronError, setCronError] = useState<string | null>(null);
+  const [cronReplyStates, setCronReplyStates] = useState<Record<string, CronReplyUiState>>(
+    initialCronReplyStates,
+  );
+  const [composerFocusThreadId, setComposerFocusThreadId] = useState<string | null>(null);
   const [routeRevision, setRouteRevision] = useState(0);
   const [showOfflineAgents, setShowOfflineAgents] = useState(false);
   const [modelByContext, setModelByContext] = useState<Record<string, string>>(() =>
@@ -1555,6 +1594,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // Conversations deleted in this session. A response already in flight when
   // one was deleted must not put it back into the projection.
   const removedThreadsRef = useRef<RemovedThreadRegistry>(createRemovedThreadRegistry());
+  const cronReplyInFlightRef = useRef<Map<string, {
+    readonly source: CronReplySource;
+    readonly promise: Promise<void>;
+  }>>(new Map());
   const selectedThreadRef = useRef<string | null>(null);
   const pendingSubmissionPayloadsRef = useRef<Map<string, {
     readonly submissionId: string;
@@ -4706,6 +4749,153 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setCreateThreadRequest,
   ]);
 
+  const cronReplyState = useCallback((sourceId: string, jobId: string, runId: string) =>
+    cronReplyStates[cronReplyKey(sourceId, jobId, runId)] ?? { status: "idle" }, [cronReplyStates]);
+
+  const consumeComposerFocus = useCallback((threadId: string) => {
+    setComposerFocusThreadId((current) => current === threadId ? null : current);
+  }, []);
+
+  const replyToCronRun = useCallback((source: CronReplySource): Promise<void> => {
+    const key = cronReplyKey(source.sourceId, source.jobId, source.runId);
+    const running = cronReplyInFlightRef.current.get(key);
+    if (running !== undefined) return running.promise;
+
+    const operation = (async (): Promise<void> => {
+      const recovered = findCronReplyRecoveryReference(source.sourceId, source.jobId, source.runId);
+      const reference: CronReplyRecoveryReference = recovered ?? {
+        ...source,
+        operationId: crypto.randomUUID(),
+      };
+      if (connection !== "live") {
+        const message = "The agent is offline. Reply was not started.";
+        setCronReplyStates((current) => ({
+          ...current,
+          [key]: { status: recovered === undefined ? "error" : "retry", message },
+        }));
+        throw new Error(message);
+      }
+
+      // Persist the identity before the request. A reload may offer an explicit
+      // retry, but it never replays this operation automatically.
+      rememberCronReplyRecoveryReference(reference);
+      setCronReplyStates((current) => ({ ...current, [key]: { status: "importing" } }));
+      const issuedAt = removedThreadsRef.current.epoch();
+      try {
+        const receipt = await boundedRequest((signal) => api.cronReply(
+          source.sourceId,
+          source.jobId,
+          source.runId,
+          { operationId: reference.operationId, snapshotKind: reference.snapshotKind },
+          signal,
+        ));
+        if (receipt.operationId !== reference.operationId
+          || receipt.sourceId !== source.sourceId
+          || receipt.jobId !== source.jobId
+          || receipt.runId !== source.runId
+          || receipt.thread.sourceId !== source.sourceId
+          || receipt.messages.length !== 2
+          || receipt.messages.some((message) => message.threadId !== receipt.thread.id)) {
+          throw new Error("Cron Reply returned a mismatched conversation receipt.");
+        }
+        if (!admitThread(removedThreadsRef.current, receipt.thread, issuedAt)) {
+          forgetCronReplyRecoveryReference(reference.operationId);
+          const message = "This imported conversation was deleted.";
+          setCronReplyStates((current) => ({ ...current, [key]: { status: "error", message } }));
+          throw new ApiError(message, 410, "cron_reply_gone");
+        }
+
+        // This is one captured-source transition. It deliberately supersedes
+        // navigation that happened while the import was pending: Reply targets
+        // the exact row activated, never whichever agent is selected later.
+        beginOperatorSelection();
+        restoredSelectionRef.current = null;
+        selectedAgentRef.current = receipt.thread.sourceId;
+        selectedThreadRef.current = receipt.thread.id;
+        detailThreadRef.current = receipt.thread;
+        showArchivedRef.current = false;
+        const mergedThreads = mergeThreads(threadsRef.current, [receipt.thread]);
+        threadsRef.current = mergedThreads;
+        setBootstrap((current) => current === null
+          ? current
+          : { ...current, threads: mergeThreads(current.threads, [receipt.thread]) });
+        threadCacheRef.current.upsertFull(
+          { thread: receipt.thread, messages: receipt.messages },
+          { reset: true },
+        );
+        threadCacheRef.current.setSelected(receipt.thread.id);
+        forgetComposerDraft(receipt.thread.sourceId, receipt.thread.id);
+        setSelectedAgentId(receipt.thread.sourceId);
+        setSelectedThreadId(receipt.thread.id);
+        setShowArchived(false);
+        localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, receipt.thread.sourceId);
+        persistThreadId(receipt.thread.sourceId, receipt.thread.id);
+        updateThreadRoute(receipt.thread);
+        publishDetail(receipt.thread.id);
+        setComposerFocusThreadId(receipt.thread.id);
+        setActionError(null);
+        forgetCronReplyRecoveryReference(reference.operationId);
+        setCronReplyStates((current) => ({ ...current, [key]: { status: "idle" } }));
+      } catch (replyError) {
+        const currentReference = findCronReplyRecoveryReference(source.sourceId, source.jobId, source.runId);
+        const pendingOperationId = replyError instanceof ApiError
+          && replyError.code === "cron_reply_pending"
+          && typeof replyError.details?.operationId === "string"
+          ? replyError.details.operationId
+          : undefined;
+        if (pendingOperationId !== undefined) {
+          forgetCronReplyRecoveryReference(reference.operationId);
+          rememberCronReplyRecoveryReference({ ...reference, operationId: pendingOperationId });
+        }
+        const preflightUnavailable = replyError instanceof ApiError
+          && (replyError.code === "cron_reply_agent_offline"
+            || replyError.code === "cron_reply_unsupported");
+        // Offline/unsupported proves a new operation was never reserved, but it
+        // does not settle an operation recovered from an earlier unknown POST.
+        // That earlier request may still complete, so retain and retry its exact
+        // identity rather than allowing the next click to create a duplicate.
+        const unresolvedPreflight = preflightUnavailable
+          && (recovered !== undefined || pendingOperationId !== undefined);
+        const definitiveCode = replyError instanceof ApiError
+          && !unresolvedPreflight
+          && (replyError.code === "cron_reply_agent_offline"
+            || replyError.code === "cron_reply_conflict"
+            || replyError.code === "cron_reply_failed"
+            || replyError.code === "cron_reply_gone"
+            || replyError.code === "cron_reply_operation_conflict"
+            || replyError.code === "cron_reply_run_not_found"
+            || replyError.code === "cron_reply_unavailable"
+            || replyError.code === "cron_reply_detail_unavailable"
+            || replyError.code === "cron_reply_unsupported");
+        // A transport failure, local deadline, malformed success receipt, or
+        // generic server failure cannot prove whether canonical import landed.
+        // Keep the same durable operation for an explicit retry.
+        const retryable = unresolvedPreflight || (!definitiveCode && (!(replyError instanceof ApiError)
+          || replyError.code === "cron_reply_outcome_unknown"
+          || replyError.code === "cron_reply_pending"
+          || replyError.status >= 500));
+        if (retryable) {
+          const message = errorMessage(replyError);
+          setCronReplyStates((current) => ({ ...current, [key]: { status: "retry", message } }));
+        } else if (currentReference?.operationId === reference.operationId) {
+          forgetCronReplyRecoveryReference(reference.operationId);
+          setCronReplyStates((current) => ({
+            ...current,
+            [key]: { status: "error", message: errorMessage(replyError) },
+          }));
+        }
+        throw replyError;
+      }
+    })();
+    cronReplyInFlightRef.current.set(key, { source, promise: operation });
+    void operation.finally(() => {
+      if (cronReplyInFlightRef.current.get(key)?.promise === operation) {
+        cronReplyInFlightRef.current.delete(key);
+      }
+    }).catch(() => undefined);
+    return operation;
+  }, [beginOperatorSelection, connection, publishDetail, setActionError]);
+
   const applyAgentUpdate = useCallback((agent: AgentSummary) => {
     setBootstrap((current) => current === null
       ? current
@@ -5732,6 +5922,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadOlderMessages,
       refreshCron,
       loadCronRunActivity,
+      cronReplyState,
+      replyToCronRun,
+      composerFocusThreadId,
+      consumeComposerFocus,
       loadFullToolCall,
       refreshReplyAttachmentAccess,
       transcriptMovedAt,
@@ -5775,6 +5969,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loadMoreThreads,
       loadOlderMessages,
       loadCronRunActivity,
+      cronReplyState,
+      replyToCronRun,
+      composerFocusThreadId,
+      consumeComposerFocus,
       loadFullToolCall,
       refreshReplyAttachmentAccess,
       transcriptMovedAt,
