@@ -113,6 +113,36 @@ describe("ThreadSidebar conversation rows", () => {
     expect(storeMock.current!.retryThreadList).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { archived: false, emptyCopy: "Start a conversation" },
+    { archived: true, emptyCopy: "No archived conversations" },
+  ])("does not call an empty $emptyCopy shelf authoritative while its listing failed", ({
+    archived,
+    emptyCopy,
+  }) => {
+    storeMock.current!.threads = [];
+    storeMock.current!.showArchived = archived;
+    storeMock.current!.hasMoreThreads = false;
+    storeMock.current!.threadListError = "listing unavailable";
+
+    const { rerender } = render(<ThreadSidebar />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Conversations could not be refreshed. listing unavailable",
+    );
+    expect(screen.getByText("Conversations unavailable")).toBeVisible();
+    expect(screen.queryByText(emptyCopy)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry conversations" }));
+    expect(storeMock.current!.retryThreadList).toHaveBeenCalledTimes(1);
+    storeMock.current!.threadListError = null;
+    rerender(<ThreadSidebar />);
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Conversations unavailable")).toBeNull();
+    expect(screen.getByText(emptyCopy)).toBeVisible();
+  });
+
   it("renders active jobs on an unselected conversation and clears activity at completion", () => {
     const running = thread("worker", "agent-one", {
       title: "Background work",

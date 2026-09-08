@@ -171,7 +171,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
                 <div className="thread-list-empty">
                   <Icon name={showArchived ? "archive" : "threads"} size={19} />
                   <span>
-                    {selectionError !== null
+                    {selectionError !== null || threadListError !== null
                       ? "Conversations unavailable"
                       : selectionLoading
                       ? "Loading conversations…"
