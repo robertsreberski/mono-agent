@@ -63,6 +63,7 @@ beforeEach(() => {
     threads: [thread("loaded", "agent-one")],
     showArchived: false,
     selectionLoading: false,
+    selectionError: null,
     setShowArchived: vi.fn(),
     hasMoreThreads: true,
     loadMoreThreads: vi.fn().mockResolvedValue(undefined),
@@ -82,6 +83,17 @@ describe("ThreadSidebar conversation rows", () => {
     render(<ThreadSidebar />);
 
     expect(screen.getByText("Loading conversations…")).toBeVisible();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
+    expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
+  });
+
+  it("shows failure instead of claiming a failed bucket has no conversations", () => {
+    storeMock.current!.threads = [];
+    storeMock.current!.selectionError = "bucket unavailable";
+
+    render(<ThreadSidebar />);
+
+    expect(screen.getByText("Conversations unavailable")).toBeVisible();
     expect(screen.queryByText("Start a conversation")).toBeNull();
     expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
   });

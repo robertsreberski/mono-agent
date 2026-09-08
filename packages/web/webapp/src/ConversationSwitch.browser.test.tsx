@@ -1,6 +1,6 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { page, userEvent } from "@vitest/browser/context";
-import { StrictMode } from "react";
+import { StrictMode, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SELECTED_AGENT_STORAGE_KEY,
@@ -44,7 +44,7 @@ vi.mock("./api", async (importOriginal) => ({
 vi.mock("./notifications", () => ({ NotificationBell: () => null }));
 
 import { api } from "./api";
-import { AgentRail } from "./components/AgentRail";
+import { AgentRail, MobileAgentPicker } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
 import { ThreadSidebar } from "./components/ThreadSidebar";
 
@@ -89,9 +89,86 @@ const detail = (summary: ThreadSummary, text: string): ThreadDetail => {
 
 const persistence = createThreadPersistence();
 
+function ConversationSwitchFixture({
+  width,
+  height,
+  mobile,
+}: {
+  readonly width: number;
+  readonly height: number;
+  readonly mobile: boolean;
+}) {
+  const [agentDrawer, setAgentDrawer] = useState(mobile);
+  const [threadDrawer, setThreadDrawer] = useState(false);
+  const closeDrawers = () => {
+    setAgentDrawer(false);
+    setThreadDrawer(false);
+  };
+
+  return (
+    <div className="app-shell" style={{ width, height }}>
+      <div className="desktop-agent-rail"><AgentRail expanded /></div>
+      <div className="desktop-thread-sidebar"><ThreadSidebar /></div>
+      <Chat
+        onOpenAgents={() => setAgentDrawer(true)}
+        onOpenThreads={() => setThreadDrawer(true)}
+      />
+      {(agentDrawer || threadDrawer) && (
+        <button
+          className="drawer-scrim"
+          type="button"
+          onClick={closeDrawers}
+          aria-label="Close navigation"
+        />
+      )}
+      <div
+        className={`mobile-agent-drawer${agentDrawer ? " is-open" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Choose agent"
+        aria-hidden={!agentDrawer}
+        inert={!agentDrawer}
+      >
+        <MobileAgentPicker onSelect={closeDrawers} />
+      </div>
+      <div
+        className={`mobile-thread-drawer${threadDrawer ? " is-open" : ""}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Conversations"
+        aria-hidden={!threadDrawer}
+        inert={!threadDrawer}
+      >
+        <ThreadSidebar onSelect={closeDrawers} />
+      </div>
+    </div>
+  );
+}
+
+const chooseAgent = async (label: string, mobile: boolean) => {
+  if (mobile && screen.queryByRole("dialog", { name: "Choose agent" }) === null) {
+    await userEvent.click(screen.getByRole("button", { name: "Choose agent" }));
+  }
+  await userEvent.click(screen.getByRole("button", { name: `${label}, online` }));
+};
+
+const expectNewConversationDisabled = async (mobile: boolean) => {
+  if (!mobile) {
+    expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
+    return;
+  }
+  await userEvent.click(screen.getByRole("button", { name: "Open conversations" }));
+  const drawer = await screen.findByRole("dialog", { name: "Conversations" });
+  expect(within(drawer).getByRole("button", { name: "New conversation" })).toBeDisabled();
+  screen.getByRole("button", { name: "Close navigation" }).click();
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull());
+};
+
 beforeEach(async () => {
   await persistence.clearAll();
   vi.clearAllMocks();
+  vi.mocked(api.thread).mockReset();
+  vi.mocked(api.threads).mockReset();
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
   localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: alphaThread.id }));
   vi.stubGlobal("EventSource", SyntheticEventSource);
@@ -113,8 +190,9 @@ describe("conversation switching through the real Chromium store and runtime", (
   it.each([
     { width: 1_280, height: 800, label: "desktop" },
     { width: 390, height: 844, label: "mobile" },
-  ])("keeps a synthetic delayed B to A to B switch owned at $label size", async ({ width, height }) => {
+  ])("keeps a synthetic delayed B to A to B switch owned at $label size", async ({ width, height, label }) => {
     await page.viewport(width, height);
+    const mobile = label === "mobile";
     let resolveBeta!: (answer: { readonly threads: readonly ThreadSummary[] }) => void;
     vi.mocked(api.threads).mockImplementation(() => new Promise((resolve) => {
       resolveBeta = resolve;
@@ -125,26 +203,22 @@ describe("conversation switching through the real Chromium store and runtime", (
       <StrictMode>
         <ConsoleStoreProvider>
           <WebRuntimeProvider>
-            <div className="app-shell" style={{ width, height }}>
-              <AgentRail expanded />
-              <ThreadSidebar />
-              <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />
-            </div>
+            <ConversationSwitchFixture width={width} height={height} mobile={mobile} />
           </WebRuntimeProvider>
         </ConsoleStoreProvider>
       </StrictMode>,
     );
 
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Beta, online" }));
+    await chooseAgent("Beta", mobile);
     expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
     expect(screen.queryByText("Start a new conversation")).toBeNull();
     expect(screen.queryByText("Something went wrong")).toBeNull();
-    expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
+    await expectNewConversationDisabled(mobile);
 
-    await userEvent.click(screen.getByRole("button", { name: "Alpha, online" }));
+    await chooseAgent("Alpha", mobile);
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Beta, online" }));
+    await chooseAgent("Beta", mobile);
     expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
     expect(api.threads).toHaveBeenCalledTimes(1);
 
@@ -153,6 +227,53 @@ describe("conversation switching through the real Chromium store and runtime", (
     expect(screen.queryByText("Alpha transcript")).toBeNull();
     expect(screen.queryByText("Something went wrong")).toBeNull();
     expect(api.threads).toHaveBeenCalledTimes(1);
+    expect(consoleError.mock.calls.flat().some((value) =>
+      String(value).includes("render failed") || String(value).includes("useClientLookup"),
+    )).toBe(false);
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
+    consoleError.mockRestore();
+  });
+
+  it.each([
+    { width: 1_280, height: 800, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
+  ])("keeps a failed cold selection explicit and retryable at $label size", async ({ width, height, label }) => {
+    await page.viewport(width, height);
+    const mobile = label === "mobile";
+    vi.mocked(api.threads)
+      .mockRejectedValueOnce(new Error("Beta conversations unavailable"))
+      .mockResolvedValueOnce({ threads: [betaThread] });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    render(
+      <StrictMode>
+        <ConsoleStoreProvider>
+          <WebRuntimeProvider>
+            <ConversationSwitchFixture width={width} height={height} mobile={mobile} />
+          </WebRuntimeProvider>
+        </ConsoleStoreProvider>
+      </StrictMode>,
+    );
+
+    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await chooseAgent("Beta", mobile);
+
+    const failure = await screen.findByRole("alert");
+    expect(failure).toHaveTextContent("Conversation could not be loaded");
+    expect(failure).toHaveTextContent("Beta conversations unavailable");
+    expect(screen.queryByText("Start a new conversation")).toBeNull();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
+    expect(screen.queryByRole("status", { name: "Loading conversation" })).toBeNull();
+    await expectNewConversationDisabled(mobile);
+    expect(api.threads).toHaveBeenCalledTimes(1);
+
+    const retry = screen.getByRole("button", { name: "Retry conversation" });
+    retry.scrollIntoView({ block: "center" });
+    await userEvent.click(retry);
+    await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Beta transcript")).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Alpha transcript")).toBeNull();
     expect(consoleError.mock.calls.flat().some((value) =>
       String(value).includes("render failed") || String(value).includes("useClientLookup"),
     )).toBe(false);

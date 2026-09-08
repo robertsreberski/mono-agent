@@ -83,6 +83,11 @@ type SelectionRequest =
       readonly direct: boolean;
     };
 
+interface SelectionFailure {
+  readonly request: SelectionRequest;
+  readonly message: string;
+}
+
 interface ConsoleStoreValue {
   readonly bootstrap: Bootstrap | null;
   readonly agents: readonly AgentSummary[];
@@ -98,6 +103,8 @@ interface ConsoleStoreValue {
   readonly detailLoading: boolean;
   /** An operator-selected agent or conversation has not resolved yet. */
   readonly selectionLoading: boolean;
+  /** The current operator-selected destination failed before it could resolve. */
+  readonly selectionError: string | null;
   readonly error: string | null;
   readonly actionError: string | null;
   readonly connection: ConnectionState;
@@ -136,6 +143,7 @@ interface ConsoleStoreValue {
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
   readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
+  readonly retrySelection: () => void;
   readonly createThread: () => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
@@ -1418,6 +1426,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectionRequest, setSelectionRequestState] = useState<SelectionRequest | null>(null);
+  const [selectionFailure, setSelectionFailureState] = useState<SelectionFailure | null>(null);
   const [operatorSelectionGeneration, setOperatorSelectionGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1505,6 +1514,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    */
   const operatorSelectionRef = useRef(0);
   const selectionRequestRef = useRef<SelectionRequest | null>(null);
+  const selectionFailureRef = useRef<SelectionFailure | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   /** The catalog scope a page walk was started under. See `catalogScope`. */
   const catalogScopeRef = useRef<string>("");
@@ -1731,16 +1741,43 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setSelectionRequestState(request);
   }, []);
 
+  const setSelectionFailure = useCallback((failure: SelectionFailure | null) => {
+    selectionFailureRef.current = failure;
+    setSelectionFailureState(failure);
+  }, []);
+
+  const failOwnedSelection = useCallback((request: SelectionRequest | null, failure: unknown) => {
+    if (request === null
+      || selectionRequestRef.current !== request
+      || operatorSelectionRef.current !== request.generation) return false;
+    const message = errorMessage(failure);
+    setSelectionRequest(null);
+    setSelectionFailure({ request, message });
+    setActionError(message);
+    return true;
+  }, [setSelectionFailure, setSelectionRequest]);
+
   /** Invalidate every older navigation before publishing the new one. */
   const beginOperatorSelection = useCallback(() => {
     const generation = operatorSelectionRef.current + 1;
     operatorSelectionRef.current = generation;
     setOperatorSelectionGeneration(generation);
     setSelectionRequest(null);
+    setSelectionFailure(null);
     return generation;
-  }, [setSelectionRequest]);
+  }, [setSelectionFailure, setSelectionRequest]);
 
   const selectionLoading = selectionRequest !== null || detailLoading;
+  const selectionError = selectionFailure?.message ?? null;
+
+  const requireResolvedSelection = useCallback(() => {
+    if (selectionRequestRef.current !== null) {
+      throw new Error("Wait for the selected conversation to finish loading.");
+    }
+    if (selectionFailureRef.current !== null) {
+      throw new Error("Retry or switch conversations before starting new work.");
+    }
+  }, []);
 
   useEffect(() => {
     const keys = new Set([...Object.keys(modelByContext), ...Object.keys(effortByContext)]);
@@ -2391,12 +2428,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       if (operatorSelectionRef.current !== generation
         || selectedAgentRef.current !== selectedAgentId
         || selectionRequestRef.current !== request) return;
-      setSelectionRequest(null);
-      setActionError(errorMessage(loadError));
+      if (!failOwnedSelection(request, loadError)) setActionError(errorMessage(loadError));
     });
   }, [
     error,
     hasBootstrap,
+    failOwnedSelection,
     loadThreadBucket,
     loading,
     operatorSelectionGeneration,
@@ -2602,7 +2639,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         closeMissingThread(threadId);
         return;
       }
-      setActionError(errorMessage(loadError));
+      if (!failOwnedSelection(request, loadError)) setActionError(errorMessage(loadError));
     } finally {
       if (!ownsSelection()) return;
       if (request !== null && selectionRequestRef.current === request) setSelectionRequest(null);
@@ -2612,6 +2649,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     applySelectedThreadDetail,
     closeMissingThread,
     confirmConversation,
+    failOwnedSelection,
     leaveRestoredArchivedThread,
     setSelectionRequest,
   ]);
@@ -4237,16 +4275,35 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             closeMissingThread(threadId);
             return;
           }
-          setActionError(errorMessage(selectionError));
+          if (!failOwnedSelection(request, selectionError)) {
+            setActionError(errorMessage(selectionError));
+          }
         }).finally(() => {
-          if (selectionRequestRef.current !== request) return;
-          setSelectionRequest(null);
+          if (operatorSelectionRef.current !== generation) return;
+          if (selectionRequestRef.current === request) setSelectionRequest(null);
           setDetailLoading(false);
         });
       }
     },
-    [beginOperatorSelection, closeMissingThread, publishDetail, setSelectionRequest, threads],
+    [
+      beginOperatorSelection,
+      closeMissingThread,
+      failOwnedSelection,
+      publishDetail,
+      setSelectionRequest,
+      threads,
+    ],
   );
+
+  const retrySelection = useCallback(() => {
+    const failure = selectionFailureRef.current;
+    if (failure === null) return;
+    if (failure.request.kind === "bucket") {
+      selectAgent(failure.request.sourceId);
+      return;
+    }
+    selectThread(failure.request.threadId);
+  }, [selectAgent, selectThread]);
 
   useEffect(() => {
     const route = cronRouteSelection();
@@ -4260,9 +4317,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
-    if (selectionRequestRef.current !== null) {
-      throw new Error("Wait for the selected conversation to finish loading.");
-    }
+    requireResolvedSelection();
     const selectionAtRequest = operatorSelectionRef.current;
     try {
       const issuedAt = removedThreadsRef.current.epoch();
@@ -4333,6 +4388,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     effortByContext,
     modelByContext,
     publishDetail,
+    requireResolvedSelection,
     selectedAgentId,
   ]);
 
@@ -5126,9 +5182,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const sendTurn = useCallback(
     async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
-      if (selectionRequestRef.current !== null) {
-        throw new Error("Wait for the selected conversation to finish loading.");
-      }
+      requireResolvedSelection();
       let thread = selectedThread;
       if (!thread) thread = await createThread();
       if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
@@ -5159,6 +5213,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       applyThreadUpdate,
       createThread,
       refreshSelectedThread,
+      requireResolvedSelection,
       selectedThread,
       settleThreadWrites,
     ],
@@ -5184,6 +5239,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [patchRunState, publishDetail, refreshSelectedThread, selectedThreadId]);
 
   const sendLiveInput = useCallback(async (text: string) => {
+    requireResolvedSelection();
     const threadId = selectedThreadId;
     if (!threadId) throw new Error("Select a conversation before sending a follow-up.");
     try {
@@ -5207,7 +5263,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(liveInputError));
       throw liveInputError;
     }
-  }, [publishDetail, refreshSelectedThread, selectedThreadId, settleThreadWrites]);
+  }, [publishDetail, refreshSelectedThread, requireResolvedSelection, selectedThreadId, settleThreadWrites]);
 
   const value = useMemo<ConsoleStoreValue>(
     () => ({
@@ -5224,6 +5280,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       loading,
       detailLoading,
       selectionLoading,
+      selectionError,
       error,
       actionError,
       connection,
@@ -5252,6 +5309,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setAgentRunDefaults,
       clearAgentRunDefaults,
       selectThread,
+      retrySelection,
       createThread,
       renameThread,
       archiveThread,
@@ -5299,6 +5357,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       detail,
       detailLoading,
       selectionLoading,
+      selectionError,
       deleteThread,
       effort,
       effectiveEffort,
@@ -5324,6 +5383,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       resetRunOverride,
       skillRegistry,
       renameThread,
+      retrySelection,
       refreshCron,
       selectAgent,
       selectThread,

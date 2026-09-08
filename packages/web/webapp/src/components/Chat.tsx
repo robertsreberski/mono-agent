@@ -147,7 +147,7 @@ export function ConnectionBanner({ connection }: { readonly connection: Connecti
 }
 
 function ConversationTitle() {
-  const { selectedThread, renameThread, selectionLoading } = useConsoleStore();
+  const { selectedThread, renameThread, selectionLoading, selectionError } = useConsoleStore();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(selectedThread?.title ?? "New conversation");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -213,7 +213,11 @@ function ConversationTitle() {
         disabled={!selectedThread}
         title={selectedThread ? "Rename conversation" : undefined}
       >
-        {selectionLoading ? "Loading conversation…" : selectedThread?.title ?? "New conversation"}
+        {selectionError !== null
+          ? "Conversation unavailable"
+          : selectionLoading
+            ? "Loading conversation…"
+            : selectedThread?.title ?? "New conversation"}
       </button>
       {triggerBadge}
     </div>
@@ -342,18 +346,29 @@ function ConversationActions() {
 }
 
 function EmptyConversation() {
-  const { selectedAgent, createThread, selectedThread, selectionLoading } = useConsoleStore();
+  const {
+    selectedAgent,
+    createThread,
+    retrySelection,
+    selectedThread,
+    selectionLoading,
+    selectionError,
+  } = useConsoleStore();
   const cron = selectedThread?.trigger?.kind === "cron";
   return (
     <ThreadPrimitive.Empty>
-      <div className="chat-empty">
+      <div className="chat-empty" role={selectionError === null ? undefined : "alert"}>
         <div className="empty-orbit" aria-hidden="true">
           <span />
           <Icon name="spark" size={22} />
         </div>
-        <span className="eyebrow">{selectedAgent?.label ?? "mono-agent"}</span>
+        <span className="eyebrow">
+          {selectionError === null ? selectedAgent?.label ?? "mono-agent" : "Conversation unavailable"}
+        </span>
         <h2>
-          {selectionLoading
+          {selectionError !== null
+            ? "Conversation could not be loaded"
+            : selectionLoading
             ? "Loading conversation…"
             : cron
               ? "No cron runs recorded yet"
@@ -362,7 +377,9 @@ function EmptyConversation() {
                 : "Start a new conversation"}
         </h2>
         <p>
-          {selectionLoading
+          {selectionError !== null
+            ? selectionError
+            : selectionLoading
             ? "Resolving the conversation you selected."
             : cron
             ? "Runs will appear here chronologically after the agent admits them."
@@ -370,7 +387,11 @@ function EmptyConversation() {
             ? "Messages, reasoning, tool calls, and files stay together in this conversation."
             : "No agents have been discovered yet. Start an agent and it will appear here automatically."}
         </p>
-        {selectedAgent && !selectedThread && !cron && !selectionLoading && (
+        {selectionError !== null ? (
+          <button type="button" className="primary-button" onClick={retrySelection}>
+            Retry conversation
+          </button>
+        ) : selectedAgent && !selectedThread && !cron && !selectionLoading && (
           <button
             type="button"
             className="primary-button"
@@ -399,6 +420,7 @@ export function Chat({
     connection,
     detailLoading,
     selectionLoading,
+    selectionError,
     unarchiveThread,
     hasOlderMessages,
     loadOlderMessages,
@@ -411,7 +433,9 @@ export function Chat({
     runStatus === "cancelled" ||
     runStatus === "interrupted";
   const status =
-    selectionLoading
+    selectionError !== null
+      ? "Error"
+      : selectionLoading
       ? "Loading"
       : selectedAgent?.status === "offline"
       ? "Offline"
@@ -503,7 +527,11 @@ export function Chat({
                 <Icon name="arrow-down" size={16} />
               </ThreadPrimitive.ScrollToBottom>
               <ThreadPrimitive.ViewportFooter className="thread-footer">
-                {selectionLoading ? (
+                {selectionError !== null ? (
+                  <div className="cron-readonly-footer" role="status">
+                    Retry this conversation or choose another one before sending.
+                  </div>
+                ) : selectionLoading ? (
                   <div className="cron-readonly-footer" role="status">
                     Loading the selected conversation…
                   </div>

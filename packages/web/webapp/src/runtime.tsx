@@ -581,7 +581,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         agentId: store.selectedAgentId,
         threadId: store.selectedThreadId,
       };
-      if (store.selectionLoading) {
+      if (store.selectionLoading || store.selectionError !== null) {
         queueRecovery(text, attachments, quote, submissionContext);
         return;
       }
@@ -680,7 +680,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   // moves, and these never change.
   const threadListActions = useMemo(() => ({
     onSwitchToNewThread: async () => {
-      if (!storeRef.current.selectedAgent || storeRef.current.selectionLoading) return;
+      if (!storeRef.current.selectedAgent
+        || storeRef.current.selectionLoading
+        || storeRef.current.selectionError !== null) return;
       await storeRef.current.createThread().catch(() => undefined);
     },
     onSwitchToThread: (threadId: string) => storeRef.current.selectThread(threadId),
@@ -736,12 +738,12 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     ],
   );
 
-  const selectedCanSend = !store.selectionLoading && canSendInConsole(
+  const selectedCanSend = store.selectionError === null && !store.selectionLoading && canSendInConsole(
     store.connection,
     store.selectedAgent,
     store.selectedThread,
   );
-  const selectedCanUpload = !store.selectionLoading && canUploadInConsole(
+  const selectedCanUpload = store.selectionError === null && !store.selectionLoading && canUploadInConsole(
     store.connection,
     store.selectedAgent,
     store.selectedThread,

@@ -89,12 +89,13 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
   const [selection, setSelection] = useState({ start: composer.value.length, end: composer.value.length });
   const savedBrowseSelection = useRef(selection);
   const isRunning = useAuiState((state) => state.thread.isRunning);
-  const canUpload = !store.selectionLoading
+  const selectionUnavailable = store.selectionLoading || store.selectionError !== null;
+  const canUpload = !selectionUnavailable
     && !isRunning
     && canUploadInConsole(connection, selectedAgent, selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
-  const canOfferSteer = !store.selectionLoading
+  const canOfferSteer = !selectionUnavailable
     && isRunning
     && selectedThread !== null
     && selectedThread.trigger?.kind !== "cron";
@@ -104,7 +105,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
     : "Offer to the active run.";
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
-    hasAgent: selectedAgent !== null && !store.selectionLoading,
+    hasAgent: selectedAgent !== null && !selectionUnavailable,
     hasRunSettings: store.modelOptions.length > 0 || store.effortOptions.length > 0,
     isRunning,
     createConversation: () => void store.createThread().catch(() => undefined),

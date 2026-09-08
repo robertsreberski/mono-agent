@@ -3328,7 +3328,32 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.threads).toHaveBeenCalledTimes(1);
     });
 
-    it("retries a failed current cold bucket only after the operator selects it again", async () => {
+    it("keeps a failed current cold bucket explicit after its notice expires", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockRejectedValue(new Error("bucket unavailable"));
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("bucket unavailable"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("bucket unavailable");
+      expect(api.threads).toHaveBeenCalledTimes(1);
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionError).toBe("bucket unavailable");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+    });
+
+    it("retries a failed current cold bucket through its owned recovery action", async () => {
       const store = await openOnAlpha();
       await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
       vi.mocked(api.threads)
@@ -3336,17 +3361,51 @@ describe("ConsoleStoreProvider integration", () => {
         .mockResolvedValueOnce({ threads: [betaThread] });
 
       act(() => { store.current.selectAgent("beta"); });
-      await waitFor(() => expect(store.current.actionError).toBe("bucket unavailable"));
-      expect(store.current.selectionLoading).toBe(false);
-      expect(api.threads).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(store.current.selectionError).toBe("bucket unavailable"));
 
-      await quiet();
-      expect(api.threads).toHaveBeenCalledTimes(1);
-      act(() => { store.current.selectAgent("beta"); });
+      act(() => { store.current.retrySelection(); });
       await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
       expect(store.current.actionError).toBeNull();
       expect(store.current.selectionLoading).toBe(false);
       expect(api.threads).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps repeated bucket failures explicit until a retry confirms an empty agent", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads)
+        .mockRejectedValueOnce(new Error("first failure"))
+        .mockRejectedValueOnce(new Error("second failure"))
+        .mockResolvedValueOnce({ threads: [] });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("first failure"));
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError).toBe("second failure"));
+      expect(store.current.selectionLoading).toBe(false);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(3));
+      await waitFor(() => expect(store.current.selectionError).toBeNull());
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("clears a failed bucket selection when the operator switches away", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockRejectedValue(new Error("bucket unavailable"));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("bucket unavailable"));
+      act(() => { store.current.selectAgent("alpha"); });
+
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
     });
 
     it("retries a failed uncached listed conversation when the same row is selected again", async () => {
@@ -3363,13 +3422,52 @@ describe("ConsoleStoreProvider integration", () => {
       act(() => { store.current.selectThread(olderAlpha.id); });
       await waitFor(() => expect(store.current.actionError).toBe("detail unavailable"));
       expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("detail unavailable");
       expect(store.current.detail).toBeNull();
 
-      act(() => { store.current.selectThread(olderAlpha.id); });
+      act(() => { store.current.retrySelection(); });
       await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
       expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
       expect(store.current.actionError).toBeNull();
       expect(olderReads).toBe(2);
+    });
+
+    it("retries a failed current unlisted conversation without losing its destination", async () => {
+      const outside = thread("outside-beta", "beta");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("detail unavailable"))
+        .mockResolvedValueOnce(detail(outside, "recovered"));
+
+      act(() => { store.current.selectThread(outside.id); });
+      await waitFor(() => expect(store.current.selectionError).toBe("detail unavailable"));
+      expect(store.current.selectedThreadId).toBe(outside.id);
+      expect(store.current.detail).toBeNull();
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(outside.id));
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.thread).toHaveBeenCalledTimes(3);
+    });
+
+    it("keeps an authoritative current unlisted not-found as deletion rather than retryable failure", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.thread).mockRejectedValueOnce(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+
+      act(() => { store.current.selectThread("deleted-outside"); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
     });
 
     it("lets only the newest unlisted selection publish agent, route, detail, and errors", async () => {
@@ -3429,6 +3527,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).toBe(betaThread.id);
       expect(store.current.actionError).toBeNull();
       expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
     });
 
     it("does not let a late create response take navigation back from another agent", async () => {
