@@ -2551,11 +2551,16 @@ describe("WebStore", () => {
       jobId: uncertain.jobId,
       deliveryKey: uncertain.wake.deliveryKey,
     })).toEqual({ kind: "uncertain" });
-    reopened.abandonProcessJobWake({
+    expect(reopened.abandonProcessJobWake({
       sourceId: "agent-one",
       jobId: uncertain.jobId,
       deliveryKey: uncertain.wake.deliveryKey,
-    });
+    })).toBe(true);
+    expect(reopened.abandonProcessJobWake({
+      sourceId: "agent-one",
+      jobId: uncertain.jobId,
+      deliveryKey: uncertain.wake.deliveryKey,
+    })).toBe(false);
     expect(reopened.reserveProcessJobWake({
       sourceId: "agent-one",
       threadId: thread.id,

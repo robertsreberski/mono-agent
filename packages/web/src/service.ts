@@ -2086,7 +2086,39 @@ export class WebService {
         }
       }
 
-      if (active !== undefined) await active.completion;
+      if (active !== undefined) {
+        try {
+          await active.completion;
+        } catch {
+          // No live-input request was sent, or the active run explicitly said
+          // requeue/unavailable before this wait. This wake therefore has not
+          // crossed an operator boundary and is safe to release only when the
+          // store proves that it deleted the exact accepted reservation.
+          let abandoned = false;
+          try {
+            abandoned = this.store.abandonProcessJobWake({
+              sourceId: input.sourceId,
+              jobId: input.processJob.jobId,
+              deliveryKey: input.deliveryKey,
+            });
+          } catch {
+            // The accepted claim may remain. Preserve ambiguity and no-replay.
+          }
+          if (!abandoned) {
+            return {
+              delivered: false,
+              code: "process_job_wake_ambiguous",
+              retryable: false,
+              ambiguous: true,
+            };
+          }
+          return {
+            delivered: false,
+            code: "process_job_wake_failed",
+            retryable: false,
+          };
+        }
+      }
       if (this.stopped) {
         this.store.abandonProcessJobWake({
           sourceId: input.sourceId,

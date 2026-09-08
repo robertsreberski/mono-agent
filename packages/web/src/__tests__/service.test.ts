@@ -1822,6 +1822,194 @@ describe("WebService", () => {
     }
   });
 
+  it("releases a waiting process-job wake when the prior admitted turn rejects before dispatch", async () => {
+    const encoder = new TextEncoder();
+    let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let secondStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const logError = vi.fn();
+    const service = await createService({
+      logger: { error: logError },
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => turnBodies.length === 1
+          ? new ReadableStream<Uint8Array>({ start(controller) { firstStream = controller; } })
+          : new ReadableStream<Uint8Array>({ start(controller) { secondStream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const firstJob = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const secondJob = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
+    const firstInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: firstJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: firstJob,
+      wakePrompt: "Handle the first job.",
+    };
+    const secondInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: secondJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: secondJob,
+      wakePrompt: "Handle the second job.",
+    };
+
+    try {
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      const internals = service as unknown as {
+        readonly activeTurns: Map<string, { readonly turnId: string; readonly completion: Promise<void> }>;
+      };
+      const firstTurnId = internals.activeTurns.get(thread.id)?.turnId;
+      expect(firstTurnId).toBeTypeOf("string");
+      const secondDelivery = service.deliverNotification(secondInput);
+      await waitFor(() => {
+        const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+        const claim = raw.prepare(`
+          SELECT state, turn_id AS turnId FROM process_job_wake_deliveries
+          WHERE source_id = ? AND job_id = ?
+        `).get("agent-one", secondJob.jobId) as unknown as { state: string; turnId: string | null } | undefined;
+        raw.close();
+        return claim?.state === "accepted" && claim.turnId === null;
+      });
+      expect(turnBodies).toHaveLength(1);
+      vi.spyOn(service.store, "failTurn").mockImplementationOnce(() => {
+        throw new Error("terminal persistence unavailable");
+      });
+
+      firstStream?.error(new Error("provider stream failed"));
+      firstStream = undefined;
+      await expect(secondDelivery).resolves.toMatchObject({
+        delivery: {
+          delivered: false,
+          code: "process_job_wake_failed",
+          retryable: false,
+        },
+      });
+      await waitFor(() => logError.mock.calls.length === 1);
+      expect(logError).toHaveBeenCalledWith(
+        "Web process-job follow-up turn settlement failed after admission.",
+        { threadId: thread.id, turnId: firstTurnId, errorCode: "unknown" },
+      );
+      expect(turnBodies).toHaveLength(1);
+
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+
+      service.store.failTurn(firstTurnId!, { message: "Recovered terminal persistence failure." });
+      expect(service.store.turnStatus(firstTurnId!)).toBe("failed");
+      const retriedSecondDelivery = service.deliverNotification(secondInput);
+      await waitFor(() => secondStream !== undefined);
+      await expect(retriedSecondDelivery).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies.map((body) => body.processJobWakeDeliveryKey)).toEqual([
+        firstJob.wake.deliveryKey,
+        secondJob.wake.deliveryKey,
+      ]);
+      secondStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Second job handled" })}\n`));
+      secondStream?.close();
+      secondStream = undefined;
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(turnBodies).toHaveLength(2);
+    } finally {
+      firstStream?.error(new Error("test cleanup"));
+      secondStream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
+  it("keeps a waiting process-job wake ambiguous when its pre-dispatch cleanup fails", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const firstJob = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const secondJob = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
+    const firstInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: firstJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: firstJob,
+      wakePrompt: "Handle the first job.",
+    };
+    const secondInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: secondJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: secondJob,
+      wakePrompt: "Handle the second job.",
+    };
+
+    try {
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      const secondDelivery = service.deliverNotification(secondInput);
+      await waitFor(() => {
+        const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+        const claim = raw.prepare(`
+          SELECT state FROM process_job_wake_deliveries
+          WHERE source_id = ? AND job_id = ?
+        `).get("agent-one", secondJob.jobId) as unknown as { state: string } | undefined;
+        raw.close();
+        return claim?.state === "accepted";
+      });
+      vi.spyOn(service.store, "failTurn").mockImplementationOnce(() => {
+        throw new Error("terminal persistence unavailable");
+      });
+      vi.spyOn(service.store, "abandonProcessJobWake").mockImplementationOnce(() => {
+        throw new Error("reservation cleanup unavailable");
+      });
+
+      stream?.error(new Error("provider stream failed"));
+      stream = undefined;
+      await expect(secondDelivery).resolves.toMatchObject({
+        delivery: {
+          delivered: false,
+          code: "process_job_wake_ambiguous",
+          retryable: false,
+          ambiguous: true,
+        },
+      });
+      expect(turnBodies).toHaveLength(1);
+      expect(service.store.reserveProcessJobWake({
+        sourceId: "agent-one",
+        threadId: thread.id,
+        jobId: secondJob.jobId,
+        deliveryKey: secondJob.wake.deliveryKey,
+      })).toEqual({ kind: "uncertain" });
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      stream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
   it("keeps an admission-to-receipt store failure uncertain without replay", async () => {
     const encoder = new TextEncoder();
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
