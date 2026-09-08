@@ -715,7 +715,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 24. Schema 9 added the `message_search` FTS5
+The web state database is at schema 25. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
@@ -740,16 +740,20 @@ marker, so their earlier dispatch history remains ambiguous. Schema 23 adds the
 `web_submissions` idempotency ledger with payload digest, admitted kind,
 turn/message/input associations, and durable product rejection reason. The
 ledger survives archive and is removed only with permanent thread deletion.
-Back up the database before upgrading. A schema-22 `@mono-agent/web` binary
-refuses the schema-23 database rather than reading it incorrectly; rollback
-requires restoring that compatible pre-upgrade backup and therefore loses
-subsequent writes.
 Schema 24 adds two read-path indexes, `turns_by_thread_started` on
 `turns(thread_id, started_at)` and `messages_by_turn` on `messages(turn_id)`,
 so the per-thread run-state lookup behind the conversation list, bootstrap and
 conversation detail no longer scans every turn and message of a long history.
 The migration creates nothing else and changes no rows; on a store with a few
 hundred conversations it completes in well under a second on first open.
+Schema 25 adds `cron_reply_operations`, the durable owner of one terminal-run
+Reply's immutable bounded snapshot, canonical import identity, pending
+settlement, completion, failure, and deletion tombstone. It permits explicit
+same-operation recovery without startup replay and prevents a late response
+from exposing or resurrecting a deleted conversation. Back up the database
+before upgrading. A schema-24 `@mono-agent/web` binary refuses the schema-25
+database rather than reading it incorrectly; rollback requires restoring that
+compatible pre-upgrade backup and therefore loses subsequent writes.
 
 ## Local state and reset
 

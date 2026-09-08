@@ -177,6 +177,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("Cache-Control", "private, no-store, max-age=0");
     next();
   });
+  app.use("/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId/reply-threads", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {
@@ -429,6 +433,23 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       pathParam(req.params.jobId),
       pathParam(req.params.runId),
     ), activeOperations).then((message) => res.status(200).json({ message })).catch(next);
+  });
+
+  app.post("/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId/reply-threads", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const input = parseCronReply(req.body);
+      void trackOperation(service.createCronReplyThread(
+        pathParam(req.params.id),
+        pathParam(req.params.jobId),
+        pathParam(req.params.runId),
+        input,
+      ), activeOperations).then((receipt) => {
+        res.status(receipt.duplicate ? 200 : 201).json(receipt);
+      }).catch(next);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/v1/agents/:id/cron/jobs/:jobId/run", (req, res, next) => {
@@ -1514,6 +1535,18 @@ function parseSubmissionId(value: unknown): string {
     throw invalidBody("submissionId must be a canonical UUID.");
   }
   return submissionId.toLowerCase();
+}
+
+function parseCronReply(value: unknown): { readonly operationId: string; readonly snapshotKind: "summary" | "detail" } {
+  const body = requireRecord(value);
+  if (Object.keys(body).sort().join("\0") !== ["operationId", "snapshotKind"].join("\0")) {
+    throw invalidBody("Cron Reply requires only operationId and snapshotKind.");
+  }
+  const operationId = parseSubmissionId(body.operationId);
+  if (body.snapshotKind !== "summary" && body.snapshotKind !== "detail") {
+    throw invalidBody("snapshotKind must be summary or detail.");
+  }
+  return { operationId, snapshotKind: body.snapshotKind };
 }
 
 function parseLiveInput(value: unknown): StartWebLiveInputInput {

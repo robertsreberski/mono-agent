@@ -178,6 +178,20 @@ The running agent remains authoritative for configured/effective state, last and
 
 Run records use a durable per-job admission sequence. Scheduled ids are `cron:<encodedJobId>:<scheduledAt>`; manual ids use the disjoint `cron:<encodedJobId>:<observedAt>:m<sequence>` form. The feed orders every admitted, running, queued, succeeded, failed, cancelled, skipped, or dropped record by immutable `(orderedAt, sequence, runId)`. The artifact run id is a separate link when one exists.
 
+A visible terminal run also offers **Reply**. It creates a separate normal
+conversation for the same agent and leaves its composer empty and focused; it
+does not continue the cron session, rerun the job, invoke a provider, or send a
+message automatically. The imported context is an immutable, explicitly
+untrusted snapshot of the exact persisted source/job/run: summary by default,
+or detail only when that detail was already loaded before activation. The
+snapshot is capped at 32 KiB with explicit source and consumer truncation and
+excludes activity/tool payloads, files, artifacts, prompts/config, and adjacent
+history. Reply is unavailable without a live agent positively advertising
+context-import v1 and its full byte bound. If the request outcome is unknown,
+the console requires an explicit retry of the same operation and never replays
+it during startup. Status, time, and Reply stay visible while secondary run
+diagnostics remain available under **Details**.
+
 Operator control APIs require all three gates: `cron.operatorActions.enabled`, an operator API key, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
 
 The agent stores overrides, run ordering, idempotency receipts, and audit records in owner-private `.mono-agent/cron-control-v1/`. An absent directory is normal first-run state and is created before jobs arm. A present but corrupt, insecure, or already-leased store is fail-closed: no cron jobs arm, lifecycle/discovery reports the cron channel as degraded, an error is logged, and `mono-agent doctor` reports the state for recovery. Removing this directory is not a routine enable/reset operation because it discards runtime overrides, ordering, idempotency, audit, and bounded run history.

@@ -5969,3 +5969,145 @@ describe("every transcript-moving write names its message", () => {
     await service.stop();
   });
 });
+
+describe("cron Reply import orchestration", () => {
+  const run = {
+    projection: "summary",
+    runId: "cron:digest:2026-09-08T10:00:00.000Z",
+    jobId: "digest",
+    scheduledAt: "2026-09-08T10:00:00.000Z",
+    orderedAt: "2026-09-08T10:00:01.000Z",
+    sequence: 11,
+    trigger: "scheduled",
+    status: "succeeded",
+    completedAt: "2026-09-08T10:00:02.000Z",
+    text: "Synthetic digest result",
+    eventCount: 0,
+  } as const;
+  const operationId = "33333333-3333-4333-8333-333333333333";
+
+  it("coalesces an overlapping operation around one reservation/import and exposes only the completed thread", async () => {
+    let imports = 0;
+    let finishImport: ((value: Record<string, unknown>) => void) | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          imports += 1;
+          return new Promise((resolve) => {
+            finishImport = (value) => resolve({ ...value, conversationId });
+          });
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const first = service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      });
+      const second = service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      });
+      expect(second).toBe(first);
+      expect(imports).toBe(1);
+      expect(service.store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 100 }).threads)
+        .not.toEqual(expect.arrayContaining([expect.objectContaining({ title: expect.stringContaining("Reply to") })]));
+      finishImport?.({ imported: true, status: "appended" });
+      const receipt = await first;
+      await expect(second).resolves.toEqual(receipt);
+      expect(receipt).toMatchObject({ duplicate: false, sourceId: "agent-one", jobId: "digest", runId: run.runId });
+      expect(service.thread(receipt.thread.id).messages).toHaveLength(2);
+    } finally { await service.stop(); }
+  });
+
+  it("keeps unknown transport outcomes pending until an explicit same-operation retry settles them", async () => {
+    let attempts = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("synthetic lost response");
+          return { imported: true, status: "duplicate", conversationId };
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const input = { operationId, snapshotKind: "summary" as const };
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .rejects.toMatchObject({ code: "cron_reply_outcome_unknown", status: 504 });
+      expect(service.store.cronReplyOperation(operationId))
+        .toMatchObject({ kind: "pending", operation: { snapshotText: expect.stringContaining("Synthetic digest result") } });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .resolves.toMatchObject({ duplicate: false, thread: { sourceId: "agent-one" } });
+      const completed = service.store.cronReplyOperation(operationId);
+      expect(completed).toMatchObject({ kind: "completed" });
+      if (completed?.kind === "completed") expect(completed.receipt.thread).not.toHaveProperty("trigger");
+      expect(attempts).toBe(2);
+    } finally { await service.stop(); }
+  });
+
+  it("requires positive sufficient capability before durable reservation or network import", async () => {
+    let imports = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: () => {
+          imports += 1;
+          return {};
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      })).rejects.toMatchObject({ code: "cron_reply_unsupported" });
+      expect(service.store.cronReplyOperation(operationId)).toBeUndefined();
+      expect(imports).toBe(0);
+    } finally { await service.stop(); }
+  });
+
+  it("terminally records producer failure and lets a later deliberate Reply use a new operation", async () => {
+    let attempts = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          attempts += 1;
+          if (attempts === 1) {
+            return Response.json({
+              error: { code: "context_import_failed", message: "Import failed.", reason: "operation_failed" },
+            }, { status: 500 });
+          }
+          return { imported: true, status: "appended", conversationId };
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      })).rejects.toMatchObject({ code: "cron_reply_failed", status: 409 });
+      expect(service.store.cronReplyOperation(operationId))
+        .toMatchObject({ kind: "failed", operation: { failureReason: "operation_failed" } });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId: "66666666-6666-4666-8666-666666666666",
+        snapshotKind: "summary",
+      })).resolves.toMatchObject({ duplicate: false });
+      expect(attempts).toBe(2);
+    } finally { await service.stop(); }
+  });
+});

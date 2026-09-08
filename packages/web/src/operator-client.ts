@@ -1,4 +1,6 @@
 import {
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+  AGENT_CONTEXT_IMPORT_VERSION,
   CronOperatorWireError,
   MCP_APP_SUPPORTED_VERSIONS,
   parseCronOperatorJob,
@@ -78,6 +80,12 @@ const PRESERVED_PROVIDER_AUTH_ERRORS = new Map<string, number>([
 ]);
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
+const CONTEXT_IMPORT_TIMEOUT_MS = 5_000;
+const PRESERVED_CONTEXT_IMPORT_ERRORS = new Map<string, number>([
+  ["context_import_conflict", 409],
+  ["context_import_failed", 500],
+  ["context_import_unsupported", 501],
+]);
 // The provider summary rides `/v1/info`, which shares one 1 MiB body cap with
 // every other field and is polled every 5s, so this parse stays bounded: an
 // oversized summary must cost the summary, never the whole response (which
@@ -121,6 +129,10 @@ export interface OperatorInfo {
   readonly skills?: OperatorSkillRegistry;
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
+  readonly contextImport?: {
+    readonly version: typeof AGENT_CONTEXT_IMPORT_VERSION;
+    readonly maxTextBytes: number;
+  };
   readonly supportsAskUser: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput: boolean;
@@ -223,6 +235,7 @@ export class OperatorClient {
     const cron = record(capabilities?.cron);
     const replyAttachments = parseReplyAttachmentsCapability(capabilities?.replyAttachments);
     const mcpApps = parseMcpAppsCapability(capabilities?.mcpApps);
+    const contextImport = parseContextImportCapability(capabilities?.contextImport);
     return {
       schema: body.schema,
       ...(typeof body.label === "string" ? { label: body.label } : {}),
@@ -234,6 +247,7 @@ export class OperatorClient {
       ...(skills === undefined ? {} : { skills }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
+      ...(contextImport === undefined ? {} : { contextImport }),
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
@@ -466,6 +480,53 @@ export class OperatorClient {
     }).then(async (response) => {
       await response.body?.cancel().catch(() => undefined);
     });
+  }
+
+  async recordContextImport(
+    conversationId: string,
+    text: string,
+    idempotencyKey: string,
+  ): Promise<"appended" | "duplicate"> {
+    let response: Response;
+    try {
+      response = await this.request(
+        `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/context-imports`,
+        {
+          method: "POST",
+          headers: this.headers(true),
+          signal: AbortSignal.timeout(CONTEXT_IMPORT_TIMEOUT_MS),
+          body: JSON.stringify({ text, idempotencyKey }),
+        },
+        PRESERVED_CONTEXT_IMPORT_ERRORS,
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new WebConsoleError(
+          "context_import_outcome_unknown",
+          "Canonical context import timed out; its outcome is unknown.",
+          504,
+        );
+      }
+      throw error;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readBoundedBody(
+        response,
+        MAX_INFO_BODY_BYTES,
+        "context_import_response_too_large",
+      )) as unknown;
+    } catch (error) {
+      if (error instanceof WebConsoleError) throw error;
+      throw new WebConsoleError("invalid_context_import_response", "The agent returned invalid context-import JSON.", 502);
+    }
+    const body = record(raw);
+    if (body?.imported !== true
+      || (body.status !== "appended" && body.status !== "duplicate")
+      || body.conversationId !== conversationId) {
+      throw new WebConsoleError("invalid_context_import_response", "The agent returned an invalid context-import receipt.", 502);
+    }
+    return body.status;
   }
 
   async getJob(jobId: string, signal?: AbortSignal): Promise<ProcessJobProjection> {
@@ -837,9 +898,12 @@ export class OperatorClient {
           preserved.code,
           preserved.message,
           response.status,
-          typeof retryAfterSeconds === "number" && Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0
-            ? { retryAfterSeconds }
-            : undefined,
+          {
+            ...(typeof retryAfterSeconds === "number" && Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0
+              ? { retryAfterSeconds }
+              : {}),
+            ...(preserved.reason === undefined ? {} : { reason: preserved.reason }),
+          },
         );
       }
       throw new WebConsoleError(
@@ -856,7 +920,7 @@ function preservedOperatorError(
   body: string,
   status: number,
   expected: ReadonlyMap<string, number>,
-): { readonly code: string; readonly message: string } | undefined {
+): { readonly code: string; readonly message: string; readonly reason?: string } | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body) as unknown;
@@ -869,7 +933,10 @@ function preservedOperatorError(
   const message = typeof error?.message === "string" && error.message.length <= 1_024
     ? error.message
     : "The MCP App audit operation failed.";
-  return { code, message };
+  const reason = typeof error?.reason === "string" && error.reason.length <= 128
+    ? error.reason
+    : undefined;
+  return { code, message, ...(reason === undefined ? {} : { reason }) };
 }
 
 function invalidCronResponse(): never {
@@ -884,6 +951,15 @@ function parseReplyAttachmentsCapability(
     && Number.isSafeInteger(capability.maxBytes)
     && Number(capability.maxBytes) > 0
     ? { version: 1, maxBytes: capability.maxBytes as number }
+    : undefined;
+}
+
+function parseContextImportCapability(value: unknown): OperatorInfo["contextImport"] | undefined {
+  const capability = record(value);
+  return capability?.version === AGENT_CONTEXT_IMPORT_VERSION
+    && Number.isSafeInteger(capability.maxTextBytes)
+    && Number(capability.maxTextBytes) >= AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+    ? { version: AGENT_CONTEXT_IMPORT_VERSION, maxTextBytes: Number(capability.maxTextBytes) }
     : undefined;
 }
 

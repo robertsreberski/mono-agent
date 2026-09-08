@@ -7,6 +7,7 @@ import { isDeepStrictEqual } from "node:util";
 import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
 
 import {
+  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
@@ -41,6 +42,8 @@ import {
   type WebCronRun,
   type WebCronRunSummary,
   type WebCronRunPage,
+  type WebCronReplyReceipt,
+  type WebCronReplySnapshotKind,
   type WebMessagePage,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
@@ -60,6 +63,7 @@ import {
   type WebPushSubscriptionState,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
+import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
 import { WebConsoleError } from "./errors.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
@@ -185,6 +189,55 @@ interface CronChannelRow {
   created_at: string;
   updated_at: string;
 }
+
+type CronReplyOperationState = "pending" | "completed" | "failed" | "tombstoned";
+
+interface CronReplyOperationRow {
+  operation_id: string;
+  source_id: string;
+  job_id: string;
+  run_id: string;
+  thread_id: string;
+  conversation_id: string;
+  provenance_message_id: string | null;
+  result_message_id: string | null;
+  idempotency_key: string;
+  state: CronReplyOperationState;
+  snapshot_kind: WebCronReplySnapshotKind;
+  snapshot_text: string | null;
+  snapshot_sha256: string | null;
+  title: string | null;
+  run_model: string | null;
+  run_effort: string | null;
+  canonical_status: "appended" | "duplicate" | null;
+  failure_reason: string | null;
+  created_at: string;
+  completed_at: string | null;
+  failed_at: string | null;
+  tombstoned_at: string | null;
+}
+
+export interface StoredCronReplyOperation {
+  readonly operationId: string;
+  readonly sourceId: string;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly threadId: string;
+  readonly conversationId: string;
+  readonly idempotencyKey: string;
+  readonly state: CronReplyOperationState;
+  readonly snapshotKind: WebCronReplySnapshotKind;
+  readonly snapshotText?: string;
+  readonly snapshotSha256?: string;
+  readonly failureReason?: string;
+}
+
+export type CronReplyReservationResult =
+  | { readonly kind: "reserved"; readonly operation: StoredCronReplyOperation }
+  | { readonly kind: "pending"; readonly operation: StoredCronReplyOperation }
+  | { readonly kind: "completed"; readonly receipt: WebCronReplyReceipt }
+  | { readonly kind: "failed"; readonly operation: StoredCronReplyOperation }
+  | { readonly kind: "tombstoned"; readonly operation: StoredCronReplyOperation };
 
 interface ProcessJobCardRow {
   source_id: string;
@@ -1502,6 +1555,231 @@ export class WebStore {
     };
   }
 
+  captureCronReplySnapshot(
+    sourceId: string,
+    jobId: string,
+    runId: string,
+    snapshotKind: WebCronReplySnapshotKind,
+  ): CronReplySnapshotCandidate {
+    const row = this.database.prepare(`
+      SELECT r.payload_json, m.parts_json, m.cron_suppressed,
+        t.text, t.error_code, t.error_message
+      FROM cron_run_messages r
+      JOIN cron_channels c ON c.source_id = r.source_id AND c.job_id = r.job_id AND c.thread_id = r.thread_id
+      JOIN messages m ON m.id = r.message_id AND m.thread_id = r.thread_id
+      JOIN turns t ON t.id = r.turn_id AND t.thread_id = r.thread_id
+      WHERE r.source_id = ? AND r.job_id = ? AND r.run_id = ?
+    `).get(sourceId, jobId, runId) as unknown as {
+      payload_json: string;
+      parts_json: string;
+      cron_suppressed: number;
+      text: string;
+      error_code: string | null;
+      error_message: string | null;
+    } | undefined;
+    if (row === undefined) {
+      throw new WebConsoleError("cron_reply_run_not_found", "Cron run not found for this agent and job.", 404);
+    }
+    const run = parseStoredCronRun(row.payload_json);
+    if (run.jobId !== jobId || run.runId !== runId) {
+      throw new WebConsoleError("storage_corrupt", "Stored cron run identity is inconsistent.", 500);
+    }
+    if (row.cron_suppressed === 1 || !isTerminalCronRun(run.status)) {
+      throw new WebConsoleError("cron_reply_unavailable", "Only visible terminal cron results can be replied to.", 422);
+    }
+    if (snapshotKind === "summary") {
+      return {
+        sourceId,
+        jobId,
+        runId,
+        snapshotKind,
+        capturedAt: this.now(),
+        run,
+        text: run.text ?? "",
+        ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
+        ...(run.error === undefined ? {} : { errorMessage: run.error }),
+        sourceFieldsTruncated: run.fieldsTruncated ?? [],
+        sourceTruncationKnown: true,
+      };
+    }
+    const telemetry = parseParts(row.parts_json).find((part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
+      part.type === "telemetry" && part.event === "cron_run");
+    const data = record(telemetry?.data);
+    if (data?.activityLoaded !== true) {
+      throw new WebConsoleError("cron_reply_detail_unavailable", "Cron run detail was not loaded when Reply was activated.", 422);
+    }
+    const detailFields = Array.isArray(data.detailFieldsTruncated)
+      && data.detailFieldsTruncated.every((field) => typeof field === "string")
+      ? data.detailFieldsTruncated as string[]
+      : undefined;
+    return {
+      sourceId,
+      jobId,
+      runId,
+      snapshotKind,
+      capturedAt: this.now(),
+      run,
+      text: row.text,
+      ...(row.error_code === null ? {} : { errorCode: row.error_code }),
+      ...(row.error_message === null ? {} : { errorMessage: row.error_message }),
+      ...(detailFields === undefined ? {} : { sourceFieldsTruncated: detailFields }),
+      sourceTruncationKnown: detailFields !== undefined,
+    };
+  }
+
+  cronReplyOperation(operationId: string): CronReplyReservationResult | undefined {
+    const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+      .get(operationId) as unknown as CronReplyOperationRow | undefined;
+    return row === undefined ? undefined : this.cronReplyState(row);
+  }
+
+  reserveCronReplyOperation(
+    operationId: string,
+    candidate: CronReplySnapshotCandidate,
+  ): CronReplyReservationResult {
+    return this.transaction(() => {
+      const existing = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+        .get(operationId) as unknown as CronReplyOperationRow | undefined;
+      if (existing !== undefined) {
+        this.assertCronReplyIdentity(existing, candidate.sourceId, candidate.jobId, candidate.runId);
+        return this.cronReplyState(existing);
+      }
+      const pending = this.database.prepare(`
+        SELECT * FROM cron_reply_operations
+        WHERE source_id = ? AND job_id = ? AND run_id = ? AND state = 'pending'
+      `).get(candidate.sourceId, candidate.jobId, candidate.runId) as unknown as CronReplyOperationRow | undefined;
+      if (pending !== undefined) return { kind: "pending", operation: mapCronReplyOperation(pending) };
+      // Revalidate only eligibility/identity. The candidate remains the exact
+      // activation snapshot and is never replaced by a later detail refresh.
+      const eligible = this.database.prepare(`
+        SELECT r.payload_json, m.cron_suppressed
+        FROM cron_run_messages r JOIN messages m ON m.id = r.message_id
+        WHERE r.source_id = ? AND r.job_id = ? AND r.run_id = ?
+      `).get(candidate.sourceId, candidate.jobId, candidate.runId) as unknown as {
+        payload_json: string; cron_suppressed: number;
+      } | undefined;
+      if (eligible === undefined || eligible.cron_suppressed === 1
+        || !isTerminalCronRun(parseStoredCronRun(eligible.payload_json).status)) {
+        throw new WebConsoleError("cron_reply_unavailable", "This cron result is no longer eligible for Reply.", 422);
+      }
+      const threadId = randomUUID();
+      const conversationId = `web:${threadId}`;
+      const provenanceMessageId = randomUUID();
+      const resultMessageId = randomUUID();
+      const idempotencyKey = `web-cron-reply:v1:${createHash("sha256")
+        .update(`${candidate.sourceId}\0${candidate.jobId}\0${candidate.runId}\0${operationId}`)
+        .digest("hex")}`;
+      const snapshotText = formatCronReplyContext(candidate);
+      const snapshotSha256 = createHash("sha256").update(snapshotText).digest("hex");
+      const title = normalizeTitle(`Reply to ${candidate.jobId} · Run ${String(candidate.run.sequence)}`);
+      const override = this.database.prepare("SELECT model, effort FROM agent_run_overrides WHERE source_id = ?")
+        .get(candidate.sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
+      this.database.prepare(`
+        INSERT INTO cron_reply_operations (
+          operation_id, source_id, job_id, run_id, thread_id, conversation_id,
+          provenance_message_id, result_message_id, idempotency_key, state, snapshot_kind,
+          snapshot_text, snapshot_sha256, title, run_model, run_effort, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        operationId,
+        candidate.sourceId,
+        candidate.jobId,
+        candidate.runId,
+        threadId,
+        conversationId,
+        provenanceMessageId,
+        resultMessageId,
+        idempotencyKey,
+        candidate.snapshotKind,
+        snapshotText,
+        snapshotSha256,
+        title,
+        override?.model ?? null,
+        override?.effort ?? null,
+        candidate.capturedAt,
+      );
+      const row = this.requireCronReplyOperationRow(operationId);
+      return { kind: "reserved", operation: mapCronReplyOperation(row) };
+    });
+  }
+
+  completeCronReplyOperation(
+    operationId: string,
+    canonicalStatus: "appended" | "duplicate",
+  ): CronReplyReservationResult {
+    return this.transaction(() => {
+      const row = this.requireCronReplyOperationRow(operationId);
+      if (row.state !== "pending") return this.cronReplyState(row);
+      if (row.snapshot_text === null || row.snapshot_sha256 === null || row.title === null
+        || row.provenance_message_id === null || row.result_message_id === null
+        || createHash("sha256").update(row.snapshot_text).digest("hex") !== row.snapshot_sha256) {
+        throw new WebConsoleError("storage_corrupt", "Cron reply reservation is incomplete or changed.", 500);
+      }
+      const now = this.now();
+      this.database.prepare(`
+        INSERT INTO threads (
+          id, source_id, conversation_id, title, title_manual, archived_at,
+          created_at, updated_at, run_model, run_effort, revision
+        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 1)
+      `).run(
+        row.thread_id,
+        row.source_id,
+        row.conversation_id,
+        row.title,
+        now,
+        now,
+        row.run_model,
+        row.run_effort,
+      );
+      this.database.prepare(`
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, NULL, 'system', ?, ?, ?, 'complete')
+      `).run(
+        row.provenance_message_id,
+        row.thread_id,
+        serializeParts([{ type: "text", text: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE }]),
+        now,
+        now,
+      );
+      this.database.prepare(`
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, NULL, 'assistant', ?, ?, ?, 'complete')
+      `).run(
+        row.result_message_id,
+        row.thread_id,
+        serializeParts([{ type: "text", text: row.snapshot_text }]),
+        now,
+        now,
+      );
+      this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'cron_reply_imported', ?)")
+        .run(row.thread_id, now);
+      this.setSetting("current_thread_id", row.thread_id);
+      const settled = this.database.prepare(`
+        UPDATE cron_reply_operations
+        SET state = 'completed', canonical_status = ?, completed_at = ?
+        WHERE operation_id = ? AND state = 'pending'
+      `).run(canonicalStatus, now, operationId);
+      if (settled.changes !== 1) return this.cronReplyState(this.requireCronReplyOperationRow(operationId));
+      return { kind: "completed", receipt: this.cronReplyReceipt(this.requireCronReplyOperationRow(operationId), false) };
+    });
+  }
+
+  failCronReplyOperation(operationId: string, reason: string): CronReplyReservationResult {
+    return this.transaction(() => {
+      const row = this.requireCronReplyOperationRow(operationId);
+      if (row.state !== "pending") return this.cronReplyState(row);
+      const now = this.now();
+      this.database.prepare(`
+        UPDATE cron_reply_operations SET state = 'failed', provenance_message_id = NULL,
+          result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL,
+          failure_reason = ?, failed_at = ?
+        WHERE operation_id = ? AND state = 'pending'
+      `).run(reason.slice(0, 128), now, operationId);
+      return this.cronReplyState(this.requireCronReplyOperationRow(operationId));
+    });
+  }
+
   reconcileCronRuns(sourceId: string, jobId: string, runs: readonly WebCronRun[]): WebMessage[] {
     return [...this.reconcileCronRunsResult(sourceId, jobId, runs).messages];
   }
@@ -2680,12 +2958,13 @@ export class WebStore {
           UNION ALL SELECT 1 FROM attachments WHERE thread_id = ?
           UNION ALL SELECT 1 FROM live_inputs WHERE thread_id = ?
           UNION ALL SELECT 1 FROM web_submissions WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM cron_reply_operations WHERE thread_id = ? AND state = 'completed'
           UNION ALL SELECT 1 FROM process_job_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM monitor_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM notification_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM push_events WHERE thread_id = ?
           LIMIT 1
-        `).get(id, id, id, id, id, id, id, id, id) !== undefined;
+        `).get(id, id, id, id, id, id, id, id, id, id) !== undefined;
         if (hasContent) {
           throw new WebConsoleError(
             "thread_not_empty",
@@ -2695,6 +2974,13 @@ export class WebStore {
         }
       }
       const now = this.now();
+      this.database.prepare(`
+        UPDATE cron_reply_operations SET state = 'tombstoned', provenance_message_id = NULL,
+          result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, completed_at = NULL,
+          failure_reason = 'thread_deleted', tombstoned_at = ?
+        WHERE thread_id = ? AND state = 'completed'
+      `).run(now, id);
       this.database.prepare(`
         UPDATE push_deliveries SET status = 'dropped', updated_at = ?, finished_at = ?, last_error_code = 'thread_deleted'
         WHERE event_id IN (SELECT id FROM push_events WHERE thread_id = ?)
@@ -4061,6 +4347,41 @@ export class WebStore {
         created_at TEXT NOT NULL,
         PRIMARY KEY (thread_id, submission_id)
       );
+      CREATE TABLE IF NOT EXISTS cron_reply_operations (
+        operation_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        job_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL UNIQUE,
+        provenance_message_id TEXT UNIQUE,
+        result_message_id TEXT UNIQUE,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'completed', 'failed', 'tombstoned')),
+        snapshot_kind TEXT NOT NULL CHECK (snapshot_kind IN ('summary', 'detail')),
+        snapshot_text TEXT,
+        snapshot_sha256 TEXT,
+        title TEXT,
+        run_model TEXT,
+        run_effort TEXT,
+        canonical_status TEXT CHECK (canonical_status IN ('appended', 'duplicate')),
+        failure_reason TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        failed_at TEXT,
+        tombstoned_at TEXT,
+        CHECK (
+          (state IN ('pending', 'completed') AND snapshot_text IS NOT NULL AND snapshot_sha256 IS NOT NULL
+            AND title IS NOT NULL AND provenance_message_id IS NOT NULL AND result_message_id IS NOT NULL)
+          OR (state IN ('failed', 'tombstoned') AND snapshot_text IS NULL AND snapshot_sha256 IS NULL
+            AND title IS NULL AND provenance_message_id IS NULL AND result_message_id IS NULL)
+        ),
+        CHECK ((state = 'completed') = (completed_at IS NOT NULL)),
+        CHECK ((state = 'failed') = (failed_at IS NOT NULL)),
+        CHECK ((state = 'tombstoned') = (tombstoned_at IS NOT NULL))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS cron_reply_operations_one_pending_run
+        ON cron_reply_operations(source_id, job_id, run_id) WHERE state = 'pending';
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
         thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
@@ -5380,6 +5701,56 @@ export class WebStore {
     return row === undefined ? undefined : mapWebSubmission(row);
   }
 
+  private requireCronReplyOperationRow(operationId: string): CronReplyOperationRow {
+    const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+      .get(operationId) as unknown as CronReplyOperationRow | undefined;
+    if (row === undefined) {
+      throw new WebConsoleError("cron_reply_operation_not_found", "Cron reply operation not found.", 404);
+    }
+    return row;
+  }
+
+  private assertCronReplyIdentity(
+    row: CronReplyOperationRow,
+    sourceId: string,
+    jobId: string,
+    runId: string,
+  ): void {
+    if (row.source_id !== sourceId || row.job_id !== jobId || row.run_id !== runId) {
+      throw new WebConsoleError("cron_reply_operation_conflict", "Cron reply operation id was used for another run.", 409);
+    }
+  }
+
+  private cronReplyState(row: CronReplyOperationRow): CronReplyReservationResult {
+    if (row.state === "completed") {
+      return { kind: "completed", receipt: this.cronReplyReceipt(row, true) };
+    }
+    if (row.state === "failed") return { kind: "failed", operation: mapCronReplyOperation(row) };
+    if (row.state === "tombstoned") return { kind: "tombstoned", operation: mapCronReplyOperation(row) };
+    return { kind: "pending", operation: mapCronReplyOperation(row) };
+  }
+
+  private cronReplyReceipt(row: CronReplyOperationRow, duplicate: boolean): WebCronReplyReceipt {
+    if (row.provenance_message_id === null || row.result_message_id === null) {
+      throw new WebConsoleError("storage_corrupt", "Completed cron reply is missing its projected messages.", 500);
+    }
+    const thread = this.getThread(row.thread_id);
+    const provenance = this.getMessage(row.provenance_message_id);
+    const result = this.getMessage(row.result_message_id);
+    if (thread === undefined || provenance === undefined || result === undefined) {
+      throw new WebConsoleError("storage_corrupt", "Completed cron reply projection is missing.", 500);
+    }
+    return {
+      operationId: row.operation_id,
+      sourceId: row.source_id,
+      jobId: row.job_id,
+      runId: row.run_id,
+      duplicate,
+      thread,
+      messages: [provenance, result],
+    };
+  }
+
   private transaction<T>(operation: () => T): T {
     if (this.transactionDepth > 0) return operation();
     this.database.exec("BEGIN IMMEDIATE");
@@ -5411,6 +5782,23 @@ function mapWebSubmission(row: WebSubmissionRow): StoredWebSubmission {
     ...(row.message_id === null ? {} : { messageId: row.message_id }),
     ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
     ...(row.input_id === null ? {} : { inputId: row.input_id }),
+  };
+}
+
+function mapCronReplyOperation(row: CronReplyOperationRow): StoredCronReplyOperation {
+  return {
+    operationId: row.operation_id,
+    sourceId: row.source_id,
+    jobId: row.job_id,
+    runId: row.run_id,
+    threadId: row.thread_id,
+    conversationId: row.conversation_id,
+    idempotencyKey: row.idempotency_key,
+    state: row.state,
+    snapshotKind: row.snapshot_kind,
+    ...(row.snapshot_text === null ? {} : { snapshotText: row.snapshot_text }),
+    ...(row.snapshot_sha256 === null ? {} : { snapshotSha256: row.snapshot_sha256 }),
+    ...(row.failure_reason === null ? {} : { failureReason: row.failure_reason }),
   };
 }
 
@@ -5602,6 +5990,14 @@ function cronMessageStatus(status: WebCronRun["status"]): WebMessageStatus {
   return "complete";
 }
 
+function isTerminalCronRun(status: WebCronRun["status"]): boolean {
+  return status === "succeeded"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "skipped_overlap"
+    || status === "dropped";
+}
+
 /** Presentation queries only; storage validation/recovery and retention stay raw. */
 function visibleMessageSql(alias: "m" | "messages"): string { return `${alias}.cron_suppressed = 0`; }
 
@@ -5646,6 +6042,10 @@ function cronRunParts(
   const priorActivityEventCount = Number.isSafeInteger(priorCronData?.activityEventCount)
     ? Number(priorCronData?.activityEventCount)
     : priorLoadedEventCount;
+  const priorDetailFieldsTruncated = Array.isArray(priorCronData?.detailFieldsTruncated)
+    && priorCronData.detailFieldsTruncated.every((field) => typeof field === "string")
+    ? priorCronData.detailFieldsTruncated as string[]
+    : undefined;
   const activityLoaded = run.projection === "detail"
     || (priorActivityLoaded && priorActivityEventCount === run.eventCount);
   const activityStale = run.projection === "summary"
@@ -5731,6 +6131,9 @@ function cronRunParts(
         : {}),
       ...(activityStale ? { activityStale: true, loadedEventCount: priorLoadedEventCount } : {}),
       ...(eventsTruncated ? { eventsTruncated: true } : {}),
+      ...(run.projection === "detail"
+        ? { detailFieldsTruncated: run.fieldsTruncated ?? [] }
+        : priorDetailFieldsTruncated === undefined ? {} : { detailFieldsTruncated: priorDetailFieldsTruncated }),
       ...(run.fieldsTruncated === undefined ? {} : { fieldsTruncated: run.fieldsTruncated }),
     },
   });

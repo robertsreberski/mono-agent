@@ -4,6 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/agent-contracts";
+
 import type { WebAgentSummary, WebCronRun, WebCronRunSummary } from "../contracts.js";
 import { WebStore } from "../store.js";
 import { temporaryRoot } from "./helpers.js";
@@ -1080,6 +1082,17 @@ describe("WebStore first-class cron channels", () => {
     const afterDetail = store.getThread(threadId)!.revision;
     expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [summary]).changed).toBe(false);
     expect(store.getThread(threadId)!.revision).toBe(afterDetail);
+    expect(store.captureCronReplySnapshot(
+      "agent-one",
+      "daily:brief",
+      summary.runId,
+      "detail",
+    )).toMatchObject({
+      snapshotKind: "detail",
+      text: "Full selected run text",
+      sourceFieldsTruncated: ["text"],
+      sourceTruncationKnown: true,
+    });
 
     const assertPersisted = (messageParts: readonly unknown[]) => {
       expect(messageParts).toContainEqual(expect.objectContaining({
@@ -1288,5 +1301,91 @@ describe("silent cron projections", () => {
       try { expect(database.prepare("SELECT cron_suppressed, COUNT(*) AS count FROM messages GROUP BY cron_suppressed ORDER BY cron_suppressed").all()).toEqual([{ cron_suppressed: 0, count: 500 }, { cron_suppressed: 1, count: 500 }]); }
       finally { database.close(); }
     } finally { store.close(); }
+  });
+});
+
+describe("cron Reply operation storage", () => {
+  const operationId = "11111111-1111-4111-8111-111111111111";
+  const runId = "cron:daily%3Abrief:2026-09-08T10:00:00.000Z";
+
+  async function replyFixture() {
+    const root = await temporaryRoot("cron-reply-");
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    syncCronJob(store);
+    store.reconcileCronRuns("agent-one", "daily:brief", [cronRun({
+      runId,
+      sequence: 9,
+      status: "succeeded",
+      text: "Captured result",
+      fieldsTruncated: ["text"],
+    })]);
+    return { stateDir, store };
+  }
+
+  it("reserves the exact summary before import and materializes one normal immutable conversation", async () => {
+    const { store } = await replyFixture();
+    try {
+      const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+      const reserved = store.reserveCronReplyOperation(operationId, captured);
+      expect(reserved).toMatchObject({
+        kind: "reserved",
+        operation: { operationId, snapshotKind: "summary", state: "pending" },
+      });
+      if (reserved.kind !== "reserved") throw new Error("expected reservation");
+      expect(reserved.operation.snapshotText).toContain("Captured result");
+      expect(reserved.operation.snapshotText).toContain('"sourceFieldsTruncated":["text"]');
+
+      // A later projection must not retarget or rewrite what activation captured.
+      store.reconcileCronRuns("agent-one", "daily:brief", [cronRun({
+        runId,
+        sequence: 9,
+        status: "succeeded",
+        text: "Later result",
+      })]);
+      const completed = store.completeCronReplyOperation(operationId, "appended");
+      expect(completed.kind).toBe("completed");
+      if (completed.kind !== "completed") throw new Error("expected completion");
+      expect(completed.receipt.duplicate).toBe(false);
+      expect(completed.receipt.thread).toMatchObject({
+        sourceId: "agent-one",
+        messageCount: 2,
+      });
+      expect(completed.receipt.thread).not.toHaveProperty("trigger");
+      expect(completed.receipt.messages).toMatchObject([
+        { role: "system", parts: [{ type: "text", text: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE }] },
+        { role: "assistant", parts: [{ type: "text", text: expect.stringContaining("Captured result") }] },
+      ]);
+      expect(JSON.stringify(completed.receipt.messages)).not.toContain("Later result");
+    } finally { store.close(); }
+  });
+
+  it("serializes overlapping processes, replays terminal completion, and fences deletion from late settlement", async () => {
+    const { stateDir, store: first } = await replyFixture();
+    const second = await WebStore.open({ stateDir });
+    try {
+      const captured = first.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+      expect(first.reserveCronReplyOperation(operationId, captured).kind).toBe("reserved");
+      expect(second.reserveCronReplyOperation(
+        "22222222-2222-4222-8222-222222222222",
+        captured,
+      )).toMatchObject({ kind: "pending", operation: { operationId } });
+
+      const won = second.completeCronReplyOperation(operationId, "duplicate");
+      expect(won).toMatchObject({ kind: "completed", receipt: { duplicate: false } });
+      expect(first.failCronReplyOperation(operationId, "late_conflict"))
+        .toMatchObject({ kind: "completed", receipt: { duplicate: true } });
+      if (won.kind !== "completed") throw new Error("expected completion");
+      first.patchThread(won.receipt.thread.id, { archived: true });
+      await first.deleteArchivedThread(won.receipt.thread.id);
+      expect(second.completeCronReplyOperation(operationId, "appended"))
+        .toMatchObject({ kind: "tombstoned", operation: { failureReason: "thread_deleted" } });
+      expect(first.getThread(won.receipt.thread.id)).toBeUndefined();
+    } finally {
+      second.close();
+      first.close();
+    }
   });
 });

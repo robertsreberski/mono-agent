@@ -565,7 +565,7 @@ export function Chat({
                   </div>
                 ) : selectedThread?.trigger?.kind === "cron" ? (
                   <div className="cron-readonly-footer" role="status">
-                    Cron channels are read-only. Open the originating session to continue the conversation.
+                    Cron channels are read-only. Use Reply on a finished run to start a separate conversation.
                   </div>
                 ) : (
                   <Composer

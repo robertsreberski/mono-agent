@@ -391,6 +391,19 @@ Disabled or removed jobs say so. Missing, invalid, past, or offline/stale next-r
 state says **Next run unavailable**. Configuration stays in files/config JSON;
 the browser neither edits it nor computes a schedule.
 
+Each visible terminal run keeps **Reply**, status, and local time in its compact
+footer; secondary artifact, originating-session, activity, and truncation
+diagnostics live under an accessible **Details** disclosure. Reply snapshots the
+exact persisted result at activation—compact summary unless activity detail is
+already loaded—and imports at most 32 KiB of explicitly marked untrusted
+provenance/result into a separate normal conversation for the same agent. It
+does not fetch hidden detail, rerun cron, invoke a provider, submit the empty
+composer, include tools/files/config/neighbouring history, or continue the cron
+session. The agent must positively advertise context-import v1 with a sufficient
+byte limit. Unknown transport outcomes keep one operation for explicit Retry;
+they are never replayed on startup, while a later deliberate Reply after a
+definitive failure creates another operation and conversation.
+
 The web HTTP config-view, run-now, and effective-enabled proxies remain available
 for operator clients. Mutations still require same-origin requests, source-qualified
 routing, an operator API key, explicit agent-side opt-in, an idempotency key, and
@@ -602,6 +615,7 @@ ACP_PROTOCOL_VERSION
 AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
+CreateWebCronReplyInput
 CreateWebThreadInput
 CreateWebUploadInput
 DEFAULT_WEB_HOST
@@ -655,6 +669,8 @@ WebBootstrap
 WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
+WebCronReplyReceipt
+WebCronReplySnapshotKind
 WebEvent
 WebEventType
 WebJobActivity
@@ -744,6 +760,10 @@ The browser API is rooted at `/api/v1`:
 - `GET /events` (SSE); the optional `?thread=<id>` subscribes that connection to
   one conversation's `message.delta` frames, resolving a redirected id to the
   canonical one. `Last-Event-ID` is ignored — `ready` means resync
+- `POST /agents/:sourceId/cron/jobs/:jobId/runs/:runId/reply-threads` snapshots
+  one visible terminal run and imports it into one normal same-agent thread;
+  the exact-origin request carries a browser-owned operation UUID and summary
+  or already-loaded-detail selection
 
 `GET /healthz` is intentionally outside the versioned API for service probes.
 Its compatibility-stable `status` remains `ok` while the additive `push` field
@@ -771,8 +791,13 @@ queue once; a marked row becomes `uncertain` and non-promotable. Existing
 schema-21 rows migrate with a null marker, so their earlier dispatch history is
 not reconstructible. Schema 23 adds the durable `web_submissions` ledger and
 keeps it for the lifetime of its thread, including archive; permanent deletion
-cascades it. Stop the Web service and make a compatible database backup before
-migration. A schema-22 binary refuses a schema-23 database; rollback requires
+cascades it. Schema 24 adds the read indexes used by conversation run-state
+lookups. Schema 25 adds `cron_reply_operations`, which owns the immutable
+snapshot, canonical-import identity, pending/terminal settlement, and deletion
+tombstone. Pending rows survive restart for explicit same-operation retry;
+failed or deleted rows cannot expose or resurrect a conversation. Stop the Web
+service and make a compatible database backup before migration. A schema-24
+binary refuses a schema-25 database; rollback requires
 restoring that compatible pre-upgrade backup and loses writes made afterward.
 Upgrade the operator-adapter before the Web producer so `liveInputTargeting`
 is available; an older operator is not guessed through and the receipt visibly

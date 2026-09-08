@@ -44,7 +44,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["agents", "threads", "turns", "messages", "live_inputs", "web_submissions", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["agents", "threads", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -290,7 +290,7 @@ describe("web storage migration history", () => {
       try { expect(store.getThread("fixture-thread")).toBeUndefined(); } finally { store.close(); }
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 24 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         for (const [index, columns] of Object.entries(readIndexes)) expect(indexColumns(inspected, index)).toEqual(columns);
         expect(inspected.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
       } finally { inspected.close(); }
@@ -342,8 +342,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 24 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(24);
+  it("is immutable and derives schema 25 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(25);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
