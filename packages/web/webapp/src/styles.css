@@ -401,6 +401,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .sidebar-header h1 { max-width: 205px; margin: 0; overflow: hidden; color: var(--text); font-size: 17px; font-weight: 680; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .new-thread-button { width: 38px; height: 38px; display: grid; place-items: center; flex: none; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow-sm); cursor: pointer; }
 .new-thread-button:hover { color: var(--accent); border-color: var(--line-strong); }
+.new-thread-spinner { width: 17px; height: 17px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin 800ms linear infinite; }
 .sidebar-header-actions { display: flex; align-items: center; gap: 7px; }
 .agent-settings-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--text-muted); background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
 .agent-settings-button:hover:not(:disabled) { color: var(--accent); background: var(--surface-hover); }

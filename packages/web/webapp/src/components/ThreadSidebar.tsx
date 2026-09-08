@@ -79,6 +79,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     selectedAgentId,
     showArchived,
     selectionLoading,
+    creatingThread,
     selectionError,
     threadListError,
     retryThreadList,
@@ -123,12 +124,15 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           </button>
           <ThreadListPrimitive.New
             className="new-thread-button"
-            aria-label="New conversation"
-            title="New conversation (⌘⇧O)"
+            aria-label={creatingThread ? "Creating conversation" : "New conversation"}
+            aria-busy={creatingThread || undefined}
+            title={creatingThread ? "Creating conversation…" : "New conversation (⌘⇧O)"}
             onClick={onSelect}
             disabled={!selectedAgent || selectionLoading || selectionError !== null}
           >
-            <Icon name="new" size={18} />
+            {creatingThread
+              ? <span className="new-thread-spinner" aria-hidden="true" />
+              : <Icon name="new" size={18} />}
           </ThreadListPrimitive.New>
         </div>
       </div>

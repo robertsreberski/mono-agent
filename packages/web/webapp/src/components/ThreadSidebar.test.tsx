@@ -63,6 +63,7 @@ beforeEach(() => {
     threads: [thread("loaded", "agent-one")],
     showArchived: false,
     selectionLoading: false,
+    creatingThread: false,
     selectionError: null,
     threadListError: null,
     retryThreadList: vi.fn(),
@@ -78,6 +79,19 @@ afterEach(() => {
 });
 
 describe("ThreadSidebar conversation rows", () => {
+  it("turns the new-conversation action into an immediate pending indicator", () => {
+    storeMock.current!.selectionLoading = true;
+    storeMock.current!.creatingThread = true;
+
+    render(<ThreadSidebar />);
+
+    const pending = screen.getByRole("button", { name: "Creating conversation" });
+    expect(pending).toBeDisabled();
+    expect(pending).toHaveAttribute("aria-busy", "true");
+    expect(pending).toHaveAttribute("title", "Creating conversation…");
+    expect(pending.querySelector(".new-thread-spinner")).not.toBeNull();
+  });
+
   it("shows loading instead of claiming a cold agent has no conversations", () => {
     storeMock.current!.threads = [];
     storeMock.current!.selectionLoading = true;
