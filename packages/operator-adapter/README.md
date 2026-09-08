@@ -80,8 +80,11 @@ Keep bearer values out of source config when possible. Set
   provenance plus assistant context without a model turn. The decoded
   conversation id is capped at 4096 UTF-8 bytes, the key at 512, and the JSON
   parser ceiling is 199711 bytes (the sixfold escaping maximum). Results are
-  `appended`/`duplicate` (`200`), a stable conflict (`409`), or unsupported
-  (`501`); responses are private and non-cacheable.
+  `appended`/`duplicate` (`200`), `context_import_conflict` with a bounded
+  canonical reason (`409`), `context_import_unsupported` (`501`), or a
+  sanitized `context_import_failed` (`500`); responses are private and
+  non-cacheable. Whitespace-only text/keys are invalid, while accepted opaque
+  values retain their original whitespace.
 - `GET {basePath}/v1/provider-auth` plus the paired session create, poll,
   input, and delete routes expose a host-injected `ProviderAuthOperator`.
   `capabilities.providerAuth = { version: 1 }` and every route are available

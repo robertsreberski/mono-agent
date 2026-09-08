@@ -1,5 +1,17 @@
 export type RuntimeSessionEvictReason = "idle_timeout" | "stale" | "replaced" | "disposed";
 
+/** Public upper bound for opaque canonical-history version tokens. */
+export const CONVERSATION_HISTORY_VERSION_MAX_BYTES = 512;
+
+export function assertConversationHistoryVersion(value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new TypeError("historyVersion must be a non-empty string.");
+  }
+  if (Buffer.byteLength(value, "utf8") > CONVERSATION_HISTORY_VERSION_MAX_BYTES) {
+    throw new TypeError(`historyVersion must not exceed ${CONVERSATION_HISTORY_VERSION_MAX_BYTES} UTF-8 bytes.`);
+  }
+}
+
 export interface RuntimeSessionRecord {
   readonly conversationId: string;
   readonly providerSessionId: string;
@@ -166,9 +178,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       ) {
         throw new TypeError("providerSessionRevision must be a non-negative safe integer when present.");
       }
-      if (historyVersion !== undefined && !/^[a-f0-9]{64}$/u.test(historyVersion)) {
-        throw new TypeError("historyVersion must be a 64-character lowercase hexadecimal digest when present.");
-      }
+      if (historyVersion !== undefined) assertConversationHistoryVersion(historyVersion);
       const stored = entries.get(conversationId);
       if (stored !== undefined && stored.record.providerSessionId === providerSessionId) {
         stored.record.lastActivityAt = now();

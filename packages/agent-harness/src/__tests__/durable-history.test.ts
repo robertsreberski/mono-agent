@@ -65,6 +65,11 @@ describe("DurableConversationHistoryStore", () => {
       timestamp: "2026-09-08T10:00:00.000Z",
     };
 
+    await expect(store.contextImport!.prepareImport("blank-text", { ...request, text: " \t\n" }))
+      .rejects.toThrow("context import text must be a non-empty string");
+    await expect(store.contextImport!.prepareImport("blank-key", { ...request, idempotencyKey: " \t\n" }))
+      .rejects.toThrow("context import idempotencyKey must be a non-empty string");
+
     const first = await store.contextImport!.prepareImport("web:cron:job-1", request);
     expect(first.result).toEqual({ status: "appended" });
     await first.append!.commit();

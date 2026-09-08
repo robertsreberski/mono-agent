@@ -793,10 +793,12 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     (req, res, next) => {
       if (!authorize(req, res, apiKey)) return;
       if (typeof options.responder.importContext !== "function") {
-        sendJsonError(
+        sendContextImportError(
           res,
           501,
-          new TuiAdapterError("invalid_request", "This responder does not support canonical context import."),
+          "context_import_unsupported",
+          "This responder does not support canonical context import.",
+          "unsupported",
         );
         return;
       }
@@ -810,11 +812,26 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       void options.responder.importContext(normalized.conversationId, normalized.request).then((result) => {
         res.setHeader("Cache-Control", "private, no-store, max-age=0");
         if (result.status === "conflict") {
-          res.status(409).json({ imported: false, status: result.status, reason: result.reason });
+          sendContextImportError(
+            res,
+            409,
+            "context_import_conflict",
+            "Canonical context import conflicts with existing history.",
+            result.reason,
+          );
           return;
         }
         res.status(200).json({ imported: true, status: result.status, conversationId: normalized.conversationId });
-      }).catch(next);
+      }).catch((error: unknown) => {
+        options.logger?.error?.("TUI context import failed.", { error: errorToMessage(error) });
+        sendContextImportError(
+          res,
+          500,
+          "context_import_failed",
+          "Canonical context import failed.",
+          "operation_failed",
+        );
+      });
     },
   );
 
@@ -1821,14 +1838,14 @@ function normalizeContextImportBody(
   }
   if (
     typeof record.text !== "string"
-    || record.text.length === 0
+    || record.text.trim().length === 0
     || Buffer.byteLength(record.text, "utf8") > AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
   ) {
     throw new TuiAdapterError("invalid_request", "text must be a string within the context import byte limit.");
   }
   if (
     typeof record.idempotencyKey !== "string"
-    || record.idempotencyKey.length === 0
+    || record.idempotencyKey.trim().length === 0
     || record.idempotencyKey.includes("\0")
     || Buffer.byteLength(record.idempotencyKey, "utf8") > AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
   ) {
@@ -2481,6 +2498,17 @@ function boundedProviderAuthSessionId(value: unknown): string | undefined {
 
 function sendJsonError(res: Response, status: number, error: unknown): void {
   res.status(status).type("application/json").send(boundedErrorBody(error));
+}
+
+function sendContextImportError(
+  res: Response,
+  status: 409 | 500 | 501,
+  code: "context_import_conflict" | "context_import_failed" | "context_import_unsupported",
+  message: string,
+  reason: "conversation_not_empty" | "idempotency_conflict" | "operation_failed" | "unsupported",
+): void {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.status(status).json({ error: { code, message, reason } });
 }
 
 /** Appended to a message the fence had to cut, so a reader is never handed a

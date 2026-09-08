@@ -1898,13 +1898,13 @@ function validateContextImportRequest(
   if (keys.join("\0") !== ["idempotencyKey", "text", "timestamp"].join("\0")) {
     throw new TypeError("context import request must contain only text, idempotencyKey, and timestamp.");
   }
-  if (typeof request.text !== "string" || request.text.length === 0) {
+  if (typeof request.text !== "string" || request.text.trim().length === 0) {
     throw new TypeError("context import text must be a non-empty string.");
   }
   if (Buffer.byteLength(request.text, "utf8") > AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES) {
     throw new TypeError(`context import text must not exceed ${AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES} UTF-8 bytes.`);
   }
-  if (typeof request.idempotencyKey !== "string" || request.idempotencyKey.length === 0) {
+  if (typeof request.idempotencyKey !== "string" || request.idempotencyKey.trim().length === 0) {
     throw new TypeError("context import idempotencyKey must be a non-empty string.");
   }
   if (Buffer.byteLength(request.idempotencyKey, "utf8") > AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES) {

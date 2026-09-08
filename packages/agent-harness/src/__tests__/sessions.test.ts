@@ -21,6 +21,16 @@ describe("createRuntimeSessionStore", () => {
     expect(store.acquire("conv-1")).toMatchObject({ providerSessionId: "ps-1" });
   });
 
+  it("accepts opaque history versions through the UTF-8 byte boundary", () => {
+    const store = createRuntimeSessionStore({ idleTimeoutMs: 60_000 });
+    store.save("conv-1", "ps-1", undefined, undefined, "revision-1");
+    expect(store.list()[0]?.historyVersion).toBe("revision-1");
+    store.save("conv-1", "ps-1", undefined, undefined, "é".repeat(256));
+    expect(store.list()[0]?.historyVersion).toBe("é".repeat(256));
+    expect(() => store.save("conv-1", "ps-1", undefined, undefined, `${"é".repeat(256)}x`))
+      .toThrow("historyVersion must not exceed 512 UTF-8 bytes");
+  });
+
   it("lists read-only snapshots of live session records", () => {
     const store = createRuntimeSessionStore({ idleTimeoutMs: 60_000, now: () => 1000 });
     store.save("conv-1", "ps-1");

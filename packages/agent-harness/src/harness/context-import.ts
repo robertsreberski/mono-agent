@@ -59,7 +59,7 @@ export async function importHarnessContext(
 }
 
 function validateUtf8String(value: unknown, name: string, maxBytes: number, allowEmpty: boolean): asserts value is string {
-  if (typeof value !== "string" || (!allowEmpty && value.length === 0)) {
+  if (typeof value !== "string" || (!allowEmpty && value.trim().length === 0)) {
     throw new TypeError(`${name} must be ${allowEmpty ? "a string" : "a non-empty string"}.`);
   }
   if (Buffer.byteLength(value, "utf8") > maxBytes) {

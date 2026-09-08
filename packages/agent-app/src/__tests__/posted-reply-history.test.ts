@@ -195,6 +195,53 @@ describe("createSlackPostedReplyHistory", () => {
     expect(importContext).toHaveBeenCalledWith("telegram:42", { text: "snapshot", idempotencyKey: "run:1" });
   });
 
+  it("preserves receiver-bound exclusive-turn methods inside a posted-reply scope", async () => {
+    const canonical = createInMemoryHistoryStore({ maxMessages: 64 });
+    await canonical.append(PRODUCER, [{ role: "assistant", content: "producer canonical" }]);
+    await seedDelivery(canonical);
+    let expectedReceiver!: object;
+    class ReceiverBoundTurn {
+      readonly history = [{ role: "assistant" as const, content: "producer canonical" }];
+      readonly historyVersion = "revision-1";
+      async prepareCommit() {
+        if (this !== expectedReceiver) throw new Error("prepareCommit receiver changed");
+        return {
+          append: { commit: async () => undefined, abort: async () => undefined },
+          committedHistoryVersion: "revision-2",
+        };
+      }
+      async abort() {
+        if (this !== expectedReceiver) throw new Error("abort receiver changed");
+      }
+    }
+    const turn = new ReceiverBoundTurn();
+    expectedReceiver = turn;
+    const store: ConversationHistoryStore = {
+      load: canonical.load.bind(canonical),
+      append: canonical.append.bind(canonical),
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        beginExclusiveTurn: async () => turn,
+        prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+      },
+    };
+    const bridge = createSlackPostedReplyHistory({ maxMessages: 64 });
+    const wrapped = bridge.wrapHistoryStore(store);
+    const responder = bridge.wrapResponder({
+      async respond(request) {
+        const acquired = await wrapped.contextImport!.beginExclusiveTurn(request.conversationId);
+        expect(acquired.history.map((message) => message.content)).toContain(SENT_TEXT);
+        await acquired.prepareCommit([]);
+        await acquired.abort();
+        return { text: "ok" };
+      },
+    });
+
+    await expect(responder.respond(slackReplyRequest(), noopStream())).resolves.toEqual({ text: "ok" });
+  });
+
   it("adds the exact destination receipt once to a cold real replay without changing producer history", async () => {
     const identityPath = await identityFixture();
     const canonical = createInMemoryHistoryStore({ maxMessages: 64 });

@@ -1,6 +1,6 @@
 import dns from "node:dns";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentResponseCancelledError,
@@ -1180,11 +1180,25 @@ describe("startTuiAdapter", () => {
     expect((await post({ text: "same", idempotencyKey: "duplicate" })).status).toBe(200);
     const conflict = await post({ text: "other", idempotencyKey: "conflict" });
     expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toEqual({ imported: false, status: "conflict", reason: "conversation_not_empty" });
+    expect(await conflict.json()).toEqual({
+      error: {
+        code: "context_import_conflict",
+        message: "Canonical context import conflicts with existing history.",
+        reason: "conversation_not_empty",
+      },
+    });
+    const blankText = await post({ text: " \t\n", idempotencyKey: "k" });
+    expect(blankText.status).toBe(400);
+    expect(await blankText.json()).toEqual({
+      error: { code: "invalid_request", message: "text must be a string within the context import byte limit." },
+    });
+    expect((await post({ text: "x", idempotencyKey: " \t\n" })).status).toBe(400);
+    expect((await post({ text: "  opaque  ", idempotencyKey: "  opaque-key  " })).status).toBe(200);
     expect((await post({ text: "x", idempotencyKey: "k", extra: true })).status).toBe(400);
     expect((await post({ text: "x".repeat(32_769), idempotencyKey: "k" })).status).toBe(400);
     expect((await post({ text: "x", idempotencyKey: "é".repeat(257) })).status).toBe(400);
     expect(imported[0]).toEqual(["web:cron:job-1", "quote \" slash \\ control \u0000 and 東京", "run:1"]);
+    expect(imported).toContainEqual(["web:cron:job-1", "  opaque  ", "  opaque-key  "]);
 
     const exactEscaped = JSON.stringify({ text: "\u0000".repeat(32_768), idempotencyKey: "\u0001".repeat(512) });
     expect(Buffer.byteLength(exactEscaped, "utf8")).toBe(199_711);
@@ -1218,6 +1232,45 @@ describe("startTuiAdapter", () => {
       body: JSON.stringify({ text: "x", idempotencyKey: "k" }),
     });
     expect(response.status).toBe(501);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "context_import_unsupported",
+        message: "This responder does not support canonical context import.",
+        reason: "unsupported",
+      },
+    });
+  });
+
+  it("sanitizes context import operational failures while logging their detail", async () => {
+    const error = vi.fn();
+    running = await startTuiAdapter({
+      logger: { error },
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        async importContext() {
+          throw new Error("database failure at /srv/agent-secret/history.sqlite");
+        },
+      },
+    });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/c/context-imports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "snapshot", idempotencyKey: "run:1" }),
+    });
+
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: {
+        code: "context_import_failed",
+        message: "Canonical context import failed.",
+        reason: "operation_failed",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("/srv/agent-secret");
+    expect(error).toHaveBeenCalledWith("TUI context import failed.", {
+      error: "database failure at /srv/agent-secret/history.sqlite",
+    });
   });
 
   it("advertises live input and holds the request until the active run settles it", async () => {

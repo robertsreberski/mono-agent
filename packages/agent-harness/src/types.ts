@@ -62,9 +62,11 @@ export interface ConversationHistoryProviderSessionTurn {
 /** Short-transaction exclusive turn used outside durable provider-session mode. */
 export interface ConversationHistoryExclusiveTurn {
   readonly history: readonly HistoryMessage[];
+  /** Opaque, non-empty UTF-8 token capped by CONVERSATION_HISTORY_VERSION_MAX_BYTES. */
   readonly historyVersion: string;
   prepareCommit(messages: readonly HistoryMessage[]): Promise<{
     readonly append: PreparedHistoryAppend;
+    /** Opaque version for the record that `append.commit()` will publish. */
     readonly committedHistoryVersion: string;
   }>;
   abort(): Promise<void>;

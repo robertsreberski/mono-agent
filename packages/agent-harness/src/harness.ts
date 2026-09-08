@@ -85,6 +85,7 @@ import { retireRunResultSession } from "./harness/session-retirement.js";
 import { validateOptions, validateRequest } from "./harness/validation.js";
 import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
 import { eligibleContextImport, importHarnessContext } from "./harness/context-import.js";
+import { assertConversationHistoryVersion } from "./sessions.js";
 
 export { AgentHarnessError };
 export { requestOverridesModel, runSourceFromRequest };
@@ -239,7 +240,7 @@ export class MonoAgentHarness implements AgentHarness {
       request,
       this.nowIso(),
     );
-    if (result.status !== "conflict") {
+    if (result.status === "appended") {
       await this.sessionStore?.evict(conversationId.trim(), "stale");
     }
     return result;
@@ -481,8 +482,9 @@ export class MonoAgentHarness implements AgentHarness {
         } else if (exclusiveHistoryTurn !== undefined) {
           const exclusiveCommit = await exclusiveHistoryTurn.prepareCommit(messages);
           continuityAppend = exclusiveCommit.append;
-          committedHistoryVersion = exclusiveCommit.committedHistoryVersion;
           exclusiveHistoryTurn = undefined;
+          assertConversationHistoryVersion(exclusiveCommit.committedHistoryVersion);
+          committedHistoryVersion = exclusiveCommit.committedHistoryVersion;
         } else if (exclusiveHistoryRequired) {
           throw new Error("The required exclusive history turn was not acquired; unlocked continuity append is forbidden.");
         } else {
@@ -676,6 +678,12 @@ export class MonoAgentHarness implements AgentHarness {
         // shard transaction behavior.
         const beginMutation = (async () => {
           const acquired = await contextImportSupport.beginExclusiveTurn(request.conversationId);
+          try {
+            assertConversationHistoryVersion(acquired.historyVersion);
+          } catch (error) {
+            await acquired.abort().catch(() => undefined);
+            throw error;
+          }
           exclusiveHistoryTurn = acquired;
           exclusiveCapturedHistory = acquired.history;
         })();
@@ -1096,8 +1104,9 @@ export class MonoAgentHarness implements AgentHarness {
             } else if (exclusiveHistoryTurn !== undefined) {
               const exclusiveCommit = await exclusiveHistoryTurn.prepareCommit(completedTurn.messages);
               preparedHistoryAppend = exclusiveCommit.append;
-              committedHistoryVersion = exclusiveCommit.committedHistoryVersion;
               exclusiveHistoryTurn = undefined;
+              assertConversationHistoryVersion(exclusiveCommit.committedHistoryVersion);
+              committedHistoryVersion = exclusiveCommit.committedHistoryVersion;
             } else {
               preparedHistoryAppend = await this.options.historyStore?.prepareAppend?.(
                 request.conversationId,

@@ -109,7 +109,12 @@ function wrapHistoryStore(
               || (deliveryKey !== undefined && turn.history.some((message) => message.idempotencyKey === deliveryKey))
               ? turn.history
               : mergeHistory(turn.history, delivery, options.maxMessages);
-            return { ...turn, history };
+            return {
+              history,
+              historyVersion: turn.historyVersion,
+              prepareCommit: turn.prepareCommit.bind(turn),
+              abort: turn.abort.bind(turn),
+            };
           },
           prepareImport: (conversationId, request) => store.contextImport!.prepareImport(conversationId, request),
         },
