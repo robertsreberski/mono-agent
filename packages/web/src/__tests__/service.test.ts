@@ -2057,6 +2057,129 @@ describe("WebService", () => {
     }
   });
 
+  /**
+   * The agent binds the wake's host-owned chain depth and background starts to
+   * the exact turn request it accepts. Receipting before that acceptance ends
+   * the wake route on the agent side and leaves the follow-up unable to start
+   * the next job, so the receipt must wait for admission -- and only admission.
+   */
+  it("holds the process-job wake receipt until the operator admits the follow-up turn", async () => {
+    let admit!: (body: ReadableStream<Uint8Array>) => void;
+    const admission = new Promise<ReadableStream<Uint8Array>>((resolve) => { admit = resolve; });
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => admission,
+      }),
+    });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    const claim = (): { state: string; disposition: string | null; turnId: string | null } | undefined => {
+      const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      const row = raw.prepare(`
+        SELECT state, disposition, turn_id AS turnId FROM process_job_wake_deliveries
+        WHERE source_id = ? AND job_id = ?
+      `).get("agent-one", terminal.jobId) as unknown as {
+        state: string;
+        disposition: string | null;
+        turnId: string | null;
+      } | undefined;
+      raw.close();
+      return row;
+    };
+
+    try {
+      const pending = Symbol("pending");
+      const delivery = service.deliverNotification(input);
+      await waitFor(() => turnBodies.length === 1);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+
+      // The console already has the running assistant turn...
+      expect(service.store.getThread(thread.id)?.runState.status).toBe("running");
+      expect(events.some((event) => event.type === "turn.changed" && event.threadId === thread.id)).toBe(true);
+      // ...while the receipt is still withheld and the claim is unsettled.
+      expect(await Promise.race([delivery, Promise.resolve(pending)])).toBe(pending);
+      expect(claim()).toMatchObject({ state: "accepted", disposition: null, turnId: expect.any(String) });
+
+      admit(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
+      await expect(delivery).resolves.toMatchObject({
+        duplicate: false,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      // Admission, not completion: the model turn is still running.
+      expect(service.store.getThread(thread.id)?.runState.status).toBe("running");
+      expect(claim()).toMatchObject({ state: "completed", disposition: "follow_up" });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      unsubscribe();
+      // Unblock the operator response even when an assertion above failed, so a
+      // regression reports its assertion rather than hanging `stop()`.
+      admit(new ReadableStream<Uint8Array>({ start(controller) { stream ??= controller; } }));
+      stream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
+  it("keeps a process-job wake ambiguous when its follow-up turn never reaches the operator", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => Promise.reject(new Error("operator unavailable")),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    const ambiguous = {
+      delivered: false,
+      code: "process_job_wake_ambiguous",
+      retryable: false,
+      ambiguous: true,
+    };
+
+    try {
+      await expect(service.deliverNotification(input)).resolves.toMatchObject({ delivery: ambiguous });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "failed");
+      // The request may still have reached the agent, so the claim stays
+      // accepted: no abandon, and every retry fails closed on that claim.
+      const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      const row = raw.prepare(`
+        SELECT state, disposition FROM process_job_wake_deliveries
+        WHERE source_id = ? AND job_id = ?
+      `).get("agent-one", terminal.jobId) as unknown as { state: string; disposition: string | null };
+      raw.close();
+      expect(row).toMatchObject({ state: "accepted", disposition: null });
+
+      await expect(service.deliverNotification(input)).resolves.toMatchObject({
+        duplicate: true,
+        delivery: ambiguous,
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      await service.stop();
+    }
+  });
+
   it("runs one assistant-only Monitor wake in its exact web thread and durably suppresses replay", async () => {
     const turnBodies: Record<string, unknown>[] = [];
     const service = await createService({

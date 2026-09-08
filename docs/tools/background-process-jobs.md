@@ -400,8 +400,12 @@ the same NDJSON activity/tool frames, and never invents a user message.
 Every steer or fallback carries the stable delivery key out of band. The web
 console durably records accepted and completed delivery claims. A `steered`
 completion means the exact active run accepted the live input; a `follow_up`
-completion means the exact assistant turn was durably admitted, not that its
-model work succeeded. After restart a completed claim returns its prior receipt
+completion means the agent accepted that exact assistant turn request, not that
+its model work succeeded. Acceptance is also when the wake's host-owned
+capability binds to the request, so the follow-up keeps the parent's chain depth
+and its remaining background starts; a receipt that returned earlier would end
+the wake and leave the turn it raised unable to start the next job. After
+restart a completed claim returns its prior receipt
 while the associated turn can independently recover as interrupted; an accepted
 but unsettled claim fails closed as ambiguous. A wake is a genuine tool-capable
 turn, not continuation synthesis. The host raises the active controller to the
