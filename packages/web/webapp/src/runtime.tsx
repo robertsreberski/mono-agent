@@ -70,16 +70,6 @@ const quoteFromMetadata = (value: unknown): WebQuote | undefined => {
     : undefined;
 };
 
-const formatLiveInput = (text: string, quote: WebQuote | undefined): string => {
-  if (quote === undefined) return text;
-  const blockquote = quote.text
-    .trim()
-    .split(/\r?\n/u)
-    .map((line) => `> ${line}`)
-    .join("\n");
-  return `Quoted context:\n${blockquote}\n\n${text}`;
-};
-
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -565,7 +555,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   );
 
   const onNew = useCallback(
-    async (message: AppendMessage, options?: SubmissionOptions) => {
+    async (message: AppendMessage, _options?: SubmissionOptions) => {
       const text = message.content
         .filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> =>
           part.type === "text",
@@ -581,30 +571,6 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         agentId: store.selectedAgentId,
         threadId: store.selectedThreadId,
       };
-      if (options?.steer === true) {
-        const canForceSteer = !turnStartingRef.current
-          && store.selectedThread !== null
-          && store.selectedThreadId !== null
-          && store.selectedThread.trigger?.kind !== "cron"
-          && canSendInConsole(store.connection, store.selectedAgent, store.selectedThread);
-        // assistant-ui's shortcut can invoke this path without clicking the
-        // disabled button. Live input is text-only, so fail closed before
-        // either endpoint and put everything it cleared back in the composer.
-        if (!canForceSteer || text.length === 0 || attachments.length > 0) {
-          queueRecovery(text, attachments, quote, submissionContext);
-          return;
-        }
-        void store.sendLiveInput(formatLiveInput(text, quote)).catch(() => {
-          queueRecovery(text, [], quote, submissionContext);
-        });
-        return;
-      }
-      if (store.selectedThread?.runState.status === "running" && attachments.length === 0) {
-        void store.sendLiveInput(formatLiveInput(text, quote)).catch(() => {
-          queueRecovery(text, [], quote, submissionContext);
-        });
-        return;
-      }
       if (turnStartingRef.current) {
         queueRecovery(text, attachments, quote, submissionContext);
         return;
@@ -618,7 +584,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       void (async () => {
         let resolvedThreadId = submissionContext.threadId;
         try {
-          await store.sendTurn(
+          await store.sendSubmission(
             {
               text: text || undefined,
               quote,
@@ -650,7 +616,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           // exact resolved context and either rehydrate or clean it up.
           attachmentAdapter.recoverSend(attachments);
           queueRecovery(text, attachments, quote, recoveryContext);
-          // sendTurn owns the visible action error. assistant-ui does not await
+          // sendSubmission owns the visible action error. assistant-ui does not await
           // onNew, so containing the rejection here prevents an unhandled task.
         } finally {
           turnStartingRef.current = false;
@@ -739,11 +705,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   const submissionQueue = useMemo<ExternalThreadQueueAdapter | undefined>(
     () => store.selectedThread !== null && store.selectedThread.trigger?.kind !== "cron"
       ? {
-          // The web service owns persisted live-input and fallback queue state.
-          // Exposing this for every existing interactive conversation lets
-          // assistant-ui carry explicit `{ steer: true }` intent even when the
-          // browser's displayed run state is stale. Ordinary sends still pass
-          // `{ steer: false }` and retain their existing routing below.
+          // The web service owns the one server-authoritative submission path.
+          // Browser run state affects presentation only; every composer action
+          // enters through `onNew` and the server chooses live input or a turn.
           items: [],
           enqueue: (message, options) => { void onNew(message, options); },
           steer: () => undefined,

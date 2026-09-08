@@ -3608,6 +3608,135 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("deduplicates one targeted submission and ignores the draft model for the owned active run", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const delivered: Record<string, unknown>[] = [];
+    let discovered = [fakeDiscoveredAgent()];
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        supportsLiveInputTargeting: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onLiveInput(_conversationId, body) {
+          delivered.push(body);
+          return { status: "applied", runId: "owned-run" };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const started = await service.startTurn(thread.id, {
+      text: "Initial task",
+      model: "provider/default",
+    });
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    const input = {
+      submissionId,
+      text: "Use this correction",
+      model: "provider/fallback",
+    };
+
+    const first = service.submit(thread.id, input);
+    expect(service.submit(thread.id, input)).toEqual(first);
+    await waitFor(() => delivered.length === 1);
+    expect(delivered).toEqual([expect.objectContaining({
+      id: expect.any(String),
+      text: "Use this correction",
+      targetTurnId: started.turn.id,
+    })]);
+    expect(() => service.submit(thread.id, {
+      submissionId,
+      text: "Conflicting correction",
+    })).toThrowError(expect.objectContaining({ code: "submission_conflict" }));
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.submission(thread.id, submissionId)).toMatchObject({
+      submissionId,
+      outcome: "live-input",
+      message: { liveInputStatus: "applied" },
+    });
+    discovered = [];
+    await service.refreshAgents();
+    expect(service.store.getThread(thread.id)?.canSend).toBe(false);
+    expect(service.submit(thread.id, input)).toMatchObject({
+      submissionId,
+      outcome: "live-input",
+      message: { liveInputStatus: "applied" },
+    });
+    expect(delivered).toHaveLength(1);
+    await service.stop();
+  });
+
+  it("keeps an active-attachment rejection durable and accepts a corrected new-id send", async () => {
+    const encoder = new TextEncoder();
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const turns: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        supportsLiveInputTargeting: true,
+        onTurn(body) { turns.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { streams.push(controller); },
+        }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const attachment = service.createUpload({ name: "keep.txt", contentType: "text/plain", sizeBytes: 5 });
+    const stored = service.storedAttachment(attachment.id);
+    await writeFile(service.store.attachmentPath(stored), "hello", { mode: 0o600 });
+    service.completeUpload(attachment.id, 5);
+    const rejectedId = "22222222-2222-4222-8222-222222222222";
+    const rejectedInput = {
+      submissionId: rejectedId,
+      text: "Keep this draft",
+      attachmentIds: [attachment.id],
+    };
+
+    const rejected = service.submit(thread.id, rejectedInput);
+    expect(rejected).toMatchObject({
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+
+    expect(service.submit(thread.id, rejectedInput)).toEqual(rejected);
+    expect(service.submission(thread.id, rejectedId)).toEqual(rejected);
+    expect(service.submit(thread.id, rejectedInput)).toEqual(rejected);
+    expect(service.thread(thread.id).messages).toHaveLength(2);
+
+    await waitFor(() => streams.length === 1);
+    streams[0]?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    streams[0]?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.submission(thread.id, rejectedId)).toEqual(rejected);
+
+    const corrected = service.submit(thread.id, {
+      submissionId: "33333333-3333-4333-8333-333333333333",
+      text: "Send after completion",
+      attachmentIds: [attachment.id],
+    });
+    expect(corrected.outcome).toBe("turn");
+    await waitFor(() => turns.length === 2 && streams.length === 2);
+    expect(turns).toHaveLength(2);
+    expect(turns[1]?.attachments).toEqual([{
+      kind: "document",
+      mimeType: "text/plain",
+      data: "aGVsbG8=",
+      name: "keep.txt",
+      sizeBytes: 5,
+    }]);
+    streams[1]?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Corrected done" })}\n`));
+    streams[1]?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await service.stop();
+  });
+
   it.each([
     ["explicit uncertainty", async () => ({ status: "uncertain", reason: "delivery_uncertain" })],
     ["rejected settlement", async () => { throw new Error("connection ended after dispatch"); }],

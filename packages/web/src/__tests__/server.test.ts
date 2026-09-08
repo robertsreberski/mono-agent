@@ -1756,7 +1756,122 @@ describe("web HTTP server", () => {
       conversationId: `web:${thread.id}`,
       body: expect.objectContaining({ text: "Use the smaller scope" }),
     }]);
+    const rejectedSubmissionId = "22222222-2222-4222-8222-222222222222";
+    const submissionsPath = `${baseUrl}/api/v1/threads/${thread.id}/submissions`;
+    const rejected = await fetch(submissionsPath, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        submissionId: rejectedSubmissionId,
+        text: "Keep this draft",
+        attachmentIds: ["staged-upload"],
+      }),
+    });
+    expect(rejected.status).toBe(409);
+    const rejectedReceipt = await json(rejected);
+    expect(rejectedReceipt).toMatchObject({
+      submissionId: rejectedSubmissionId,
+      threadId: thread.id,
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+    const recoveredRejection = await fetch(`${submissionsPath}/${rejectedSubmissionId}`);
+    expect(recoveredRejection.status).toBe(200);
+    expect(await json(recoveredRejection)).toEqual(rejectedReceipt);
     finishTurn();
+  });
+
+  it("serves one idempotent no-store submission receipt and validates its UUID on POST and GET", async () => {
+    const turns: Record<string, unknown>[] = [];
+    const { baseUrl, root } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    const path = `${baseUrl}/api/v1/threads/${threadId}/submissions`;
+    const mutation = { "content-type": "application/json", origin: baseUrl };
+    const body = JSON.stringify({ submissionId, text: "One send" });
+
+    const first = await fetch(path, { method: "POST", headers: mutation, body });
+    expect(first.status).toBe(202);
+    expect(first.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    const receipt = await json(first) as Record<string, unknown> & {
+      message: { id: string };
+      turn: { id: string };
+    };
+    expect(receipt).toMatchObject({ submissionId, threadId, outcome: "turn" });
+
+    const replay = await fetch(path, { method: "POST", headers: mutation, body });
+    expect(replay.status).toBe(202);
+    const replayReceipt = await json(replay) as Record<string, unknown> & {
+      message: { id: string };
+      turn: { id: string };
+    };
+    expect(replayReceipt).toMatchObject({ submissionId, threadId, outcome: "turn" });
+    expect(replayReceipt.message.id).toBe(receipt.message.id);
+    expect(replayReceipt.turn.id).toBe(receipt.turn.id);
+    expect(turns).toHaveLength(1);
+
+    const recovered = await fetch(`${path}/${submissionId}`);
+    expect(recovered.status).toBe(200);
+    expect(recovered.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(recovered)).toEqual(replayReceipt);
+
+    const database = new DatabaseSync(join(root, "state", "state.sqlite"));
+    database.prepare(
+      "INSERT INTO thread_redirects (old_thread_id, new_thread_id, created_at) VALUES (?, ?, ?)",
+    ).run("legacy-submission-thread", threadId, new Date().toISOString());
+    database.close();
+    const aliasReplay = await fetch(
+      `${baseUrl}/api/v1/threads/legacy-submission-thread/submissions`,
+      { method: "POST", headers: mutation, body },
+    );
+    expect(aliasReplay.status).toBe(202);
+    expect(await json(aliasReplay)).toMatchObject({
+      submissionId,
+      threadId,
+      message: { id: receipt.message.id },
+      turn: { id: receipt.turn.id },
+    });
+    expect(turns).toHaveLength(1);
+
+    const secondThreadId = await createThread(baseUrl, "agent-one");
+    const isolated = await fetch(`${baseUrl}/api/v1/threads/${secondThreadId}/submissions`, {
+      method: "POST",
+      headers: mutation,
+      body,
+    });
+    expect(isolated.status).toBe(202);
+    expect(await json(isolated)).toMatchObject({ submissionId, threadId: secondThreadId, outcome: "turn" });
+    expect(turns).toHaveLength(2);
+
+    const conflict = await fetch(path, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ submissionId, text: "Different content" }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(await json(conflict)).toMatchObject({ error: { code: "submission_conflict" } });
+
+    for (const response of [
+      await fetch(path, {
+        method: "POST",
+        headers: mutation,
+        body: JSON.stringify({ submissionId: "not-a-uuid", text: "No" }),
+      }),
+      await fetch(`${path}/not-a-uuid`),
+    ]) {
+      expect(response.status).toBe(400);
+      expect(await json(response)).toMatchObject({ error: { code: "invalid_request" } });
+    }
+
+    const crossOrigin = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example" },
+      body,
+    });
+    expect(crossOrigin.status).toBe(403);
   });
 
   it("proxies pending and submitted AskUser state for a web conversation", async () => {

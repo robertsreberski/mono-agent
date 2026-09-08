@@ -301,24 +301,26 @@ blockquote context; it does not rewrite the visible message text. The public
 turn DTO exposes this as `quote: { text, messageId }`, and the source message
 must belong to the same thread.
 
-The composer remains sendable while a response is running. A normal text-only
-send is persisted immediately and offered to the active provider as live
-guidance. An existing interactive conversation shows a secondary **Steer**
-action only while a turn is running. **Control/Command + Shift + Enter** still
-uses the same server-authoritative live-input path regardless of the browser's
-displayed state. With no active turn, the service queues the message as exactly
-one normal turn using the conversation route captured when it was offered.
+The composer has one **Send** action whether the thread looks idle or running.
+Button Send, desktop Enter, and **Control/Command + Shift + Enter** all submit
+one immutable UUID-bearing payload; Shift+Enter and touch Enter remain newline.
+The server, not browser run state, admits it as either a normal turn or targeted
+live guidance for the exact active Web operation. There is no secondary Steer
+button. With no active turn, the service starts exactly one normal turn using
+the conversation route captured at admission.
 
 The message shows `pending`, `applied`, `queued`, `cancelled`, or `uncertain`.
 `applied` means exact owned-operation transcript consumption, not provider
-receipt or answer adherence. Unsupported or proved-safe removal queues one
-normal turn; a post-dispatch failure, end-of-turn race, cancellation, or restart
-is permanently uncertain and is not retried automatically. Steering is
-text-only: the Steer button is disabled when attachments are present, and the
-shortcut fails closed before either send endpoint while restoring the draft,
-quote, and attachments. Attachments retain the ordinary turn path. Cancelling
-the active turn also cancels its pending or queued live follow-ups. Live
-follow-ups are capped at 8,000 characters and 100 unsettled messages per thread.
+receipt or answer adherence. Unsupported targeting or proved-safe removal
+visibly queues one normal turn; a post-dispatch failure, end-of-turn race,
+cancellation, or restart is permanently uncertain and is not retried
+automatically. Active-turn attachments are rejected with
+`active_attachments_unsupported` before upload ownership changes; the browser
+restores the full text, structured quote, and staged files. The same payload may
+be deliberately sent after the response finishes with a new submission id.
+Cancelling the active turn also cancels its pending or queued live follow-ups.
+Live follow-ups are capped at 8,000 characters and 100 unsettled messages per
+thread.
 
 Once exact consumption is host-confirmed, the assistant's Activity disclosure also
 receives one completed `↪️ Steered: “<safe preview>”` tool row with result
@@ -614,6 +616,7 @@ PutWebAgentRunSettingsInput
 SearchWebThreadsInput
 StartWebLiveInputInput
 StartWebServerOptions
+StartWebSubmissionInput
 StartWebTurnInput
 WEB_API_VERSION
 WEB_CONSOLE_NAME_MAX_CHARACTERS
@@ -670,6 +673,7 @@ WebSkillRegistry
 WebSkillUnavailableReason
 WebStatePathOptions
 WebStatePaths
+WebSubmissionReceipt
 WebTheme
 WebThread
 WebThreadChangedPayload
@@ -706,7 +710,9 @@ The browser API is rooted at `/api/v1`:
 - `GET /bootstrap` (one `?sourceId`/`?archived` thread bucket, `?limit` capped),
   `PATCH /agents/:id`, and `GET/PATCH/DELETE /threads/:id`
 - `POST /threads`, `/threads/:id/turns`, `/threads/:id/live-input`, and
-  `/threads/:id/cancel`
+  `/threads/:id/cancel`; the browser composer uses
+  `POST /threads/:id/submissions` plus recovery reads at
+  `GET /threads/:id/submissions/:submissionId`
 - `GET /threads/:id/messages/:messageId` for one message (delta gap recovery)
   and `GET /threads/:id/messages/:messageId/tool-calls/:toolCallId` for the
   unshaped body behind a truncated tool-call preview; `?full=1` on a transcript
@@ -738,22 +744,33 @@ The additive `WebBootstrap.console` object carries the server-derived
 with `disposition: "pending" | "queued"`; SSE invalidation exposes its later
 `liveInputStatus` settlement.
 
+`POST /threads/:id/submissions` accepts a canonical UUID plus the ordinary turn
+payload. The thread-scoped immutable payload is recorded in `web_submissions`
+with its turn/live-input/rejection associations. Same-id same-payload replay
+returns the existing current receipt without dispatch; conflicting reuse is
+`409`. `GET /threads/:id/submissions/:submissionId` is side-effect-free and both
+receipt routes are `private, no-store`. Browser recovery persists only thread
+and submission ids in session storage—never draft text or file bytes—and checks
+the receipt without automatically posting again.
+
 Schema 22 adds a nullable `live_inputs.dispatch_started_at` marker committed
 before the operator request. On restart, an unmarked offered row is safe to
 queue once; a marked row becomes `uncertain` and non-promotable. Existing
 schema-21 rows migrate with a null marker, so their earlier dispatch history is
-not reconstructible. Stop the Web service and make a compatible database backup
-before migration. A schema-21 binary refuses a schema-22 database; rollback
-requires restoring that compatible backup and loses writes made afterward.
-Upgrade every in-repo consumer before enabling the new producer result, and do
-not send `uncertain` to an older external Web consumer. Deployment remains a
-separate operation.
+not reconstructible. Schema 23 adds the durable `web_submissions` ledger and
+keeps it for the lifetime of its thread, including archive; permanent deletion
+cascades it. Stop the Web service and make a compatible database backup before
+migration. A schema-22 binary refuses a schema-23 database; rollback requires
+restoring that compatible pre-upgrade backup and loses writes made afterward.
+Upgrade the operator-adapter before the Web producer so `liveInputTargeting`
+is available; an older operator is not guessed through and the receipt visibly
+queues `unsupported_targeting`. Deployment remains a separate operation.
 Permanent deletion is limited to archived, inactive conversations. It removes
 database descendants transactionally and deletes committed attachment files;
 startup and scheduled cleanup remove any file orphaned by a crash or transient
 filesystem failure after the database commit. Archiving a truly empty manual
 conversation conditionally removes it instead; any authoritative trigger,
-message, turn, attachment, live input, or delivery evidence makes the server
+message, turn, attachment, live input, submission receipt, or delivery evidence makes the server
 preserve it in Archived, including activity that arrives during the archive
 race.
 

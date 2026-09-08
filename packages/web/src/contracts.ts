@@ -862,6 +862,33 @@ export interface StartWebLiveInputInput {
   readonly text: string;
 }
 
+export interface StartWebSubmissionInput extends StartWebTurnInput {
+  readonly submissionId: string;
+}
+
+export interface WebSubmissionReceipt {
+  readonly submissionId: string;
+  readonly threadId: string;
+  readonly outcome: "turn" | "live-input" | "rejected";
+  readonly reason?:
+    | "active_attachments_unsupported"
+    | "unsupported_targeting"
+    | "closed_before_dispatch"
+    | "operator_inactive"
+    | "operator_unsupported"
+    | "operator_too_large"
+    | "operator_full"
+    | "operator_invalid"
+    | "mailbox_unsupported"
+    | "mailbox_closed"
+    | "mailbox_failed";
+  readonly disposition?: "pending" | "queued";
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly message?: WebMessage;
+  readonly turn?: WebRunState;
+}
+
 export interface WebLiveInputReceipt {
   readonly message: WebMessage;
   readonly disposition: "pending" | "queued";

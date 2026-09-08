@@ -98,6 +98,7 @@ interface TurnContinuityPublicationBarrier {
 }
 
 export class MonoAgentHarness implements AgentHarness {
+  readonly liveInputOwnership = { version: 1 } as const;
   private readonly options: AgentHarnessOptions;
   private readonly sessionStore: RuntimeSessionStore | undefined;
   private readonly liveSessionManager: LiveSessionManager | undefined;
@@ -224,13 +225,23 @@ export class MonoAgentHarness implements AgentHarness {
   async run(request: AgentHarnessRequest, lifecycle?: LiveSessionRunLifecycle): Promise<AgentHarnessResponse> {
     this.assertAcceptingRuns();
     this.activeRuns += 1;
+    let closed = false;
+    const observe: NonNullable<AgentHarnessRequest["onLiveInputOwnership"]> = (event) => {
+      if (closed) return;
+      if (event.status === "closed") closed = true;
+      request.onLiveInputOwnership?.(event);
+    };
     try {
-      return await this.runActive(request, lifecycle);
+      return await this.runActive({ ...request, onLiveInputOwnership: observe }, lifecycle);
     } finally {
-      this.activeRuns -= 1;
-      if (this.activeRuns === 0) {
-        for (const resolve of this.activeRunWaiters) resolve();
-        this.activeRunWaiters.clear();
+      try {
+        observe({ status: "closed", reason: "closed" });
+      } finally {
+        this.activeRuns -= 1;
+        if (this.activeRuns === 0) {
+          for (const resolve of this.activeRunWaiters) resolve();
+          this.activeRunWaiters.clear();
+        }
       }
     }
   }
@@ -321,9 +332,19 @@ export class MonoAgentHarness implements AgentHarness {
     }
     liveInputMailbox = !mailboxEligible || this.activeLiveInputs.has(request.conversationId)
       ? undefined
-      : createLiveInputMailbox(runId);
+      : createLiveInputMailbox(runId, () => request.onLiveInputOwnership?.({ status: "closed", reason: "closed" }));
     if (liveInputMailbox !== undefined) {
       this.activeLiveInputs.set(request.conversationId, liveInputMailbox);
+      try {
+        request.onLiveInputOwnership?.({ status: "ready", runId });
+      } catch (error) {
+        try { liveInputMailbox.close("failed"); } finally {
+          this.activeLiveInputs.delete(request.conversationId);
+        }
+        throw error;
+      }
+    } else {
+      request.onLiveInputOwnership?.({ status: "closed", reason: "unsupported" });
     }
     const sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
     let context: BuiltAgentContext | undefined;

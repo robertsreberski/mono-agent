@@ -144,12 +144,16 @@ describe("AgentHarness", () => {
       historyStore,
       createRunId: () => "run-live",
     });
+    const ownership: Array<{ status: string; runId?: string; reason?: string }> = [];
+    expect(harness.liveInputOwnership).toEqual({ version: 1 });
     const running = harness.run({
       conversationId: "telegram:42",
       userMessage: "Initial request",
       abortSignal: new AbortController().signal,
+      onLiveInputOwnership: (event) => ownership.push(event),
     });
     await started;
+    expect(ownership).toEqual([{ status: "ready", runId: "run-live" }]);
 
     const offered = harness.offerLiveInput?.({
       conversationId: "telegram:42",
@@ -163,11 +167,53 @@ describe("AgentHarness", () => {
       await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-live" });
     }
     expect(seen).toEqual(["Use the new constraint"]);
+    expect(ownership).toEqual([
+      { status: "ready", runId: "run-live" },
+      { status: "closed", reason: "closed" },
+    ]);
     expect(await historyStore.load("telegram:42")).toMatchObject([
       { role: "user", content: "Initial request", runId: "run-live" },
       { role: "user", content: "Use the new constraint", timestamp: "2026-07-21T09:00:00.000Z", runId: "run-live" },
       { role: "assistant", content: "Updated answer", runId: "run-live" },
     ]);
+  });
+
+  it("revokes mailbox ownership and fails the request when the host observer rejects readiness", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let runtimeCalls = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          return { text: "must not run" };
+        },
+      },
+      model,
+      cwd: dir,
+      createRunId: () => "run-observer-failure",
+    });
+    const ownership: string[] = [];
+
+    await expect(harness.run({
+      conversationId: "web:observer-failure",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "ready") throw new Error("ownership observer failed");
+      },
+    })).rejects.toThrow("ownership observer failed");
+    expect(runtimeCalls).toBe(0);
+    expect(ownership).toEqual(["ready", "closed"]);
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:observer-failure",
+      id: "late-input",
+      text: "Do not accept",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
   });
 
   it("keeps a concurrent non-owner abort or failure from removing an isolated interactive mailbox", async () => {

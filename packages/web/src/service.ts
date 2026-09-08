@@ -45,6 +45,7 @@ import {
   type PatchWebThreadInput,
   type PutWebAgentRunSettingsInput,
   type StartWebTurnInput,
+  type StartWebSubmissionInput,
   type WebAgentsChangedPayload,
   type WebAgentSummary,
   type WebAgentProvider,
@@ -59,6 +60,7 @@ import {
   type WebEvent,
   type WebEventType,
   type WebLiveInputReceipt,
+  type WebSubmissionReceipt,
   type WebMessage,
   type WebMessageChangedPayload,
   type WebMessageDelta,
@@ -108,6 +110,8 @@ import {
   type StoredMessageWrite,
   type CronRunReconciliationResult,
   type StoredTurnExecution,
+  type BeginStoredTurnResult,
+  type StoredWebSubmission,
   type StoredWebPushEvent,
   type WebPushIdentity,
 } from "./store.js";
@@ -485,6 +489,8 @@ interface ActiveTurn {
   readonly controller: AbortController;
   readonly client: OperatorClient;
   readonly completion: Promise<void>;
+  readonly admitted: Promise<void>;
+  readonly resolveAdmitted: () => void;
 }
 
 interface ActiveLiveInput {
@@ -1579,6 +1585,114 @@ export class WebService {
     return { thread: started.thread, turn: started.thread.runState };
   }
 
+  submit(threadId: string, input: StartWebSubmissionInput): WebSubmissionReceipt {
+    if (this.stopped) throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
+    const thread = this.store.getThread(threadId);
+    if (thread === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    threadId = thread.id;
+    const text = input.text ?? "";
+    const attachmentIds = input.attachmentIds ?? [];
+    const operatorText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
+    const payloadSha256 = createHash("sha256").update(JSON.stringify({
+      text,
+      quote: input.quote ?? null,
+      attachmentIds,
+      model: input.model ?? null,
+      effort: input.effort ?? null,
+    })).digest("hex");
+    const existing = this.store.webSubmission(threadId, input.submissionId);
+    if (existing !== undefined) {
+      if (existing.payloadSha256 !== payloadSha256) {
+        throw new WebConsoleError("submission_conflict", "Submission id was already used for different content.", 409);
+      }
+      return this.submissionReceipt(existing);
+    }
+    if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
+    const connection = this.connections.get(thread.sourceId);
+    if (connection === undefined || !thread.canSend) {
+      throw new WebConsoleError("agent_offline", "This agent is offline. The conversation remains available read-only.", 409);
+    }
+    let started: BeginStoredTurnResult | undefined;
+    let reserved: ReturnType<WebStore["reserveLiveInput"]> | undefined;
+    const activeTurnId = this.store.activeTurn(threadId)?.id;
+    const activeTarget = activeTurnId === undefined ? undefined : this.activeTurns.get(threadId);
+    const ownsActiveTarget = activeTarget?.turnId === activeTurnId;
+    const claimed = this.store.claimWebSubmission({
+      threadId,
+      submissionId: input.submissionId,
+      payloadSha256,
+      create: () => {
+        if (activeTurnId !== undefined && attachmentIds.length > 0) {
+          return { outcome: "rejected", reason: "active_attachments_unsupported" };
+        }
+        if (activeTurnId !== undefined) {
+          reserved = this.store.reserveLiveInput(threadId, text, input.quote, operatorText);
+          if (!connection.info.supportsLiveInputTargeting || !ownsActiveTarget) {
+            const reason = connection.info.supportsLiveInputTargeting
+              ? "closed_before_dispatch"
+              : "unsupported_targeting";
+            this.store.queueLiveInput(reserved.input.id, reason);
+            return {
+              outcome: "live-input",
+              reason,
+              messageId: reserved.message.id,
+              inputId: reserved.input.id,
+              turnId: activeTurnId,
+            };
+          }
+          return {
+            outcome: "live-input",
+            messageId: reserved.message.id,
+            inputId: reserved.input.id,
+            turnId: activeTurnId,
+          };
+        }
+        const { model, effort, requestedModel, requestedEffort } = this.resolveTurnSelection(
+          threadId,
+          input.model,
+          input.effort,
+        );
+        started = this.store.beginTurn({
+          threadId,
+          text,
+          attachmentIds,
+          ...(input.quote === undefined ? {} : { quote: input.quote }),
+          ...(model === undefined ? {} : { model }),
+          ...(effort === undefined ? {} : { effort }),
+          ...(requestedModel === undefined ? {} : { requestedModel }),
+          ...(requestedEffort === undefined ? {} : { requestedEffort }),
+        });
+        return {
+          outcome: "turn",
+          messageId: started.userMessageId,
+          turnId: started.turnId,
+        };
+      },
+    });
+
+    if (claimed.created && started !== undefined) {
+      this.launchTurn(started, connection.client, operatorText);
+      this.emit("message.changed", threadId, { messageId: started.userMessageId, updatedAt: started.thread.updatedAt });
+      this.emit("turn.changed", threadId, { turn: started.thread.runState });
+      this.emitThread("threads.changed", { thread: started.thread });
+    } else if (claimed.created && reserved !== undefined) {
+      this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
+      this.emitThread("threads.changed", { thread: reserved.thread });
+      if (claimed.submission.reason !== undefined || activeTarget === undefined) {
+        void this.drainQueuedLiveInputs(threadId);
+      } else {
+        void this.dispatchTargetedSubmission(claimed.submission, activeTarget);
+      }
+    }
+    return this.submissionReceipt(claimed.submission);
+  }
+
+  submission(threadId: string, submissionId: string): WebSubmissionReceipt {
+    const stored = this.store.webSubmission(threadId, submissionId);
+    if (stored === undefined) throw new WebConsoleError("submission_not_found", "Submission not found.", 404);
+    return this.submissionReceipt(stored);
+  }
+
   submitLiveInput(threadId: string, text: string): WebLiveInputReceipt {
     if (this.stopped) {
       throw new WebConsoleError("web_service_stopping", "The web service is stopping.", 409);
@@ -1810,6 +1924,7 @@ export class WebService {
     controller: AbortController,
     operatorText: string,
     hostWakeDeliveryKey?: string,
+    onAdmitted?: () => void,
   ): Promise<void> {
     const coalescer = new StreamFrameCoalescer(
       async (frames) => {
@@ -1848,6 +1963,7 @@ export class WebService {
           this.observeConversationTitleFrame(started.thread.id, started.turnId, frame);
           coalescer.push(frame);
         },
+        ...(onAdmitted === undefined ? {} : { onAdmitted }),
       });
       await coalescer.flush();
       const silentMonitorWake = hostWakeDeliveryKey?.startsWith("monitor:") === true
@@ -1907,21 +2023,87 @@ export class WebService {
   ): Promise<void> {
     const threadId = started.thread.id;
     const controller = new AbortController();
+    let resolveAdmitted!: () => void;
+    const admitted = new Promise<void>((resolve) => { resolveAdmitted = resolve; });
     const completion = this.runTurn(
       started,
       client,
       controller,
       operatorText,
       hostWakeDeliveryKey,
+      resolveAdmitted,
     ).finally(() => {
+      resolveAdmitted();
       const active = this.activeTurns.get(threadId);
       if (active?.turnId === started.turnId) this.activeTurns.delete(threadId);
       if (!this.stopped && !this.hostWakeReservations.has(threadId)) {
         void this.drainQueuedLiveInputs(threadId);
       }
     });
-    this.activeTurns.set(threadId, { turnId: started.turnId, controller, client, completion });
+    this.activeTurns.set(threadId, {
+      turnId: started.turnId,
+      controller,
+      client,
+      completion,
+      admitted,
+      resolveAdmitted,
+    });
     return completion;
+  }
+
+  private submissionReceipt(submission: StoredWebSubmission): WebSubmissionReceipt {
+    const message = submission.messageId === undefined ? undefined : this.store.getMessage(submission.messageId);
+    const thread = this.store.getThread(submission.threadId);
+    return {
+      submissionId: submission.submissionId,
+      threadId: submission.threadId,
+      outcome: submission.outcome,
+      ...(submission.reason === undefined ? {} : { reason: submission.reason }),
+      ...(submission.messageId === undefined ? {} : { messageId: submission.messageId }),
+      ...(submission.turnId === undefined ? {} : { turnId: submission.turnId }),
+      ...(message === undefined ? {} : { message }),
+      ...(submission.turnId === undefined || thread?.runState.id !== submission.turnId
+        ? {}
+        : { turn: thread.runState }),
+      ...(submission.outcome !== "live-input"
+        ? {}
+        : message?.liveInputStatus === "queued"
+          ? { disposition: "queued" }
+          : message?.liveInputStatus === "pending"
+            ? { disposition: "pending" }
+            : {}),
+    };
+  }
+
+  private async dispatchTargetedSubmission(submission: StoredWebSubmission, active: ActiveTurn): Promise<void> {
+    if (submission.inputId === undefined || submission.messageId === undefined || submission.turnId === undefined) return;
+    await active.admitted;
+    if (this.activeTurns.get(submission.threadId) !== active
+      || this.store.activeTurn(submission.threadId)?.id !== submission.turnId) {
+      const queued = this.store.queueLiveInput(submission.inputId, "closed_before_dispatch");
+      if (queued !== undefined) {
+        this.emit("message.changed", submission.threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
+        void this.drainQueuedLiveInputs(submission.threadId);
+      }
+      return;
+    }
+    const input = this.store.storedLiveInput(submission.inputId);
+    if (input === undefined || !this.store.markLiveInputDispatchStarted(submission.inputId, submission.turnId)) return;
+    const controller = new AbortController();
+    const completion = this.deliverLiveInput(
+      submission.inputId,
+      submission.threadId,
+      active.client,
+      controller,
+      {
+        conversationId: `web:${submission.threadId}`,
+        id: submission.inputId,
+        text: input.text,
+        receivedAt: input.createdAt,
+        targetTurnId: submission.turnId,
+      },
+    ).finally(() => this.activeLiveInputs.delete(submission.inputId!));
+    this.activeLiveInputs.set(submission.inputId, { threadId: submission.threadId, controller, completion });
   }
 
   private async deliverLiveInput(
@@ -1939,8 +2121,11 @@ export class WebService {
         changedMessage = this.store.markLiveInputApplied(id);
       } else if (result.status === "discarded") {
         changedMessage = this.store.cancelLiveInput(id);
-      } else if (result.status === "requeue" || result.status === "unavailable") {
-        changedMessage = this.store.queueLiveInput(id);
+      } else if (result.status === "requeue") {
+        changedMessage = this.store.queueLiveInput(id, `mailbox_${result.reason}`);
+        queued = changedMessage !== undefined;
+      } else if (result.status === "unavailable") {
+        changedMessage = this.store.queueLiveInput(id, `operator_${result.reason}`);
         queued = changedMessage !== undefined;
       } else {
         changedMessage = this.store.markLiveInputUncertain(id);

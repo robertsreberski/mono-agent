@@ -1,6 +1,6 @@
 import dns from "node:dns";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentResponseCancelledError,
@@ -1173,6 +1173,255 @@ describe("startTuiAdapter", () => {
     const response = await responsePromise;
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "applied", runId: "run-1" });
+  });
+
+  it("holds a Web-targeted offer until the exact turn publishes mailbox ownership", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    let offered: AgentLiveInputRequest | undefined;
+    const responder: AgentResponder = {
+      liveInputOwnership: { version: 1 },
+      async respond(request) {
+        activeRequest = request;
+        await turnFinished;
+        return { text: "done" };
+      },
+      offerLiveInput(request) {
+        offered = request;
+        return { status: "accepted", settled: Promise.resolve({ status: "applied", runId: "run-owned" }) };
+      },
+    };
+    running = await startTuiAdapter({ responder });
+    await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
+      capabilities: { liveInput: true, liveInputTargeting: { version: 1 } },
+    });
+
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-1" } },
+    });
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-1",
+        text: "Use the exact target",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-1",
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(offered).toBeUndefined();
+
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "run-owned" });
+    await expect((await liveResponse).json()).resolves.toEqual({ status: "applied", runId: "run-owned" });
+    expect(offered).toMatchObject({
+      conversationId: "web:thread-1",
+      id: "input-1",
+      targetRunId: "run-owned",
+    });
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("detaches a pending targeted offer on closure and never steers a successor", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-1" } },
+    });
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-closed",
+        text: "Do not send later",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-1",
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    activeRequest?.onLiveInputOwnership?.({ status: "closed", reason: "closed" });
+
+    await expect((await liveResponse).json()).resolves.toEqual({ status: "unavailable", reason: "inactive" });
+    expect(offered).toEqual([]);
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "successor-run" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("rejects mismatched explicit run ownership without offering live input", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-1" } },
+    });
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "run-owned" });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-wrong-run",
+        text: "Do not offer",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-1",
+        targetRunId: "run-wrong",
+      }),
+    });
+    expect(await response.json()).toEqual({ status: "unavailable", reason: "inactive" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("detaches an exact-turn waiter before its owned timeout response", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    let expireWaiter: (() => void) | undefined;
+    const nativeSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((...parameters: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...args] = parameters;
+      if (delay === 10 * 60 * 1_000) {
+        expireWaiter = () => { callback(...args); };
+        return { unref() {} } as ReturnType<typeof setTimeout>;
+      }
+      return nativeSetTimeout(...parameters);
+    }) as typeof setTimeout);
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-timeout" } },
+    });
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-timeout",
+        text: "Do not send after timeout",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-timeout",
+      }),
+    });
+    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
+    expect(expireWaiter).toBeDefined();
+    expireWaiter?.();
+
+    await expect((await liveResponse).json()).resolves.toEqual({ status: "unavailable", reason: "inactive" });
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "late-run" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("detaches an exact-turn waiter when its HTTP client disconnects", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-disconnect" } },
+    });
+    const controller = new AbortController();
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-disconnect",
+        text: "Do not send after disconnect",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-disconnect",
+      }),
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+    await expect(liveResponse).rejects.toMatchObject({ name: "AbortError" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "late-run" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
   });
 
   it("reports unavailable live input for responders without an active mailbox", async () => {
