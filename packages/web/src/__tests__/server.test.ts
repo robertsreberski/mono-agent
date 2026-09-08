@@ -1788,10 +1788,11 @@ describe("web HTTP server", () => {
       fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
     });
     const threadId = await createThread(baseUrl, "agent-one");
-    const submissionId = "11111111-1111-4111-8111-111111111111";
+    const submissionId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+    const uppercaseSubmissionId = submissionId.toUpperCase();
     const path = `${baseUrl}/api/v1/threads/${threadId}/submissions`;
     const mutation = { "content-type": "application/json", origin: baseUrl };
-    const body = JSON.stringify({ submissionId, text: "One send" });
+    const body = JSON.stringify({ submissionId: uppercaseSubmissionId, text: "One send" });
 
     const first = await fetch(path, { method: "POST", headers: mutation, body });
     expect(first.status).toBe(202);
@@ -1802,7 +1803,11 @@ describe("web HTTP server", () => {
     };
     expect(receipt).toMatchObject({ submissionId, threadId, outcome: "turn" });
 
-    const replay = await fetch(path, { method: "POST", headers: mutation, body });
+    const replay = await fetch(path, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ submissionId, text: "One send" }),
+    });
     expect(replay.status).toBe(202);
     const replayReceipt = await json(replay) as Record<string, unknown> & {
       message: { id: string };
@@ -1849,7 +1854,7 @@ describe("web HTTP server", () => {
     const conflict = await fetch(path, {
       method: "POST",
       headers: mutation,
-      body: JSON.stringify({ submissionId, text: "Different content" }),
+      body: JSON.stringify({ submissionId: uppercaseSubmissionId, text: "Different content" }),
     });
     expect(conflict.status).toBe(409);
     expect(conflict.headers.get("cache-control")).toBe("private, no-store, max-age=0");
