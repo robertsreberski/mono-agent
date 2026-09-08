@@ -715,7 +715,7 @@ Older running agents that do not advertise attachment support remain usable for 
 
 ## Storage schema
 
-The web state database is at schema 23. Schema 9 added the `message_search` FTS5
+The web state database is at schema 24. Schema 9 added the `message_search` FTS5
 index and the triggers that maintain it, backfilled from existing messages on
 first open. Schema 10 added an `origin` column to `attachments`, distinguishing a
 file the operator uploaded from the console's own durable copy of an image the
@@ -744,6 +744,12 @@ Back up the database before upgrading. A schema-22 `@mono-agent/web` binary
 refuses the schema-23 database rather than reading it incorrectly; rollback
 requires restoring that compatible pre-upgrade backup and therefore loses
 subsequent writes.
+Schema 24 adds two read-path indexes, `turns_by_thread_started` on
+`turns(thread_id, started_at)` and `messages_by_turn` on `messages(turn_id)`,
+so the per-thread run-state lookup behind the conversation list, bootstrap and
+conversation detail no longer scans every turn and message of a long history.
+The migration creates nothing else and changes no rows; on a store with a few
+hundred conversations it completes in well under a second on first open.
 
 ## Local state and reset
 
