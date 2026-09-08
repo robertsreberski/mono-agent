@@ -1949,6 +1949,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
 
   /**
+   * Publish the conversation a selected-row removal resolves to.
+   *
+   * Finding the replacement row settles only the listing half of the move.
+   * When its transcript is not cached, that read remains part of the same
+   * generation-owned navigation so a failure cannot decay into an apparently
+   * empty conversation after the transient action notice is dismissed.
+   */
+  const installReplacementSelection = useCallback((
+    replacement: ThreadSummary | undefined,
+    generation: number,
+  ) => {
+    const replacementId = replacement?.id ?? null;
+    const transcriptCached = replacement !== undefined
+      && threadCacheRef.current.get(replacement.id) !== undefined;
+    setSelectionRequest(replacement !== undefined && !transcriptCached
+      ? { kind: "thread", generation, threadId: replacement.id, direct: false }
+      : null);
+    setDetailLoading(replacement !== undefined && !transcriptCached);
+    selectedThreadRef.current = replacementId;
+    setSelectedThreadId(replacementId);
+    publishDetail(replacementId);
+    updateThreadRoute(replacement, true);
+  }, [publishDetail, setSelectionRequest]);
+
+  /**
    * Put what this device kept back on screen, before anything is asked for.
    *
    * The console used to open on an empty shell and a spinner: nothing could be
@@ -2494,13 +2519,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const replacement = [...threadsRef.current]
       .filter((item) => item.sourceId === thread.sourceId && !item.archivedAt && item.id !== thread.id)
       .sort(byMostRecent)[0];
-    selectedThreadRef.current = replacement?.id ?? null;
-    setSelectedThreadId(replacement?.id ?? null);
-    publishDetail(replacement?.id ?? null);
+    installReplacementSelection(replacement, operatorSelectionRef.current);
     persistThreadId(thread.sourceId, replacement?.id ?? null);
-    updateThreadRoute(replacement, true);
     return true;
-  }, [publishDetail]);
+  }, [installReplacementSelection]);
 
   /** Bring an existing listing row to the selected cache's safe projection. */
   const reconcileSelectedListing = useCallback((entry: ThreadCacheEntry) => {
@@ -3483,9 +3505,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             threadCacheRef.current.evict(threadId);
             void persistenceRef.current?.forget([threadId]).catch(() => undefined);
             if (threadId === selectedThreadRef.current) {
+              // The authoritative removal settles any direct selection read
+              // still on the wire. Invalidating its generation keeps its late
+              // success or failure from reviving a conversation the event says
+              // is gone, or installing a retry failure on an empty selection.
+              beginOperatorSelection();
+              restoredSelectionRef.current = null;
               selectedThreadRef.current = null;
               setSelectedThreadId(null);
               setDetail(null);
+              setDetailLoading(false);
               setActionError("This conversation was deleted.");
             }
             return;
@@ -3709,6 +3738,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [
     applyMessageDeltaEvent,
     applyThreadUpdate,
+    beginOperatorSelection,
     loadAgents,
     patchRunState,
     queueRefresh,
@@ -4494,14 +4524,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           api.patchThread(target.id, { archived: true }, signal));
         applyThreadUpdate(thread, issuedAt);
         if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
-          beginOperatorSelection();
+          const generation = beginOperatorSelection();
           restoredSelectionRef.current = null;
           const replacement = visibleThreads.find((item) => item.id !== target.id);
-          selectedThreadRef.current = replacement?.id ?? null;
-          setSelectedThreadId(replacement?.id ?? null);
-          publishDetail(replacement?.id ?? null);
+          installReplacementSelection(replacement, generation);
           persistThreadId(thread.sourceId, replacement?.id ?? null);
-          updateThreadRoute(replacement, true);
         } else if (readPersistedThreadIds()[thread.sourceId] === target.id) {
           persistThreadId(thread.sourceId, null);
         }
@@ -4529,7 +4556,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       beginOperatorSelection,
       enqueueThreadWrite,
       fetchThreadSummary,
-      publishDetail,
+      installReplacementSelection,
       visibleThreads,
     ],
   );
@@ -4542,13 +4569,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         api.patchThread(target.id, { archived: false }, signal));
       applyThreadUpdate(thread, issuedAt);
       if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
-        beginOperatorSelection();
+        const generation = beginOperatorSelection();
         restoredSelectionRef.current = null;
         const replacement = visibleThreads.find((item) => item.id !== target.id);
-        selectedThreadRef.current = replacement?.id ?? null;
-        setSelectedThreadId(replacement?.id ?? null);
-        publishDetail(replacement?.id ?? null);
-        updateThreadRoute(replacement, true);
+        installReplacementSelection(replacement, generation);
       }
     } catch (unarchiveError) {
       setActionError(errorMessage(unarchiveError));
@@ -4559,7 +4583,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     beginOperatorSelection,
     enqueueThreadWrite,
     fetchThreadSummary,
-    publishDetail,
+    installReplacementSelection,
     visibleThreads,
   ]);
 
@@ -4599,16 +4623,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     void persistenceRef.current?.forget([thread.id, requestedId]).catch(() => undefined);
     if (selectedThreadRef.current === thread.id || selectedThreadRef.current === requestedId) {
       const replacement = visibleThreads.find((item) => item.id !== thread.id);
-      selectedThreadRef.current = replacement?.id ?? null;
-      setSelectedThreadId(replacement?.id ?? null);
-      publishDetail(replacement?.id ?? null);
-      updateThreadRoute(replacement, true);
+      const generation = beginOperatorSelection();
+      restoredSelectionRef.current = null;
+      installReplacementSelection(replacement, generation);
     }
     if (readPersistedThreadIds()[thread.sourceId] === thread.id) {
       persistThreadId(thread.sourceId, null);
     }
     setActionError(null);
-  }, [publishDetail, visibleThreads]);
+  }, [beginOperatorSelection, installReplacementSelection, visibleThreads]);
   // Assigned during render: it changes with the visible listing, and putting it
   // in the SSE effect's dependencies would tear down and reopen the event
   // stream every time a conversation moved.

@@ -72,6 +72,11 @@ const betaThread = thread("beta-thread", "beta", {
   title: "Beta thread",
   messageCount: 1,
 });
+const olderAlphaThread = thread("older-alpha-thread", "alpha", {
+  title: "Older Alpha thread",
+  messageCount: 1,
+  updatedAt: "2026-09-07T08:00:00.000Z",
+});
 
 const detail = (summary: ThreadSummary, text: string): ThreadDetail => {
   const message: WebMessage = {
@@ -157,8 +162,11 @@ const expectNewConversationDisabled = async (mobile: boolean) => {
     expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
     return;
   }
-  await userEvent.click(screen.getByRole("button", { name: "Open conversations" }));
-  const drawer = await screen.findByRole("dialog", { name: "Conversations" });
+  let drawer = screen.queryByRole("dialog", { name: "Conversations" });
+  if (drawer === null) {
+    await userEvent.click(screen.getByRole("button", { name: "Open conversations" }));
+    drawer = await screen.findByRole("dialog", { name: "Conversations" });
+  }
   expect(within(drawer).getByRole("button", { name: "New conversation" })).toBeDisabled();
   screen.getByRole("button", { name: "Close navigation" }).click();
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull());
@@ -232,6 +240,72 @@ describe("conversation switching through the real Chromium store and runtime", (
     )).toBe(false);
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
     consoleError.mockRestore();
+  });
+
+  it.each([
+    { width: 1_280, height: 800, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
+  ])("keeps an uncached archive replacement failure explicit and retryable at $label size", async ({ width, height, label }) => {
+    await page.viewport(width, height);
+    const mobile = label === "mobile";
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+      [alphaThread, olderAlphaThread],
+      alphaThread.id,
+      { threadsSourceId: "alpha" },
+    ));
+    vi.mocked(api.patchThread).mockResolvedValue({
+      ...alphaThread,
+      archivedAt: "2026-09-08T09:00:00.000Z",
+    });
+    let replacementReads = 0;
+    vi.mocked(api.thread).mockImplementation(async (threadId) => {
+      if (threadId === olderAlphaThread.id) {
+        replacementReads += 1;
+        if (replacementReads === 1) throw new Error("Archive replacement unavailable");
+        return detail(olderAlphaThread, "Older Alpha transcript");
+      }
+      return detail(alphaThread, "Alpha transcript");
+    });
+
+    render(
+      <StrictMode>
+        <ConsoleStoreProvider>
+          <WebRuntimeProvider>
+            <ConversationSwitchFixture width={width} height={height} mobile={mobile} />
+          </WebRuntimeProvider>
+        </ConsoleStoreProvider>
+      </StrictMode>,
+    );
+
+    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    let scope: HTMLElement = document.body;
+    if (mobile) {
+      screen.getByRole("button", { name: "Close navigation" }).click();
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose agent" })).toBeNull());
+      await userEvent.click(screen.getByRole("button", { name: "Open conversations" }));
+      scope = await screen.findByRole("dialog", { name: "Conversations" });
+    }
+    await userEvent.click(within(scope).getByRole("button", { name: "Archive Alpha thread" }));
+    if (mobile && screen.queryByRole("button", { name: "Close navigation" }) !== null) {
+      screen.getByRole("button", { name: "Close navigation" }).click();
+    }
+    if (mobile) await waitFor(() => expect(screen.queryByRole("dialog", { name: "Conversations" })).toBeNull());
+
+    const failure = await screen.findByRole("alert");
+    expect(failure).toHaveTextContent("Conversation could not be loaded");
+    expect(failure).toHaveTextContent("Archive replacement unavailable");
+    expect(screen.queryByText("Start a new conversation")).toBeNull();
+    expect(screen.queryByText("Start a conversation")).toBeNull();
+    await expectNewConversationDisabled(mobile);
+
+    const retry = screen.getByRole("button", { name: "Retry conversation" });
+    retry.scrollIntoView({ block: "center" });
+    await userEvent.click(retry);
+    expect(await screen.findByText("Older Alpha transcript")).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(replacementReads).toBe(2);
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
   });
 
   it.each([
