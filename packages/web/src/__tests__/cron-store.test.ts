@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1387,5 +1389,103 @@ describe("cron Reply operation storage", () => {
       second.close();
       first.close();
     }
+  });
+
+  it("reads a completed receipt coherently while another process deletes its archived thread", async () => {
+    const { stateDir, store } = await replyFixture();
+    const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
+    expect(store.reserveCronReplyOperation(
+      operationId,
+      captured,
+    )).toMatchObject({ kind: "reserved" });
+    const completed = store.completeCronReplyOperation(operationId, "appended");
+    if (completed.kind !== "completed") throw new Error("expected completion");
+    const threadId = completed.receipt.thread.id;
+    store.patchThread(threadId, { archived: true });
+
+    const releasePath = join(stateDir, "cron-reply-read-release");
+    const attemptedPath = join(stateDir, "cron-reply-delete-attempted");
+    const committedPath = join(stateDir, "cron-reply-delete-committed");
+    const child = spawn(process.execPath, ["-e", `
+      const { existsSync, writeFileSync } = require("node:fs");
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(process.argv[1], { timeout: 5000 });
+      db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL");
+      console.log("ready");
+      while (!existsSync(process.argv[3])) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+      writeFileSync(process.argv[4], "attempted", { mode: 0o600 });
+      db.exec("BEGIN IMMEDIATE");
+      const now = new Date().toISOString();
+      db.prepare(\`
+        UPDATE cron_reply_operations SET state = 'tombstoned', provenance_message_id = NULL,
+          result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, completed_at = NULL,
+          failure_reason = 'thread_deleted', tombstoned_at = ?
+        WHERE thread_id = ? AND state = 'completed'
+      \`).run(now, process.argv[2]);
+      db.prepare("DELETE FROM revisions WHERE entity_kind = 'thread' AND entity_id = ?").run(process.argv[2]);
+      db.prepare("DELETE FROM threads WHERE id = ?").run(process.argv[2]);
+      db.prepare("DELETE FROM settings WHERE key = 'current_thread_id' AND value = ?").run(process.argv[2]);
+      db.exec("COMMIT");
+      writeFileSync(process.argv[5], "committed", { mode: 0o600 });
+      db.close();
+    `, store.paths.database, threadId, releasePath, attemptedPath, committedPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const exited = new Promise<number | null>((resolve) => { child.on("exit", resolve); });
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (chunk.toString("utf8").includes("ready")) resolve();
+      });
+      child.on("exit", () => reject(new Error(
+        `the deleting process exited before the read: ${Buffer.concat(stderr).toString("utf8")}`,
+      )));
+    });
+
+    const getThread = store.getThread.bind(store);
+    let held = false;
+    Object.defineProperty(store, "getThread", {
+      configurable: true,
+      value: (id: string) => {
+        if (!held && id === threadId) {
+          held = true;
+          writeFileSync(releasePath, "release", { mode: 0o600 });
+          const attemptedDeadline = Date.now() + 1_000;
+          while (!existsSync(attemptedPath) && Date.now() < attemptedDeadline) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+          }
+          if (!existsSync(attemptedPath)) throw new Error("the deleting process did not attempt its transaction");
+          // Without a read transaction, the delete commits during this window
+          // and the following projection reads falsely report storage_corrupt.
+          const raceDeadline = Date.now() + 400;
+          while (!existsSync(committedPath) && Date.now() < raceDeadline) {
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+          }
+        }
+        return getThread(id);
+      },
+    });
+
+    let firstRead: ReturnType<WebStore["cronReplyOperation"]> | undefined;
+    let firstReadError: unknown;
+    try {
+      firstRead = store.cronReplyOperation(operationId);
+    } catch (error) {
+      firstReadError = error;
+    }
+    expect(await exited).toBe(0);
+    expect(Buffer.concat(stderr).toString("utf8")).toBe("");
+    expect(firstReadError).toBeUndefined();
+    expect(firstRead).toMatchObject({
+      kind: "completed",
+      receipt: { operationId, thread: { id: threadId } },
+    });
+    expect(store.cronReplyOperation(operationId))
+      .toMatchObject({ kind: "tombstoned", operation: { operationId, failureReason: "thread_deleted" } });
+    store.close();
   });
 });

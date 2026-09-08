@@ -1628,9 +1628,11 @@ export class WebStore {
   }
 
   cronReplyOperation(operationId: string): CronReplyReservationResult | undefined {
-    const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
-      .get(operationId) as unknown as CronReplyOperationRow | undefined;
-    return row === undefined ? undefined : this.cronReplyState(row);
+    return this.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+        .get(operationId) as unknown as CronReplyOperationRow | undefined;
+      return row === undefined ? undefined : this.cronReplyState(row);
+    });
   }
 
   reserveCronReplyOperation(
