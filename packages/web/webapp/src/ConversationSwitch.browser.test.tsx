@@ -237,12 +237,17 @@ describe("conversation switching through the real Chromium store and runtime", (
   it.each([
     { width: 1_280, height: 800, label: "desktop" },
     { width: 390, height: 844, label: "mobile" },
-  ])("keeps a failed cold selection explicit and retryable at $label size", async ({ width, height, label }) => {
+  ])("keeps a cold bucket transcript failure explicit and retryable at $label size", async ({ width, height, label }) => {
     await page.viewport(width, height);
     const mobile = label === "mobile";
-    vi.mocked(api.threads)
-      .mockRejectedValueOnce(new Error("Beta conversations unavailable"))
-      .mockResolvedValueOnce({ threads: [betaThread] });
+    vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+    let betaReads = 0;
+    vi.mocked(api.thread).mockImplementation(async (threadId) => {
+      if (threadId !== betaThread.id) return detail(alphaThread, "Alpha transcript");
+      betaReads += 1;
+      if (betaReads === 1) throw new Error("Beta transcript unavailable");
+      return detail(betaThread, "Beta transcript");
+    });
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     render(
@@ -260,17 +265,19 @@ describe("conversation switching through the real Chromium store and runtime", (
 
     const failure = await screen.findByRole("alert");
     expect(failure).toHaveTextContent("Conversation could not be loaded");
-    expect(failure).toHaveTextContent("Beta conversations unavailable");
+    expect(failure).toHaveTextContent("Beta transcript unavailable");
     expect(screen.queryByText("Start a new conversation")).toBeNull();
     expect(screen.queryByText("Start a conversation")).toBeNull();
     expect(screen.queryByRole("status", { name: "Loading conversation" })).toBeNull();
     await expectNewConversationDisabled(mobile);
     expect(api.threads).toHaveBeenCalledTimes(1);
+    expect(betaReads).toBe(1);
 
     const retry = screen.getByRole("button", { name: "Retry conversation" });
     retry.scrollIntoView({ block: "center" });
     await userEvent.click(retry);
-    await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(betaReads).toBe(2));
+    expect(api.threads).toHaveBeenCalledTimes(1);
     expect(await screen.findByText("Beta transcript")).toBeVisible();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByText("Alpha transcript")).toBeNull();

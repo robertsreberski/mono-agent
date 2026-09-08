@@ -2420,8 +2420,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       restoredSelectionRef.current = null;
       selectedThreadRef.current = next.id;
       setSelectedThreadId(next.id);
-      setDetailLoading(threadCacheRef.current.get(next.id) === undefined);
-      if (selectionRequestRef.current === request) setSelectionRequest(null);
+      const transcriptCached = threadCacheRef.current.get(next.id) !== undefined;
+      setDetailLoading(!transcriptCached);
+      // The page resolves WHICH conversation this navigation means, but an
+      // uncached transcript is still part of the same operator selection. Keep
+      // its exact request until loadThread can settle success, 404, or failure.
+      // A cached transcript is already on screen and needs no such ownership.
+      if (transcriptCached && selectionRequestRef.current === request) {
+        setSelectionRequest(null);
+      }
       persistThreadId(selectedAgentId, next.id);
       updateThreadRoute(next);
     }).catch((loadError: unknown) => {
@@ -2688,16 +2695,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       && selectionRequest.direct
       && selectionRequest.threadId === selectedThreadId) return;
     const controller = new AbortController();
+    const ownedDetailRequest = selectionRequest?.kind === "thread"
+      && !selectionRequest.direct
+      && selectionRequest.threadId === selectedThreadId
+      ? selectionRequest
+      : selectionRequest?.kind === "bucket"
+        && selectionRequest.sourceId === selectedAgentRef.current
+        ? selectionRequest
+        : null;
     void loadThread(
       selectedThreadId,
       controller.signal,
       entry === undefined,
       operatorSelectionGeneration,
-      selectionRequest?.kind === "thread"
-        && !selectionRequest.direct
-        && selectionRequest.threadId === selectedThreadId
-        ? selectionRequest
-        : null,
+      ownedDetailRequest,
     );
     return () => controller.abort();
   }, [loadThread, operatorSelectionGeneration, publishDetail, selectedThreadId]);

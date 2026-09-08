@@ -3371,6 +3371,103 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.threads).toHaveBeenCalledTimes(2);
     });
 
+    it("keeps a cold bucket owned through repeated transcript failure and explicit retry", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let betaReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== betaThread.id) return detail(alphaThread, "alpha");
+        betaReads += 1;
+        if (betaReads === 1) throw new Error("first transcript failure");
+        if (betaReads === 2) throw new Error("second transcript failure");
+        return detail(betaThread, "recovered transcript");
+      });
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("first transcript failure"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("first transcript failure");
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(1);
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.selectionError).toBe("first transcript failure");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError).toBe("second transcript failure"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(2);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(3);
+    });
+
+    it("ignores a cold bucket transcript rejection after the operator switches away", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let rejectBeta!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === betaThread.id) {
+          return new Promise((_resolve, reject) => { rejectBeta = reject; });
+        }
+        return Promise.resolve(detail(alphaThread, "alpha"));
+      });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(betaThread.id));
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+      await act(async () => { rejectBeta(new Error("stale transcript failure")); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      expect(store.current.detail?.thread.id).toBe(alphaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("keeps a cold bucket transcript not-found authoritative", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === betaThread.id) {
+          throw new ApiError("Conversation not found.", 404, "thread_not_found");
+        }
+        return detail(alphaThread, "alpha");
+      });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
     it("keeps repeated bucket failures explicit until a retry confirms an empty agent", async () => {
       const store = await openOnAlpha();
       await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
