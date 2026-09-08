@@ -1640,7 +1640,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // A canonical epoch at exactly revision+1 proves the history rename won
       // and only fence cleanup crashed; preserve that valid transcript.
       if (!canonicalProvesCommit) {
-        await this.retireProviderSessions([{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
+        const sameCommittedEpoch = committedRecord?.sourceVersion === STORE_VERSION
+          && committedRecord.providerSession?.epoch === fence.epoch;
+        // Contradictory owners for one id are corruption, not a retirement hint.
+        // Validate both before invoking either runtime or losing the journal.
+        await this.retireProviderSessions(sameCommittedEpoch
+          ? this.providerSessionsForRetirement(committedRecord, fence)
+          : [{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
         if (
           committedEntry !== undefined
           && committedRecord?.sourceVersion === STORE_VERSION

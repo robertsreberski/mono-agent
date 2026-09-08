@@ -90,6 +90,9 @@ describe("harness model owner lifecycle", () => {
         const reloaded = createAgentHarness(options);
         expect((await reloaded.run(request())).text).toBe("answer");
         expect(owner.refreshSession.mock.calls).toEqual([[id], [id]]);
+        // The original mapping is now one committed revision behind.
+        expect((await harness.run(request())).text).toBe("answer");
+        expect(owner.refreshSession.mock.calls).toEqual([[id], [id], [id]]);
         await reloaded.dispose?.();
       }
     }
@@ -127,4 +130,49 @@ describe("harness model owner lifecycle", () => {
     }
     await harness.dispose?.();
   });
+  it("retires a late cancelled override result on its captured owner after the default resumes", async () => {
+    const { identityPath } = await fixture();
+    const base = runtime();
+    const owner = runtime();
+    base.run.mockResolvedValue({ text: "default answer", providerSessionId: "default-id" });
+    let started!: () => void;
+    let finish!: () => void;
+    const running = new Promise<void>((resolve) => { started = resolve; });
+    const released = new Promise<void>((resolve) => { finish = resolve; });
+    owner.run.mockImplementationOnce(async () => { started(); await released; return { text: "late", providerSessionId: "late-id" }; });
+    const harness = createAgentHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
+      historyStore: createInMemoryHistoryStore(), session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000 },
+      runtimeOptionsForRequest: ({ request: current }) => ({ runtimeOptions: { model: current.metadata?.web ? alternate : model } }) });
+    const abort = new AbortController();
+    const cancelled = harness.run({ ...request(), abortSignal: abort.signal });
+    await running;
+    abort.abort();
+    expect((await harness.run({ conversationId: "c", userMessage: "next", abortSignal: new AbortController().signal })).text).toBe("default answer");
+    finish();
+    expect((await cancelled).failure?.kind).toBe("cancelled");
+    await vi.waitFor(() => expect(owner.invalidateSession).toHaveBeenCalledWith("late-id"));
+    expect(base.invalidateSession).not.toHaveBeenCalled();
+    expect(base.disposeSession).not.toHaveBeenCalled();
+    await harness.dispose?.();
+  });
+
+  it("retires an override handle when canonical context is imported", async () => {
+    const { dir, identityPath } = await fixture();
+    const base = runtime();
+    const owner = runtime();
+    const historyStore = createDurableHistoryStore({ root: join(dir, "history"), retireProviderSession: async () => undefined });
+    const harness = createAgentHarness({ identityPath, runtime: base, model, runtimeForModel: () => owner,
+      historyStore, session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000 },
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { model: alternate } }) });
+    expect((await harness.run(request())).text).toBe("answer");
+    // An external reset leaves this harness's mapping stale; imports require an empty destination.
+    await historyStore.reset("c");
+    expect(await harness.importContext!("c", { text: "imported evidence", idempotencyKey: "import:1" })).toEqual({ status: "appended" });
+    expect(owner.disposeSession).toHaveBeenCalledWith("override-id");
+    expect(base.disposeSession).not.toHaveBeenCalled();
+    expect((await harness.run(request())).text).toBe("answer");
+    expect(JSON.stringify(owner.run.mock.calls[1]![1].messages)).toContain("imported evidence");
+    await harness.dispose?.();
+  });
+
 });

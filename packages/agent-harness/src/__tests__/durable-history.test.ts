@@ -1923,6 +1923,12 @@ describe("durable provider model binding", () => {
     await writeFile(fencePath, JSON.stringify({ ...fence, modelKey: a.modelKey }), { mode: 0o600 });
     await expect(store.beginProviderSessionTurn("proof", "mismatch", b)).rejects.toThrow("conflicting model bindings");
     expect(JSON.parse(await readFile(fencePath, "utf8")).modelKey).toBe(a.modelKey);
+    retired.length = 0;
+    // The unrelated mutation's maintenance sweep must reject the same conflict.
+    await expect(store.append("maintenance", [{ role: "user", content: "trigger" }]))
+      .rejects.toThrow("conflicting model bindings");
+    expect(retired).toEqual([]);
+    expect(JSON.parse(await readFile(fencePath, "utf8")).modelKey).toBe(a.modelKey);
   });
 
 });
