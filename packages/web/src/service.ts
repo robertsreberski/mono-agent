@@ -427,6 +427,15 @@ function formatQuotedTurn(quote: string, text: string): string {
   return `Quoted context:\n${blockquote}\n\n${text}`;
 }
 
+function assertTurnTextWithinLimit(operatorText: string): void {
+  if (operatorText.length <= WEB_MAX_TURN_TEXT_CHARACTERS) return;
+  throw new WebConsoleError(
+    "turn_text_too_large",
+    `The message and quote may contain at most ${WEB_MAX_TURN_TEXT_CHARACTERS} characters after formatting.`,
+    413,
+  );
+}
+
 function assertMonitorWakeAddress(input: DeliverWebMonitorNotificationInput): void {
   const originConversation = input.monitor.origin.conversationId.split("#", 1)[0];
   const expectedDeliveryKey = `monitor:${input.monitor.monitorId}:${String(input.monitor.counters.seq)}`;
@@ -1545,13 +1554,7 @@ export class WebService {
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
     const text = input.text ?? "";
     const operatorText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
-    if (operatorText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
-      throw new WebConsoleError(
-        "turn_text_too_large",
-        `The message and quote may contain at most ${WEB_MAX_TURN_TEXT_CHARACTERS} characters after formatting.`,
-        413,
-      );
-    }
+    assertTurnTextWithinLimit(operatorText);
     const attachmentIds = input.attachmentIds ?? [];
     const selection = this.resolveTurnSelection(threadId, input.model, input.effort);
     const { thread, agent, model, effort, requestedModel, requestedEffort } = selection;
@@ -1607,6 +1610,7 @@ export class WebService {
       }
       return this.submissionReceipt(existing);
     }
+    assertTurnTextWithinLimit(operatorText);
     if (thread.trigger?.kind === "cron") throw cronChannelReadOnlyError();
     const connection = this.connections.get(thread.sourceId);
     if (connection === undefined || !thread.canSend) {

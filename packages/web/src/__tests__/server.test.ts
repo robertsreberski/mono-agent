@@ -1884,6 +1884,54 @@ describe("web HTTP server", () => {
     expect(crossOrigin.status).toBe(403);
   });
 
+  it("rejects oversized formatted submissions before receipt, turn, or dispatch admission", async () => {
+    const turns: Record<string, unknown>[] = [];
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ text: "Source prompt" }),
+    });
+    let sourceMessageId: string | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`)) as {
+        thread: { runState: { status: string } };
+        messages: Array<{ id: string }>;
+      };
+      if (detail.thread.runState.status === "complete") {
+        sourceMessageId = detail.messages.at(-1)?.id;
+        break;
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    expect(sourceMessageId).toEqual(expect.any(String));
+    const submissionId = "44444444-4444-4444-8444-444444444444";
+    const path = `${baseUrl}/api/v1/threads/${threadId}/submissions`;
+
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({
+        submissionId,
+        text: "x".repeat(199_990),
+        quote: { text: "First line", messageId: sourceMessageId },
+      }),
+    });
+    expect(response.status).toBe(413);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(response)).toMatchObject({ error: { code: "turn_text_too_large" } });
+    expect(turns).toHaveLength(1);
+
+    const receipt = await fetch(`${path}/${submissionId}`);
+    expect(receipt.status).toBe(404);
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+    expect(detail).toMatchObject({ thread: { runState: { status: "complete" } } });
+    expect((detail.messages as unknown[])).toHaveLength(2);
+  });
+
   it("proxies pending and submitted AskUser state for a web conversation", async () => {
     const submissions: Record<string, unknown>[] = [];
     const snapshot = {

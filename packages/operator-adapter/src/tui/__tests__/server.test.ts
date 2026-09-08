@@ -1175,6 +1175,20 @@ describe("startTuiAdapter", () => {
     expect(await response.json()).toEqual({ status: "applied", runId: "run-1" });
   });
 
+  it("does not advertise targeting for an ownership-only responder", async () => {
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond() {
+          return { text: "done" };
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).toEqual({ attachments: true });
+  });
+
   it("holds a Web-targeted offer until the exact turn publishes mailbox ownership", async () => {
     let activeRequest: AgentRequestBase | undefined;
     let finishTurn!: () => void;

@@ -436,7 +436,8 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                 }
               : {}),
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
-            ...(options.responder.liveInputOwnership?.version === 1
+            ...(typeof options.responder.offerLiveInput === "function"
+              && options.responder.liveInputOwnership?.version === 1
               ? { liveInputTargeting: { version: 1 } }
               : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),

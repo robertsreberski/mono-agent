@@ -3672,6 +3672,51 @@ describe("WebService", () => {
     await service.stop();
   });
 
+  it("rejects oversized formatted submission text before receipt, turn, or dispatch mutation", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Source prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const sourceMessage = service.thread(thread.id).messages.at(-1)!;
+    const submissionId = "44444444-4444-4444-8444-444444444444";
+    const input = {
+      submissionId,
+      text: "x".repeat(199_990),
+      quote: { text: "First line", messageId: sourceMessage.id },
+    };
+    const before = service.thread(thread.id);
+
+    expect(() => service.submit(thread.id, input))
+      .toThrowError(expect.objectContaining({ code: "turn_text_too_large", status: 413 }));
+
+    expect(service.store.webSubmission(thread.id, submissionId)).toBeUndefined();
+    expect(service.store.activeTurn(thread.id)).toBeUndefined();
+    expect(service.thread(thread.id)).toEqual(before);
+    expect(turnBodies).toHaveLength(1);
+
+    const existingInput = { ...input, submissionId: "55555555-5555-4555-8555-555555555555" };
+    const payloadSha256 = createHash("sha256").update(JSON.stringify({
+      text: existingInput.text,
+      quote: existingInput.quote,
+      attachmentIds: [],
+      model: null,
+      effort: null,
+    })).digest("hex");
+    service.store.claimWebSubmission({
+      threadId: thread.id,
+      submissionId: existingInput.submissionId,
+      payloadSha256,
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    });
+    const existingReceipt = service.submission(thread.id, existingInput.submissionId);
+    expect(service.submit(thread.id, existingInput)).toEqual(existingReceipt);
+    expect(turnBodies).toHaveLength(1);
+    await service.stop();
+  });
+
   it("keeps an active-attachment rejection durable and accepts a corrected new-id send", async () => {
     const encoder = new TextEncoder();
     const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
