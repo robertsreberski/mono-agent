@@ -99,10 +99,11 @@ returns. The provider answer remains successful if admission rejects; the harnes
 method keep the legacy awaited `appendHostSummary` plus optional best-effort `scheduleCapture` path.
 
 The built-in default soul adds only a compact evidence router: active dialogue
-for what was just said, targeted memory search for a durable fact or decision,
-chronological memory browsing for a broad explicit-period retrospective, and
-history tools for exact execution evidence. It uses capability-conditional
-language because the harness itself does not own or assume any app MCP tool.
+for what was just said, `MemoryRecall` for a targeted durable fact or decision,
+`MemoryJournal` for a chronological retrospective over an explicit date range,
+and `RunHistory`/`SessionHistory` for exact execution evidence. It names those
+tools "when available" because the harness itself does not own or assume any
+app MCP tool.
 Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
 
 ## Architecture
