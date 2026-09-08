@@ -580,6 +580,7 @@ describe("process job service", () => {
   });
 
   it("tracks only the newest queue timer when overlapping arms resolve out of order", async () => {
+    vi.useFakeTimers({ now: new Date("2026-08-14T10:00:00.000Z") });
     const fixture = await createFixture();
     const baseStore = await openProcessJobStore(fixture.cwd, fixture.settings.stateDir);
     const pendingLists: Array<ReturnType<typeof deferred<readonly DurableProcessJobRecord[]>>> = [];
@@ -591,7 +592,6 @@ describe("process job service", () => {
       },
     };
     const service = await startService(fixture, { store });
-    vi.useFakeTimers({ now: new Date("2026-08-14T10:00:00.000Z") });
     const first = deferred<readonly DurableProcessJobRecord[]>();
     const second = deferred<readonly DurableProcessJobRecord[]>();
     pendingLists.push(first, second);

@@ -11,18 +11,15 @@ import {
 const isActive = (job: ProcessJobProjection): boolean =>
   !TERMINAL_PROCESS_JOB_STATES.has(job.state);
 
-const needsAttention = (job: ProcessJobProjection): boolean =>
-  TERMINAL_PROCESS_JOB_STATES.has(job.state) && job.state !== "succeeded";
-
 export function ProcessJobStack() {
   const {
     threadId,
     jobs,
     historyIsBounded,
-    stackOpen,
-    setStackOpen,
+    historyOpen,
+    setHistoryOpen,
   } = useProcessJobPresentation();
-  const bodyId = useId();
+  const stackId = useId();
   const [liveByJobId, setLiveByJobId] = useState<ReadonlyMap<string, ProcessJobProjection>>(
     () => new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
   );
@@ -56,43 +53,57 @@ export function ProcessJobStack() {
     [jobs, liveByJobId],
   );
   const activeCount = projections.filter(isActive).length;
-  const attentionCount = projections.filter(needsAttention).length;
+  const historyCount = projections.length - activeCount;
   const totalLabel = historyIsBounded
     ? `${String(jobs.length)} loaded`
     : `${String(jobs.length)} ${jobs.length === 1 ? "job" : "jobs"}`;
-  const countLabel = `${totalLabel} · ${String(activeCount)} active · ${String(attentionCount)} needs attention`;
+  const countLabel = `${totalLabel} · ${String(activeCount)} active · ${String(historyCount)} history`;
+  const hasHistoryDisclosure = historyIsBounded || historyCount > 0;
 
   if (threadId === null || jobs.length === 0) return null;
 
   return (
-    <section className="process-job-stack" aria-labelledby={`${bodyId}-label`}>
-      <button
-        type="button"
-        className="process-job-stack-toggle"
-        aria-expanded={stackOpen}
-        aria-controls={bodyId}
-        onClick={() => setStackOpen(!stackOpen)}
-      >
-        <span id={`${bodyId}-label`} className="process-job-stack-title">Background jobs</span>
+    <section className="process-job-stack" aria-labelledby={`${stackId}-label`}>
+      <div className="process-job-stack-header">
+        <span id={`${stackId}-label`} className="process-job-stack-title">Background jobs</span>
         <span className="process-job-stack-counts" aria-live="polite" aria-atomic="true">
           {countLabel}
         </span>
-        <span className="process-job-stack-chevron" aria-hidden="true">⌄</span>
-      </button>
-      <div id={bodyId} className="process-job-stack-body" hidden={!stackOpen}>
+        {hasHistoryDisclosure && (
+          <button
+            type="button"
+            className="process-job-stack-toggle"
+            aria-label="Background job history"
+            aria-pressed={historyOpen}
+            onClick={() => setHistoryOpen(!historyOpen)}
+          >
+            <span>History</span>
+            <span className="process-job-stack-chevron" aria-hidden="true">⌄</span>
+          </button>
+        )}
+      </div>
+      <div className="process-job-stack-body">
         {historyIsBounded && (
-          <p className="process-job-stack-history">
+          <p className="process-job-stack-history" hidden={!historyOpen}>
             Showing jobs in loaded messages. Load earlier messages to reveal older jobs.
           </p>
         )}
         <div className="process-job-stack-list">
-          {jobs.map(({ part }) => (
-            <ProcessJobCard
-              key={`${threadId}:${part.job.jobId}`}
-              part={part}
-              onProjectionChange={onProjectionChange}
-            />
-          ))}
+          {jobs.map(({ part }, index) => {
+            const projection = projections[index] ?? part.job;
+            return (
+              <div
+                key={`${threadId}:${part.job.jobId}`}
+                className="process-job-stack-item"
+                hidden={TERMINAL_PROCESS_JOB_STATES.has(projection.state) && !historyOpen}
+              >
+                <ProcessJobCard
+                  part={part}
+                  onProjectionChange={onProjectionChange}
+                />
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>

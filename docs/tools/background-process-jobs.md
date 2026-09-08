@@ -553,16 +553,17 @@ only while the controller and its owner bearer are present. List responses keep
 every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console
 collects running and terminal jobs from the loaded transcript window into one
-collapsible stack after the conversation (tool, purpose, state and elapsed time
-on each card; output tail, artifact paths, wake state and the wake's response
-behind it). Active work opens the stack by default; a terminal-only stack starts
-collapsed. The stack labels counts as loaded and points to **Load earlier
-messages** whenever older history is available. Collapsing the stack hides but
-does not unmount its cards, so status counts stay live. A running card polls its
-exact job once per second and opens when its first output arrives. Operators may
-collapse that card; later output and settlement preserve the choice, and the
-tail follows the bottom only until the operator scrolls upward. Queued/starting
-jobs and failed reads retain bounded backoff. Each nonterminal card polls only its
+stack after the conversation (tool, purpose, state and elapsed time on each
+card; output tail, artifact paths, wake state and the wake's response behind
+it). Queued, starting, and running work stays visible by default. Every terminal
+outcome remains mounted but hidden until the operator expands history; that
+choice is remembered per conversation for the browser session. The stack labels
+its active and history counts as loaded and points to **Load earlier messages**
+whenever older history is available. A running card polls its exact job once per
+second and opens when its first output arrives. Operators may collapse that
+card; later output and settlement preserve the choice, and the tail follows the
+bottom only until the operator scrolls upward. Queued/starting jobs and failed
+reads retain bounded backoff. Each nonterminal card polls only its
 exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
