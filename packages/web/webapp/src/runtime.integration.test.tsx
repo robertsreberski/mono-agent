@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StartTurnInput, WebMessage } from "./types";
-import { agent, attachment, monitor, thread, uploadLimits } from "./test/fixtures";
+import { agent, attachment, monitor, processJob, thread, uploadLimits } from "./test/fixtures";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
@@ -28,6 +28,7 @@ import {
   resetComposerDraft,
 } from "./composer-draft";
 import { Composer } from "./components/Composer";
+import { useProcessJobPresentation } from "./process-job-presentation";
 import { WebRuntimeProvider } from "./runtime";
 
 const onlineAgent = agent("agent");
@@ -177,6 +178,40 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     ] } });
     const view = await renderRuntime();
     expect(view.runtime.thread.getState().messages.map((message) => message.id)).toEqual(["activity", "running"]);
+  });
+
+  it("gives assistant-ui and the conversation stack one separated provider snapshot", async () => {
+    const ordinary: WebMessage = {
+      id: "ordinary", threadId: idleThread.id, role: "assistant", status: "complete",
+      createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", attachments: [],
+      parts: [{ type: "text", text: "Visible reply" }],
+    };
+    const jobOnly: WebMessage = {
+      ...ordinary,
+      id: "job-only",
+      parts: [{ type: "process-job", job: processJob() }],
+    };
+    storeMock.current = createStore(vi.fn(), {
+      detail: { thread: idleThread, messages: [ordinary, jobOnly] },
+      hasOlderMessages: true,
+    });
+    let runtime: AssistantRuntime | undefined;
+    let presentation: ReturnType<typeof useProcessJobPresentation> | undefined;
+    function PresentationCapture() {
+      presentation = useProcessJobPresentation();
+      return null;
+    }
+    render(
+      <WebRuntimeProvider>
+        <RuntimeCapture onReady={(value) => { runtime = value; }} />
+        <PresentationCapture />
+      </WebRuntimeProvider>,
+    );
+
+    await waitFor(() => expect(runtime).toBeDefined());
+    expect(runtime?.thread.getState().messages.map(({ id }) => id)).toEqual(["ordinary"]);
+    expect(presentation?.jobs.map(({ part }) => part.job.jobId)).toEqual([processJob().jobId]);
+    expect(presentation?.historyIsBounded).toBe(true);
   });
 
   it("restores a rejected turn as a retryable composer draft without an unhandled rejection", async () => {

@@ -74,6 +74,7 @@ import { AgentRail } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
 import { Composer } from "./components/Composer";
 import { AssistantMessage, SystemMessage, UserMessage } from "./components/Messages";
+import { ProcessJobStack } from "./components/ProcessJobStack";
 import { ThreadSidebar } from "./components/ThreadSidebar";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
@@ -1191,6 +1192,50 @@ describe("ConsoleStoreProvider integration", () => {
       "message-first",
     ]);
     expect(store.current.hasOlderMessages).toBe(false);
+  });
+
+  it("labels a job stack as loaded when only the cron-run cursor has older history", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.cronRuns).mockResolvedValue({ runs: [], nextCursor: "older-run-page" });
+    const job = processJob({
+      origin: {
+        ...processJob().origin,
+        conversationId: `web:${cronThread.id}`,
+        historyBoundary: `web:${cronThread.id}`,
+      },
+    });
+    vi.mocked(api.thread).mockResolvedValue({
+      thread: cronThread,
+      messages: [{
+        id: "cron-job-message",
+        threadId: cronThread.id,
+        role: "assistant",
+        parts: [{ type: "process-job", job }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:03.000Z",
+        status: "complete",
+      }],
+    });
+
+    render(
+      <ConsoleStoreProvider>
+        <WebRuntimeProvider>
+          <ThreadPrimitive.Root>
+            <ProcessJobStack />
+          </ThreadPrimitive.Root>
+        </WebRuntimeProvider>
+      </ConsoleStoreProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: /Background jobs.*1 loaded/u }))
+      .toHaveAttribute("aria-expanded", "false");
+    expect(api.cronRuns).toHaveBeenCalled();
   });
 
   it("keeps a cached cron channel read-only when paired with an old agent", async () => {
@@ -4174,6 +4219,7 @@ describe("ConsoleStoreProvider integration", () => {
                 SystemMessage,
                 UserMessage,
               }} />
+              <ProcessJobStack />
               <Composer />
             </ThreadPrimitive.Root>
           </WebRuntimeProvider>

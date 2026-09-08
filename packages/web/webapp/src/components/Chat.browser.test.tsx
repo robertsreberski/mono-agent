@@ -3,7 +3,7 @@ import { userEvent } from "@vitest/browser/context";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WebRuntimeProvider } from "../runtime";
-import { agent, thread } from "../test/fixtures";
+import { agent, processJob, thread } from "../test/fixtures";
 import type { ThreadDetail, ThreadSummary, WebMessage } from "../types";
 import "../styles.css";
 
@@ -109,8 +109,8 @@ const chatStore = (
   };
 };
 
-const chatTree = () => (
-  <div style={{ width: 760, height: 520 }}>
+const chatTree = (width = 760) => (
+  <div style={{ width, height: 520 }}>
     <WebRuntimeProvider>
       <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />
     </WebRuntimeProvider>
@@ -176,6 +176,87 @@ beforeEach(() => {
 });
 
 describe("Chat conversation viewport in Chromium", () => {
+  it("follows stack disclosure at bottom and preserves an operator reading above", async () => {
+    const selectedThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
+    const base = chatDetail(selectedThread, messageIds(18));
+    const job = processJob({
+      origin: {
+        ...processJob().origin,
+        conversationId: `web:${selectedThread.id}`,
+        historyBoundary: `web:${selectedThread.id}`,
+      },
+    });
+    const detail: ThreadDetail = {
+      ...base,
+      messages: [...base.messages, {
+        ...chatMessage("job-only", selectedThread.id),
+        parts: [{ type: "process-job", job }],
+      }],
+    };
+    storeMock.current = chatStore(selectedThread, detail);
+
+    const { container } = render(chatTree());
+    await waitForMessages(container, 18);
+    const viewport = getViewport(container);
+    await waitForBottom(viewport);
+    const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+    toggle.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    await waitForFrames(3);
+    expect(Math.abs(gapFromBottom(viewport))).toBeLessThanOrEqual(1);
+
+    viewport.tabIndex = 0;
+    await userEvent.click(viewport);
+    await userEvent.keyboard("{PageUp}");
+    await waitFor(() => expect(gapFromBottom(viewport)).toBeGreaterThan(1));
+    await waitForScrollToSettle(viewport);
+    const readingTop = viewport.scrollTop;
+
+    fireEvent.click(toggle);
+    await waitForFrames(3);
+    expect(viewport.scrollTop).toBe(readingTop);
+    fireEvent.click(toggle);
+    await waitForFrames(3);
+    expect(viewport.scrollTop).toBe(readingTop);
+  });
+
+  it("keeps the expanded stack inside a 360px conversation column", async () => {
+    const selectedThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
+    const job = processJob({
+      summary: "a deliberately long command summary that must not widen the mobile conversation",
+      origin: {
+        ...processJob().origin,
+        conversationId: `web:${selectedThread.id}`,
+        historyBoundary: `web:${selectedThread.id}`,
+      },
+    });
+    const detail: ThreadDetail = {
+      thread: selectedThread,
+      messages: [{
+        ...chatMessage("job-only", selectedThread.id),
+        parts: [{ type: "process-job", job }],
+      }],
+    };
+    storeMock.current = chatStore(selectedThread, detail);
+
+    const { container } = render(chatTree(360));
+    await waitFor(() => expect(container.querySelector(".process-job-stack")).not.toBeNull());
+    const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;
+    toggle.focus();
+    await userEvent.keyboard("{Space}");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const column = getMessageColumn(container);
+    const stack = container.querySelector<HTMLElement>(".process-job-stack")!;
+    await waitForFrames(2);
+
+    expect(stack.getBoundingClientRect().left).toBeGreaterThanOrEqual(column.getBoundingClientRect().left);
+    expect(stack.getBoundingClientRect().right).toBeLessThanOrEqual(column.getBoundingClientRect().right);
+    expect(getViewport(container).scrollWidth).toBeLessThanOrEqual(getViewport(container).clientWidth);
+  });
+
   it("pins a short ordinary conversation's composer footer to the viewport bottom", async () => {
     const selectedThread = thread("thread-a", "agent");
     storeMock.current = chatStore(selectedThread, chatDetail(selectedThread, messageIds(1)));

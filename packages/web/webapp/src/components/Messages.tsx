@@ -53,7 +53,6 @@ import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
 import { MessageGallery } from "./ImageGallery";
 import { toolHistoryFailure } from "./tool-history";
-import { ProcessJobPart } from "./ProcessJob";
 import { useToolCallRepair } from "./tool-call-repair";
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
@@ -1164,7 +1163,6 @@ const parts = {
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
       "reply-failure": ReplyFailurePart,
-      "process-job": ProcessJobPart,
       "monitor-activity": MonitorActivityPart,
     },
   },
@@ -1175,16 +1173,6 @@ const dataPartName = (part: Record<string, unknown>): string | undefined => {
   return typeof part.type === "string" && part.type.startsWith("data-")
     ? part.type.slice("data-".length)
     : undefined;
-};
-
-/** A running job row already carries its own pulsing progress affordance. */
-const lastPartConveysProgress = (content: readonly unknown[]): boolean => {
-  const last = content.at(-1);
-  if (last === null || typeof last !== "object" || Array.isArray(last)) return false;
-  const part = last as Record<string, unknown>;
-  if (dataPartName(part) !== "process-job") return false;
-  const job = asRecord(asRecord(part.data).job);
-  return job.state === "queued" || job.state === "starting" || job.state === "running";
 };
 
 /** The parts an Activity band is made of: the same set `ACTIVITY_GROUP_BY` coalesces. */
@@ -1256,7 +1244,7 @@ function AssistantParts() {
     <>
       <MessagePrimitive.GroupedParts
         groupBy={ACTIVITY_GROUP_BY}
-        indicator={lastPartConveysProgress(content) ? "never" : "no-text"}
+        indicator="no-text"
       >
         {({ part, children }) => {
           switch (part.type) {
@@ -1297,7 +1285,6 @@ function AssistantParts() {
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
-            if (part.name === "process-job") return <ProcessJobPart {...part} />;
             if (part.name === "monitor-activity") return <MonitorActivityPart {...part} />;
             return part.dataRendererUI;
           case "indicator":

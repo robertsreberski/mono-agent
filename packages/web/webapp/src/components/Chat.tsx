@@ -16,6 +16,7 @@ import {
 import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
+import { ProcessJobStack } from "./ProcessJobStack";
 import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { useRunControls } from "./run-controls";
 
@@ -483,6 +484,7 @@ export function Chat({
                     SystemMessage,
                   }}
                 />
+                <ProcessJobStack />
               </div>
               <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
                 <Icon name="arrow-down" size={16} />

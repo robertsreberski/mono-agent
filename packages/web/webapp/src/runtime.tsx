@@ -17,6 +17,12 @@ import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import { noteComposerAttachments } from "./composer-draft";
+import {
+  isAssistantMessageBoundaryPart,
+  isContextCompactionPart,
+  ProcessJobPresentationProvider,
+  projectProcessJobPresentation,
+} from "./process-job-presentation";
 import type {
   MessagePart,
   ToolCall,
@@ -92,40 +98,6 @@ const jsonObject = (value: unknown): JsonObject => {
     return normalized;
   }
   return value === undefined ? {} : { value: normalized };
-};
-
-const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
-  if (part.event === "context_compaction") return true;
-  let current = part.data;
-  const seen = new Set<object>();
-  for (let depth = 0; depth < 8; depth += 1) {
-    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) {
-      return false;
-    }
-    seen.add(current);
-    const record = current as Record<string, unknown>;
-    if (record.kind === "context_compaction" || record.type === "context_compaction") return true;
-    current = record.data;
-  }
-  return false;
-};
-
-const isAssistantMessageBoundaryPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
-  let current = part.data;
-  const seen = new Set<object>();
-  for (let depth = 0; depth < 8; depth += 1) {
-    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) {
-      return false;
-    }
-    seen.add(current);
-    const record = current as Record<string, unknown>;
-    // context_usage was the only reliable message-end marker retained by older
-    // Pi runs. Keep it as a read-time compatibility boundary; new runs carry
-    // the explicit content-free marker even when usage is unavailable.
-    if (record.kind === "assistant_message_boundary" || record.kind === "context_usage") return true;
-    current = record.data;
-  }
-  return false;
 };
 
 const isLegacyMonitorToolPart = (part: MessagePart): boolean =>
@@ -782,12 +754,17 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [onNew, store.selectedThread],
   );
 
-  const messages = useMemo(
-    () => coalesceMonitorWakeMessages((store.detail?.messages ?? []).filter((message) =>
-      !isLegacySilentCronMessage(message)
-      && !(message.role === "assistant" && message.status === "complete"
-        && message.attachments.length === 0 && convertWebMessage(message).content?.length === 0))),
-    [store.detail?.messages],
+  const presentation = useMemo(
+    () => projectProcessJobPresentation(
+      coalesceMonitorWakeMessages(
+        (store.detail?.messages ?? []).filter((message) =>
+          !isLegacySilentCronMessage(message)
+          && !(message.role === "assistant" && message.status === "complete"
+            && message.attachments.length === 0 && convertWebMessage(message).content?.length === 0)),
+      ),
+      store.effectiveModel,
+    ),
+    [store.detail?.messages, store.effectiveModel],
   );
   // Changing the selected model deliberately gives assistant-ui a new converter,
   // which reconverts every loaded message so its transient attribution visibility
@@ -798,7 +775,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [store.effectiveModel],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
-    messages,
+    messages: presentation.messages,
     convertMessage,
     isLoading: store.detailLoading,
     isRunning,
@@ -879,12 +856,19 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   }, [attachmentAdapter, recoveries, runtime, selectedCanUpload, turnStarting]);
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ToolCallRepairProvider repair={store.loadFullToolCall}>
-        <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
-          {children}
-        </ReplyAccessProvider>
-      </ToolCallRepairProvider>
-    </AssistantRuntimeProvider>
+    <ProcessJobPresentationProvider
+      threadId={store.selectedThreadId}
+      messages={presentation.messages}
+      jobs={presentation.jobs}
+      historyIsBounded={store.hasOlderMessages}
+    >
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ToolCallRepairProvider repair={store.loadFullToolCall}>
+          <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
+            {children}
+          </ReplyAccessProvider>
+        </ToolCallRepairProvider>
+      </AssistantRuntimeProvider>
+    </ProcessJobPresentationProvider>
   );
 }
