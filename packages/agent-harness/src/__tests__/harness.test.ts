@@ -216,6 +216,79 @@ describe("AgentHarness", () => {
     })).toEqual({ status: "unavailable", reason: "inactive" });
   });
 
+  it("preserves an already-aborted outcome when the terminal ownership observer throws", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let runtimeCalls = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          return { text: "must not run" };
+        },
+      },
+      model,
+      cwd: dir,
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancel before admission"));
+    const ownership: string[] = [];
+
+    const response = await harness.run({
+      conversationId: "web:cancelled-observer",
+      userMessage: "Do not start",
+      abortSignal: controller.signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(runtimeCalls).toBe(0);
+    expect(ownership).toEqual(["closed"]);
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
+  it("runs an ownership-ineligible turn when its terminal observer throws", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "scheduled result" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      session: {
+        mode: "continuous",
+        idleTimeoutMs: 60_000,
+        supportsResume: false,
+        isolateProactive: true,
+      },
+    });
+    const ownership: Array<{ status: string; reason?: string }> = [];
+
+    const response = await harness.run({
+      conversationId: "cron:ownership-ineligible",
+      userMessage: "Run the schedule",
+      abortSignal: new AbortController().signal,
+      metadata: { cron: { jobId: "ownership-ineligible" } },
+      onLiveInputOwnership(event) {
+        ownership.push(event);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    expect(response).toMatchObject({ text: "scheduled result" });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.options.liveInput).toBeUndefined();
+    expect(ownership).toEqual([{ status: "closed", reason: "unsupported" }]);
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
   it("releases mailbox ownership when the host observer throws on terminal closure", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

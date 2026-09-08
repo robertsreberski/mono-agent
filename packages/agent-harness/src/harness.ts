@@ -228,7 +228,15 @@ export class MonoAgentHarness implements AgentHarness {
     let closed = false;
     const observe: NonNullable<AgentHarnessRequest["onLiveInputOwnership"]> = (event) => {
       if (closed) return;
-      if (event.status === "closed") closed = true;
+      if (event.status === "closed") {
+        closed = true;
+        try {
+          request.onLiveInputOwnership?.(event);
+        } catch {
+          // Terminal ownership notification cannot replace the run outcome or block draining.
+        }
+        return;
+      }
       request.onLiveInputOwnership?.(event);
     };
     try {
