@@ -2377,6 +2377,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       };
       setSelectionRequest(ownedRouteRequest);
     }
+    // The snapshot is the first authority on whether the route's agent can
+    // answer at all. `refreshCron` refuses to fail an owned route before the
+    // snapshot lands, and its effect re-runs only when the agent's cron
+    // capability CHANGES -- which an agent that never had one does not do.
+    if (route !== undefined && resolvedRouteThread === undefined && ownedRouteRequest !== null) {
+      const routeAgent = next.agents.find((agent) => agent.sourceId === route.sourceId);
+      if (routeAgent?.cron?.read !== true) {
+        failOwnedSelection(ownedRouteRequest, new Error(
+          routeAgent === undefined
+            ? "The agent for this cron conversation was not found."
+            : "This agent does not expose cron conversations.",
+        ));
+      }
+    }
     const selection = resolvedRouteThread !== undefined
       ? { agentId: resolvedRouteThread.sourceId, threadId: resolvedRouteThread.id }
       : ownedRouteRequest !== null && route !== undefined
@@ -2433,6 +2447,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [
     applyConnection,
     discardOtherHostData,
+    failOwnedSelection,
     publishDetail,
     reconcileCronRevision,
     setSelectionRequest,
@@ -4569,16 +4584,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => {
     const route = cronRouteSelection();
     if (route === undefined) return;
-    const request = selectionRequestRef.current;
-    if (request?.kind !== "cron"
-      || request.generation !== operatorSelectionRef.current
-      || request.sourceId !== route.sourceId
-      || request.jobId !== route.jobId
-      || route.sourceId !== selectedAgentId
-      || cronOverview === null) return;
-    const job = cronOverview?.jobs.find(
+    if (route.sourceId !== selectedAgentId || cronOverview === null) return;
+    const job = cronOverview.jobs.find(
       (candidate) => candidate.jobId === route.jobId,
     );
+    const request = selectionRequestRef.current;
+    const ownsRoute = request?.kind === "cron"
+      && request.generation === operatorSelectionRef.current
+      && request.sourceId === route.sourceId
+      && request.jobId === route.jobId;
+    if (!ownsRoute) {
+      // Nothing owns this route: the operator navigated browser history back
+      // onto a cron URL the overview already names. Follow it as before; a job
+      // the overview does not carry has no request to fail either.
+      if (job !== undefined && selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
+      return;
+    }
     if (job === undefined) {
       failOwnedSelection(request, new Error(
         cronOverview.jobsTruncated

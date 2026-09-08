@@ -1193,6 +1193,49 @@ describe("ConsoleStoreProvider integration", () => {
     expect(api.thread).not.toHaveBeenCalled();
   });
 
+  it("settles a cron route whose agent exposes no cron capability instead of loading forever", async () => {
+    const fallback = thread("fallback", "alpha");
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha"),
+    ], [fallback], fallback.id));
+    vi.mocked(api.thread).mockResolvedValue(detail(fallback, "wrong fallback"));
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose cron/iu));
+    expect(store.current.selectedThreadId).toBeNull();
+    expect(store.current.selectionLoading).toBe(false);
+    expect(api.cronOverview).not.toHaveBeenCalled();
+    expect(api.thread).not.toHaveBeenCalled();
+  });
+
+  it("follows browser history back onto a cron route the overview already names", async () => {
+    const ordinary = thread("ordinary", "alpha");
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread, ordinary]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread, ordinary] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.thread).mockImplementation(async (id) =>
+      id === ordinary.id ? detail(ordinary, "ordinary") : detail());
+
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+
+    act(() => store.current.selectThread(ordinary.id));
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    expect(window.location.pathname).toBe("/");
+
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.selectionLoading).toBe(false);
+    expect(store.current.selectionError).toBeNull();
+  });
+
   it("fetches, archives, and conditionally removes an empty out-of-window thread", async () => {
     const canonical = thread("canonical-thread", "alpha", { archivedAt: null });
     vi.mocked(api.thread).mockResolvedValue({ thread: canonical, messages: [] });
