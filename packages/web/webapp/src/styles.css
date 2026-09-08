@@ -988,6 +988,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-row.is-subagent .activity-row-glyph { color: var(--cat-4); }
 .activity-row.is-subagent.is-running .activity-row-glyph { color: var(--warning); }
 .activity-row.is-subagent.is-failed .activity-row-glyph { color: var(--danger); }
+.activity-row.is-job { background: color-mix(in srgb, var(--accent) 7%, transparent); border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.activity-row.is-job .activity-row-glyph { color: var(--accent); }
+.activity-row.is-job.is-running .activity-row-glyph { color: var(--warning); }
+.activity-row.is-job.is-failed { background: color-mix(in srgb, var(--danger) 7%, transparent); border-left-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.activity-row.is-job.is-failed .activity-row-glyph { color: var(--danger); }
 .activity-row-label { flex: none; color: var(--text); font-size: 11.5px; font-weight: 650; white-space: nowrap; }
 .activity-row-summary { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
 .activity-row-time { min-width: 0; flex: 0 1 auto; overflow: hidden; color: var(--text-muted); font-family: var(--font-mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1010,7 +1015,8 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .process-job-stack-history { margin: 0 4px 7px; color: var(--text-muted); font-size: 10px; line-height: 1.45; }
 .process-job-stack-list { display: grid; gap: 7px; }
 .process-job-stack-item { min-width: 0; }
-.process-job-stack-item > .activity-row.is-job, .assistant-content > .activity-row.is-job { margin: 0; padding: 3px 4px; background: color-mix(in srgb, var(--panel) 32%, var(--surface)); border: 1px solid var(--line); border-radius: 12px; }
+.process-job-stack-item > .activity-row.is-job, .assistant-content > .activity-row.is-job { margin: 0; padding: 3px 4px; background: color-mix(in srgb, var(--accent) 6%, color-mix(in srgb, var(--panel) 32%, var(--surface))); border: 1px solid var(--line); border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 12px; }
+.process-job-stack-item > .activity-row.is-job.is-failed, .assistant-content > .activity-row.is-job.is-failed { background: color-mix(in srgb, var(--danger) 6%, color-mix(in srgb, var(--panel) 32%, var(--surface))); border-left-color: color-mix(in srgb, var(--danger) 45%, transparent); }
 .activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
 @media (max-width: 560px) {
   .model-controls-label { display: none; }

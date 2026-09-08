@@ -72,7 +72,7 @@ export function ActivityRow({
   ariaLabel,
   children,
 }: {
-  /** `job` is a tool run detached into the background: same dot as a tool row, its own chrome. */
+  /** `job` is a tool run detached into the background: terminal glyph and accented chrome distinguish it from tool rows. */
   readonly variant?: "tool" | "thinking" | "subagent" | "job";
   readonly status?: ActivityStatus;
   readonly label?: string;
@@ -100,7 +100,8 @@ export function ActivityRow({
         }}
       >
         <span className="activity-row-glyph">
-          {(variant === "tool" || variant === "job") && <i className="activity-dot" />}
+          {variant === "tool" && <i className="activity-dot" />}
+          {variant === "job" && <Icon className="activity-job-icon" name="terminal" size={14} />}
           {variant === "thinking" && <Icon name="bulb" size={14} />}
           {variant === "subagent" && <Icon name="agent" size={14} />}
         </span>

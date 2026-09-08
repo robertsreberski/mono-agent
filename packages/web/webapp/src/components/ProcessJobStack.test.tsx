@@ -78,6 +78,7 @@ describe("ProcessJobStack", () => {
     expect(view.container.querySelectorAll(".process-job-stack-item[hidden]")).toHaveLength(2);
 
     const toggle = screen.getByRole("button", { name: "Background job history" });
+    expect(toggle.querySelector("svg.process-job-stack-chevron")).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(toggle);
 

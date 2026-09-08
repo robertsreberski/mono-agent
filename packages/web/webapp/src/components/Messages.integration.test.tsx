@@ -1564,7 +1564,8 @@ describe("message actions", () => {
       "is-job",
       "is-running",
     );
-    expect(container.querySelectorAll(".activity-dot")).toHaveLength(1);
+    expect(container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+    expect(container.querySelectorAll(".activity-dot")).toHaveLength(0);
     expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
   });
 

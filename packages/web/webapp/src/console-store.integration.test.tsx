@@ -5078,7 +5078,8 @@ describe("ConsoleStoreProvider integration", () => {
       expect(screen.getByRole("group", { name: "Exec background job running" }))
         .toHaveClass("is-running");
       expect(view.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
-      expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(0);
       expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
       expect(screen.getByRole("combobox", { name: "Message" }))
         .toHaveAttribute("placeholder", "Message Alpha…");
