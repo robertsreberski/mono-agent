@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { createRef } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
 import "../styles.css";
 
@@ -50,7 +50,7 @@ const expectDialogTypography = (element: Element, size: "10px" | "12px") => {
 };
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   storeMock.selectedAgent = agent("alpha", {
     label: "Alpha",
     models: ["provider/model", "provider/other"],
@@ -64,6 +64,17 @@ beforeEach(() => {
   apiMock.cancelProviderAuth.mockResolvedValue(undefined);
   apiMock.cancelProviderAuthCheck.mockResolvedValue(undefined);
 });
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const advanceProviderPolls = async (count = 1) => {
+  await act(async () => await Promise.resolve());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(count * 1_000);
+  });
+};
 
 describe("AgentSettingsDialog", () => {
   it.each(["auth", "check"] as const)("cancels a late %s admission after its dialog closes without losing the response ID", async (kind) => {
@@ -102,7 +113,10 @@ describe("AgentSettingsDialog", () => {
     view.rerender(<AgentSettingsDialog open {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: action }));
     await act(async () => await Promise.resolve());
-    await act(async () => old.resolve(snapshot("OLD UNOWNED FLOW")));
+    await act(async () => {
+      old.resolve(snapshot("OLD UNOWNED FLOW"));
+      await old.promise;
+    });
     expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "OLD UNOWNED FLOW", expect.any(AbortSignal));
     expect(screen.queryByText("OLD UNOWNED FLOW")).not.toBeInTheDocument();
     if (kind === "auth") expect(screen.getByText("NEW OWNED FLOW")).toBeVisible();
@@ -138,8 +152,11 @@ describe("AgentSettingsDialog", () => {
     get.mockReturnValueOnce(poll.promise);
     cancel.mockReturnValueOnce(deletion.promise);
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    fireEvent.click(await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" }));
-    await vi.waitFor(() => expect(get).toHaveBeenCalledOnce(), { timeout: 1_500 });
+    const startButton = await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" });
+    vi.useFakeTimers();
+    fireEvent.click(startButton);
+    await advanceProviderPolls();
+    expect(get).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole("button", { name: kind === "auth" ? "Cancel authentication" : "Cancel live provider checks" }));
     await act(async () => {
       deletion.resolve();
@@ -306,20 +323,23 @@ describe("AgentSettingsDialog", () => {
     });
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Re-authenticate" }));
-    expect(await screen.findByLabelText("Old API key prompt")).toBeVisible();
-    await vi.waitFor(() => expect(apiMock.providerAuthSession).toHaveBeenCalledWith("alpha", "session-old", expect.any(AbortSignal)), {
-      timeout: 1_500,
-    });
+    const authenticate = await screen.findByRole("button", { name: "Re-authenticate" });
+    vi.useFakeTimers();
+    fireEvent.click(authenticate);
+    await act(async () => await Promise.resolve());
+    expect(screen.getByLabelText("Old API key prompt")).toBeVisible();
+    await advanceProviderPolls();
+    expect(apiMock.providerAuthSession).toHaveBeenCalledWith("alpha", "session-old", expect.any(AbortSignal));
     const restart = screen.getByRole("button", { name: "Re-authenticate" });
     expect(restart).toBeEnabled();
     fireEvent.click(restart);
     expect(screen.getByLabelText("Old API key prompt")).toBeVisible();
     expect(screen.getByText("Restarting authentication…")).toHaveAttribute("aria-live", "polite");
 
-    replacementRequest.resolve(replacement);
-    expect(await screen.findByText("Fresh authentication started")).toBeVisible();
-    expect(await screen.findByText("FRESH SESSION SUCCEEDED", {}, { timeout: 4_500 })).toBeVisible();
+    await act(async () => replacementRequest.resolve(replacement));
+    expect(screen.getByText("Fresh authentication started")).toBeVisible();
+    await advanceProviderPolls(3);
+    expect(screen.getByText("FRESH SESSION SUCCEEDED")).toBeVisible();
     expect(apiMock.providerAuthSession.mock.calls.filter(([, sessionId]) => sessionId === replacement.id)).toHaveLength(3);
     await act(async () => oldPoll.resolve({ ...active, state: "succeeded", progress: "STALE OLD SESSION" }));
     expect(screen.queryByText("STALE OLD SESSION")).not.toBeInTheDocument();
@@ -728,11 +748,15 @@ describe("AgentSettingsDialog", () => {
       .mockResolvedValueOnce(completed);
 
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    const run = await screen.findByRole("button", { name: "Run live checks for all displayed providers" });
+    vi.useFakeTimers();
+    fireEvent.click(run);
+    await act(async () => await Promise.resolve());
 
-    expect(await screen.findByText("Checking…")).toBeVisible();
-    await vi.waitFor(() => expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(3), { timeout: 4_500 });
-    expect(await screen.findByText("Check passed")).toBeVisible();
+    expect(screen.getByText("Checking…")).toBeVisible();
+    await advanceProviderPolls(3);
+    expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(3);
+    expect(screen.getByText("Check passed")).toBeVisible();
     expect(screen.getByText("Checks complete: 1 of 1 passed.")).toBeVisible();
   }, 6_000);
 
@@ -761,12 +785,16 @@ describe("AgentSettingsDialog", () => {
     }));
 
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
-    expect(await screen.findByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }, { timeout: 1_500 })).toBeVisible();
+    const run = await screen.findByRole("button", { name: "Run live checks for all displayed providers" });
+    vi.useFakeTimers();
+    fireEvent.click(run);
+    await act(async () => await Promise.resolve());
+    expect(screen.getByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
+    await advanceProviderPolls();
+    expect(screen.getByRole("button", { name: "Run live checks for all displayed providers" })).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
-    await new Promise((resolve) => window.setTimeout(resolve, 1_100));
+    await advanceProviderPolls();
     expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
   }, 4_000);
 
@@ -825,8 +853,12 @@ describe("AgentSettingsDialog", () => {
       });
 
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
-    expect(await screen.findByText("Check passed", {}, { timeout: 2_500 })).toBeVisible();
+    const run = await screen.findByRole("button", { name: "Run live checks for all displayed providers" });
+    vi.useFakeTimers();
+    fireEvent.click(run);
+    await act(async () => await Promise.resolve());
+    await advanceProviderPolls(2);
+    expect(screen.getByText("Check passed")).toBeVisible();
     expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(2);
   }, 4_000);
 

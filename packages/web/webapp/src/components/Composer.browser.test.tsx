@@ -43,6 +43,8 @@ function store(sendSubmission: SendSubmission): Record<string, unknown> {
     selectedThreadId: runningThread.id,
     loading: false,
     detailLoading: false,
+    selectionLoading: false,
+    selectionError: null,
     error: null,
     actionError: null,
     connection: "live",

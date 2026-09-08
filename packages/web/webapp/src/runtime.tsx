@@ -589,6 +589,10 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         agentId: store.selectedAgentId,
         threadId: store.selectedThreadId,
       };
+      if (store.selectionLoading || store.selectionError !== null) {
+        queueRecovery(text, attachments, quote, submissionContext);
+        return;
+      }
       if (turnStartingRef.current) {
         queueRecovery(text, attachments, quote, submissionContext);
         return;
@@ -660,7 +664,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   // moves, and these never change.
   const threadListActions = useMemo(() => ({
     onSwitchToNewThread: async () => {
-      if (!storeRef.current.selectedAgent) return;
+      if (!storeRef.current.selectedAgent
+        || storeRef.current.selectionLoading
+        || storeRef.current.selectionError !== null) return;
       await storeRef.current.createThread().catch(() => undefined);
     },
     onSwitchToThread: (threadId: string) => storeRef.current.selectThread(threadId),
@@ -681,7 +687,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   const threadList = useMemo(
     () => ({
       threadId: store.selectedThreadId ?? undefined,
-      isLoading: store.loading,
+      isLoading: store.loading || store.selectionLoading,
       threads: store.threads
         .filter(
           (thread) => thread.sourceId === store.selectedAgentId && !thread.archivedAt,
@@ -706,15 +712,22 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         })),
       ...threadListActions,
     }),
-    [store.loading, store.selectedAgentId, store.selectedThreadId, store.threads, threadListActions],
+    [
+      store.loading,
+      store.selectedAgentId,
+      store.selectedThreadId,
+      store.selectionLoading,
+      store.threads,
+      threadListActions,
+    ],
   );
 
-  const selectedCanSend = canSendInConsole(
+  const selectedCanSend = store.selectionError === null && !store.selectionLoading && canSendInConsole(
     store.connection,
     store.selectedAgent,
     store.selectedThread,
   );
-  const selectedCanUpload = canUploadInConsole(
+  const selectedCanUpload = store.selectionError === null && !store.selectionLoading && canUploadInConsole(
     store.connection,
     store.selectedAgent,
     store.selectedThread,
@@ -762,7 +775,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
     convertMessage,
-    isLoading: store.detailLoading,
+    isLoading: store.selectionLoading || store.detailLoading,
     isRunning,
     isSendDisabled: !selectedCanSend || turnStarting,
     onNew,

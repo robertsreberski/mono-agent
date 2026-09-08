@@ -194,10 +194,13 @@ const chatStore = (
     selectedThreadId,
     loading: false,
     detailLoading,
+    selectionLoading: detailLoading,
+    selectionError: null,
     connection: "live" as const,
     model: "",
     effort: "",
     createThread: vi.fn(),
+    retrySelection: vi.fn(),
     selectThread: vi.fn(),
     renameThread: vi.fn(),
     archiveThread: vi.fn().mockResolvedValue(undefined),
@@ -217,6 +220,48 @@ const chatTree = () => (
     <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />
   </WebRuntimeProvider>
 );
+
+it("shows an owned loading surface instead of a false new-conversation state", () => {
+  const prior = thread("thread-a", "agent");
+  storeMock.current = {
+    ...chatStore(prior, null),
+    selectedThread: null,
+    selectedThreadId: null,
+    detail: null,
+    selectionLoading: true,
+  };
+
+  render(chatTree());
+
+  expect(screen.getByRole("button", { name: "Loading conversation…" })).toBeDisabled();
+  expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+  expect(screen.getAllByRole("status").some((item) => item.textContent?.includes("Loading"))).toBe(true);
+});
+
+it("keeps a failed selection explicit after its transient notice is gone", () => {
+  const prior = thread("thread-a", "agent");
+  const retrySelection = vi.fn();
+  storeMock.current = {
+    ...chatStore(prior, null),
+    selectedThread: null,
+    selectedThreadId: null,
+    detail: null,
+    selectionError: "bucket unavailable",
+    retrySelection,
+    actionError: null,
+  };
+
+  render(chatTree());
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Conversation could not be loaded");
+  expect(screen.getByRole("alert")).toHaveTextContent("bucket unavailable");
+  expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+  expect(screen.queryByRole("status", { name: "Loading conversation" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Retry conversation" }));
+  expect(retrySelection).toHaveBeenCalledTimes(1);
+});
 
 describe("Chat conversation viewport", () => {
   it("places one loaded job stack after transcript messages and before the footer", () => {

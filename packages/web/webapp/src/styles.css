@@ -436,6 +436,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .thread-search-hit mark { padding: 0 1px; color: var(--accent); background: var(--accent-soft); border-radius: 3px; font-weight: 650; }
 .thread-search-count { flex: none; color: var(--text-muted); font-family: var(--font-mono); font-size: 8.5px; }
 .thread-search-truncated { margin: 10px 6px 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.4; }
+.thread-list-error { display: flex; align-items: center; gap: 8px; margin: 0 10px 8px; padding: 9px 10px; color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, var(--surface-raised)); border: 1px solid color-mix(in srgb, var(--danger) 24%, var(--line)); border-radius: 9px; font-size: 10.5px; line-height: 1.35; }
+.thread-list-error span { min-width: 0; flex: 1; }
+.thread-list-error button { flex: none; padding: 5px 7px; color: var(--danger); background: transparent; border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--line)); border-radius: 6px; cursor: pointer; font-size: 10px; font-weight: 650; }
 .thread-list-empty { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; color: var(--text-muted); text-align: center; font-size: 12px; }
 .sidebar-footer { display: flex; flex-direction: column; }
 .archive-toggle { min-height: 49px; display: flex; align-items: center; gap: 9px; margin: 0 10px; padding: 0 11px; color: var(--text-muted); background: transparent; border-top: 1px solid var(--line); cursor: pointer; font-size: 12px; text-align: left; }
