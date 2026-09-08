@@ -54,7 +54,13 @@ describe("createMessengerChannelDriver", () => {
     expect(driver.id).toBe("messenger");
     expect(driver.label).toBe("Facebook Messenger");
     expect(driver.processJobs).toEqual({ conversationScheme: "messenger" });
-    expect(createMessengerChannelDriver({ id: "fb", label: "FB" })).toMatchObject({ id: "fb", label: "FB" });
+    // A custom id keeps the FIXED conversation scheme: the host resolves the
+    // owning driver by scheme and then delivers to `driver.id`.
+    expect(createMessengerChannelDriver({ id: "fb", label: "FB" })).toMatchObject({
+      id: "fb",
+      label: "FB",
+      processJobs: { conversationScheme: "messenger" },
+    });
     expect(createChannelDriverFromIndex().id).toBe("messenger");
     expect(createChannelDriver).toBe(createMessengerChannelDriver);
   });
@@ -71,6 +77,49 @@ describe("createMessengerChannelDriver", () => {
     const error = await driver.loadConfig(configInput()).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(MessengerAdapterConfigError);
     expect(driver.isConfigError(error)).toBe(true);
+  });
+
+  it("rejects a credential placed in the inline plugin config", async () => {
+    const driver = createMessengerChannelDriver({
+      config: { enabled: true, allowAllUsers: true, pageAccessToken: "from-json" },
+    });
+    const error = await driver.loadConfig(configInput(secrets)).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(MessengerAdapterConfigError);
+    expect(error).toMatchObject({ code: "invalid_config" });
+    expect((error as MessengerAdapterConfigError).message).toContain("messenger.pageAccessToken");
+  });
+
+  it("routes a custom-id driver's process-job wake through the messenger scheme", async () => {
+    const started = fakeStartResult();
+    const startAdapter = vi.fn(async (_options: StartMessengerAdapterOptions) => started);
+    const driver = createMessengerChannelDriver({
+      id: "fb",
+      config: { enabled: true, allowedUserIds: ["42"] },
+      startAdapter,
+    });
+    const config = await driver.loadConfig(configInput(secrets));
+    const running = await driver.start({
+      config,
+      coreConfig: {},
+      responder: responder(),
+      cwd: dir,
+      onFailure: vi.fn(),
+    } as unknown as ChannelStartInput<MessengerAdapterConfig>);
+
+    const projection = {
+      jobId: "job-1",
+      state: "succeeded",
+      origin: { channel: "messenger", conversationId: "messenger:42" },
+    } as never;
+    const woken = await running.processJobs?.wake({
+      conversationId: "messenger:42",
+      text: "done",
+      deliveryKey: "job-1:done",
+      processJob: projection,
+    });
+
+    expect(woken).toMatchObject({ delivered: true });
+    expect(started.notify).toHaveBeenCalledWith("42", "done", { deliveryKey: "job-1:done", steerActive: true });
   });
 
   it("rejects malformed inline config values", async () => {

@@ -1,4 +1,4 @@
-import type { AgentMessageStream } from "@mono-agent/agent-contracts";
+import type { AgentLiveInputSettlement, AgentMessageStream } from "@mono-agent/agent-contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -39,6 +39,8 @@ function fakeClient(): MessengerGraphClientLike & { readonly sent: SentText[]; r
 function responderWith(handler: (request: AgentRequest, stream: AgentMessageStream) => Promise<string>): AgentResponder & {
   readonly requests: AgentRequest[];
   readonly verbatim: { conversationId: string; text: string }[];
+  offerLiveInput?: AgentResponder["offerLiveInput"];
+  cancel?: AgentResponder["cancel"];
 } {
   const requests: AgentRequest[] = [];
   const verbatim: { conversationId: string; text: string }[] = [];
@@ -142,7 +144,12 @@ describe("MessengerAdapter", () => {
       status: 200,
       headers: { "content-type": "image/png", "content-length": "9" },
     })) as unknown as typeof fetch;
-    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"], attachments: { fetch: fetchImpl } });
+    const adapter = new MessengerAdapter({
+      client,
+      responder,
+      allowedUserIds: ["42"],
+      attachments: { fetch: fetchImpl, resolveAddresses: async () => ["31.13.64.35"] },
+    });
 
     await adapter.handleWebhookPayload(pagePayload([
       { sender: { id: "42" }, postback: { mid: "pb", title: "Yes", payload: "YES_PAYLOAD" } },
@@ -151,7 +158,7 @@ describe("MessengerAdapter", () => {
         message: {
           mid: "img",
           attachments: [
-            { type: "image", payload: { url: "https://scontent.example.com/photo.png" } },
+            { type: "image", payload: { url: "https://scontent.xx.fbcdn.net/photo.png" } },
             { type: "location", title: "Home", payload: { coordinates: { lat: 47.5, long: 19.04 } } },
             { type: "audio", payload: { url: "https://cdn.example.com/voice.mp4" } },
           ],
@@ -169,7 +176,7 @@ describe("MessengerAdapter", () => {
     expect(withAttachments.metadata.messenger.attachmentTypes).toEqual(["image", "location", "audio"]);
   });
 
-  it("queues messages per user and reports busy beyond the queue cap", async () => {
+  it("admits one active turn plus maxQueuedPerUser waiting, then reports busy", async () => {
     const client = fakeClient();
     let release!: () => void;
     const gate = new Promise<void>((resolvePromise) => { release = resolvePromise; });
@@ -179,16 +186,34 @@ describe("MessengerAdapter", () => {
     });
     const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"], maxQueuedPerUser: 2 });
 
-    const first = adapter.handleEvent(textEvent("42", "slow") as never);
+    // Boundary table for maxQueuedPerUser: 2 — one active turn plus two waiting
+    // are admitted; only the fourth message is refused.
+    const active = adapter.handleEvent(textEvent("42", "slow") as never);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
-    const second = adapter.handleEvent(textEvent("42", "second") as never);
-    const third = await adapter.handleEvent(textEvent("42", "third") as never);
+    const waitingOne = adapter.handleEvent(textEvent("42", "second") as never);
+    const waitingTwo = adapter.handleEvent(textEvent("42", "third") as never);
+    const refused = await adapter.handleEvent(textEvent("42", "fourth") as never);
 
-    expect(third).toMatchObject({ kind: "busy" });
+    expect(refused).toMatchObject({ kind: "busy" });
     release();
-    expect(await first).toMatchObject({ kind: "handled" });
-    expect(await second).toMatchObject({ kind: "handled" });
-    expect(client.sent.map((entry) => entry.text)).toEqual([expect.stringContaining("still working"), "done:slow", "done:second"]);
+    expect(await active).toMatchObject({ kind: "handled" });
+    expect(await waitingOne).toMatchObject({ kind: "handled" });
+    expect(await waitingTwo).toMatchObject({ kind: "handled" });
+    expect(client.sent.map((entry) => entry.text)).toEqual([
+      expect.stringContaining("still working"),
+      "done:slow",
+      "done:second",
+      "done:third",
+    ]);
+  });
+
+  it("frees a queue slot once a turn settles, so a later message is admitted", async () => {
+    const client = fakeClient();
+    const responder = responderWith(async (request) => `done:${request.text}`);
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"], maxQueuedPerUser: 1 });
+
+    expect(await adapter.handleEvent(textEvent("42", "one") as never)).toMatchObject({ kind: "handled" });
+    expect(await adapter.handleEvent(textEvent("42", "two") as never)).toMatchObject({ kind: "handled" });
   });
 
   it("delivers verbatim notifications with proactive send options and records history", async () => {
@@ -236,6 +261,177 @@ describe("MessengerAdapter", () => {
 
     expect(result).toMatchObject({ kind: "error" });
     expect(client.sent.at(-1)?.text).toContain("failed");
+  });
+});
+
+describe("cancellation", () => {
+  it("retires a queued prompt on /cancel and still accepts a new one afterwards", async () => {
+    const client = fakeClient();
+    let release!: () => void;
+    const gate = new Promise<void>((resolvePromise) => { release = resolvePromise; });
+    const responder = responderWith(async (request) => {
+      if (request.text === "slow") await gate;
+      return `done:${request.text}`;
+    });
+    const cancelled: string[] = [];
+    responder.cancel = (conversationId) => { cancelled.push(conversationId); };
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const active = adapter.handleEvent(textEvent("42", "slow") as never);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+    const parked = adapter.handleEvent(textEvent("42", "parked") as never);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+
+    const cancel = await adapter.handleEvent(textEvent("42", "/cancel") as never);
+    expect(cancel).toMatchObject({ kind: "cancelled" });
+    expect(cancelled).toEqual(["messenger:42"]);
+
+    release();
+    expect(await active).toMatchObject({ kind: "cancelled" });
+    // The parked prompt must NOT run and answer after the user asked to stop.
+    expect(await parked).toMatchObject({ kind: "cancelled" });
+    expect(responder.requests.map((request) => request.text)).toEqual(["slow"]);
+
+    // A genuinely new prompt after the cancel still runs.
+    const after = await adapter.handleEvent(textEvent("42", "after") as never);
+    expect(after).toMatchObject({ kind: "handled" });
+    expect(responder.requests.map((request) => request.text)).toEqual(["slow", "after"]);
+  });
+
+  it("cancels only the requesting user's work", async () => {
+    const client = fakeClient();
+    let release!: () => void;
+    const gate = new Promise<void>((resolvePromise) => { release = resolvePromise; });
+    const responder = responderWith(async (request) => {
+      if (request.text === "slow") await gate;
+      return `done:${request.text}`;
+    });
+    const adapter = new MessengerAdapter({ client, responder, allowAllUsers: true });
+
+    const other = adapter.handleEvent(textEvent("99", "slow") as never);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+    await adapter.handleEvent(textEvent("42", "/cancel") as never);
+    release();
+
+    expect(await other).toMatchObject({ kind: "handled" });
+  });
+});
+
+describe("process-job wake steering", () => {
+  function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((innerResolve) => { resolve = innerResolve; });
+    return { promise, resolve };
+  }
+
+  it("reserves its queue slot before offering, so a later prompt cannot overtake the wake", async () => {
+    const client = fakeClient();
+    let releaseActive!: () => void;
+    const activeGate = new Promise<void>((resolvePromise) => { releaseActive = resolvePromise; });
+    const responder = responderWith(async (request) => {
+      if (request.text === "active") await activeGate;
+      return `done:${request.text}`;
+    });
+    const settlement = deferred<AgentLiveInputSettlement>();
+    responder.offerLiveInput = () => ({ status: "accepted", settled: settlement.promise });
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const active = adapter.handleEvent(textEvent("42", "active") as never);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+
+    // The wake reserves its slot synchronously; the later prompt queues behind it.
+    const wake = adapter.notify("42", "wake", { steerActive: true, deliveryKey: "job:1" });
+    const later = adapter.handleEvent(textEvent("42", "later") as never);
+
+    // The active turn ends without absorbing the wake, so the reservation runs.
+    settlement.resolve({ status: "requeue", reason: "closed" });
+    releaseActive();
+
+    expect(await wake).toMatchObject({ delivered: true, disposition: "follow_up" });
+    expect(await later).toMatchObject({ kind: "handled" });
+    expect(await active).toMatchObject({ kind: "handled" });
+    expect(responder.requests.map((request) => request.text)).toEqual(["active", "wake", "later"]);
+  });
+
+  it("reports a steered wake without running a follow-up turn", async () => {
+    const client = fakeClient();
+    const responder = responderWith(async (request) => `done:${request.text}`);
+    responder.offerLiveInput = () => ({
+      status: "accepted",
+      settled: Promise.resolve({ status: "applied", runId: "run-1" } satisfies AgentLiveInputSettlement),
+    });
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const result = await adapter.notify("42", "wake", { steerActive: true, deliveryKey: "job:1" });
+
+    expect(result).toMatchObject({ delivered: true, disposition: "steered", historyRecorded: true });
+    expect(responder.requests).toHaveLength(0);
+  });
+
+  it("runs the reserved fallback turn when the offer is unavailable", async () => {
+    const client = fakeClient();
+    const responder = responderWith(async (request) => `done:${request.text}`);
+    responder.offerLiveInput = () => ({ status: "unavailable", reason: "inactive" });
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const result = await adapter.notify("42", "wake", { steerActive: true, deliveryKey: "job:1" });
+
+    expect(result).toMatchObject({ delivered: true, disposition: "follow_up" });
+    expect(responder.requests.map((request) => request.text)).toEqual(["wake"]);
+  });
+
+  it("runs the reserved fallback turn when the offer throws", async () => {
+    const client = fakeClient();
+    const responder = responderWith(async (request) => `done:${request.text}`);
+    responder.offerLiveInput = () => { throw new Error("mailbox exploded"); };
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const result = await adapter.notify("42", "wake", { steerActive: true, deliveryKey: "job:1" });
+
+    expect(result).toMatchObject({ delivered: true, disposition: "follow_up" });
+    expect(responder.requests.map((request) => request.text)).toEqual(["wake"]);
+  });
+
+  it("settles a discarded offer without delivering a follow-up turn", async () => {
+    const client = fakeClient();
+    const responder = responderWith(async (request) => `done:${request.text}`);
+    responder.offerLiveInput = () => ({
+      status: "accepted",
+      settled: Promise.resolve({ status: "discarded", reason: "cancelled" } satisfies AgentLiveInputSettlement),
+    });
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const result = await adapter.notify("42", "wake", { steerActive: true, deliveryKey: "job:1" });
+
+    expect(result).toMatchObject({ delivered: false, code: "process_job_wake_discarded", retryable: false });
+    expect(responder.requests).toHaveLength(0);
+  });
+
+  it("settles a rejected settlement as an ambiguous delivery", async () => {
+    const client = fakeClient();
+    const responder = responderWith(async (request) => `done:${request.text}`);
+    responder.offerLiveInput = () => ({ status: "accepted", settled: Promise.reject(new Error("lost")) });
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const result = await adapter.notify("42", "wake", { steerActive: true, deliveryKey: "job:1" });
+
+    expect(result).toMatchObject({ delivered: false, code: "delivery_uncertain", ambiguous: true });
+    expect(responder.requests).toHaveLength(0);
+  });
+
+  it("settles an uncertain settlement as an ambiguous delivery", async () => {
+    const client = fakeClient();
+    const responder = responderWith(async (request) => `done:${request.text}`);
+    responder.offerLiveInput = () => ({
+      status: "accepted",
+      settled: Promise.resolve({ status: "uncertain", reason: "delivery_uncertain" } satisfies AgentLiveInputSettlement),
+    });
+    const adapter = new MessengerAdapter({ client, responder, allowedUserIds: ["42"] });
+
+    const result = await adapter.notify("42", "wake", { steerActive: true, deliveryKey: "job:1" });
+
+    expect(result).toMatchObject({ delivered: false, code: "delivery_uncertain", ambiguous: true });
+    expect(responder.requests).toHaveLength(0);
   });
 });
 

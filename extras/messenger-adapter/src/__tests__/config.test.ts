@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   MessengerAdapterConfigError,
+  assertValidMessengerAdapterConfig,
   loadMessengerAdapterConfig,
   redactMessengerAdapterConfig,
+  type MessengerAdapterConfig,
 } from "../config.js";
 
 let dir: string;
@@ -118,5 +120,101 @@ describe("redactMessengerAdapterConfig", () => {
     expect(redacted.pageAccessToken).toEqual({ present: true, redacted: true });
     expect(redacted.allowedUserIds).toEqual({ count: 2 });
     expect(JSON.stringify(redacted)).not.toContain("page-token");
+  });
+});
+
+describe("env-only credentials", () => {
+  const enabledJson = {
+    messenger: { enabled: true, allowAllUsers: true },
+  };
+
+  it.each(["pageAccessToken", "appSecret", "verifyToken"] as const)(
+    "rejects %s supplied through inline JSON",
+    async (key) => {
+      const error = await loadMessengerAdapterConfig({
+        env: {},
+        json: { messenger: { ...enabledJson.messenger, [key]: "from-json" } },
+      }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(MessengerAdapterConfigError);
+      expect((error as MessengerAdapterConfigError).code).toBe("invalid_config");
+      expect((error as MessengerAdapterConfigError).details).toMatchObject({ reason: "env_only_secret" });
+      expect((error as MessengerAdapterConfigError).message).toContain(`messenger.${key}`);
+    },
+  );
+
+  it("rejects a credential in a JSON config file", async () => {
+    const configPath = join(dir, "mono-agent.config.json");
+    await writeFile(
+      configPath,
+      JSON.stringify({ messenger: { enabled: true, allowAllUsers: true, appSecret: "from-file" } }),
+      "utf8",
+    );
+
+    await expect(loadMessengerAdapterConfig({ env: {}, jsonPath: configPath }))
+      .rejects.toBeInstanceOf(MessengerAdapterConfigError);
+  });
+
+  it("cannot satisfy a required secret from JSON: an enabled channel still fails closed", async () => {
+    // Only the app secret is in the environment; JSON supplying the rest must not help.
+    const error = await loadMessengerAdapterConfig({
+      env: { MONO_AGENT_MESSENGER_APP_SECRET: "app-secret" },
+      json: { messenger: { enabled: true, allowAllUsers: true } },
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(MessengerAdapterConfigError);
+    expect((error as MessengerAdapterConfigError).code).toBe("missing_required_config");
+    expect((error as MessengerAdapterConfigError).details).toMatchObject({
+      env: "MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN",
+    });
+  });
+
+  it("still loads credentials from the environment", async () => {
+    const config = await loadMessengerAdapterConfig({
+      env: { ...secrets, MONO_AGENT_MESSENGER_ENABLED: "true", MONO_AGENT_MESSENGER_ALLOW_ALL_USERS: "true" },
+    });
+
+    expect(config.pageAccessToken).toBe("page-token");
+    expect(redactMessengerAdapterConfig(config).pageAccessToken).toEqual({ present: true, redacted: true });
+  });
+});
+
+describe("assertValidMessengerAdapterConfig", () => {
+  const base: MessengerAdapterConfig = {
+    enabled: true,
+    pageAccessToken: "page-token",
+    appSecret: "app-secret",
+    verifyToken: "verify-token",
+    allowedUserIds: ["42"],
+    allowAllUsers: false,
+    host: "127.0.0.1",
+    port: 8650,
+    webhookPath: "/messenger/webhook",
+    apiVersion: "v21.0",
+    allowNonLoopback: false,
+    proactiveMessagingType: "RESPONSE",
+  };
+
+  it("accepts a complete loopback config", () => {
+    expect(() => assertValidMessengerAdapterConfig(base)).not.toThrow();
+  });
+
+  it("rejects a programmatically built non-loopback config without the opt-in", () => {
+    expect(() => assertValidMessengerAdapterConfig({ ...base, host: "0.0.0.0" }))
+      .toThrow(MessengerAdapterConfigError);
+    expect(() => assertValidMessengerAdapterConfig({ ...base, host: "0.0.0.0", allowNonLoopback: true }))
+      .not.toThrow();
+  });
+
+  it("rejects a missing secret, an empty allowlist, and a tag-less MESSAGE_TAG", () => {
+    expect(() => assertValidMessengerAdapterConfig({ ...base, appSecret: "" })).toThrow(MessengerAdapterConfigError);
+    expect(() => assertValidMessengerAdapterConfig({ ...base, allowedUserIds: [] })).toThrow(MessengerAdapterConfigError);
+    expect(() => assertValidMessengerAdapterConfig({ ...base, proactiveMessagingType: "MESSAGE_TAG" }))
+      .toThrow(MessengerAdapterConfigError);
+  });
+
+  it("does not validate a disabled config", () => {
+    expect(() => assertValidMessengerAdapterConfig({ ...base, enabled: false, appSecret: "", host: "0.0.0.0" }))
+      .not.toThrow();
   });
 });

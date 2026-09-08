@@ -16,6 +16,7 @@ import {
 
 import { MESSENGER_CHANNEL_ID, messengerUserIdFromConversation } from "./adapter.js";
 import {
+  assertNoMessengerSecretsInJson,
   loadMessengerAdapterConfig,
   MessengerAdapterConfigError,
   MESSENGER_CONFIG_FIELDS,
@@ -39,10 +40,9 @@ export interface MessengerChannelDriverOptions {
 }
 
 const BOOLEAN_RAW_CONFIG_FIELDS = ["enabled", "allowAllUsers", "allowNonLoopback"] as const;
+// `pageAccessToken`, `appSecret`, and `verifyToken` are deliberately absent:
+// they are environment-only and `assertNoMessengerSecretsInJson` rejects them.
 const STRING_RAW_CONFIG_FIELDS = [
-  "pageAccessToken",
-  "appSecret",
-  "verifyToken",
   "host",
   "webhookPath",
   "apiVersion",
@@ -230,6 +230,9 @@ function labelForFieldId(id: string): string {
 }
 
 function validateMessengerChannelDriverConfig(config: MessengerChannelDriverConfig): void {
+  // Fail closed on a credential in the inline plugin config before any type
+  // check: it must never reach the loader, and the operator must be told.
+  assertNoMessengerSecretsInJson(config as Record<string, unknown>);
   for (const key of BOOLEAN_RAW_CONFIG_FIELDS) {
     validateRawField(config, key, (value) => typeof value === "boolean", "a boolean");
   }

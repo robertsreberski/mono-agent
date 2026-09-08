@@ -2,7 +2,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ChannelId } from "./channels.js";
-import { channelIdForConversation } from "./proactive-notify.js";
+import { channelIdForConversation, isNotifyCapableChannel } from "./proactive-notify.js";
 
 /** A real conversation the agent has handled, recovered from run artifacts. */
 export interface SeenConversation {
@@ -161,9 +161,10 @@ export function createSeenNotifyDestinationCache(
 }
 
 /**
- * Distinct Telegram/Slack conversationIds the agent has actually handled, read
- * from the run-artifact summaries in `artifactDir`. Other schemes (including
- * synthetic `cron:`/`webhook:` ids and WhatsApp) are dropped; daily-rollover
+ * Distinct notify-capable conversationIds the agent has actually handled
+ * (Telegram, Slack, and the Messenger plugin — see `NOTIFY_CAPABLE_CHANNELS`),
+ * read from the run-artifact summaries in `artifactDir`. Other schemes
+ * (including synthetic `cron:`/`webhook:` ids and WhatsApp) are dropped; daily-rollover
  * buckets are stripped to the base id (the form a `notify` destination uses) and
  * deduped to the most recent sighting. Sorted newest-first. A missing dir yields
  * an empty list.
@@ -221,7 +222,7 @@ export async function listSeenNotifyDestinations(
       continue;
     }
     const channelId = channelIdForConversation(parsed.conversationId);
-    if (channelId !== "telegram" && channelId !== "slack") {
+    if (!isNotifyCapableChannel(channelId)) {
       continue; // synthetic or a push channel without native-notify support
     }
     const conversationId = parsed.conversationId.replace(ROLLOVER_BUCKET, "");

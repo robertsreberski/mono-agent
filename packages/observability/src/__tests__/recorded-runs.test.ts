@@ -421,6 +421,7 @@ describe("deriveRunSource", () => {
   it("maps each known conversationId prefix to its source, and falls back to \"other\"", () => {
     expect(deriveRunSource("telegram:12345")).toBe("telegram");
     expect(deriveRunSource("slack:C123:U456")).toBe("slack");
+    expect(deriveRunSource("messenger:1234567890")).toBe("messenger");
     expect(deriveRunSource("cron:nightly-digest")).toBe("cron");
     expect(deriveRunSource("webhook:my-endpoint")).toBe("webhook");
     expect(deriveRunSource("memory:capture:distill")).toBe("memory");

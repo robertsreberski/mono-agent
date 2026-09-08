@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 
+import { assertMessengerBindAllowed } from "./config.js";
 import { verifyMessengerSignature } from "./text.js";
 
 const DEFAULT_MAX_BODY_BYTES = 1_048_576;
@@ -16,6 +17,12 @@ export interface MessengerWebhookServerOptions {
   readonly webhookPath: string;
   readonly verifyToken: string;
   readonly appSecret: string;
+  /**
+   * Explicit opt-in for a non-loopback bind. Required (not optional-defaulting)
+   * so a direct caller of this low-level factory has to make the same decision
+   * the config loader does; `start()` re-checks it immediately before `listen()`.
+   */
+  readonly allowNonLoopback: boolean;
   readonly maxBodyBytes?: number;
   readonly logger?: MessengerWebhookServerLogger;
   /** Called after the 200 reply; processing must not delay Meta's delivery ack. */
@@ -114,6 +121,9 @@ export function createMessengerWebhookServer(options: MessengerWebhookServerOpti
       if (server !== undefined) {
         throw new Error("Messenger webhook server already started.");
       }
+      // Last gate before the socket exists: a contradictory config assembled
+      // programmatically cannot reach a public listener.
+      assertMessengerBindAllowed(options.host, options.allowNonLoopback);
       const instance = createServer(handle);
       server = instance;
       instance.on("error", (error) => {

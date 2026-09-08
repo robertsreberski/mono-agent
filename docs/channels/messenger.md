@@ -43,7 +43,7 @@ MONO_AGENT_MESSENGER_VERIFY_TOKEN=...
 4. Expose `http://<host>:8650/messenger/webhook` over HTTPS (a reverse proxy or a tunnel such as cloudflared) and register that public URL in the app's Messenger **Webhooks** settings with the same verify token, subscribed to `messages` and `messaging_postbacks`. Meta calls `GET` with `hub.challenge` during registration; the adapter answers it once the agent is running.
 
 :::caution
-The Page access token can send messages as your Page. Keep it in `.env`, never in the JSON config. The adapter refuses to bind a non-loopback host unless `allowNonLoopback` is set, so an accidental public listener without TLS termination fails validation.
+The Page access token can send messages as your Page. All three credentials are **environment-only**: putting `pageAccessToken`, `appSecret`, or `verifyToken` in the JSON config is rejected with a config error rather than silently accepted. The adapter refuses to bind a non-loopback host unless `allowNonLoopback` is set — enforced at config load, at `startMessengerAdapter`, and again immediately before the socket is opened — so an accidental public listener without TLS termination fails validation.
 :::
 
 ## Configuration
@@ -61,7 +61,7 @@ The Page access token can send messages as your Page. Keep it in `.env`, never i
 | `config.proactiveMessagingType` | `RESPONSE` \| `UPDATE` \| `MESSAGE_TAG` | `RESPONSE` | Send API `messaging_type` for proactive cron/webhook deliveries. |
 | `config.proactiveTag` | string | — | Policy tag required with `MESSAGE_TAG`, e.g. `CONFIRMED_EVENT_UPDATE`. |
 
-Secrets are read from `MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN`, `MONO_AGENT_MESSENGER_APP_SECRET`, and `MONO_AGENT_MESSENGER_VERIFY_TOKEN`; every other field also has a `MONO_AGENT_MESSENGER_*` env override (see [Environment variables](/config/env-vars/)).
+Secrets are read **only** from `MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN`, `MONO_AGENT_MESSENGER_APP_SECRET`, and `MONO_AGENT_MESSENGER_VERIFY_TOKEN` — they have no JSON key. Every other field also has a `MONO_AGENT_MESSENGER_*` env override (see [Environment variables](/config/env-vars/)).
 
 ## Finding a PSID
 
@@ -76,8 +76,9 @@ Meta only delivers ordinary messages within 24 hours of the user's last message.
 ## Behaviour
 
 - Webhook POSTs are verified with `X-Hub-Signature-256` over the raw body, acknowledged immediately, and processed afterwards; duplicate deliveries are dropped by message id.
-- Messages from one user run in order; up to four queue behind an active turn, then the user gets a short busy reply. `/cancel` aborts the active turn; `/help` and `/start` answer without a model call.
-- Images and PDF/text files are downloaded from Meta's CDN (https only, 20 MiB cap) and passed as attachments. Audio, video, locations, and other files are described in the request text.
+- Messages from one user run in order; up to four queue behind an active turn, then the user gets a short busy reply. `/cancel` aborts the active turn **and retires anything already queued behind it**, so a withdrawn prompt never answers later; a message sent after the cancel runs normally. `/help` and `/start` answer without a model call.
+- Images and PDF/text files are downloaded from Meta's CDN and passed as attachments. Downloads are restricted to HTTPS on `fbcdn.net` / `fbsbx.com`; redirects are followed manually with every hop re-checked against that policy, hostnames must resolve entirely to public addresses, and the 20 MiB cap is enforced while streaming (an absent or dishonest `Content-Length` cannot exhaust memory). Audio, video, locations, and other files are described in the request text.
+- Replies are never silently duplicated: Meta's Send API has no idempotency key, so a message POST whose outcome is unknown (timeout, transport failure, 5xx) is reported as an ambiguous delivery instead of being replayed. Only a `429`, which the server refused before acting, is retried.
 - Replies are plain text: Markdown is flattened before sending.
 
 ## Related
