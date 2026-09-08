@@ -20,7 +20,7 @@ import type { RunningArtifactRetentionScheduler } from "./artifact-retention.js"
 import { resolveNotifyDestinations } from "./notify-destinations.js";
 import type { NotifyDestination } from "./notify-destinations.js";
 import { reasonOf } from "./app-controller-utils.js";
-import type { ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
+import type { ChannelDriver, ChannelId, MonoAgentAppLogger, RunningChannel } from "./channels.js";
 import type { SeenNotifyDestinationCache } from "./seen-conversations.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 
@@ -29,6 +29,8 @@ type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 interface NotifyControllerPort {
   readonly logger: MonoAgentAppLogger | undefined;
   readonly running: Map<ChannelId, RunningChannel>;
+  /** Registered drivers, so a destination SCHEME resolves to the id its owner runs under. */
+  readonly drivers: readonly ChannelDriver[];
   observabilityContext(): Promise<{
     readonly sourceId?: string;
     readonly sourceLabel?: string;
@@ -314,6 +316,9 @@ export async function notifyDestination(
     conversationId,
     text,
     running: controller.running,
+    // A plugin channel may run under a custom id while owning a fixed
+    // conversation scheme; the driver list is what maps one to the other.
+    drivers: controller.drivers,
     ...(options?.verbatim === undefined ? {} : { verbatim: options.verbatim }),
     ...(options?.deliveryKey === undefined ? {} : { deliveryKey: options.deliveryKey }),
     ...(options?.deliveryContext === undefined ? {} : { deliveryContext: options.deliveryContext }),

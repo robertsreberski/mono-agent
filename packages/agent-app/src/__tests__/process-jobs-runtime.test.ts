@@ -776,6 +776,14 @@ describe("process-job request availability", () => {
     }
   });
 
+  it("preserves live-input ownership capability through the process-job decorator", () => {
+    const responder = bindProcessJobWakeContextToResponder({
+      liveInputOwnership: { version: 1 },
+      respond: async () => ({ text: "ok" }),
+    });
+    expect(responder.liveInputOwnership).toEqual({ version: 1 });
+  });
+
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {
     const controller = vi.fn(() => ({ start: vi.fn() }));
     const coreConfig = {

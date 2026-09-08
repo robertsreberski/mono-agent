@@ -26,6 +26,12 @@ import { currentDataMode } from "./data-mode";
 import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
 import {
+  forgetSubmissionRecoveryReference,
+  readSubmissionRecoveryReferences,
+  rememberSubmissionRecoveryReference,
+  type SubmissionRecoveryReference,
+} from "./submission-recovery";
+import {
   createThreadCache,
   holdsToolCall,
   newerProjection,
@@ -51,6 +57,7 @@ import type {
   RunState,
   SkillRegistryState,
   StartTurnInput,
+  SubmissionReceipt,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
@@ -167,6 +174,10 @@ interface ConsoleStoreValue {
     onThreadResolved?: (threadId: string) => void,
   ) => Promise<void>;
   readonly sendLiveInput: (text: string) => Promise<void>;
+  readonly sendSubmission: (
+    input: StartTurnInput,
+    onThreadResolved?: (threadId: string) => void,
+  ) => Promise<void>;
   readonly cancelTurn: () => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
   readonly setShowOfflineAgents: (show: boolean) => void;
@@ -1531,6 +1542,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // one was deleted must not put it back into the projection.
   const removedThreadsRef = useRef<RemovedThreadRegistry>(createRemovedThreadRegistry());
   const selectedThreadRef = useRef<string | null>(null);
+  const pendingSubmissionPayloadsRef = useRef<Map<string, {
+    readonly submissionId: string;
+    readonly payload: string;
+  }>>(new Map());
   /**
    * Bumped by every selection the OPERATOR makes -- an agent, a conversation, a
    * new conversation, an archive or unarchive -- and by nothing the console
@@ -5373,6 +5388,95 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [publishDetail, refreshSelectedThread, requireResolvedSelection, selectedThreadId, settleThreadWrites]);
 
+  const applySubmissionReceipt = useCallback((receipt: SubmissionReceipt): string | undefined => {
+    if (receipt.message !== undefined
+      && threadCacheRef.current.upsertMessage(receipt.threadId, receipt.message)) {
+      publishDetail(receipt.threadId);
+    }
+    const selected = selectedThreadRef.current === receipt.threadId;
+    if (selected) refreshSelectedThread();
+    if (receipt.outcome !== "rejected") {
+      if (selected) setActionError(null);
+      return undefined;
+    }
+    const message = receipt.reason === "active_attachments_unsupported"
+      ? "Files can be sent when this response finishes. Your draft and files are kept."
+      : "The message was rejected.";
+    if (selected) setActionError(message);
+    return message;
+  }, [publishDetail, refreshSelectedThread]);
+
+  useEffect(() => {
+    const inFlight = new Set<string>();
+    const recover = (): void => {
+      for (const reference of readSubmissionRecoveryReferences(sessionStorage)) {
+        const key = `${reference.threadId}\0${reference.submissionId}`;
+        if (inFlight.has(key)) continue;
+        inFlight.add(key);
+        void api.submission(reference.threadId, reference.submissionId).then((receipt) => {
+          applySubmissionReceipt(receipt);
+          forgetSubmissionRecoveryReference(sessionStorage, reference);
+        }).catch(() => {
+          // Keep the reference for a later focus/online check. Recovery never
+          // resubmits the immutable payload automatically.
+        }).finally(() => { inFlight.delete(key); });
+      }
+    };
+    recover();
+    window.addEventListener("focus", recover);
+    window.addEventListener("online", recover);
+    return () => {
+      window.removeEventListener("focus", recover);
+      window.removeEventListener("online", recover);
+    };
+  }, [applySubmissionReceipt]);
+
+  const sendSubmission = useCallback(
+    async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
+      let thread = selectedThread;
+      if (!thread) thread = await createThread();
+      if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
+      const threadId = thread.id;
+      onThreadResolved?.(threadId);
+      const payload = JSON.stringify({
+        text: input.text ?? null,
+        quote: input.quote ?? null,
+        attachmentIds: input.attachmentIds ?? [],
+        model: input.model ?? null,
+        effort: input.effort ?? null,
+      });
+      const pending = pendingSubmissionPayloadsRef.current.get(threadId);
+      const submissionId = pending?.payload === payload ? pending.submissionId : crypto.randomUUID();
+      pendingSubmissionPayloadsRef.current.set(threadId, { submissionId, payload });
+      const reference: SubmissionRecoveryReference = { threadId, submissionId };
+      rememberSubmissionRecoveryReference(sessionStorage, reference);
+      let receiptKnown = false;
+      try {
+        await settleThreadWrites(threadId);
+        let receipt: SubmissionReceipt;
+        try {
+          receipt = await api.submit(threadId, submissionId, input);
+        } catch (error) {
+          receipt = await api.submission(threadId, submissionId).catch(() => { throw error; });
+        }
+        receiptKnown = true;
+        const rejection = applySubmissionReceipt(receipt);
+        if (rejection !== undefined) throw new Error(rejection);
+      } catch (submissionError) {
+        if (selectedThreadRef.current === threadId) setActionError(errorMessage(submissionError));
+        throw submissionError;
+      } finally {
+        if (receiptKnown) {
+          forgetSubmissionRecoveryReference(sessionStorage, reference);
+          if (pendingSubmissionPayloadsRef.current.get(threadId)?.submissionId === submissionId) {
+            pendingSubmissionPayloadsRef.current.delete(threadId);
+          }
+        }
+      }
+    },
+    [applySubmissionReceipt, createThread, selectedThread, settleThreadWrites],
+  );
+
   const value = useMemo<ConsoleStoreValue>(
     () => ({
       bootstrap,
@@ -5427,6 +5531,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       deleteThread,
       sendTurn,
       sendLiveInput,
+      sendSubmission,
       cancelTurn,
       setShowArchived,
       setShowOfflineAgents,
@@ -5505,6 +5610,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadId,
       sendTurn,
       sendLiveInput,
+      sendSubmission,
       setEffort,
       setAgentPinned,
       setAgentRunDefaults,

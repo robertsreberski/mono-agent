@@ -586,6 +586,42 @@ describe("createThreadCache", () => {
     expect(part.resultTruncated).toBeUndefined();
   });
 
+  it("retains an opaque process-job receipt through delta, pagination, snapshot, and thread switches", () => {
+    const receipt = {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: "job-1",
+      tool: "Exec",
+      state: "running",
+      startedAt: "2026-09-08T10:00:00.000Z",
+    } as const;
+    const launch: MessagePart = {
+      type: "tool-call",
+      toolCallId: "launch-1",
+      toolName: "Exec",
+      structuredResult: receipt,
+      status: "complete",
+    };
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("origin", { seq: 1, parts: [launch] })], "older"));
+    expect(cache.applyDelta("alpha-thread", delta({
+      messageId: "origin",
+      ops: [{ op: "set", index: 0, part: { ...launch, executionMs: 4 } }],
+    }))).toBe("applied");
+    cache.prependOlder("alpha-thread", { messages: [message("older")], nextCursor: undefined });
+    cache.upsertFull({
+      thread: thread("beta-thread", "alpha"),
+      messages: [message("beta", { threadId: "beta-thread" })],
+    });
+    expect(cache.get("beta-thread")?.messages[0]?.parts).not.toContainEqual(expect.objectContaining({ structuredResult: receipt }));
+    expect(cache.get("alpha-thread")?.messages.find(({ id }) => id === "origin")?.parts[0])
+      .toMatchObject({ structuredResult: receipt, executionMs: 4 });
+
+    const restored = createThreadCache();
+    for (const entry of cache.snapshot()) restored.restore(entry);
+    expect(restored.get("alpha-thread")?.messages.find(({ id }) => id === "origin")?.parts[0])
+      .toMatchObject({ structuredResult: receipt });
+  });
+
   it("hands a rewritten body back to the server rather than keeping a stale repair", () => {
     const cache = createThreadCache();
     const truncated: MessagePart = {

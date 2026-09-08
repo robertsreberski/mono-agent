@@ -461,7 +461,7 @@ export interface SessionToolHistoryMetadata {
 
 /**
  * Per-tool-call metadata the console renders but assistant-ui's tool-call part cannot
- * type. Both fields ride in that part's single `artifact` slot, so they are wrapped
+ * type. These fields ride in that part's single `artifact` slot, so they are wrapped
  * together rather than competing for it.
  */
 export interface ToolCallArtifact {
@@ -482,9 +482,8 @@ export interface ToolCall {
   readonly args?: unknown;
   readonly result?: unknown;
   /**
-   * An MCP tool's machine-readable result, when it returned one. `result` is the
-   * model-facing text and is lossy; renderers that must reason about the outcome
-   * (the AskUser card reads `interactionId`/`answered`) read this instead.
+   * A bounded machine-readable tool result, from MCP or a canonical host tool
+   * outcome. `result` is model-facing and lossy; consumers validate the schema here.
    */
   readonly structuredResult?: unknown;
   readonly status: ToolCallStatus;
@@ -892,6 +891,29 @@ export interface StartTurnInput {
 export interface LiveInputReceipt {
   readonly message: WebMessage;
   readonly disposition: "pending" | "queued";
+}
+
+export interface SubmissionReceipt {
+  readonly submissionId: string;
+  readonly threadId: string;
+  readonly outcome: "turn" | "live-input" | "rejected";
+  readonly reason?:
+    | "active_attachments_unsupported"
+    | "unsupported_targeting"
+    | "closed_before_dispatch"
+    | "operator_inactive"
+    | "operator_unsupported"
+    | "operator_too_large"
+    | "operator_full"
+    | "operator_invalid"
+    | "mailbox_unsupported"
+    | "mailbox_closed"
+    | "mailbox_failed";
+  readonly disposition?: "pending" | "queued";
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly message?: WebMessage;
+  readonly turn?: ThreadSummary["runState"];
 }
 
 export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {

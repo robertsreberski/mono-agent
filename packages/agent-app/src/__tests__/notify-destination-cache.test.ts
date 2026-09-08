@@ -304,6 +304,10 @@ describe("notify destination cache invalidation policy", () => {
   it("selects only Telegram/Slack conversation artifacts, including rollover buckets", () => {
     expect(isNotifyDestinationConversationId("telegram:42#2026-07-16")).toBe(true);
     expect(isNotifyDestinationConversationId("slack:C1:thread")).toBe(true);
+    // The Messenger plugin has a native notify hook, so its artifact commits
+    // must invalidate the destination cache like Telegram's and Slack's.
+    expect(isNotifyDestinationConversationId("messenger:42")).toBe(true);
+    expect(isNotifyDestinationConversationId("messenger:42#2026-07-16")).toBe(true);
     expect(isNotifyDestinationConversationId("cron:daily")).toBe(false);
     expect(isNotifyDestinationConversationId("webhook:digest")).toBe(false);
     expect(isNotifyDestinationConversationId("whatsapp:123")).toBe(false);

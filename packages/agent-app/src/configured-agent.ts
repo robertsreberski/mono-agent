@@ -1349,6 +1349,7 @@ function harnessWithAgentRootOwnership(
 ): AgentHarness {
   let disposePromise: Promise<void> | undefined;
   return {
+    ...(harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: harness.liveInputOwnership }),
     run: harness.run.bind(harness),
     ...(harness.submit === undefined ? {} : { submit: harness.submit.bind(harness) }),
     ...(harness.offerLiveInput === undefined

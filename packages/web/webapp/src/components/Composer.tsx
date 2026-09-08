@@ -91,18 +91,9 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
   const isRunning = useAuiState((state) => state.thread.isRunning);
   const selectionUnavailable = store.selectionLoading || store.selectionError !== null;
   const canUpload = !selectionUnavailable
-    && !isRunning
     && canUploadInConsole(connection, selectedAgent, selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
-  const canOfferSteer = !selectionUnavailable
-    && isRunning
-    && selectedThread !== null
-    && selectedThread.trigger?.kind !== "cron";
-  const steerDisabled = !canSend || attachmentCount > 0 || composer.value.trim().length === 0;
-  const steerHelp = attachmentCount > 0
-    ? "Steering is text-only."
-    : "Offer to the active run.";
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
     hasAgent: selectedAgent !== null && !selectionUnavailable,
@@ -233,7 +224,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
               id="composer-input"
               className="composer-input"
               placeholder={statusText ?? (isRunning
-                ? `Steer ${selectedAgent?.label ?? "the agent"} while it works…`
+                ? `Message ${selectedAgent?.label ?? "the agent"} while it works…`
                 : `Message ${selectedAgent?.label ?? "an agent"}…`)}
               aria-label="Message"
               role="combobox"
@@ -274,26 +265,14 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
                 onSelect={(name) => insertSkill(name, "browse")}
               />
               <span className="composer-hint">
-                {statusText ?? (isRunning ? "Enter to steer this run" : "Enter to send · / commands · $ skills")}
+                {statusText ?? "Enter to send · / commands · $ skills"}
               </span>
             </div>
             <div className="composer-actions">
               {runSettings}
-              {canOfferSteer && (
-                <button
-                  type="button"
-                  className="composer-steer"
-                  aria-label="Steer this message"
-                  title={steerHelp}
-                  disabled={steerDisabled}
-                  onClick={() => composer.send({ steer: true })}
-                >
-                  Steer
-                </button>
-              )}
               <ComposerPrimitive.Send
                 className="composer-send"
-                aria-label={isRunning ? "Send live follow-up" : "Send message"}
+                aria-label="Send message"
                 disabled={!canSend}
               >
                 <Icon name="send" size={16} />

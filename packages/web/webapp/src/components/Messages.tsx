@@ -59,6 +59,7 @@ import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
 import { RunAttribution } from "./RunAttribution";
+import { ProcessJobActivityEventPart } from "./ProcessJob";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -1164,6 +1165,7 @@ const parts = {
       "mcp-app": McpAppPart,
       "reply-failure": ReplyFailurePart,
       "monitor-activity": MonitorActivityPart,
+      "process-job-event": ProcessJobActivityEventPart,
     },
   },
 } as const;
@@ -1286,6 +1288,7 @@ function AssistantParts() {
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
             if (part.name === "monitor-activity") return <MonitorActivityPart {...part} />;
+            if (part.name === "process-job-event") return <ProcessJobActivityEventPart {...part} />;
             return part.dataRendererUI;
           case "indicator":
             return <RunningText status={{ type: "running" }} />;

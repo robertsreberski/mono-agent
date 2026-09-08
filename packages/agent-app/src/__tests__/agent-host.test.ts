@@ -139,6 +139,7 @@ describe("agent host composition helpers", () => {
       },
     });
 
+    expect(responder.liveInputOwnership).toEqual({ version: 1 });
     const streamText: string[] = [];
     const response = await responder.respond(
       { conversationId: "conversation-host", text: "What changed?", abortSignal: new AbortController().signal },

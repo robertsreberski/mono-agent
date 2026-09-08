@@ -44,7 +44,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["agents", "threads", "turns", "messages", "live_inputs", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["agents", "threads", "turns", "messages", "live_inputs", "web_submissions", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -76,7 +76,7 @@ describe("web storage migration history", () => {
       } finally { store.close(); }
       const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 22 });
+        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         expect(schema(database)).toEqual(expectedShape);
         expect(database.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
         expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -176,12 +176,14 @@ describe("web storage migration history", () => {
     store.close();
   });
 
-  it.each([23, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
+  it.each([WEB_STORAGE_SCHEMA_VERSION + 1, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
     const stateDir = await seeded(0);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(`PRAGMA user_version = ${version}`);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 23 ? "unsupported_storage_schema" : "storage_corrupt" });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: version === WEB_STORAGE_SCHEMA_VERSION + 1 ? "unsupported_storage_schema" : "storage_corrupt",
+    });
     const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
     try {
       expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
@@ -220,18 +222,43 @@ describe("web storage migration history", () => {
     migrated.close();
     const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
     try {
-      expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 22 });
+      expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
       expect(inspected.prepare("PRAGMA table_info(live_inputs)").all()).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: "dispatch_started_at", type: "TEXT", notnull: 0 }),
       ]));
     } finally { inspected.close(); }
   });
+
+  it("migrates schema 22 by provisioning the guarded submission ledger and reopens", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP TABLE web_submissions; PRAGMA user_version = 22");
+    database.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    migrated.close();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reopened = await WebStore.open({ stateDir });
+      reopened.close();
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 23 });
+        expect(inspected.prepare("PRAGMA table_info(web_submissions)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "thread_id", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "submission_id", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "payload_sha256", type: "TEXT", notnull: 1 }),
+        ]));
+      } finally { inspected.close(); }
+    }
+  });
 });
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 22 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(22);
+  it("is immutable and derives schema 23 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(23);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -300,7 +327,7 @@ describe("migration 19 silent history", () => {
       store.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 22 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         expect(inspected.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
         expect(inspected.prepare("SELECT revision, updated_at FROM threads").get()).toEqual({ ...before, revision: before.revision + 1 });
         expect(inspected.prepare("SELECT seq, cron_suppressed FROM messages WHERE id = 'legacy-silent'").get()).toEqual({ seq: 9, cron_suppressed: 1 });
