@@ -54,6 +54,8 @@ const createStore = (
   selectedThreadId: idleThread.id,
   loading: false,
   detailLoading: false,
+  selectionLoading: false,
+  selectionError: null,
   error: null,
   actionError: null,
   connection: "live",
@@ -77,6 +79,7 @@ const createStore = (
   setModel: vi.fn(),
   setEffort: vi.fn(),
   retry: vi.fn(),
+  retrySelection: vi.fn(),
   clearActionError: vi.fn(),
   ...overrides,
 });
@@ -147,6 +150,23 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       ...upload,
       uploaded: true,
     }));
+  });
+
+  it("keeps an implicit submission blocked while the current selection has failed", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, { selectionError: "detail unavailable" });
+    const { runtime } = await renderRuntime();
+    const composer = runtime.thread.composer;
+
+    expect(composer.getState().canSend).toBe(false);
+    act(() => {
+      composer.setText("must stay local");
+      composer.send();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(composer.getState().text).toBe("must stay local");
   });
 
   it("hides legacy silent cron rows while coalescing Monitor activity and keeping rich cron content", async () => {

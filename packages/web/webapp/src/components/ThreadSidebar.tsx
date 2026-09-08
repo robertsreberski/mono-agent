@@ -78,6 +78,10 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     threads,
     selectedAgentId,
     showArchived,
+    selectionLoading,
+    selectionError,
+    threadListError,
+    retryThreadList,
     setShowArchived,
     hasMoreThreads,
     loadMoreThreads,
@@ -122,7 +126,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
             aria-label="New conversation"
             title="New conversation (⌘⇧O)"
             onClick={onSelect}
-            disabled={!selectedAgent}
+            disabled={!selectedAgent || selectionLoading || selectionError !== null}
           >
             <Icon name="new" size={18} />
           </ThreadListPrimitive.New>
@@ -143,6 +147,12 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           </button>
         )}
       </label>
+      {threadListError !== null && (
+        <div className="thread-list-error" role="alert">
+          <span>Conversations could not be refreshed. {threadListError}</span>
+          <button type="button" onClick={retryThreadList}>Retry conversations</button>
+        </div>
+      )}
       <ThreadListPrimitive.Root className="thread-list">
         <div className="thread-list-scroll" onClick={searching ? undefined : onSelect}>
           {searching ? (
@@ -161,7 +171,13 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
                 <div className="thread-list-empty">
                   <Icon name={showArchived ? "archive" : "threads"} size={19} />
                   <span>
-                    {showArchived ? "No archived conversations" : "Start a conversation"}
+                    {selectionError !== null || threadListError !== null
+                      ? "Conversations unavailable"
+                      : selectionLoading
+                      ? "Loading conversations…"
+                      : showArchived
+                        ? "No archived conversations"
+                        : "Start a conversation"}
                   </span>
                 </div>
               )}
