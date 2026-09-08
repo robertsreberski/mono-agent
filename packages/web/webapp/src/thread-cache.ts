@@ -499,6 +499,15 @@ const isMessagePart = (value: unknown): value is MessagePart => {
       return typeof part.job === "object" && part.job !== null;
     case "monitor-activity":
       return Array.isArray(part.monitors);
+    case "cron-reply-context":
+      return part.schema === "mono-agent.web.cron-reply-context.v1"
+        && part.untrusted === true
+        && typeof part.source === "object" && part.source !== null
+        && typeof part.run === "object" && part.run !== null
+        && typeof part.snapshot === "object" && part.snapshot !== null
+        && typeof part.result === "object" && part.result !== null
+        && typeof part.failure === "object" && part.failure !== null
+        && text("prefix") && text("rawJson") && text("rawText");
     case "telemetry":
       return text("event");
     case "error":

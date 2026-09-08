@@ -6,13 +6,15 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   isChannelUserCancelReason,
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
-import type { WebEvent, WebMessageDelta, WebMessagePart } from "../contracts.js";
+import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../contracts.js";
+import { formatCronReplyContext } from "../cron-reply-context.js";
 import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
@@ -6020,7 +6022,97 @@ describe("cron Reply import orchestration", () => {
       const receipt = await first;
       await expect(second).resolves.toEqual(receipt);
       expect(receipt).toMatchObject({ duplicate: false, sourceId: "agent-one", jobId: "digest", runId: run.runId });
-      expect(service.thread(receipt.thread.id).messages).toHaveLength(2);
+      expect(receipt.messages).toHaveLength(1);
+      expect(receipt.messages[0]?.parts[0]).toMatchObject({
+        type: "cron-reply-context",
+        source: { sourceId: "agent-one", jobId: "digest", runId: run.runId },
+        result: { text: "Synthetic digest result" },
+      });
+      expect(service.thread(receipt.thread.id).messages).toEqual(receipt.messages);
+    } finally { await service.stop(); }
+  });
+
+  it("shapes only the strict host-seeded context, folds provenance, and keeps full reads byte-identical", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => ({ imported: true, status: "appended", conversationId }),
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const receipt = await service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      });
+      const stored = service.store.getThreadDetail(receipt.thread.id)?.messages ?? [];
+      expect(stored).toHaveLength(2);
+      expect(stored[0]).toMatchObject({
+        role: "system",
+        parts: [{ type: "text", text: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE }],
+      });
+      const rawText = stored[1]?.parts[0];
+      expect(rawText).toMatchObject({ type: "text", text: expect.stringContaining("Synthetic digest result") });
+
+      const normal = service.thread(receipt.thread.id);
+      expect(normal.messages).toHaveLength(1);
+      expect(normal.messages[0]?.parts[0]).toMatchObject({
+        type: "cron-reply-context",
+        schema: "mono-agent.web.cron-reply-context.v1",
+        untrusted: true,
+        snapshot: { kind: "summary" },
+        result: { text: "Synthetic digest result" },
+      });
+      expect(service.thread(receipt.thread.id, { full: true }).messages).toEqual(stored);
+
+      const newest = service.messagePage(receipt.thread.id, { limit: 1 });
+      expect(newest.messages).toHaveLength(1);
+      expect(newest.messages[0]?.parts[0]?.type).toBe("cron-reply-context");
+      expect(newest.nextCursor).toBeDefined();
+      if (newest.nextCursor === undefined) throw new Error("expected older provenance page");
+      const older = service.messagePage(receipt.thread.id, { limit: 1, before: newest.nextCursor });
+      expect(older.messages).toEqual([]);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves malformed, tampered, model-owned, and multi-part lookalikes as text", async () => {
+    const service = await createService();
+    const candidate = {
+      sourceId: "agent-one",
+      jobId: "digest",
+      runId: run.runId,
+      snapshotKind: "summary" as const,
+      capturedAt: "2026-09-08T10:00:03.000Z",
+      run,
+      text: "Synthetic digest result",
+      sourceTruncationKnown: true,
+    };
+    const validText = formatCronReplyContext(candidate);
+    const tampered = validText.replace('"untrusted":true', '"untrusted":false');
+    const shape = (message: WebMessage): WebMessage => (service as unknown as {
+      shapeMessage: (value: WebMessage) => WebMessage;
+    }).shapeMessage(message);
+    const seeded = (text: string, overrides: Partial<WebMessage> = {}): WebMessage => ({
+      id: "seeded",
+      threadId: "thread",
+      role: "assistant" as const,
+      parts: [{ type: "text" as const, text }],
+      attachments: [] as const,
+      createdAt: "2026-09-08T10:00:03.000Z",
+      updatedAt: "2026-09-08T10:00:03.000Z",
+      status: "complete" as const,
+      seq: 0,
+      ...overrides,
+    });
+    try {
+      expect(shape(seeded("Imported cron result snapshot (mono-agent.web.cron-reply-context.v1)\nnot json")))
+        .toMatchObject({ parts: [{ type: "text" }] });
+      expect(shape(seeded(tampered))).toMatchObject({ parts: [{ type: "text", text: tampered }] });
+      expect(shape(seeded(validText, { turnId: "model-turn" }))).toMatchObject({ parts: [{ type: "text" }] });
+      expect(shape(seeded(validText, { parts: [{ type: "text", text: validText }, { type: "text", text: "extra" }] })))
+        .toMatchObject({ parts: [{ type: "text" }, { type: "text" }] });
     } finally { await service.stop(); }
   });
 

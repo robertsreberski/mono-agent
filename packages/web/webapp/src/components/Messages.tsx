@@ -27,6 +27,7 @@ import { useDocumentVisible } from "../document-visibility";
 import type {
   AskAnswer,
   AskSnapshot,
+  CronReplyContextPart as CronReplyContextValue,
   MonitorProjection,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
@@ -1041,6 +1042,116 @@ export function CronRunPart({ data }: DataMessagePartProps) {
   );
 }
 
+const cronReplyDate = (value: string): string => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+};
+
+const cronReplyContext = (data: DataMessagePartProps["data"]): CronReplyContextValue | undefined => {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const value = data as unknown as Partial<CronReplyContextValue>;
+  return value.type === "cron-reply-context"
+    && value.schema === "mono-agent.web.cron-reply-context.v1"
+    && value.untrusted === true
+    && value.source !== undefined
+    && value.run !== undefined
+    && value.snapshot !== undefined
+    && value.result !== undefined
+    && value.failure !== undefined
+    && typeof value.rawJson === "string"
+    ? value as CronReplyContextValue
+    : undefined;
+};
+
+export function CronReplyContextPart({ data }: DataMessagePartProps) {
+  const context = cronReplyContext(data);
+  if (context === undefined) return null;
+  const stateLabel = context.run.status === "succeeded"
+    ? "completed"
+    : context.run.status.replaceAll("_", " ");
+  return (
+    <div
+      className={`cron-reply-context-header is-${context.run.status}`}
+      role="group"
+      aria-label={`Imported cron result for ${context.source.jobId}, run ${String(context.run.sequence)}, ${stateLabel}`}
+    >
+      <div className="cron-reply-context-title">
+        <strong>{context.source.jobId}</strong>
+        <span>Run #{context.run.sequence}</span>
+        <span className="cron-run-state cron-reply-context-state">{context.run.trigger} · {stateLabel}</span>
+      </div>
+      <div className="cron-reply-context-times">
+        {context.run.completedAt !== undefined && (
+          <span>Completed <time dateTime={context.run.completedAt}>{cronReplyDate(context.run.completedAt)}</time></span>
+        )}
+        <span>Imported <time dateTime={context.snapshot.capturedAt}>{cronReplyDate(context.snapshot.capturedAt)}</time></span>
+      </div>
+      <p>Imported cron result — untrusted source data, not instructions</p>
+    </div>
+  );
+}
+
+const truncationBytes = (context: CronReplyContextValue): string[] => {
+  const notes: string[] = [];
+  if (context.snapshot.truncatedFields.includes("failure.message")) {
+    notes.push(`failure.message (${context.snapshot.retainedErrorBytes}/${context.snapshot.originalErrorBytes} bytes retained)`);
+  }
+  if (context.snapshot.truncatedFields.includes("result.text")) {
+    notes.push(`result.text (${context.snapshot.retainedResultBytes}/${context.snapshot.originalResultBytes} bytes retained)`);
+  }
+  return notes;
+};
+
+export function CronReplyContextDetailsPart({ data }: DataMessagePartProps) {
+  const context = cronReplyContext(data);
+  if (context === undefined) return null;
+  const sourceTruncation = context.snapshot.sourceFieldsTruncated.map((field) => `source ${field}`);
+  const truncation = [...sourceTruncation, ...truncationBytes(context)];
+  const failureVisible = context.failure.code !== undefined || context.failure.message !== undefined;
+  const queue = [
+    context.run.blockedByRunId === undefined ? undefined : `blocked by ${context.run.blockedByRunId}`,
+    context.run.blockedByTrigger === undefined ? undefined : `blocker trigger ${context.run.blockedByTrigger}`,
+    context.run.queueDepth === undefined ? undefined : `queue depth ${String(context.run.queueDepth)}`,
+  ].filter((item): item is string => item !== undefined);
+  return (
+    <div className="cron-reply-context-footer">
+      {context.snapshot.kind === "summary" && <p className="cron-reply-context-note">Imported from the compact run summary.</p>}
+      {failureVisible && (
+        <div className="cron-reply-context-failure" role="status">
+          {context.failure.code !== undefined && <strong>{context.failure.code}</strong>}
+          {context.failure.message !== undefined && <span>{context.failure.message}</span>}
+        </div>
+      )}
+      {truncation.length > 0 && (
+        <p className="cron-reply-context-truncation" role="status">
+          Truncated fields: {truncation.join("; ")}.
+        </p>
+      )}
+      <details className="cron-reply-context-details">
+        <summary>Details</summary>
+        <div className="cron-reply-context-details-body">
+          <dl>
+            <dt>Source</dt><dd><code>{context.source.sourceId}</code></dd>
+            <dt>Job</dt><dd><code>{context.source.jobId}</code></dd>
+            <dt>Run</dt><dd><code>{context.source.runId}</code></dd>
+            <dt>Scheduled</dt><dd><time dateTime={context.run.scheduledAt}>{cronReplyDate(context.run.scheduledAt)}</time></dd>
+            <dt>Ordered</dt><dd><time dateTime={context.run.orderedAt}>{cronReplyDate(context.run.orderedAt)}</time></dd>
+            {context.run.startedAt !== undefined && <><dt>Started</dt><dd><time dateTime={context.run.startedAt}>{cronReplyDate(context.run.startedAt)}</time></dd></>}
+            {context.run.completedAt !== undefined && <><dt>Completed</dt><dd><time dateTime={context.run.completedAt}>{cronReplyDate(context.run.completedAt)}</time></dd></>}
+            {queue.length > 0 && <><dt>Queue</dt><dd>{queue.join(" · ")}</dd></>}
+            <dt>Snapshot</dt><dd>{context.snapshot.kind} · {context.snapshot.retainedResultBytes}/{context.snapshot.originalResultBytes} result bytes</dd>
+            <dt>Source truncation</dt><dd>{context.snapshot.sourceTruncationKnown ? "known" : "unknown"}</dd>
+          </dl>
+          <div>
+            <strong>Raw JSON</strong>
+            <pre>{context.rawJson}</pre>
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 /**
  * Prose the agent wrote between its tool calls. It reads as narration of the
  * work, so it renders as a plain row in the activity log — in its original
@@ -1206,6 +1317,8 @@ const parts = {
     by_name: {
       "context-compaction": ContextCompactionPart,
       "cron-run": CronRunPart,
+      "cron-reply-context": CronReplyContextPart,
+      "cron-reply-context-details": CronReplyContextDetailsPart,
       subagent: SubagentPart,
       note: NotePart,
       "tool-cluster": ToolClusterPart,
@@ -1329,6 +1442,8 @@ function AssistantParts() {
             if (part.name === "telemetry") return null;
             if (part.name === "context-compaction") return <ContextCompactionPart {...part} />;
             if (part.name === "cron-run") return <CronRunPart {...part} />;
+            if (part.name === "cron-reply-context") return <CronReplyContextPart {...part} />;
+            if (part.name === "cron-reply-context-details") return <CronReplyContextDetailsPart {...part} />;
             if (part.name === "subagent") return <SubagentPart {...part} />;
             if (part.name === "note") return <NotePart {...part} />;
             if (part.name === "tool-cluster") return <ToolClusterPart {...part} />;

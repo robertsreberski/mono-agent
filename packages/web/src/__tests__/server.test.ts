@@ -971,7 +971,16 @@ describe("web HTTP server", () => {
       sourceId: "agent-one",
       jobId: "digest",
       runId: summary.runId,
-      messages: [{ role: "system" }, { role: "assistant" }],
+      messages: [{
+        role: "assistant",
+        parts: [{
+          type: "cron-reply-context",
+          source: { sourceId: "agent-one", jobId: "digest", runId: summary.runId },
+          run: { sequence: 4, trigger: "scheduled", status: "succeeded" },
+          snapshot: { kind: "summary" },
+          result: { text: "Synthetic result" },
+        }],
+      }],
     });
     const replay = await post();
     expect(replay.status).toBe(200);
