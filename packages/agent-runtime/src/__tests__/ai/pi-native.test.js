@@ -928,6 +928,75 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
+  // Regression: pi-agent-core 0.85's lane.steer() settles with `{ entryId }`.
+  // The adapter must hand the bare id to the live-input runner; handing it the
+  // object settled every steer "uncertain" 18 ms after arrival even though Pi
+  // had queued it and the model consumed it, so the console showed "Delivery
+  // uncertain — not retried" and no Steered activity row.
+  it("acknowledges a live input steered through the real Pi harness as consumed by the run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-live-input-"));
+    try {
+      writeFileSync(join(root, "notes.txt"), "important context\n");
+      const model = setup();
+      const capturedRequests = [];
+      let releaseFirstResponse = () => {};
+      const firstResponseReleased = new Promise((resolve) => { releaseFirstResponse = resolve; });
+      faux.setResponses([
+        async (context) => {
+          capturedRequests.push(context.messages);
+          // Hold the first request open until Pi has queued the steer, so the
+          // run still has a post-tool request in which to consume it.
+          await firstResponseReleased;
+          return fauxAssistantMessage([fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-1" })]);
+        },
+        (context) => {
+          capturedRequests.push(context.messages);
+          return fauxAssistantMessage([fauxText("done")]);
+        },
+      ]);
+      const accepted = vi.fn(() => { releaseFirstResponse(); });
+      const acknowledge = vi.fn();
+      const uncertain = vi.fn(() => { releaseFirstResponse(); });
+      const reject = vi.fn(() => { releaseFirstResponse(); });
+      const onEvent = vi.fn();
+      // Offer the steer once the first provider request is in flight.
+      const liveInput = (async function* () {
+        await vi.waitFor(() => expect(capturedRequests.length).toBeGreaterThanOrEqual(1));
+        yield { id: "steer-1", body: "Also mention the deadline.", accepted, acknowledge, uncertain, reject };
+      })();
+
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Read"],
+        messages: [{ role: "user", content: "read the notes" }],
+        liveInput,
+        onEvent,
+      }));
+
+      expect(result.error).toBeNull();
+      expect(result.text).toBe("done");
+      expect(uncertain).not.toHaveBeenCalled();
+      expect(reject).not.toHaveBeenCalled();
+      expect(accepted).toHaveBeenCalledTimes(1);
+      expect(typeof accepted.mock.calls[0]?.[0]?.providerEntryId).toBe("string");
+      expect(accepted.mock.calls[0][0].providerEntryId.length).toBeGreaterThan(0);
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(acknowledge.mock.calls[0]?.[0]?.providerEntryId).toBe(accepted.mock.calls[0][0].providerEntryId);
+
+      // live_input_* lifecycle events are emitted by the runtime layer that
+      // wraps liveInput (instrumentLiveInputAppliedEvents), not by the bridge;
+      // here only the bridge's own warnings are in scope.
+      const events = onEvent.mock.calls.map(([event]) => event);
+      expect(events.some((event) => event?.type === "runtime_warning"
+        && (event.warning_kind === "live_input_failed" || event.warning_kind === "live_input_cancellation_failed"))).toBe(false);
+      // The steer reached the provider: the second request carries its text.
+      const secondRequest = capturedRequests[1] ?? [];
+      expect(JSON.stringify(secondRequest)).toContain("Also mention the deadline.");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("serializes a Pi 0.85 batch when any offered tool requires sequential execution", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sequential-tools-"));
     try {

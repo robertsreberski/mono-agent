@@ -265,8 +265,17 @@ export async function createPiHarnessAdapter(session, options) {
     async prompt(text, promptOptions) {
       return getOrThrow(await lane.prompt(text, promptOptions?.images, PI_CONTEXT));
     },
+    // Pi's QueueResult carries `{ entryId }`; the live-input runner keys prompt
+    // epoch registration, `cancelQueued` and `message_end` correlation on the
+    // bare entry id, so unwrap it here (as appendMessage does) rather than hand
+    // the runner an object it would settle as "uncertain" without ever
+    // registering the steer.
     async steer(message) {
-      return getOrThrow(await lane.steer(message, undefined, PI_CONTEXT));
+      const { entryId } = getOrThrow(await lane.steer(message, undefined, PI_CONTEXT));
+      if (typeof entryId !== "string" || entryId.length === 0) {
+        throw new Error("Pi steer settled without a queue entry id");
+      }
+      return entryId;
     },
     async cancelQueued(entryId) {
       return getOrThrow(await lane.cancelQueued(entryId, PI_CONTEXT));
