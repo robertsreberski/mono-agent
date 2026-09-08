@@ -262,8 +262,29 @@ export async function createPiHarnessAdapter(session, options) {
       manuallyAppendedEntryIds.add(entryId);
       return entryId;
     },
+    // Mirror pi's own lane.prompt() (accept → drive) rather than calling it,
+    // so the operation id is known the moment Pi admits the run instead of
+    // only when it settles. The live-input epoch needs it up front: without
+    // it every steer consumed mid-run stays "pending" until the whole run
+    // ends and is only acknowledged in one batch at the end.
     async prompt(text, promptOptions) {
-      return getOrThrow(await lane.prompt(text, promptOptions?.images, PI_CONTEXT));
+      const images = promptOptions?.images;
+      const admission = getOrThrow(await lane.accept({
+        kind: "prompt",
+        prompt: text,
+        ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
+      }, PI_CONTEXT));
+      const { operationId } = admission;
+      if (typeof operationId !== "string" || operationId.length === 0) {
+        throw new Error("Pi run was admitted without an operation id");
+      }
+      promptOptions?.onOperationAdmitted?.(operationId);
+      const driven = getOrThrow(await lane.drive({ operationId, waitForRetry: true }, PI_CONTEXT));
+      if (driven.kind === "settled") return driven.outcome;
+      if (driven.kind === "waiting" && driven.reason === "deferred") {
+        return { operationId, status: "suspended", deferred: driven.deferred };
+      }
+      throw new Error(`Pi run ${operationId} returned an unwaited retry`);
     },
     // Pi's QueueResult carries `{ entryId }`; the live-input runner keys prompt
     // epoch registration, `cancelQueued` and `message_end` correlation on the

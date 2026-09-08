@@ -94,6 +94,85 @@ describe("pi-native live input", () => {
     expect(warnings).toEqual([]);
   });
 
+  // Regression: with the operation only confirmed by finish() at the end of the
+  // run, every steer Pi consumed mid-run stayed "Steering current run…" until
+  // the whole run settled and was acknowledged in one batch at the end.
+  it("acknowledges mid-run once the admitted operation is confirmed before run_start", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+
+    epoch.confirm("run-1");
+    subscriber({ type: "run_start", lane: "main", runId: "run-1" });
+    epoch.register("entry-1", { acknowledge, uncertain });
+    expect(acknowledge).not.toHaveBeenCalled();
+    subscriber({ type: "message_end", lane: "main", runId: "run-1", entryId: "entry-1", message: { role: "user" } });
+
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge).toHaveBeenCalledWith({ providerEntryId: "entry-1", providerRunId: "run-1" });
+
+    // A second steer later in the same run settles on its own evidence too.
+    const acknowledgeLater = vi.fn();
+    epoch.register("entry-2", { acknowledge: acknowledgeLater, uncertain });
+    subscriber({ type: "message_end", lane: "main", runId: "run-1", entryId: "entry-2", message: { role: "user" } });
+    expect(acknowledgeLater).toHaveBeenCalledWith({ providerEntryId: "entry-2", providerRunId: "run-1" });
+
+    epoch.finish("run-1");
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledgeLater).toHaveBeenCalledTimes(1);
+    expect(uncertain).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it("acknowledges mid-run when confirm arrives after run_start", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
+
+    subscriber({ type: "run_start", lane: "main", runId: "run-1" });
+    epoch.register("entry-1", { acknowledge, uncertain });
+    subscriber({ type: "message_end", lane: "main", runId: "run-1", entryId: "entry-1", message: { role: "user" } });
+    expect(acknowledge).not.toHaveBeenCalled();
+    epoch.confirm("run-1");
+
+    expect(acknowledge).toHaveBeenCalledWith({ providerEntryId: "entry-1", providerRunId: "run-1" });
+    expect(uncertain).not.toHaveBeenCalled();
+  });
+
+  it("invalidates when the admitted operation does not match the observed run", () => {
+    let subscriber;
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+
+    const early = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const earlyMessage = { acknowledge: vi.fn(), uncertain: vi.fn() };
+    early.register("entry", earlyMessage);
+    early.confirm("op-admitted");
+    subscriber({ type: "run_start", lane: "main", runId: "run-other" });
+    subscriber({ type: "message_end", lane: "main", runId: "run-other", entryId: "entry", message: { role: "user" } });
+    early.finish("run-other");
+    expect(earlyMessage.acknowledge).not.toHaveBeenCalled();
+    expect(earlyMessage.uncertain).toHaveBeenCalledTimes(1);
+
+    const late = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const lateMessage = { acknowledge: vi.fn(), uncertain: vi.fn() };
+    late.register("entry", lateMessage);
+    subscriber({ type: "run_start", lane: "main", runId: "run-other" });
+    late.confirm("op-admitted");
+    subscriber({ type: "message_end", lane: "main", runId: "run-other", entryId: "entry", message: { role: "user" } });
+    late.finish("run-other");
+    expect(lateMessage.acknowledge).not.toHaveBeenCalled();
+    expect(lateMessage.uncertain).toHaveBeenCalledTimes(1);
+
+    expect(warnings.filter((event) => event.warning_kind === "live_input_correlation_invalid"
+      && event.reason === "operation_mismatch")).toHaveLength(2);
+  });
+
   it("keeps stop pending for unresolved steer then proves cancellation before safe rejection", async () => {
     let resolveSteer;
     const steer = vi.fn(() => new Promise((resolve) => { resolveSteer = resolve; }));
@@ -933,6 +1012,11 @@ describe("pi-native AgentHarness bridge", () => {
   // object settled every steer "uncertain" 18 ms after arrival even though Pi
   // had queued it and the model consumed it, so the console showed "Delivery
   // uncertain — not retried" and no Steered activity row.
+  //
+  // Second regression: acknowledgement must land when Pi consumes the steer
+  // (before the next provider request), not when the whole run settles. The
+  // second faux response therefore blocks until acknowledge() has fired; on
+  // the end-of-run-only behaviour that wait times out and the run errors.
   it("acknowledges a live input steered through the real Pi harness as consumed by the run", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-live-input-"));
     try {
@@ -949,11 +1033,16 @@ describe("pi-native AgentHarness bridge", () => {
           await firstResponseReleased;
           return fauxAssistantMessage([fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-1" })]);
         },
-        (context) => {
+        async (context) => {
           capturedRequests.push(context.messages);
+          // The steer is already in this request's messages, so Pi has
+          // consumed it; the runner must have acknowledged it by now.
+          await vi.waitFor(() => expect(acknowledge).toHaveBeenCalledTimes(1), { timeout: 2000 });
+          acknowledgedBeforeRunSettled = acknowledge.mock.calls.length === 1;
           return fauxAssistantMessage([fauxText("done")]);
         },
       ]);
+      let acknowledgedBeforeRunSettled = false;
       const accepted = vi.fn(() => { releaseFirstResponse(); });
       const acknowledge = vi.fn();
       const uncertain = vi.fn(() => { releaseFirstResponse(); });
@@ -982,6 +1071,7 @@ describe("pi-native AgentHarness bridge", () => {
       expect(accepted.mock.calls[0][0].providerEntryId.length).toBeGreaterThan(0);
       expect(acknowledge).toHaveBeenCalledTimes(1);
       expect(acknowledge.mock.calls[0]?.[0]?.providerEntryId).toBe(accepted.mock.calls[0][0].providerEntryId);
+      expect(acknowledgedBeforeRunSettled).toBe(true);
 
       // live_input_* lifecycle events are emitted by the runtime layer that
       // wraps liveInput (instrumentLiveInputAppliedEvents), not by the bridge;
