@@ -26,6 +26,12 @@ import { currentDataMode } from "./data-mode";
 import { recordDataUsage } from "./data-usage";
 import { recordServerTime } from "./server-clock";
 import {
+  forgetSubmissionRecoveryReference,
+  readSubmissionRecoveryReferences,
+  rememberSubmissionRecoveryReference,
+  type SubmissionRecoveryReference,
+} from "./submission-recovery";
+import {
   createThreadCache,
   holdsToolCall,
   newerProjection,
@@ -51,6 +57,7 @@ import type {
   RunState,
   SkillRegistryState,
   StartTurnInput,
+  SubmissionReceipt,
   ThreadDetail,
   ThreadSummary,
   WebEvent,
@@ -69,6 +76,32 @@ export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline"
 /** One reply attachment, as the store hands it back after minting access. */
 type ReplyAttachmentMessagePart = Extract<MessagePart, { readonly type: "attachment" }>;
 
+type SelectionRequest =
+  | {
+      readonly kind: "bucket";
+      readonly generation: number;
+      readonly sourceId: string;
+    }
+  | {
+      readonly kind: "thread";
+      readonly generation: number;
+      readonly threadId: string;
+      /** `selectThread` owns this read, so the selection effect must stand aside. */
+      readonly direct: boolean;
+    };
+
+interface SelectionFailure {
+  readonly request: SelectionRequest;
+  readonly message: string;
+}
+
+interface ThreadListFailure {
+  readonly generation: number;
+  readonly sourceId: string;
+  readonly archived: boolean;
+  readonly message: string;
+}
+
 interface ConsoleStoreValue {
   readonly bootstrap: Bootstrap | null;
   readonly agents: readonly AgentSummary[];
@@ -82,6 +115,12 @@ interface ConsoleStoreValue {
   readonly selectedThreadId: string | null;
   readonly loading: boolean;
   readonly detailLoading: boolean;
+  /** An operator-selected agent or conversation has not resolved yet. */
+  readonly selectionLoading: boolean;
+  /** The current operator-selected destination failed before it could resolve. */
+  readonly selectionError: string | null;
+  /** The current agent's visible conversation bucket could not be refreshed. */
+  readonly threadListError: string | null;
   readonly error: string | null;
   readonly actionError: string | null;
   readonly connection: ConnectionState;
@@ -120,6 +159,8 @@ interface ConsoleStoreValue {
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
   readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
+  readonly retrySelection: () => void;
+  readonly retryThreadList: () => void;
   readonly createThread: () => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
@@ -133,6 +174,10 @@ interface ConsoleStoreValue {
     onThreadResolved?: (threadId: string) => void,
   ) => Promise<void>;
   readonly sendLiveInput: (text: string) => Promise<void>;
+  readonly sendSubmission: (
+    input: StartTurnInput,
+    onThreadResolved?: (threadId: string) => void,
+  ) => Promise<void>;
   readonly cancelTurn: () => Promise<void>;
   readonly setShowArchived: (show: boolean) => void;
   readonly setShowOfflineAgents: (show: boolean) => void;
@@ -1401,8 +1446,35 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [detail, setDetail] = useState<ThreadDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [selectionRequest, setSelectionRequestState] = useState<SelectionRequest | null>(null);
+  const [selectionFailure, setSelectionFailureState] = useState<SelectionFailure | null>(null);
+  const [threadListFailure, setThreadListFailureState] = useState<ThreadListFailure | null>(null);
+  const [threadListRetryRevision, setThreadListRetryRevision] = useState(0);
+  const [operatorSelectionGeneration, setOperatorSelectionGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionErrorState] = useState<string | null>(null);
+  // The durable list failure and its short-lived notice settle together only
+  // while that notice is still the one this request published. Any newer
+  // action error clears the notice owner without disturbing the list failure.
+  const threadListFailureRef = useRef<ThreadListFailure | null>(null);
+  const threadListActionErrorRef = useRef<ThreadListFailure | null>(null);
+  const setThreadListFailure = useCallback((failure: ThreadListFailure | null) => {
+    threadListFailureRef.current = failure;
+    setThreadListFailureState(failure);
+  }, []);
+  const setActionError = useCallback((message: string | null) => {
+    threadListActionErrorRef.current = null;
+    setActionErrorState(message);
+  }, []);
+  const setThreadListActionError = useCallback((failure: ThreadListFailure) => {
+    threadListActionErrorRef.current = failure;
+    setActionErrorState(failure.message);
+  }, []);
+  const clearThreadListActionError = useCallback((failure: ThreadListFailure) => {
+    if (threadListActionErrorRef.current !== failure) return;
+    threadListActionErrorRef.current = null;
+    setActionErrorState((current) => current === failure.message ? null : current);
+  }, []);
   const [connection, setConnectionState] = useState<ConnectionState>("connecting");
   /**
    * Whether a snapshot from the SERVER has landed.
@@ -1470,6 +1542,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // one was deleted must not put it back into the projection.
   const removedThreadsRef = useRef<RemovedThreadRegistry>(createRemovedThreadRegistry());
   const selectedThreadRef = useRef<string | null>(null);
+  const pendingSubmissionPayloadsRef = useRef<Map<string, {
+    readonly submissionId: string;
+    readonly payload: string;
+  }>>(new Map());
   /**
    * Bumped by every selection the OPERATOR makes -- an agent, a conversation, a
    * new conversation, an archive or unarchive -- and by nothing the console
@@ -1486,6 +1562,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * later run action targeted a thread the console was not showing.
    */
   const operatorSelectionRef = useRef(0);
+  const selectionRequestRef = useRef<SelectionRequest | null>(null);
+  const selectionFailureRef = useRef<SelectionFailure | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   /** The catalog scope a page walk was started under. See `catalogScope`. */
   const catalogScopeRef = useRef<string>("");
@@ -1512,6 +1590,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * the first load, on every agent switch and on every archive toggle.
    */
   const seededBucketsRef = useRef<Set<string>>(new Set());
+  /** Compatible authoritative first-page reads shared by rapid revisits. */
+  const bucketReadsRef = useRef<Map<string, Promise<readonly ThreadSummary[]>>>(new Map());
   /** The current listing and selection, for the SSE handler to read at event time. */
   const threadsRef = useRef<readonly ThreadSummary[]>([]);
   /** The open conversation's own summary, which outlives its row in the listing. */
@@ -1705,16 +1785,55 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const streamOpenedBeforeRef = useRef(false);
   /** When the document went to the background, or `null` while it is on screen. */
   const hiddenSinceRef = useRef<number | null>(null);
-  /**
-   * The conversation `selectThread` is reading itself.
-   *
-   * Opening a conversation the sidebar does not list -- a push deep link, a
-   * search hit -- reads it from there, because only that path can name the
-   * agent, merge the row into the listing and follow a redirect to the
-   * canonical id. The selection effect would otherwise read the very same
-   * conversation a second time on every deep link.
-   */
-  const selectionReadRef = useRef<string | null>(null);
+  const setSelectionRequest = useCallback((request: SelectionRequest | null) => {
+    selectionRequestRef.current = request;
+    setSelectionRequestState(request);
+  }, []);
+
+  const setSelectionFailure = useCallback((failure: SelectionFailure | null) => {
+    selectionFailureRef.current = failure;
+    setSelectionFailureState(failure);
+  }, []);
+
+  const failOwnedSelection = useCallback((request: SelectionRequest | null, failure: unknown) => {
+    if (request === null
+      || selectionRequestRef.current !== request
+      || operatorSelectionRef.current !== request.generation) return false;
+    const message = errorMessage(failure);
+    setSelectionRequest(null);
+    setSelectionFailure({ request, message });
+    setActionError(message);
+    return true;
+  }, [setSelectionFailure, setSelectionRequest]);
+
+  /** Invalidate every older navigation before publishing the new one. */
+  const beginOperatorSelection = useCallback(() => {
+    const generation = operatorSelectionRef.current + 1;
+    operatorSelectionRef.current = generation;
+    setOperatorSelectionGeneration(generation);
+    setSelectionRequest(null);
+    setSelectionFailure(null);
+    setThreadListFailure(null);
+    return generation;
+  }, [setSelectionFailure, setSelectionRequest]);
+
+  const selectionLoading = selectionRequest !== null || detailLoading;
+  const selectionError = selectionFailure?.message ?? null;
+  const currentThreadListFailure = threadListFailure?.generation === operatorSelectionGeneration
+    && threadListFailure.sourceId === selectedAgentId
+    && threadListFailure.archived === showArchived
+    ? threadListFailure
+    : null;
+  const threadListError = currentThreadListFailure?.message ?? null;
+
+  const requireResolvedSelection = useCallback(() => {
+    if (selectionRequestRef.current !== null) {
+      throw new Error("Wait for the selected conversation to finish loading.");
+    }
+    if (selectionFailureRef.current !== null) {
+      throw new Error("Retry or switch conversations before starting new work.");
+    }
+  }, []);
 
   useEffect(() => {
     const keys = new Set([...Object.keys(modelByContext), ...Object.keys(effortByContext)]);
@@ -1884,6 +2003,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ? current
       : projectDetail(entry));
   }, []);
+
+  /**
+   * Publish the conversation a selected-row removal resolves to.
+   *
+   * Finding the replacement row settles only the listing half of the move.
+   * When its transcript is not cached, that read remains part of the same
+   * generation-owned navigation so a failure cannot decay into an apparently
+   * empty conversation after the transient action notice is dismissed.
+   */
+  const installReplacementSelection = useCallback((
+    replacement: ThreadSummary | undefined,
+    generation: number,
+  ) => {
+    const replacementId = replacement?.id ?? null;
+    const transcriptCached = replacement !== undefined
+      && threadCacheRef.current.get(replacement.id) !== undefined;
+    setSelectionRequest(replacement !== undefined && !transcriptCached
+      ? { kind: "thread", generation, threadId: replacement.id, direct: false }
+      : null);
+    setDetailLoading(replacement !== undefined && !transcriptCached);
+    selectedThreadRef.current = replacementId;
+    setSelectedThreadId(replacementId);
+    publishDetail(replacementId);
+    updateThreadRoute(replacement, true);
+  }, [publishDetail, setSelectionRequest]);
 
   /**
    * Put what this device kept back on screen, before anything is asked for.
@@ -2263,45 +2407,60 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     before?: string,
     mode: "replace" | "merge" = "replace",
   ): Promise<readonly ThreadSummary[]> => {
-    const issuedAt = removedThreadsRef.current.epoch();
-    const page = await boundedRequest(
-      (signal) => api.threads(sourceId, archived, before, signal, threadPageLimit()),
-      THREAD_READ_TIMEOUT_MS,
-    );
     const key = threadBucketKey(sourceId, archived);
-    const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
-    // A page is a server summary for every row in it, exactly as a bootstrap's
-    // listing is -- and a bootstrap carries ONE bucket, so a conversation held
-    // for any other agent is confirmed by nothing until that agent's bucket is
-    // read. Without this a running conversation restored for the agent the
-    // operator was not looking at stayed `fromDevice` for its whole turn, and
-    // switching to that agent did not fix it. The same write as
-    // `applyBootstrap`, under the same rules: never inserts, adopts only a
-    // strictly newer row, confirms either way.
-    for (const row of admitted) {
-      reconcileCronRevision(row);
-      threadCacheRef.current.confirmListed(row.id, row);
-    }
-    // The authoritative fill DELIVERS this bucket, exactly as a bootstrap does,
-    // so the sidebar effect must not buy it again -- an agent switch back and
-    // forth, or an archive toggle, otherwise re-read the same page every time.
-    // A revalidation does not count (it merges into rows already held) and
-    // neither does a page walk (it carries the older window, not the bucket).
-    // `applyBootstrap` REPLACES this set, so a new snapshot re-arms every other
-    // bucket for the read that fills it.
-    if (before === undefined && mode === "replace") seededBucketsRef.current.add(key);
-    setBootstrap((current) => {
-      if (current === null) return current;
-      const retained = before === undefined && mode === "replace"
-        ? current.threads.filter((thread) =>
-            thread.sourceId !== sourceId || Boolean(thread.archivedAt) !== archived)
-        : current.threads;
-      return { ...current, threads: mergeThreads(retained, admitted) };
+    const read = async (): Promise<readonly ThreadSummary[]> => {
+      const issuedAt = removedThreadsRef.current.epoch();
+      const page = await boundedRequest(
+        (signal) => api.threads(sourceId, archived, before, signal, threadPageLimit()),
+        THREAD_READ_TIMEOUT_MS,
+      );
+      const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+      // A page is a server summary for every row in it, exactly as a bootstrap's
+      // listing is -- and a bootstrap carries ONE bucket, so a conversation held
+      // for any other agent is confirmed by nothing until that agent's bucket is
+      // read. Without this a running conversation restored for the agent the
+      // operator was not looking at stayed `fromDevice` for its whole turn, and
+      // switching to that agent did not fix it. The same write as
+      // `applyBootstrap`, under the same rules: never inserts, adopts only a
+      // strictly newer row, confirms either way.
+      for (const row of admitted) {
+        reconcileCronRevision(row);
+        threadCacheRef.current.confirmListed(row.id, row);
+      }
+      // The authoritative fill DELIVERS this bucket, exactly as a bootstrap does,
+      // so the sidebar effect must not buy it again -- an agent switch back and
+      // forth, or an archive toggle, otherwise re-read the same page every time.
+      // A revalidation does not count (it merges into rows already held) and
+      // neither does a page walk (it carries the older window, not the bucket).
+      // `applyBootstrap` REPLACES this set, so a new snapshot re-arms every other
+      // bucket for the read that fills it.
+      if (before === undefined && mode === "replace") seededBucketsRef.current.add(key);
+      setBootstrap((current) => {
+        if (current === null) return current;
+        const retained = before === undefined && mode === "replace"
+          ? current.threads.filter((thread) =>
+              thread.sourceId !== sourceId || Boolean(thread.archivedAt) !== archived)
+          : current.threads;
+        return { ...current, threads: mergeThreads(retained, admitted) };
+      });
+      setThreadCursorByBucket((current) => mode === "merge" && typeof current[key] === "string"
+        ? current
+        : { ...current, [key]: page.nextCursor ?? null });
+      return admitted;
+    };
+
+    // Only the authoritative first page has compatible replacement semantics.
+    // Revalidation merges and cursor pages answer different questions and must
+    // keep their own request ordering.
+    if (before !== undefined || mode !== "replace") return read();
+    const inFlight = bucketReadsRef.current.get(key);
+    if (inFlight !== undefined) return inFlight;
+    let request!: Promise<readonly ThreadSummary[]>;
+    request = read().finally(() => {
+      if (bucketReadsRef.current.get(key) === request) bucketReadsRef.current.delete(key);
     });
-    setThreadCursorByBucket((current) => mode === "merge" && typeof current[key] === "string"
-      ? current
-      : { ...current, [key]: page.nextCursor ?? null });
-    return admitted;
+    bucketReadsRef.current.set(key, request);
+    return request;
   }, [reconcileCronRevision]);
 
   const hasBootstrap = bootstrap !== null;
@@ -2318,7 +2477,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedAgentId === null || loading || !hasBootstrap || error !== null) return;
     // Already delivered by a bootstrap -- see `seededBucketsRef`.
     if (seededBucketsRef.current.has(threadBucketKey(selectedAgentId, showArchived))) return;
+    const generation = operatorSelectionGeneration;
+    const request = selectionRequestRef.current;
     void loadThreadBucket(selectedAgentId, showArchived).then((page) => {
+      if (operatorSelectionRef.current === generation
+        && selectedAgentRef.current === selectedAgentId) {
+        const failure = threadListFailureRef.current;
+        if (failure?.generation === generation
+          && failure.sourceId === selectedAgentId
+          && failure.archived === showArchived) {
+          setThreadListFailure(null);
+          clearThreadListActionError(failure);
+        }
+      }
       // A bootstrap carries ONE bucket, so switching agents lands on rows this
       // tab has never held: `selectAgent` resolves the conversation to open
       // from what it holds and finds nothing, and this page is the first thing
@@ -2327,21 +2498,63 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // none of them is this effect's to overrule -- and never on the archive
       // shelf, which has never moved the selection.
       if (showArchived
+        || operatorSelectionRef.current !== generation
         || selectedAgentRef.current !== selectedAgentId
         || selectedThreadRef.current !== null) return;
       const persistedId = readPersistedThreadIds()[selectedAgentId];
       const next = page.find((item) => item.id === persistedId && !item.archivedAt)
         ?? [...page].filter((item) => !item.archivedAt).sort(byMostRecent)[0];
-      if (next === undefined) return;
+      if (next === undefined) {
+        if (selectionRequestRef.current === request) setSelectionRequest(null);
+        return;
+      }
       restoredSelectionRef.current = null;
       selectedThreadRef.current = next.id;
       setSelectedThreadId(next.id);
+      const transcriptCached = threadCacheRef.current.get(next.id) !== undefined;
+      setDetailLoading(!transcriptCached);
+      // The page resolves WHICH conversation this navigation means, but an
+      // uncached transcript is still part of the same operator selection. Keep
+      // its exact request until loadThread can settle success, 404, or failure.
+      // A cached transcript is already on screen and needs no such ownership.
+      if (transcriptCached && selectionRequestRef.current === request) {
+        setSelectionRequest(null);
+      }
       persistThreadId(selectedAgentId, next.id);
       updateThreadRoute(next);
     }).catch((loadError: unknown) => {
-      setActionError(errorMessage(loadError));
+      if (operatorSelectionRef.current !== generation
+        || selectedAgentRef.current !== selectedAgentId) return;
+      const ownsDestination = request?.kind === "bucket"
+        && request.generation === generation
+        && request.sourceId === selectedAgentId
+        && selectionRequestRef.current === request;
+      if (ownsDestination && failOwnedSelection(request, loadError)) return;
+      const message = errorMessage(loadError);
+      const failure = {
+        generation,
+        sourceId: selectedAgentId,
+        archived: showArchived,
+        message,
+      } satisfies ThreadListFailure;
+      setThreadListFailure(failure);
+      setThreadListActionError(failure);
     });
-  }, [error, hasBootstrap, loadThreadBucket, loading, selectedAgentId, showArchived]);
+  }, [
+    error,
+    hasBootstrap,
+    clearThreadListActionError,
+    failOwnedSelection,
+    loadThreadBucket,
+    loading,
+    operatorSelectionGeneration,
+    selectedAgentId,
+    setSelectionRequest,
+    setThreadListActionError,
+    setThreadListFailure,
+    showArchived,
+    threadListRetryRevision,
+  ]);
 
   /**
    * The conversation on screen is gone: a read of it was answered "not found".
@@ -2388,13 +2601,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const replacement = [...threadsRef.current]
       .filter((item) => item.sourceId === thread.sourceId && !item.archivedAt && item.id !== thread.id)
       .sort(byMostRecent)[0];
-    selectedThreadRef.current = replacement?.id ?? null;
-    setSelectedThreadId(replacement?.id ?? null);
-    publishDetail(replacement?.id ?? null);
+    installReplacementSelection(replacement, operatorSelectionRef.current);
     persistThreadId(thread.sourceId, replacement?.id ?? null);
-    updateThreadRoute(replacement, true);
     return true;
-  }, [publishDetail]);
+  }, [installReplacementSelection]);
 
   /** Bring an existing listing row to the selected cache's safe projection. */
   const reconcileSelectedListing = useCallback((entry: ThreadCacheEntry) => {
@@ -2480,8 +2690,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     threadId: string,
     signal: AbortSignal,
     cold: boolean,
+    generation: number,
+    request: SelectionRequest | null,
   ) => {
-    if (cold) setDetailLoading(true);
+    const ownsSelection = () => operatorSelectionRef.current === generation
+      && selectedThreadRef.current === threadId;
+    if (cold && ownsSelection()) setDetailLoading(true);
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       // The cache's own clock, quoted the same way: anything observed while
@@ -2501,6 +2715,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         (deadline) => readConversation(threadId, held, anySignal(signal, deadline)),
         THREAD_READ_TIMEOUT_MS,
       );
+      if (!ownsSelection()) return;
       if (next === NOT_MODIFIED) {
         // What is on screen IS the server's, and nothing is replaced.
         confirmConversation(threadId, observedAt);
@@ -2523,19 +2738,32 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // it no longer carries was deleted. See `mergeMessages`.
       applySelectedThreadDetail(next, observedAt, false);
     } catch (loadError) {
-      if (signal.aborted) return;
+      if (signal.aborted || !ownsSelection()) return;
       if (loadError instanceof ApiError
         && loadError.status === 404
-        && selectedThreadRef.current === threadId) {
+        && ownsSelection()) {
+        if (request !== null && selectionRequestRef.current === request) {
+          setSelectionRequest(null);
+        }
+        setDetailLoading(false);
         restoredSelectionRef.current = null;
         closeMissingThread(threadId);
         return;
       }
-      setActionError(errorMessage(loadError));
+      if (!failOwnedSelection(request, loadError)) setActionError(errorMessage(loadError));
     } finally {
-      if (selectedThreadRef.current === threadId) setDetailLoading(false);
+      if (!ownsSelection()) return;
+      if (request !== null && selectionRequestRef.current === request) setSelectionRequest(null);
+      setDetailLoading(false);
     }
-  }, [applySelectedThreadDetail, closeMissingThread, confirmConversation, leaveRestoredArchivedThread]);
+  }, [
+    applySelectedThreadDetail,
+    closeMissingThread,
+    confirmConversation,
+    failOwnedSelection,
+    leaveRestoredArchivedThread,
+    setSelectionRequest,
+  ]);
 
   useEffect(() => {
     const cache = threadCacheRef.current;
@@ -2563,14 +2791,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       && !entry.stale
       && restoredSelectionRef.current !== selectedThreadId) return;
     // `selectThread` opened a conversation the sidebar does not list and is
-    // reading it itself -- see `selectionReadRef`. Only that read can name the
+    // reading it itself. Only that read can name the
     // agent, merge the row into the listing and follow a redirect, so this one
     // would be the second copy of the same transcript.
-    if (selectionReadRef.current === selectedThreadId) return;
+    const selectionRequest = selectionRequestRef.current;
+    if (selectionRequest?.kind === "thread"
+      && selectionRequest.direct
+      && selectionRequest.threadId === selectedThreadId) return;
     const controller = new AbortController();
-    void loadThread(selectedThreadId, controller.signal, entry === undefined);
+    const ownedDetailRequest = selectionRequest?.kind === "thread"
+      && !selectionRequest.direct
+      && selectionRequest.threadId === selectedThreadId
+      ? selectionRequest
+      : selectionRequest?.kind === "bucket"
+        && selectionRequest.sourceId === selectedAgentRef.current
+        ? selectionRequest
+        : null;
+    void loadThread(
+      selectedThreadId,
+      controller.signal,
+      entry === undefined,
+      operatorSelectionGeneration,
+      ownedDetailRequest,
+    );
     return () => controller.abort();
-  }, [loadThread, publishDetail, selectedThreadId]);
+  }, [loadThread, operatorSelectionGeneration, publishDetail, selectedThreadId]);
 
   /**
    * One refresh, fetching exactly what the events behind it invalidated.
@@ -3342,9 +3587,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             threadCacheRef.current.evict(threadId);
             void persistenceRef.current?.forget([threadId]).catch(() => undefined);
             if (threadId === selectedThreadRef.current) {
+              // The authoritative removal settles any direct selection read
+              // still on the wire. Invalidating its generation keeps its late
+              // success or failure from reviving a conversation the event says
+              // is gone, or installing a retry failure on an empty selection.
+              beginOperatorSelection();
+              restoredSelectionRef.current = null;
               selectedThreadRef.current = null;
               setSelectedThreadId(null);
               setDetail(null);
+              setDetailLoading(false);
               setActionError("This conversation was deleted.");
             }
             return;
@@ -3568,6 +3820,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [
     applyMessageDeltaEvent,
     applyThreadUpdate,
+    beginOperatorSelection,
     loadAgents,
     patchRunState,
     queueRefresh,
@@ -3994,7 +4247,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const selectAgent = useCallback(
     (sourceId: string) => {
-      operatorSelectionRef.current += 1;
+      const generation = beginOperatorSelection();
       // Whatever this resolves to is the operator's, never a provisional
       // restore. See `restoredSelectionRef`.
       restoredSelectionRef.current = null;
@@ -4009,6 +4262,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const recent = persisted ?? [...threads]
         .filter((thread) => thread.sourceId === sourceId && !thread.archivedAt)
         .sort(byMostRecent)[0];
+      const bucketSeeded = seededBucketsRef.current.has(threadBucketKey(sourceId, false));
+      if (recent === undefined && !bucketSeeded) {
+        setSelectionRequest({ kind: "bucket", generation, sourceId });
+      } else if (recent !== undefined && threadCacheRef.current.get(recent.id) === undefined) {
+        setSelectionRequest({
+          kind: "thread",
+          generation,
+          threadId: recent.id,
+          direct: false,
+        });
+      }
+      setDetailLoading(recent !== undefined && threadCacheRef.current.get(recent.id) === undefined);
       selectedThreadRef.current = recent?.id ?? null;
       setSelectedThreadId(recent?.id ?? null);
       // In the SAME batch as the selection. Publishing the cached transcript
@@ -4027,7 +4292,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setShowArchived(false);
       setActionError(null);
     },
-    [publishDetail, threads],
+    [beginOperatorSelection, publishDetail, setSelectionRequest, threads],
   );
 
   const setAgentPinned = useCallback(async (sourceId: string, pinned: boolean) => {
@@ -4056,9 +4321,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const selectThread = useCallback(
     (threadId: string) => {
-      operatorSelectionRef.current += 1;
+      const generation = beginOperatorSelection();
       restoredSelectionRef.current = null;
       const thread = threads.find((candidate) => candidate.id === threadId);
+      const direct = thread === undefined;
+      if (direct || threadCacheRef.current.get(threadId) === undefined) {
+        setSelectionRequest({ kind: "thread", generation, threadId, direct });
+      }
+      setDetailLoading(threadCacheRef.current.get(threadId) === undefined);
       if (thread) {
         selectedAgentRef.current = thread.sourceId;
         setSelectedAgentId(thread.sourceId);
@@ -4083,13 +4353,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         // Claimed BEFORE the request, so the selection effect this commit is
         // about to run sees it: the two used to read the same conversation
         // twice on every deep link and every search hit.
-        selectionReadRef.current = threadId;
         setDetailLoading(true);
+        const request = selectionRequestRef.current;
         void boundedRequest(
           (signal) => api.thread(threadId, signal),
           THREAD_READ_TIMEOUT_MS,
         ).then((next) => {
-          selectionReadRef.current = null;
+          if (operatorSelectionRef.current !== generation
+            || selectionRequestRef.current !== request) return;
           const canonical = next.thread;
           // Deleted while this fetch was outstanding: selecting it now would
           // re-add it, route to it, and persist it as this agent's selection.
@@ -4119,21 +4390,50 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         }).catch((selectionError: unknown) => {
           // The read this selection owns did not answer, so nothing else will:
           // the effect stood aside for it. Reported, and the spinner cleared.
-          selectionReadRef.current = null;
+          if (operatorSelectionRef.current !== generation
+            || selectionRequestRef.current !== request) return;
           if (selectionError instanceof ApiError
             && selectionError.status === 404
             && selectedThreadRef.current === threadId) {
             closeMissingThread(threadId);
             return;
           }
-          setActionError(errorMessage(selectionError));
+          if (!failOwnedSelection(request, selectionError)) {
+            setActionError(errorMessage(selectionError));
+          }
         }).finally(() => {
-          if (selectedThreadRef.current === threadId) setDetailLoading(false);
+          if (operatorSelectionRef.current !== generation) return;
+          if (selectionRequestRef.current === request) setSelectionRequest(null);
+          setDetailLoading(false);
         });
       }
     },
-    [closeMissingThread, publishDetail, threads],
+    [
+      beginOperatorSelection,
+      closeMissingThread,
+      failOwnedSelection,
+      publishDetail,
+      setSelectionRequest,
+      threads,
+    ],
   );
+
+  const retrySelection = useCallback(() => {
+    const failure = selectionFailureRef.current;
+    if (failure === null) return;
+    if (failure.request.kind === "bucket") {
+      selectAgent(failure.request.sourceId);
+      return;
+    }
+    selectThread(failure.request.threadId);
+  }, [selectAgent, selectThread]);
+
+  const retryThreadList = useCallback(() => {
+    if (currentThreadListFailure === null) return;
+    clearThreadListActionError(currentThreadListFailure);
+    setThreadListFailure(null);
+    setThreadListRetryRevision((revision) => revision + 1);
+  }, [clearThreadListActionError, currentThreadListFailure, setThreadListFailure]);
 
   useEffect(() => {
     const route = cronRouteSelection();
@@ -4147,6 +4447,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
+    requireResolvedSelection();
+    const selectionAtRequest = operatorSelectionRef.current;
     try {
       const issuedAt = removedThreadsRef.current.epoch();
       const draftPreferenceKey = preferenceKeyForThread(selectedAgentId, null);
@@ -4183,27 +4485,42 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         delete next[draftPreferenceKey];
         return next;
       });
-      operatorSelectionRef.current += 1;
-      // See `restoredSelectionRef`: what the operator opens is theirs, and a
-      // read still in flight for what they left has nothing to settle here.
-      restoredSelectionRef.current = null;
-      selectedThreadRef.current = thread.id;
-      setSelectedThreadId(thread.id);
-      persistThreadId(selectedAgentId, thread.id);
-      setShowArchived(false);
-      updateThreadRoute(thread);
+      const stillOwnsSelection = operatorSelectionRef.current === selectionAtRequest
+        && selectedAgentRef.current === selectedAgentId;
+      if (stillOwnsSelection) {
+        beginOperatorSelection();
+        // See `restoredSelectionRef`: what the operator opens is theirs, and a
+        // read still in flight for what they left has nothing to settle here.
+        restoredSelectionRef.current = null;
+      }
       setBootstrap((current) =>
         current ? { ...current, threads: mergeThreads(current.threads, [thread]) } : current,
       );
       threadCacheRef.current.upsertFull({ thread, messages: [] });
-      publishDetail(thread.id);
-      setActionError(null);
+      if (stillOwnsSelection) {
+        selectedThreadRef.current = thread.id;
+        setSelectedThreadId(thread.id);
+        persistThreadId(selectedAgentId, thread.id);
+        setShowArchived(false);
+        updateThreadRoute(thread);
+        publishDetail(thread.id);
+      }
+      if (stillOwnsSelection) setActionError(null);
       return thread;
     } catch (createError) {
-      setActionError(errorMessage(createError));
+      if (operatorSelectionRef.current === selectionAtRequest) {
+        setActionError(errorMessage(createError));
+      }
       throw createError;
     }
-  }, [effortByContext, modelByContext, publishDetail, selectedAgentId]);
+  }, [
+    beginOperatorSelection,
+    effortByContext,
+    modelByContext,
+    publishDetail,
+    requireResolvedSelection,
+    selectedAgentId,
+  ]);
 
   const applyAgentUpdate = useCallback((agent: AgentSummary) => {
     setBootstrap((current) => current === null
@@ -4296,14 +4613,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           api.patchThread(target.id, { archived: true }, signal));
         applyThreadUpdate(thread, issuedAt);
         if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
-          operatorSelectionRef.current += 1;
+          const generation = beginOperatorSelection();
           restoredSelectionRef.current = null;
           const replacement = visibleThreads.find((item) => item.id !== target.id);
-          selectedThreadRef.current = replacement?.id ?? null;
-          setSelectedThreadId(replacement?.id ?? null);
-          publishDetail(replacement?.id ?? null);
+          installReplacementSelection(replacement, generation);
           persistThreadId(thread.sourceId, replacement?.id ?? null);
-          updateThreadRoute(replacement, true);
         } else if (readPersistedThreadIds()[thread.sourceId] === target.id) {
           persistThreadId(thread.sourceId, null);
         }
@@ -4326,7 +4640,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw archiveError;
       }
     },
-    [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, publishDetail, visibleThreads],
+    [
+      applyThreadUpdate,
+      beginOperatorSelection,
+      enqueueThreadWrite,
+      fetchThreadSummary,
+      installReplacementSelection,
+      visibleThreads,
+    ],
   );
 
   const unarchiveThread = useCallback(async (threadId: string) => {
@@ -4337,19 +4658,23 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         api.patchThread(target.id, { archived: false }, signal));
       applyThreadUpdate(thread, issuedAt);
       if (selectedThreadRef.current === target.id || selectedThreadRef.current === threadId) {
-        operatorSelectionRef.current += 1;
+        const generation = beginOperatorSelection();
         restoredSelectionRef.current = null;
         const replacement = visibleThreads.find((item) => item.id !== target.id);
-        selectedThreadRef.current = replacement?.id ?? null;
-        setSelectedThreadId(replacement?.id ?? null);
-        publishDetail(replacement?.id ?? null);
-        updateThreadRoute(replacement, true);
+        installReplacementSelection(replacement, generation);
       }
     } catch (unarchiveError) {
       setActionError(errorMessage(unarchiveError));
       throw unarchiveError;
     }
-  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, publishDetail, visibleThreads]);
+  }, [
+    applyThreadUpdate,
+    beginOperatorSelection,
+    enqueueThreadWrite,
+    fetchThreadSummary,
+    installReplacementSelection,
+    visibleThreads,
+  ]);
 
   /**
    * Everything a CONFIRMED delete leaves this tab to clean up.
@@ -4387,16 +4712,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     void persistenceRef.current?.forget([thread.id, requestedId]).catch(() => undefined);
     if (selectedThreadRef.current === thread.id || selectedThreadRef.current === requestedId) {
       const replacement = visibleThreads.find((item) => item.id !== thread.id);
-      selectedThreadRef.current = replacement?.id ?? null;
-      setSelectedThreadId(replacement?.id ?? null);
-      publishDetail(replacement?.id ?? null);
-      updateThreadRoute(replacement, true);
+      const generation = beginOperatorSelection();
+      restoredSelectionRef.current = null;
+      installReplacementSelection(replacement, generation);
     }
     if (readPersistedThreadIds()[thread.sourceId] === thread.id) {
       persistThreadId(thread.sourceId, null);
     }
     setActionError(null);
-  }, [publishDetail, visibleThreads]);
+  }, [beginOperatorSelection, installReplacementSelection, visibleThreads]);
   // Assigned during render: it changes with the visible listing, and putting it
   // in the SSE effect's dependencies would tear down and reopen the event
   // stream every time a conversation moved.
@@ -4981,6 +5305,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const sendTurn = useCallback(
     async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
+      requireResolvedSelection();
       let thread = selectedThread;
       if (!thread) thread = await createThread();
       if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
@@ -5007,7 +5332,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         throw turnError;
       }
     },
-    [applyThreadUpdate, createThread, refreshSelectedThread, selectedThread, settleThreadWrites],
+    [
+      applyThreadUpdate,
+      createThread,
+      refreshSelectedThread,
+      requireResolvedSelection,
+      selectedThread,
+      settleThreadWrites,
+    ],
   );
 
   const cancelTurn = useCallback(async () => {
@@ -5030,6 +5362,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [patchRunState, publishDetail, refreshSelectedThread, selectedThreadId]);
 
   const sendLiveInput = useCallback(async (text: string) => {
+    requireResolvedSelection();
     const threadId = selectedThreadId;
     if (!threadId) throw new Error("Select a conversation before sending a follow-up.");
     try {
@@ -5053,7 +5386,96 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setActionError(errorMessage(liveInputError));
       throw liveInputError;
     }
-  }, [publishDetail, refreshSelectedThread, selectedThreadId, settleThreadWrites]);
+  }, [publishDetail, refreshSelectedThread, requireResolvedSelection, selectedThreadId, settleThreadWrites]);
+
+  const applySubmissionReceipt = useCallback((receipt: SubmissionReceipt): string | undefined => {
+    if (receipt.message !== undefined
+      && threadCacheRef.current.upsertMessage(receipt.threadId, receipt.message)) {
+      publishDetail(receipt.threadId);
+    }
+    const selected = selectedThreadRef.current === receipt.threadId;
+    if (selected) refreshSelectedThread();
+    if (receipt.outcome !== "rejected") {
+      if (selected) setActionError(null);
+      return undefined;
+    }
+    const message = receipt.reason === "active_attachments_unsupported"
+      ? "Files can be sent when this response finishes. Your draft and files are kept."
+      : "The message was rejected.";
+    if (selected) setActionError(message);
+    return message;
+  }, [publishDetail, refreshSelectedThread]);
+
+  useEffect(() => {
+    const inFlight = new Set<string>();
+    const recover = (): void => {
+      for (const reference of readSubmissionRecoveryReferences(sessionStorage)) {
+        const key = `${reference.threadId}\0${reference.submissionId}`;
+        if (inFlight.has(key)) continue;
+        inFlight.add(key);
+        void api.submission(reference.threadId, reference.submissionId).then((receipt) => {
+          applySubmissionReceipt(receipt);
+          forgetSubmissionRecoveryReference(sessionStorage, reference);
+        }).catch(() => {
+          // Keep the reference for a later focus/online check. Recovery never
+          // resubmits the immutable payload automatically.
+        }).finally(() => { inFlight.delete(key); });
+      }
+    };
+    recover();
+    window.addEventListener("focus", recover);
+    window.addEventListener("online", recover);
+    return () => {
+      window.removeEventListener("focus", recover);
+      window.removeEventListener("online", recover);
+    };
+  }, [applySubmissionReceipt]);
+
+  const sendSubmission = useCallback(
+    async (input: StartTurnInput, onThreadResolved?: (threadId: string) => void) => {
+      let thread = selectedThread;
+      if (!thread) thread = await createThread();
+      if (thread.archivedAt) throw new Error("Unarchive this conversation before sending.");
+      const threadId = thread.id;
+      onThreadResolved?.(threadId);
+      const payload = JSON.stringify({
+        text: input.text ?? null,
+        quote: input.quote ?? null,
+        attachmentIds: input.attachmentIds ?? [],
+        model: input.model ?? null,
+        effort: input.effort ?? null,
+      });
+      const pending = pendingSubmissionPayloadsRef.current.get(threadId);
+      const submissionId = pending?.payload === payload ? pending.submissionId : crypto.randomUUID();
+      pendingSubmissionPayloadsRef.current.set(threadId, { submissionId, payload });
+      const reference: SubmissionRecoveryReference = { threadId, submissionId };
+      rememberSubmissionRecoveryReference(sessionStorage, reference);
+      let receiptKnown = false;
+      try {
+        await settleThreadWrites(threadId);
+        let receipt: SubmissionReceipt;
+        try {
+          receipt = await api.submit(threadId, submissionId, input);
+        } catch (error) {
+          receipt = await api.submission(threadId, submissionId).catch(() => { throw error; });
+        }
+        receiptKnown = true;
+        const rejection = applySubmissionReceipt(receipt);
+        if (rejection !== undefined) throw new Error(rejection);
+      } catch (submissionError) {
+        if (selectedThreadRef.current === threadId) setActionError(errorMessage(submissionError));
+        throw submissionError;
+      } finally {
+        if (receiptKnown) {
+          forgetSubmissionRecoveryReference(sessionStorage, reference);
+          if (pendingSubmissionPayloadsRef.current.get(threadId)?.submissionId === submissionId) {
+            pendingSubmissionPayloadsRef.current.delete(threadId);
+          }
+        }
+      }
+    },
+    [applySubmissionReceipt, createThread, selectedThread, settleThreadWrites],
+  );
 
   const value = useMemo<ConsoleStoreValue>(
     () => ({
@@ -5069,6 +5491,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadId,
       loading,
       detailLoading,
+      selectionLoading,
+      selectionError,
+      threadListError,
       error,
       actionError,
       connection,
@@ -5097,6 +5522,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setAgentRunDefaults,
       clearAgentRunDefaults,
       selectThread,
+      retrySelection,
+      retryThreadList,
       createThread,
       renameThread,
       archiveThread,
@@ -5104,6 +5531,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       deleteThread,
       sendTurn,
       sendLiveInput,
+      sendSubmission,
       cancelTurn,
       setShowArchived,
       setShowOfflineAgents,
@@ -5143,6 +5571,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       ensureProviderCatalog,
       detail,
       detailLoading,
+      selectionLoading,
+      selectionError,
+      threadListError,
       deleteThread,
       effort,
       effectiveEffort,
@@ -5168,6 +5599,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       resetRunOverride,
       skillRegistry,
       renameThread,
+      retrySelection,
+      retryThreadList,
       refreshCron,
       selectAgent,
       selectThread,
@@ -5177,6 +5610,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedThreadId,
       sendTurn,
       sendLiveInput,
+      sendSubmission,
       setEffort,
       setAgentPinned,
       setAgentRunDefaults,

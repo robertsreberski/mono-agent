@@ -130,7 +130,10 @@ The harness is the request-to-runtime composition boundary:
    retries and failures after assembly.
 3. Merge fail-closed tool policy and request-scoped runtime options, attach the
    active conversation's live-input mailbox and incremental tool-lifecycle sink,
-   then invoke `MonoRuntimeLike.run()` under the provider-run concurrency bound.
+   publish its exact run ownership to an optional host observer, then invoke
+   `MonoRuntimeLike.run()` under the provider-run concurrency bound. Ownership
+   closes before the mailbox is removed on completion, cancellation, failure,
+   or disposal, so a late targeted offer cannot reach a successor run.
 4. Await each redacted/bounded lifecycle write before publishing its enriched
    tool block to the client. A 250 ms foreground ceiling releases a healthy but
    still-pending write as `persistence: "deferred"`; the accepted request keeps

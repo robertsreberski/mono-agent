@@ -148,6 +148,22 @@ describe("live input mailbox", () => {
     }
   });
 
+  it("settles cancellation even when the terminal observer throws", async () => {
+    let closeCalls = 0;
+    const mailbox = createLiveInputMailbox("run-cancel-observer", () => {
+      closeCalls += 1;
+      throw new Error("terminal observer failed");
+    });
+    const offered = mailbox.offer(request("cancel-observer"));
+
+    expect(() => mailbox.cancel()).not.toThrow();
+    expect(closeCalls).toBe(1);
+    expect(offered.status).toBe("accepted");
+    if (offered.status === "accepted") {
+      await expect(offered.settled).resolves.toEqual({ status: "discarded", reason: "cancelled" });
+    }
+  });
+
   it("rejects malformed and oversized offers before admission", () => {
     const mailbox = createLiveInputMailbox("run-5");
     expect(mailbox.offer(request("blank", "   "))).toEqual({ status: "unavailable", reason: "invalid" });

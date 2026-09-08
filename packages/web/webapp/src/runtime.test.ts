@@ -9,6 +9,27 @@ import { projectProcessJobPresentation } from "./process-job-presentation";
 import { agent, attachment, monitor, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
 
+const processJobReceipt = (
+  job = processJob(),
+  overrides: Record<string, unknown> = {},
+) => ({
+  schema: "mono-agent.process-job-start-receipt.v1",
+  jobId: job.jobId,
+  tool: job.tool,
+  state: job.timestamps.startedAt === null ? "queued" : "running",
+  startedAt: job.timestamps.startedAt,
+  maxRuntimeMs: job.limits.maxRuntimeMs,
+  ...overrides,
+});
+
+const launchPart = (job = processJob(), toolCallId = `launch-${job.jobId}`) => ({
+  type: "tool-call" as const,
+  toolCallId,
+  toolName: job.tool,
+  status: "complete" as const,
+  structuredResult: processJobReceipt(job),
+});
+
 const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
   id: "message-1",
   threadId: "thread-1",
@@ -264,6 +285,22 @@ describe("coalesceMonitorWakeMessages", () => {
       expect(shaped.map((entry) => entry.id)).toEqual(["1", "separator", "2"]);
     },
   );
+
+  it("keeps a receipt-bearing background launch as its own Monitor wake boundary", () => {
+    const job = processJob();
+    const launchWake = monitorWake("2", monitor(), {
+      parts: [
+        launchPart(job, "background-launch"),
+        { type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
+      ],
+    });
+    expect(coalesceMonitorWakeMessages([monitorWake("1"), launchWake]).map(({ id }) => id)).toEqual(["1", "2"]);
+    const withoutReceipt = {
+      ...launchWake,
+      parts: launchWake.parts.map((part) => part.type === "tool-call" ? { ...part, structuredResult: undefined } : part),
+    };
+    expect(coalesceMonitorWakeMessages([monitorWake("1"), withoutReceipt])).toHaveLength(1);
+  });
 });
 
 describe("projectProcessJobPresentation", () => {
@@ -283,7 +320,7 @@ describe("projectProcessJobPresentation", () => {
       attribution: directAttribution,
     });
 
-    const projected = projectProcessJobPresentation([source], "provider:selected");
+    const projected = projectProcessJobPresentation([source], { selectedModel: "provider:selected" });
 
     expect(projected.messages).toEqual([]);
     expect(projected.jobs).toEqual([{ messageId: source.id, part: source.parts[0] }]);
@@ -316,7 +353,7 @@ describe("projectProcessJobPresentation", () => {
 
     const projected = projectProcessJobPresentation(
       [visibleAttribution, failed, rich],
-      "provider:other",
+      { selectedModel: "provider:other" },
     );
 
     expect(projected.messages.map(({ id }) => id)).toEqual(["attributed", "failed", "rich"]);
@@ -385,6 +422,104 @@ describe("projectProcessJobPresentation", () => {
     expect(projectProcessJobPresentation([hidden, visible]).messages.map(({ id }) => id))
       .toEqual(["visible"]);
   });
+
+  it("attributes real start and terminal facts only to the exact receipt-bearing response", () => {
+    const job = processJob();
+    const origin = message({
+      id: "origin",
+      threadId: "thread",
+      role: "assistant",
+      parts: [launchPart(job, "launch-one"), { type: "text", text: "Answer." }],
+    });
+    const carrier = message({
+      id: "carrier",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ type: "process-job", job }],
+    });
+
+    const projected = projectProcessJobPresentation([origin, carrier], { threadId: "thread" });
+
+    expect(projected.messages.map(({ id }) => id)).toEqual(["origin"]);
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ id: `process-job:${job.jobId}:started`, toolCallId: "launch-one", phase: "started", occurredAt: job.timestamps.startedAt }),
+      expect.objectContaining({ id: `process-job:${job.jobId}:terminal`, toolCallId: "launch-one", phase: "terminal", state: "succeeded", occurredAt: job.timestamps.completedAt, durationMs: 2_000, exitCode: 0 }),
+    ]);
+    expect(projected.eventsByMessageId.has("carrier")).toBe(false);
+  });
+
+  it.each([
+    "succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted",
+  ] as const)("derives the %s terminal outcome without inventing a missing completion", (state) => {
+    const job = processJob({
+      state,
+      timestamps: { ...processJob().timestamps, startedAt: null, completedAt: null },
+      durationMs: null,
+      exitCode: null,
+    });
+    const projected = projectProcessJobPresentation([
+      message({ id: "origin", threadId: "thread", role: "assistant", parts: [launchPart(job)] }),
+      message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] }),
+    ], { threadId: "thread" });
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ phase: "terminal", state }),
+    ]);
+    expect(projected.eventsByMessageId.get("origin")?.[0]).not.toHaveProperty("occurredAt");
+  });
+
+  it.each(["queued", "starting"] as const)("does not invent a start for %s admission", (state) => {
+    const job = processJob({
+      state,
+      timestamps: { ...processJob().timestamps, startedAt: null, completedAt: null },
+      durationMs: null,
+      exitCode: null,
+    });
+    const projected = projectProcessJobPresentation([
+      message({ id: "origin", threadId: "thread", role: "assistant", parts: [launchPart(job)] }),
+      message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] }),
+    ], { threadId: "thread" });
+    expect(projected.eventsByMessageId.size).toBe(0);
+  });
+
+  it("suppresses conflicting start evidence and contradictory completion time", () => {
+    const job = processJob({
+      timestamps: { ...processJob().timestamps, completedAt: "2026-07-17T09:59:59.000Z" },
+    });
+    const origin = message({
+      id: "origin",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ ...launchPart(job), structuredResult: processJobReceipt(job, { startedAt: "2026-07-17T10:00:02.000Z" }) }],
+    });
+    const projected = projectProcessJobPresentation([
+      origin,
+      message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] }),
+    ], { threadId: "thread" });
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ phase: "terminal", state: "succeeded" }),
+    ]);
+    expect(projected.eventsByMessageId.get("origin")?.[0]).not.toHaveProperty("occurredAt");
+  });
+
+  it("fails closed for ambiguous, wrong-thread, and legacy prose-only launch identity", () => {
+    const job = processJob();
+    const twoReceipts = ["one", "two"].map((id) => message({
+      id,
+      threadId: "thread",
+      role: "assistant",
+      parts: [launchPart(job, `launch-${id}`)],
+    }));
+    const card = message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] });
+    expect(projectProcessJobPresentation([...twoReceipts, card], { threadId: "thread" }).eventsByMessageId.size).toBe(0);
+    expect(projectProcessJobPresentation([twoReceipts[0]!, card], { threadId: "other" }).eventsByMessageId.size).toBe(0);
+    const legacy = message({
+      id: "legacy",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ ...launchPart(job), structuredResult: undefined, result: JSON.stringify({ job_id: job.jobId }) }],
+    });
+    expect(projectProcessJobPresentation([legacy, card], { threadId: "thread" }).eventsByMessageId.size).toBe(0);
+  });
 });
 
 describe("convertWebMessage", () => {
@@ -448,6 +583,62 @@ describe("convertWebMessage", () => {
         data: { type: "failure", id: "job-failure", code: "artifact_missing", message: "File expired." },
       },
     ]);
+  });
+
+  it.each(["running", "complete", "failed", "cancelled", "interrupted"] as const)(
+    "keeps launch lifecycle rows adjacent for a %s response",
+    (status) => {
+      const job = processJob();
+      const source = message({
+        role: "assistant",
+        status,
+        parts: [launchPart(job, "launch"), { type: "text", text: "After launch." }],
+      });
+      const events = [
+        { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+        { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:terminal`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "terminal" as const, state: job.state, occurredAt: job.timestamps.completedAt! },
+      ];
+      const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
+      const types = content.map((part) => part.type);
+      expect(types).toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "text"]);
+    },
+  );
+
+  it("separates consecutive receipt-bearing launches while ordinary adjacent calls still cluster", () => {
+    const job = processJob();
+    const second = processJob({ jobId: "job-two" });
+    const launches = message({ role: "assistant", parts: [launchPart(job, "one"), launchPart(second, "two")] });
+    const events = [job, second].flatMap((item, index) => [{
+      schema: "mono-agent.process-job-activity-event.v1" as const,
+      id: `process-job:${item.jobId}:started`,
+      toolCallId: index === 0 ? "one" : "two",
+      jobId: item.jobId,
+      tool: item.tool,
+      summary: item.summary,
+      phase: "started" as const,
+      state: item.state,
+      occurredAt: item.timestamps.startedAt!,
+    }, {
+      schema: "mono-agent.process-job-activity-event.v1" as const,
+      id: `process-job:${item.jobId}:terminal`,
+      toolCallId: index === 0 ? "one" : "two",
+      jobId: item.jobId,
+      tool: item.tool,
+      summary: item.summary,
+      phase: "terminal" as const,
+      state: item.state,
+      occurredAt: item.timestamps.completedAt!,
+    }]);
+    const launchContent = convertWebMessage(launches, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    expect(launchContent.map((part) => part.type))
+      .toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "tool-call", "data-process-job-event", "data-process-job-event"]);
+
+    const ordinary = message({ role: "assistant", parts: [
+      { type: "tool-call", toolCallId: "one", toolName: "Exec", status: "complete" },
+      { type: "tool-call", toolCallId: "two", toolName: "Exec", status: "complete" },
+    ] });
+    const ordinaryContent = convertWebMessage(ordinary).content as readonly { readonly type: string }[];
+    expect(ordinaryContent.map((part) => part.type)).toEqual(["data-tool-cluster"]);
   });
 
   it("preserves attachment-only user messages without manufacturing text or running state", () => {

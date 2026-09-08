@@ -334,10 +334,14 @@ matches the exact active delivery key; unrelated and stale keys cannot silence
 another turn. Web removes the sentinel from the settled reply and emits no
 response push for a reply without visible content.
 
-A timeout while awaiting a wake receipt may leave the actual turn running.
-The terminal wake state is `unknown`, with an explicit outcome-unknown error;
-automatic replay is suppressed, including after restart. A definite refusal
-remains failed or follows its existing bounded safe-retry policy.
+A timeout before the destination confirms steering or durably admits the exact
+follow-up may leave delivery uncertain. The terminal wake state is `unknown`,
+with an explicit outcome-unknown error; automatic replay is suppressed,
+including after restart. The web destination receipts a durably admitted
+follow-up without waiting for its model turn to finish; that turn's later
+success, failure, cancellation, or interruption remains independently visible.
+A definite refusal remains failed or follows its existing bounded safe-retry
+policy.
 
 The process owns its sandbox settings until every process remaining in its
 owned POSIX process group exits.
@@ -394,9 +398,12 @@ stream for the fallback. The web console creates an assistant-only turn, emits
 the same NDJSON activity/tool frames, and never invents a user message.
 
 Every steer or fallback carries the stable delivery key out of band. The web
-console durably records accepted and completed claims: after restart a completed
-claim returns its prior `steered` or `follow_up` receipt, while an accepted but
-unsettled claim fails closed as ambiguous. A wake is a genuine tool-capable
+console durably records accepted and completed delivery claims. A `steered`
+completion means the exact active run accepted the live input; a `follow_up`
+completion means the exact assistant turn was durably admitted, not that its
+model work succeeded. After restart a completed claim returns its prior receipt
+while the associated turn can independently recover as interrupted; an accepted
+but unsettled claim fails closed as ambiguous. A wake is a genuine tool-capable
 turn, not continuation synthesis. The host raises the active controller to the
 parent job's chain depth plus one before any steered tool call can start; a
 non-consumed offer rolls that provisional depth back, and the configured maximum
@@ -546,6 +553,17 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
+Successful background `Exec`/`Bash` completions carry a bounded versioned start
+receipt in their machine-readable tool result. The receipt records the exact job
+id, tool, admission state, and real start stamp when one exists; the human result
+text is not an identity source. The web console uses that causal receipt only
+when both the launching response and its card are loaded. Its response Activity
+then shows real start and terminal evidence, including failed, timed-out,
+cancelled, spawn-failed, queue-expired, and interrupted outcomes. Queued or
+starting jobs without a real start stamp do not gain a start row, and missing
+timestamps are never synthesized. Older launches without the receipt remain in
+the separate job stack only.
+
 An enabled local operator endpoint exposes bearer-protected
 `GET /gui/v1/jobs`, `GET /gui/v1/jobs/:jobId`, and
 `POST /gui/v1/jobs/:jobId/cancel`. Its info response advertises `jobs: true`
@@ -567,6 +585,10 @@ reads retain bounded backoff. Each nonterminal card polls only its
 exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
+
+The stack remains the only live card and poller. Response Activity rows do not
+poll, show output/artifacts/wake details, offer cancellation, or duplicate the
+completion response.
 
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and

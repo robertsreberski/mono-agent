@@ -123,7 +123,12 @@ Keep bearer values out of source config when possible. Set
 - `POST {basePath}/v1/conversations/:id/cancel` - explicit cancel (202; 501
   when the responder has no `cancel`); pending AskUser state is cancelled too.
 - `POST {basePath}/v1/conversations/:id/live-input` - offer bounded
-  `{ id, text, receivedAt }` guidance to the active turn. The response waits for
+  `{ id, text, receivedAt, targetTurnId?, targetRunId? }` guidance to the active
+  turn. When `/v1/info` advertises `liveInputTargeting.version: 1`, a Web
+  `targetTurnId` waits behind that exact operation's host-only harness ownership
+  and is forwarded with its actual `targetRunId`; closed, mismatched, timed-out,
+  disconnected, or stopped waiters detach without being offered to a successor.
+  The response waits for
   `applied`, `requeue`, `discarded`, or `uncertain`; inactive/unsupported offers
   return `unavailable`. A rejected accepted-settlement promise serializes as
   `uncertain` rather than an untyped error or retry signal.
@@ -169,8 +174,9 @@ Event NDJSON lines are capped at 256 KiB. Oversized thought and tool payloads
 are reduced and remeasured; an event that still cannot fit becomes a bounded
 `oversized_event` marker. That size guard is not a redaction boundary.
 
-`replyAttachments` and `mcpApps` are additive capabilities: they are omitted
-when the responder does not implement the corresponding authorization routes.
+`liveInputTargeting`, `replyAttachments`, and `mcpApps` are additive capabilities: they are omitted
+when the responder does not implement the corresponding ownership or authorized
+resource surface.
 The web consumer retains the legacy 8 MiB input ceiling so it can read an older
 agent even though current producers emit at most 256 KiB per frame. See
 [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).

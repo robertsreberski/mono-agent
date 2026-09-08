@@ -969,6 +969,52 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it.each(["complete", "failed", "cancelled", "interrupted"] as const)(
+    "persists a process-job start receipt only on its %s launching assistant response",
+    async (status) => {
+      const base = await temporaryRoot();
+      cleanup.push(base);
+      const stateDir = join(base, "state");
+      const store = await WebStore.open({ stateDir });
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      store.selectThread(thread.id);
+      const turn = store.beginTurn({ threadId: thread.id, text: "run it", attachmentIds: [] });
+      const receipt = {
+        schema: "mono-agent.process-job-start-receipt.v1",
+        jobId: "job-1",
+        tool: "Exec",
+        state: "running",
+        startedAt: "2026-09-08T10:00:00.000Z",
+      } as const;
+      store.applyStreamFrames(turn.turnId, [
+        { kind: "event", event: { type: "tool_call_started", id: "launch-1", name: "Exec", arguments: {} } },
+        { kind: "event", event: { type: "tool_call_completed", id: "launch-1", name: "Exec", content: "Background process job started.", structuredContent: receipt } },
+      ]);
+      const finished = status === "complete"
+        ? store.completeTurn(turn.turnId, "started")
+        : status === "interrupted"
+          ? store.interruptTurn(turn.turnId)
+          : store.failTurn(turn.turnId, { message: status, cancelled: status === "cancelled" });
+      expect(finished.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({
+        type: "tool-call",
+        toolCallId: "launch-1",
+        structuredResult: receipt,
+      }));
+      expect(finished.messages.filter((entry) => entry.role === "user").some((entry) =>
+        entry.parts.some((part) => part.type === "tool-call" && part.structuredResult !== undefined))).toBe(false);
+      store.close();
+
+      const reopened = await WebStore.open({ stateDir });
+      expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({
+        type: "tool-call",
+        toolCallId: "launch-1",
+        structuredResult: receipt,
+      }));
+      reopened.close();
+    },
+  );
+
   it("omits structuredResult when the tool returned no structured payload", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1048,7 +1094,60 @@ describe("WebStore", () => {
     await expect(store.deleteArchivedThread(used.id, { emptyOnly: true }))
       .rejects.toMatchObject({ code: "thread_not_empty" });
     expect(store.getThread(used.id)).toBeDefined();
+
+    const ledgerOnly = store.createThread("agent-one");
+    store.claimWebSubmission({
+      threadId: ledgerOnly.id,
+      submissionId: "11111111-1111-4111-8111-111111111111",
+      payloadSha256: "a".repeat(64),
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    });
+    store.patchThread(ledgerOnly.id, { archived: true });
+    await expect(store.deleteArchivedThread(ledgerOnly.id, { emptyOnly: true }))
+      .rejects.toMatchObject({ code: "thread_not_empty" });
+    await expect(store.deleteArchivedThread(ledgerOnly.id)).resolves.toEqual({ orphanedFiles: 0 });
+    expect(store.getThread(ledgerOnly.id)).toBeUndefined();
     store.close();
+  });
+
+  it("reopens and replays a durable submission ledger entry without recreating it", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    const payloadSha256 = "a".repeat(64);
+    expect(store.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    })).toMatchObject({ created: true });
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.webSubmission(thread.id, submissionId)).toEqual({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+    expect(reopened.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      create: () => { throw new Error("must not recreate"); },
+    })).toMatchObject({ created: false });
+    expect(() => reopened.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256: "b".repeat(64),
+      create: () => ({ outcome: "turn" }),
+    })).toThrowError(expect.objectContaining({ code: "submission_conflict" }));
+    reopened.close();
   });
 
   it("enforces one active turn per thread while allowing parallel threads", async () => {
@@ -2521,12 +2620,19 @@ describe("WebStore", () => {
         deliveryKey: processJob.wake.deliveryKey,
       })).toEqual({ kind: "new" });
     }
+    const admitted = store.beginAssistantTurn({
+      threadId: thread.id,
+      prompt: "Process the completed job",
+    });
+    store.associateProcessJobWakeTurn(completed.wake.deliveryKey, admitted.turnId);
     store.completeProcessJobWake({
       sourceId: "agent-one",
       jobId: completed.jobId,
       deliveryKey: completed.wake.deliveryKey,
       disposition: "follow_up",
+      turnId: admitted.turnId,
     });
+    expect(store.turnStatus(admitted.turnId)).toBe("running");
     store.close();
 
     const reopened = await WebStore.open({ stateDir });
@@ -2537,17 +2643,23 @@ describe("WebStore", () => {
       jobId: completed.jobId,
       deliveryKey: completed.wake.deliveryKey,
     })).toEqual({ kind: "completed", disposition: "follow_up" });
+    expect(reopened.turnStatus(admitted.turnId)).toBe("interrupted");
     expect(reopened.reserveProcessJobWake({
       sourceId: "agent-one",
       threadId: thread.id,
       jobId: uncertain.jobId,
       deliveryKey: uncertain.wake.deliveryKey,
     })).toEqual({ kind: "uncertain" });
-    reopened.abandonProcessJobWake({
+    expect(reopened.abandonProcessJobWake({
       sourceId: "agent-one",
       jobId: uncertain.jobId,
       deliveryKey: uncertain.wake.deliveryKey,
-    });
+    })).toBe(true);
+    expect(reopened.abandonProcessJobWake({
+      sourceId: "agent-one",
+      jobId: uncertain.jobId,
+      deliveryKey: uncertain.wake.deliveryKey,
+    })).toBe(false);
     expect(reopened.reserveProcessJobWake({
       sourceId: "agent-one",
       threadId: thread.id,
@@ -2981,7 +3093,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 23");
+    future.exec(`PRAGMA user_version = ${String(WEB_STORAGE_SCHEMA_VERSION + 1)}`);
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 

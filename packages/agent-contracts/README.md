@@ -73,6 +73,13 @@ write continued toward bounded run-finalization reconciliation; it is not a
 durability or loss claim. `failed` is an explicit definitive fail-soft
 diagnostic. Neither changes the tool's provider outcome.
 
+A completed tool event may also carry bounded `structuredContent`. This is an
+opaque machine-readable result from MCP or a canonical host tool outcome; it is
+not the model-facing prose. Consumers must recognize and validate the specific
+schema they use. An exact `Exec`/`Bash` process-job start receipt can therefore
+bind later lifecycle evidence to its launch without parsing text or comparing
+timestamps.
+
 Responders may also implement `offerLiveInput()`. An adapter can then offer one
 plain-text follow-up to the active conversation without starting a parallel
 turn. The immediate result says whether the active run accepted ownership; the
@@ -132,8 +139,11 @@ The core turn boundary is deliberately structural:
 1. A channel normalizes transport input into an `AgentRequestBase`, including a
    required `AbortSignal`.
 2. The host calls `AgentResponder.respond(request, stream)`.
-3. While that response is active, the adapter may offer bounded live input and
-   retain normal-turn admission until the offer settles.
+3. A capable responder reports host-only live-input ownership as `ready` with
+   the exact harness run id, then `closed` before that mailbox can be replaced.
+   While ownership is active, the adapter may offer bounded live input and
+   retain normal-turn admission until the offer settles. These callbacks never
+   enter request metadata, prompts, history, or JSON transport.
 4. The responder sends deltas, replacement text, status, and telemetry through
    `AgentMessageStream` and returns an `AgentResponse` when the turn settles.
 5. A `ChannelDriver` combines config loading and the responder with a transport,
@@ -254,6 +264,7 @@ AgentContinuationContextMessage
 AgentContinuationOriginContext
 AgentContinuationTurn
 AgentLiveInputOffer
+AgentLiveInputOwnership
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason

@@ -25,6 +25,7 @@ const ENV_TABLE_KEY_PATTERN = /^\| `(MONO_AGENT_[A-Z0-9_]+)` \|/gmu;
 const ADAPTER_ENV_PREFIXES = {
   "a2a-adapter": ["MONO_AGENT_A2A_"],
   "cron-adapter": ["MONO_AGENT_CRON_"],
+  "messenger-adapter": ["MONO_AGENT_MESSENGER_"],
   "openai-api-adapter": ["MONO_AGENT_OPENAI_API_"],
   "operator-adapter": ["MONO_AGENT_TUI_"],
   "slack-adapter": ["MONO_AGENT_SLACK_"],

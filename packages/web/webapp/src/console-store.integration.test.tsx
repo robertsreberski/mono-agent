@@ -105,6 +105,8 @@ vi.mock("./api", async (importOriginal) => ({
     message: vi.fn(),
     threadIfChanged: vi.fn(),
     liveInput: vi.fn(),
+    submit: vi.fn(),
+    submission: vi.fn(),
     threadJob: vi.fn(),
   },
 }));
@@ -278,7 +280,10 @@ describe("ConsoleStoreProvider integration", () => {
     // Reset both; every case installs what it needs.
     vi.mocked(api.thread).mockReset();
     vi.mocked(api.threadIfChanged).mockReset();
+    vi.mocked(api.submit).mockReset();
+    vi.mocked(api.submission).mockReset();
     localStorage.clear();
+    sessionStorage.clear();
     window.history.replaceState(null, "", "/");
     FakeEventSource.latest = undefined;
     FakeEventSource.instances = [];
@@ -312,6 +317,25 @@ describe("ConsoleStoreProvider integration", () => {
     const drift = Date.now() - serverNow();
     expect(drift).toBeGreaterThanOrEqual(3_000);
     expect(drift).toBeLessThan(3_500);
+  });
+
+  it("recovers a persisted submission reference with GET only and clears it after a known receipt", async () => {
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    sessionStorage.setItem("mono-agent.web.pending-submissions", JSON.stringify([{
+      threadId: "thread-one",
+      submissionId,
+    }]));
+    vi.mocked(api.submission).mockResolvedValue({
+      submissionId,
+      threadId: "thread-one",
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+
+    await renderStore();
+    await waitFor(() => expect(api.submission).toHaveBeenCalledWith("thread-one", submissionId));
+    expect(api.submit).not.toHaveBeenCalled();
+    await waitFor(() => expect(sessionStorage.getItem("mono-agent.web.pending-submissions")).toBeNull());
   });
 
   it("keeps the real console shell mounted while switching agents and conversations", async () => {
@@ -1607,6 +1631,26 @@ describe("ConsoleStoreProvider integration", () => {
         await sent;
       });
       expect(order).toEqual(["start:0", "end:0", "startTurn"]);
+    });
+
+    it("reuses one submission UUID after an unknown transport result without persisting authored text", async () => {
+      seedOneThread();
+      vi.mocked(api.submit).mockRejectedValue(new Error("submission response lost"));
+      vi.mocked(api.submission).mockRejectedValue(new Error("receipt unavailable"));
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      const input = { text: "Do not persist this authored draft" };
+
+      await expect(store.current.sendSubmission(input)).rejects.toThrow("submission response lost");
+      await expect(store.current.sendSubmission(input)).rejects.toThrow("submission response lost");
+
+      expect(api.submit).toHaveBeenCalledTimes(2);
+      const submissionIds = vi.mocked(api.submit).mock.calls.map((call) => call[1]);
+      expect(new Set(submissionIds).size).toBe(1);
+      expect(vi.mocked(api.submission).mock.calls.map((call) => call[1])).toEqual(submissionIds);
+      const persisted = sessionStorage.getItem("mono-agent.web.pending-submissions") ?? "";
+      expect(persisted).toContain(submissionIds[0]!);
+      expect(persisted).not.toContain(input.text);
     });
 
     it("does not offer live input until prior writes land and keeps its captured conversation", async () => {
@@ -3279,6 +3323,698 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
     });
 
+    it("keeps a current bucket rejection visible when its known transcript settles first", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let resolveTranscript!: (value: ThreadDetail) => void;
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => threadId === betaThread.id
+        ? new Promise((resolve) => { resolveTranscript = resolve; })
+        : Promise.resolve(detail(alphaThread, "alpha")));
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(api.thread).toHaveBeenCalledWith(betaThread.id, expect.any(AbortSignal)));
+      await act(async () => { resolveTranscript(detail(betaThread, "beta transcript")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+
+      await act(async () => { rejectBucket(new Error("beta conversations unavailable")); });
+      await waitFor(() => expect(store.current.actionError).toBe("beta conversations unavailable"));
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(false);
+
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      act(() => { store.current.retryThreadList(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
+        .toHaveLength(1);
+    });
+
+    it("does not misclassify an early current bucket rejection as a transcript failure", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let resolveTranscript!: (value: ThreadDetail) => void;
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => threadId === betaThread.id
+        ? new Promise((resolve) => { resolveTranscript = resolve; })
+        : Promise.resolve(detail(alphaThread, "alpha")));
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(api.thread).toHaveBeenCalledWith(betaThread.id, expect.any(AbortSignal)));
+      await act(async () => { rejectBucket(new Error("beta conversations unavailable")); });
+      await waitFor(() => expect(store.current.actionError).toBe("beta conversations unavailable"));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(true);
+
+      await act(async () => { resolveTranscript(detail(betaThread, "beta transcript")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(false);
+
+      vi.mocked(api.patchAgent).mockRejectedValueOnce(new Error("newer pin failure"));
+      await act(async () => {
+        await expect(store.current.setAgentPinned("beta", true)).rejects.toThrow("newer pin failure");
+      });
+      expect(store.current.actionError).toBe("newer pin failure");
+
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      act(() => { store.current.retryThreadList(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(store.current.actionError).toBe("newer pin failure");
+      expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
+        .toHaveLength(1);
+    });
+
+    it("ignores a known-thread bucket rejection after a newer agent selection", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === betaThread.id
+        ? detail(betaThread, "beta transcript")
+        : detail(alphaThread, "alpha transcript"));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+      await act(async () => { rejectBucket(new Error("stale beta conversations failure")); });
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.threadListError).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+    });
+
+    it("keeps a cold agent switch loading and blocks implicit conversation creation", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveBeta!: (page: { readonly threads: readonly ThreadSummary[] }) => void;
+      vi.mocked(api.threads).mockImplementation(() => new Promise((resolve) => {
+        resolveBeta = resolve;
+      }));
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      expect(store.current.selectedThreadId).toBeNull();
+      await expect(store.current.createThread()).rejects.toThrow(/finish loading/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/finish loading/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+
+      await act(async () => { resolveBeta({ threads: [betaThread] }); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("beta-thread"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.actionError).toBeNull();
+    });
+
+    it("coalesces a cold B to A to B switch while only the newest visit consumes it", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveBeta!: (page: { readonly threads: readonly ThreadSummary[] }) => void;
+      vi.mocked(api.threads).mockImplementation(() => new Promise((resolve) => {
+        resolveBeta = resolve;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      await act(async () => { resolveBeta({ threads: [betaThread] }); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("beta-thread"));
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe("beta-thread");
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a failed current cold bucket explicit after its notice expires", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockRejectedValue(new Error("bucket unavailable"));
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("bucket unavailable"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("bucket unavailable");
+      expect(api.threads).toHaveBeenCalledTimes(1);
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionError).toBe("bucket unavailable");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+    });
+
+    it("retries a failed current cold bucket through its owned recovery action", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads)
+        .mockRejectedValueOnce(new Error("bucket unavailable"))
+        .mockResolvedValueOnce({ threads: [betaThread] });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("bucket unavailable"));
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a cold bucket owned through repeated transcript failure and explicit retry", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let betaReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== betaThread.id) return detail(alphaThread, "alpha");
+        betaReads += 1;
+        if (betaReads === 1) throw new Error("first transcript failure");
+        if (betaReads === 2) throw new Error("second transcript failure");
+        return detail(betaThread, "recovered transcript");
+      });
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("first transcript failure"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("first transcript failure");
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(1);
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.selectionError).toBe("first transcript failure");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError).toBe("second transcript failure"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(2);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(3);
+    });
+
+    it("keeps an uncached archive replacement failure explicit until retry succeeds", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("replacement transcript unavailable"))
+        .mockRejectedValueOnce(new Error("replacement transcript still unavailable"))
+        .mockResolvedValueOnce(detail(olderAlpha, "replacement transcript"));
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.actionError).toBe("replacement transcript unavailable"));
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("replacement transcript unavailable");
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionError).toBe("replacement transcript unavailable");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError)
+        .toBe("replacement transcript still unavailable"));
+      expect(store.current.selectionLoading).toBe(false);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("keeps an uncached unarchive replacement failure explicit until retry succeeds", async () => {
+      const archivedAlpha = { ...alphaThread, archivedAt: "2026-08-14T09:00:00.000Z", messageCount: 1 };
+      const archivedOlder = { ...olderAlpha, archivedAt: "2026-08-13T09:00:00.000Z", messageCount: 1 };
+      const store = await openOnAlpha([archivedAlpha, archivedOlder]);
+      vi.mocked(api.threads).mockResolvedValue({ threads: [archivedAlpha, archivedOlder] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => detail(
+        threadId === archivedOlder.id ? archivedOlder : archivedAlpha,
+        "archived transcript",
+      ));
+      act(() => { store.current.setShowArchived(true); });
+      await waitFor(() => expect(store.current.visibleThreads.map((item) => item.id))
+        .toEqual([archivedAlpha.id, archivedOlder.id]));
+      act(() => { store.current.selectThread(archivedAlpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(archivedAlpha.id));
+
+      vi.mocked(api.patchThread).mockResolvedValue({ ...archivedAlpha, archivedAt: null });
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("unarchive replacement unavailable"))
+        .mockResolvedValueOnce(detail(archivedOlder, "recovered archived transcript"));
+      await act(async () => { await store.current.unarchiveThread(archivedAlpha.id); });
+      await waitFor(() => expect(store.current.selectionError).toBe("unarchive replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(archivedOlder.id);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(archivedOlder.id));
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("keeps an uncached confirmed-delete replacement failure explicit until retry succeeds", async () => {
+      const selected = { ...alphaThread, messageCount: 1 };
+      const store = await openOnAlpha([selected, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(selected.id));
+      vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("delete replacement unavailable"))
+        .mockResolvedValueOnce(detail(olderAlpha, "recovered replacement"));
+
+      await act(async () => { await store.current.deleteThread(selected.id); });
+      await waitFor(() => expect(store.current.selectionError).toBe("delete replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("keeps an uncached remote-removal replacement failure explicit until retry succeeds", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("remote replacement unavailable"))
+        .mockResolvedValueOnce(detail(olderAlpha, "recovered remote replacement"));
+
+      emit("thread.changed", {
+        threadId: alphaThread.id,
+        payload: { threadId: alphaThread.id, removed: true },
+      });
+      await waitFor(() => expect(store.current.selectionError).toBe("remote replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("keeps replacement transcript not-found authoritative", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+      vi.mocked(api.thread).mockRejectedValue(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("ignores an archive replacement rejection after the operator switches away", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let rejectReplacement!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === olderAlpha.id) {
+          return new Promise((_resolve, reject) => { rejectReplacement = reject; });
+        }
+        return Promise.resolve(detail(betaThread, "beta transcript"));
+      });
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      await act(async () => { rejectReplacement(new Error("stale replacement failure")); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(betaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+    });
+
+    it("publishes a cached archive replacement without entering selection loading", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      act(() => { store.current.selectThread(olderAlpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      act(() => { store.current.selectThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+      expect(store.current.detail?.thread.id).toBe(olderAlpha.id);
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+      expect(api.thread).toHaveBeenCalledTimes(detailReads);
+    });
+
+    it("settles a selected archive with no replacement as an intentional empty state", async () => {
+      const store = await openOnAlpha([alphaThread]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("ignores a cold bucket transcript rejection after the operator switches away", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let rejectBeta!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === betaThread.id) {
+          return new Promise((_resolve, reject) => { rejectBeta = reject; });
+        }
+        return Promise.resolve(detail(alphaThread, "alpha"));
+      });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(betaThread.id));
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+      await act(async () => { rejectBeta(new Error("stale transcript failure")); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      expect(store.current.detail?.thread.id).toBe(alphaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("keeps a cold bucket transcript not-found authoritative", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === betaThread.id) {
+          throw new ApiError("Conversation not found.", 404, "thread_not_found");
+        }
+        return detail(alphaThread, "alpha");
+      });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("keeps repeated bucket failures explicit until a retry confirms an empty agent", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads)
+        .mockRejectedValueOnce(new Error("first failure"))
+        .mockRejectedValueOnce(new Error("second failure"))
+        .mockResolvedValueOnce({ threads: [] });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("first failure"));
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError).toBe("second failure"));
+      expect(store.current.selectionLoading).toBe(false);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(3));
+      await waitFor(() => expect(store.current.selectionError).toBeNull());
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("clears a failed bucket selection when the operator switches away", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockRejectedValue(new Error("bucket unavailable"));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("bucket unavailable"));
+      act(() => { store.current.selectAgent("alpha"); });
+
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("retries a failed uncached listed conversation when the same row is selected again", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let olderReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== olderAlpha.id) return detail(alphaThread, "alpha");
+        olderReads += 1;
+        if (olderReads === 1) throw new Error("detail unavailable");
+        return detail(olderAlpha, "older");
+      });
+
+      act(() => { store.current.selectThread(olderAlpha.id); });
+      await waitFor(() => expect(store.current.actionError).toBe("detail unavailable"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("detail unavailable");
+      expect(store.current.detail).toBeNull();
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(olderReads).toBe(2);
+    });
+
+    it("retries a failed current unlisted conversation without losing its destination", async () => {
+      const outside = thread("outside-beta", "beta");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("detail unavailable"))
+        .mockResolvedValueOnce(detail(outside, "recovered"));
+
+      act(() => { store.current.selectThread(outside.id); });
+      await waitFor(() => expect(store.current.selectionError).toBe("detail unavailable"));
+      expect(store.current.selectedThreadId).toBe(outside.id);
+      expect(store.current.detail).toBeNull();
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(outside.id));
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.thread).toHaveBeenCalledTimes(3);
+    });
+
+    it("keeps an authoritative current unlisted not-found as deletion rather than retryable failure", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.thread).mockRejectedValueOnce(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+
+      act(() => { store.current.selectThread("deleted-outside"); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("lets only the newest unlisted selection publish agent, route, detail, and errors", async () => {
+      const outsideA = thread("outside-a", "alpha", { title: "Outside A" });
+      const outsideB = thread("outside-b", "beta", { title: "Outside B" });
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveA!: (answer: ThreadDetail) => void;
+      let resolveB!: (answer: ThreadDetail) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === outsideA.id) return new Promise((resolve) => { resolveA = resolve; });
+        if (threadId === outsideB.id) return new Promise((resolve) => { resolveB = resolve; });
+        return Promise.resolve(detail(alphaThread, "alpha"));
+      });
+
+      act(() => { store.current.selectThread(outsideA.id); });
+      act(() => { store.current.selectThread(outsideB.id); });
+      await act(async () => { resolveB(detail(outsideB, "newest")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(outsideB.id));
+      await act(async () => { resolveA(detail(outsideA, "stale")); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(outsideB.id);
+      expect(store.current.detail?.messages[0]?.parts).toEqual([{ type: "text", text: "newest" }]);
+      expect(window.location.pathname).toBe("/");
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.threads.some((item) => item.id === outsideA.id)).toBe(false);
+    });
+
+    it.each([
+      ["network rejection", new Error("stale failure")],
+      ["not-found rejection", new ApiError("Conversation not found.", 404, "thread_not_found")],
+    ])("ignores an old unlisted %s after a newer navigation settles", async (_label, failure) => {
+      const outsideA = thread("outside-a", "alpha");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let rejectA!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === outsideA.id) {
+          return new Promise((_resolve, reject) => { rejectA = reject; });
+        }
+        return Promise.resolve(detail(
+          threadId === betaThread.id ? betaThread : alphaThread,
+          threadId === betaThread.id ? "beta" : "alpha",
+        ));
+      });
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      act(() => { store.current.selectThread(outsideA.id); });
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      await act(async () => { rejectA(failure); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(betaThread.id);
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("does not let a late create response take navigation back from another agent", async () => {
+      const created = thread("created-late", "alpha");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveCreate!: (answer: ThreadSummary) => void;
+      vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+        resolveCreate = resolve;
+      }));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      const creating = store.current.createThread();
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      await act(async () => {
+        resolveCreate(created);
+        await creating;
+      });
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(betaThread.id);
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(store.current.threads.some((item) => item.id === created.id)).toBe(true);
+    });
+
     it("opens the conversation the operator last had with the agent they switch to", async () => {
       localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ beta: "beta-older" }));
       const olderBeta = thread("beta-older", "beta", { updatedAt: "2026-07-16T09:00:00.000Z" });
@@ -3410,6 +4146,39 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.thread.id).toBe("alpha-thread");
       expect(JSON.parse(localStorage.getItem(SELECTED_THREADS_STORAGE_KEY) ?? "{}"))
         .toEqual({ alpha: "alpha-thread" });
+    });
+
+    it("keeps an uncached replacement for a restored archived conversation owned", async () => {
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: archivedElsewhere.id }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      let replacementReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === archivedElsewhere.id) return detail(archivedElsewhere, "archived");
+        replacementReads += 1;
+        if (replacementReads === 1) throw new Error("restored replacement unavailable");
+        return detail(alphaThread, "replacement");
+      });
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.selectionError).toBe("restored replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      expect(store.current.selectionLoading).toBe(false);
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(replacementReads).toBe(2);
     });
 
     it("keeps an archived conversation the operator opened themselves", async () => {
@@ -4309,7 +5078,8 @@ describe("ConsoleStoreProvider integration", () => {
       expect(screen.getByRole("group", { name: "Exec background job running" }))
         .toHaveClass("is-running");
       expect(view.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
-      expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(0);
       expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
       expect(screen.getByRole("combobox", { name: "Message" }))
         .toHaveAttribute("placeholder", "Message Alpha…");
@@ -4605,6 +5375,8 @@ describe("ConsoleStoreProvider integration", () => {
 
       await waitFor(() => expect(store.current.selectedThreadId).toBeNull());
       expect(store.current.actionError).toBe("This conversation was deleted.");
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
 
       // The read the selection started is answered the way a server answers for
@@ -4614,6 +5386,8 @@ describe("ConsoleStoreProvider integration", () => {
         await new Promise((resolve) => { setTimeout(resolve, 0); });
       });
       expect(store.current.detail).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
       expect([...store.current.threads].map((item) => item.id).sort())
         .toEqual(["alpha-thread", "other-thread"]);
     });
@@ -7299,7 +8073,13 @@ describe("ConsoleStoreProvider integration", () => {
         { timeout: HYDRATION_DEADLINE_MS + 3_000 },
       );
       await waitFor(
-        () => expect(screen.queryByTestId("kept-m1")).not.toBeNull(),
+        () => {
+          expect(screen.queryByTestId("kept-m1")).not.toBeNull();
+          // The transcript commits before StoreProbe's passive effect publishes
+          // the matching context value to this closure. Wait for both views of
+          // the same restored projection before making synchronous assertions.
+          expect(store.current.bootstrap).not.toBeNull();
+        },
         { timeout: HYDRATION_DEADLINE_MS + 3_000 },
       );
 

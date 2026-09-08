@@ -4,9 +4,10 @@ import { useProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobProjection } from "../types";
 import {
   ProcessJobCard,
-  processJobSupersedes,
+  mergeProcessJobProjection,
   TERMINAL_PROCESS_JOB_STATES,
 } from "./ProcessJob";
+import { Icon } from "./Icon";
 
 const isActive = (job: ProcessJobProjection): boolean =>
   !TERMINAL_PROCESS_JOB_STATES.has(job.state);
@@ -31,7 +32,7 @@ export function ProcessJobStack() {
         const live = current.get(part.job.jobId);
         next.set(
           part.job.jobId,
-          live === undefined || processJobSupersedes(live, part.job) ? part.job : live,
+          live === undefined ? part.job : mergeProcessJobProjection(live, part.job),
         );
       }
       return next;
@@ -41,9 +42,10 @@ export function ProcessJobStack() {
   const onProjectionChange = useCallback((projection: ProcessJobProjection) => {
     setLiveByJobId((current) => {
       const previous = current.get(projection.jobId);
-      if (previous !== undefined && !processJobSupersedes(previous, projection)) return current;
+      const merged = previous === undefined ? projection : mergeProcessJobProjection(previous, projection);
+      if (merged === previous) return current;
       const next = new Map(current);
-      next.set(projection.jobId, projection);
+      next.set(projection.jobId, merged);
       return next;
     });
   }, []);
@@ -78,7 +80,7 @@ export function ProcessJobStack() {
             onClick={() => setHistoryOpen(!historyOpen)}
           >
             <span>History</span>
-            <span className="process-job-stack-chevron" aria-hidden="true">⌄</span>
+            <Icon className="process-job-stack-chevron" name="chevron-down" size={13} />
           </button>
         )}
       </div>

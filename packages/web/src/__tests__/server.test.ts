@@ -72,6 +72,14 @@ async function createThread(baseUrl: string, sourceId: string): Promise<string> 
   return ((await json(response)).thread as { id: string }).id;
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for server state.");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}
+
 interface ScopedBootstrap {
   readonly threads: readonly { readonly id: string; readonly sourceId: string }[];
   readonly threadsSourceId: string | null;
@@ -1695,6 +1703,91 @@ describe("web HTTP server", () => {
     expect(JSON.stringify(message.parts)).not.toContain("mono-agent-artifact");
   });
 
+  it("receipts a durably admitted process-job follow-up before its provider turn completes", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const { baseUrl, handle } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+      }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const processJob = fakeProcessJob({
+      conversationId: `web:${threadId}`,
+      state: "succeeded",
+    });
+    const notification = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: processJob.wake.deliveryKey,
+      threadId,
+      processJob,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    const delivery = deliverWebNotification(notification, {
+      stateDir: handle.stateDir,
+      timeoutMs: 100,
+    });
+
+    try {
+      await expect(delivery).resolves.toEqual({
+        threadId,
+        duplicate: false,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(stream).toBeDefined();
+      expect(turnBodies).toHaveLength(1);
+
+      const paths = await prepareWebStatePaths({ stateDir: handle.stateDir });
+      const raw = new DatabaseSync(paths.database, { readOnly: true });
+      const claim = raw.prepare(`
+        SELECT state, disposition, turn_id AS turnId
+        FROM process_job_wake_deliveries
+        WHERE source_id = ? AND job_id = ?
+      `).get("agent-one", processJob.jobId) as unknown as {
+        state: string;
+        disposition: string | null;
+        turnId: string | null;
+      };
+      const turnBeforeCompletion = raw.prepare("SELECT status FROM turns WHERE id = ?")
+        .get(claim.turnId) as unknown as { status: string };
+      raw.close();
+      expect(claim).toMatchObject({ state: "completed", disposition: "follow_up", turnId: expect.any(String) });
+      expect(turnBeforeCompletion).toEqual({ status: "running" });
+
+      await expect(deliverWebNotification(notification, {
+        stateDir: handle.stateDir,
+        timeoutMs: 100,
+      })).resolves.toEqual({
+        threadId,
+        duplicate: true,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Worker result processed" })}\n`));
+      stream?.close();
+      stream = undefined;
+      await waitFor(() => {
+        const database = new DatabaseSync(paths.database, { readOnly: true });
+        const turn = database.prepare("SELECT status FROM turns WHERE id = ?").get(claim.turnId) as unknown as {
+          status: string;
+        } | undefined;
+        database.close();
+        return turn?.status === "complete";
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      stream?.error(new Error("test cleanup"));
+      await delivery.catch(() => undefined);
+    }
+  });
+
   it("accepts a live follow-up for the active web turn and exposes its applied status", async () => {
     const encoder = new TextEncoder();
     let finishTurn = () => undefined;
@@ -1756,7 +1849,185 @@ describe("web HTTP server", () => {
       conversationId: `web:${thread.id}`,
       body: expect.objectContaining({ text: "Use the smaller scope" }),
     }]);
+    const rejectedSubmissionId = "22222222-2222-4222-8222-222222222222";
+    const submissionsPath = `${baseUrl}/api/v1/threads/${thread.id}/submissions`;
+    const rejected = await fetch(submissionsPath, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        submissionId: rejectedSubmissionId,
+        text: "Keep this draft",
+        attachmentIds: ["staged-upload"],
+      }),
+    });
+    expect(rejected.status).toBe(409);
+    const rejectedReceipt = await json(rejected);
+    expect(rejectedReceipt).toMatchObject({
+      submissionId: rejectedSubmissionId,
+      threadId: thread.id,
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+    const recoveredRejection = await fetch(`${submissionsPath}/${rejectedSubmissionId}`);
+    expect(recoveredRejection.status).toBe(200);
+    expect(await json(recoveredRejection)).toEqual(rejectedReceipt);
     finishTurn();
+  });
+
+  it("serves one idempotent no-store submission receipt and validates its UUID on POST and GET", async () => {
+    const turns: Record<string, unknown>[] = [];
+    const { baseUrl, root } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const submissionId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+    const uppercaseSubmissionId = submissionId.toUpperCase();
+    const path = `${baseUrl}/api/v1/threads/${threadId}/submissions`;
+    const mutation = { "content-type": "application/json", origin: baseUrl };
+    const body = JSON.stringify({ submissionId: uppercaseSubmissionId, text: "One send" });
+
+    const first = await fetch(path, { method: "POST", headers: mutation, body });
+    expect(first.status).toBe(202);
+    expect(first.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    const receipt = await json(first) as Record<string, unknown> & {
+      message: { id: string };
+      turn: { id: string };
+    };
+    expect(receipt).toMatchObject({ submissionId, threadId, outcome: "turn" });
+
+    const replay = await fetch(path, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ submissionId, text: "One send" }),
+    });
+    expect(replay.status).toBe(202);
+    const replayReceipt = await json(replay) as Record<string, unknown> & {
+      message: { id: string };
+      turn: { id: string };
+    };
+    expect(replayReceipt).toMatchObject({ submissionId, threadId, outcome: "turn" });
+    expect(replayReceipt.message.id).toBe(receipt.message.id);
+    expect(replayReceipt.turn.id).toBe(receipt.turn.id);
+    expect(turns).toHaveLength(1);
+
+    const recovered = await fetch(`${path}/${submissionId}`);
+    expect(recovered.status).toBe(200);
+    expect(recovered.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(recovered)).toEqual(replayReceipt);
+
+    const database = new DatabaseSync(join(root, "state", "state.sqlite"));
+    database.prepare(
+      "INSERT INTO thread_redirects (old_thread_id, new_thread_id, created_at) VALUES (?, ?, ?)",
+    ).run("legacy-submission-thread", threadId, new Date().toISOString());
+    database.close();
+    const aliasReplay = await fetch(
+      `${baseUrl}/api/v1/threads/legacy-submission-thread/submissions`,
+      { method: "POST", headers: mutation, body },
+    );
+    expect(aliasReplay.status).toBe(202);
+    expect(await json(aliasReplay)).toMatchObject({
+      submissionId,
+      threadId,
+      message: { id: receipt.message.id },
+      turn: { id: receipt.turn.id },
+    });
+    expect(turns).toHaveLength(1);
+
+    const secondThreadId = await createThread(baseUrl, "agent-one");
+    const isolated = await fetch(`${baseUrl}/api/v1/threads/${secondThreadId}/submissions`, {
+      method: "POST",
+      headers: mutation,
+      body,
+    });
+    expect(isolated.status).toBe(202);
+    expect(await json(isolated)).toMatchObject({ submissionId, threadId: secondThreadId, outcome: "turn" });
+    expect(turns).toHaveLength(2);
+
+    const conflict = await fetch(path, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ submissionId: uppercaseSubmissionId, text: "Different content" }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(conflict.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(conflict)).toMatchObject({ error: { code: "submission_conflict" } });
+
+    for (const response of [
+      await fetch(path, {
+        method: "POST",
+        headers: mutation,
+        body: JSON.stringify({ submissionId: "not-a-uuid", text: "No" }),
+      }),
+      await fetch(`${path}/not-a-uuid`),
+    ]) {
+      expect(response.status).toBe(400);
+      expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+      expect(await json(response)).toMatchObject({ error: { code: "invalid_request" } });
+    }
+
+    const malformed = await fetch(path, { method: "POST", headers: mutation, body: "{" });
+    expect(malformed.status).toBe(400);
+    expect(malformed.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+
+    const unknown = await fetch(`${path}/22222222-2222-4222-8222-222222222222`);
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+
+    const crossOrigin = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example" },
+      body,
+    });
+    expect(crossOrigin.status).toBe(403);
+  });
+
+  it("rejects oversized formatted submissions before receipt, turn, or dispatch admission", async () => {
+    const turns: Record<string, unknown>[] = [];
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ text: "Source prompt" }),
+    });
+    let sourceMessageId: string | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`)) as {
+        thread: { runState: { status: string } };
+        messages: Array<{ id: string }>;
+      };
+      if (detail.thread.runState.status === "complete") {
+        sourceMessageId = detail.messages.at(-1)?.id;
+        break;
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    expect(sourceMessageId).toEqual(expect.any(String));
+    const submissionId = "44444444-4444-4444-8444-444444444444";
+    const path = `${baseUrl}/api/v1/threads/${threadId}/submissions`;
+
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({
+        submissionId,
+        text: "x".repeat(199_990),
+        quote: { text: "First line", messageId: sourceMessageId },
+      }),
+    });
+    expect(response.status).toBe(413);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(response)).toMatchObject({ error: { code: "turn_text_too_large" } });
+    expect(turns).toHaveLength(1);
+
+    const receipt = await fetch(`${path}/${submissionId}`);
+    expect(receipt.status).toBe(404);
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+    expect(detail).toMatchObject({ thread: { runState: { status: "complete" } } });
+    expect((detail.messages as unknown[])).toHaveLength(2);
   });
 
   it("proxies pending and submitted AskUser state for a web conversation", async () => {

@@ -120,6 +120,50 @@ interface ThreadRow {
   run_effort: string | null;
 }
 
+interface WebSubmissionRow {
+  thread_id: string;
+  submission_id: string;
+  payload_sha256: string;
+  outcome: "turn" | "live-input" | "rejected";
+  reason: StoredWebSubmissionReason | null;
+  message_id: string | null;
+  turn_id: string | null;
+  input_id: string | null;
+  created_at: string;
+}
+
+export type StoredWebSubmissionReason =
+  | "active_attachments_unsupported"
+  | "unsupported_targeting"
+  | "closed_before_dispatch"
+  | "operator_inactive"
+  | "operator_unsupported"
+  | "operator_too_large"
+  | "operator_full"
+  | "operator_invalid"
+  | "mailbox_unsupported"
+  | "mailbox_closed"
+  | "mailbox_failed";
+
+export interface StoredWebSubmission {
+  readonly threadId: string;
+  readonly submissionId: string;
+  readonly payloadSha256: string;
+  readonly outcome: WebSubmissionRow["outcome"];
+  readonly reason?: NonNullable<WebSubmissionRow["reason"]>;
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly inputId?: string;
+}
+
+export interface NewStoredWebSubmission {
+  readonly outcome: WebSubmissionRow["outcome"];
+  readonly reason?: NonNullable<WebSubmissionRow["reason"]>;
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly inputId?: string;
+}
+
 interface NotificationDeliveryRow {
   source_id: string;
   delivery_key: string;
@@ -1902,6 +1946,11 @@ export class WebStore {
     return { kind: "new" };
   }
 
+  /**
+   * Confirm the wake's delivery path, independently of the associated turn's
+   * eventual outcome. `completed/follow_up` means the exact turn was durably
+   * admitted; it does not mean that turn completed successfully.
+   */
   completeProcessJobWake(input: {
     readonly sourceId: string;
     readonly jobId: string;
@@ -1968,16 +2017,17 @@ export class WebStore {
     `).run(deliveryKey, turnId);
   }
 
-  /** Release a reservation only while no operator delivery has begun. */
+  /** Release a reservation only while no operator delivery has begun, proving the exact claim was removed. */
   abandonProcessJobWake(input: {
     readonly sourceId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
-  }): void {
-    this.database.prepare(`
+  }): boolean {
+    const result = this.database.prepare(`
       DELETE FROM process_job_wake_deliveries
       WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
     `).run(input.sourceId, input.jobId, input.deliveryKey);
+    return result.changes === 1;
   }
 
   /** Durably claim one Monitor wake before touching the operator. */
@@ -2629,12 +2679,13 @@ export class WebStore {
           UNION ALL SELECT 1 FROM turns WHERE thread_id = ?
           UNION ALL SELECT 1 FROM attachments WHERE thread_id = ?
           UNION ALL SELECT 1 FROM live_inputs WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM web_submissions WHERE thread_id = ?
           UNION ALL SELECT 1 FROM process_job_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM monitor_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM notification_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM push_events WHERE thread_id = ?
           LIMIT 1
-        `).get(id, id, id, id, id, id, id, id) !== undefined;
+        `).get(id, id, id, id, id, id, id, id, id) !== undefined;
         if (hasContent) {
           throw new WebConsoleError(
             "thread_not_empty",
@@ -3016,7 +3067,12 @@ export class WebStore {
     };
   }
 
-  reserveLiveInput(threadId: string, text: string): ReserveStoredLiveInputResult {
+  reserveLiveInput(
+    threadId: string,
+    text: string,
+    quote?: WebQuote,
+    operatorText = text,
+  ): ReserveStoredLiveInputResult {
     threadId = this.resolveThreadId(threadId);
     const thread = this.requireThread(threadId);
     if (thread.archivedAt !== null) {
@@ -3029,12 +3085,20 @@ export class WebStore {
     if (text.trim().length === 0) {
       throw new WebConsoleError("empty_turn", "Enter a message.", 400);
     }
-    if (text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+    if (operatorText.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
       throw new WebConsoleError(
         "turn_text_too_large",
         `A live follow-up may contain at most ${AGENT_LIVE_INPUT_MAX_CHARACTERS} characters.`,
         413,
       );
+    }
+    if (quote !== undefined) {
+      const source = this.database.prepare(
+        `SELECT id FROM messages WHERE id = ? AND thread_id = ? AND ${visibleMessageSql("messages")}`,
+      ).get(quote.messageId, threadId);
+      if (quote.text.trim().length === 0 || source === undefined) {
+        throw new WebConsoleError("invalid_quote", "The quoted message does not belong to this conversation.", 400);
+      }
     }
     const usage = this.database.prepare(
       "SELECT COUNT(*) AS count FROM live_inputs WHERE thread_id = ?",
@@ -3058,6 +3122,9 @@ export class WebStore {
     const effort = active === undefined ? thread.runEffort : active.effort;
     const parts: WebMessagePart[] = [
       liveInputTelemetry(status === "offered" ? "pending" : "queued"),
+      ...(quote === undefined
+        ? []
+        : [{ type: "telemetry" as const, event: QUOTE_TELEMETRY_EVENT, data: quote }]),
       { type: "text", text },
     ];
     this.transaction(() => {
@@ -3074,7 +3141,7 @@ export class WebStore {
         threadId,
         messageId,
         active?.id ?? null,
-        text,
+        operatorText,
         model,
         effort,
         status,
@@ -3115,6 +3182,11 @@ export class WebStore {
     return this.requireMessage(row.message_id);
   }
 
+  storedLiveInput(id: string): StoredLiveInput | undefined {
+    const row = this.getLiveInput(id);
+    return row === undefined ? undefined : mapLiveInput(row);
+  }
+
   markLiveInputUncertain(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
@@ -3141,7 +3213,7 @@ export class WebStore {
     });
   }
 
-  queueLiveInput(id: string): WebMessage | undefined {
+  queueLiveInput(id: string, submissionReason?: StoredWebSubmissionReason): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
     const message = this.requireMessage(row.message_id);
@@ -3152,6 +3224,12 @@ export class WebStore {
         SET status = 'queued', active_turn_id = NULL, dispatch_started_at = NULL, updated_at = ?
         WHERE id = ?
       `).run(now, id);
+      if (submissionReason !== undefined) {
+        this.database.prepare(`
+          UPDATE web_submissions SET reason = ?
+          WHERE input_id = ? AND outcome = 'live-input' AND reason IS NULL
+        `).run(submissionReason, id);
+      }
       this.writeMessageParts(
         row.message_id,
         withLiveInputStatus(message.parts, "queued"),
@@ -3965,6 +4043,22 @@ export class WebStore {
       );
       CREATE INDEX IF NOT EXISTS live_inputs_by_thread
         ON live_inputs(thread_id, status, created_at);
+      CREATE TABLE IF NOT EXISTS web_submissions (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        submission_id TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('turn', 'live-input', 'rejected')),
+        reason TEXT CHECK (reason IN (
+          'active_attachments_unsupported', 'unsupported_targeting', 'closed_before_dispatch',
+          'operator_inactive', 'operator_unsupported', 'operator_too_large', 'operator_full', 'operator_invalid',
+          'mailbox_unsupported', 'mailbox_closed', 'mailbox_failed'
+        )),
+        message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        input_id TEXT REFERENCES live_inputs(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (thread_id, submission_id)
+      );
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
         thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
@@ -4568,6 +4662,10 @@ export class WebStore {
         }
         if (row.dispatch_started_at === null) {
           updateInput.run(now, row.id);
+          this.database.prepare(`
+            UPDATE web_submissions SET reason = 'closed_before_dispatch'
+            WHERE input_id = ? AND outcome = 'live-input' AND reason IS NULL
+          `).run(row.id);
           this.writeMessageParts(
             row.message_id,
             withLiveInputStatus(parseParts(persisted.parts_json), "queued"),
@@ -5225,8 +5323,65 @@ export class WebStore {
       .run(key, value);
   }
 
+  private transactionDepth = 0;
+
+  claimWebSubmission(input: {
+    readonly threadId: string;
+    readonly submissionId: string;
+    readonly payloadSha256: string;
+    readonly create: () => NewStoredWebSubmission;
+  }): { readonly created: boolean; readonly submission: StoredWebSubmission } {
+    return this.transaction(() => {
+      const threadId = this.resolveThreadId(input.threadId);
+      this.requireThread(threadId);
+      const existing = this.database.prepare(
+        "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
+      ).get(threadId, input.submissionId) as unknown as WebSubmissionRow | undefined;
+      if (existing !== undefined) {
+        if (existing.payload_sha256 !== input.payloadSha256) {
+          throw new WebConsoleError("submission_conflict", "Submission id was already used for different content.", 409);
+        }
+        return { created: false, submission: mapWebSubmission(existing) };
+      }
+      const created = input.create();
+      const now = this.now();
+      this.database.prepare(`
+        INSERT INTO web_submissions (
+          thread_id, submission_id, payload_sha256, outcome, reason, message_id, turn_id, input_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        threadId,
+        input.submissionId,
+        input.payloadSha256,
+        created.outcome,
+        created.reason ?? null,
+        created.messageId ?? null,
+        created.turnId ?? null,
+        created.inputId ?? null,
+        now,
+      );
+      return {
+        created: true,
+        submission: mapWebSubmission(this.database.prepare(
+          "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
+        ).get(threadId, input.submissionId) as unknown as WebSubmissionRow),
+      };
+    });
+  }
+
+  webSubmission(threadId: string, submissionId: string): StoredWebSubmission | undefined {
+    threadId = this.resolveThreadId(threadId);
+    this.requireThread(threadId);
+    const row = this.database.prepare(
+      "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
+    ).get(threadId, submissionId) as unknown as WebSubmissionRow | undefined;
+    return row === undefined ? undefined : mapWebSubmission(row);
+  }
+
   private transaction<T>(operation: () => T): T {
+    if (this.transactionDepth > 0) return operation();
     this.database.exec("BEGIN IMMEDIATE");
+    this.transactionDepth += 1;
     try {
       const result = operation();
       this.database.exec("COMMIT");
@@ -5234,12 +5389,27 @@ export class WebStore {
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
+    } finally {
+      this.transactionDepth -= 1;
     }
   }
 
   private now(): string {
     return this.clock().toISOString();
   }
+}
+
+function mapWebSubmission(row: WebSubmissionRow): StoredWebSubmission {
+  return {
+    threadId: row.thread_id,
+    submissionId: row.submission_id,
+    payloadSha256: row.payload_sha256,
+    outcome: row.outcome,
+    ...(row.reason === null ? {} : { reason: row.reason }),
+    ...(row.message_id === null ? {} : { messageId: row.message_id }),
+    ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
+    ...(row.input_id === null ? {} : { inputId: row.input_id }),
+  };
 }
 
 function mapPushSubscriptionStatus(row: PushSubscriptionRow): WebPushSubscriptionStatus {
@@ -5927,10 +6097,10 @@ function applyEvent(
       toolName: event.name ?? existingToolName(parts, event.id) ?? "Tool",
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
       ...(event.content === undefined ? {} : { result: event.content }),
-      // `result` is the model-facing text and cannot answer "what did this tool
-      // actually decide". The AskUser card needs `interactionId`/`answered` to
-      // re-render an answered question after a reload, so keep the structured
-      // payload beside the prose rather than reparsing the sentence.
+      // `result` is model-facing and cannot answer "what did this tool actually
+      // decide". Keep bounded MCP and canonical host outcomes beside the prose:
+      // AskUser needs its answer identity after reload, and process-job launches
+      // need their exact causal receipt rather than reparsing a sentence.
       ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
       ...(executionMs === undefined ? {} : { executionMs }),
       status,

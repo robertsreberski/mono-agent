@@ -326,12 +326,13 @@ describe("OperatorClient", () => {
     });
   });
 
-  it("intersects additive reply attachment and MCP Apps capabilities", async () => {
+  it("intersects additive targeting, reply attachment, and MCP Apps capabilities", async () => {
     const client = new OperatorClient({
       baseUrl: "http://127.0.0.1:1234/gui",
       fetchImpl: (async () => Response.json({
         schema: 1,
         capabilities: {
+          liveInputTargeting: { version: 1 },
           replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 },
           mcpApps: {
             bridgeVersion: 1,
@@ -343,6 +344,7 @@ describe("OperatorClient", () => {
     });
 
     await expect(client.info()).resolves.toMatchObject({
+      supportsLiveInputTargeting: true,
       replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 },
       mcpApps: {
         bridgeVersion: 1,
@@ -508,6 +510,8 @@ describe("OperatorClient", () => {
       text: "Use the new constraint",
       receivedAt: "2026-07-21T09:00:00.000Z",
       deliveryKey: "process-job:job-7",
+      targetTurnId: "web-turn-7",
+      targetRunId: "run-7",
     })).resolves.toEqual({ status: "applied", runId: "run-7" });
     expect(request).toEqual({
       url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Athread%2Fone/live-input",
@@ -516,6 +520,8 @@ describe("OperatorClient", () => {
         text: "Use the new constraint",
         receivedAt: "2026-07-21T09:00:00.000Z",
         deliveryKey: "process-job:job-7",
+        targetTurnId: "web-turn-7",
+        targetRunId: "run-7",
       },
     });
   });
@@ -634,13 +640,18 @@ describe("OperatorClient", () => {
       }) as typeof fetch,
     });
     const frames: unknown[] = [];
+    let admitted = false;
     const result = await client.turn({
       conversationId: "web:thread",
       text: "prompt",
       attachments: [{ kind: "document", mimeType: "text/plain", data: "aGk=", name: "a.txt", sizeBytes: 2 }],
       metadata: { web: { model: "p/m" }, tui: { model: "p/m" } },
       signal: new AbortController().signal,
-      onFrame(frame) { frames.push(frame); },
+      onAdmitted() { admitted = true; },
+      onFrame(frame) {
+        expect(admitted).toBe(true);
+        frames.push(frame);
+      },
     });
 
     expect(requestBody).toMatchObject({ client: "web", conversationId: "web:thread", text: "prompt" });

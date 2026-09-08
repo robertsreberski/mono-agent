@@ -66,6 +66,34 @@ import {
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
 
+const TARGET_WAITER_TIMEOUT_MS = 10 * 60 * 1_000;
+const MAX_TARGET_WAITERS_PER_OPERATION = 100;
+const MAX_TARGET_WAITERS_GLOBAL = 1_000;
+
+type LiveInputTargetWaiter = (runId: string | undefined) => void;
+
+interface LiveInputTarget {
+  state: "pending" | "ready" | "closed";
+  runId?: string;
+  readonly waiters: Set<LiveInputTargetWaiter>;
+}
+
+function liveInputTargetKey(conversationId: string, turnId: string): string {
+  return `${conversationId.length}:${conversationId}${turnId}`;
+}
+
+function settleLiveInputOffer(res: Response, offer: AgentLiveInputOffer): void {
+  if (offer.status === "unavailable") {
+    res.status(200).json(offer);
+    return;
+  }
+  void offer.settled.then((settlement) => {
+    if (!res.writableEnded) res.status(200).json(settlement);
+  }).catch(() => {
+    if (!res.writableEnded) res.status(200).json({ status: "uncertain", reason: "delivery_uncertain" });
+  });
+}
+
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT, MAX_FRAME_BYTES, TUI_WIRE_SCHEMA } from "./constants.js";
 import {
   CronOperatorError,
@@ -337,6 +365,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const app = express();
   const server = createServer(app);
   const activeTurns = new Set<AbortController>();
+  const liveInputTargets = new Map<string, LiveInputTarget>();
+  let pendingTargetWaiters = 0;
+  const settleTarget = (target: LiveInputTarget, runId: string | undefined): void => {
+    target.state = runId === undefined ? "closed" : "ready";
+    if (runId === undefined) delete target.runId;
+    else target.runId = runId;
+    for (const waiter of [...target.waiters]) waiter(runId);
+  };
   let stopping = false;
   let stopPromise: Promise<void> | undefined;
   const infoPath = `${basePath}/v1/info`;
@@ -409,6 +445,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                 }
               : {}),
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
+            ...(typeof options.responder.offerLiveInput === "function"
+              && options.responder.liveInputOwnership?.version === 1
+              ? { liveInputTargeting: { version: 1 } }
+              : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
             ...(typeof options.responder.importContext === "function"
               ? { contextImport: { version: AGENT_CONTEXT_IMPORT_VERSION, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } }
@@ -860,6 +900,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         && (typeof body.deliveryKey !== "string"
           || body.deliveryKey.trim().length === 0
           || body.deliveryKey.length > 1_024))
+      || (body.targetTurnId !== undefined
+        && (typeof body.targetTurnId !== "string" || body.targetTurnId.trim().length === 0 || body.targetTurnId.length > 4_096))
+      || (body.targetRunId !== undefined
+        && (typeof body.targetRunId !== "string" || body.targetRunId.trim().length === 0 || body.targetRunId.length > 4_096))
     ) {
       next(new TuiAdapterError(
         "invalid_request",
@@ -872,6 +916,68 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       res.status(200).json({ status: "unavailable", reason: "unsupported" });
       return;
     }
+    const inputId = body.id as string;
+    const inputText = body.text as string;
+    const receivedAt = body.receivedAt as string;
+    const targetTurnId = typeof body.targetTurnId === "string" ? body.targetTurnId : undefined;
+    const explicitRunId = typeof body.targetRunId === "string" ? body.targetRunId : undefined;
+    if (targetTurnId !== undefined) {
+      const target = liveInputTargets.get(liveInputTargetKey(conversationId, targetTurnId));
+      if (target === undefined || target.state === "closed") {
+        res.status(200).json({ status: "unavailable", reason: "inactive" });
+        return;
+      }
+      const offerToTarget = (runId: string | undefined): void => {
+        if (res.writableEnded || res.destroyed) return;
+        if (runId === undefined || (explicitRunId !== undefined && explicitRunId !== runId)) {
+          res.status(200).json({ status: "unavailable", reason: "inactive" });
+          return;
+        }
+        try {
+          settleLiveInputOffer(res, options.responder.offerLiveInput!({
+            conversationId,
+            id: inputId,
+            text: inputText,
+            receivedAt,
+            targetRunId: runId,
+            ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
+          }));
+        } catch (error) {
+          next(error);
+        }
+      };
+      if (target.state === "ready") {
+        offerToTarget(target.runId);
+        return;
+      }
+      if (target.waiters.size >= MAX_TARGET_WAITERS_PER_OPERATION || pendingTargetWaiters >= MAX_TARGET_WAITERS_GLOBAL) {
+        res.status(200).json({ status: "unavailable", reason: "full" });
+        return;
+      }
+      pendingTargetWaiters += 1;
+      let detached = false;
+      let timer: NodeJS.Timeout | undefined;
+      const abort = (): void => { detach(); };
+      const settle: LiveInputTargetWaiter = (runId) => {
+        detach();
+        offerToTarget(runId);
+      };
+      const detach = (): void => {
+        if (detached) return;
+        detached = true;
+        if (timer !== undefined) clearTimeout(timer);
+        req.off("aborted", abort);
+        res.off("close", abort);
+        target.waiters.delete(settle);
+        pendingTargetWaiters -= 1;
+      };
+      target.waiters.add(settle);
+      timer = setTimeout(() => { settle(undefined); }, TARGET_WAITER_TIMEOUT_MS);
+      timer.unref?.();
+      req.once("aborted", abort);
+      res.once("close", abort);
+      return;
+    }
     let offer: AgentLiveInputOffer;
     try {
       offer = options.responder.offerLiveInput({
@@ -879,21 +985,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         id: body.id,
         text: body.text,
         receivedAt: body.receivedAt,
+        ...(explicitRunId === undefined ? {} : { targetRunId: explicitRunId }),
         ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
       });
     } catch (error) {
       next(error);
       return;
     }
-    if (offer.status === "unavailable") {
-      res.status(200).json(offer);
-      return;
-    }
-    void offer.settled.then((settlement) => {
-      res.status(200).json(settlement);
-    }).catch(() => {
-      res.status(200).json({ status: "uncertain", reason: "delivery_uncertain" });
-    });
+    settleLiveInputOffer(res, offer);
   });
 
   app.get(askPath, (req, res) => {
@@ -1284,15 +1383,40 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   async function handleTurn(req: Request, res: Response): Promise<void> {
     const body = normalizeTurnBody(req.body, options.requestToolEnvironment);
+    const requestId = randomUUID();
+    const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+    const webTurnId = body.client === "web" && typeof web?.turnId === "string" && web.turnId.length > 0
+      ? web.turnId
+      : undefined;
+    const targetKey = webTurnId === undefined || options.responder.liveInputOwnership?.version !== 1
+      ? undefined
+      : liveInputTargetKey(body.conversationId, webTurnId);
+    if (targetKey !== undefined && liveInputTargets.has(targetKey)) {
+      throw new TuiAdapterError("invalid_request", "Web turn is already active.");
+    }
     const controller = new AbortController();
     activeTurns.add(controller);
     if (stopping) controller.abort(new Error("TUI adapter is stopping."));
-    const requestId = randomUUID();
+    let target: LiveInputTarget | undefined;
+    if (targetKey !== undefined) {
+      target = { state: "pending", waiters: new Set() };
+      liveInputTargets.set(targetKey, target);
+    }
     const request: AgentRequestBase = {
       conversationId: body.conversationId,
       text: body.text,
       abortSignal: controller.signal,
       metadata: requestMetadata(body, requestId),
+      ...(target === undefined ? {} : {
+        onLiveInputOwnership: (event) => {
+          if (target?.state === "closed") return;
+          if (event.status === "ready") {
+            settleTarget(target!, event.runId);
+          } else {
+            settleTarget(target!, undefined);
+          }
+        },
+      }),
       ...(body.attachments === undefined || body.attachments.length === 0
         ? {}
         : { attachments: body.attachments }),
@@ -1330,6 +1454,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         cancelled,
       }).catch(() => undefined);
     } finally {
+      if (target !== undefined) {
+        settleTarget(target, undefined);
+        if (targetKey !== undefined && liveInputTargets.get(targetKey) === target) liveInputTargets.delete(targetKey);
+      }
       activeTurns.delete(controller);
       res.end();
     }
@@ -1345,6 +1473,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     stop() {
       stopPromise ??= (async () => {
         stopping = true;
+        for (const target of liveInputTargets.values()) {
+          settleTarget(target, undefined);
+        }
+        liveInputTargets.clear();
         for (const controller of activeTurns) controller.abort(new Error("TUI adapter stopped."));
         await Promise.all([closeServerBounded(server), options.providerAuth?.stop()]);
         activeTurns.clear();

@@ -55,11 +55,14 @@ function MessagesHarness({
 }) {
   const presentation = projectProcessJobPresentation(
     coalesceMonitorWakeMessages(messages),
-    selectedModel,
+    { selectedModel, threadId: messages[0]?.threadId ?? null },
   );
   const convertMessage = useCallback(
-    (message: WebMessage) => convertWebMessage(message, { selectedModel }),
-    [selectedModel],
+    (message: WebMessage) => convertWebMessage(message, {
+      selectedModel,
+      processJobEvents: presentation.eventsByMessageId.get(message.id),
+    }),
+    [presentation.eventsByMessageId, selectedModel],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
@@ -1251,6 +1254,48 @@ describe("message actions", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("File expired.");
   });
 
+  it("renders causally attributed lifecycle rows in response Activity without duplicating the stack card", () => {
+    const job = processJob();
+    const origin: WebMessage = {
+      ...assistantMessage("complete"),
+      id: "origin",
+      parts: [
+        { type: "reasoning", text: "Prepare the background launch." },
+        {
+          type: "tool-call",
+          toolCallId: "launch",
+          toolName: "Exec",
+          status: "complete",
+          structuredResult: {
+            schema: "mono-agent.process-job-start-receipt.v1",
+            jobId: job.jobId,
+            tool: "Exec",
+            state: "running",
+            startedAt: job.timestamps.startedAt,
+          },
+        },
+        { type: "text", text: "The report is ready." },
+      ],
+    };
+    const carrier: WebMessage = {
+      ...origin,
+      id: "card",
+      parts: [{ type: "process-job", job }],
+    };
+    render(<MessagesHarness messages={[origin, carrier]} />);
+
+    expect(screen.getByRole("button", { name: "Activity" })).toHaveTextContent("4 steps");
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByRole("group", { name: "Exec job started" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Exec job succeeded" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".process-job-event")).toHaveLength(2);
+    expect(document.querySelectorAll(".message-assistant")).toHaveLength(1);
+    expect(document.querySelectorAll(".message-actions")).toHaveLength(1);
+    expect(screen.getByText("The report is ready.")).toBeVisible();
+    expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
+    expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
+  });
+
   it("does not retain job-only copy chrome for hidden attribution but keeps exceptional attribution", async () => {
     const attributed: WebMessage = {
       ...assistantMessage("complete"),
@@ -1519,7 +1564,8 @@ describe("message actions", () => {
       "is-job",
       "is-running",
     );
-    expect(container.querySelectorAll(".activity-dot")).toHaveLength(1);
+    expect(container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+    expect(container.querySelectorAll(".activity-dot")).toHaveLength(0);
     expect(container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
   });
 

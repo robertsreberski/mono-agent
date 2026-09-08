@@ -8,12 +8,15 @@ import { processJob } from "../test/fixtures";
 import type { ProcessJobState } from "../types";
 import {
   ProcessJobPart,
+  ProcessJobActivityEventPart,
+  mergeProcessJobProjection,
   processJobAdvances,
   processJobExitLabel,
   processJobStatus,
   processJobSupersedes,
   processJobThreadId,
   processJobTiming,
+  projectionSignature,
 } from "./ProcessJob";
 
 type ProcessJobProps = Parameters<typeof ProcessJobPart>[0];
@@ -175,6 +178,98 @@ describe("processJobSupersedes", () => {
     expect(processJobSupersedes(pending, processJob())).toBe(true);
     expect(processJobSupersedes(processJob(), processJob({ state: "failed" }))).toBe(false);
   });
+
+  it("monotonically merges same-state terminal evidence one field at a time", () => {
+    const empty = processJob({
+      timestamps: { ...processJob().timestamps, runtimeDeadlineAt: null, completedAt: null },
+      durationMs: null,
+      exitCode: null,
+      signal: null,
+    });
+    const completed = processJob({ ...empty, timestamps: { ...empty.timestamps, completedAt: "2026-07-17T10:00:03.000Z" } });
+    const duration = processJob({
+      ...empty,
+      timestamps: { ...empty.timestamps, runtimeDeadlineAt: "2026-07-17T10:30:01.000Z" },
+      durationMs: 2_000,
+      exitCode: 0,
+      signal: "SIGTERM",
+    });
+    const first = mergeProcessJobProjection(empty, completed);
+    const merged = mergeProcessJobProjection(first, duration);
+    expect(merged.timestamps.completedAt).toBe("2026-07-17T10:00:03.000Z");
+    expect(merged.durationMs).toBe(2_000);
+    expect(merged.exitCode).toBe(0);
+    expect(merged.signal).toBe("SIGTERM");
+    expect(merged.timestamps.runtimeDeadlineAt).toBe("2026-07-17T10:30:01.000Z");
+    expect(mergeProcessJobProjection(merged, empty)).toBe(merged);
+    expect(projectionSignature(merged)).not.toBe(projectionSignature(first));
+  });
+
+  it("rejects immutable identity changes and preserves byte/wake evidence independently", () => {
+    const current = processJob({
+      output: { ...processJob().output, stdoutBytes: 10, preview: "ten bytes" },
+      wake: { ...processJob().wake, attempts: 2 },
+    });
+    expect(mergeProcessJobProjection(current, processJob({ summary: "different" }))).toBe(current);
+    const regressed = processJob({
+      ...current,
+      output: { ...current.output, stdoutBytes: 1, preview: "x" },
+      wake: { ...current.wake, attempts: 1, state: "pending" },
+      timestamps: { ...current.timestamps, completedAt: "2026-07-17T10:00:05.000Z" },
+    });
+    const merged = mergeProcessJobProjection(current, regressed);
+    expect(merged.output).toBe(current.output);
+    expect(merged.wake).toBe(current.wake);
+    expect(merged.timestamps.completedAt).toBe(current.timestamps.completedAt);
+  });
+});
+
+describe("ProcessJobActivityEventPart", () => {
+  type EventProps = Parameters<typeof ProcessJobActivityEventPart>[0];
+  const eventPart = (data: unknown) =>
+    <ProcessJobActivityEventPart {...({ data } as unknown as EventProps)} />;
+
+  it("renders a pure semantic start row", () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    render(eventPart({
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:started",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Exec",
+      summary: "Generate the report",
+      phase: "started",
+      state: "running",
+      occurredAt: "2026-07-17T10:00:01.000Z",
+    }));
+    const row = screen.getByRole("group", { name: "Exec job started" });
+    expect(row).toHaveClass("is-job", "is-complete");
+    expect(row.querySelector(".activity-job-icon")).toBeInTheDocument();
+    expect(row.querySelector(".activity-dot")).toBeNull();
+    expect(row.querySelector("time")).toHaveAttribute("datetime", "2026-07-17T10:00:01.000Z");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("renders abnormal terminal facts and rejects malformed data", () => {
+    const { rerender } = render(eventPart({
+      schema: "mono-agent.process-job-activity-event.v1",
+      id: "process-job:job-1:terminal",
+      toolCallId: "launch-1",
+      jobId: "job-1",
+      tool: "Bash",
+      summary: "Build assets",
+      phase: "terminal",
+      state: "timed_out",
+      durationMs: 12_000,
+      exitCode: 137,
+      signal: "SIGKILL",
+    }));
+    const row = screen.getByRole("group", { name: "Bash job timed out" });
+    expect(row).toHaveClass("is-failed");
+    expect(row.querySelector(".activity-row-time")).toHaveTextContent("12.0s · exit 137 · SIGKILL");
+    rerender(eventPart({ schema: "wrong" }));
+    expect(screen.queryByRole("group")).toBeNull();
+  });
 });
 
 describe("ProcessJobPart", () => {
@@ -183,7 +278,8 @@ describe("ProcessJobPart", () => {
 
     const row = screen.getByRole("group", { name: "Exec background job succeeded" });
     expect(row).toHaveClass("activity-row", "is-job", "is-complete");
-    expect(row.querySelector(".activity-dot")).not.toBeNull();
+    expect(row.querySelector(".activity-job-icon")).toBeInTheDocument();
+    expect(row.querySelector(".activity-dot")).toBeNull();
     expect(within(row).getByText("Exec job")).toHaveClass("activity-row-label");
     expect(within(row).getByText("node worker.js --safe-summary")).toHaveClass("activity-row-summary");
     expect(row.querySelector(".activity-row-time")).toHaveTextContent("succeeded · 2s · exit 0");

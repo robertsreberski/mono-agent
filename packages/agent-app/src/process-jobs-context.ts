@@ -176,6 +176,7 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
       }
     },
     ...(responder.cancel === undefined ? {} : { cancel: responder.cancel.bind(responder) }),
+    ...(responder.liveInputOwnership === undefined ? {} : { liveInputOwnership: responder.liveInputOwnership }),
     ...(responder.offerLiveInput === undefined
       ? {}
       : {

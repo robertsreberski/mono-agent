@@ -8,6 +8,7 @@ import {
   registerServiceWorkerUpdates,
   resetServiceWorkerUpdates,
 } from "./service-worker-update";
+import { agent } from "./test/fixtures";
 import "./styles.css";
 
 const storeMock = vi.hoisted(() => ({
@@ -19,6 +20,8 @@ const storeMock = vi.hoisted(() => ({
   agents: [],
   visibleAgents: [],
   selectedAgent: null,
+  selectionLoading: false,
+  selectionError: null,
   selectedThread: null,
   hasRunningThread: false,
   showArchived: false,
@@ -37,6 +40,7 @@ const storeMock = vi.hoisted(() => ({
   clearCachedData: vi.fn(async () => undefined),
   clearError: vi.fn(),
   retry: vi.fn(),
+  retrySelection: vi.fn(),
   hasServerSnapshot: true,
 }));
 
@@ -85,6 +89,47 @@ import { App } from "./App";
 beforeEach(() => {
   localStorage.clear();
   document.title = "mono-agent";
+  storeMock.selectionLoading = false;
+  storeMock.selectionError = null;
+  storeMock.selectedAgent = null;
+  storeMock.createThread.mockReset().mockResolvedValue(undefined);
+});
+
+describe("App new-conversation shortcut", () => {
+  afterEach(() => {
+    storeMock.selectedAgent = null;
+    storeMock.selectionLoading = false;
+    storeMock.selectionError = null;
+  });
+
+  it("does not bypass an unresolved selection", () => {
+    storeMock.selectedAgent = agent("beta", { label: "Beta" }) as never;
+    storeMock.selectionLoading = true;
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+
+    expect(storeMock.createThread).not.toHaveBeenCalled();
+  });
+
+  it("does not bypass a failed selection", () => {
+    storeMock.selectedAgent = agent("beta", { label: "Beta" }) as never;
+    storeMock.selectionError = "bucket unavailable" as never;
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+
+    expect(storeMock.createThread).not.toHaveBeenCalled();
+  });
+
+  it("still opens a conversation once selection has settled", () => {
+    storeMock.selectedAgent = agent("beta", { label: "Beta" }) as never;
+    render(<App />);
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+
+    expect(storeMock.createThread).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("App agent sidebar toggle", () => {
@@ -283,6 +328,15 @@ describe("App snapshot failure", () => {
 });
 
 describe("App command palette", () => {
+  it("disables new conversation while the current selection has failed", () => {
+    storeMock.selectedAgent = agent("beta", { label: "Beta" }) as never;
+    storeMock.selectionError = "bucket unavailable" as never;
+    render(<App />);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+
+    expect(screen.getByRole("option", { name: /New conversation/iu })).toBeDisabled();
+  });
+
   it("gives the operator a way to clear what this browser has stored", async () => {
     // The console keeps recent conversations on the device now, so there has to
     // be one action that takes them off it -- and it has to say that it did.

@@ -318,9 +318,8 @@ export interface WebToolCall {
   readonly args?: unknown;
   readonly result?: unknown;
   /**
-   * An MCP tool's machine-readable result, when it returned one. `result` is the
-   * model-facing text and is lossy; renderers that must reason about the outcome
-   * (the AskUser card reads `interactionId`/`answered`) read this instead.
+   * A bounded machine-readable tool result, from MCP or a canonical host tool
+   * outcome. `result` is model-facing and lossy; consumers validate the schema here.
    */
   readonly structuredResult?: unknown;
   readonly status: WebToolCallStatus;
@@ -860,6 +859,33 @@ export interface StartWebTurnInput {
 
 export interface StartWebLiveInputInput {
   readonly text: string;
+}
+
+export interface StartWebSubmissionInput extends StartWebTurnInput {
+  readonly submissionId: string;
+}
+
+export interface WebSubmissionReceipt {
+  readonly submissionId: string;
+  readonly threadId: string;
+  readonly outcome: "turn" | "live-input" | "rejected";
+  readonly reason?:
+    | "active_attachments_unsupported"
+    | "unsupported_targeting"
+    | "closed_before_dispatch"
+    | "operator_inactive"
+    | "operator_unsupported"
+    | "operator_too_large"
+    | "operator_full"
+    | "operator_invalid"
+    | "mailbox_unsupported"
+    | "mailbox_closed"
+    | "mailbox_failed";
+  readonly disposition?: "pending" | "queued";
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly message?: WebMessage;
+  readonly turn?: WebRunState;
 }
 
 export interface WebLiveInputReceipt {

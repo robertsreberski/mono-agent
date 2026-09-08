@@ -514,7 +514,14 @@ export type AgentContinuationTurn = AgentContinuationTurnBase & (
     }
 );
 
+/** Host-only mailbox ownership; independent of HTTP and provider run lifetimes. */
+export type AgentLiveInputOwnership =
+  | { readonly status: "ready"; readonly runId: string }
+  | { readonly status: "closed"; readonly reason: "closed" | "unsupported" };
+
 export interface AgentRequestBase {
+  /** Never serialized into metadata, history, or prompts. */
+  readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
   readonly conversationId: string;
   readonly text: string;
   readonly abortSignal: AbortSignal;
@@ -743,10 +750,9 @@ export type AgentStreamEvent =
       readonly arguments?: unknown;
       readonly content?: unknown;
       /**
-       * An MCP tool's machine-readable result, when it returned one. `content` is the
-       * model-facing text and is deliberately lossy; a renderer that needs the tool's
-       * actual outcome fields (AskUser's `interactionId`/`answered`, for instance) must
-       * read them here. Bounded at the emitter — see `structuredContentFromToolResult`.
+       * A bounded machine-readable tool result, from MCP or a canonical host tool
+       * outcome. `content` is model-facing and deliberately lossy; consumers that need
+       * exact outcome fields read and validate their versioned schema here.
        */
       readonly structuredContent?: unknown;
       readonly isError?: boolean;
@@ -912,6 +918,7 @@ export interface AgentResponder<
   Stream extends AgentMessageStream = AgentMessageStream,
   Response extends AgentResponse = AgentResponse,
 > {
+  readonly liveInputOwnership?: { readonly version: 1 };
   respond(request: Request, stream: Stream): Promise<Response>;
   /**
    * Optional: offer a text follow-up to the active turn without starting a

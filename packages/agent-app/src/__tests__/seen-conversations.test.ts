@@ -29,13 +29,26 @@ describe("listSeenNotifyDestinations", () => {
     await summary("run-e", "webhook:req-1", "2026-06-19T08:00:00Z"); // synthetic → filtered out
     await summary("run-f", "telegram:-1001234567890", "2026-06-17T00:00:00Z");
     await summary("run-g", "whatsapp:15551234567", "2026-06-19T10:00:00Z"); // not notify-capable
+    await summary("run-h", "messenger:1234567890#2026-06-19", "2026-06-19T11:00:00Z"); // plugin, notify-capable
 
     const result = await listSeenNotifyDestinations(dir);
 
     expect(result).toEqual([
+      { conversationId: "messenger:1234567890", channelId: "messenger", lastSeen: "2026-06-19T11:00:00Z" },
       { conversationId: "slack:C1:171.5", channelId: "slack", lastSeen: "2026-06-19T09:00:00Z" },
       { conversationId: "telegram:42", channelId: "telegram", lastSeen: "2026-06-19T07:00:00Z" },
       { conversationId: "telegram:-1001234567890", channelId: "telegram", lastSeen: "2026-06-17T00:00:00Z" },
+    ]);
+  });
+
+  it("admits a sole Messenger sighting, so notify inference has a candidate", async () => {
+    await summary("run-a", "messenger:1234567890", "2026-06-19T11:00:00Z");
+
+    // Before this was derived from the shared capability registry, a lone
+    // Messenger sighting yielded zero candidates and `notify: true` silently
+    // skipped delivery.
+    expect(await listSeenNotifyDestinations(dir)).toEqual([
+      { conversationId: "messenger:1234567890", channelId: "messenger", lastSeen: "2026-06-19T11:00:00Z" },
     ]);
   });
 

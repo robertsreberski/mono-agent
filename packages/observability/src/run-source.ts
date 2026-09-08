@@ -1,6 +1,7 @@
 const CONVERSATION_ID_PREFIX_SOURCES: ReadonlyArray<readonly [string, string]> = [
   ["telegram:", "telegram"],
   ["slack:", "slack"],
+  ["messenger:", "messenger"],
   ["cron:", "cron"],
   ["webhook:", "webhook"],
   ["memory:", "memory"],
