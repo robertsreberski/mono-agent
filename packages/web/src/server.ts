@@ -173,6 +173,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("Cache-Control", "private, no-cache");
     next();
   });
+  app.use("/api/v1/threads/:id/submissions", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {
@@ -730,7 +734,6 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       const input = parseSubmission(req.body);
       const receipt = service.submit(pathParam(req.params.id), input);
-      res.setHeader("Cache-Control", "private, no-store, max-age=0");
       res.status(receipt.outcome === "rejected" ? 409 : 202).json(receipt);
     } catch (error) {
       next(error);
@@ -743,7 +746,6 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         pathParam(req.params.id),
         parseSubmissionId(pathParam(req.params.submissionId)),
       );
-      res.setHeader("Cache-Control", "private, no-store, max-age=0");
       res.status(200).json(receipt);
     } catch (error) {
       next(error);

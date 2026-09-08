@@ -1318,9 +1318,6 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   async function handleTurn(req: Request, res: Response): Promise<void> {
     const body = normalizeTurnBody(req.body, options.requestToolEnvironment);
-    const controller = new AbortController();
-    activeTurns.add(controller);
-    if (stopping) controller.abort(new Error("TUI adapter is stopping."));
     const requestId = randomUUID();
     const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
     const webTurnId = body.client === "web" && typeof web?.turnId === "string" && web.turnId.length > 0
@@ -1329,9 +1326,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     const targetKey = webTurnId === undefined || options.responder.liveInputOwnership?.version !== 1
       ? undefined
       : liveInputTargetKey(body.conversationId, webTurnId);
+    if (targetKey !== undefined && liveInputTargets.has(targetKey)) {
+      throw new TuiAdapterError("invalid_request", "Web turn is already active.");
+    }
+    const controller = new AbortController();
+    activeTurns.add(controller);
+    if (stopping) controller.abort(new Error("TUI adapter is stopping."));
     let target: LiveInputTarget | undefined;
     if (targetKey !== undefined) {
-      if (liveInputTargets.has(targetKey)) throw new TuiAdapterError("invalid_request", "Web turn is already active.");
       target = { state: "pending", waiters: new Set() };
       liveInputTargets.set(targetKey, target);
     }

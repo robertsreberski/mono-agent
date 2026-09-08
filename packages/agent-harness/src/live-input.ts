@@ -129,7 +129,11 @@ export function createLiveInputMailbox(runId: string, onClose?: () => void): Liv
       }
     }
     wakeConsumers();
-    onClose?.();
+    try {
+      onClose?.();
+    } catch {
+      // Terminal ownership notification is best-effort and cannot block cleanup.
+    }
   };
 
   return {

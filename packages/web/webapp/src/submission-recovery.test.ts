@@ -39,4 +39,15 @@ describe("submission recovery references", () => {
     expect(readSubmissionRecoveryReferences(sessionStorage)).toEqual([]);
     expect(sessionStorage.length).toBe(0);
   });
+
+  it("preserves every unresolved reference beyond the former arbitrary cap", () => {
+    const references = Array.from({ length: 40 }, (_, index) => ({
+      threadId: `thread-${index}`,
+      submissionId: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+    }));
+
+    for (const reference of references) rememberSubmissionRecoveryReference(sessionStorage, reference);
+
+    expect(readSubmissionRecoveryReferences(sessionStorage)).toEqual(references);
+  });
 });

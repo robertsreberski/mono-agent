@@ -1228,6 +1228,62 @@ describe("startTuiAdapter", () => {
     await readFrames(turnResponse);
   });
 
+  it("rejects repeated duplicate Web turn keys without leaking controllers or disturbing the original target", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          return {
+            status: "accepted",
+            settled: Promise.resolve({ status: "applied", runId: request.targetRunId! }),
+          };
+        },
+      },
+    });
+    const body = {
+      conversationId: "web:duplicate-target",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "same-web-turn" } },
+    };
+    const original = await postTurn(running.baseUrl, body);
+
+    for (let index = 0; index < 2; index += 1) {
+      const duplicate = await postTurn(running.baseUrl, body);
+      expect(duplicate.status).toBe(400);
+      await expect(duplicate.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    }
+    expect(activeRequest?.abortSignal.aborted).toBe(false);
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "original-run" });
+    const liveResponse = await fetch(`${running.baseUrl}/v1/conversations/web%3Aduplicate-target/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-original",
+        text: "Reach only the original",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "same-web-turn",
+      }),
+    });
+    expect(await liveResponse.json()).toEqual({ status: "applied", runId: "original-run" });
+
+    finishTurn();
+    await readFrames(original);
+    abortSpy.mockClear();
+    await running.stop();
+    expect(abortSpy).not.toHaveBeenCalled();
+    running = undefined;
+  });
+
   it("detaches a pending targeted offer on closure and never steers a successor", async () => {
     let activeRequest: AgentRequestBase | undefined;
     let finishTurn!: () => void;

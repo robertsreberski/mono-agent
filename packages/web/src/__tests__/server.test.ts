@@ -1852,6 +1852,7 @@ describe("web HTTP server", () => {
       body: JSON.stringify({ submissionId, text: "Different content" }),
     });
     expect(conflict.status).toBe(409);
+    expect(conflict.headers.get("cache-control")).toBe("private, no-store, max-age=0");
     expect(await json(conflict)).toMatchObject({ error: { code: "submission_conflict" } });
 
     for (const response of [
@@ -1863,8 +1864,17 @@ describe("web HTTP server", () => {
       await fetch(`${path}/not-a-uuid`),
     ]) {
       expect(response.status).toBe(400);
+      expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
       expect(await json(response)).toMatchObject({ error: { code: "invalid_request" } });
     }
+
+    const malformed = await fetch(path, { method: "POST", headers: mutation, body: "{" });
+    expect(malformed.status).toBe(400);
+    expect(malformed.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+
+    const unknown = await fetch(`${path}/22222222-2222-4222-8222-222222222222`);
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("cache-control")).toBe("private, no-store, max-age=0");
 
     const crossOrigin = await fetch(path, {
       method: "POST",

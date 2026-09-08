@@ -216,6 +216,38 @@ describe("AgentHarness", () => {
     })).toEqual({ status: "unavailable", reason: "inactive" });
   });
 
+  it("releases mailbox ownership when the host observer throws on terminal closure", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const runIds = ["run-terminal-one", "run-terminal-two"];
+    const ownership: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          return { text: "completed" };
+        },
+      },
+      model,
+      cwd: dir,
+      createRunId: () => runIds.shift() ?? "unexpected-run",
+    });
+    const request = () => harness.run({
+      conversationId: "web:terminal-observer",
+      userMessage: "Complete this run",
+      abortSignal: new AbortController().signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    await expect(request()).resolves.toMatchObject({ text: "completed" });
+    await expect(request()).resolves.toMatchObject({ text: "completed" });
+    expect(ownership).toEqual(["ready", "closed", "ready", "closed"]);
+  });
+
   it("keeps a concurrent non-owner abort or failure from removing an isolated interactive mailbox", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");

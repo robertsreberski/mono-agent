@@ -4,7 +4,6 @@ export interface SubmissionRecoveryReference {
 }
 
 const STORAGE_KEY = "mono-agent.web.pending-submissions";
-const MAX_REFERENCES = 32;
 
 const isReference = (value: unknown): value is SubmissionRecoveryReference => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -23,7 +22,7 @@ export function readSubmissionRecoveryReferences(storage: Storage): SubmissionRe
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) throw new TypeError("Invalid recovery references.");
     const unique = new Map<string, SubmissionRecoveryReference>();
-    for (const value of parsed.slice(-MAX_REFERENCES)) {
+    for (const value of parsed) {
       if (!isReference(value)) throw new TypeError("Invalid recovery reference.");
       unique.set(`${value.threadId}\0${value.submissionId}`, value);
     }
@@ -41,7 +40,7 @@ export function rememberSubmissionRecoveryReference(
   const references = readSubmissionRecoveryReferences(storage).filter((candidate) =>
     candidate.threadId !== reference.threadId || candidate.submissionId !== reference.submissionId);
   references.push(reference);
-  storage.setItem(STORAGE_KEY, JSON.stringify(references.slice(-MAX_REFERENCES)));
+  storage.setItem(STORAGE_KEY, JSON.stringify(references));
 }
 
 export function forgetSubmissionRecoveryReference(
