@@ -35,6 +35,18 @@ function assertColumns(database: DatabaseSync, table: string, required: readonly
   if (required.some((name) => !actual.has(name))) throw new Error("Missing migration column.");
 }
 
+/** Exact column order; `index_info` cannot see sort direction, so no index here uses DESC. */
+function assertIndex(database: DatabaseSync, index: string, expected: readonly string[]): void {
+  const actual = (database.prepare(`PRAGMA index_info(${index})`).all() as Array<{ name: string }>).map((column) => column.name);
+  if (actual.join(",") !== expected.join(",")) throw new Error("Invalid migration index.");
+}
+
+/** Read-path lookup indexes; bootstrap DDL creates them, so the step only asserts them. */
+const THREAD_READ_INDEXES: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["messages_by_turn", ["turn_id"]],
+  ["turns_by_thread_started", ["thread_id", "started_at"]],
+];
+
 // Versions 1, 3, 4, 7, 8 and 13 were bootstrap-only layouts. Keep their DDL in
 // initialize, before these fixups; never invent or renumber a historical step.
 export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.freeze(([
@@ -94,6 +106,11 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     assertColumns(database, "web_submissions", [
       "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
     ]);
+  } },
+  { version: 24, name: "thread-read-indexes", up: ({ database }) => {
+    // latestRunState scans turns by thread and probes messages by turn for
+    // every mapped thread; without these, long histories dominate list/detail.
+    for (const [index, expected] of THREAD_READ_INDEXES) assertIndex(database, index, expected);
   } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
@@ -186,10 +203,8 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["cron_run_messages_by_order", ["source_id", "job_id", "ordered_at", "sequence", "run_id"]],
       ["monitor_wake_deliveries_by_thread", ["thread_id", "created_at"]],
       ["notification_deliveries_by_thread", ["thread_id"]],
-    ] as const) {
-      const actual = (database.prepare(`PRAGMA index_info(${index})`).all() as Array<{ name: string }>).map((column) => column.name);
-      if (actual.join(",") !== expected.join(",")) throw new Error("Invalid migration index.");
-    }
+      ...THREAD_READ_INDEXES,
+    ] as const) assertIndex(database, index, expected);
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],
       ["messages", "turn_id", "turns", "CASCADE"],
