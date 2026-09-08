@@ -55,11 +55,15 @@ the local route omits effort and therefore uses its provider default. The fallba
 list is ordered and has no product-imposed count limit.
 
 :::caution
-Any configured fallback chain is stateless across provider sessions. The harness
-replays logical conversation history and the router uses a bounded transcript-tail
-snapshot between attempts, but it never reuses a provider session id across routes.
-`providers.piNative.piSessionsRoot` does not turn a mixed fallback chain into a
-shared durable provider session.
+The primary's first attempt owns the provider session. Retries and failovers run
+stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+any answer from a retry or backup retires the primary epoch. The next turn
+cold-reseeds from canonical history; after a primary first-attempt success,
+subsequent turns resume the new session and are eligible for provider caching.
+
+On a warm turn whose primary attempt fails, the retry or backup attempt runs
+stateless with the current message and a bounded snapshot of the failed attempt,
+without the earlier conversation; the next turn reseeds from canonical history.
 :::
 
 ## Steps
