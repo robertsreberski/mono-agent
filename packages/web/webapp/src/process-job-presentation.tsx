@@ -7,9 +7,13 @@ import {
   useState,
 } from "react";
 
-import { processJobSupersedes } from "./components/ProcessJob";
+import {
+  mergeProcessJobProjection,
+  processJobThreadId,
+  TERMINAL_PROCESS_JOB_STATES,
+} from "./components/ProcessJob";
 import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
-import type { MessagePart, WebMessage } from "./types";
+import type { MessagePart, ProcessJobProjection, WebMessage } from "./types";
 
 export type ProcessJobPartValue = Extract<MessagePart, { type: "process-job" }>;
 
@@ -21,7 +25,77 @@ export interface ProcessJobPresentationEntry {
 export interface ProcessJobPresentation {
   readonly messages: readonly WebMessage[];
   readonly jobs: readonly ProcessJobPresentationEntry[];
+  readonly eventsByMessageId: ReadonlyMap<string, readonly ProcessJobActivityEvent[]>;
 }
+
+export interface ProcessJobStartReceipt {
+  readonly schema: "mono-agent.process-job-start-receipt.v1";
+  readonly jobId: string;
+  readonly tool: "Exec" | "Bash";
+  readonly state: "queued" | "starting" | "running";
+  readonly startedAt: string | null;
+  readonly maxRuntimeMs?: number;
+}
+
+export interface ProcessJobActivityEvent {
+  readonly schema: "mono-agent.process-job-activity-event.v1";
+  readonly id: string;
+  readonly toolCallId: string;
+  readonly jobId: string;
+  readonly tool: "Exec" | "Bash";
+  readonly summary: string;
+  readonly phase: "started" | "terminal";
+  readonly state: ProcessJobProjection["state"];
+  readonly occurredAt?: string;
+  readonly durationMs?: number;
+  readonly exitCode?: number;
+  readonly signal?: string;
+}
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value) as unknown;
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+};
+
+const canonicalIsoTimestamp = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+};
+
+/** Parse only the canonical host receipt on its containing Exec/Bash call. */
+export const parseProcessJobStartReceipt = (
+  value: unknown,
+  containingTool: string,
+): ProcessJobStartReceipt | undefined => {
+  if (!isPlainRecord(value)) return undefined;
+  try {
+    const keys = Object.keys(value);
+    const allowed = ["schema", "jobId", "tool", "state", "startedAt", "maxRuntimeMs"];
+    const required = allowed.slice(0, 5);
+    if (!required.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+      || keys.some((key) => !allowed.includes(key))
+      || keys.length !== required.length + (Object.prototype.hasOwnProperty.call(value, "maxRuntimeMs") ? 1 : 0)
+      || value.schema !== "mono-agent.process-job-start-receipt.v1"
+      || (value.tool !== "Exec" && value.tool !== "Bash")
+      || value.tool !== containingTool
+      || typeof value.jobId !== "string"
+      || value.jobId.trim().length === 0
+      || value.jobId.length > 256
+      || (value.state !== "queued" && value.state !== "starting" && value.state !== "running")
+      || (value.startedAt !== null && !canonicalIsoTimestamp(value.startedAt))
+      || (Object.prototype.hasOwnProperty.call(value, "maxRuntimeMs")
+        && (!Number.isSafeInteger(value.maxRuntimeMs) || Number(value.maxRuntimeMs) <= 0))) return undefined;
+    return value as unknown as ProcessJobStartReceipt;
+  } catch {
+    return undefined;
+  }
+};
 
 export const isContextCompactionPart = (
   part: Extract<MessagePart, { type: "telemetry" }>,
@@ -104,11 +178,37 @@ const nonEmptyResponse = (value: string | undefined): string | undefined =>
  */
 export const projectProcessJobPresentation = (
   messages: readonly WebMessage[],
-  selectedModel?: string | null,
+  options: { readonly selectedModel?: string | null; readonly threadId?: string | null } = {},
 ): ProcessJobPresentation => {
   const projectedMessages: WebMessage[] = [];
   const jobs: ProcessJobPresentationEntry[] = [];
   const jobIndexes = new Map<string, number>();
+  const receiptCandidates = new Map<string, Map<string, {
+    readonly messageId: string;
+    readonly toolCallId: string;
+    readonly receipt: ProcessJobStartReceipt;
+  }>>();
+  const ambiguousReceipts = new Set<string>();
+
+  if (options.threadId !== undefined && options.threadId !== null) {
+    for (const message of messages) {
+      if (message.role !== "assistant" || message.threadId !== options.threadId) continue;
+      for (const part of message.parts) {
+        if (part.type !== "tool-call") continue;
+        const receipt = parseProcessJobStartReceipt(part.structuredResult, part.toolName);
+        if (receipt === undefined) continue;
+        const key = `${message.id}\0${part.toolCallId}\0${receipt.jobId}`;
+        const candidates = receiptCandidates.get(receipt.jobId) ?? new Map();
+        const existing = candidates.get(key);
+        if (existing !== undefined && JSON.stringify(existing.receipt) !== JSON.stringify(receipt)) {
+          ambiguousReceipts.add(receipt.jobId);
+        } else if (existing === undefined) {
+          candidates.set(key, { messageId: message.id, toolCallId: part.toolCallId, receipt });
+          receiptCandidates.set(receipt.jobId, candidates);
+        }
+      }
+    }
+  }
 
   for (const message of messages) {
     let containedJob = false;
@@ -128,9 +228,7 @@ export const projectProcessJobPresentation = (
       }
 
       const existing = jobs[existingIndex]!;
-      const job = processJobSupersedes(existing.part.job, part.job)
-        ? part.job
-        : existing.part.job;
+      const job = mergeProcessJobProjection(existing.part.job, part.job);
       const responseText = nonEmptyResponse(part.responseText)
         ?? nonEmptyResponse(existing.part.responseText);
       jobs[existingIndex] = {
@@ -149,16 +247,86 @@ export const projectProcessJobPresentation = (
     }
 
     const projected = { ...message, parts: remainingParts };
-    if (messageHasTranscriptPresentation(projected, selectedModel)) {
+    if (messageHasTranscriptPresentation(projected, options.selectedModel)) {
       projectedMessages.push(projected);
     }
   }
 
-  return { messages: projectedMessages, jobs };
+  const eventsByMessageId = new Map<string, ProcessJobActivityEvent[]>();
+  if (options.threadId !== undefined && options.threadId !== null) {
+    for (const { part } of jobs) {
+      const job = part.job;
+      const candidates = receiptCandidates.get(job.jobId);
+      if (ambiguousReceipts.has(job.jobId)
+        || candidates === undefined
+        || candidates.size !== 1
+        || processJobThreadId(job) !== options.threadId) continue;
+      const candidate = [...candidates.values()][0]!;
+      if (candidate.receipt.tool !== job.tool) continue;
+
+      const receiptStart = candidate.receipt.startedAt;
+      const projectionStart = job.timestamps.startedAt;
+      const startConflicts = receiptStart !== null && projectionStart !== null && receiptStart !== projectionStart;
+      const startedAt = startConflicts ? undefined : receiptStart ?? projectionStart ?? undefined;
+      const admittedAtMs = Date.parse(job.timestamps.admittedAt);
+      const validStartedAt = startedAt !== undefined
+        && canonicalIsoTimestamp(startedAt)
+        && Date.parse(startedAt) >= admittedAtMs
+        ? startedAt
+        : undefined;
+      const events: ProcessJobActivityEvent[] = [];
+      if (validStartedAt !== undefined) {
+        events.push({
+          schema: "mono-agent.process-job-activity-event.v1",
+          id: `process-job:${job.jobId}:started`,
+          toolCallId: candidate.toolCallId,
+          jobId: job.jobId,
+          tool: job.tool,
+          summary: job.summary,
+          phase: "started",
+          state: job.state,
+          occurredAt: validStartedAt,
+        });
+      }
+      if (TERMINAL_PROCESS_JOB_STATES.has(job.state)) {
+        const completedAt = job.timestamps.completedAt;
+        const completedAtMs = completedAt === null ? Number.NaN : Date.parse(completedAt);
+        const validCompletedAt = completedAt !== null
+          && canonicalIsoTimestamp(completedAt)
+          && completedAtMs >= admittedAtMs
+          && (validStartedAt === undefined || completedAtMs >= Date.parse(validStartedAt))
+          ? completedAt
+          : undefined;
+        events.push({
+          schema: "mono-agent.process-job-activity-event.v1",
+          id: `process-job:${job.jobId}:terminal`,
+          toolCallId: candidate.toolCallId,
+          jobId: job.jobId,
+          tool: job.tool,
+          summary: job.summary,
+          phase: "terminal",
+          state: job.state,
+          ...(validCompletedAt === undefined ? {} : { occurredAt: validCompletedAt }),
+          ...(job.durationMs === null ? {} : { durationMs: job.durationMs }),
+          ...(job.exitCode === null ? {} : { exitCode: job.exitCode }),
+          ...(job.signal === null ? {} : { signal: job.signal }),
+        });
+      }
+      if (events.length > 0) {
+        const current = eventsByMessageId.get(candidate.messageId) ?? [];
+        current.push(...events);
+        eventsByMessageId.set(candidate.messageId, current);
+      }
+    }
+  }
+
+  return { messages: projectedMessages, jobs, eventsByMessageId };
 };
 
-interface ProcessJobPresentationContextValue extends ProcessJobPresentation {
+interface ProcessJobPresentationContextValue {
   readonly threadId: string | null;
+  readonly messages: readonly WebMessage[];
+  readonly jobs: readonly ProcessJobPresentationEntry[];
   readonly historyIsBounded: boolean;
   readonly historyOpen: boolean;
   readonly setHistoryOpen: (open: boolean) => void;
@@ -181,7 +349,7 @@ export function ProcessJobPresentationProvider({
   messages,
   jobs,
   historyIsBounded,
-}: ProcessJobPresentation & {
+}: Pick<ProcessJobPresentation, "messages" | "jobs"> & {
   readonly children: ReactNode;
   readonly threadId: string | null;
   readonly historyIsBounded: boolean;

@@ -688,7 +688,7 @@ export function streamEventFromRuntimeEvent(
           context?.toolNames?.delete(id);
         }
         const history = toolHistoryEventMetadata(block.history);
-        const structuredContent = structuredContentFromToolResult(block.raw_result);
+        const structuredContent = structuredContentFromToolResult(block.raw_result, name);
         return {
           type: "tool_call_completed",
           id,
@@ -715,7 +715,7 @@ export function streamEventFromRuntimeEvent(
 const MAX_STRUCTURED_CONTENT_CHARS = 16_000;
 
 /**
- * Lift an MCP tool's `structuredContent` out of the transcript block's raw result.
+ * Lift a bounded machine-readable result out of the transcript block's raw result.
  *
  * The pi bridge stores the untouched MCP payload at `raw_result.details.raw`
  * (`agent-runtime/src/agent/tools/pi-bridge.js`), while `content` keeps only the
@@ -727,15 +727,32 @@ const MAX_STRUCTURED_CONTENT_CHARS = 16_000;
  * replaced an oversized raw result with its truncation marker, or when the payload
  * exceeds MAX_STRUCTURED_CONTENT_CHARS.
  */
-function structuredContentFromToolResult(rawResult: unknown): unknown {
+function structuredContentFromToolResult(rawResult: unknown, toolName?: string): unknown {
   if (!isRecord(rawResult)) return undefined;
-  const details = rawResult.details;
+  let details: unknown;
+  try {
+    details = rawResult.details;
+  } catch {
+    return undefined;
+  }
   if (!isRecord(details)) return undefined;
-  const raw = details.raw;
+  const processJobReceipt = processJobStartReceipt(details, toolName);
+  if (processJobReceipt !== undefined) return processJobReceipt;
+  let raw: unknown;
+  try {
+    raw = details.raw;
+  } catch {
+    return undefined;
+  }
   // `compactRawMcpResult` swaps an oversized payload for {truncated, preview, ...};
   // that marker carries no structuredContent, so this falls through to undefined.
   if (!isRecord(raw)) return undefined;
-  const structuredContent = raw.structuredContent;
+  let structuredContent: unknown;
+  try {
+    structuredContent = raw.structuredContent;
+  } catch {
+    return undefined;
+  }
   if (structuredContent === undefined || structuredContent === null) return undefined;
   let serialized: string;
   try {
@@ -745,6 +762,100 @@ function structuredContentFromToolResult(rawResult: unknown): unknown {
     return undefined;
   }
   return serialized.length > MAX_STRUCTURED_CONTENT_CHARS ? undefined : structuredContent;
+}
+
+const PROCESS_JOB_OUTCOME_KEYS = [
+  "status",
+  "code",
+  "retryable",
+  "attempts",
+  "durationMs",
+  "bytes",
+  "truncated",
+  "exitCode",
+  "signal",
+  "timedOut",
+  "background",
+  "job_id",
+  "state",
+  "started_at",
+] as const;
+
+const canonicalIsoTimestamp = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+};
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  try {
+    const prototype = Object.getPrototypeOf(value) as unknown;
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Recognize only the host-authored successful background handoff from Exec/Bash.
+ * The Bash tool historically adds `legacyTimeoutUsed: true` after the shared
+ * handoff when its supported deprecated timeout parameter was used; that exact
+ * extension is admitted but deliberately omitted from the canonical receipt.
+ */
+function processJobStartReceipt(
+  details: Record<string, unknown>,
+  toolName: string | undefined,
+): Record<string, unknown> | undefined {
+  if (toolName !== "Exec" && toolName !== "Bash") return undefined;
+  try {
+    if (details.tool !== toolName || !isPlainRecord(details.outcome)) return undefined;
+    const outcome = details.outcome;
+    const actualKeys = Object.keys(outcome);
+    const allowedKeys: readonly string[] = [
+      ...PROCESS_JOB_OUTCOME_KEYS,
+      "max_runtime_ms",
+      ...(toolName === "Bash" ? ["legacyTimeoutUsed"] : []),
+    ];
+    if (!PROCESS_JOB_OUTCOME_KEYS.every((key) => hasOwn(outcome, key))
+      || actualKeys.some((key) => !allowedKeys.includes(key))) return undefined;
+    if (outcome.status !== "ok"
+      || outcome.code !== "background_started"
+      || outcome.retryable !== false
+      || outcome.attempts !== 1
+      || typeof outcome.durationMs !== "number"
+      || !Number.isFinite(outcome.durationMs)
+      || outcome.durationMs < 0
+      || outcome.bytes !== 0
+      || outcome.truncated !== false
+      || outcome.exitCode !== null
+      || outcome.signal !== null
+      || outcome.timedOut !== false
+      || outcome.background !== true
+      || typeof outcome.job_id !== "string"
+      || outcome.job_id.trim().length === 0
+      || outcome.job_id.length > 256
+      || (outcome.state !== "queued" && outcome.state !== "starting" && outcome.state !== "running")
+      || (outcome.started_at !== null && !canonicalIsoTimestamp(outcome.started_at))) return undefined;
+    if (hasOwn(outcome, "max_runtime_ms")
+      && (!Number.isSafeInteger(outcome.max_runtime_ms) || Number(outcome.max_runtime_ms) <= 0)) return undefined;
+    if (hasOwn(outcome, "legacyTimeoutUsed")
+      && (toolName !== "Bash" || outcome.legacyTimeoutUsed !== true)) return undefined;
+    const expectedLength = PROCESS_JOB_OUTCOME_KEYS.length
+      + (hasOwn(outcome, "max_runtime_ms") ? 1 : 0)
+      + (hasOwn(outcome, "legacyTimeoutUsed") ? 1 : 0);
+    if (actualKeys.length !== expectedLength) return undefined;
+    return {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: outcome.job_id,
+      tool: toolName,
+      state: outcome.state,
+      startedAt: outcome.started_at,
+      ...(hasOwn(outcome, "max_runtime_ms") ? { maxRuntimeMs: outcome.max_runtime_ms } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function toolHistoryEventMetadata(value: unknown): NonNullable<

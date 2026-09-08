@@ -203,9 +203,26 @@ describe("Chat conversation viewport in Chromium", () => {
       durationMs: null,
     });
     vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const launch = (id: string, job: ProcessJobProjection): WebMessage => ({
+      ...chatMessage(id, selectedThread.id),
+      parts: [{
+        type: "tool-call",
+        toolCallId: `${id}-tool`,
+        toolName: job.tool,
+        status: "complete",
+        structuredResult: {
+          schema: "mono-agent.process-job-start-receipt.v1",
+          jobId: job.jobId,
+          tool: job.tool,
+          state: job.timestamps.startedAt === null ? "queued" : "running",
+          startedAt: job.timestamps.startedAt,
+          maxRuntimeMs: job.limits.maxRuntimeMs,
+        },
+      }],
+    });
     const detail: ThreadDetail = {
       ...base,
-      messages: [...base.messages, {
+      messages: [...base.messages, launch("running-origin", running), launch("terminal-origin", terminal), {
         ...chatMessage("job-only", selectedThread.id),
         parts: [
           { type: "process-job", job: running },
@@ -216,7 +233,7 @@ describe("Chat conversation viewport in Chromium", () => {
     storeMock.current = chatStore(selectedThread, detail);
 
     const { container } = render(chatTree());
-    await waitForMessages(container, 18);
+    await waitForMessages(container, 20);
     const viewport = getViewport(container);
     await waitForBottom(viewport);
     const toggle = container.querySelector<HTMLButtonElement>(".process-job-stack-toggle")!;

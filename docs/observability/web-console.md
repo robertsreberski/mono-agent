@@ -580,6 +580,17 @@ Reported cost and processed tokens include what the run's subagents spent. A del
 
 Assistant reasoning, routine tool calls, subagent delegations, and context compactions share one compact **Activity** disclosure without changing their order. Each compaction is one row that updates from running to succeeded, skipped, failed, or interrupted instead of producing duplicate start/end rows. Pi's before/after token counts are estimates and carry a `~` prefix; provider summary text is never displayed. Activity opens while the message is running and force-collapses when the message completes, fails, is cancelled, or is interrupted; it can be reopened afterward, and individual tool payloads remain collapsed inside it. Standalone interactive tools remain outside the group.
 
+A background `Exec` or `Bash` launch whose completed tool call contains the
+exact persisted process-job receipt also shows lifecycle evidence in that
+response's Activity. A start row requires a real start stamp: queued or starting
+admission alone is not presented as running. Every terminal outcome gets one
+row, while unavailable completion time, duration, exit code, or signal is simply
+omitted. Association uses exact job/tool/thread identity, never prose or
+timestamp proximity. Both the launch response and card must be loaded, so
+legacy launches and paginated-out receipts honestly remain stack-only.
+Receipt-bearing launches stay as separate tool/event runs; ordinary adjacent
+same-tool calls keep their existing grouping.
+
 An `Agent` call is one foldable row inside Activity — profile name, the model's short task label, and a `4 tools · 12.4s · $0.0042` summary — that **owns** the tool calls its subagent made rather than listing them as siblings. The price appears when the runtime priced that subagent's model, and is the one place a single expensive delegation is identifiable; the run total it folds into cannot say which one spent it. Opening the row reveals each child call indented, individually foldable for its input and output, followed by the report the subagent sent back. Nesting keeps concurrent delegations readable when the provider overlaps them: their events interleave, so a flat transcript would shuffle several agents' work together. Pi 0.85 cannot overlap an `Agent` batch when any stateful/mutating or MCP tool is also offered because its scheduling mode applies to the whole harness. A child that failed is marked without marking the delegation that contains it, and a delegation whose parent call was never observed (a truncated or replayed stream) still renders from its children alone.
 
 The child run's model and any fallback appear inside its own delegation row.
@@ -605,6 +616,9 @@ settlement, and scrolling upward pauses bottom-follow until the tail is near the
 bottom again. Live chunks remain memory-only in the agent; the web service does
 not write each refresh to SQLite or broadcast it as a message delta. The same
 bounded final tail remains behind the card after settlement.
+
+Lifecycle rows never poll, expose output, offer cancellation, or repeat the
+wake response. The separate stack remains the single live operational owner.
 
 Type `/` in an empty composer to open the keyboard-friendly command popover for available actions such as run settings, starting a new conversation, or stopping an active response. Type `$` to find an available skill, or use **Browse skills** without entering a trigger.
 

@@ -20,6 +20,13 @@ const EVENT_FIXTURES: AgentStreamEvent[] = [
     content: "done",
     isError: false,
     executionMs: 42,
+    structuredContent: {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: "job-1",
+      tool: "Exec",
+      state: "running",
+      startedAt: "2026-09-08T10:00:00.000Z",
+    },
   },
   {
     type: "usage_update",

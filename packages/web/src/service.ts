@@ -298,8 +298,8 @@ function jsonTextOf(value: unknown): string | undefined {
 
 function shapeToolCall(call: WebToolCall): WebToolCall {
   // AskUser's arguments and answer ARE the card the console renders, and they
-  // are bounded at the emitter. `structuredResult` is never touched anywhere:
-  // it is the machine-readable outcome, bounded at the emitter too.
+  // are bounded at the emitter. `structuredResult` is never shaped here: MCP
+  // and canonical host outcomes are already bounded and remain opaque.
   if (isAskUserToolName(call.toolName)) return call;
   const args = shapedArgs(call.args);
   const result = payloadPreview(call.result);

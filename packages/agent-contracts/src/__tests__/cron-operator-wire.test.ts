@@ -92,6 +92,19 @@ describe("cron operator wire contract", () => {
         content: "The user answered:\n- Delivery: Send",
         structuredContent: { ok: true, answered: true, interactionId: "ask-1" },
       },
+      {
+        type: "tool_call_completed",
+        id: "call-3",
+        name: "Exec",
+        content: "Background process job started.",
+        structuredContent: {
+          schema: "mono-agent.process-job-start-receipt.v1",
+          jobId: "job-1",
+          tool: "Exec",
+          state: "running",
+          startedAt: "2026-09-08T10:00:00.000Z",
+        },
+      },
     ];
 
     expect(parseCronOperatorRunDetail(summary({

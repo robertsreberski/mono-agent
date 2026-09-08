@@ -5,8 +5,10 @@ import { api } from "../api";
 import { currentDataMode } from "../data-mode";
 import { useDocumentVisible } from "../document-visibility";
 import type { MessagePart, ProcessJobProjection, ProcessJobState } from "../types";
+import type { ProcessJobActivityEvent } from "../process-job-presentation";
 import { ActivityRow, type ActivityStatus } from "./ActivityRow";
 import { ActivityElapsed, type ActivityTiming } from "./assistant-ui/ActivityElapsed";
+import { formatToolDuration } from "./duration";
 
 export const TERMINAL_PROCESS_JOB_STATES: ReadonlySet<ProcessJobState> = new Set<ProcessJobState>([
   "succeeded",
@@ -53,30 +55,91 @@ const PROCESS_JOB_STATE_RANK: Readonly<Record<ProcessJobState, number>> = {
 export const processJobAdvances = (from: ProcessJobState, to: ProcessJobState): boolean =>
   PROCESS_JOB_STATE_RANK[to] > PROCESS_JOB_STATE_RANK[from];
 
+const immutableProcessJobIdentityMatches = (
+  current: ProcessJobProjection,
+  next: ProcessJobProjection,
+): boolean => current.schema === next.schema
+  && current.jobId === next.jobId
+  && current.tool === next.tool
+  && current.summary === next.summary
+  && current.origin.conversationId === next.origin.conversationId
+  && current.origin.channel === next.origin.channel
+  && current.origin.runId === next.origin.runId
+  && current.origin.historyBoundary === next.origin.historyBoundary
+  && current.origin.bucket === next.origin.bucket
+  && current.timestamps.admittedAt === next.timestamps.admittedAt
+  && current.timestamps.queueDeadlineAt === next.timestamps.queueDeadlineAt
+  && current.limits.maxRuntimeMs === next.limits.maxRuntimeMs
+  && current.limits.maxOutputBytes === next.limits.maxOutputBytes
+  && current.limits.previewChars === next.limits.previewChars
+  && current.limits.chainDepth === next.limits.chainDepth
+  && current.wake.deliveryKey === next.wake.deliveryKey;
+
+const preserveFact = <T,>(current: T | null, next: T | null): T | null =>
+  current === null ? next : current;
+
 /**
- * Whether a projection fetched by the poll or supplied by a card repair should
- * replace the one the row has. Rank decides across states. Within one state,
- * lifecycle facts and byte counters may only move forward; this admits a live
- * output tail without letting a delayed response erase a richer projection.
+ * Merge one eligible projection without forgetting lifecycle evidence already
+ * shown by a card or response event. Stale states and changed immutable identity
+ * fail closed; same-state snapshots can still fill terminal facts one field at
+ * a time.
  */
-export const processJobSupersedes = (current: ProcessJobProjection, next: ProcessJobProjection): boolean => {
-  if (processJobAdvances(current.state, next.state)) return true;
-  if (current.state !== next.state) return false;
-  if (current.timestamps.startedAt !== null && next.timestamps.startedAt === null) return false;
-  if (current.cancelRequested && !next.cancelRequested) return false;
-  if (next.output.stdoutBytes < current.output.stdoutBytes
-    || next.output.stderrBytes < current.output.stderrBytes) return false;
-  const started = current.timestamps.startedAt === null && next.timestamps.startedAt !== null;
-  const cancelled = !current.cancelRequested && next.cancelRequested;
-  const output = next.output.stdoutBytes > current.output.stdoutBytes
-    || next.output.stderrBytes > current.output.stderrBytes;
-  const wakeRank = (wake: ProcessJobProjection["wake"]): number => wake.state === "pending" ? 0 : 1;
-  const wake = TERMINAL_PROCESS_JOB_STATES.has(next.state)
-    && (wakeRank(next.wake) > wakeRank(current.wake)
-      || (next.wake.state === current.wake.state && next.wake.attempts > current.wake.attempts));
-  const error = current.lastError === null && next.lastError !== null;
-  return started || cancelled || output || wake || error;
+export const mergeProcessJobProjection = (
+  current: ProcessJobProjection,
+  next: ProcessJobProjection,
+): ProcessJobProjection => {
+  if (!immutableProcessJobIdentityMatches(current, next)) return current;
+  if (current.state !== next.state && !processJobAdvances(current.state, next.state)) return current;
+
+  const outputRegressed = next.output.stdoutBytes < current.output.stdoutBytes
+    || next.output.stderrBytes < current.output.stderrBytes;
+  const output = outputRegressed
+    ? current.output
+    : {
+        ...next.output,
+        truncated: current.output.truncated || next.output.truncated,
+        stdoutRef: current.output.stdoutRef ?? next.output.stdoutRef,
+        stderrRef: current.output.stderrRef ?? next.output.stderrRef,
+        ...(next.output.stdoutBytes === current.output.stdoutBytes
+          && next.output.stderrBytes === current.output.stderrBytes
+          && next.output.preview.length < current.output.preview.length
+          ? { preview: current.output.preview }
+          : {}),
+      };
+
+  const wakeRegressed = next.wake.attempts < current.wake.attempts
+    || (current.wake.state !== "pending" && next.wake.state !== current.wake.state);
+  const wake = wakeRegressed
+    ? current.wake
+    : {
+        ...next.wake,
+        ...(next.wake.attempts === current.wake.attempts
+          ? { lastAttemptAt: preserveFact(current.wake.lastAttemptAt, next.wake.lastAttemptAt) }
+          : {}),
+      };
+
+  const merged: ProcessJobProjection = {
+    ...next,
+    timestamps: {
+      ...next.timestamps,
+      startedAt: preserveFact(current.timestamps.startedAt, next.timestamps.startedAt),
+      runtimeDeadlineAt: preserveFact(current.timestamps.runtimeDeadlineAt, next.timestamps.runtimeDeadlineAt),
+      completedAt: preserveFact(current.timestamps.completedAt, next.timestamps.completedAt),
+    },
+    output,
+    wake,
+    exitCode: preserveFact(current.exitCode, next.exitCode),
+    signal: preserveFact(current.signal, next.signal),
+    durationMs: preserveFact(current.durationMs, next.durationMs),
+    cancelRequested: current.cancelRequested || next.cancelRequested,
+    lastError: current.lastError ?? next.lastError,
+  };
+  return JSON.stringify(merged) === JSON.stringify(current) ? current : merged;
 };
+
+/** Compatibility predicate for tests and callers that only need change detection. */
+export const processJobSupersedes = (current: ProcessJobProjection, next: ProcessJobProjection): boolean =>
+  mergeProcessJobProjection(current, next) !== current;
 
 /**
  * What a projection would tell this card that it does not already know.
@@ -86,15 +149,22 @@ export const processJobSupersedes = (current: ProcessJobProjection, next: Proces
  * projections agreeing on these say the same thing however many times the
  * transcript is rebuilt.
  */
-const projectionSignature = (job: ProcessJobProjection | undefined): string =>
+export const projectionSignature = (job: ProcessJobProjection | undefined): string =>
   job === undefined ? "" : [
     job.state,
     job.timestamps.startedAt ?? "",
+    job.timestamps.runtimeDeadlineAt ?? "",
+    job.timestamps.completedAt ?? "",
+    job.durationMs === null ? "" : String(job.durationMs),
+    job.wake.state,
     String(job.wake.attempts),
+    job.wake.lastAttemptAt ?? "",
     job.exitCode === null ? "" : String(job.exitCode),
+    job.signal ?? "",
     String(job.output.stdoutBytes),
     String(job.output.stderrBytes),
     String(job.cancelRequested),
+    job.lastError?.code ?? "",
   ].join(" ");
 
 /** The retained web thread a job reports to, or nothing for an origin the console cannot poll. */
@@ -115,6 +185,86 @@ export const processJobStatus = (state: ProcessJobState): ActivityStatus =>
     : state === "succeeded" ? "complete" : "failed";
 
 export const processJobStateLabel = (state: ProcessJobState): string => state.replaceAll("_", " ");
+
+const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const allowed = [
+    "schema", "id", "toolCallId", "jobId", "tool", "summary", "phase", "state",
+    "occurredAt", "durationMs", "exitCode", "signal",
+  ];
+  const required = allowed.slice(0, 8);
+  try {
+    if (!required.every((key) => Object.prototype.hasOwnProperty.call(record, key))
+      || Object.keys(record).some((key) => !allowed.includes(key))
+      || record.schema !== "mono-agent.process-job-activity-event.v1"
+      || typeof record.id !== "string"
+      || typeof record.toolCallId !== "string"
+      || typeof record.jobId !== "string"
+      || (record.tool !== "Exec" && record.tool !== "Bash")
+      || typeof record.summary !== "string"
+      || (record.phase !== "started" && record.phase !== "terminal")
+      || typeof record.state !== "string"
+      || !(record.state in PROCESS_JOB_STATE_RANK)
+      || (record.phase === "started" && typeof record.occurredAt !== "string")
+      || (record.phase === "terminal" && !TERMINAL_PROCESS_JOB_STATES.has(record.state as ProcessJobState))
+      || record.id !== `process-job:${record.jobId}:${record.phase === "started" ? "started" : "terminal"}`
+      || (record.occurredAt !== undefined
+        && (typeof record.occurredAt !== "string"
+          || !Number.isFinite(Date.parse(record.occurredAt))
+          || new Date(Date.parse(record.occurredAt)).toISOString() !== record.occurredAt))
+      || (record.durationMs !== undefined
+        && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0))
+      || (record.exitCode !== undefined && !Number.isSafeInteger(record.exitCode))
+      || (record.signal !== undefined && typeof record.signal !== "string")) return undefined;
+    return record as unknown as ProcessJobActivityEvent;
+  } catch {
+    return undefined;
+  }
+};
+
+const eventTime = (value: string | undefined, key?: string): ReactNode => value === undefined
+  ? undefined
+  : <time key={key} dateTime={value}>{new Date(value).toLocaleString()}</time>;
+
+/** A persisted-card-derived lifecycle fact; deliberately no hooks, API calls, or live clock. */
+export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
+  const event = activityEvent(data);
+  if (event === undefined) return null;
+  const terminal = event.phase === "terminal";
+  const stateLabel = processJobStateLabel(event.state);
+  const meta = terminal
+    ? joinMeta([
+        ...(event.occurredAt === undefined ? [] : [eventTime(event.occurredAt, "occurred")]),
+        ...(event.durationMs === undefined ? [] : [formatToolDuration(event.durationMs)]),
+        ...(event.exitCode === undefined ? [] : [`exit ${String(event.exitCode)}`]),
+        ...(event.signal === undefined ? [] : [event.signal]),
+      ])
+    : eventTime(event.occurredAt);
+  return (
+    <ActivityRow
+      variant="job"
+      status={terminal && event.state !== "succeeded" ? "failed" : "complete"}
+      label={`${event.tool} job ${terminal ? stateLabel : "started"}`}
+      summary={event.summary}
+      duration={meta}
+      ariaLabel={`${event.tool} job ${terminal ? stateLabel : "started"}`}
+    >
+      <div className="activity-payload is-indented process-job-event">
+        <dl className="process-job-facts">
+          <div><dt>Job</dt><dd>{event.jobId}</dd></div>
+          <div><dt>{terminal ? "Outcome" : "Phase"}</dt><dd>{terminal ? stateLabel : "started"}</dd></div>
+          {event.occurredAt !== undefined && (
+            <div><dt>{terminal ? "Completed" : "Started"}</dt><dd>{eventTime(event.occurredAt)}</dd></div>
+          )}
+          {event.durationMs !== undefined && <div><dt>Duration</dt><dd>{formatToolDuration(event.durationMs)}</dd></div>}
+          {event.exitCode !== undefined && <div><dt>Exit</dt><dd>{event.exitCode}</dd></div>}
+          {event.signal !== undefined && <div><dt>Signal</dt><dd>{event.signal}</dd></div>}
+        </dl>
+      </div>
+    </ActivityRow>
+  );
+}
 
 /**
  * The job's own window. It opens when the host started the process — or, while
@@ -219,7 +369,7 @@ export function ProcessJobCard({
   useLayoutEffect(() => {
     setLive((current) => {
       if (initial === undefined || current === undefined || current.jobId !== initial.jobId) return initial;
-      return processJobSupersedes(current, initial) ? initial : current;
+      return mergeProcessJobProjection(current, initial);
     });
     const signature = projectionSignature(initial);
     if (projectedRef.current.signature !== signature) {
@@ -295,7 +445,7 @@ export function ProcessJobCard({
         // it may bring, and a terminal one is progress however the request and
         // the store interleaved. Judged against the latest state, not the
         // closure's.
-        setLive((current) => current === undefined || processJobSupersedes(current, next) ? next : current);
+        setLive((current) => current === undefined ? next : mergeProcessJobProjection(current, next));
         // Terminal always advances the nonterminal row this effect exists for,
         // so the answer that ends the loop is one the row has taken.
         if (TERMINAL_PROCESS_JOB_STATES.has(next.state)) return;

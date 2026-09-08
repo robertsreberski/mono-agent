@@ -969,6 +969,52 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it.each(["complete", "failed", "cancelled", "interrupted"] as const)(
+    "persists a process-job start receipt only on its %s launching assistant response",
+    async (status) => {
+      const base = await temporaryRoot();
+      cleanup.push(base);
+      const stateDir = join(base, "state");
+      const store = await WebStore.open({ stateDir });
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      store.selectThread(thread.id);
+      const turn = store.beginTurn({ threadId: thread.id, text: "run it", attachmentIds: [] });
+      const receipt = {
+        schema: "mono-agent.process-job-start-receipt.v1",
+        jobId: "job-1",
+        tool: "Exec",
+        state: "running",
+        startedAt: "2026-09-08T10:00:00.000Z",
+      } as const;
+      store.applyStreamFrames(turn.turnId, [
+        { kind: "event", event: { type: "tool_call_started", id: "launch-1", name: "Exec", arguments: {} } },
+        { kind: "event", event: { type: "tool_call_completed", id: "launch-1", name: "Exec", content: "Background process job started.", structuredContent: receipt } },
+      ]);
+      const finished = status === "complete"
+        ? store.completeTurn(turn.turnId, "started")
+        : status === "interrupted"
+          ? store.interruptTurn(turn.turnId)
+          : store.failTurn(turn.turnId, { message: status, cancelled: status === "cancelled" });
+      expect(finished.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({
+        type: "tool-call",
+        toolCallId: "launch-1",
+        structuredResult: receipt,
+      }));
+      expect(finished.messages.filter((entry) => entry.role === "user").some((entry) =>
+        entry.parts.some((part) => part.type === "tool-call" && part.structuredResult !== undefined))).toBe(false);
+      store.close();
+
+      const reopened = await WebStore.open({ stateDir });
+      expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({
+        type: "tool-call",
+        toolCallId: "launch-1",
+        structuredResult: receipt,
+      }));
+      reopened.close();
+    },
+  );
+
   it("omits structuredResult when the tool returned no structured payload", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
