@@ -3279,6 +3279,123 @@ describe("ConsoleStoreProvider integration", () => {
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
     });
 
+    it("keeps a current bucket rejection visible when its known transcript settles first", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let resolveTranscript!: (value: ThreadDetail) => void;
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => threadId === betaThread.id
+        ? new Promise((resolve) => { resolveTranscript = resolve; })
+        : Promise.resolve(detail(alphaThread, "alpha")));
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(api.thread).toHaveBeenCalledWith(betaThread.id, expect.any(AbortSignal)));
+      await act(async () => { resolveTranscript(detail(betaThread, "beta transcript")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+
+      await act(async () => { rejectBucket(new Error("beta conversations unavailable")); });
+      await waitFor(() => expect(store.current.actionError).toBe("beta conversations unavailable"));
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(false);
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      act(() => { store.current.retryThreadList(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
+        .toHaveLength(1);
+    });
+
+    it("does not misclassify an early current bucket rejection as a transcript failure", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let resolveTranscript!: (value: ThreadDetail) => void;
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => threadId === betaThread.id
+        ? new Promise((resolve) => { resolveTranscript = resolve; })
+        : Promise.resolve(detail(alphaThread, "alpha")));
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(api.thread).toHaveBeenCalledWith(betaThread.id, expect.any(AbortSignal)));
+      await act(async () => { rejectBucket(new Error("beta conversations unavailable")); });
+      await waitFor(() => expect(store.current.actionError).toBe("beta conversations unavailable"));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(true);
+
+      await act(async () => { resolveTranscript(detail(betaThread, "beta transcript")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(false);
+
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      act(() => { store.current.retryThreadList(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
+        .toHaveLength(1);
+    });
+
+    it("ignores a known-thread bucket rejection after a newer agent selection", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === betaThread.id
+        ? detail(betaThread, "beta transcript")
+        : detail(alphaThread, "alpha transcript"));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+      await act(async () => { rejectBucket(new Error("stale beta conversations failure")); });
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.threadListError).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+    });
+
     it("keeps a cold agent switch loading and blocks implicit conversation creation", async () => {
       const store = await openOnAlpha();
       await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));

@@ -80,6 +80,8 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     showArchived,
     selectionLoading,
     selectionError,
+    threadListError,
+    retryThreadList,
     setShowArchived,
     hasMoreThreads,
     loadMoreThreads,
@@ -145,6 +147,12 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           </button>
         )}
       </label>
+      {threadListError !== null && (
+        <div className="thread-list-error" role="alert">
+          <span>Conversations could not be refreshed. {threadListError}</span>
+          <button type="button" onClick={retryThreadList}>Retry conversations</button>
+        </div>
+      )}
       <ThreadListPrimitive.Root className="thread-list">
         <div className="thread-list-scroll" onClick={searching ? undefined : onSelect}>
           {searching ? (

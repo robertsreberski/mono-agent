@@ -88,6 +88,13 @@ interface SelectionFailure {
   readonly message: string;
 }
 
+interface ThreadListFailure {
+  readonly generation: number;
+  readonly sourceId: string;
+  readonly archived: boolean;
+  readonly message: string;
+}
+
 interface ConsoleStoreValue {
   readonly bootstrap: Bootstrap | null;
   readonly agents: readonly AgentSummary[];
@@ -105,6 +112,8 @@ interface ConsoleStoreValue {
   readonly selectionLoading: boolean;
   /** The current operator-selected destination failed before it could resolve. */
   readonly selectionError: string | null;
+  /** The current agent's visible conversation bucket could not be refreshed. */
+  readonly threadListError: string | null;
   readonly error: string | null;
   readonly actionError: string | null;
   readonly connection: ConnectionState;
@@ -144,6 +153,7 @@ interface ConsoleStoreValue {
   readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
   readonly retrySelection: () => void;
+  readonly retryThreadList: () => void;
   readonly createThread: () => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
@@ -1427,6 +1437,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectionRequest, setSelectionRequestState] = useState<SelectionRequest | null>(null);
   const [selectionFailure, setSelectionFailureState] = useState<SelectionFailure | null>(null);
+  const [threadListFailure, setThreadListFailure] = useState<ThreadListFailure | null>(null);
+  const [threadListRetryRevision, setThreadListRetryRevision] = useState(0);
   const [operatorSelectionGeneration, setOperatorSelectionGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -1764,11 +1776,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setOperatorSelectionGeneration(generation);
     setSelectionRequest(null);
     setSelectionFailure(null);
+    setThreadListFailure(null);
     return generation;
   }, [setSelectionFailure, setSelectionRequest]);
 
   const selectionLoading = selectionRequest !== null || detailLoading;
   const selectionError = selectionFailure?.message ?? null;
+  const currentThreadListFailure = threadListFailure?.generation === operatorSelectionGeneration
+    && threadListFailure.sourceId === selectedAgentId
+    && threadListFailure.archived === showArchived
+    ? threadListFailure
+    : null;
+  const threadListError = currentThreadListFailure?.message ?? null;
 
   const requireResolvedSelection = useCallback(() => {
     if (selectionRequestRef.current !== null) {
@@ -2424,6 +2443,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     const generation = operatorSelectionGeneration;
     const request = selectionRequestRef.current;
     void loadThreadBucket(selectedAgentId, showArchived).then((page) => {
+      if (operatorSelectionRef.current === generation
+        && selectedAgentRef.current === selectedAgentId) {
+        setThreadListFailure((current) => current?.generation === generation
+          && current.sourceId === selectedAgentId
+          && current.archived === showArchived
+          ? null
+          : current);
+      }
       // A bootstrap carries ONE bucket, so switching agents lands on rows this
       // tab has never held: `selectAgent` resolves the conversation to open
       // from what it holds and finds nothing, and this page is the first thing
@@ -2458,9 +2485,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       updateThreadRoute(next);
     }).catch((loadError: unknown) => {
       if (operatorSelectionRef.current !== generation
-        || selectedAgentRef.current !== selectedAgentId
-        || selectionRequestRef.current !== request) return;
-      if (!failOwnedSelection(request, loadError)) setActionError(errorMessage(loadError));
+        || selectedAgentRef.current !== selectedAgentId) return;
+      const ownsDestination = request?.kind === "bucket"
+        && request.generation === generation
+        && request.sourceId === selectedAgentId
+        && selectionRequestRef.current === request;
+      if (ownsDestination && failOwnedSelection(request, loadError)) return;
+      const message = errorMessage(loadError);
+      setThreadListFailure({
+        generation,
+        sourceId: selectedAgentId,
+        archived: showArchived,
+        message,
+      });
+      setActionError(message);
     });
   }, [
     error,
@@ -2472,6 +2510,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     selectedAgentId,
     setSelectionRequest,
     showArchived,
+    threadListRetryRevision,
   ]);
 
   /**
@@ -4346,6 +4385,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     selectThread(failure.request.threadId);
   }, [selectAgent, selectThread]);
 
+  const retryThreadList = useCallback(() => {
+    if (currentThreadListFailure === null) return;
+    setThreadListFailure(null);
+    setThreadListRetryRevision((revision) => revision + 1);
+  }, [currentThreadListFailure]);
+
   useEffect(() => {
     const route = cronRouteSelection();
     if (route === undefined) return;
@@ -5315,6 +5360,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       detailLoading,
       selectionLoading,
       selectionError,
+      threadListError,
       error,
       actionError,
       connection,
@@ -5344,6 +5390,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       clearAgentRunDefaults,
       selectThread,
       retrySelection,
+      retryThreadList,
       createThread,
       renameThread,
       archiveThread,
@@ -5392,6 +5439,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       detailLoading,
       selectionLoading,
       selectionError,
+      threadListError,
       deleteThread,
       effort,
       effectiveEffort,
@@ -5418,6 +5466,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       skillRegistry,
       renameThread,
       retrySelection,
+      retryThreadList,
       refreshCron,
       selectAgent,
       selectThread,

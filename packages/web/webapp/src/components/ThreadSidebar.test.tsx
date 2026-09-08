@@ -64,6 +64,8 @@ beforeEach(() => {
     showArchived: false,
     selectionLoading: false,
     selectionError: null,
+    threadListError: null,
+    retryThreadList: vi.fn(),
     setShowArchived: vi.fn(),
     hasMoreThreads: true,
     loadMoreThreads: vi.fn().mockResolvedValue(undefined),
@@ -96,6 +98,19 @@ describe("ThreadSidebar conversation rows", () => {
     expect(screen.getByText("Conversations unavailable")).toBeVisible();
     expect(screen.queryByText("Start a conversation")).toBeNull();
     expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
+  });
+
+  it("keeps a usable conversation available while offering an exact listing retry", () => {
+    storeMock.current!.threadListError = "beta conversations unavailable";
+
+    render(<ThreadSidebar />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Conversations could not be refreshed. beta conversations unavailable",
+    );
+    expect(screen.getByRole("button", { name: "New conversation" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry conversations" }));
+    expect(storeMock.current!.retryThreadList).toHaveBeenCalledTimes(1);
   });
 
   it("renders active jobs on an unselected conversation and clears activity at completion", () => {
