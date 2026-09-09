@@ -28,6 +28,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
 import {
+  recoverDurableNativeSession,
   cleanupSessionOnThrow,
   commitSession,
   discardUncommittedSession,
@@ -116,8 +117,138 @@ function findJsonlFiles(root) {
 }
 
 describe("pi-native sessions", () => {
+  it("resumes a cancelled tool-bearing durable Pi turn with a byte-stable valid request prefix", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-terminal-recovery-"));
+    writeFileSync(join(root, "evidence.txt"), "native tool evidence");
+    const model = setup({ reasoning: true });
+    const controller = new AbortController();
+    let beforeCancel;
+    let next;
+    let sessionId;
+    try {
+      faux.setResponses([
+        fauxAssistantMessage([fauxText("warm answer")]),
+        fauxAssistantMessage([
+          { ...fauxThinking("complete reasoning"), thinkingSignature: "faux-signature" },
+          fauxToolCall("Read", { file_path: "evidence.txt" }, { id: "cancel-read" }),
+        ]),
+        (context) => {
+          beforeCancel = structuredClone(context.messages);
+          controller.abort();
+          return fauxAssistantMessage([fauxText("interrupted prose")], { stopReason: "aborted" });
+        },
+        (context) => { next = structuredClone(context.messages); return fauxAssistantMessage([fauxText("resumed")]); },
+      ]);
+      const base = { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true, allowedTools: ["Read"], compaction: { enabled: false } };
+      const warm = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm" }] }));
+      expect(warm.error).toBeNull();
+      sessionId = warm.providerSessionId;
+      const cancelled = await generatePiNativeResponse("stable", runOptions(model, {
+        ...base, sessionId, sessionRecovery: { runId: "cancel-run", revision: 1 }, abortSignal: controller.signal,
+        messages: [{ role: "user", content: "cancelled ask" }],
+      }));
+      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.providerSessionRecovery).toMatchObject({ runId: "cancel-run", revision: 1, providerSessionId: sessionId });
+
+      const blocked = await generatePiNativeResponse("stable", runOptions(model, { ...base, sessionId, messages: [{ role: "user", content: "must not run while pending" }] }));
+      expect(blocked.failureKind).toBe("session_busy");
+      cancelled.providerSessionRecovery.revision = 2;
+      await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
+      cancelled.providerSessionRecovery.revision = 1;
+      for (const changed of [{ runId: "other" }, { revision: 2 }, { modelKey: "faux:other" }, { tipId: "wrong" }]) {
+        await expect(recoverDurableNativeSession({ ...cancelled.providerSessionRecovery, ...changed }, { appliedInputIds: [] })).resolves.toBe(false);
+      }
+      await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: ["unacknowledged"] })).resolves.toBe(false);
+      await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
+      const persisted = readFileSync(findJsonlFiles(join(root, "pi"))[0], "utf8");
+      expect(persisted).toContain("faux-signature");
+      await disposeProviderSession(sessionId);
+      const resumed = await generatePiNativeResponse("stable", runOptions(model, {
+        ...base, sessionId, messages: [{ role: "assistant", content: "MUST-NOT-RESEED" }, { role: "user", content: "next ask" }],
+      }));
+      expect(resumed.error).toBeNull();
+      expect(JSON.stringify(next.slice(0, beforeCancel.length))).toBe(JSON.stringify(beforeCancel));
+      expect(next).toHaveLength(beforeCancel.length + 1);
+      expect(JSON.stringify(next)).not.toMatch(/interrupted prose|MUST-NOT-RESEED/);
+      expect(next.filter((message) => message.role === "toolResult")).toHaveLength(1);
+    } finally {
+      if (sessionId) await disposeProviderSession(sessionId);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   const sessionsRoot = mkdtempSync(join(tmpdir(), "pi-native-sessions-"));
   afterAll(() => rmSync(sessionsRoot, { recursive: true, force: true }));
+
+  it("retains an admitted cancelled first durable turn and its cancelled tool result", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-first-cancel-recovery-"));
+    const model = setup();
+    const controller = new AbortController();
+    let sessionId;
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxToolCall("Read", { file_path: "never-read" }, { id: "cancel-tool" })])]);
+      const options = runOptions(model, { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true,
+        sessionRecovery: { runId: "first", revision: 0 }, allowedTools: ["Read"], abortSignal: controller.signal,
+        messages: [{ role: "user", content: "first cancelled ask" }],
+        onEvent: (event) => {
+          if (event.type === "assistant" && event.message?.content?.some((block) => block.type === "tool_use")) controller.abort();
+        },
+      });
+      const cancelled = await generatePiNativeResponse("stable", options);
+      sessionId = cancelled.providerSessionId;
+      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.providerSessionRecovery).toBeDefined();
+      await expect(recoverDurableNativeSession(cancelled.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
+      let context;
+      faux.setResponses([(value) => { context = value; return fauxAssistantMessage([fauxText("next")]); }]);
+      const resumed = await generatePiNativeResponse("stable", runOptions(model, { cwd: root, piSessionsRoot: join(root, "pi"), sessionKeepAlive: true, sessionId,
+        messages: [{ role: "user", content: "next" }], allowedTools: ["Read"] }));
+      expect(resumed.error).toBeNull();
+      expect(transcriptOf(context)[0]).toBe("user:first cancelled ask");
+      expect(context.messages.filter((message) => message.role === "toolResult")).toEqual([
+        expect.objectContaining({ toolCallId: "cancel-tool", isError: true }),
+      ]);
+    } finally {
+      if (sessionId) await disposeProviderSession(sessionId);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes a pre-admission durable abort despite recovery opt-in", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-pre-admission-recovery-"));
+    try {
+      const model = setup();
+      const controller = new AbortController(); controller.abort();
+      const result = await generatePiNativeResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+        sessionRecovery: { runId: "never-admitted", revision: 0 }, abortSignal: controller.signal, messages: [{ role: "user", content: "never sent" }] }));
+      expect(result.cancelled).toBe(true);
+      expect(result.providerSessionRecovery).toBeUndefined();
+      expect(countJsonlFiles(root)).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects recovery after the durable branch tip changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-recovery-changed-tip-"));
+    const model = setup();
+    let sessionId;
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("answer")])]);
+      const result = await generatePiNativeResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+        sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
+      sessionId = result.providerSessionId;
+      expect(result.providerSessionRecovery).toBeDefined();
+      const { PI_CONTEXT } = await import("../../ai/providers/pi-native/harness-adapter.js");
+      const repo = resolveDurableNativeSessionRepo(root);
+      const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
+      const branch = await raw.branch("main", PI_CONTEXT);
+      await branch.appendMessage({ role: "user", content: "unexpected append", timestamp: Date.now() }, PI_CONTEXT);
+      await raw.close(PI_CONTEXT);
+      await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
+    } finally {
+      if (sessionId) await retireDurableNativeSession(sessionId, root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it("rolls back and closes a resumed handle after a setup throw", async () => {
     const moveTo = vi.fn(async () => undefined);
