@@ -92,6 +92,7 @@ function wrapHistoryStore(
   const providerSessionRetirement = store.providerSessionRetirement;
   const contextImport = store.contextImport;
   return {
+    ...(store.providerSessionRecovery === undefined ? {} : { providerSessionRecovery: store.providerSessionRecovery }),
     ...(store.providerSessionModelBinding === undefined ? {} : { providerSessionModelBinding: store.providerSessionModelBinding }),
     ...(providerSessionRetirement === undefined
       ? {}

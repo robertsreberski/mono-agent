@@ -102,6 +102,40 @@ describe("tool lifecycle persistence gate", () => {
     });
   });
 
+  it("admits queued lifecycle evidence before abort while preserving serialized persistence", async () => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const admitted = [];
+    const persisted = [];
+    const delivered = [];
+    const controller = new AbortController();
+    const gate = createToolLifecycleEventGate({
+      abortSignal: controller.signal,
+      onLifecycleAdmitted: (event) => admitted.push(event),
+      sink: async (event) => {
+        persisted.push(event);
+        if (event.phase === "invocation") await held;
+        return { persistence: "persisted" };
+      },
+      onEvent: (event) => delivered.push(event),
+    });
+    const start = { type: "assistant", message: { content: [{ type: "tool_use", id: "queued", name: "Read", input: {} }] } };
+    const result = { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "queued", content: "completed before abort", is_error: false }] } };
+    gate.emit(start);
+    gate.emit(result);
+    gate.emit(result); // redelivery must not admit or persist the same block twice
+    expect(admitted.map((event) => event.phase)).toEqual(["invocation", "result"]);
+    controller.abort();
+    await Promise.resolve();
+    expect(persisted).toEqual([admitted[0]]);
+    expect(delivered).toEqual([]);
+    release();
+    await gate.flush();
+    expect(persisted).toEqual(admitted);
+    expect(persisted[1]).toMatchObject({ phase: "result", state: "success" });
+    expect(delivered).toEqual([start, result, result]);
+  });
+
   it("preserves a host-deferred lifecycle acknowledgement as untrusted client metadata", async () => {
     const seen = [];
     const gate = createToolLifecycleEventGate({

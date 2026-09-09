@@ -40,6 +40,7 @@ import { buildTurnContextEvent, composeUserMessageWithMemory } from "./turn-cont
 interface HarnessRuntimeRouting {
   readonly modelKey: string;
   readonly runtimeForSession: SessionRuntimeResolver;
+  readonly recoveryRevision?: number | undefined;
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
@@ -290,6 +291,9 @@ export async function runHarnessRuntime(
       const structuredHistory = historyAsMessages ? structuredHistoryMessages(history) : [];
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
+        sessionRecovery: routing.recoveryRevision !== undefined && typeof runtime.recoverSession === "function"
+          && sessionsEnabled && !sessionIsolated && durablePiSessionsRoot !== undefined
+          ? { runId, revision: routing.recoveryRevision } : undefined,
         model: effectiveModel,
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See
@@ -315,6 +319,10 @@ export async function runHarnessRuntime(
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
+        observers: [...(Array.isArray(merged.observers) ? merged.observers : []), {
+          recordEvent: (event: RuntimeEventLike) => turnContinuityCollector.observeNativeEvent(event),
+          recordToolLifecycle: (event: import("@mono-agent/runtime-adapter").RuntimeToolLifecycleEvent) => turnContinuityCollector.admitToolLifecycle(event),
+        }],
         toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(
           options.toolHistory?.writer.createSink({
               conversationId: request.conversationId,
