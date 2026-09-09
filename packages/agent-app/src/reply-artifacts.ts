@@ -31,6 +31,7 @@ import {
   CodedError,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   type AgentReplyArtifactOpenRequest,
+  type ChannelLogger,
   type AgentReplyArtifactStream,
   type AgentReplyAttachmentPart,
   type AgentReplyPart,
@@ -172,6 +173,8 @@ export interface ReplyArtifactServiceOptions {
   readonly beforeSourceOpen?: () => void | Promise<void>;
   /** @internal runs after all staged files are durable and before directory rename. */
   readonly beforePublicationCommit?: () => void | Promise<void>;
+  /** Receives unexpected (non-policy) publication failures; policy rejections are returned to the tool caller. */
+  readonly logger?: ChannelLogger;
 }
 
 export interface ReplyArtifactService {
@@ -473,17 +476,19 @@ export function createReplyArtifactService(options: ReplyArtifactServiceOptions)
         mediaType: input.mediaType,
         code,
       })}`;
-      const storageFull = error instanceof ReplyArtifactStorageFullError;
       const failure: AgentReplyPartFailure = {
         type: "failure",
         id: stablePartId("reply-file-failure", failureIdentity),
         code,
-        message: storageFull
-          ? "Reply artifact storage is full; this file was not published."
-          : code === "artifact_too_large"
-          ? errorMessage(error)
-          : "The generated file could not be published safely.",
+        message: publishFailureMessage(error),
       };
+      if (!isExpectedPublishFailure(error)) {
+        options.logger?.warn?.("Reply artifact publication failed unexpectedly.", {
+          runId: binding.runId,
+          error: errorMessage(error),
+          errorCode: errnoCode(error),
+        });
+      }
       return recordPart(binding.runId, failureIdentity, failure).part as AgentReplyPartFailure;
     }
   };
@@ -775,7 +780,7 @@ function createPublishServer(
   const server = new McpServer({ name: REPLY_ARTIFACT_MCP_SERVER_NAME, version: "1.0.0" });
   server.registerTool(PUBLISH_REPLY_FILE_TOOL_NAME, {
     title: "Attach a generated file",
-    description: "Publish one generated workspace file with the assistant reply. Call once per file after writing it. The host copies, hashes, retains, and authorizes the file; the response carries only an opaque id and sanitized metadata. Paths outside the workspace or this run's MCP output directory, symlinks, non-files, and files over 20 MiB are rejected.",
+    description: "Publish one generated workspace file with the assistant reply. Call once per file after writing it. The host copies, hashes, retains, and authorizes the file; the response carries only an opaque id and sanitized metadata. Paths outside the workspace or this run's MCP output directory, anything under the agent's private state (.mono-agent/, the artifacts directory, memory, credentials), symlinks, non-files, and files over 20 MiB are rejected; write files meant for publication to an ordinary workspace directory such as tmp/ or output/. A rejection names its reason so the file can be rewritten to an allowed location.",
     inputSchema: PUBLISH_INPUT,
   }, async (input) => {
     const part = await publish(input);
@@ -855,10 +860,11 @@ async function openAuthorizedSource(
       lstat(canonical),
       realpath(candidate),
     ]);
+    if (!opened.isFile() || !currentPath.isFile()) {
+      throw new CodedError("artifact_publish_failed", "Only regular files can be published.");
+    }
     if (
-      !opened.isFile()
-      || opened.nlink !== 1
-      || !currentPath.isFile()
+      opened.nlink !== 1
       || currentPath.isSymbolicLink()
       || currentPath.nlink !== 1
       || currentCanonical !== canonical
@@ -1203,6 +1209,35 @@ async function* streamHandle(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function errnoCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
+const CALLER_ERRNO_CODES = new Set(["ENOENT", "ENOTDIR", "EACCES", "EPERM"]);
+
+/** Policy rejections and caller path mistakes are answered, not logged as host faults. */
+function isExpectedPublishFailure(error: unknown): boolean {
+  if (error instanceof CodedError || error instanceof ReplyArtifactStorageFullError) return true;
+  const code = errnoCode(error);
+  return code !== undefined && CALLER_ERRNO_CODES.has(code);
+}
+
+/**
+ * Policy rejections carry static, path-free reasons the model can act on
+ * (write the file elsewhere, publish a regular file, retry after a rewrite).
+ * Anything else stays generic so filesystem details never reach the reply.
+ */
+function publishFailureMessage(error: unknown): string {
+  if (error instanceof ReplyArtifactStorageFullError) {
+    return "Reply artifact storage is full; this file was not published.";
+  }
+  if (error instanceof CodedError) return error.message;
+  const code = errnoCode(error);
+  if (code === "ENOENT" || code === "ENOTDIR") return "The generated file does not exist at that path.";
+  if (code === "EACCES" || code === "EPERM") return "The generated file is not readable by the agent.";
+  return "The generated file could not be published safely.";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

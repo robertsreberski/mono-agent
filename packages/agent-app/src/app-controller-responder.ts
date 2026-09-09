@@ -248,6 +248,7 @@ export async function buildResponder(
     retentionDays: coreConfig.artifacts.retention.maxAgeDays,
     replyPartBudget,
     storageBudget: replyArtifactStorage,
+    ...(controller.logger === undefined ? {} : { logger: controller.logger }),
   });
   const mcpApps = mcpAppsEnabled
     ? createMcpAppService({
