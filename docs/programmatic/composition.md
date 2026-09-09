@@ -129,7 +129,9 @@ Notes:
 
 - The configured fallback chain is applied by the built-in runtime's router. An injected runtime bypasses that wiring, so your runtime owns retry and failover behavior.
 - The BuJo memory LLM is separate from the channel runtime. `createConfiguredMemory(config, { memoryRuntime })` is the seam for tests or custom memory LLM execution; otherwise memory builds its own fallback-free runtime from `memory.llm`.
-- Per-trigger model overrides from cron and webhook (and child subagent profile models) use `runtimeForModel`. A host with a custom runtime that should honor those overrides must also provide a `runtimeForModel(model)` factory.
+- Model overrides use a cached `runtimeForModel(model)` owner when supplied; without it, the injected runtime receives the effective per-run model directly. Provide the factory when separate runtimes are needed, such as routers with a fixed primary. Session cleanup resolves the same owner, including after a restart.
+- `createSessionRuntimeResolver` from `@mono-agent/agent-harness` caches runtime identity by canonical model key. Durable-history retirement callbacks receive `(providerSessionId, modelKey?)`; absent keys identify legacy unbound records. The configured app wires retirement to the owning runtime.
+- A custom history coordinator opts into durable alternate-model sessions with `providerSessionModelBinding: "v1"`. Its `beginProviderSessionTurn(conversationId, runId, { modelKey })` must persist and acknowledge the binding, rotate on changes, and return `previousModelKey` for a known change. Legacy coordinators retain their default-model path; alternate-model sessions remain process-local until the coordinator supports binding.
 
 ## Custom memory stores
 

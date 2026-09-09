@@ -92,6 +92,7 @@ function wrapHistoryStore(
   const providerSessionRetirement = store.providerSessionRetirement;
   const contextImport = store.contextImport;
   return {
+    ...(store.providerSessionModelBinding === undefined ? {} : { providerSessionModelBinding: store.providerSessionModelBinding }),
     ...(providerSessionRetirement === undefined
       ? {}
       : { providerSessionRetirement }),
@@ -152,8 +153,8 @@ function wrapHistoryStore(
           store.prepareAppend!(conversationId, messages) }),
     ...(store.beginProviderSessionTurn === undefined
       ? {}
-      : { beginProviderSessionTurn: (conversationId: string, runId: string) =>
-          store.beginProviderSessionTurn!(conversationId, runId) }),
+      : { beginProviderSessionTurn: (...args: Parameters<NonNullable<ConversationHistoryStore["beginProviderSessionTurn"]>>) =>
+          store.beginProviderSessionTurn!(...args) }),
   };
 }
 

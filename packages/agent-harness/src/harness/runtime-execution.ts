@@ -1,6 +1,6 @@
+import { sessionModelKey } from "../session-runtime.js";
 import type { RunRecorder, RuntimeEventLike } from "@mono-agent/observability";
 import {
-  modelReferenceKey,
   monoRuntimeSupportsLiveInput,
   sandboxPolicyToRuntimeOptions,
   type RuntimeMessage,
@@ -18,6 +18,7 @@ import type {
   AgentHarnessRequest,
   AgentHarnessRuntimeOptionsExtension,
 } from "../types.js";
+import type { SessionRuntimeResolver } from "../session-runtime.js";
 import type { LiveInputMailbox } from "../live-input.js";
 import { failClosedToolPolicy, toolPolicyToRuntimeOptions } from "../tool-policy/index.js";
 import type { AttachmentRequestContext } from "./attachments.js";
@@ -27,7 +28,6 @@ import { injectMcpContinuationContext, injectMcpRequestContext } from "./mcp-con
 import {
   isRuntimeModelReference,
   mergeRuntimeOptions,
-  sameRuntimeModel,
   withoutToolPolicyOptions,
 } from "./runtime-options.js";
 import {
@@ -36,6 +36,12 @@ import {
   speakerTurnContextFields,
 } from "./speaker-context.js";
 import { buildTurnContextEvent, composeUserMessageWithMemory } from "./turn-context.js";
+
+interface HarnessRuntimeRouting {
+  readonly modelKey: string;
+  readonly runtimeForSession: SessionRuntimeResolver;
+  readonly onRuntimeSelected: (modelKey: string) => void;
+}
 
 export async function runHarnessRuntime(
   options: AgentHarnessOptions,
@@ -50,6 +56,7 @@ export async function runHarnessRuntime(
   providerAttributionSessionId: string | undefined,
   durablePiSessionsRoot: string | undefined,
   sessionIsolated: boolean,
+  routing: HarnessRuntimeRouting,
   skillDisclosureEntries: readonly SkillIndexSummary[],
   history: readonly HistoryMessage[],
   historyOmitted: boolean,
@@ -232,15 +239,10 @@ export async function runHarnessRuntime(
       if (
         !sessionIsolated
         && sessionsEnabled
-        && overrideModel !== undefined
-        && !sameRuntimeModel(overrideModel, options.model)
+        && sessionModelKey(effectiveModel) !== routing.modelKey
       ) {
-        // Context/session isolation must be decided before history assembly. A
-        // model-changing extension that was not declared by the request's
-        // cron/webhook/web/TUI/Telegram/Slack metadata arrives too late: a warm
-        // turn may already have omitted canonical history. Fail before provider
-        // execution rather than mixing model lineage or saving an id owned by
-        // another runtime.
+        // A session-capable non-isolated call must execute the canonical primary
+        // selected before history assembly; reject late extension mismatches.
         throw new AgentHarnessError(
           "undeclared_model_override",
           "A model-changing runtimeOptionsForRequest result must be declared in request metadata before context assembly.",
@@ -260,17 +262,9 @@ export async function runHarnessRuntime(
         }
         if (!useManagedLiveInput || !supportsLiveInput) liveInputMailbox.markUnsupported();
       }
-      // When the override names a DIFFERENT model, run it on a runtime built for
-      // that model (override as the fallback-chain primary, configured backups
-      // after) so failover is preserved. Falls back to the shared runtime when no
-      // factory is wired (the app wires it only when fallbacks exist; a plain
-      // runtime honors the per-run model) or the model is unchanged.
-      const runtime =
-        overrideModel !== undefined &&
-        options.runtimeForModel !== undefined &&
-        !sameRuntimeModel(overrideModel, options.model)
-          ? options.runtimeForModel(effectiveModel)
-          : options.runtime;
+      const effectiveModelKey = sessionModelKey(effectiveModel);
+      const runtime = routing.runtimeForSession(effectiveModelKey);
+      routing.onRuntimeSelected(effectiveModelKey);
       // Speaker/group context wraps the user's words FIRST (it is chronologically
       // prior and identity-scoping); recalled memory still appends last. Composing
       // HERE rather than mutating request.userMessage is load-bearing: that field
@@ -333,7 +327,7 @@ export async function runHarnessRuntime(
         // Durable provider-session root is forwarded only for a host-history
         // coordinated turn. Custom stores and isolated runs cannot safely make
         // provider JSONL authoritative across a crash, so they stay in-memory.
-        ...(durablePiSessionsRoot === undefined || runtime !== options.runtime
+        ...(durablePiSessionsRoot === undefined
           ? {}
           : { piSessionsRoot: durablePiSessionsRoot }),
         // Progressive skill disclosure (index mode): pass the discovered skills
@@ -355,13 +349,9 @@ export async function runHarnessRuntime(
         // clobber the harness's session decision — including forcing the keys
         // back to undefined on fresh runs.
         //
-        // Omitted entirely when running on a per-turn OVERRIDE runtime (a model
-        // override built via runtimeForModel): that runtime is not the one the
-        // shared session store / disposal is keyed to, so keeping a session alive
-        // on it would leak (the store disposes against the base runtime). An
-        // override turn is one-shot, so it runs stateless. Non-override turns
-        // (runtime === options.runtime) are byte-for-byte unchanged.
-        ...(sessionsEnabled && runtime === options.runtime
+        // The model-bound owner receives the same host-owned session keys for
+        // default and override turns; isolated turns remain one-shot.
+        ...(sessionsEnabled && !sessionIsolated
           ? {
             ...(providerAttributionSessionId === undefined ? {} : { providerAttributionSessionId }),
             sessionKeepAlive: true,
@@ -386,7 +376,7 @@ export async function runHarnessRuntime(
       // to both sinks the same way as the provider_bridge_latency event below.
       const runConfigEvent: RuntimeEventLike = {
         type: "run_config",
-        model: modelReferenceKey(effectiveModel),
+        model: sessionModelKey(effectiveModel),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         overridden: overrideModel !== undefined || overrideEffort !== undefined,
         timestamp: new Date().toISOString(),
