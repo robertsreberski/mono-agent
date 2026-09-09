@@ -447,6 +447,9 @@ export function requestModelOverrideRuntimeOptions(
     ...(configuredRuntimeFallbackModels(coreConfig.runtime).length === 0
       ? {}
       : { fallbackModels: configuredRuntimeFallbackModels(coreConfig.runtime) }),
+    ...((coreConfig.runtime.fallbacks?.length ?? 0) === 0
+      ? {}
+      : { fallbackRoutes: coreConfig.runtime.fallbacks }),
     ...(coreConfig.runtime.effort === undefined ? {} : { baseEffort: coreConfig.runtime.effort }),
     ...(coreConfig.providers?.local === undefined ? {} : { localProviders: coreConfig.providers.local }),
   };

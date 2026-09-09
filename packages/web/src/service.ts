@@ -90,7 +90,13 @@ import {
 } from "./discovery.js";
 import { conversationTitleFromFrame } from "./conversation-title.js";
 import { parseCronReplyContext } from "./cron-reply-context.js";
-import { advertisedEffortLevels, effectiveModelForAgent, effortLevelsForModel } from "./effort-ladder.js";
+import {
+  advertisedEffortLevels,
+  effectiveModelForAgent,
+  effortLevelsForModel,
+  inheritedEffortForModel,
+  type EffortAdvertisement,
+} from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
 import { OperatorClient, type OperatorInfo } from "./operator-client.js";
 import {
@@ -594,6 +600,7 @@ export interface WebUploadReservation {
 interface CatalogModelRecord {
   readonly source: "page" | "shortlist";
   readonly efforts: readonly string[] | undefined;
+  readonly advertisement?: EffortAdvertisement;
 }
 
 /** One agent generation's admitted refs. See `reconcileModelCatalogCache`. */
@@ -3516,7 +3523,11 @@ export class WebService {
     exactTarget?: PersistedCatalogTarget,
   ): boolean {
     const refs = page.models.flatMap((model) => {
-      const record: CatalogModelRecord = { source: "page", efforts: advertisedEffortLevels(model) };
+      const record: CatalogModelRecord = {
+        source: "page",
+        efforts: advertisedEffortLevels(model),
+        advertisement: model,
+      };
       // The wire carries provider-local ids while every selection surface
       // speaks the canonical `<provider>:<model>` reference. Admit both, or a
       // turn is judged against metadata the page did advertise but under a
@@ -3577,7 +3588,15 @@ export class WebService {
     const effort = explicitEffort ?? thread.runEffort ?? undefined;
     this.validateModelAndEffort(thread.sourceId, agent, model, effort);
     const requestedModel = effectiveModelForAgent(agent, model);
-    const requestedEffort = effort ?? agent.defaultEffort ?? undefined;
+    const cached = requestedModel === undefined
+      ? undefined
+      : this.modelCatalogCache.get(thread.sourceId)?.models.get(requestedModel);
+    const requestedEffort = effort ?? inheritedEffortForModel(
+      agent,
+      requestedModel,
+      cached?.advertisement,
+      agent.defaultEffort,
+    );
     return {
       thread,
       agent,

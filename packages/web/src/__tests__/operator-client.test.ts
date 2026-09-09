@@ -327,6 +327,7 @@ describe("OperatorClient", () => {
         modelOptions: {
           "p/m": {
             effortLevels: ["low", "high"],
+            effort: null,
             reasoning: true,
             contextWindow: 128_000,
           },
@@ -353,6 +354,7 @@ describe("OperatorClient", () => {
       modelOptions: {
         "p/m": {
           effortLevels: ["low", "high"],
+          effort: null,
           reasoning: true,
           contextWindow: 128_000,
         },

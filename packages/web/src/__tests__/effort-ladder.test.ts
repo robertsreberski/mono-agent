@@ -7,6 +7,7 @@ import {
   advertisedEffortLevels,
   effortLevelsForModel,
   GLOBAL_EFFORT_LEVELS,
+  inheritedEffortForModel,
 } from "../effort-ladder.js";
 import { errorCode, errorMessage } from "../errors.js";
 import { WebService } from "../service.js";
@@ -91,6 +92,49 @@ describe("the shared effort rule", () => {
     expect(effortLevelsForModel({ efforts: ["low"] }, "anything", undefined)).toEqual(["low"]);
     expect(effortLevelsForModel({}, "anything", undefined)).toEqual([...GLOBAL_EFFORT_LEVELS]);
   });
+
+  it("resolves inherited effort per primary, fallback, and advertised catalog route", () => {
+    const agent = {
+      defaultModel: "primary",
+      models: ["primary", "pinned", "provider-default", "legacy-fallback"],
+      modelOptions: {
+        primary: { reasoning: true, effortLevels: ["low"] },
+        pinned: { reasoning: true, effortLevels: ["low"], effort: "xhigh" },
+        "provider-default": { reasoning: true, effortLevels: ["high"], effort: null },
+        "legacy-fallback": { reasoning: true, effortLevels: ["high"] },
+      },
+    };
+
+    expect(inheritedEffortForModel(agent, "primary", undefined, "high")).toBe("high");
+    expect(inheritedEffortForModel(agent, "pinned", undefined, "high")).toBe("xhigh");
+    expect(inheritedEffortForModel(agent, "provider-default", undefined, "high")).toBeUndefined();
+    // No per-route field means an older agent: retain ladder-based behavior.
+    expect(inheritedEffortForModel(agent, "legacy-fallback", undefined, "high")).toBe("high");
+    expect(inheritedEffortForModel(agent, "catalog", {
+      reasoning: true,
+      reasoningMode: "effort",
+      effortLevels: ["low", "xhigh"],
+    }, "high")).toBeUndefined();
+    expect(inheritedEffortForModel(agent, "catalog", {
+      reasoning: true,
+      reasoningMode: "effort",
+      effortLevels: ["low", "high"],
+    }, "high")).toBe("high");
+  });
+
+  it("handles toggle, non-reasoning, and unknown-cloud inheritance", () => {
+    const agent = { defaultModel: "primary", modelOptions: {} };
+    expect(inheritedEffortForModel(agent, "toggle", {
+      reasoning: true,
+      reasoningMode: "toggle",
+    }, "high")).toBe("high");
+    expect(inheritedEffortForModel(agent, "toggle", {
+      reasoning: true,
+      reasoningMode: "toggle",
+    }, "medium")).toBeUndefined();
+    expect(inheritedEffortForModel(agent, "plain", { reasoning: false }, "high")).toBeUndefined();
+    expect(inheritedEffortForModel(agent, "unknown", { reasoning: true }, "high")).toBe("high");
+  });
 });
 
 describe("WebService effort validation", () => {
@@ -167,6 +211,63 @@ describe("WebService effort validation", () => {
       if (Date.now() >= deadline) throw new Error("Turns did not drain.");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    await service.stop();
+  });
+
+  it("attributes model-only turns with their resolved inherited effort", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const fallback = operatorFetch();
+    const fetchWithRouteEffort = (async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ): Promise<Response> => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.endsWith("/v1/info")) return Response.json({
+        schema: 1,
+        model: "cloud:primary",
+        effort: "high",
+        models: ["cloud:primary", "local:fallback", "cloud:pinned"],
+        modelOptions: {
+          "cloud:primary": { reasoning: true, effortLevels: ["high"] },
+          "local:fallback": {
+            reasoning: true,
+            reasoningMode: "effort",
+            effortLevels: ["low", "xhigh"],
+            effort: null,
+          },
+          "cloud:pinned": { reasoning: true, effortLevels: ["high"], effort: "xhigh" },
+        },
+        capabilities: { attachments: true },
+      });
+      return fallback(input, init);
+    }) as typeof fetch;
+    const service = await WebService.create({
+      stateDir: join(base, "state"),
+      discoveryIntervalMs: 0,
+      purgeIntervalMs: 0,
+      discoverImpl: async () => [fakeDiscoveredAgent()],
+      fetchImpl: fetchWithRouteEffort,
+    });
+
+    const fallbackThread = service.createThread("agent-one");
+    await service.startTurn(fallbackThread.id, { text: "fallback", model: "local:fallback" });
+    const primaryThread = service.createThread("agent-one");
+    await service.startTurn(primaryThread.id, { text: "primary" });
+    const pinnedThread = service.createThread("agent-one");
+    await service.startTurn(pinnedThread.id, { text: "pinned", model: "cloud:pinned" });
+    const deadline = Date.now() + 5_000;
+    while (service.store.listActiveTurnIds().length > 0) {
+      if (Date.now() >= deadline) throw new Error("Turns did not drain.");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(service.thread(fallbackThread.id).messages.at(-1)?.attribution?.requested)
+      .toEqual({ model: "local:fallback" });
+    expect(service.thread(primaryThread.id).messages.at(-1)?.attribution?.requested)
+      .toEqual({ model: "cloud:primary", effort: "high" });
+    expect(service.thread(pinnedThread.id).messages.at(-1)?.attribution?.requested)
+      .toEqual({ model: "cloud:pinned", effort: "xhigh" });
     await service.stop();
   });
 });

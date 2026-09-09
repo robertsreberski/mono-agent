@@ -22,6 +22,7 @@ interface RunOptions {
   readonly localProviders?: readonly LocalProviderDefinition[];
   readonly baseModel?: RuntimeModelReference;
   readonly fallbackModels?: readonly RuntimeModelReference[];
+  readonly fallbackRoutes?: readonly { readonly model: RuntimeModelReference; readonly effort?: string }[];
   readonly baseEffort?: string;
 }
 
@@ -31,6 +32,7 @@ function run(metadata: Record<string, unknown> | undefined, options: RunOptions 
     ...(options.localProviders === undefined ? {} : { localProviders: options.localProviders }),
     ...(options.baseModel === undefined ? {} : { baseModel: options.baseModel }),
     ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
+    ...(options.fallbackRoutes === undefined ? {} : { fallbackRoutes: options.fallbackRoutes }),
     ...(options.baseEffort === undefined ? {} : { baseEffort: options.baseEffort }),
   });
   return extension({
@@ -53,6 +55,25 @@ const OLLAMA_PROVIDER: LocalProviderDefinition = {
   type: "ollama",
   baseUrl: "http://localhost:11434",
   enabled: true,
+};
+
+const EFFORT_MODELS_PROVIDER: LocalProviderDefinition = {
+  id: "localx",
+  type: "lmstudio",
+  baseUrl: "http://localhost:1234",
+  enabled: true,
+  models: [
+    {
+      name: "graded",
+      capabilities: {
+        reasoning: true,
+        reasoning_mode: "effort",
+        reasoning_levels: ["low", "medium", "xhigh"],
+      },
+    },
+    { name: "toggle", capabilities: { reasoning: true, reasoning_mode: "toggle" } },
+    { name: "plain", capabilities: { reasoning: false, reasoning_mode: "none" } },
+  ],
 };
 
 describe("requestModelOverrideTargetsPiNative", () => {
@@ -184,6 +205,99 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     const result = await run({ cron: { model: "openai-codex:gpt-5.5" } });
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ provider: "openai-codex", model: "gpt-5.5" }));
     expect(result.runtimeOptions.effort).toBeUndefined();
+  });
+
+  describe("model-only inherited effort", () => {
+    const baseModel = parseMonoRuntimeModelReference("unknown-provider:primary");
+    const fallbackPinned = parseMonoRuntimeModelReference("unknown-provider:fallback-pinned");
+    const fallbackDefault = parseMonoRuntimeModelReference("unknown-provider:fallback-default");
+    const fallbackRoutes = [
+      { model: fallbackPinned, effort: "xhigh" },
+      { model: fallbackDefault },
+    ];
+
+    it("keeps the configured effort for the default model", async () => {
+      const result = await run(
+        { web: { model: baseModel.reference } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions).not.toHaveProperty("effort");
+    });
+
+    it("uses a configured fallback's pinned effort", async () => {
+      const result = await run(
+        { cron: { model: fallbackPinned.reference } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions.effort).toBe("xhigh");
+    });
+
+    it("selects provider default for a configured fallback without effort", async () => {
+      const result = await run(
+        { webhook: { model: fallbackDefault.reference } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions.effort).toBeNull();
+    });
+
+    it("inherits only when a local model's advertised ladder admits the base effort", async () => {
+      const excluded = await run(
+        { web: { model: "localx:graded" } },
+        { baseModel, baseEffort: "high", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      const included = await run(
+        { web: { model: "localx:graded" } },
+        { baseModel, baseEffort: "xhigh", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      expect(excluded.runtimeOptions.effort).toBeNull();
+      expect(included.runtimeOptions).not.toHaveProperty("effort");
+    });
+
+    it("admits only high/none for a toggle model", async () => {
+      const high = await run(
+        { telegram: { model: "localx:toggle" } },
+        { baseModel, baseEffort: "high", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      const medium = await run(
+        { telegram: { model: "localx:toggle" } },
+        { baseModel, baseEffort: "medium", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      expect(high.runtimeOptions).not.toHaveProperty("effort");
+      expect(medium.runtimeOptions.effort).toBeNull();
+    });
+
+    it("selects provider default for a non-reasoning model", async () => {
+      const result = await run(
+        { slack: { model: "localx:plain" } },
+        { baseModel, baseEffort: "high", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      expect(result.runtimeOptions.effort).toBeNull();
+    });
+
+    it("keeps permissive inheritance for an unknown cloud model", async () => {
+      const result = await run(
+        { web: { model: "unknown-provider:other" } },
+        { baseModel, baseEffort: "high" },
+      );
+      expect(result.runtimeOptions).not.toHaveProperty("effort");
+    });
+
+    it("always lets an explicit request effort win", async () => {
+      const result = await run(
+        { web: { model: fallbackDefault.reference, effort: "medium" } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions.effort).toBe("medium");
+    });
+
+    it("escalates a keyword over a provider-default null baseline", async () => {
+      const result = await run(
+        { webhook: { model: fallbackDefault.reference } },
+        { baseModel, baseEffort: "xhigh", fallbackRoutes },
+        "think this through",
+      );
+      expect(result.runtimeOptions.effort).toBe("high");
+    });
   });
 
   it("prefers webhook metadata over cron metadata when both are present", async () => {
