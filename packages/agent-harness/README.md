@@ -374,7 +374,9 @@ are `status: "failed"`, one of `runtime_result`, `empty_response`, or
 `thrown_error`, and a fixed framework-authored notice. Runtime/provider codes
 and details for either outcome are bounded and redacted only as `untrustedCode`
 and `untrustedDetail` inside tag-safe JSON explicitly framed as untrusted
-evidence. The collector seals at settlement and rejects late runtime events.
+evidence. The collector seals at settlement and rejects late runtime events. Native events
+admitted before the seal retain that admission while sidecar persistence is
+queued; continuity waits for those accepted writes before finalizing history.
 Eligible coordinated durable Pi turns retain their epoch after validated native
 settlement; the canonical revision advances once. Recovery adds no Pi message.
 Pi filters interrupted prose/reasoning and retains completed native tools and the

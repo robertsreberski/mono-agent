@@ -2066,6 +2066,37 @@ describe("coordinated terminal recovery", () => {
     } finally { await f.close(); }
   });
 
+  it("retains native evidence admitted before cancellation while sidecar delivery is queued", async () => {
+    const f = await fixture();
+    const assistant = { type: "assistant", message: { content: [{ type: "text", text: "accepted prose" }] } };
+    const invocation = { phase: "invocation", toolCallId: "queued-read", toolName: "Read", arguments: { path: "file" } } as const;
+    const completed = { phase: "result", toolCallId: "queued-read", toolName: "Read", content: "accepted tool evidence", state: "success" } as const;
+    try {
+      f.before(async (options) => {
+        for (const observer of Array.isArray(options.observers) ? options.observers : []) {
+          const admission = observer as { recordEvent(event: typeof assistant): void; recordToolLifecycle(event: typeof invocation | typeof completed): void };
+          admission.recordEvent(assistant);
+          admission.recordToolLifecycle(invocation);
+          admission.recordToolLifecycle(completed);
+        }
+      });
+      f.transform(async (result) => {
+        const options = f.fake.calls.at(-1)!.options;
+        await options.toolLifecycleSink?.(invocation);
+        await options.toolLifecycleSink?.(completed);
+        options.onEvent?.(assistant);
+        return result;
+      });
+      const response = await f.run("cancelled", "cancelled ask");
+      expect((response.metadata?.runtime as { runtimeWarnings?: unknown[] } | undefined)?.runtimeWarnings).toBeUndefined();
+      expect(f.receipts).toHaveLength(1);
+      const history = await f.historyStore.load("recovery");
+      expect(history.at(-1)?.content).toContain("accepted tool evidence");
+      expect(history.at(-1)?.content).toContain('"state":"success"');
+      expect(history.at(-1)?.content?.match(/accepted prose/g)).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
   it.each(["success", "error", "cancelled"] as const)("checks post-seal tool settlement against accepted evidence: %s", async (state) => {
     const f = await fixture();
     try {

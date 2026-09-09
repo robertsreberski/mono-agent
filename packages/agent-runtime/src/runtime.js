@@ -219,6 +219,7 @@ export function createRuntime(host = {}) {
         // Observer delivery keeps the runtime's synchronous contract. Only the
         // client-facing lifecycle event waits for its serialized persistence.
         onObserve: (event) => hub.emit(event),
+        onLifecycleAdmitted: (event) => hub.recordToolLifecycle(event),
         onEvent: options.onEvent,
         abortSignal: options.abortSignal,
       });

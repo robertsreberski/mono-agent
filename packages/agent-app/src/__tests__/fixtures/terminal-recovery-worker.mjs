@@ -2,9 +2,16 @@
 import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
+import { ToolHistoryWriter } from "@mono-agent/agent-harness";
+import { setTimeout as delay } from "node:timers/promises";
 import { createConfiguredAgentHarness } from "@mono-agent/agent-app";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
-const [root, mode] = process.argv.slice(2);
+const [root, mode, slowWriter] = process.argv.slice(2);
+if (slowWriter === "slow-writer") {
+  // Exercise the CI race: native Read finishes while its sidecar opens.
+  const open = ToolHistoryWriter.open;
+  ToolHistoryWriter.open = async (options) => { await delay(2_000); return open.call(ToolHistoryWriter, options); };
+}
 await writeFile(join(root, "IDENTITY.md"), "You are Mono.");
 await writeFile(join(root, "evidence.txt"), "DURABLE TOOL EVIDENCE");
 const faux = fauxProvider({ provider: "faux", models: [{ id: "fixture", reasoning: true }] });

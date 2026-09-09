@@ -179,6 +179,24 @@ interface TurnContinuityLiveInput {
 }
 
 export class UncommittedTurnCollector {
+  private readonly nativeEvents = new WeakSet<object>();
+  private readonly admittedLifecycles = new WeakMap<object, { call: CapturedToolCall; release: () => void; settled: Promise<void> }>();
+
+  /** Native observers run before the runtime queues durable persistence. */
+  observeNativeEvent(event: RuntimeEventLike): void {
+    this.observeRuntimeEvent(event);
+    this.nativeEvents.add(event);
+  }
+
+  admitToolLifecycle(event: RuntimeToolLifecycleEvent): void {
+    if (this.sealedOutcome !== undefined || this.admittedLifecycles.has(event)) return;
+    const call = this.observeToolLifecycle(event);
+    let release!: () => void;
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    this.admittedLifecycles.set(event, { call, release, settled });
+    this.pendingLifecycleWrites.add(settled);
+  }
+
   private unsafeRecoveryEvidence = false;
   canRecoverNativeTail(): boolean { return !this.unsafeRecoveryEvidence; }
 
@@ -191,6 +209,7 @@ export class UncommittedTurnCollector {
   private readonly pendingLifecycleWrites = new Set<Promise<unknown>>();
 
   observeRuntimeEvent(event: RuntimeEventLike): boolean {
+    if (this.nativeEvents.has(event)) return this.sealedOutcome === undefined;
     if (this.sealedOutcome !== undefined) {
       const message = dataRecord(event.message);
       if (event.type === "assistant" && !["aborted", "error"].includes(String(message?.stopReason))) this.unsafeRecoveryEvidence = true;
@@ -226,6 +245,19 @@ export class UncommittedTurnCollector {
 
   wrapToolLifecycleSink(delegate: RuntimeToolLifecycleSink | undefined): RuntimeToolLifecycleSink {
     return async (event) => {
+      const admitted = this.admittedLifecycles.get(event);
+      if (admitted !== undefined) {
+        try {
+          const persistence = await delegate?.(event);
+          if (persistence !== undefined && event.phase === "invocation" && admitted.call.invocation !== undefined) admitted.call.invocation.persistence = persistence;
+          if (persistence !== undefined && event.phase === "result" && admitted.call.result !== undefined) admitted.call.result.persistence = persistence;
+          return persistence;
+        } finally {
+          admitted.release();
+          this.pendingLifecycleWrites.delete(admitted.settled);
+          this.admittedLifecycles.delete(event);
+        }
+      }
       if (this.sealedOutcome !== undefined) {
         if (event.phase === "invocation" || !this.calls.has(event.toolCallId)
           || (event.phase === "result" && event.state === "success")) this.unsafeRecoveryEvidence = true;

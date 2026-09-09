@@ -15,9 +15,9 @@ const HOST_HISTORY_METADATA = Symbol("mono-agent.host-tool-history");
 const HOST_TOOL_LIFECYCLE_METADATA = Symbol("mono-agent.host-tool-lifecycle");
 
 /**
- * @param {{sink?: (event: any) => Promise<any>, onObserve?: (event: any) => void, onEvent?: (event: any) => void, abortSignal?: AbortSignal}} options
+ * @param {{sink?: (event: any) => Promise<any>, onObserve?: (event: any) => void, onLifecycleAdmitted?: (event: any) => void, onEvent?: (event: any) => void, abortSignal?: AbortSignal}} options
  */
-export function createToolLifecycleEventGate({ sink, onObserve, onEvent, abortSignal }) {
+export function createToolLifecycleEventGate({ sink, onObserve, onLifecycleAdmitted, onEvent, abortSignal }) {
   /** @type {Promise<void>} */
   let tail = Promise.resolve();
   let pendingDeliveries = 0;
@@ -25,22 +25,30 @@ export function createToolLifecycleEventGate({ sink, onObserve, onEvent, abortSi
   const timing = new Map();
   /** @type {Map<string, any>} */
   const approvals = new Map();
+  const preparedBlocks = new WeakSet();
 
   const emit = (event) => {
     stripProviderLifecycleMetadata(event);
     try { onObserve?.(event); } catch { /* observer callback semantics remain best-effort */ }
+    observeClassification(event, timing, approvals);
     const requiresPersistence = typeof sink === "function" && eventNeedsPersistence(event);
+    // Admission/classification follows native emission, not delayed storage.
+    const writes = requiresPersistence ? prepareEvent(event, { timing, approvals, abortSignal }, preparedBlocks) : [];
+    for (const write of writes) {
+      try { onLifecycleAdmitted?.(write.lifecycle); } catch { /* observers remain best-effort */ }
+    }
     if (!requiresPersistence && pendingDeliveries === 0) {
-      observeClassification(event, timing, approvals);
       try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
       return;
     }
 
     pendingDeliveries += 1;
     const delivery = tail.then(async () => {
-      observeClassification(event, timing, approvals);
       if (requiresPersistence) {
-        await persistEvent(event, sink, { timing, approvals, abortSignal });
+        for (const write of writes) {
+          const persisted = await safePersist(sink, write.lifecycle);
+          try { write.block.history = historyMetadata(persisted, write.state); } catch { /* still settle every admitted write */ }
+        }
       }
       try { onEvent?.(event); } catch { /* host callback semantics remain best-effort */ }
     }).catch((error) => {
@@ -118,32 +126,34 @@ function observeClassification(event, timing, approvals) {
   }
 }
 
-/** @param {any} event @param {(event:any)=>Promise<any>} sink @param {{timing:Map<string,any>,approvals:Map<string,any>,abortSignal?:AbortSignal}} context */
-async function persistEvent(event, sink, context) {
-  if (!record(event) || (event.type !== "assistant" && event.type !== "user")) return;
+/** @param {any} event @param {{timing:Map<string,any>,approvals:Map<string,any>,abortSignal?:AbortSignal}} context @param {WeakSet<object>} preparedBlocks */
+function prepareEvent(event, context, preparedBlocks) {
+  const writes = [];
+  if (!record(event) || (event.type !== "assistant" && event.type !== "user")) return writes;
   const message = event.message;
-  if (!record(message) || !Array.isArray(message.content)) return;
+  if (!record(message) || !Array.isArray(message.content)) return writes;
   for (const block of message.content) {
     if (!record(block)) continue;
     if (event.type === "assistant" && block.type === "tool_use") {
-      if (hostHistoryMetadata(block.history)) continue;
+      if (hostHistoryMetadata(block.history) || preparedBlocks.has(block)) continue;
       if (typeof block.id !== "string" || typeof block.name !== "string") continue;
-      const persisted = await safePersist(sink, {
+      const lifecycle = {
         phase: "invocation",
         toolCallId: block.id,
         toolName: block.name,
         ...(Object.hasOwn(block, "input") ? { arguments: block.input } : {}),
-      });
-      block.history = historyMetadata(persisted, undefined);
+      };
+      preparedBlocks.add(block);
+      writes.push({ block, lifecycle, state: undefined });
       continue;
     }
     if (event.type === "user" && block.type === "tool_result") {
-      if (hostHistoryMetadata(block.history)) continue;
+      if (hostHistoryMetadata(block.history) || preparedBlocks.has(block)) continue;
       const id = typeof block.tool_use_id === "string" ? block.tool_use_id
         : typeof block.tool_call_id === "string" ? block.tool_call_id : undefined;
       if (id === undefined) continue;
       const classified = classifyGenericResult(block, context.timing.get(id), context.approvals.get(id), context.abortSignal);
-      const persisted = await safePersist(sink, {
+      const lifecycle = {
         phase: "result",
         toolCallId: id,
         ...(typeof block.name === "string" ? { toolName: block.name } : {}),
@@ -153,12 +163,14 @@ async function persistEvent(event, sink, context) {
           ? { executionMs: context.timing.get(id).execution_ms }
           : {}),
         artifacts: artifactPaths(block),
-      });
-      block.history = historyMetadata(persisted, classified.state);
+      };
+      preparedBlocks.add(block);
+      writes.push({ block, lifecycle, state: classified.state });
       context.timing.delete(id);
       context.approvals.delete(id);
     }
   }
+  return writes;
 }
 
 /** @param {any} block @param {any} timing @param {any} approval @param {AbortSignal|undefined} abortSignal */

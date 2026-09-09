@@ -132,6 +132,7 @@
  * @typedef {Object} RuntimeObserver
  * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
  * Loose on purpose: observer.js is not a kernel seam file.
+ * @property {(event: RuntimeToolLifecycleEvent) => void} [recordToolLifecycle] Synchronous admission before queued lifecycle persistence.
  * @property {(event: RuntimeEvent) => (void|Promise<void>)} [onEvent]
  * @property {() => (void|Promise<void>)} [flush]
  */

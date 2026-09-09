@@ -376,13 +376,13 @@ describe("configured durable Pi history", () => {
   });
 });
 
-it("reopens a recovered tool-bearing Pi transcript in a second process", async () => {
+it.each(["normal", "slow-writer"])("reopens a recovered tool-bearing Pi transcript in a second process (%s)", async (writerMode) => {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   const { fileURLToPath } = await import("node:url");
   const dir = await mkdtemp(join(tmpdir(), "terminal-recovery-process-")); tempDirs.push(dir);
   const worker = fileURLToPath(new URL("./fixtures/terminal-recovery-worker.mjs", import.meta.url));
-  const run = async (mode: string) => JSON.parse((await promisify(execFile)(process.execPath, [worker, dir, mode], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
+  const run = async (mode: string) => JSON.parse((await promisify(execFile)(process.execPath, [worker, dir, mode, writerMode], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
   const produced = await run("produce");
   const consumed = await run("consume");
   expect(produced.status).toBe("cancelled"); expect(consumed.status).toBe("success");
@@ -394,6 +394,8 @@ it("reopens a recovered tool-bearing Pi transcript in a second process", async (
   expect(JSON.stringify(consumed.context)).toContain("disk-signature");
   expect(JSON.stringify(consumed.context)).toContain("DURABLE TOOL EVIDENCE");
   expect(JSON.stringify(consumed.context)).not.toContain("cancelled_turn_history");
+  expect(produced.runtimeWarnings).not.toEqual(expect.arrayContaining([expect.objectContaining({ warning_kind: "terminal_recovery_skipped" })]));
+  expect(produced.records[0].messages.at(-1).content).toContain('"state":"success"');
   expect(produced.records[0].providerSession.revision).toBe(2);
   expect(consumed.records[0].providerSession.revision).toBe(3);
   expect(Object.keys(consumed.records[0].providerSession).sort()).toEqual(["epoch", "modelKey", "revision"]);

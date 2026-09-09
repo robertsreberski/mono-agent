@@ -118,6 +118,13 @@ the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main
 
 ### Managed-tool lifecycle fidelity
 
+Native event admission precedes queued storage: observers receive `recordEvent`
+and optional `recordToolLifecycle` callbacks synchronously. The latter receives
+the normalized lifecycle event before persistence begins. This lets the harness
+retain work emitted before cancellation while its sidecar is busy. Persistence
+and client delivery remain serialized; later cancellation cannot reclassify an
+already admitted tool result.
+
 `RuntimeRunOptions.toolLifecycleSink` is an awaited host-owned boundary. The
 runtime sends redaction-eligible raw arguments/content plus stable provider call
 id and name; the host returns only record/sequence, persistence/truncation byte

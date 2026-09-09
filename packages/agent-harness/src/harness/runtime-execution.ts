@@ -319,6 +319,10 @@ export async function runHarnessRuntime(
         ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
         ...(options.maxTurns === undefined ? {} : { maxTurns: options.maxTurns }),
+        observers: [...(Array.isArray(merged.observers) ? merged.observers : []), {
+          recordEvent: (event: RuntimeEventLike) => turnContinuityCollector.observeNativeEvent(event),
+          recordToolLifecycle: (event: import("@mono-agent/runtime-adapter").RuntimeToolLifecycleEvent) => turnContinuityCollector.admitToolLifecycle(event),
+        }],
         toolLifecycleSink: turnContinuityCollector.wrapToolLifecycleSink(
           options.toolHistory?.writer.createSink({
               conversationId: request.conversationId,
