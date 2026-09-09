@@ -441,6 +441,7 @@ export function recordSessionEvent(controller: TraceabilityControllerPort, event
     : undefined;
   const snapshot = event.snapshot ?? [];
   const current = snapshot.find((entry) => entry.conversationId === event.conversationId);
+  const modelKey = current?.modelKey ?? event.modelKey;
   const providerSessionId = current?.providerSessionId ?? event.providerSessionId;
   controller.sessionMetadataValue = {
     currentBucketId: event.conversationId,
@@ -448,6 +449,7 @@ export function recordSessionEvent(controller: TraceabilityControllerPort, event
     event: event.kind,
     updatedAt: now.toISOString(),
     ...(snapshot.length === 0 ? {} : { snapshot }),
+    ...(modelKey === undefined ? {} : { modelKey }),
     ...(providerSessionId === undefined ? {} : { providerSessionId }),
     ...(current?.createdAt === undefined ? {} : { createdAt: current.createdAt }),
     ...(current?.lastActivityAt === undefined ? {} : { lastActivityAt: current.lastActivityAt }),
@@ -459,6 +461,7 @@ export function recordSessionEvent(controller: TraceabilityControllerPort, event
     controller.logger?.info?.("Provider session evicted.", {
       conversationId: event.conversationId,
       providerSessionId: event.providerSessionId,
+      ...(event.modelKey === undefined ? {} : { modelKey: event.modelKey }),
       reason: event.reason,
     });
   }

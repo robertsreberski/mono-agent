@@ -7,7 +7,7 @@ import { createModels, fauxProvider, fauxAssistantMessage, fauxThinking, fauxTex
 import { createAgentHarness, createDurableHistoryStore, createSessionRuntimeResolver, createToolPolicy } from "@mono-agent/agent-harness";
 import { createMonoRuntime, parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
-const [root, origin, sequenceJson, startText = "0", defaultName = "base", unrouted = "false"] = process.argv.slice(2);
+const [root, origin, sequenceJson, startText = "0", defaultName = "base", unrouted = "false", legacyUnbound = "false"] = process.argv.slice(2);
 const sequence = JSON.parse(sequenceJson);
 const start = Number(startText);
 await mkdir(root, { recursive: true, mode: 0o700 });
@@ -20,6 +20,7 @@ const trace = [];
 const requests = [];
 const contexts = [];
 const events = [];
+const sessionEvents = [];
 const records = [];
 const jsonl = [];
 const piSessionsRoot = join(root, "pi");
@@ -47,10 +48,24 @@ const history = createDurableHistoryStore({ root: join(root, "history"), retireP
   await owner.invalidateSession(id);
   await owner.retireDurableSession(id, piSessionsRoot);
 } });
+if (legacyUnbound === "true") {
+  await history.append("bound", []);
+  const key = createHash("sha256").update("mono-agent-history-v1\0bound").digest("hex");
+  await writeFile(join(root, "history", `${key}.history.json`), `${JSON.stringify({
+    version: 2,
+    conversationId: "bound",
+    messages: [
+      { role: "user", content: "legacy question" },
+      { role: "assistant", content: "legacy answer" },
+    ],
+    providerSession: { epoch: "a".repeat(64), revision: 1 },
+  })}\n`, { mode: 0o600 });
+}
 const harness = createAgentHarness({
   runtime, model, cwd: root, identityPath: join(root, "IDENTITY.md"),
   ...(unrouted === "true" ? {} : { runtimeForModel: (ref) => runtimeForSession(ref.reference) }),
-  session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true },
+  session: { mode: "continuous", idleTimeoutMs: 60000, supportsResume: true,
+    onSessionEvent: (event) => { sessionEvents.push(event); } },
   historyStore: history, piSessionsRoot, effort: "none",
   toolPolicy: createToolPolicy({ allowedTools: ["Read"] }),
   runtimeOptionsForRequest: ({ request }) => {
@@ -90,4 +105,4 @@ const mapped = mapRunToSession({ runId: "contract", conversationId: "bound", sta
   { instanceLabel: "contract", cwd: root });
 const boundaries = mapped.steps.filter((step) => step.k === "boundary");
 const notices = events.map(sessionBoundaryNotice);
-process.stdout.write(JSON.stringify({ boundaries, notices, pid: process.pid, contexts, requests, events, records, jsonl, trace }));
+process.stdout.write(JSON.stringify({ boundaries, notices, pid: process.pid, contexts, requests, events, sessionEvents, records, jsonl, trace }));

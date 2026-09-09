@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRuntimeSessionStore } from "../sessions.js";
+import { sessionEventFromRecord } from "../harness/session-events.js";
 
 describe("createRuntimeSessionStore", () => {
   beforeEach(() => {
@@ -203,6 +204,23 @@ describe("createRuntimeSessionStore", () => {
 });
 
 describe("model-bound session records", () => {
+  it("projects model keys for bound session events and snapshots while omitting legacy unbound keys", async () => {
+    const store = createRuntimeSessionStore({ idleTimeoutMs: 1000 });
+    store.save("bound", "bound-id", undefined, 1, undefined, "faux:override");
+    store.save("legacy", "legacy-id");
+    const snapshot = store.list();
+    const bound = snapshot.find((entry) => entry.conversationId === "bound")!;
+    const legacy = snapshot.find((entry) => entry.conversationId === "legacy")!;
+
+    expect(sessionEventFromRecord("saved", bound, undefined, snapshot)).toMatchObject({
+      modelKey: "faux:override",
+      snapshot: [expect.objectContaining({ modelKey: "faux:override" }), expect.any(Object)],
+    });
+    expect(sessionEventFromRecord("saved", legacy, undefined, snapshot)).not.toHaveProperty("modelKey");
+    expect(legacy).not.toHaveProperty("modelKey");
+    await store.disposeAll();
+  });
+
   it("retains model binding through acquire release snapshot and eviction", async () => {
     const evicted: string[] = [];
     const store = createRuntimeSessionStore({ idleTimeoutMs: 1000,
