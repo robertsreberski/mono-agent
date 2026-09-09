@@ -3,6 +3,7 @@ import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
 import {
   AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
@@ -88,6 +89,7 @@ import {
   type DiscoveredOperatorAgent,
 } from "./discovery.js";
 import { conversationTitleFromFrame } from "./conversation-title.js";
+import { parseCronReplyContext } from "./cron-reply-context.js";
 import { advertisedEffortLevels, effectiveModelForAgent, effortLevelsForModel } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
 import { OperatorClient, type OperatorInfo } from "./operator-client.js";
@@ -885,7 +887,7 @@ export class WebService {
     const { full, ...query } = input;
     const page = this.store.listMessagesPage(threadId, query);
     const shape: WebTranscriptShape = full === undefined ? {} : { full };
-    return { ...page, messages: page.messages.map((message) => this.shapeMessage(message, shape)) };
+    return { ...page, messages: this.shapeMessages(page.messages, shape) };
   }
 
   /**
@@ -1351,7 +1353,8 @@ export class WebService {
       }
       return running.promise;
     }
-    const operation = this.createCronReplyThreadOnce(sourceId, jobId, runId, input);
+    const operation = this.createCronReplyThreadOnce(sourceId, jobId, runId, input)
+      .then((receipt) => ({ ...receipt, messages: this.shapeMessages(receipt.messages) }));
     this.activeCronReplies.set(input.operationId, { sourceId, jobId, runId, promise: operation });
     const release = (): void => {
       if (this.activeCronReplies.get(input.operationId)?.promise === operation) {
@@ -1456,6 +1459,7 @@ export class WebService {
     }
     if (!receipt.duplicate) {
       for (const message of receipt.messages) {
+        if (this.isCronReplyProvenanceMessage(message)) continue;
         this.emit("message.changed", receipt.thread.id, { messageId: message.id, updatedAt: message.updatedAt });
       }
       this.emitThread("threads.changed", { thread: receipt.thread });
@@ -3695,7 +3699,31 @@ export class WebService {
     // attempt failed or was interrupted. Idempotent and guarded, so repeated
     // reads of the same thread fetch each image at most once.
     void this.persistReplyImages(detail.thread.id, detail.messages);
-    return { ...detail, messages: detail.messages.map((message) => this.shapeMessage(message, options)) };
+    return { ...detail, messages: this.shapeMessages(detail.messages, options) };
+  }
+
+  /**
+   * Fold the host's provenance row into the imported-context card.
+   *
+   * The exact host-owned string is enough to identify this row: no model turn
+   * can own it, and the store writes it only for canonical context imports.
+   * Filtering independently of its neighbour is intentional, because the two
+   * stored rows can straddle a message-page boundary. `?full=1` remains the raw
+   * transcript escape hatch and therefore returns both stored rows unchanged.
+   */
+  private shapeMessages(messages: readonly WebMessage[], options: WebTranscriptShape = {}): WebMessage[] {
+    const visible = options.full === true
+      ? messages
+      : messages.filter((message) => !this.isCronReplyProvenanceMessage(message));
+    return visible.map((message) => this.shapeMessage(message, options));
+  }
+
+  private isCronReplyProvenanceMessage(message: WebMessage): boolean {
+    return message.role === "system"
+      && message.turnId === undefined
+      && message.parts.length === 1
+      && message.parts[0]?.type === "text"
+      && message.parts[0].text === AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE;
   }
 
   /**
@@ -3708,6 +3736,12 @@ export class WebService {
    * exactly as recorded.
    */
   private shapeMessage(message: WebMessage, options: WebTranscriptShape = {}): WebMessage {
+    if (options.full !== true && this.isCronReplyProvenanceMessage(message)) {
+      // Individual-message recovery cannot omit its addressed row. An empty
+      // projection keeps the raw provenance out of the UI; list reads remove
+      // the row altogether through `shapeMessages`.
+      return { ...message, parts: [] };
+    }
     return { ...message, parts: message.parts.map((part) => this.shapePart(message, part, options)) };
   }
 
@@ -3722,6 +3756,12 @@ export class WebService {
   private shapePart(message: WebMessage, part: WebMessagePart, options: WebTranscriptShape): WebMessagePart {
     if (part.type === "attachment" || part.type === "mcp_app") return this.decorateReplyPart(message, part);
     if (options.full === true) return part;
+    if (message.role === "assistant"
+      && message.turnId === undefined
+      && message.parts.length === 1
+      && part.type === "text") {
+      return parseCronReplyContext(part.text) ?? part;
+    }
     if (part.type === "telemetry") return shapeTelemetryPart(part);
     if (part.type === "tool-call") return shapeToolCallPart(part);
     if (part.type === "subagent") return shapeSubagentPart(part);

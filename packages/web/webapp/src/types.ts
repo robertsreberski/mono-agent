@@ -518,9 +518,50 @@ export interface ToolCall {
   readonly argsDigest?: string;
 }
 
+export interface CronReplyContextPart {
+  readonly type: "cron-reply-context";
+  readonly schema: "mono-agent.web.cron-reply-context.v1";
+  readonly untrusted: true;
+  readonly source: {
+    readonly sourceId: string;
+    readonly jobId: string;
+    readonly runId: string;
+  };
+  readonly run: {
+    readonly sequence: number;
+    readonly trigger: "scheduled" | "manual";
+    readonly status: CronRunStatus;
+    readonly scheduledAt: string;
+    readonly orderedAt: string;
+    readonly startedAt?: string;
+    readonly completedAt?: string;
+    readonly blockedByRunId?: string;
+    readonly blockedByTrigger?: "scheduled" | "manual";
+    readonly queueDepth?: number;
+  };
+  readonly snapshot: {
+    readonly capturedAt: string;
+    readonly kind: CronReplySnapshotKind;
+    readonly sourceTruncationKnown: boolean;
+    readonly sourceFieldsTruncated: readonly ("artifactRunId" | "error" | "failureKind" | "text")[];
+    readonly maxBytes: number;
+    readonly originalErrorBytes: number;
+    readonly retainedErrorBytes: number;
+    readonly originalResultBytes: number;
+    readonly retainedResultBytes: number;
+    readonly truncatedFields: readonly ("failure.message" | "result.text")[];
+  };
+  readonly result: { readonly text: string };
+  readonly failure: { readonly code?: string; readonly message?: string };
+  readonly prefix: string;
+  readonly rawJson: string;
+  readonly rawText: string;
+}
+
 export type MessagePart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
+  | CronReplyContextPart
   | ({ readonly type: "tool-call" } & ToolCall)
   /** One `Agent` delegation and the tool calls its subagent made. */
   | {
@@ -823,7 +864,7 @@ export interface CronReplyReceipt {
   readonly runId: string;
   readonly duplicate: boolean;
   readonly thread: ThreadSummary;
-  readonly messages: readonly [WebMessage, WebMessage];
+  readonly messages: readonly WebMessage[];
 }
 
 export interface UploadLimits {

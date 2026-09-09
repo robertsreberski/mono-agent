@@ -405,6 +405,12 @@ they are never replayed on startup. The page keeps unresolved identity in
 memory even when bounded session persistence is unavailable, and temporary
 offline/unsupported retry preflight does not discard it. A later deliberate
 Reply after a definitive failure creates another operation and conversation.
+The imported conversation renders that immutable snapshot as a compact card:
+run provenance and status, Markdown result, optional failure/truncation notices,
+and an accessible **Details** disclosure with exact raw JSON. This is read-time
+presentation only. The two host-seeded rows, snapshot text and digest remain
+unchanged in SQLite and in the agent's canonical history; unparseable or
+non-v1 text remains ordinary text.
 
 The web HTTP config-view, run-now, and effective-enabled proxies remain available
 for operator clients. Mutations still require same-origin requests, source-qualified
@@ -671,6 +677,7 @@ WebBootstrap
 WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
+WebCronReplyContextPart
 WebCronReplyReceipt
 WebCronReplySnapshotKind
 WebEvent
