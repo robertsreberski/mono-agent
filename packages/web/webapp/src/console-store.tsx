@@ -74,6 +74,7 @@ import {
   effectiveModelForAgent,
   effortLevelsForAgentModel,
   findCatalogModel,
+  inheritedEffortForModel,
   providerOfModel,
 } from "./components/model-catalog";
 
@@ -5419,7 +5420,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const inheritedEffort = draftInheritsWebEffort
     ? selectedAgent?.runSettings.effective.effort ?? configEffort
     : configEffort;
-  const effectiveEffort = effort || inheritedEffort;
+  const effectiveEffort = effort || (selectedAgent === null
+    ? inheritedEffort
+    : inheritedEffortForModel(
+        selectedAgent,
+        effectiveModel,
+        findCatalogModel(catalogModels, effectiveModel),
+        inheritedEffort || undefined,
+      ) ?? "");
   // An override is what the operator chose for THIS conversation, as opposed to
   // whatever the agent would otherwise start with.
   const hasRunOverride = selectedThread === null

@@ -1304,6 +1304,9 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
     const effortLevels = stringArray(option.effortLevels);
     result[model] = {
       ...(effortLevels === undefined ? {} : { effortLevels }),
+      ...(typeof option.effort === "string" || option.effort === null
+        ? { effort: option.effort }
+        : {}),
       ...(typeof option.reasoning === "boolean" ? { reasoning: option.reasoning } : {}),
       ...(typeof option.reasoningMode === "string" ? { reasoningMode: option.reasoningMode } : {}),
       ...(typeof option.label === "string" ? { label: option.label } : {}),

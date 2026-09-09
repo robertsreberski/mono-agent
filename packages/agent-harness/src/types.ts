@@ -550,7 +550,16 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // `onEvent` stays harness-owned. Provider-session ids, keep-alive fields, and
   // piSessionsRoot are accepted structurally for compatibility but stripped
   // and replaced by the harness's coordinated decision.
-  readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">>;
+  readonly runtimeOptions?: Omit<
+    Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">>,
+    "effort"
+  > & {
+    /**
+     * A string pins this turn's effort, `null` explicitly selects the provider
+     * default, and omission inherits the harness effort.
+     */
+    readonly effort?: string | null;
+  };
   /**
    * Authoritative request-scoped tool boundary. When present, it replaces the
    * host/static allowed, denied, MCP-server, and MCP-config-path fields instead

@@ -13,6 +13,7 @@ import {
   effortName,
   GLOBAL_EFFORT_LEVELS,
   groupSelectorModels,
+  inheritedEffortForModel,
   initialCatalogProviders,
   providerOfModel,
   selectorProvides,
@@ -170,6 +171,14 @@ describe("the shared effort rule, as this end applies it", () => {
     expect(effortLevelsForAgentModel(source, "localx:reasoner")).toEqual([...GLOBAL_EFFORT_LEVELS]);
     expect(effortLevelsForAgentModel(source, "localx:reasoner", catalogModel("reasoner", "localx", "Local X")))
       .toEqual([...GLOBAL_EFFORT_LEVELS]);
+  });
+
+  it("uses the shared inherited-effort rule", () => {
+    expect(inheritedEffortForModel(source, sonnet, undefined, "high")).toBe("high");
+    expect(inheritedEffortForModel(source, "localx:strict", {
+      reasoning: true,
+      effortLevels: ["low", "xhigh"],
+    }, "high")).toBeUndefined();
   });
 });
 
@@ -332,6 +341,33 @@ describe("buildSelectorModels", () => {
     expect(rows[0].efforts.map((option) => option.id)).toEqual(["", "medium", "high"]);
   });
 
+  it("labels provider-default inheritance without changing the primary label", () => {
+    const fallback = "lmstudio:qwen/qwen3.8-27b";
+    const configured = agent("agent", {
+      models: [sonnet, fallback],
+      defaultModel: sonnet,
+      defaultEffort: "high",
+      modelOptions: {
+        [sonnet]: { reasoning: true, effortLevels: ["medium", "high"] },
+        [fallback]: {
+          reasoning: true,
+          reasoningMode: "effort",
+          effortLevels: ["low", "medium", "xhigh"],
+          effort: null,
+        },
+      },
+    });
+    const rows = buildSelectorModels({
+      agent: configured,
+      modelOptions: configured.models ?? [],
+      defaultEffort: "high",
+    });
+
+    expect(rows[0]?.efforts[0]?.name).toBe("Default · High");
+    expect(rows.find((row) => row.id === fallback)?.efforts[0]?.name)
+      .toBe("Default · Provider");
+  });
+
   it("uses catalog names when shortlist metadata has no label", () => {
     const unlabeled = agent("agent", {
       models: shortlist,
@@ -446,6 +482,7 @@ describe("the shared effort module", () => {
     expect(catalog.effortLevelsForModel).toBe(ladder.effortLevelsForModel);
     expect(catalog.advertisedEffortLevels).toBe(ladder.advertisedEffortLevels);
     expect(catalog.effectiveModelForAgent).toBe(ladder.effectiveModelForAgent);
+    expect(catalog.inheritedEffortForModel).toBe(ladder.inheritedEffortForModel);
     expect(catalog.GLOBAL_EFFORT_LEVELS).toBe(ladder.GLOBAL_EFFORT_LEVELS);
   });
 

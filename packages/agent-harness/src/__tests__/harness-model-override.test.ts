@@ -114,6 +114,23 @@ describe("AgentHarness per-request model/effort override", () => {
     expect(options.effort).toBe("low");
   });
 
+  it("omits effort from the runtime call when an extension selects provider default", async () => {
+    const identityPath = await identityFixture();
+    const base = createFakeRuntime();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: base.runtime,
+      model: defaultModel,
+      effort: "high",
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { effort: null } }),
+    });
+
+    await harness.run(request());
+
+    expect(base.calls).toHaveLength(1);
+    expect(base.calls[0]?.options).not.toHaveProperty("effort");
+  });
+
   it("keeps messages harness-owned even if an extension tries to override them", async () => {
     const identityPath = await identityFixture();
     const base = createFakeRuntime();

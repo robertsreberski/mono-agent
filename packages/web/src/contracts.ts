@@ -105,6 +105,8 @@ export interface WebCronCapability {
 
 export interface WebModelOption {
   readonly effortLevels?: readonly string[];
+  /** Configured fallback effort; null means provider default. */
+  readonly effort?: string | null;
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly label?: string;

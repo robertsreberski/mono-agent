@@ -456,8 +456,18 @@ export function createTuiChannelDriver(
       // 5s per connected console, and a throwing or slow info provider returns
       // 500 for the WHOLE response — showing the agent offline rather than
       // degraded. Neither projection may run per request.
-      const describeModelOption = (ref: RuntimeModelReference): TuiModelOption | undefined =>
-        catalog.describe([ref])[modelReferenceKey(ref)];
+      const fallbackEfforts = new Map<string, string | null>(
+        (input.coreConfig.runtime.fallbacks ?? []).map((entry) => [
+          modelReferenceKey(entry.model),
+          entry.effort ?? null,
+        ]),
+      );
+      const describeModelOption = (ref: RuntimeModelReference): TuiModelOption | undefined => {
+        const key = modelReferenceKey(ref);
+        const described = catalog.describe([ref])[key];
+        if (!fallbackEfforts.has(key)) return described;
+        return { ...described, effort: fallbackEfforts.get(key) ?? null };
+      };
       const projection: InfoModelProjection = {
         keys: [],
         seen: new Set(),

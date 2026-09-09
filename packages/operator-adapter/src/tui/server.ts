@@ -139,6 +139,11 @@ export type TuiSkillRegistry =
 /** Static facts surfaced by GET /v1/info so the TUI can label the session. */
 export interface TuiModelOption {
   readonly effortLevels?: readonly string[];
+  /**
+   * Configured fallback-route effort. A string pins the route, `null` selects
+   * provider default, and absence means the producer predates this field.
+   */
+  readonly effort?: string | null;
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly label?: string;

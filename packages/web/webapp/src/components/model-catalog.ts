@@ -3,6 +3,7 @@ import {
   effectiveModelForAgent,
   effortLevelsForModel,
   GLOBAL_EFFORT_LEVELS,
+  inheritedEffortForModel,
 } from "../../../src/effort-ladder.js";
 import type { AgentProvider, AgentSummary, CatalogModel } from "../types";
 
@@ -25,7 +26,13 @@ import type { AgentProvider, AgentSummary, CatalogModel } from "../types";
  * copy that returns identical values passed every value-level assertion in this
  * suite, and would have shipped the drift this module pair exists to prevent.
  */
-export { advertisedEffortLevels, effectiveModelForAgent, effortLevelsForModel, GLOBAL_EFFORT_LEVELS };
+export {
+  advertisedEffortLevels,
+  effectiveModelForAgent,
+  effortLevelsForModel,
+  GLOBAL_EFFORT_LEVELS,
+  inheritedEffortForModel,
+};
 
 export type ModelSelectorEffortOption = {
   readonly id: string;
@@ -168,8 +175,14 @@ const buildEffortOptions = (
     catalogModel?.reasoningMode === "toggle";
   const levels = effortLevelsForAgentModel(agent, effectiveReference, catalogModel);
   if (levels.length === 0) return [];
+  const inheritedEffort = inheritedEffortForModel(
+    { ...agent, models: agent.models ?? modelOptions },
+    effectiveReference,
+    catalogModel,
+    defaultEffort || undefined,
+  );
   return [
-    { id: "", name: `Default · ${defaultEffortName(defaultEffort || undefined, toggle)}` },
+    { id: "", name: `Default · ${defaultEffortName(inheritedEffort, toggle)}` },
     ...levels.map((level) => ({
       id: level,
       name: toggle ? (level === "none" ? "Off" : "On") : effortName(level),

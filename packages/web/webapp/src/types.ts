@@ -153,6 +153,8 @@ export type RunStatus =
 
 export interface ModelOption {
   readonly effortLevels?: readonly string[];
+  /** Configured fallback effort; null means provider default. */
+  readonly effort?: string | null;
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly label?: string;
