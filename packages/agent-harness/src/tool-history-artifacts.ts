@@ -136,7 +136,7 @@ function createToolHistoryArtifactSinkWithValidator(
       assertPrivateArtifactFile(opened, 0);
       createdIdentity = { dev: opened.dev, ino: opened.ino };
       const currentRunRoot = lstatSync(runRoot);
-      assertPrivateDirectory(currentRunRoot);
+      assertTrustedExistingDirectory(currentRunRoot);
       if (currentRunRoot.dev !== runRootIdentity.dev || currentRunRoot.ino !== runRootIdentity.ino) {
         throw new Error("Tool artifact run directory changed during publication.");
       }
@@ -238,7 +238,7 @@ function ensurePrivateDirectory(path: string): { readonly dev: number; readonly 
   for (;;) {
     try {
       const info = lstatSync(existing);
-      assertPrivateDirectory(info);
+      assertTrustedExistingDirectory(info);
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -251,17 +251,25 @@ function ensurePrivateDirectory(path: string): { readonly dev: number; readonly 
 
   for (const component of missing.reverse()) {
     mkdirSync(component, { mode: 0o700 });
-    assertPrivateDirectory(lstatSync(component));
+    assertCreatedPrivateDirectory(lstatSync(component));
   }
   const info = lstatSync(path);
-  assertPrivateDirectory(info);
+  if (missing.length === 0) assertTrustedExistingDirectory(info);
+  else assertCreatedPrivateDirectory(info);
   return { dev: info.dev, ino: info.ino };
 }
 
-function assertPrivateDirectory(info: Stats): void {
+function assertTrustedExistingDirectory(info: Stats): void {
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Tool artifact directory must be a non-symlink directory.");
   const uid = process.getuid?.();
   if (uid !== undefined && info.uid !== uid) throw new Error("Tool artifact directory must be owned by the current user.");
+  if (process.platform !== "win32" && (info.mode & 0o022) !== 0) {
+    throw new Error("Tool artifact directory must not be group- or world-writable.");
+  }
+}
+
+function assertCreatedPrivateDirectory(info: Stats): void {
+  assertTrustedExistingDirectory(info);
   if (process.platform !== "win32" && (info.mode & 0o777) !== 0o700) {
     throw new Error("Tool artifact directory must have mode 0700.");
   }

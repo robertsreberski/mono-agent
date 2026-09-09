@@ -491,8 +491,11 @@ plus opaque artifact ids;
 artifact availability is recomputed and the reference does not extend artifact
 lifetime. `createToolHistoryArtifactSink({ artifactRoot, runId })` creates a
 best-effort synchronous sink that creates missing directories one component at
-a time, verifies owner-private directory and file identities around publication,
-and requires the final path to pass the same run-root containment checks. Node
+a time with mode `0700`. It accepts pre-existing path components only when they
+are non-symlink directories owned by the current user and are not group- or
+world-writable; components it creates are additionally verified at exact mode
+`0700`. Publication verifies directory and owner-private file identities and
+requires the final path to pass the same run-root containment checks. Node
 does not expose an fd-relative `openat` API, so these checks narrow but cannot
 eliminate the residual window in which another process running as the same user
 renames a verified directory. A failed final validation removes only the
