@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import * as agentHarness from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   PhoenixExporterConfig,
@@ -1474,6 +1475,27 @@ describe("agent host composition helpers", () => {
       network: { mode: "none", allowlist: [] },
     });
     expect(fake.calls[0]?.options.sandboxEngine).toBe(fakeSandboxEngine);
+  });
+
+  it("forwards the host terminal recovery settlement window to harness session options", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const createHarness = vi.spyOn(agentHarness, "createAgentHarness");
+    let harness: Awaited<ReturnType<typeof createConfiguredAgentHarness>> | undefined;
+    try {
+      harness = await createConfiguredAgentHarness({
+        config: monoConfig({ dir, identityPath, artifactDir: join(dir, "artifacts") }),
+        runtime: createFakeRuntime(async () => ({ text: "unused" })).runtime,
+        terminalRecoverySettlementMs: 30_000,
+      });
+      expect(createHarness).toHaveBeenCalledWith(expect.objectContaining({
+        session: expect.objectContaining({ terminalRecoverySettlementMs: 30_000 }),
+      }));
+    } finally {
+      createHarness.mockRestore();
+      await harness?.dispose?.();
+    }
   });
 
   it("forwards continuous session config so consecutive requests resume the provider session", async () => {

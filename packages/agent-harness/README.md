@@ -378,8 +378,10 @@ evidence. The collector seals at settlement and rejects late runtime events.
 Eligible coordinated durable Pi turns retain their epoch after validated native
 settlement; the canonical revision advances once. Recovery adds no Pi message.
 Pi filters interrupted prose/reasoning and retains completed native tools and the
-cancelled user input. Cancellation permits 1,000 ms for provider settlement while
-the caller and mailbox close immediately. Unsafe or unsettled tails retire and
+cancelled user input. Cancellation permits 1,000 ms by default for provider settlement while
+the caller and mailbox close immediately. Hosts may override the window through
+`session.terminalRecoverySettlementMs` (a positive safe integer); the two-process
+smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
 reseed. A process-local budget allows one failed-turn recovery per epoch; user
 cancellation does not spend it, success does not reset it, and reconstruction may
 allow one extra attempt. Custom stores opt in with `providerSessionRecovery: "v1"`.

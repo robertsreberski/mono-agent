@@ -287,6 +287,8 @@ export interface AgentHarnessSessionEvent {
 export interface AgentHarnessSessionOptions {
   readonly mode: AgentSessionMode;
   readonly idleTimeoutMs: number;
+  /** Provider settlement window after cancellation or failure. Defaults to 1,000 ms. */
+  readonly terminalRecoverySettlementMs?: number;
   /**
    * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
    * — primarily for tests and custom runtimes.

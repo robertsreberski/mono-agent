@@ -169,7 +169,7 @@ the conversation lane, and runs one bounded continuity finalizer. A
 per-conversation barrier prevents the next turn from assembling context until
 that finalizer publishes the 48 KiB account and either recovers or retires the provider epoch.
 Cancellation closes the mailbox and rejects the live caller immediately; the
-publication barrier allows up to 1,000 ms for the provider to settle before
+publication barrier allows up to 1,000 ms by default for the provider to settle before
 choosing retirement. Recovery itself completes its persistence transaction
 before the barrier opens. Late text and tool
 events from that call are quarantined. Cancellation retains its typed host abort
@@ -177,7 +177,11 @@ reason. Failure records trusted host settlement fields and keeps raw
 runtime/provider code and detail only as bounded, redacted untrusted evidence.
 Isolated proactive/continuation runs remain outside shared history, and a queued
 request cancelled before admission publishes no account. If publication fails,
-later turns fail closed with the outcome-specific continuity error.
+later turns fail closed with the outcome-specific continuity error. Hosts may override the window with
+`AgentHarnessOptions.session.terminalRecoverySettlementMs`, a positive safe integer,
+or the top-level `terminalRecoverySettlementMs` option of
+`createConfiguredAgentHarness`. Tests may use a longer window; this is not a
+configuration-file setting.
 
 The ordinary successful-turn boundary remains atomic. Once success claims that
 boundary, a later abort or exception does not replace it with a continuity

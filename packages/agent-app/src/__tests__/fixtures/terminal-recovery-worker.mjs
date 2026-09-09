@@ -14,6 +14,7 @@ let context;
 const requests = [];
 const runtime = createMonoRuntime();
 const harness = await createConfiguredAgentHarness({ cwd: root,
+  terminalRecoverySettlementMs: 30_000,
   config: {
     runtime: { model: { provider: "faux", model: "fixture", reference: "faux:fixture" }, workspace: root,
       session: { mode: "continuous", idleTimeoutMs: 60000 }, compaction: { enabled: false }, maxTurns: 4 },

@@ -623,7 +623,7 @@ export class MonoAgentHarness implements AgentHarness {
       terminalOwner = claim.outcome;
       toolHistoryStatus = claim.outcome;
       continuitySettledAt = this.nowIso();
-      recoveryDeadline = Date.now() + 1_000;
+      recoveryDeadline = Date.now() + (this.options.session?.terminalRecoverySettlementMs ?? 1_000);
       continuityClaim = claim;
       sealedPersistText = persistText;
       sealedLiveInputs = liveInputMailbox?.applied() ?? [];

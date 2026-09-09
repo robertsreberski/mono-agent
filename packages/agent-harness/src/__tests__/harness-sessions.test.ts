@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
 import type { HistoryMessage } from "../context/index.js";
@@ -1723,7 +1723,7 @@ describe("AgentHarness continuous sessions", () => {
 });
 
 describe("coordinated terminal recovery", () => {
-  async function fixture() {
+  async function fixture(sessionOverrides: Partial<AgentHarnessSessionOptions> = {}) {
     const identityPath = await identityFixture();
     const root = join(identityPath, "..");
     const retired: string[] = [];
@@ -1770,7 +1770,7 @@ describe("coordinated terminal recovery", () => {
     const sidecar = toolHistoryStatusSpy(identityPath, []);
     const finishRun = sidecar.writer.finishRun;
     sidecar.writer.finishRun = async (...args) => { if (failSidecar) throw new Error("injected sidecar failure"); await finishRun(...args); };
-    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
+    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
     let harness = makeHarness();
     return { fake, retired, native, prefixes, receipts, historyStore, events,
       rejectCommit() { failCommit = true; },
@@ -1878,6 +1878,53 @@ describe("coordinated terminal recovery", () => {
       expect(f.fake.calls[2]!.options.sessionId).not.toBe(f.fake.calls[1]!.options.sessionId);
     } finally { await f.close(); }
   });
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects invalid terminalRecoverySettlementMs: %s", (terminalRecoverySettlementMs) => {
+    expect(() => createAgentHarness({ identityPath: "IDENTITY.md", model,
+      runtime: createSessionFakeRuntime(async () => ({ text: "unused" })).runtime,
+      session: { ...session, terminalRecoverySettlementMs },
+    })).toThrow(new TypeError("terminalRecoverySettlementMs must be a positive safe integer."));
+  });
+
+  it.each([4_999, 5_000])("honours a 5,000 ms cancellation settlement window at %s ms", async (settledAfterMs) => {
+    const f = await fixture({ terminalRecoverySettlementMs: 5_000 });
+    let paused: ReturnType<typeof f.pauseNext> | undefined;
+    let timerSpy: { mockRestore(): void } | undefined;
+    try {
+      await f.run("success", "warm");
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const fakeSetTimeout = globalThis.setTimeout;
+      let signalTimer!: () => void;
+      const timerScheduled = new Promise<void>((resolve) => { signalTimer = resolve; });
+      timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+        const timer = fakeSetTimeout(...args);
+        if (args[1] === 5_000) signalTimer();
+        return timer;
+      }) as typeof setTimeout);
+      paused = f.pauseNext();
+      const cancelled = f.run("cancelled", "cancelled ask");
+      await paused.admitted;
+      await timerScheduled; // publication has reached the settlement race
+      await vi.advanceTimersByTimeAsync(settledAfterMs);
+      paused.release();
+      expect((await cancelled).failure?.kind).toBe("cancelled");
+      await f.run("success", "next");
+      const cancelledId = f.fake.calls[1]!.options.sessionId;
+      const nextId = f.fake.calls[2]!.options.sessionId;
+      if (settledAfterMs < 5_000) {
+        expect(f.receipts).toHaveLength(1);
+        expect(nextId).toBe(cancelledId);
+      } else {
+        expect(f.receipts).toHaveLength(0);
+        expect(nextId).not.toBe(cancelledId);
+      }
+    } finally {
+      paused?.release();
+      timerSpy?.mockRestore();
+      vi.useRealTimers();
+      await f.close();
+    }
+  });
+
   it("times out cancelled recovery without blocking a successor or retiring its session", async () => {
     const f = await fixture();
     try {

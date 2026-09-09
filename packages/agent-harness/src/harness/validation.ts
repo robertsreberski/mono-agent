@@ -12,6 +12,10 @@ export function validateOptions(options: AgentHarnessOptions): void {
   if (typeof options.model !== "object" || options.model === null) {
     throw new TypeError("model must be a parsed runtime model reference.");
   }
+  const settlementMs = options.session?.terminalRecoverySettlementMs;
+  if (settlementMs !== undefined && (!Number.isSafeInteger(settlementMs) || settlementMs <= 0)) {
+    throw new TypeError("terminalRecoverySettlementMs must be a positive safe integer.");
+  }
   if (options.mcpRequestContext !== undefined) {
     if (!Array.isArray(options.mcpRequestContext.serverNames)
       || options.mcpRequestContext.serverNames.some((name) => typeof name !== "string" || name.trim().length === 0)) {
