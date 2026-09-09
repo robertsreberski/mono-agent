@@ -26,7 +26,10 @@ object keys are redacted; numeric values under matched keys are retained; retain
 free text is scanned for a closed set of high-confidence credential shapes. A
 `tokens` object is retained only when it is a non-empty, closed envelope of
 recognized token-usage keys whose values are finite non-negative numbers;
-mixed, unknown, or string-valued token objects remain fully redacted.
+mixed, unknown, or string-valued token objects remain fully redacted. Compaction
+metadata also preserves boolean `tokenCountsExact` and null
+`generatedSummaryTokens`/`tailEstimateTokens`; strings or objects under those names
+remain redacted.
 Phoenix export keeps its separate, default-off `contentPatternRedaction` policy
 for content supplied directly to an exporter.
 

@@ -146,6 +146,10 @@ function redact(
     && isSensitiveStructuredKey(key)
     && typeof value !== "number"
     && !(key === "tokens" && isNumericTokenUsage(value))
+    // Closed, typed compaction metadata exceptions. Strings/objects under these
+    // names are still sensitive; null estimates and boolean exactness carry no secret.
+    && !(key === "tokenCountsExact" && typeof value === "boolean")
+    && !(["generatedSummaryTokens", "tailEstimateTokens"].includes(key) && value === null)
   ) {
     return "[redacted]";
   }

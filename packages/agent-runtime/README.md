@@ -1022,8 +1022,41 @@ guidance only says complete instructions may remain visible.
 
 ### Context compaction
 
-The sole pi bridge runs on pi-agent-core's native `AgentHarness`. pi performs **no**
-automatic in-loop compaction, so the bridge drives it: before each turn it estimates the
+Summary preparation preserves labelled heads and tails of text tool results within
+Pi's 2,000-character serializer allowance. Copies retain tool identities and
+arguments; live results remain unchanged. Confirmed `Read`/`Write`/`Edit` results
+augment file metadata using `file_path`; failed or unmatched writes remain
+unresolved evidence. File metadata and supplemental file-operation evidence each
+have a 4 KiB bound, with omission counts. Record references remain unavailable
+without a proven host resolver.
+
+A versioned focus supplements both Pi summary requests, including split turns:
+intent, approval constraints, open work, decisions, exact symbols, errors, and next
+action, distinguishing current instructions from superseded ones. Pi's prompts,
+cut rules, recent tail and output budgets remain unchanged. Empty, malformed,
+aborted and output-truncated summaries are rejected before persistence.
+
+Each `context_compaction` event includes metadata-only `accounting` (version 1).
+Terminal events retain separately identified summary requests and their status,
+duration, provider tokens and cost, including rejected requests. Missing usage or
+cost stays `null`. Transcript and full-request before/after estimates are comparable
+and explicitly inexact; `afterSource` distinguishes a candidate preview from the
+persisted context. Summary text estimates, appended metadata bytes, tail
+estimate, policy and preparation omission counts are separate. Summary content,
+paths, tool arguments and raw cache keys are excluded from accounting.
+
+With prompt-cache diagnostics enabled, assistant payload diagnostics and usage
+share a request ID and phase. `context_usage.providerCostUsd` preserves unknown
+provider cost as `null` alongside the existing compatibility cost field. Summary requests use operation-scoped IDs in
+compaction accounting; their usage never flows into assistant request totals.
+`scripts/summarize-prompt-cache.mjs` reports boundaries, separate assistant/summary
+cost, and first differing observed message fingerprints for full inputs. Differences
+are evidence of payload changes, not proof of cache misses; delta/unsupported
+prefix comparisons remain unknown. Pi summary requests retain their existing
+`cacheRetention: "none"` behavior.
+
+The sole pi bridge runs on pi-agent-core's native `AgentHarness`. Pi supports native checkpoint and overflow compaction; mono-agent disables that path
+and drives guarded compaction itself: before each turn it estimates the
 running model's context usage and calls `AgentHarness.compact()` when near the window
 (proactive), and if a turn still overflows it compacts once and re-prompts exactly once
 only after a rebuilt-context preview proves positive reduction (reactive recovery).

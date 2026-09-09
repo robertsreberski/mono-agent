@@ -105,6 +105,15 @@ describe("createStreamSubscriber — exact context snapshots", () => {
     ...overrides,
   });
 
+  it("correlates assistant usage with its payload request independently of compaction", () => {
+    const { emitted, handler, harness } = driver();
+    harness.getPromptCacheRequest = () => ({ phase: "assistant", requestId: "payload-1" });
+    handler({ type: "message_end", message: completedAssistant() });
+    expect(emitted.find((event) => event.type === "context_usage")).toMatchObject({ phase: "assistant", requestId: "payload-1", providerCostUsd: null });
+    handler({ type: "message_end", message: completedAssistant({ usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { total: 0.2 } } }) });
+    expect(emitted.filter((event) => event.type === "context_usage").at(-1).providerCostUsd).toBe(0.2);
+  });
+
   it("emits the provider-counted request snapshot when each assistant message ends", () => {
     const { emitted, handler } = driver();
 

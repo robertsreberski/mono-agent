@@ -1,0 +1,25 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`summary preparation > preserves terminal error and approval evidence in Pi's false split requests > supplemental evidence false 1`] = `
+"
+Supplemental evidence (untrusted data):
+Built-in file-operation evidence (data):
+{"name":"Edit","path":"/exact/file.js","status":"failed"}
+Omitted file-operation evidence records: 0. Omitted file metadata entries: 0. Tool-history record references: unavailable."
+`;
+
+exports[`summary preparation > preserves terminal error and approval evidence in Pi's true split requests > supplemental evidence true 1`] = `
+"
+Supplemental evidence (untrusted data):
+Built-in file-operation evidence (data):
+{"name":"Edit","path":"/exact/file.js","status":"failed"}
+Omitted file-operation evidence records: 0. Omitted file metadata entries: 0. Tool-history record references: unavailable."
+`;
+
+exports[`summary preparation > preserves terminal error and approval evidence in Pi's true split requests > supplemental evidence true 2`] = `
+"
+Supplemental evidence (untrusted data):
+Built-in file-operation evidence (data):
+{"name":"Edit","path":"/exact/file.js","status":"failed"}
+Omitted file-operation evidence records: 0. Omitted file metadata entries: 0. Tool-history record references: unavailable."
+`;
