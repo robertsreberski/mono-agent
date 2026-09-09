@@ -180,6 +180,14 @@ describe("layerJsonOntoEnv", () => {
     expect(canonical.MONO_AGENT_FALLBACKS_JSON).toContain("gpt-5.6-sol");
   });
 
+  it("layers prompt cache diagnostics with env precedence", () => {
+    const json = { providers: { piNative: { promptCacheDiagnostics: true } } };
+    expect(layerJsonOntoEnv(json, {}).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("true");
+    expect(() => layerJsonOntoEnv({ providers: { piNative: { promptCacheDiagnostics: "true" as unknown as boolean } } }, {})).toThrow("boolean");
+    expect(layerJsonOntoEnv(json, { MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS: "false" }).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("false");
+    expect(layerJsonOntoEnv({ providers: { piNative: { promptCacheDiagnostics: false } } }, {}).MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS).toBe("false");
+  });
+
   it("translates JSON providers.piNative knobs to env keys", () => {
     const layered = layerJsonOntoEnv(
       {

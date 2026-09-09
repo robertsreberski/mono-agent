@@ -43,6 +43,16 @@ Boundary rules:
 
 `runtime.session` decides whether the runtime keeps a warm provider session per conversation or starts fresh on every message.
 
+The primary's first attempt owns the provider session. Retries and failovers run
+stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+any answer from a retry or backup retires the primary epoch. The next turn
+cold-reseeds from canonical history; after a primary first-attempt success,
+subsequent turns resume the new session and are eligible for provider caching.
+
+On a warm turn whose primary attempt fails, the retry or backup attempt runs
+stateless with the current message and a bounded snapshot of the failed attempt,
+without the earlier conversation; the next turn reseeds from canonical history.
+
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `runtime.session.mode` | `"continuous"` \| `"per-message"` | `continuous` | `continuous` keeps a warm provider session per conversation; `per-message` rebuilds context each turn |
@@ -185,6 +195,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 | Key | Range / Default | Meaning |
 | --- | --- | --- |
 | `providers.piNative.transport` | `auto` (default), `sse`, `websocket`, `websocket-cached` | Preferred provider transport; providers without multiple transports ignore it |
+| `providers.piNative.promptCacheDiagnostics` | boolean; default `false` | Metadata-only request fingerprints in run artifacts |
 | `providers.piNative.piMaxRetries` | `0`–`8`, default `2` | Transient provider-transport retries |
 | `providers.piNative.maxRetryDelayMs` | default `60000` | Backoff cap between retries (ms) |
 | `providers.piNative.piSessionsRoot` | path; unset = in-memory | Durable JSONL session store enabling resume across restarts |
@@ -202,7 +213,7 @@ Size the value as a *per-channel* budget. If you need a hard app-wide ceiling, d
 }
 ```
 
-Env vars: `MONO_AGENT_PI_TRANSPORT`, `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT`.
+Env vars: `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`, `MONO_AGENT_PI_TRANSPORT`, `MONO_AGENT_PI_MAX_RETRIES`, `MONO_AGENT_MAX_RETRY_DELAY_MS`, `MONO_AGENT_PI_SESSIONS_ROOT`.
 
 `auto` preserves Pi's provider-specific default and fallback behavior. An explicit mode is host-authoritative for configured agents: request-scoped runtime extensions cannot replace it. Every Pi result records the normalized choice as `diagnostics.pi_transport_requested`; this is the requested mode, not a claim that a provider with only one transport changed its wire protocol.
 
@@ -263,3 +274,7 @@ For retry behavior across *different* models (provider failover, not transport r
 - [Local providers](/runtime/local-providers/) — `<provider>:<model>` for Ollama / LM Studio / OpenAI-compatible
 - [Fallback & failover](/runtime/fallback/) — ordered backups on retryable provider failure
 - [Tool scheduling](/runtime/tools-and-guards/#tool-scheduling-code-only) — safe parallel or forced-sequential tool calls within a model step (code-only)
+
+## Prompt-cache diagnostics
+
+`providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.

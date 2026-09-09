@@ -375,6 +375,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       diagnostics: {},
     },
     session: null,
+    // Fresh stateless calls own a private repo, even when attribution matches a
+    // live primary session. Cleanup must never delete that primary's record.
+    ephemeralSessionRepo: null,
     sessionEntry: null,
     // Fresh keep-alive sessions are registered busy until the harness closes;
     // this prevents another turn from reopening the same repo record while its

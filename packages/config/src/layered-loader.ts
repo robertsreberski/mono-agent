@@ -1115,6 +1115,13 @@ export function layerJsonOntoEnv(
   if (json.providers?.piAuthPath !== undefined) {
     fromJson.MONO_AGENT_PI_AUTH_PATH = json.providers.piAuthPath;
   }
+  if (json.providers?.piNative?.promptCacheDiagnostics !== undefined) {
+    if (typeof json.providers.piNative.promptCacheDiagnostics !== "boolean"
+      && !env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS?.trim()) {
+      throwInvalidJsonValue("providers.piNative.promptCacheDiagnostics", "a boolean");
+    }
+    fromJson.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS = String(json.providers.piNative.promptCacheDiagnostics);
+  }
   if (json.providers?.piNative?.piMaxRetries !== undefined) {
     fromJson.MONO_AGENT_PI_MAX_RETRIES = String(json.providers.piNative.piMaxRetries);
   }

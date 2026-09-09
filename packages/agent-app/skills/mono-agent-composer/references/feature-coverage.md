@@ -125,3 +125,9 @@ idempotency key and a 4096-byte conversation id.
 | Explicit failure objects (no fake success) | auto | harness | — |
 | Per-request runtime options, custom memory/history stores | code | `createConfiguredAgentResponder` options | — |
 | Multi-agent delegation (`AskCollaborator` loopback MCP tool) | code | `@mono-agent/agent-orchestrator` | — |
+
+Prompt-cache diagnostics: set `providers.piNative.promptCacheDiagnostics` (default
+`false`) or `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` to retain metadata-only request
+fingerprints in existing run artifacts. Use the framework script
+`scripts/summarize-prompt-cache.mjs` for token-weighted cache ratios and fingerprint
+changes; see [measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
