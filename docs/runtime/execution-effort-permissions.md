@@ -23,7 +23,7 @@ A representative runtime block:
 
 ## Effort
 
-`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**.
+`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. A model-only turn override follows the same route-aware rule: the configured primary keeps `runtime.effort`, a configured fallback uses its own pinned effort or provider default, and any other catalog/local model inherits `runtime.effort` only when its advertised ladder admits that grade. Unknown cloud metadata stays permissive. An explicit per-turn effort always wins. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|
@@ -66,7 +66,7 @@ Every inbound message is scanned for effort trigger phrases, always on with no c
 | `extra think` / `extrathink` | `xhigh` |
 | `ultra think` / `ultrathink` | `max` |
 
-Matching is case-insensitive on word boundaries anywhere in the message ("what do you *think*?" triggers; "thinking" and "rethink" do not), and the strongest matching phrase wins. Escalation is one-directional: the turn runs at the **higher** of the otherwise-resolved effort (configured default or a per-trigger override) and the keyword's level, so a bare `think` never lowers a `xhigh` agent and an equal-or-lower keyword changes nothing. The trigger words stay in the message text.
+Matching is case-insensitive on word boundaries anywhere in the message ("what do you *think*?" triggers; "thinking" and "rethink" do not), and the strongest matching phrase wins. Escalation is one-directional: the turn runs at the **higher** of the otherwise-resolved route effort (including no baseline when that route uses provider default) and the keyword's level, so a bare `think` never lowers a `xhigh` agent and still raises a provider-default turn to `high`. The trigger words stay in the message text.
 
 Escalated `max` degrades to the same per-model ceiling as configured effort: native `max` when the resolved model advertises it, otherwise `xhigh`. The escalated effort is visible in the run's `run_config` event with `overridden: true`, and only the single turn is affected — the session and configured default stay unchanged. The trigger list is exported as `EFFORT_KEYWORD_TRIGGERS` from `@mono-agent/config`.
 

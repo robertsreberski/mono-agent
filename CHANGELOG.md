@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Resolve inherited reasoning effort per selected model route. Model-only web,
+  Slack, Telegram, cron, and webhook overrides now keep `runtime.effort` only
+  for the configured primary or a model whose advertised ladder admits it;
+  configured fallbacks use their own pinned effort or provider default. The web
+  console labels provider-default inheritance accurately, and explicit effort
+  overrides remain unchanged.
 - **Breaking: framework self-configuration has been removed.** The dedicated
   SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
   `/configure`, host-side proposal review/apply/restart transaction, and bundled

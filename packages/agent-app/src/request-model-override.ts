@@ -15,6 +15,8 @@ import type {
   RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 
+import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
+
 /**
  * Per-request runtime-options extension that applies a per-turn model/effort
  * override carried on webhook (`metadata.webhook`), cron (`metadata.cron`), or
@@ -65,7 +67,15 @@ export interface RequestModelOverrideOptions {
   readonly baseModel?: RuntimeModelReference;
   /** Host fallback chain retained behind a request-level primary override. */
   readonly fallbackModels?: readonly RuntimeModelReference[];
-  /** Host effort inherited by model-only overrides unless the override supplies one. */
+  /**
+   * Canonical fallback routes and their independently configured efforts.
+   * Omitted route effort means provider default.
+   */
+  readonly fallbackRoutes?: readonly {
+    readonly model: RuntimeModelReference;
+    readonly effort?: string;
+  }[];
+  /** Host effort inherited only when the effective route admits it. */
   readonly baseEffort?: string;
   /**
    * Configured local providers (`config.providers?.local`). When an override
@@ -86,7 +96,8 @@ interface RequestModelOverrideInput {
 interface RequestModelOverrideResult {
   readonly runtimeOptions: {
     model?: RuntimeModelReference;
-    effort?: string;
+    /** String pins effort; null explicitly selects the provider default. */
+    effort?: string | null;
     // `null` is an explicit CLEAR sentinel the harness merge reads as "delete the
     // host default's value" (undefined would leave it untouched) — see the module
     // doc. Set for a local override, null for a non-local one.
@@ -162,6 +173,9 @@ export function createRequestModelOverrideRuntimeExtension(
           valid: [...EFFORT_SET],
         });
       }
+    } else if (model !== undefined) {
+      const inheritedEffort = inheritedEffortForModelOverride(model, options);
+      if (inheritedEffort !== undefined) runtimeOptions.effort = inheritedEffort;
     }
 
     applyEffortKeywordEscalation(
@@ -197,7 +211,9 @@ function applyEffortKeywordEscalation(
   if (match === undefined) {
     return;
   }
-  const resolvedEffort = runtimeOptions.effort ?? baseEffort;
+  const resolvedEffort = runtimeOptions.effort === null
+    ? undefined
+    : runtimeOptions.effort ?? baseEffort;
   if (effortRank(match.effort) <= effortRank(resolvedEffort)) {
     return;
   }
@@ -211,6 +227,53 @@ function applyEffortKeywordEscalation(
     from: resolvedEffort ?? null,
     to: match.effort,
   });
+}
+
+/**
+ * Resolve a model-only request override against the configured route policy.
+ * `undefined` means inherit the harness effort; `null` means provider default.
+ */
+function inheritedEffortForModelOverride(
+  model: RuntimeModelReference,
+  options: RequestModelOverrideOptions | undefined,
+): string | null | undefined {
+  if (options?.baseModel !== undefined
+    && modelReferenceKey(model) === modelReferenceKey(options.baseModel)) return undefined;
+
+  const fallback = options?.fallbackRoutes?.find(
+    (route) => modelReferenceKey(route.model) === modelReferenceKey(model),
+  );
+  if (fallback !== undefined) return fallback.effort ?? null;
+
+  const baseEffort = options?.baseEffort;
+  if (baseEffort === undefined) return undefined;
+  try {
+    const advertised = resolveAdvertisedModelEffort(model, {
+      ...(options?.localProviders === undefined ? {} : { localProviders: options.localProviders }),
+    });
+    return advertisedEffortAdmits(advertised, baseEffort) ? undefined : null;
+  } catch {
+    // Capability discovery is advisory. If it cannot judge the route, preserve
+    // the previously permissive inheritance behavior.
+    return undefined;
+  }
+}
+
+function advertisedEffortAdmits(
+  advertised: {
+    readonly reasoning?: boolean;
+    readonly reasoningMode?: string;
+    readonly effortLevels?: readonly string[];
+  },
+  effort: string,
+): boolean {
+  if (advertised.reasoning === false || advertised.reasoningMode === "none") return false;
+  if (advertised.effortLevels?.length === 0) return false;
+  if (advertised.reasoningMode === "toggle") return effort === "high" || effort === "none";
+  if (advertised.effortLevels !== undefined) return advertised.effortLevels.includes(effort);
+  if (advertised.reasoningMode === "effort") return EFFORT_SET.has(effort);
+  // `reasoning: true` alone is an unknown cloud ladder, not a denial.
+  return true;
 }
 
 /** Whether the accepted request route (or its configured base) is Pi-native. */

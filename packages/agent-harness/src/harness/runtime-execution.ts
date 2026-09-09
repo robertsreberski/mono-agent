@@ -250,7 +250,12 @@ export async function runHarnessRuntime(
         );
       }
       const overrideEffort = typeof merged.effort === "string" ? merged.effort : undefined;
-      const effectiveEffort = overrideEffort ?? options.effort;
+      const effortOverridden = overrideEffort !== undefined || merged.effort === null;
+      const effectiveEffort = merged.effort === null ? undefined : overrideEffort ?? options.effort;
+      // `null` is the request-extension sentinel for provider default. The
+      // runtime contract itself does not accept that sentinel, so remove the
+      // merged value and materialize only the resolved string below.
+      delete merged.effort;
       const useManagedLiveInput = liveInputMailbox !== undefined && merged.liveInput === undefined;
       let supportsLiveInput = false;
       if (liveInputMailbox !== undefined) {
@@ -386,7 +391,7 @@ export async function runHarnessRuntime(
         type: "run_config",
         model: sessionModelKey(effectiveModel),
         ...(effectiveEffort === undefined ? {} : { effort: effectiveEffort }),
-        overridden: overrideModel !== undefined || overrideEffort !== undefined,
+        overridden: overrideModel !== undefined || effortOverridden,
         timestamp: new Date().toISOString(),
       };
       emitRuntimeEvent(runConfigEvent);

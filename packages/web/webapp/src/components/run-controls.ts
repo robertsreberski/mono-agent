@@ -76,7 +76,9 @@ export function useRunControls() {
   // draft that can be the web-owned agent default; an explicit blank or an
   // existing thread resolves back to the agent's configured default.
   const agentDefaultModel = model === "" ? effectiveModel : selectedAgent?.defaultModel ?? "";
-  const agentDefaultEffort = effort === "" ? effectiveEffort : selectedAgent?.defaultEffort ?? "";
+  const agentDefaultEffort = selectedThread === null && effort === ""
+    ? selectedAgent?.runSettings.effective.effort ?? selectedAgent?.defaultEffort ?? ""
+    : selectedAgent?.defaultEffort ?? "";
 
   const firstRenderProviders = useMemo(
     () => initialCatalogProviders(selectedAgent, effectiveModel, modelOptions),

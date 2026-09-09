@@ -347,4 +347,29 @@ describe("AgentHarness run_config synthetic event", () => {
     const hostRunConfig = hostEvents.find((event) => event.type === "run_config");
     expect(hostRunConfig).toMatchObject({ effort: "high", overridden: true });
   });
+
+  it("marks provider-default effort as overridden without attributing a grade", async () => {
+    const identityPath = await identityFixture();
+    const fake = createFakeRuntime();
+    const recorder = new SpyRecorder();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      effort: "high",
+      recorderFactory: () => recorder,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { effort: null } }),
+    });
+
+    await harness.run({
+      conversationId: "conv-provider-default",
+      userMessage: "tick",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options).not.toHaveProperty("effort");
+    const runConfig = recorder.events.find((event) => event.type === "run_config");
+    expect(runConfig).toMatchObject({ overridden: true });
+    expect(runConfig).not.toHaveProperty("effort");
+  });
 });

@@ -34,6 +34,7 @@ interface BuildInputOptions {
   readonly effort?: EffortLevel;
   /** AUTHORED reference strings. Parsed here, never hand-built — see `baseInput`. */
   readonly fallbackModels?: readonly string[];
+  readonly fallbackRoutes?: readonly { readonly model: string; readonly effort?: EffortLevel }[];
   readonly localProviders?: readonly LocalProviderDefinition[];
   /** Canonical `providers.entries` list, for the provider-summary budget. */
   readonly providerEntries?: readonly ProviderDefinition[];
@@ -57,7 +58,12 @@ function baseCoreConfig(options: BuildInputOptions): MonoAgentConfig {
       workspace: "/tmp",
       session: { mode: "continuous", idleTimeoutMs: 300_000 },
       ...(options.effort === undefined ? {} : { effort: options.effort }),
-      ...(options.fallbackModels === undefined ? {} : {
+      ...(options.fallbackRoutes !== undefined ? {
+        fallbacks: options.fallbackRoutes.map((route) => ({
+          model: parseMonoRuntimeModelReference(route.model),
+          ...(route.effort === undefined ? {} : { effort: route.effort }),
+        })),
+      } : options.fallbackModels === undefined ? {} : {
         // Through the REAL parser, exactly as the config loader builds these. A fixture
         // naming something the parser refuses now fails at construction instead of quietly
         // testing a route no operator could ever have configured.
@@ -927,11 +933,30 @@ describe("tui channel driver — info composition", () => {
 
     // Toggle model carries the mode but NO graded effortLevels.
     expect(info.modelOptions?.["ollama:qwen3.6:latest"]).toEqual({
+      effort: null,
       reasoning: true,
       reasoningMode: "toggle",
       provider: "ollama",
       providerLabel: "ollama",
     });
+  });
+
+  it("advertises configured fallback effort as a tri-state route value", async () => {
+    const captured = await startCapturingTui({
+      fallbackRoutes: [
+        { model: "openai-codex:gpt-5.6-sol", effort: "xhigh" },
+        { model: "ollama:qwen3.6:latest" },
+      ],
+      localProviders: [
+        { id: "ollama", type: "ollama", baseUrl: "http://localhost:11434", enabled: true },
+      ],
+      discoverModels: async () => [],
+    });
+    const info = await resolveInfo(captured);
+
+    expect(info.modelOptions?.["openai-codex:gpt-5.6-sol"]?.effort).toBe("xhigh");
+    expect(info.modelOptions?.["ollama:qwen3.6:latest"]?.effort).toBeNull();
+    expect(info.modelOptions?.["anthropic:claude-fable-5"]).not.toHaveProperty("effort");
   });
 
   it("withholds embedding routes and aliases from both info and paged chat models", async () => {
@@ -1076,6 +1101,7 @@ describe("tui channel driver — info composition", () => {
     });
     expect(info.modelOptions?.["anthropic:claude-sonnet-4-6"]?.effortLevels?.length).toBeGreaterThan(0);
     expect(info.modelOptions?.["unknown-provider:gemini"]).toEqual({
+      effort: null,
       reasoning: true,
       provider: "unknown-provider",
       providerLabel: "unknown-provider",
