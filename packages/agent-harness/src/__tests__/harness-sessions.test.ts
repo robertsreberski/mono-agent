@@ -9,6 +9,7 @@ import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/ag
 import type { HistoryMessage } from "../context/index.js";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import {
   AgentHarnessError,
@@ -1730,11 +1731,23 @@ describe("coordinated terminal recovery", () => {
     const native = new Map<string, string[]>();
     const prefixes: string[][] = [];
     const receipts: RuntimeResult["providerSessionRecovery"][] = [];
+    let selectedModel: RuntimeRunOptions["model"] = model;
     let outcome: "success" | "cancelled" | "provider_unavailable" | "context_limit" = "success";
     let controller = new AbortController();
     let recoveryAllowed = true;
+    let failCommit = false;
+    let failSidecar = false;
+    let beforeTerminal = async (_options: RuntimeRunOptions): Promise<void> => {};
+    const begin = historyStore.beginProviderSessionTurn.bind(historyStore);
+    historyStore.beginProviderSessionTurn = async (...args: Parameters<typeof begin>) => {
+      const turn = await begin(...args);
+      return { ...turn, prepareCommit: async (...params: Parameters<typeof turn.prepareCommit>) => {
+        const append = await turn.prepareCommit(...params);
+        return { ...append, commit: async () => { if (failCommit) throw new Error("injected canonical commit failure"); await append.commit(); } };
+      } };
+    };
     let pause: { started: () => void; wait: Promise<void> } | undefined;
-    let resultTransform = (result: RuntimeResult): RuntimeResult => result;
+    let resultTransform: (result: RuntimeResult) => RuntimeResult | Promise<RuntimeResult> = (result) => result;
     const events: RuntimeEventLike[] = [];
     const fake = createSessionFakeRuntime(async (_prompt, options) => {
       const id = options.sessionId as string;
@@ -1744,6 +1757,7 @@ describe("coordinated terminal recovery", () => {
       native.set(id, transcript);
       prefixes.push([...transcript]);
       const receipt = options.sessionRecovery === undefined ? undefined : { ...options.sessionRecovery, providerSessionId: id, modelKey, tipId: `tip-${prefixes.length}` };
+      await beforeTerminal(options);
       if (outcome === "cancelled") controller.abort(new Error("user cancel"));
       if (outcome === "success") transcript.push("native answer");
       const result: RuntimeResult = { providerSessionId: id, ...(receipt ? { providerSessionRecovery: receipt } : {}),
@@ -1753,9 +1767,15 @@ describe("coordinated terminal recovery", () => {
       return resultTransform(result);
     });
     const runtime = { ...fake.runtime, async recoverSession(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>) { receipts.push(receipt); return recoveryAllowed; } };
-    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, historyStore, session, piSessionsRoot: join(root, "pi") });
+    const sidecar = toolHistoryStatusSpy(identityPath, []);
+    const finishRun = sidecar.writer.finishRun;
+    sidecar.writer.finishRun = async (...args) => { if (failSidecar) throw new Error("injected sidecar failure"); await finishRun(...args); };
+    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
     let harness = makeHarness();
     return { fake, retired, native, prefixes, receipts, historyStore, events,
+      rejectCommit() { failCommit = true; },
+      rejectSidecar() { failSidecar = true; },
+      before(next: typeof beforeTerminal) { beforeTerminal = next; },
       transform(next: typeof resultTransform) { resultTransform = next; },
       pauseNext() {
         let started!: () => void; let release!: () => void;
@@ -1765,15 +1785,19 @@ describe("coordinated terminal recovery", () => {
       },
       denyRecovery() { recoveryAllowed = false; },
       async reconstruct() { await harness.dispose?.(); harness = makeHarness(); },
-      async run(nextOutcome: typeof outcome, text: string) {
+      async run(nextOutcome: typeof outcome, text: string, modelOverride?: string) {
+        selectedModel = modelOverride === undefined ? model : parseMonoRuntimeModelReference(modelOverride);
         outcome = nextOutcome; controller = new AbortController();
-        return harness.run({ ...request("recovery", text), abortSignal: controller.signal, onEvent: (event) => { events.push(event); } });
+        return harness.run({ ...request("recovery", text), abortSignal: controller.signal, ...(modelOverride === undefined ? {} : { metadata: { source: "web", web: { model: modelOverride } } }), onEvent: (event) => { events.push(event); } });
       },
       async close() { await harness.dispose?.(); },
     };
   }
 
-  it.each(["cancelled", "provider_unavailable"] as const)("resumes a %s durable turn with an unchanged native prefix", async (outcome) => {
+  it.each([
+    { outcome: "cancelled", name: "resumes a cancelled durable turn with an unchanged native prefix" },
+    { outcome: "provider_unavailable", name: "resumes one transport-failed durable turn with an unchanged native prefix" },
+  ] as const)("$name", async ({ outcome }) => {
     const f = await fixture();
     try {
       await f.run("success", "warm");
@@ -1808,6 +1832,8 @@ describe("coordinated terminal recovery", () => {
       await f.run("provider_unavailable", "failure two"); await f.run("success", "next");
       expect(f.receipts).toHaveLength(1);
       expect(f.fake.calls[3]!.options.sessionId).not.toBe(f.fake.calls[2]!.options.sessionId);
+      await f.run("provider_unavailable", "new epoch failure");
+      expect(f.receipts).toHaveLength(2); // rotation clears the process-local budget
     } finally { await f.close(); }
   });
 
@@ -1885,6 +1911,76 @@ describe("coordinated terminal recovery", () => {
       await f.run("provider_unavailable", "failed");
       expect(f.receipts).toHaveLength(0);
       expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds when terminal sidecar finalization fails", async () => {
+    const f = await fixture();
+    try {
+      f.rejectSidecar(); await f.run("cancelled", "cancelled ask");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+      expect(await f.historyStore.load("recovery")).toHaveLength(2);
+    } finally { await f.close(); }
+  });
+
+  it("keeps the publication barrier closed when canonical commit fails after native recovery", async () => {
+    const f = await fixture();
+    try {
+      f.rejectCommit();
+      expect((await f.run("cancelled", "cancelled ask")).failure?.kind).toBe("cancelled");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.fake.retiredSessions).toEqual(expect.arrayContaining([expect.objectContaining({ providerSessionId: f.fake.calls[0]!.options.sessionId })]));
+      expect((await f.run("success", "blocked successor")).failure).toBeDefined();
+      expect(f.fake.calls).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it("keeps custom coordinators without the recovery capability on the retirement path", async () => {
+    const f = await fixture();
+    try {
+      Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      await f.run("cancelled", "cancelled ask");
+      expect(f.fake.calls[0]!.options.sessionRecovery).toBeUndefined();
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it.each(["success", "error", "cancelled"] as const)("checks post-seal tool settlement against accepted evidence: %s", async (state) => {
+    const f = await fixture();
+    try {
+      f.before(async (options) => { await options.toolLifecycleSink?.({ phase: "invocation", toolCallId: "in-flight", toolName: "Read", arguments: { path: "file" } }); });
+      f.transform(async (result) => {
+        await f.fake.calls.at(-1)!.options.toolLifecycleSink?.({ phase: "result", toolCallId: "in-flight", toolName: "Read", content: "late result", state });
+        return result;
+      });
+      await f.run("cancelled", "cancelled ask");
+      expect(f.receipts).toHaveLength(state === "success" ? 0 : 1);
+      const history = await f.historyStore.load("recovery");
+      expect(history.at(-1)?.content).toContain("in_flight_at_cancellation");
+      expect(history.at(-1)?.content).not.toContain("late result");
+    } finally { await f.close(); }
+  });
+
+  it("reseeds when new assistant prose arrives after the cancellation seal", async () => {
+    const f = await fixture();
+    try {
+      f.transform((result) => { f.fake.calls.at(-1)!.options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "late prose" }] } }); return result; });
+      await f.run("cancelled", "cancelled ask");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("gives model change precedence over a pending recovery boundary", async () => {
+    const f = await fixture();
+    try {
+      await f.run("cancelled", "cancelled ask");
+      expect((await f.run("success", "new model", "anthropic:claude-opus-4-8")).failure).toBeUndefined();
+      expect(f.fake.calls[1]!.options.sessionId).not.toBe(f.fake.calls[0]!.options.sessionId);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === "model_change")).toHaveLength(1);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === "cancelled_turn_resume")).toHaveLength(0);
     } finally { await f.close(); }
   });
 
