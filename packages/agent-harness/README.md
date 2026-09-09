@@ -287,6 +287,7 @@ TOOL_HISTORY_PERSISTENCE_CEILING_MS
 TOOL_HISTORY_SCHEMA
 TOOL_HISTORY_USER_VERSION
 ToolHistoryArtifactReference
+ToolHistoryArtifactSinkInput
 ToolHistoryGetInput
 ToolHistoryGetResult
 ToolHistoryReader
@@ -322,6 +323,7 @@ createLiveSessionManager
 createRuntimeSessionStore
 createSessionRuntimeResolver
 createSkillsCache
+createToolHistoryArtifactSink
 createToolPolicy
 failClosedToolPolicy
 isProcessAlive
@@ -487,7 +489,19 @@ carry exact original byte counts for fully admitted payloads, a saturated
 over-limit count after secure omission, retained byte counts, and truncation,
 plus opaque artifact ids;
 artifact availability is recomputed and the reference does not extend artifact
-lifetime. Retention independently bounds completed calls (100,000), age (365
+lifetime. `createToolHistoryArtifactSink({ artifactRoot, runId })` creates a
+best-effort synchronous sink that creates missing directories one component at
+a time with mode `0700`. It accepts pre-existing path components only when they
+are non-symlink directories owned by the current user and are not group- or
+world-writable; components it creates are additionally verified at exact mode
+`0700`. Publication verifies directory and owner-private file identities and
+requires the final path to pass the same run-root containment checks. Node
+does not expose an fd-relative `openat` API, so these checks narrow but cannot
+eliminate the residual window in which another process running as the same user
+renames a verified directory. A failed final validation removes only the
+just-created file whose device/inode identity is still provable. Those raw,
+untrusted files have no automatic cleanup owner;
+run-artifact and tool-history retention do not delete them. Retention independently bounds completed calls (100,000), age (365
 days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
 days). Isolated/proactive runs persist but are excluded from default reads.
 

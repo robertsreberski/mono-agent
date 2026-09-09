@@ -210,6 +210,49 @@ describe("Codex subscription search broker", () => {
     const turns = fake.clients[0].requests.filter((entry) => entry.method === "turn/start");
     expect(turns.map((entry) => entry.params.input[0].text)).toEqual(["first query", "second query"]);
   });
+
+  it("marks snippets truncated to the shared 4000-character WebSearch bound", async () => {
+    const snippet = "evidence ".repeat(1_000);
+    const fake = fakeFactory({
+      items: [{
+        type: "webSearch",
+        query: "bounded snippet",
+        results: [{
+          type: "text_result",
+          title: "Bounded source",
+          url: "https://example.com/bounded",
+          snippet,
+        }],
+      }],
+    });
+    const result = await searchCodexSubscription("bounded snippet", { clientFactory: fake.factory });
+
+    expect(result.ok).toBe(true);
+    expect([...result.results[0].snippet]).toHaveLength(4_000);
+    expect(result.results[0].snippet.endsWith("[snippet truncated; use WebFetch for full source]")).toBe(true);
+    expect(result.results[0].snippetTruncated).toBe(true);
+  });
+
+  it("bounds titles by well-formed code points without splitting astral characters", async () => {
+    const fake = fakeFactory({
+      items: [{
+        type: "webSearch",
+        query: "bounded title",
+        results: [{
+          type: "text_result",
+          title: `${"t".repeat(499)}🙂\ud800ignored`,
+          url: "https://example.com/bounded-title",
+          snippet: "evidence",
+        }],
+      }],
+    });
+    const result = await searchCodexSubscription("bounded title", { clientFactory: fake.factory });
+
+    expect(result.ok).toBe(true);
+    expect([...result.results[0].title]).toHaveLength(500);
+    expect(result.results[0].title.endsWith("🙂")).toBe(true);
+    expect(result.results[0].title).not.toMatch(/[\ud800-\udfff]/u);
+  });
 });
 
 describe("Codex quota and structured result validation", () => {

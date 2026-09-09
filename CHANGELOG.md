@@ -8,6 +8,18 @@
   configured fallbacks use their own pinned effort or provider default. The web
   console labels provider-default inheritance accurately, and explicit effort
   overrides remain unchanged.
+- Bound every WebSearch backend to 4,000-character marked snippets and a 64 KiB
+  ranked body, pass Ollama the caller's result limit, and preserve complete
+  trust framing. Oversized text tool results now retain a framed UTF-8-safe
+  head/tail sample, while configured app runs persist raw blocks best-effort in
+  owner-private `tool-output/<runId>` files that can become opaque
+  `SessionHistory` references. Publication creates and verifies directory
+  components individually at mode `0700`, accepts pre-existing owner-controlled
+  components only when they are not group- or world-writable, rechecks the
+  run-directory identity after opening, and removes identity-proven files after
+  final validation failure; Node's lack
+  of fd-relative `openat` leaves a documented residual same-user rename window.
+  These raw files have no automatic cleanup owner.
 - **Breaking: framework self-configuration has been removed.** The dedicated
   SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
   `/configure`, host-side proposal review/apply/restart transaction, and bundled

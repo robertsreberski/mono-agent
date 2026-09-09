@@ -403,6 +403,13 @@ export interface RuntimeRunOptions {
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
+  /** Host-owned synchronous artifact writer bound to this run. */
+  readonly persistArtifact?: (artifact: {
+    readonly filename: string;
+    readonly buffer: Buffer;
+    readonly toolName: string;
+    readonly toolUseId: string | null;
+  }) => string | null;
   /**
    * Host-owned provider attribution continuity key. Pi-native sends this raw
    * value only to providers that require session attribution; it does not by

@@ -62,6 +62,7 @@ import type {
 import type { SandboxEngine, SandboxPolicy } from "@mono-agent/runtime-adapter";
 
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
+import { createToolOutputArtifactsRuntimeExtension } from "./tool-output-artifacts.js";
 import {
   acquireAgentRootOwnership,
   assertAgentRootLeaseOutsideWorkspace,
@@ -1163,7 +1164,7 @@ async function createConfiguredAgentHarnessInternal(
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
-  const runtimeOptionsForRequest = createMonitorsRuntimeExtension({
+  const monitoredRuntimeOptionsForRequest = createMonitorsRuntimeExtension({
     next: processJobsRuntimeOptionsForRequest,
     service: internalHooks.monitors?.service,
     coreConfig: config,
@@ -1174,6 +1175,11 @@ async function createConfiguredAgentHarnessInternal(
       ?? internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
+  const toolOutputArtifactRoot = resolvePath(config.artifacts.dir, "tool-output");
+  const runtimeOptionsForRequest = createToolOutputArtifactsRuntimeExtension(
+    monitoredRuntimeOptionsForRequest,
+    toolOutputArtifactRoot,
+  );
   const subagents = subagentsRuntimeOptions(config, {
     runtime,
     baseModel: model,
@@ -1232,7 +1238,7 @@ async function createConfiguredAgentHarnessInternal(
   // create either the sidecar or its owner database.
   const toolHistory = lazyConfiguredToolHistory({
     root: historyRoot,
-    artifactRoot: resolvePath(config.artifacts.dir, "tool-output"),
+    artifactRoot: toolOutputArtifactRoot,
     rollover,
     ...(options.onToolHistoryWarning === undefined
       ? {}

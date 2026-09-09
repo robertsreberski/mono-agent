@@ -111,7 +111,9 @@ never sent to local, private, or custom origins; `apiKeyEnv` is rejected for
 those origins. A custom public origin requires HTTPS and
 `trustPublicUrl: true`, remains unauthenticated, and never receives an Ollama
 hosted key. Redirects are rejected. Language and time range are advisory for
-Ollama, and strict Ollama never falls back to another provider.
+Ollama, and strict Ollama never falls back to another provider. Both Ollama
+endpoint variants receive the caller's effective 1–10 result limit as
+`max_results`; a compatibility retry does not reset it.
 
 The tool accepts one `query`, up to three `alternate_queries`, a result `limit`
 from 1–10, `domains`, `exclude_domains`, `language`, and a `time_range` of
@@ -123,6 +125,15 @@ stripped or relaxed. Results are normalized, tracking parameters are removed,
 duplicates are fused with reciprocal-rank fusion, and include/exclude domain
 filters plus a deterministic query-term/quoted-phrase relevance gate are
 enforced before a backend can end `auto` mode.
+
+Every backend shares the same model-facing output bounds. A result title is at
+most 500 characters and its snippet is at most 4,000 characters, including the
+visible marker `[snippet truncated; use WebFetch for full source]`. The ranked
+result body is at most 64 KiB of UTF-8. Under pressure, lower-ranked snippets
+are shortened before a whole result is omitted. The search-control line,
+metadata and filters, plus `[BEGIN UNTRUSTED WEB SEARCH RESULTS]` and its
+matching closing marker are outside that body allocation and always survive.
+Use `WebFetch` on a result URL when the marker says the snippet is incomplete.
 
 Start research with one broad, high-yield query that covers the decision's main
 constraints. Treat snippets as leads and use `WebFetch` on the strongest
