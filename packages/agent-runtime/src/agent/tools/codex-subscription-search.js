@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createCodexAppServerClient } from "../../ai/providers/codex/app-server-client.js";
+import { boundWebSearchSnippet } from "./web-search-output.js";
 
 export const DEFAULT_CODEX_SEARCH_MODEL = "gpt-5.6-luna";
 
@@ -423,10 +424,12 @@ function normalizeResults(rows) {
   const results = [];
   for (const row of rows) {
     if (!row || typeof row !== "object" || typeof row.url !== "string") continue;
+    const snippet = boundWebSearchSnippet(row.snippet);
     results.push({
       title: boundedText(row.title, 500),
       url: row.url,
-      snippet: boundedText(row.snippet, 4_000),
+      snippet: snippet.text,
+      snippetTruncated: snippet.truncated,
       provenance: boundedText(row.domain || row.ref_id || row.type, 300),
       backend: "codex",
     });

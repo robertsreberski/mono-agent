@@ -235,6 +235,20 @@ describe("createRuntime", () => {
     });
   });
 
+  it("run() lets a run-bound artifact sink replace the host default", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const hostSink = () => null;
+    const runSink = () => "/tmp/run/tool-output.txt";
+    const runtime = createRuntime({ persistArtifact: hostSink });
+
+    await runtime.run("sys", {
+      model: modelRef("anthropic", "x"),
+      persistArtifact: runSink,
+    });
+
+    expect(executeMock.mock.calls[0][1].persistArtifact).toBe(runSink);
+  });
+
   it("run() does not bind host keys the RuntimeRequest shape no longer declares", async () => {
     executeMock.mockResolvedValue({ text: "ok" });
     // These three belonged to the deleted ACP *client* backend (the ACP server

@@ -112,6 +112,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   companion's lifecycle. Opt-in `tools.web.coordination: "host"` injects the same private
   admission and cooldown store into parent and subagent runs;
   `mono-agent web-control status|reset` inspects or clears idle operational state.
+- Bind oversized tool-block persistence to the harness's authoritative run id,
+  writing owner-private raw payloads under `artifacts.dir/tool-output/<runId>/`.
+  The sink is not injected into out-of-harness child callbacks.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and a console label
   that defaults to the hostname and can be restored with `--name -`; on macOS
@@ -574,6 +577,13 @@ root, or private run path. Only regular files beneath the configured run-specifi
 `tool-output` root are accepted or checked for availability; provider-supplied
 outside or symlinked paths are dropped. Isolated/proactive
 runs persist but search excludes them unless explicitly requested.
+
+Configured harness runs install the run-bound tool-output sink. When a tool
+lifecycle record persists too, `SessionHistory` exposes only its opaque id and
+current availability, never the host path or contents. The immediate truncation
+summary still names a successfully saved path. These files contain raw,
+untrusted data and are not automatically removed by either run-artifact or
+tool-history retention.
 
 For tool evidence from a failed, cancelled, or interrupted `RunHistory` candidate, use
 `{ "action": "search", "runIds": ["..."], "includeIsolated": true }` without

@@ -102,7 +102,7 @@ const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
   "webSearchState",
-  "outputSchema", "liveInput", "toolEnvironment",
+  "outputSchema", "liveInput", "toolEnvironment", "persistArtifact",
 ]);
 
 class ResolverProtectedOptionError extends Error {

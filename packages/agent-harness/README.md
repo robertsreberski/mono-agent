@@ -287,6 +287,7 @@ TOOL_HISTORY_PERSISTENCE_CEILING_MS
 TOOL_HISTORY_SCHEMA
 TOOL_HISTORY_USER_VERSION
 ToolHistoryArtifactReference
+ToolHistoryArtifactSinkInput
 ToolHistoryGetInput
 ToolHistoryGetResult
 ToolHistoryReader
@@ -322,6 +323,7 @@ createLiveSessionManager
 createRuntimeSessionStore
 createSessionRuntimeResolver
 createSkillsCache
+createToolHistoryArtifactSink
 createToolPolicy
 failClosedToolPolicy
 isProcessAlive
@@ -487,7 +489,10 @@ carry exact original byte counts for fully admitted payloads, a saturated
 over-limit count after secure omission, retained byte counts, and truncation,
 plus opaque artifact ids;
 artifact availability is recomputed and the reference does not extend artifact
-lifetime. Retention independently bounds completed calls (100,000), age (365
+lifetime. `createToolHistoryArtifactSink({ artifactRoot, runId })` creates a
+best-effort synchronous sink whose owner-private files pass the same run-root
+containment checks. Those raw, untrusted files have no automatic cleanup owner;
+run-artifact and tool-history retention do not delete them. Retention independently bounds completed calls (100,000), age (365
 days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
 days). Isolated/proactive runs persist but are excluded from default reads.
 

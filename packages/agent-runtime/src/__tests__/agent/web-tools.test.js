@@ -18,6 +18,14 @@ import {
   performWebSearch,
 } from "../../agent/tools/web-search.js";
 import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
+import {
+  boundWebSearchSnippet,
+  renderBoundedWebSearchBody,
+  WEB_SEARCH_BODY_MAX_BYTES,
+  WEB_SEARCH_SNIPPET_MAX_CHARS,
+  WEB_SEARCH_SNIPPET_TRUNCATION_MARKER,
+} from "../../agent/tools/web-search-output.js";
+import { applyToolBloatGuard, MAX_TOOL_RESULT_BYTES } from "../../agent/tool-bloat.js";
 
 const tempDirs = [];
 
@@ -37,6 +45,32 @@ function runtimeContext(workspace = tempWorkspace(), sandbox = passthroughSandbo
 beforeEach(() => {
   __resetWebSearchThrottleForTests({ minSpacingMs: 0 });
   __resetSharedSearchCacheForTests();
+});
+
+describe("WebSearch output bounds", () => {
+  it("keeps the exact snippet boundary and marks the first truncated character within it", () => {
+    const exact = boundWebSearchSnippet("x".repeat(WEB_SEARCH_SNIPPET_MAX_CHARS));
+    const overflow = boundWebSearchSnippet("x".repeat(WEB_SEARCH_SNIPPET_MAX_CHARS + 1));
+
+    expect(exact).toEqual({ text: "x".repeat(WEB_SEARCH_SNIPPET_MAX_CHARS), truncated: false });
+    expect([...overflow.text]).toHaveLength(WEB_SEARCH_SNIPPET_MAX_CHARS);
+    expect(overflow.text.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
+    expect(overflow.truncated).toBe(true);
+  });
+
+  it("omits a pathological trailing result as a whole instead of cutting its Markdown link", () => {
+    const rendered = renderBoundedWebSearchBody([
+      { title: "usable", url: "https://example.com/usable", snippet: "evidence" },
+      { title: "too large", url: `https://example.com/${"x".repeat(600)}`, snippet: "evidence" },
+    ], { maxBytes: 160 });
+
+    expect(rendered.renderedResultCount).toBe(1);
+    expect(rendered.truncated).toBe(true);
+    expect(rendered.body).toContain("1. [usable](https://example.com/usable)");
+    expect(rendered.body).toContain("[additional search results omitted by WebSearch output bound] (1)");
+    expect(rendered.body).not.toContain("too large");
+    expect(Buffer.byteLength(rendered.body, "utf8")).toBeLessThanOrEqual(160);
+  });
 });
 
 afterEach(() => {
@@ -146,7 +180,73 @@ describe("WebSearch", () => {
       "http://127.0.0.1:11434/api/web_search",
     ]);
     expect(calls.every((call) => call.init.headers.Authorization === undefined)).toBe(true);
-    expect(JSON.parse(calls[0].init.body)).toEqual({ query: "mono agent", max_results: 10 });
+    expect(JSON.parse(calls[0].init.body)).toEqual({ query: "mono agent", max_results: 5 });
+  });
+
+  it("keeps the observed 414365-byte Ollama WebSearch result usable instead of triggering the tool-bloat guard", async () => {
+    const rawContent = "bounded output evidence ".repeat(2_700);
+    const rawResults = Array.from({ length: 7 }, (_, index) => ({
+      title: `Bounded output evidence source ${index + 1}`,
+      url: `https://example.com/source-${index + 1}`,
+      content: rawContent,
+    }));
+    expect(Buffer.byteLength(rawResults.map((entry) => entry.content).join(""), "utf8")).toBeGreaterThan(414_365);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ results: rawResults }), {
+      headers: { "content-type": "application/json" },
+    }));
+
+    const result = await performWebSearch({ query: "bounded output evidence", limit: 7 }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl,
+      ctx: runtimeContext(),
+    });
+    const guarded = await applyToolBloatGuard("WebSearch", Promise.resolve({
+      content: [{ type: "text", text: result.text }],
+    }));
+
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body)).toEqual({ query: "bounded output evidence", max_results: 7 });
+    expect(result.outcome).toMatchObject({ resultCount: 7, truncated: true });
+    expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
+    expect(result.outcome.bytes).toBeLessThan(MAX_TOOL_RESULT_BYTES);
+    expect(result.text).toContain("1. [Bounded output evidence source 1]");
+    expect(result.text).toContain("7. [Bounded output evidence source 7]");
+    expect(result.text).toContain(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER);
+    expect(result.text).toContain("[END UNTRUSTED WEB SEARCH RESULTS]");
+    expect(guarded.details?.tool_payload_truncated).toBeUndefined();
+    expect(guarded.content[0].text).toBe(result.text);
+  });
+
+  it("bounds the complete multi-byte WebSearch text while preserving every host frame and rendered outcome", async () => {
+    const longUrlTail = "x".repeat(2_000);
+    const rawResults = Array.from({ length: 10 }, (_, index) => ({
+      title: `Worst case evidence source ${index + 1} ${"t".repeat(700)}`,
+      url: `https://example.com/source-${index + 1}?q=${longUrlTail}`,
+      content: `worst case evidence ${"🙂".repeat(8_000)}`,
+    }));
+    const result = await performWebSearch({
+      query: "worst case evidence",
+      limit: 10,
+      language: "n".repeat(500),
+      time_range: "month",
+    }, {
+      searchConfig: { backend: "ollama", ollama: { baseUrl: "http://127.0.0.1:11434" } },
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ results: rawResults }), {
+        headers: { "content-type": "application/json" },
+      })),
+      ctx: runtimeContext(),
+    });
+    const begin = "[BEGIN UNTRUSTED WEB SEARCH RESULTS]";
+    const end = "[END UNTRUSTED WEB SEARCH RESULTS]";
+    const body = result.text.slice(result.text.indexOf(begin) + begin.length, result.text.lastIndexOf(end));
+
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(WEB_SEARCH_BODY_MAX_BYTES + 1_024);
+    expect(Buffer.byteLength(result.text, "utf8")).toBeLessThan(MAX_TOOL_RESULT_BYTES);
+    expect(result.text).toContain("[Search control:");
+    expect(result.text).toContain("[Search metadata:");
+    expect(result.text).toContain("[Requested filters:");
+    expect(result.text.indexOf(begin)).toBeLessThan(result.text.indexOf(end));
+    expect(result.outcome).toMatchObject({ resultCount: 10, truncated: true });
+    expect(result.outcome.bytes).toBe(Buffer.byteLength(result.text, "utf8"));
   });
 
   it("host-binds Ollama bearer auth and includes explicitly configured Ollama first in auto", async () => {

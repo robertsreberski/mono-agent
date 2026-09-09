@@ -6,6 +6,8 @@ export type { AppliedLiveInput, LiveInputMailbox } from "./live-input.js";
 export { createInMemoryHistoryStore } from "./history.js";
 export { createDurableHistoryStore, DurableConversationHistoryStore } from "./durable-history.js";
 export { isProcessAlive } from "./history-process-liveness.js";
+export { createToolHistoryArtifactSink } from "./tool-history-artifacts.js";
+export type { ToolHistoryArtifactSinkInput } from "./tool-history-artifacts.js";
 export type { DurableHistoryStoreOptions, DurableHistoryStoreStats } from "./durable-history.js";
 export {
   acquireToolHistoryWriter,

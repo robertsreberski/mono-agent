@@ -6,9 +6,9 @@
 // still cite the artifact.
 //
 // Persistence is delegated to the host via a `persistArtifact({ filename, buffer,
-// toolName, toolUseId }) -> path | null` callback. Host output sinks
-// in src/core/tool-artifacts.js writes to {runArtifactDir}/tool-output/<file>.
-// Hosts that don't care can pass null and the truncated payload is dropped.
+// toolName, toolUseId }) -> path | null` callback. The app binds that callback
+// per run and stores payloads under its configured tool-output artifact root.
+// Hosts that don't provide a sink still receive bounded retained text.
 
 export const MAX_TOOL_RESULT_BYTES = 262144;
 
@@ -21,6 +21,10 @@ export const DEFAULT_TOOL_BLOAT_CONFIG = Object.freeze({
   maxBytes: MAX_TOOL_RESULT_BYTES,
   binaryBloatTools: BINARY_BLOAT_TOOLS,
 });
+
+const RETAINED_UNTRUSTED_BEGIN = "[BEGIN RETAINED UNTRUSTED TOOL RESULT]";
+const RETAINED_UNTRUSTED_END = "[END RETAINED UNTRUSTED TOOL RESULT]";
+const RETAINED_MIDDLE_NOTICE = "[Omitted middle may contain additional source content; retained tail is not the source ending.]";
 
 function blockBytes(block) {
   if (!block || typeof block !== "object") return 0;
@@ -74,15 +78,121 @@ function persistBlock(toolName, block, idx, idTag, persistArtifact) {
   }
 }
 
-function summaryText(toolName, originalBytes, maxBytes, savedPaths) {
+function controlFree(value) {
+  return String(value || "").replace(/[\u0000-\u001f\u007f]+/gu, " ").trim();
+}
+
+function persistenceSummary(savedPaths, includePath = true) {
+  if (savedPaths.length === 0) return "persistence unavailable";
+  if (!includePath) return `saved_files=${savedPaths.length}`;
+  if (savedPaths.length === 1) return `saved_to=${controlFree(savedPaths[0])}`;
+  return `saved_to=${controlFree(savedPaths[0])}; saved_files=${savedPaths.length}`;
+}
+
+function summaryText(toolName, originalBytes, retainedBytes, maxBytes, savedPaths, includePath = true) {
   const parts = [
     `[truncated tool_result: ${originalBytes} bytes exceeded ${maxBytes} byte cap`,
-    `tool=${toolName}`,
+    `retained=${retainedBytes} bytes`,
+    `tool=${controlFree(toolName)}`,
   ];
-  if (savedPaths.length === 1) parts.push(`saved_to=${savedPaths[0]}`);
-  else if (savedPaths.length > 1) parts.push(`saved_to=[${savedPaths.length} files]`);
-  else parts.push("persistence unavailable");
+  parts.push(persistenceSummary(savedPaths, includePath));
   return `${parts.join("; ")}]`;
+}
+
+function capSummary(text, maxBytes) {
+  for (const candidate of [text, "[truncated tool_result]", "[truncated]", "[]"]) {
+    if (Buffer.byteLength(candidate, "utf8") <= maxBytes) return candidate;
+  }
+  return "";
+}
+
+function summaryOnly(toolName, originalBytes, maxBytes, savedPaths) {
+  const parts = [
+    `[truncated tool_result: ${originalBytes} bytes exceeded ${maxBytes} byte cap`,
+    `tool=${controlFree(toolName)}`,
+  ];
+  parts.push(persistenceSummary(savedPaths));
+  return `${parts.join("; ")}]`;
+}
+
+function neutralizeRetainedFrames(value) {
+  return value
+    .replaceAll(RETAINED_UNTRUSTED_BEGIN, `(BEGIN RETAINED UNTRUSTED TOOL RESULT)`)
+    .replaceAll(RETAINED_UNTRUSTED_END, `(END RETAINED UNTRUSTED TOOL RESULT)`)
+    .replaceAll(RETAINED_MIDDLE_NOTICE, `(Omitted middle may contain additional source content; retained tail is not the source ending.)`);
+}
+
+function utf8Head(value, maxBytes) {
+  if (maxBytes <= 0) return "";
+  let bytes = 0;
+  let out = "";
+  for (const point of value) {
+    const size = Buffer.byteLength(point, "utf8");
+    if (bytes + size > maxBytes) break;
+    out += point;
+    bytes += size;
+  }
+  return out;
+}
+
+function utf8Tail(value, maxBytes) {
+  if (maxBytes <= 0) return "";
+  let bytes = 0;
+  const out = [];
+  for (const point of [...value].reverse()) {
+    const size = Buffer.byteLength(point, "utf8");
+    if (bytes + size > maxBytes) break;
+    out.push(point);
+    bytes += size;
+  }
+  return out.reverse().join("");
+}
+
+function retainedTextPayload(toolName, blocks, originalBytes, maxBytes, savedPaths) {
+  const source = neutralizeRetainedFrames(blocks.map((block) => String(block.text || "")).join("\n\n"));
+  const maximumDigits = String(originalBytes).length;
+  const retainedPlaceholder = "9".repeat(maximumDigits);
+  const omittedPlaceholder = "9".repeat(maximumDigits);
+  let summary = summaryText(toolName, originalBytes, Number(retainedPlaceholder), maxBytes, savedPaths, true);
+  const fixedBody = [
+    summary,
+    RETAINED_UNTRUSTED_BEGIN,
+    "",
+    `[... ${omittedPlaceholder} source bytes omitted ...]`,
+    RETAINED_MIDDLE_NOTICE,
+    "",
+    RETAINED_UNTRUSTED_END,
+  ].join("\n");
+  if (Buffer.byteLength(fixedBody, "utf8") > maxBytes) {
+    summary = summaryText(toolName, originalBytes, 0, maxBytes, savedPaths, false);
+    return capSummary(summary, maxBytes);
+  }
+
+  const sourceBudget = maxBytes - Buffer.byteLength(fixedBody, "utf8");
+  const head = utf8Head(source, Math.floor(sourceBudget * 0.6));
+  const tail = utf8Tail(source, sourceBudget - Buffer.byteLength(head, "utf8"));
+  const retainedBytes = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
+  const omittedBytes = Math.max(0, originalBytes - retainedBytes);
+  summary = summaryText(toolName, originalBytes, retainedBytes, maxBytes, savedPaths, true);
+  const rendered = [
+    summary,
+    RETAINED_UNTRUSTED_BEGIN,
+    head,
+    `[... ${omittedBytes} source bytes omitted ...]`,
+    RETAINED_MIDDLE_NOTICE,
+    tail,
+    RETAINED_UNTRUSTED_END,
+  ].join("\n");
+  if (Buffer.byteLength(rendered, "utf8") <= maxBytes) return rendered;
+
+  // A long saved path can make the exact-path summary larger than the reserved
+  // placeholder. Preserve the trust frame and source slices by falling back to
+  // the honest saved-file count, never by returning a partial path.
+  const countSummary = summaryText(toolName, originalBytes, retainedBytes, maxBytes, savedPaths, false);
+  const countRendered = [countSummary, ...rendered.split("\n").slice(1)].join("\n");
+  return Buffer.byteLength(countRendered, "utf8") <= maxBytes
+    ? countRendered
+    : capSummary(countSummary, maxBytes);
 }
 
 export function summarisePayload(toolName, contentBlocks, persistArtifact, options = {}) {
@@ -109,8 +219,12 @@ export function summarisePayload(toolName, contentBlocks, persistArtifact, optio
     const path = persistBlock(toolName, block, idx, idTag, persistArtifact);
     if (path) savedPaths.push(path);
   });
+  const textOnly = blocks.length > 0 && blocks.every((block) => block?.type === "text");
+  const rewrittenText = textOnly && otherBytes > maxBytes && imageBytes === 0
+    ? retainedTextPayload(toolName, blocks, originalBytes, maxBytes, savedPaths)
+    : summaryOnly(toolName, originalBytes, maxBytes, savedPaths);
   return {
-    rewrittenBlocks: [{ type: "text", text: summaryText(toolName, originalBytes, maxBytes, savedPaths) }],
+    rewrittenBlocks: [{ type: "text", text: rewrittenText }],
     savedPaths,
     originalBytes,
     truncated: true,
