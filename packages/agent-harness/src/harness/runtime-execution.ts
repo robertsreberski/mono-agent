@@ -40,6 +40,7 @@ import { buildTurnContextEvent, composeUserMessageWithMemory } from "./turn-cont
 interface HarnessRuntimeRouting {
   readonly modelKey: string;
   readonly runtimeForSession: SessionRuntimeResolver;
+  readonly recoveryRevision?: number | undefined;
   readonly onRuntimeSelected: (modelKey: string) => void;
 }
 
@@ -290,6 +291,9 @@ export async function runHarnessRuntime(
       const structuredHistory = historyAsMessages ? structuredHistoryMessages(history) : [];
       const runtimeOptions: RuntimeRunOptions = {
         ...merged,
+        sessionRecovery: routing.recoveryRevision !== undefined && typeof runtime.recoverSession === "function"
+          && sessionsEnabled && !sessionIsolated && durablePiSessionsRoot !== undefined
+          ? { runId, revision: routing.recoveryRevision } : undefined,
         model: effectiveModel,
         // Recalled memory is appended to the user message (NOT the system prompt) so
         // it reaches the model on every turn, including resumed turns. See

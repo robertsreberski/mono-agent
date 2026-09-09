@@ -1936,3 +1936,24 @@ describe("durable provider model binding", () => {
   });
 
 });
+
+it("commits recovered continuity at the same epoch and next revision without recovery metadata", async () => {
+  const root = await tempDir();
+  const retired: string[] = [];
+  const store = createDurableHistoryStore({ root, retireProviderSession: async (id) => { retired.push(id); } });
+  expect(store.providerSessionRecovery).toBe("v1");
+  const first = await store.beginProviderSessionTurn("recovered", "run-one", { modelKey: "faux:fixture" });
+  await (await first.prepareCommit([{ role: "user", content: "cancelled ask" }, { role: "assistant", content: "continuity account" }], { providerSessionSynced: true })).commit();
+  const next = await store.beginProviderSessionTurn("recovered", "run-two", { modelKey: "faux:fixture" });
+  expect(next.providerSessionId).toBe(first.providerSessionId);
+  expect(next.providerSessionRevision).toBe(1);
+  await expect(next.prepareCommit([], { providerSessionSynced: "yes" } as never)).rejects.toThrow("providerSessionSynced must be a boolean");
+  await (await next.prepareCommit([{ role: "user", content: "unsafe tail" }], { providerSessionSynced: false })).commit();
+  expect(retired).toContain(first.providerSessionId);
+  const cold = await store.beginProviderSessionTurn("recovered", "run-three", { modelKey: "faux:fixture" });
+  expect(cold.providerSessionId).not.toBe(first.providerSessionId);
+  expect(cold.providerSessionRevision).toBe(0);
+  await cold.abort();
+  const record = JSON.parse(await readFile(join(root, `${createHash("sha256").update("mono-agent-history-v1\0recovered").digest("hex")}.history.json`), "utf8"));
+  expect(Object.keys(record.providerSession).sort()).toEqual(["epoch", "modelKey", "revision"]);
+});

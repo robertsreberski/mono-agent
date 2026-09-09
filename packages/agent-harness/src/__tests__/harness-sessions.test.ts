@@ -1720,3 +1720,172 @@ describe("AgentHarness continuous sessions", () => {
     expect(fake.invalidatedSessions).toContain("ps-e2e");
   });
 });
+
+describe("coordinated terminal recovery", () => {
+  async function fixture() {
+    const identityPath = await identityFixture();
+    const root = join(identityPath, "..");
+    const retired: string[] = [];
+    const historyStore = createCoordinatedDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async (id) => { retired.push(id); } });
+    const native = new Map<string, string[]>();
+    const prefixes: string[][] = [];
+    const receipts: RuntimeResult["providerSessionRecovery"][] = [];
+    let outcome: "success" | "cancelled" | "provider_unavailable" | "context_limit" = "success";
+    let controller = new AbortController();
+    let recoveryAllowed = true;
+    let pause: { started: () => void; wait: Promise<void> } | undefined;
+    let resultTransform = (result: RuntimeResult): RuntimeResult => result;
+    const events: RuntimeEventLike[] = [];
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      const id = options.sessionId as string;
+      const transcript = native.get(id) ?? [];
+      const last = String(options.messages.at(-1)?.content);
+      transcript.push(last);
+      native.set(id, transcript);
+      prefixes.push([...transcript]);
+      const receipt = options.sessionRecovery === undefined ? undefined : { ...options.sessionRecovery, providerSessionId: id, modelKey, tipId: `tip-${prefixes.length}` };
+      if (outcome === "cancelled") controller.abort(new Error("user cancel"));
+      if (outcome === "success") transcript.push("native answer");
+      const result: RuntimeResult = { providerSessionId: id, ...(receipt ? { providerSessionRecovery: receipt } : {}),
+        ...(outcome === "success" ? { text: "native answer" } : outcome === "cancelled"
+          ? { cancelled: true, failureKind: "cancelled" } : { error: "transport detail", failureKind: outcome }) };
+      if (pause !== undefined) { const held = pause; pause = undefined; held.started(); await held.wait; }
+      return resultTransform(result);
+    });
+    const runtime = { ...fake.runtime, async recoverSession(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>) { receipts.push(receipt); return recoveryAllowed; } };
+    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, historyStore, session, piSessionsRoot: join(root, "pi") });
+    let harness = makeHarness();
+    return { fake, retired, native, prefixes, receipts, historyStore, events,
+      transform(next: typeof resultTransform) { resultTransform = next; },
+      pauseNext() {
+        let started!: () => void; let release!: () => void;
+        const admitted = new Promise<void>((resolve) => { started = resolve; });
+        pause = { started, wait: new Promise<void>((resolve) => { release = resolve; }) };
+        return { admitted, release };
+      },
+      denyRecovery() { recoveryAllowed = false; },
+      async reconstruct() { await harness.dispose?.(); harness = makeHarness(); },
+      async run(nextOutcome: typeof outcome, text: string) {
+        outcome = nextOutcome; controller = new AbortController();
+        return harness.run({ ...request("recovery", text), abortSignal: controller.signal, onEvent: (event) => { events.push(event); } });
+      },
+      async close() { await harness.dispose?.(); },
+    };
+  }
+
+  it.each(["cancelled", "provider_unavailable"] as const)("resumes a %s durable turn with an unchanged native prefix", async (outcome) => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm");
+      await f.run(outcome, "interrupted");
+      await f.run("success", "next");
+      expect(f.receipts).toHaveLength(1);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+      expect(f.prefixes[2]!.slice(0, f.prefixes[1]!.length)).toEqual(f.prefixes[1]);
+      expect(f.prefixes[2]).toHaveLength(f.prefixes[1]!.length + 1); // no host note
+      const history = await f.historyStore.load("recovery");
+      expect(history.filter((message) => message.content === "interrupted")).toHaveLength(1);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_resume`)).toHaveLength(1);
+      await f.run("success", "after boundary");
+      expect(f.events.filter((event) => event.type === "session_boundary" && String(event.reason).endsWith("_turn_resume"))).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds after context termination despite a recoverable-looking receipt", async () => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm"); await f.run("context_limit", "too much"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.fake.calls[2]!.options.sessionId).not.toBe(f.fake.calls[1]!.options.sessionId);
+      expect(f.retired).toContain(f.fake.calls[1]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds after the second failed turn on the same epoch", async () => {
+    const f = await fixture();
+    try {
+      await f.run("provider_unavailable", "failure one"); await f.run("success", "between");
+      await f.run("provider_unavailable", "failure two"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.fake.calls[3]!.options.sessionId).not.toBe(f.fake.calls[2]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("preserves the epoch failure budget across a cross-process revision refresh", async () => {
+    const f = await fixture();
+    try {
+      await f.run("provider_unavailable", "first failure");
+      const other = await f.historyStore.beginProviderSessionTurn("recovery", "other-process", { modelKey });
+      await (await other.prepareCommit([{ role: "user", content: "other turn" }, { role: "assistant", content: "other answer" }], { providerSessionSynced: true })).commit();
+      await f.run("success", "refresh");
+      await f.run("provider_unavailable", "second failure");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("does not spend the failure recovery budget on user cancellation", async () => {
+    const f = await fixture();
+    try {
+      await f.run("cancelled", "cancel one"); await f.run("cancelled", "cancel two");
+      await f.run("provider_unavailable", "failure"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(3);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+    } finally { await f.close(); }
+  });
+
+  it("resets the in-memory failure recovery budget after harness reconstruction", async () => {
+    const f = await fixture();
+    try {
+      await f.run("provider_unavailable", "first"); await f.reconstruct();
+      await f.run("provider_unavailable", "second process lifetime"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(2);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds when native recovery cannot prove the tail", async () => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm"); f.denyRecovery(); await f.run("provider_unavailable", "failed"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.fake.calls[2]!.options.sessionId).not.toBe(f.fake.calls[1]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+  it("times out cancelled recovery without blocking a successor or retiring its session", async () => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm");
+      const paused = f.pauseNext();
+      const old = f.run("cancelled", "old cancelled");
+      await paused.admitted;
+      const next = await f.run("success", "successor");
+      expect(next.text).toBe("native answer");
+      const oldId = f.fake.calls[1]!.options.sessionId;
+      const nextId = f.fake.calls[2]!.options.sessionId;
+      expect(nextId).not.toBe(oldId);
+      paused.release(); await old;
+      expect(f.retired).not.toContain(nextId);
+      expect(f.receipts).toHaveLength(0);
+      await f.run("success", "still warm");
+      expect(f.fake.calls[3]!.options.sessionId).toBe(nextId);
+    } finally { await f.close(); }
+  });
+
+  it.each(["missing", "model", "revision", "extra-attempt", "auth", "context-exhausted"])("fails terminal recovery closed on unsafe evidence: %s", async (kind) => {
+    const f = await fixture();
+    try {
+      f.transform((result) => {
+        if (kind === "missing") { const { providerSessionRecovery: _receipt, ...rest } = result; return rest; }
+        if (kind === "auth") return { ...result, failureKind: "provider_auth" };
+        if (kind === "context-exhausted") return { ...result, failureKind: "provider_unavailable_exhausted", failoverHistory: [{ failureKind: "context_limit" }] };
+        if (kind === "extra-attempt") return { ...result, failoverHistory: [{ failureKind: "provider_unavailable" }, { failureKind: "provider_unavailable" }] };
+        return { ...result, providerSessionRecovery: { ...result.providerSessionRecovery!, ...(kind === "model" ? { modelKey: "faux:wrong" } : { revision: 99 }) } };
+      });
+      await f.run("provider_unavailable", "failed");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+});

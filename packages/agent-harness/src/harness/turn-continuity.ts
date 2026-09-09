@@ -179,6 +179,9 @@ interface TurnContinuityLiveInput {
 }
 
 export class UncommittedTurnCollector {
+  private unsafeRecoveryEvidence = false;
+  canRecoverNativeTail(): boolean { return !this.unsafeRecoveryEvidence; }
+
   private sealedOutcome: TurnContinuityOutcome | undefined;
   private partialAssistant = "";
   private partialAssistantRetainedBytes = 0;
@@ -188,7 +191,11 @@ export class UncommittedTurnCollector {
   private readonly pendingLifecycleWrites = new Set<Promise<unknown>>();
 
   observeRuntimeEvent(event: RuntimeEventLike): boolean {
-    if (this.sealedOutcome !== undefined) return false;
+    if (this.sealedOutcome !== undefined) {
+      const message = dataRecord(event.message);
+      if (event.type === "assistant" && !["aborted", "error"].includes(String(message?.stopReason))) this.unsafeRecoveryEvidence = true;
+      return false;
+    }
     if (event.type !== "assistant") return true;
     const message = dataRecord(event.message);
     if (message === undefined || !Array.isArray(message.content)) return true;
@@ -220,6 +227,8 @@ export class UncommittedTurnCollector {
   wrapToolLifecycleSink(delegate: RuntimeToolLifecycleSink | undefined): RuntimeToolLifecycleSink {
     return async (event) => {
       if (this.sealedOutcome !== undefined) {
+        if (event.phase === "invocation" || !this.calls.has(event.toolCallId)
+          || (event.phase === "result" && event.state === "success")) this.unsafeRecoveryEvidence = true;
         return {
           persistence: "failed",
           errorCode: this.sealedOutcome === "cancelled"

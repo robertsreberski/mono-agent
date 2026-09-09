@@ -1,3 +1,4 @@
+import { terminalFailureCanRecover, waitForTerminalSettlement } from "./harness/session-recovery.js";
 import type { RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type {
   AgentContextImportRequest,
@@ -435,6 +436,16 @@ export class MonoAgentHarness implements AgentHarness {
         this.sessionsEnabled(), request.conversationId, record, ...handles);
     };
     let runtimeResult: RuntimeResult | undefined;
+    let terminalRecovered = false;
+    let epochRecovery: RuntimeSessionRecord["recovery"];
+    let recoveryDeadline = 0;
+    let providerSettledAt: number | undefined;
+    let settleProvider!: () => void;
+    const providerSettled = new Promise<void>((resolve) => { settleProvider = resolve; });
+    const settleRuntime = async (work: Promise<RuntimeResult>): Promise<RuntimeResult> => {
+      try { runtimeResult = await work; return runtimeResult; }
+      finally { providerSettledAt = Date.now(); settleProvider(); }
+    };
     let persistText = request.userMessage;
     let terminalOwner: "running" | "success" | "cancelled" | "failed" = "running";
     let toolHistoryFinished = false;
@@ -520,12 +531,32 @@ export class MonoAgentHarness implements AgentHarness {
           reason: claim.reason,
           settledAt: continuitySettledAt,
         });
+      let recovered = false;
+      const recoveryRuntime = this.runtimeForSession(requestedModelKey);
+      if (providerHistoryTurn !== undefined && !providerHistoryOwnershipTransferred
+        && this.options.historyStore?.providerSessionRecovery === "v1"
+        && coordinatedProviderAttemptEligibleForSync && typeof recoveryRuntime.recoverSession === "function"
+        && toolHistoryError === undefined
+        && (claim.outcome === "cancelled" || epochRecovery?.failureUsed !== true)
+        && await waitForTerminalSettlement(providerSettled, recoveryDeadline)
+        && providerSettledAt !== undefined && providerSettledAt <= recoveryDeadline) {
+        const receipt = runtimeResult?.providerSessionRecovery;
+        if (runtimeResult !== undefined && terminalFailureCanRecover(runtimeResult, claim.outcome)
+          && turnContinuityCollector.canRecoverNativeTail()
+          && receipt?.runId === runId && receipt.revision === coordinatedProviderSessionRevision
+          && receipt.providerSessionId === coordinatedProviderSessionId
+          && runtimeResult.providerSessionId === coordinatedProviderSessionId
+          && receipt.modelKey === requestedModelKey && typeof receipt.tipId === "string" && receipt.tipId.length > 0) {
+          try { recovered = await recoveryRuntime.recoverSession(receipt, { appliedInputIds: sealedLiveInputs.map((input) => input.id) }); }
+          catch { recovered = false; }
+        }
+      }
       let continuityAppend: PreparedHistoryAppend | undefined;
       const providerHistoryOwnsContinuity = providerHistoryTurn !== undefined;
       const exclusiveHistoryOwnsContinuity = exclusiveHistoryTurn !== undefined;
       try {
         if (providerHistoryTurn !== undefined) {
-          continuityAppend = await providerHistoryTurn.prepareCommit(messages, { providerSessionSynced: false });
+          continuityAppend = await providerHistoryTurn.prepareCommit(messages, { providerSessionSynced: recovered });
           providerHistoryTurn = undefined;
         } else if (exclusiveHistoryTurn !== undefined) {
           const exclusiveCommit = await exclusiveHistoryTurn.prepareCommit(messages);
@@ -545,9 +576,15 @@ export class MonoAgentHarness implements AgentHarness {
         else await this.options.historyStore?.append(request.conversationId, messages);
       } catch (error) {
         await continuityAppend?.abort().catch(() => undefined);
+        if (recovered) await retireSessions(sessionRecord, coordinatedProviderSessionId);
         throw error;
       }
-      if (providerHistoryOwnsContinuity || exclusiveHistoryOwnsContinuity) {
+      terminalRecovered = recovered;
+      if (recovered) {
+        this.saveSession(request.conversationId, coordinatedProviderSessionId, sessionRecord,
+          (coordinatedProviderSessionRevision as number) + 1, undefined, requestedModelKey,
+          { failureUsed: claim.outcome === "failed" || epochRecovery?.failureUsed === true, nextOutcome: claim.outcome });
+      } else if (providerHistoryOwnsContinuity || exclusiveHistoryOwnsContinuity) {
         if (sessionRecord !== undefined) {
           await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
         }
@@ -586,6 +623,7 @@ export class MonoAgentHarness implements AgentHarness {
       terminalOwner = claim.outcome;
       toolHistoryStatus = claim.outcome;
       continuitySettledAt = this.nowIso();
+      recoveryDeadline = Date.now() + 1_000;
       continuityClaim = claim;
       sealedPersistText = persistText;
       sealedLiveInputs = liveInputMailbox?.applied() ?? [];
@@ -764,6 +802,12 @@ export class MonoAgentHarness implements AgentHarness {
       let providerAttributionSessionId = !isolated && this.sessionsEnabled()
         ? resumeSessionId ?? randomUUID()
         : undefined;
+      if (providerHistoryTurn !== undefined && sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId
+        && sessionRecord.modelKey === requestedModelKey) {
+        // A cross-process revision refresh changes the handle, not the epoch's
+        // process-local failure budget. A true rotation starts without it.
+        epochRecovery = sessionRecord.recovery;
+      }
       const confirmedWarmSession = sessionRecord !== undefined
         && sessionRecord.modelKey === requestedModelKey
         && sessionRecord.providerSessionId === resumeSessionId
@@ -772,6 +816,7 @@ export class MonoAgentHarness implements AgentHarness {
         && (providerHistoryTurn === undefined
           || sessionRecord.providerSessionRevision === providerHistoryTurn.providerSessionRevision);
 
+      if (!confirmedWarmSession && epochRecovery !== undefined) epochRecovery = { failureUsed: epochRecovery.failureUsed };
       if (providerHistoryTurn !== undefined && !confirmedWarmSession) {
         // A durable coordinator can prove which epoch/revision is canonical,
         // but it cannot see module-global provider handles. Every unconfirmed
@@ -826,6 +871,12 @@ export class MonoAgentHarness implements AgentHarness {
         : providerHistoryTurn?.previousModelWasUnbound === true
           ? "legacy_unbound_model"
           : undefined;
+      if (coldReason === undefined && confirmedWarmSession && sessionRecord?.recovery?.nextOutcome !== undefined) {
+        const outcome = sessionRecord.recovery.nextOutcome;
+        delete sessionRecord.recovery.nextOutcome;
+        emit({ type: "session_boundary", kind: "resume_replay", conversationId: request.conversationId,
+          providerSessionId: providerAttributionSessionId, reason: `${outcome}_turn_resume`, timestamp: this.nowIso() });
+      }
       if (coldReason !== undefined) {
         emit({ type: "session_boundary", kind: "resume_replay",
           conversationId: request.conversationId, providerSessionId: providerAttributionSessionId,
@@ -855,7 +906,7 @@ export class MonoAgentHarness implements AgentHarness {
       try {
         coordinatedProviderAttemptEligibleForSync = providerHistoryTurn !== undefined
           && resumeSessionId === providerHistoryTurn.providerSessionId;
-        runtimeResult = await runHarnessRuntime(
+        runtimeResult = await settleRuntime(runHarnessRuntime(
           this.options,
           this.runLimiter,
           this.sessionsEnabled(),
@@ -869,6 +920,8 @@ export class MonoAgentHarness implements AgentHarness {
           providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
           isolated,
           { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
+            ...(this.options.historyStore?.providerSessionRecovery === "v1" && coordinatedProviderAttemptEligibleForSync
+              ? { recoveryRevision: coordinatedProviderSessionRevision } : {}),
             onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },
           prepared.skillDisclosureEntries,
           prepared.history,
@@ -880,7 +933,7 @@ export class MonoAgentHarness implements AgentHarness {
           turnContinuityCollector,
           liveInputMailbox,
           () => noteProviderStart(resumeSessionId),
-        );
+        ));
         noteProviderResultSession(runtimeResult.providerSessionId);
       } catch (error) {
         if (resumeSessionId === undefined || request.abortSignal.aborted) {
@@ -920,7 +973,7 @@ export class MonoAgentHarness implements AgentHarness {
         }, emit);
         context = prepared.context;
         throwIfCancellationOwned();
-        runtimeResult = await runHarnessRuntime(
+        runtimeResult = await settleRuntime(runHarnessRuntime(
           this.options,
           this.runLimiter,
           this.sessionsEnabled(),
@@ -945,7 +998,7 @@ export class MonoAgentHarness implements AgentHarness {
           turnContinuityCollector,
           liveInputMailbox,
           () => noteProviderStart(undefined),
-        );
+        ));
         noteProviderResultSession(runtimeResult.providerSessionId);
       }
       if (runtimeResult === undefined) {
@@ -957,16 +1010,16 @@ export class MonoAgentHarness implements AgentHarness {
       // BEFORE we commit it. Committing a cancelled turn would bake it into the
       // warm session + history + memory, diverging from what the caller (whose
       // promise the LiveSessionManager rejects) believes happened. So when the
-      // signal is aborted here, skip saveSession + durable turn persistence,
-      // evict/dispose any returned provider session (mirrors the empty-turn
-      // retirement below), and return a cancelled failure instead.
+      // signal is aborted here, use the one terminal recovery/retirement
+      // decision. A late result cleans only an epoch that decision retired.
       if (request.abortSignal.aborted) {
         onAbort();
-        await retireSessions(
-          sessionRecord,
-          runtimeResult.providerSessionId,
-        );
-        if (!isolated) return await cancellationResponse();
+        if (!isolated) {
+          await continuityPromise?.catch(() => undefined);
+          if (!terminalRecovered) await retireSessions(sessionRecord, runtimeResult.providerSessionId);
+          return await cancellationResponse();
+        }
+        await retireSessions(sessionRecord, runtimeResult.providerSessionId);
         toolHistoryStatus = "cancelled";
         const failureKind = cancellationFailureKind(request.abortSignal);
         const cancellationReason = cancelledTurnReason(request.abortSignal.reason, failureKind);
@@ -1274,6 +1327,7 @@ export class MonoAgentHarness implements AgentHarness {
             : undefined,
           providerHistoryOwnershipTransferred ? undefined : committedHistoryVersion,
           requestedModelKey,
+          epochRecovery,
         );
       }
 
@@ -1319,6 +1373,8 @@ export class MonoAgentHarness implements AgentHarness {
       };
     } catch (error) {
       if (continuityClaim?.outcome === "cancelled") {
+        await continuityPromise?.catch(() => undefined);
+        if (!terminalRecovered && providerAttemptStarted) await retireSessions(sessionRecord, ...providerAttemptSessionIds.keys(), coordinatedProviderSessionId, runtimeResult?.providerSessionId);
         return await cancellationResponse();
       }
       toolHistoryStatus = request.abortSignal.aborted ? "cancelled" : "failed";
@@ -1599,6 +1655,7 @@ export class MonoAgentHarness implements AgentHarness {
     providerSessionRevision?: number,
     historyVersion?: string,
     modelKey?: string,
+    recovery?: RuntimeSessionRecord["recovery"],
   ): void {
     if (!this.sessionsEnabled()) {
       return;
@@ -1606,7 +1663,7 @@ export class MonoAgentHarness implements AgentHarness {
     if (typeof providerSessionId !== "string" || providerSessionId.trim().length === 0) {
       return;
     }
-    this.sessionStore?.save(conversationId, providerSessionId, owner, providerSessionRevision, historyVersion, modelKey);
+    this.sessionStore?.save(conversationId, providerSessionId, owner, providerSessionRevision, historyVersion, modelKey, recovery);
     const snapshot = this.sessionStoreSnapshot();
     const saved = snapshot.find((entry) => entry.conversationId === conversationId && entry.providerSessionId === providerSessionId);
     if (saved !== undefined) {

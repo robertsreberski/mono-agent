@@ -208,6 +208,7 @@ interface CommittedEntry {
  */
 export class DurableConversationHistoryStore implements ConversationHistoryStore {
   readonly providerSessionModelBinding = "v1" as const;
+  readonly providerSessionRecovery = "v1" as const;
   readonly providerSessionRetirement: "fail-closed" | undefined;
   readonly contextImport: ConversationHistoryContextImport | undefined;
   private readonly root: string;
