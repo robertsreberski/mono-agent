@@ -594,6 +594,12 @@ export type MessagePart =
       readonly responseText?: string;
     }
   | {
+      readonly type: "process-job-wake";
+      readonly jobId: string;
+      readonly deliveryKey: string;
+      readonly disposition: "steered" | "follow_up";
+    }
+  | {
       readonly type: "monitor-activity";
       readonly monitors: readonly {
         readonly projection: MonitorProjection;

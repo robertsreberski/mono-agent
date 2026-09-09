@@ -207,7 +207,6 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
       || typeof record.state !== "string"
       || !(record.state in PROCESS_JOB_STATE_RANK)
       || (record.phase === "started" && typeof record.occurredAt !== "string")
-      || (record.phase === "terminal" && !TERMINAL_PROCESS_JOB_STATES.has(record.state as ProcessJobState))
       || record.id !== `process-job:${record.jobId}:${record.phase === "started" ? "started" : "terminal"}`
       || (record.occurredAt !== undefined
         && (typeof record.occurredAt !== "string"
@@ -244,7 +243,8 @@ export function ProcessJobActivityEventPart({ data }: DataMessagePartProps) {
   return (
     <ActivityRow
       variant="job"
-      status={terminal && event.state !== "succeeded" ? "failed" : "complete"}
+      status={terminal && TERMINAL_PROCESS_JOB_STATES.has(event.state)
+        && event.state !== "succeeded" ? "failed" : "complete"}
       label={`${event.tool} job ${terminal ? stateLabel : "started"}`}
       summary={event.summary}
       duration={meta}

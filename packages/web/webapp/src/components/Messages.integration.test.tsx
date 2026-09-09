@@ -61,8 +61,9 @@ function MessagesHarness({
     (message: WebMessage) => convertWebMessage(message, {
       selectedModel,
       processJobEvents: presentation.eventsByMessageId.get(message.id),
+      processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, selectedModel],
+    [presentation.eventsByMessageId, presentation.jobsById, selectedModel],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
@@ -1294,6 +1295,29 @@ describe("message actions", () => {
     expect(screen.getByText("The report is ready.")).toBeVisible();
     expect(screen.getByText("1 job · 0 active · 1 history")).toBeVisible();
     expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
+  });
+
+  it("renders a job wake terminal row in place without a synthetic Steered row", () => {
+    const job = processJob();
+    const wake: WebMessage = {
+      ...assistantMessage("complete"),
+      id: "wake",
+      parts: [
+        { type: "process-job-wake", jobId: job.jobId, deliveryKey: job.wake.deliveryKey, disposition: "steered" },
+        { type: "text", text: "The job result is ready." },
+      ],
+    };
+    const card: WebMessage = {
+      ...wake,
+      id: "card",
+      parts: [{ type: "process-job", job }],
+    };
+    render(<MessagesHarness messages={[wake, card]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByRole("group", { name: "Exec job succeeded" })).toBeInTheDocument();
+    expect(screen.queryByText(/Steered:/u)).toBeNull();
+    expect(screen.getByText("The job result is ready.")).toBeVisible();
   });
 
   it("does not retain job-only copy chrome for hidden attribution but keeps exceptional attribution", async () => {
