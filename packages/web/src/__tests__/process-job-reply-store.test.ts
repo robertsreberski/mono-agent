@@ -8,7 +8,7 @@ import { normalizeMonitorTerminalReply } from "../monitor-reply.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
-async function setup() {
+async function setup(seedWake = true) {
   const root = await temporaryRoot(); roots.push(root);
   let now = new Date("2026-09-05T10:00:00Z");
   const store = await WebStore.open({ stateDir: join(root, "state"), clock: () => now });
@@ -23,7 +23,11 @@ async function setup() {
   const input = { sourceId: "agent-one", threadId: thread.id, jobId: job.jobId, deliveryKey: job.wake.deliveryKey };
   store.upsertProcessJobCard({ ...input, processJob: job });
   store.reserveProcessJobWake(input);
-  const turn = store.beginAssistantTurn({ threadId: thread.id, prompt: "Job finished" });
+  const turn = store.beginAssistantTurn({
+    threadId: thread.id,
+    prompt: "Job finished",
+    ...(seedWake ? { processJobWake: { jobId: job.jobId, deliveryKey: job.wake.deliveryKey, disposition: "follow_up" as const } } : {}),
+  });
   return { store, turn, input, advance: () => { now = new Date(now.getTime() + 10_000); } };
 }
 
@@ -35,7 +39,12 @@ describe("process-job exact terminal suppression", () => {
       s.store.applyStreamFrames(s.turn.turnId, [{ kind: "append", delta: "NOTHING_TO_REPORT" }]);
       s.store.completeTurn(s.turn.turnId, "", undefined, undefined, { monitorWakeDeliveryKey: s.input.deliveryKey });
       s.store.completeProcessJobWake({ ...s.input, disposition: "follow_up", turnId: s.turn.turnId });
-      expect(s.store.getMessage(s.turn.assistantMessageId)?.parts.filter((part) => part.type === "text")).toEqual([]);
+      expect(s.store.getMessage(s.turn.assistantMessageId)?.parts).toEqual([{
+        type: "process-job-wake",
+        jobId: s.input.jobId,
+        deliveryKey: s.input.deliveryKey,
+        disposition: "follow_up",
+      }]);
       s.advance(); expect(s.store.claimDueWebPushDeliveries(10)).toEqual([]);
     } finally { s.store.close(); }
   });
@@ -61,7 +70,7 @@ describe("process-job exact terminal suppression", () => {
   });
 
   it("holds a push while steering is unresolved and suppresses it after the exact applied receipt", async () => {
-    const s = await setup();
+    const s = await setup(false);
     try {
       s.store.associateProcessJobWakeTurn(s.input.deliveryKey, s.turn.turnId);
       s.store.applyStreamFrames(s.turn.turnId, [{ kind: "append", delta: "NOTHING_TO_REPORT" }]);
@@ -69,6 +78,31 @@ describe("process-job exact terminal suppression", () => {
       s.advance(); expect(s.store.claimDueWebPushDeliveries(10)).toEqual([]);
       expect(s.store.completeProcessJobWake({ ...s.input, disposition: "steered", turnId: s.turn.turnId })?.parts).toEqual([]);
       expect(s.store.claimDueWebPushDeliveries(10)).toEqual([]);
+    } finally { s.store.close(); }
+  });
+
+  it("replays a steered wake frame idempotently without retaining its synthetic tool row", async () => {
+    const s = await setup(false);
+    try {
+      s.store.associateProcessJobWakeTurn(s.input.deliveryKey, s.turn.turnId);
+      const wakeEvent = (type: "tool_call_started" | "tool_call_completed") => ({
+        kind: "event" as const,
+        event: {
+          type,
+          id: `live-input:${s.input.deliveryKey}`,
+          name: "↪️ Steered: wake",
+          metadata: { liveInput: true, synthetic: true, inputId: s.input.deliveryKey },
+        },
+      });
+      const frames = [wakeEvent("tool_call_started"), wakeEvent("tool_call_completed")];
+      s.store.applyStreamFrames(s.turn.turnId, frames as never);
+      s.store.applyStreamFrames(s.turn.turnId, frames as never);
+      expect(s.store.getMessage(s.turn.assistantMessageId)?.parts).toEqual([{
+        type: "process-job-wake",
+        jobId: s.input.jobId,
+        deliveryKey: s.input.deliveryKey,
+        disposition: "steered",
+      }]);
     } finally { s.store.close(); }
   });
 });

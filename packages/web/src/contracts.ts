@@ -453,6 +453,13 @@ export type WebMessagePart =
       readonly responseText?: string;
     }
   | {
+      /** Chronological marker for the point where a retained job wake was applied. */
+      readonly type: "process-job-wake";
+      readonly jobId: string;
+      readonly deliveryKey: string;
+      readonly disposition: "steered" | "follow_up";
+    }
+  | {
       readonly type: "monitor-activity";
       /** One compact run-level row, with one latest projection per Monitor. */
       readonly monitors: readonly {

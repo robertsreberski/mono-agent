@@ -2503,6 +2503,11 @@ export class WebService {
         started = this.store.beginAssistantTurn({
           threadId: input.threadId,
           prompt: input.wakePrompt,
+          processJobWake: {
+            jobId: input.processJob.jobId,
+            deliveryKey: input.deliveryKey,
+            disposition: "follow_up",
+          },
           ...(selection.model === undefined ? {} : { model: selection.model }),
           ...(selection.effort === undefined ? {} : { effort: selection.effort }),
           ...(selection.requestedModel === undefined ? {} : { requestedModel: selection.requestedModel }),
@@ -2520,7 +2525,6 @@ export class WebService {
           retryable: false,
         };
       }
-      this.store.associateProcessJobWakeTurn(input.deliveryKey, started.turnId);
       const { completion, admitted } = this.launchTurn(
         started,
         refreshedConnection.client,

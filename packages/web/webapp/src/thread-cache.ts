@@ -497,6 +497,9 @@ const isMessagePart = (value: unknown): value is MessagePart => {
         && (part.attribution === undefined || isRunAttribution(part.attribution));
     case "process-job":
       return typeof part.job === "object" && part.job !== null;
+    case "process-job-wake":
+      return text("jobId") && text("deliveryKey")
+        && (part.disposition === "steered" || part.disposition === "follow_up");
     case "monitor-activity":
       return Array.isArray(part.monitors);
     case "cron-reply-context":

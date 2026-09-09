@@ -21,12 +21,14 @@ import {
   isAssistantMessageBoundaryPart,
   isContextCompactionPart,
   parseProcessJobStartReceipt,
+  processJobTerminalEvent,
   ProcessJobPresentationProvider,
   projectProcessJobPresentation,
   type ProcessJobActivityEvent,
 } from "./process-job-presentation";
 import type {
   MessagePart,
+  ProcessJobProjection,
   ToolCall,
   ToolCallArtifact,
   WebAttachment,
@@ -160,6 +162,7 @@ const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
       case "telemetry":
         return part.event === "cron_run";
       case "process-job":
+      case "process-job-wake":
       case "cron-reply-context":
       case "error":
       case "attachment":
@@ -257,7 +260,10 @@ const toolCallArtifact = (part: ToolCall): ToolCallArtifact | undefined => {
   return Object.keys(artifact).length === 0 ? undefined : artifact;
 };
 
-const convertPart = (part: MessagePart): ConvertedPart | null => {
+const convertPart = (
+  part: MessagePart,
+  processJobs?: ReadonlyMap<string, ProcessJobProjection>,
+): ConvertedPart | null => {
   switch (part.type) {
     case "text":
       return { type: "text", text: part.text };
@@ -286,6 +292,13 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
       return { type: "data-subagent", data: jsonObject(part) };
     case "process-job":
       return { type: "data-process-job", data: jsonObject(part) };
+    case "process-job-wake": {
+      const job = processJobs?.get(part.jobId);
+      return job === undefined ? null : {
+        type: "data-process-job-event",
+        data: jsonObject(processJobTerminalEvent(job, part.deliveryKey)),
+      };
+    }
     case "monitor-activity":
       return { type: "data-monitor-activity", data: jsonObject(part) };
     case "cron-reply-context":
@@ -420,6 +433,7 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
 interface ConvertWebMessageOptions {
   readonly selectedModel?: string | null;
   readonly processJobEvents?: readonly ProcessJobActivityEvent[];
+  readonly processJobs?: ReadonlyMap<string, ProcessJobProjection>;
 }
 
 export const convertWebMessage = (
@@ -460,7 +474,7 @@ export const convertWebMessage = (
     // transcript over one unrecognized row.
     const convertedPart = convertPart(part.type === "telemetry" && part.event === "cron_run"
       ? { ...part, data: { ...(part.data as Record<string, unknown>), hasVisibleContent: !isLegacySilentCronMessage(message) } }
-      : part);
+      : part, options.processJobs);
     if (convertedPart == null) return [];
     if (part.type !== "tool-call") return [convertedPart];
     return [
@@ -767,7 +781,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         (store.detail?.messages ?? []).filter((message) =>
           !isLegacySilentCronMessage(message)
           && !(message.role === "assistant" && message.status === "complete"
-            && message.attachments.length === 0 && convertWebMessage(message).content?.length === 0)),
+            && message.attachments.length === 0
+            && !message.parts.some((part) => part.type === "process-job-wake")
+            && convertWebMessage(message).content?.length === 0)),
       ),
       { selectedModel: store.effectiveModel, threadId: store.selectedThreadId },
     ),
@@ -781,8 +797,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     (message: WebMessage) => convertWebMessage(message, {
       selectedModel: store.effectiveModel,
       processJobEvents: presentation.eventsByMessageId.get(message.id),
+      processJobs: presentation.jobsById,
     }),
-    [presentation.eventsByMessageId, store.effectiveModel],
+    [presentation.eventsByMessageId, presentation.jobsById, store.effectiveModel],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: presentation.messages,
