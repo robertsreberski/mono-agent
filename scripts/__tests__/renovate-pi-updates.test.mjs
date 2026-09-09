@@ -92,7 +92,9 @@ describe("Pi dependency update automation", () => {
       expectedPiPackages,
     );
     expect([...piRule.matchPackageNames].sort()).toEqual(expectedPiPackages);
-    expect(directPiDependencies).toHaveLength(4);
+    // agent-app (pi-ai), agent-runtime (pi-agent-core, pi-ai), tui (pi-tui), plus
+    // agent-harness's devDependency on pi-ai for its real-Pi session fixtures (#829).
+    expect(directPiDependencies).toHaveLength(5);
     for (const dependency of directPiDependencies) {
       expect(dependency.version, `${dependency.path} ${dependency.name}`).toMatch(
         /^\d+\.\d+\.\d+$/,
