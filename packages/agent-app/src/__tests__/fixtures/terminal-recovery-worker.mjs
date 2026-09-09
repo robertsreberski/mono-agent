@@ -20,6 +20,16 @@ const controller = new AbortController();
 let context;
 const requests = [];
 const runtime = createMonoRuntime();
+// Configured harnesses protect their clear-sessions registry with a synthetic
+// sandbox policy. This recovery smoke is independent of whether the host has
+// installed SRT, so keep its one known Read executable through a test engine.
+const sandboxEngine = {
+  id: "terminal-recovery-fixture",
+  async isAvailable() { return true; },
+  async prepareCommand(command) {
+    return { ...command, args: command.args ?? [], cwd: command.cwd ?? root, sandboxed: true };
+  },
+};
 const harness = await createConfiguredAgentHarness({ cwd: root,
   terminalRecoverySettlementMs: 30_000,
   config: {
@@ -31,6 +41,7 @@ const harness = await createConfiguredAgentHarness({ cwd: root,
     artifacts: { dir: join(root, ".mono-agent", "artifacts") },
   },
   runtime: { ...runtime, async run(prompt, options) { requests.push(options.sessionId); return runtime.run(prompt, options); } },
+  sandboxEngine,
   runtimeOptions: { piResolvedModel: faux.getModel(), piResolvedModels: models, piMaxRetries: 0, effort: "none" },
 });
 try {
