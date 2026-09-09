@@ -81,9 +81,12 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   cards stay visible by default; terminal cards remain mounted behind
   expandable history so status counts and live transitions stay current.
   When a loaded launching `Exec`/`Bash` call has its exact persisted machine
-  receipt, that response's Activity also shows actual start and terminal rows.
-  Those rows never poll or duplicate card output and wake details; legacy or
-  paginated-out launch receipts remain stack-only.
+  receipt, that response's Activity also shows its actual start row. The
+  terminal row appears where the exact wake was consumed: at the steered point
+  in an active response or first in a follow-up response. If no retained wake
+  marker exists, the terminal row falls back beside the launch. These rows
+  never poll or duplicate card output; legacy or paginated-out launch receipts
+  remain stack-only.
 - Accept exact-source/thread Monitor wakes through that private ingress, steer
   them into the active run or serialize one assistant-only follow-up, retain
   delivery identity plus a payload hash for fail-closed duplicate handling, and
@@ -220,9 +223,10 @@ from aggregate work.
 Structured reasoning, routine tools, process-job lifecycle evidence, and one
 update-in-place row per compaction share the stream-aware Activity disclosure,
 which collapses at every terminal message state without reordering answer
-parts. Receipt-bearing job launches keep their start/end rows beside the exact
-launch call, so adjacent background launches remain distinct; ordinary adjacent
-same-tool calls retain their existing clustering.
+parts. Receipt-bearing job launches keep their start row beside the exact
+launch call. Their terminal row follows the consumed wake chronologically, with
+launch-adjacent placement only as a fallback when no wake marker was retained;
+ordinary adjacent same-tool calls retain their existing clustering.
 
 The picker is labelled **Next turn**. The conversation header carries no run
 attribution. Below an assistant message, a normal route marker appears only when

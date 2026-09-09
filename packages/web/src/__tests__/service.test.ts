@@ -1560,10 +1560,50 @@ describe("WebService", () => {
     expect(service.thread(thread.id).messages.filter((message) => message.role === "user"))
       .toHaveLength(1);
 
+    const ordinary = service.submitLiveInput(thread.id, "Also check the real user request");
+    await waitFor(() => service.thread(thread.id).messages.some(
+      (message) => message.id === ordinary.message.id && message.liveInputStatus === "applied",
+    ));
+    const ordinaryInputId = liveInputs[1]?.body.id;
+    expect(typeof ordinaryInputId).toBe("string");
+    const liveInputEvent = (type: "tool_call_started" | "tool_call_completed", inputId: string) => ({
+      kind: "event",
+      event: {
+        type,
+        id: `live-input:${inputId}`,
+        name: "↪️ Steered: wake",
+        ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
+        metadata: { liveInput: true, synthetic: true, inputId },
+      },
+    });
+    stream?.enqueue(encoder.encode([
+      JSON.stringify(liveInputEvent("tool_call_started", terminal.wake.deliveryKey)),
+      JSON.stringify(liveInputEvent("tool_call_completed", terminal.wake.deliveryKey)),
+      JSON.stringify(liveInputEvent("tool_call_started", ordinaryInputId as string)),
+      JSON.stringify(liveInputEvent("tool_call_completed", ordinaryInputId as string)),
+      "",
+    ].join("\n")));
+
     stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Initial done" })}\n`));
     stream?.close();
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
     expect(service.store.getThread(thread.id)?.runState.attribution?.requested).toEqual(requestedBeforeSteer);
+    const assistant = service.thread(thread.id).messages.find((message) => message.turnId !== undefined
+      && message.role === "assistant");
+    expect(assistant?.parts).toContainEqual({
+      type: "process-job-wake",
+      jobId: terminal.jobId,
+      deliveryKey: terminal.wake.deliveryKey,
+      disposition: "steered",
+    });
+    expect(assistant?.parts.some((part) => part.type === "tool-call"
+      && part.toolCallId === `live-input:${terminal.wake.deliveryKey}`)).toBe(false);
+    expect(assistant?.parts).toContainEqual(expect.objectContaining({
+      type: "tool-call",
+      toolCallId: `live-input:${ordinaryInputId as string}`,
+    }));
+    expect(service.thread(thread.id).messages.find((message) => message.id === ordinary.message.id))
+      .toMatchObject({ role: "user", liveInputStatus: "applied" });
     await service.stop();
   });
 
@@ -1707,9 +1747,19 @@ describe("WebService", () => {
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "assistant", parts: [expect.objectContaining({ type: "process-job" })] }),
       expect.objectContaining({ role: "assistant", parts: expect.arrayContaining([
+        expect.objectContaining({ type: "tool-call", toolCallId: "t1" }),
         expect.objectContaining({ type: "text", text: "Worker result processed" }),
       ]) }),
     ]));
+    const followUp = messages.find((message) => message.parts.some(
+      (part) => part.type === "text" && part.text === "Worker result processed",
+    ));
+    expect(followUp?.parts[0]).toEqual({
+      type: "process-job-wake",
+      jobId: terminal.jobId,
+      deliveryKey: terminal.wake.deliveryKey,
+      disposition: "follow_up",
+    });
     expect(messages.find((message) => message.attribution?.disposition === "fallback")?.attribution).toMatchObject({
       requested: { model: "provider/fallback", effort: "high" },
       attempted: { model: "provider/default", effort: "medium", effectiveEffort: "low" },

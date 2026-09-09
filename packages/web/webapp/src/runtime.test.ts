@@ -448,6 +448,44 @@ describe("projectProcessJobPresentation", () => {
     expect(projected.eventsByMessageId.has("carrier")).toBe(false);
   });
 
+  it("keeps the start at launch but moves the terminal event to the chronological wake", () => {
+    const job = processJob();
+    const origin = message({
+      id: "origin",
+      threadId: "thread",
+      role: "assistant",
+      parts: [launchPart(job, "launch-one")],
+    });
+    const wake = message({
+      id: "wake",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{
+        type: "process-job-wake",
+        jobId: job.jobId,
+        deliveryKey: job.wake.deliveryKey,
+        disposition: "follow_up",
+      }],
+    });
+    const card = message({
+      id: "card",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ type: "process-job", job }],
+    });
+
+    const projected = projectProcessJobPresentation([origin, wake, card], { threadId: "thread" });
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ phase: "started", toolCallId: "launch-one" }),
+    ]);
+    expect(convertWebMessage(wake, { processJobs: projected.jobsById }).content).toEqual([
+      expect.objectContaining({
+        type: "data-process-job-event",
+        data: expect.objectContaining({ phase: "terminal", jobId: job.jobId, state: "succeeded" }),
+      }),
+    ]);
+  });
+
   it.each([
     "succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted",
   ] as const)("derives the %s terminal outcome without inventing a missing completion", (state) => {

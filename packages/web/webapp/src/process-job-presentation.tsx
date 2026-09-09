@@ -26,6 +26,7 @@ export interface ProcessJobPresentation {
   readonly messages: readonly WebMessage[];
   readonly jobs: readonly ProcessJobPresentationEntry[];
   readonly eventsByMessageId: ReadonlyMap<string, readonly ProcessJobActivityEvent[]>;
+  readonly jobsById: ReadonlyMap<string, ProcessJobProjection>;
 }
 
 export interface ProcessJobStartReceipt {
@@ -51,6 +52,24 @@ export interface ProcessJobActivityEvent {
   readonly exitCode?: number;
   readonly signal?: string;
 }
+
+export const processJobTerminalEvent = (
+  job: ProcessJobProjection,
+  toolCallId: string,
+): ProcessJobActivityEvent => ({
+  schema: "mono-agent.process-job-activity-event.v1",
+  id: `process-job:${job.jobId}:terminal`,
+  toolCallId,
+  jobId: job.jobId,
+  tool: job.tool,
+  summary: job.summary,
+  phase: "terminal",
+  state: job.state,
+  ...(job.timestamps.completedAt === null ? {} : { occurredAt: job.timestamps.completedAt }),
+  ...(job.durationMs === null ? {} : { durationMs: job.durationMs }),
+  ...(job.exitCode === null ? {} : { exitCode: job.exitCode }),
+  ...(job.signal === null ? {} : { signal: job.signal }),
+});
 
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -144,6 +163,8 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
       return part.event === "cron_run" || isContextCompactionPart(part);
     case "process-job":
       return false;
+    case "process-job-wake":
+      return true;
     case "cron-reply-context":
       return true;
     case "tool-call":
@@ -191,6 +212,8 @@ export const projectProcessJobPresentation = (
     readonly receipt: ProcessJobStartReceipt;
   }>>();
   const ambiguousReceipts = new Set<string>();
+  const wakeJobIds = new Set(messages.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === "process-job-wake" ? [part.jobId] : [])));
 
   if (options.threadId !== undefined && options.threadId !== null) {
     for (const message of messages) {
@@ -290,7 +313,7 @@ export const projectProcessJobPresentation = (
           occurredAt: validStartedAt,
         });
       }
-      if (TERMINAL_PROCESS_JOB_STATES.has(job.state)) {
+      if (TERMINAL_PROCESS_JOB_STATES.has(job.state) && !wakeJobIds.has(job.jobId)) {
         const completedAt = job.timestamps.completedAt;
         const completedAtMs = completedAt === null ? Number.NaN : Date.parse(completedAt);
         const validCompletedAt = completedAt !== null
@@ -300,18 +323,10 @@ export const projectProcessJobPresentation = (
           ? completedAt
           : undefined;
         events.push({
-          schema: "mono-agent.process-job-activity-event.v1",
-          id: `process-job:${job.jobId}:terminal`,
-          toolCallId: candidate.toolCallId,
-          jobId: job.jobId,
-          tool: job.tool,
-          summary: job.summary,
-          phase: "terminal",
-          state: job.state,
-          ...(validCompletedAt === undefined ? {} : { occurredAt: validCompletedAt }),
-          ...(job.durationMs === null ? {} : { durationMs: job.durationMs }),
-          ...(job.exitCode === null ? {} : { exitCode: job.exitCode }),
-          ...(job.signal === null ? {} : { signal: job.signal }),
+          ...processJobTerminalEvent({
+            ...job,
+            timestamps: { ...job.timestamps, completedAt: validCompletedAt ?? null },
+          }, candidate.toolCallId),
         });
       }
       if (events.length > 0) {
@@ -322,7 +337,12 @@ export const projectProcessJobPresentation = (
     }
   }
 
-  return { messages: projectedMessages, jobs, eventsByMessageId };
+  return {
+    messages: projectedMessages,
+    jobs,
+    eventsByMessageId,
+    jobsById: new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
+  };
 };
 
 interface ProcessJobPresentationContextValue {

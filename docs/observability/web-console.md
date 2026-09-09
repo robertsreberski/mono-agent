@@ -594,10 +594,14 @@ A background `Exec` or `Bash` launch whose completed tool call contains the
 exact persisted process-job receipt also shows lifecycle evidence in that
 response's Activity. A start row requires a real start stamp: queued or starting
 admission alone is not presented as running. Every terminal outcome gets one
-row, while unavailable completion time, duration, exit code, or signal is simply
-omitted. Association uses exact job/tool/thread identity, never prose or
-timestamp proximity. Both the launch response and card must be loaded, so
-legacy launches and paginated-out receipts honestly remain stack-only.
+row at the point its exact wake was consumed: where a wake steered into the
+active assistant stream, or first in its follow-up assistant message. A wake
+marker suppresses launch-adjacent terminal placement; without one, the terminal
+row remains beside the launch as a fallback. Unavailable completion time,
+duration, exit code, or signal is simply omitted. Association uses exact
+job/tool/thread identity, never prose or timestamp proximity. Both the launch
+response and card must be loaded, so legacy launches and paginated-out receipts
+honestly remain stack-only.
 Receipt-bearing launches stay as separate tool/event runs; ordinary adjacent
 same-tool calls keep their existing grouping.
 

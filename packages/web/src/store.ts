@@ -2499,6 +2499,24 @@ export class WebStore {
     }
   }
 
+  /** Resolve only an exact process-job live-input receipt belonging to this turn. */
+  private processJobWakeForTurn(turnId: string, deliveryKey: string): {
+    readonly jobId: string;
+    readonly deliveryKey: string;
+  } | undefined {
+    return this.database.prepare(`
+      SELECT cards.job_id AS jobId, cards.delivery_key AS deliveryKey
+      FROM process_job_cards AS cards
+      JOIN process_job_wake_deliveries AS deliveries
+        ON deliveries.source_id = cards.source_id
+        AND deliveries.job_id = cards.job_id
+        AND deliveries.delivery_key = cards.delivery_key
+      JOIN turns ON turns.id = ? AND turns.thread_id = cards.thread_id
+      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = cards.source_id
+      WHERE cards.delivery_key = ? AND deliveries.turn_id = turns.id
+    `).get(turnId, deliveryKey) as { jobId: string; deliveryKey: string } | undefined;
+  }
+
   /** Release a Monitor reservation only before any operator delivery begins. */
   abandonMonitorWake(input: {
     readonly sourceId: string;
@@ -3298,6 +3316,11 @@ export class WebStore {
     readonly effort?: string;
     readonly requestedModel?: string;
     readonly requestedEffort?: string;
+    readonly processJobWake?: {
+      readonly jobId: string;
+      readonly deliveryKey: string;
+      readonly disposition: "follow_up";
+    };
   }): BeginStoredAssistantTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
@@ -3318,6 +3341,24 @@ export class WebStore {
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
     const now = this.now();
+    if (input.processJobWake !== undefined) {
+      const card = this.database.prepare(`
+        SELECT 1 FROM process_job_cards AS cards
+        JOIN threads ON threads.id = cards.thread_id AND threads.source_id = cards.source_id
+        JOIN process_job_wake_deliveries AS deliveries
+          ON deliveries.source_id = cards.source_id
+          AND deliveries.job_id = cards.job_id
+          AND deliveries.delivery_key = cards.delivery_key
+        WHERE cards.thread_id = ? AND cards.job_id = ? AND cards.delivery_key = ?
+          AND deliveries.state = 'accepted' AND deliveries.turn_id IS NULL
+      `).get(threadId, input.processJobWake.jobId, input.processJobWake.deliveryKey);
+      if (card === undefined) {
+        throw new WebConsoleError("invalid_notification", "The process-job wake does not match its retained card.", 409);
+      }
+    }
+    const initialParts: WebMessagePart[] = input.processJobWake === undefined
+      ? []
+      : [{ type: "process-job-wake", ...input.processJobWake }];
     this.transaction(() => {
       this.database.prepare(`
         INSERT INTO turns (
@@ -3337,8 +3378,11 @@ export class WebStore {
       );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
-        VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
-      `).run(assistantMessageId, threadId, turnId, now, now);
+        VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'running')
+      `).run(assistantMessageId, threadId, turnId, serializeParts(initialParts), now, now);
+      if (input.processJobWake !== undefined) {
+        this.associateProcessJobWakeTurn(input.processJobWake.deliveryKey, turnId);
+      }
       this.database.prepare(
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
@@ -3668,7 +3712,12 @@ export class WebStore {
         } else if (frame.kind === "replace") {
           replaceWholeText(parts, frame.text);
         } else if (frame.kind === "event") {
-          applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
+          applyEvent(
+            parts,
+            frame.event,
+            (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey),
+            (deliveryKey) => this.processJobWakeForTurn(turnId, deliveryKey),
+          );
           if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
             const model = canonicalRouteString(frame.event.data?.model);
             const effort = canonicalRouteString(frame.event.data?.effort, 64);
@@ -6022,7 +6071,8 @@ function hasMeaningfulCronContent(parts: readonly WebMessagePart[]): boolean {
   return parts.some((part) => part.type === "text"
     ? !isSyntheticCronStateText(part.text) && classifyNotifySuppression(part.text) === "none"
     : part.type === "attachment" || part.type === "error" || part.type === "mcp_app"
-      || part.type === "failure" || part.type === "process-job" || part.type === "monitor-activity");
+      || part.type === "failure" || part.type === "process-job" || part.type === "process-job-wake"
+      || part.type === "monitor-activity");
 }
 
 function cronRunParts(
@@ -6065,7 +6115,8 @@ function cronRunParts(
   const parts: WebMessagePart[] = run.projection === "summary"
     ? [...retained]
     : retained.filter((part) => part.type === "text" || part.type === "error" || part.type === "attachment"
-      || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job" || part.type === "monitor-activity");
+      || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job"
+      || part.type === "process-job-wake" || part.type === "monitor-activity");
   for (const event of run.projection === "detail" ? run.events : []) applyEvent(parts, event);
   const preserveLoadedText = run.projection === "summary"
     && run.fieldsTruncated?.includes("text") === true
@@ -6385,6 +6436,10 @@ export function toWebAttachment(attachment: StoredAttachment): WebAttachment {
 }
 
 type MonitorWakeProjectionResolver = (deliveryKey: string) => MonitorProjection | undefined;
+type ProcessJobWakeResolver = (deliveryKey: string) => {
+  readonly jobId: string;
+  readonly deliveryKey: string;
+} | undefined;
 
 function appliedMonitorWake(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
@@ -6406,6 +6461,7 @@ function applyEvent(
   parts: WebMessagePart[],
   event: AgentStreamEvent,
   resolveMonitorWake?: MonitorWakeProjectionResolver,
+  resolveProcessJobWake?: ProcessJobWakeResolver,
 ): void {
   if (event.type === "assistant_thought") {
     appendTextPart(parts, "reasoning", event.text);
@@ -6413,6 +6469,7 @@ function applyEvent(
   }
   if (event.type === "tool_call_started") {
     if (appliedMonitorWake(event, resolveMonitorWake) !== undefined) return;
+    if (appliedProcessJobWake(event, resolveProcessJobWake) !== undefined) return;
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
@@ -6457,6 +6514,14 @@ function applyEvent(
     const monitorWake = appliedMonitorWake(event, resolveMonitorWake);
     if (monitorWake !== undefined) {
       upsertMonitorActivity(parts, monitorWake.projection, monitorWake.deliveryKey);
+      return;
+    }
+    const processJobWake = appliedProcessJobWake(event, resolveProcessJobWake);
+    if (processJobWake !== undefined) {
+      if (!parts.some((part) => part.type === "process-job-wake"
+        && part.deliveryKey === processJobWake.deliveryKey)) {
+        parts.push({ type: "process-job-wake", ...processJobWake, disposition: "steered" });
+      }
       return;
     }
     const status = event.isError === true ? "failed" : "complete";
@@ -6519,6 +6584,19 @@ function applyEvent(
     return;
   }
   parts.push({ type: "telemetry", event: event.type, data: event });
+}
+
+function appliedProcessJobWake(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+  resolveProcessJobWake: ProcessJobWakeResolver | undefined,
+): { readonly jobId: string; readonly deliveryKey: string } | undefined {
+  if (resolveProcessJobWake === undefined
+    || event.metadata?.liveInput !== true
+    || event.metadata?.synthetic !== true
+    || typeof event.metadata.inputId !== "string") {
+    return undefined;
+  }
+  return resolveProcessJobWake(event.metadata.inputId);
 }
 
 type MonitorActivityPart = Extract<WebMessagePart, { readonly type: "monitor-activity" }>;
@@ -7314,6 +7392,10 @@ function parseParts(value: string): WebMessagePart[] {
   if (parts.filter((part) => part.type === "monitor-activity").length > 1) {
     throw new WebConsoleError("storage_corrupt", "Persisted Monitor activity is duplicated.", 500);
   }
+  const wakeKeys = parts.flatMap((part) => part.type === "process-job-wake" ? [part.deliveryKey] : []);
+  if (new Set(wakeKeys).size !== wakeKeys.length) {
+    throw new WebConsoleError("storage_corrupt", "Persisted process-job wake activity is duplicated.", 500);
+  }
   quoteFromParts(parts);
   return parts;
 }
@@ -7578,6 +7660,15 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
     } catch {
       return false;
     }
+  }
+  if (part.type === "process-job-wake") {
+    return hasOnlyKeys(part, new Set(["type", "jobId", "deliveryKey", "disposition"]))
+      && validRichId(part.jobId)
+      && typeof part.deliveryKey === "string"
+      && part.deliveryKey.length > 0
+      && part.deliveryKey.length <= 1_024
+      && !/[\u0000-\u001f\u007f]/u.test(part.deliveryKey)
+      && (part.disposition === "steered" || part.disposition === "follow_up");
   }
   if (part.type === "monitor-activity") {
     if (!hasOnlyKeys(part, new Set(["type", "monitors"]))
