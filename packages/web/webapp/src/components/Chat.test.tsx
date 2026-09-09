@@ -572,6 +572,67 @@ describe("ModelControls", () => {
     };
   });
 
+  it("shows a reversible cold-turn status for model changes, but not effort changes", async () => {
+    const otherModel = "pi:anthropic:claude-sonnet-4.5";
+    const selectedThread = thread("thread", "agent", { runModel: MODEL });
+    const attributedAssistant = {
+      ...chatMessage("assistant", selectedThread.id),
+      attribution: {
+        requested: { model: MODEL, effort: "high" },
+        executed: { model: MODEL, effort: "high" },
+        disposition: "requested" as const,
+        transitions: [],
+        retries: [],
+      },
+    };
+    const setModel = vi.fn((next: string) => {
+      storeMock.current = {
+        ...storeMock.current,
+        model: next,
+        effectiveModel: next,
+      };
+    });
+    const setEffort = vi.fn((next: string) => {
+      storeMock.current = { ...storeMock.current, effort: next, effectiveEffort: next };
+    });
+    storeMock.current = {
+      ...storeMock.current,
+      model: MODEL,
+      modelOptions: [MODEL, otherModel],
+      selectedThread,
+      detail: { thread: selectedThread, messages: [attributedAssistant] },
+      setModel,
+      setEffort,
+      selectedAgent: agent("agent", {
+        models: [MODEL, otherModel],
+        defaultModel: MODEL,
+        defaultEffort: "high",
+        modelOptions: {
+          [MODEL]: { label: "GPT-5.5 Codex", reasoning: true, effortLevels: ["low", "high"] },
+          [otherModel]: { label: "Claude Sonnet 4.5", reasoning: true, effortLevels: ["low", "high"] },
+        },
+      }),
+    };
+
+    const view = render(<ModelControls />);
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    fireEvent.click(within(effortGroup).getByRole("radio", { name: "Low" }));
+    view.rerender(<ModelControls />);
+    expect(setEffort).toHaveBeenCalledWith("low");
+    expect(screen.queryByText(/Model changed —/u)).toBeNull();
+
+    fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.5/u }));
+    view.rerender(<ModelControls />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Model changed — the next reply rebuilds this conversation's context from its text history.",
+    );
+
+    fireEvent.click(screen.getByRole("option", { name: /^GPT-5\.5 Codex/u }));
+    view.rerender(<ModelControls />);
+    expect(screen.queryByText(/Model changed —/u)).toBeNull();
+  });
+
   it("shows the advertised label while submitting the canonical model reference", async () => {
     render(<ModelControls />);
     const trigger = screen.getByRole("button", { name: "Model and reasoning effort" });
