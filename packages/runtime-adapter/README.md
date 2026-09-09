@@ -92,6 +92,13 @@ be replaced through `resolveAttempt().options`.
 
 `RuntimeRunOptions.providerAttributionSessionId` is a host-owned continuity key
 for provider attribution, not permission to resume provider transcript state.
+`MonoRuntimeLike.recoverSession(receipt, { appliedInputIds })` forwards optional
+host-coordinated durable terminal recovery. `RuntimeRunOptions.sessionRecovery`
+opts in with run id and canonical revision; `RuntimeResult.providerSessionRecovery`
+proves the exact session/model/tip after successful native close. Recovery appends
+nothing and returns false when the tail cannot be proven safe. It does not change
+the durable history record format.
+
 The agent harness supplies the active provider-session epoch automatically for
 continuous conversations and protects it from route-attempt overrides. Direct
 runtime callers that need attribution continuity across calls must reuse a safe,
