@@ -40,5 +40,5 @@ try {
   const result = await harness.run({ conversationId: "durable", userMessage: mode === "produce" ? "cancelled ask" : "next ask", abortSignal: controller.signal });
   const historyRoot = join(root, ".mono-agent", "history");
   const records = await Promise.all((await readdir(historyRoot)).filter((name) => name.endsWith(".history.json")).map(async (name) => JSON.parse(await readFile(join(historyRoot, name), "utf8"))));
-  process.stdout.write(JSON.stringify({ pid: process.pid, requests, context, status: result.failure?.kind ?? "success", records }));
+  process.stdout.write(JSON.stringify({ pid: process.pid, requests, context, runtimeWarnings: result.metadata?.runtime?.runtimeWarnings, status: result.failure?.kind ?? "success", records }));
 } finally { await harness.dispose(); }

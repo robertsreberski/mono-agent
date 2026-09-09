@@ -385,6 +385,10 @@ smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails
 reseed. A process-local budget allows one failed-turn recovery per epoch; user
 cancellation does not spend it, success does not reset it, and reconstruction may
 allow one extra attempt. Custom stores opt in with `providerSessionRecovery: "v1"`.
+A declined recovery reports a `terminal_recovery_skipped` runtime warning with
+`source: "harness"`, the terminal `outcome`, and the first failing gate in `reason`.
+The next cold turn reports `cancelled_turn_reseed` or `failed_turn_reseed` unless
+a prior boundary reason, such as model change, applies. These markers are process-local.
 The durable record shape is unchanged. See [session recovery](../../docs/runtime/sessions-concurrency.md).
 Cancelled and failed accounts never qualify for memory capture. Isolated
 proactive or continuation runs and queued requests that never started do not

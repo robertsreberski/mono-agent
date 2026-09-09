@@ -1,5 +1,13 @@
 import type { RuntimeResult } from "@mono-agent/runtime-adapter";
 
+/** First gate that declined a terminal turn's native recovery. */
+export type TerminalRecoverySkipReason =
+  | "history_not_coordinated" | "history_ownership_transferred" | "store_capability"
+  | "attempt_not_coordinated" | "runtime_unsupported" | "tool_history_finalize_failed"
+  | "failure_budget_spent" | "settlement_timeout" | "failure_kind_not_recoverable"
+  | "post_seal_contradiction" | "receipt_missing" | "receipt_mismatch"
+  | "recover_returned_false" | "recover_threw";
+
 /** Only a first primary attempt can prove ownership of a recoverable tail. */
 export function terminalFailureCanRecover(result: RuntimeResult, outcome: "cancelled" | "failed"): boolean {
   const history = result.failoverHistory;

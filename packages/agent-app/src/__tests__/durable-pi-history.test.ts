@@ -387,7 +387,7 @@ it("reopens a recovered tool-bearing Pi transcript in a second process", async (
   const consumed = await run("consume");
   expect(produced.status).toBe("cancelled"); expect(consumed.status).toBe("success");
   expect(consumed.pid).not.toBe(produced.pid);
-  expect(consumed.requests[0], `Producer providerSession: ${JSON.stringify(produced.records[0]?.providerSession)}`)
+  expect(consumed.requests[0], `Producer providerSession: ${JSON.stringify(produced.records[0]?.providerSession)}; runtimeWarnings: ${JSON.stringify(produced.runtimeWarnings)}`)
     .toBe(produced.requests[0]);
   expect(JSON.stringify(consumed.context.slice(0, produced.context.length))).toBe(JSON.stringify(produced.context));
   expect(consumed.context).toHaveLength(produced.context.length + 1);

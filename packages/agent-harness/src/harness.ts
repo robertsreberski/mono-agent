@@ -1,4 +1,4 @@
-import { terminalFailureCanRecover, waitForTerminalSettlement } from "./harness/session-recovery.js";
+import { terminalFailureCanRecover, waitForTerminalSettlement, type TerminalRecoverySkipReason } from "./harness/session-recovery.js";
 import type { RunSummary, RuntimeEventLike } from "@mono-agent/observability";
 import type {
   AgentContextImportRequest,
@@ -130,6 +130,7 @@ export class MonoAgentHarness implements AgentHarness {
   private activeRuns = 0;
   private readonly activeRunWaiters = new Set<() => void>();
   private readonly activeRunWarningSinks = new Set<(event: RuntimeEventLike) => void>();
+  private readonly pendingTerminalReseeds = new Map<string, TurnContinuityOutcome>();
   private readonly turnContinuityPublicationBarriers = new Map<string, TurnContinuityPublicationBarrier>();
   private readonly shutdownDrainTimeoutMs: number;
   private disposed = false;
@@ -196,6 +197,7 @@ export class MonoAgentHarness implements AgentHarness {
     }
     const normalized = conversationId.trim();
     await this.waitForTurnContinuityPublication(normalized);
+    this.pendingTerminalReseeds.delete(normalized);
     const historyStore = this.options.historyStore;
     const logicalConversationId = this.options.toolHistory?.logicalConversationId(normalized) ?? normalized;
     if (
@@ -436,6 +438,7 @@ export class MonoAgentHarness implements AgentHarness {
         this.sessionsEnabled(), request.conversationId, record, ...handles);
     };
     let runtimeResult: RuntimeResult | undefined;
+    const terminalRecoveryWarnings: Array<{ warning_kind: "terminal_recovery_skipped"; source: "harness"; outcome: TurnContinuityOutcome; reason: TerminalRecoverySkipReason }> = [];
     let terminalRecovered = false;
     let epochRecovery: RuntimeSessionRecord["recovery"];
     let recoveryDeadline = 0;
@@ -533,23 +536,38 @@ export class MonoAgentHarness implements AgentHarness {
         });
       let recovered = false;
       const recoveryRuntime = this.runtimeForSession(requestedModelKey);
-      if (providerHistoryTurn !== undefined && !providerHistoryOwnershipTransferred
-        && this.options.historyStore?.providerSessionRecovery === "v1"
-        && coordinatedProviderAttemptEligibleForSync && typeof recoveryRuntime.recoverSession === "function"
-        && toolHistoryError === undefined
-        && (claim.outcome === "cancelled" || epochRecovery?.failureUsed !== true)
-        && await waitForTerminalSettlement(providerSettled, recoveryDeadline)
-        && providerSettledAt !== undefined && providerSettledAt <= recoveryDeadline) {
-        const receipt = runtimeResult?.providerSessionRecovery;
-        if (runtimeResult !== undefined && terminalFailureCanRecover(runtimeResult, claim.outcome)
-          && turnContinuityCollector.canRecoverNativeTail()
-          && receipt?.runId === runId && receipt.revision === coordinatedProviderSessionRevision
-          && receipt.providerSessionId === coordinatedProviderSessionId
-          && runtimeResult.providerSessionId === coordinatedProviderSessionId
-          && receipt.modelKey === requestedModelKey && typeof receipt.tipId === "string" && receipt.tipId.length > 0) {
-          try { recovered = await recoveryRuntime.recoverSession(receipt, { appliedInputIds: sealedLiveInputs.map((input) => input.id) }); }
-          catch { recovered = false; }
+      let skipReason: TerminalRecoverySkipReason | undefined;
+      if (providerHistoryOwnershipTransferred) skipReason = "history_ownership_transferred";
+      else if (providerHistoryTurn === undefined) skipReason = "history_not_coordinated";
+      else if (this.options.historyStore?.providerSessionRecovery !== "v1") skipReason = "store_capability";
+      else if (!coordinatedProviderAttemptEligibleForSync) skipReason = "attempt_not_coordinated";
+      else if (typeof recoveryRuntime.recoverSession !== "function") skipReason = "runtime_unsupported";
+      else if (toolHistoryError !== undefined) skipReason = "tool_history_finalize_failed";
+      else if (claim.outcome !== "cancelled" && epochRecovery?.failureUsed === true) skipReason = "failure_budget_spent";
+      else if (!await waitForTerminalSettlement(providerSettled, recoveryDeadline)
+        || providerSettledAt === undefined || providerSettledAt > recoveryDeadline) skipReason = "settlement_timeout";
+      else if (runtimeResult === undefined || !terminalFailureCanRecover(runtimeResult, claim.outcome)) skipReason = "failure_kind_not_recoverable";
+      else if (!turnContinuityCollector.canRecoverNativeTail()) skipReason = "post_seal_contradiction";
+      else if (runtimeResult.providerSessionRecovery == null) skipReason = "receipt_missing";
+      else {
+        // Settlement may have populated runtimeResult during the await above.
+        const settledReceipt = runtimeResult.providerSessionRecovery;
+        if (settledReceipt.runId !== runId || settledReceipt.revision !== coordinatedProviderSessionRevision
+          || settledReceipt.providerSessionId !== coordinatedProviderSessionId
+          || runtimeResult.providerSessionId !== coordinatedProviderSessionId
+          || settledReceipt.modelKey !== requestedModelKey || typeof settledReceipt.tipId !== "string" || settledReceipt.tipId.length === 0) {
+          skipReason = "receipt_mismatch";
+        } else {
+          try {
+            recovered = await recoveryRuntime.recoverSession(settledReceipt, { appliedInputIds: sealedLiveInputs.map((input) => input.id) });
+            if (!recovered) skipReason = "recover_returned_false";
+          } catch { skipReason = "recover_threw"; }
         }
+      }
+      if (skipReason !== undefined) {
+        const warning = { warning_kind: "terminal_recovery_skipped", source: "harness", outcome: claim.outcome, reason: skipReason } as const;
+        terminalRecoveryWarnings.push(warning);
+        emitShutdownWarning({ type: "runtime_warning", ...warning });
       }
       let continuityAppend: PreparedHistoryAppend | undefined;
       const providerHistoryOwnsContinuity = providerHistoryTurn !== undefined;
@@ -580,6 +598,7 @@ export class MonoAgentHarness implements AgentHarness {
         throw error;
       }
       terminalRecovered = recovered;
+      if (!recovered && this.sessionsEnabled()) this.pendingTerminalReseeds.set(request.conversationId, claim.outcome);
       if (recovered) {
         this.saveSession(request.conversationId, coordinatedProviderSessionId, sessionRecord,
           (coordinatedProviderSessionRevision as number) + 1, undefined, requestedModelKey,
@@ -660,7 +679,9 @@ export class MonoAgentHarness implements AgentHarness {
         // later turns. The request that caused it keeps its original settlement.
       }
       return {
-        metadata: responseMetadata(runId, request, context, continuitySummary, runtimeResult),
+        metadata: responseMetadata(runId, request, context, continuitySummary, terminalRecoveryWarnings.length === 0 ? runtimeResult : {
+          ...runtimeResult, runtimeWarnings: [...(Array.isArray(runtimeResult?.runtimeWarnings) ? runtimeResult.runtimeWarnings : []), ...terminalRecoveryWarnings],
+        }),
         failure,
       };
     };
@@ -866,11 +887,13 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       if (!confirmedWarmSession) sessionRecord = undefined;
+      const reseedOutcome = !isolated ? this.pendingTerminalReseeds.get(request.conversationId) : undefined;
+      if (!isolated) this.pendingTerminalReseeds.delete(request.conversationId);
       const coldReason = changedModel !== undefined
         ? "model_change"
         : providerHistoryTurn?.previousModelWasUnbound === true
           ? "legacy_unbound_model"
-          : undefined;
+          : reseedOutcome === undefined || request.sessionBoundary?.reason !== undefined ? undefined : `${reseedOutcome}_turn_reseed`;
       if (coldReason === undefined && confirmedWarmSession && sessionRecord?.recovery?.nextOutcome !== undefined) {
         const outcome = sessionRecord.recovery.nextOutcome;
         delete sessionRecord.recovery.nextOutcome;
@@ -1562,6 +1585,7 @@ export class MonoAgentHarness implements AgentHarness {
     const liveSessionDisposal = this.liveSessionManager?.dispose();
     void liveSessionDisposal?.catch(() => undefined);
     const drained = await this.waitForActiveRuns();
+    this.pendingTerminalReseeds.clear();
     const cleanupErrors: unknown[] = [];
     if (drained) {
       try {

@@ -1772,7 +1772,8 @@ describe("coordinated terminal recovery", () => {
     sidecar.writer.finishRun = async (...args) => { if (failSidecar) throw new Error("injected sidecar failure"); await finishRun(...args); };
     const makeHarness = () => createAgentHarness({ identityPath, model, runtime, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
     let harness = makeHarness();
-    return { fake, retired, native, prefixes, receipts, historyStore, events,
+    return { fake, retired, native, prefixes, receipts, historyStore, events, runtime,
+      cancel() { controller.abort(new Error("injected cancel")); },
       rejectCommit() { failCommit = true; },
       rejectSidecar() { failSidecar = true; },
       before(next: typeof beforeTerminal) { beforeTerminal = next; },
@@ -1878,6 +1879,77 @@ describe("coordinated terminal recovery", () => {
       expect(f.fake.calls[2]!.options.sessionId).not.toBe(f.fake.calls[1]!.options.sessionId);
     } finally { await f.close(); }
   });
+  it.each([
+    "history_not_coordinated", "history_ownership_transferred", "store_capability", "attempt_not_coordinated",
+    "runtime_unsupported", "tool_history_finalize_failed", "failure_budget_spent", "settlement_timeout",
+    "failure_kind_not_recoverable", "post_seal_contradiction", "receipt_missing", "receipt_mismatch",
+    "recover_returned_false", "recover_threw",
+  ] as const)("reports the first terminal recovery skip reason: %s", async (reason) => {
+    const f = await fixture(reason === "settlement_timeout" ? { terminalRecoverySettlementMs: 1 } : {});
+    let release: (() => void) | undefined;
+    try {
+      let outcome: "cancelled" | "provider_unavailable" | "success" = "cancelled";
+      if (reason === "history_not_coordinated") Object.defineProperty(f.historyStore, "beginProviderSessionTurn", { value: undefined });
+      if (reason === "store_capability") Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      if (reason === "runtime_unsupported") Object.defineProperty(f.runtime, "recoverSession", { value: undefined });
+      if (reason === "tool_history_finalize_failed") f.rejectSidecar();
+      if (reason === "failure_budget_spent") { await f.run("provider_unavailable", "first failure"); outcome = "provider_unavailable"; }
+      if (reason === "settlement_timeout") {
+        const paused = f.pauseNext(); release = paused.release;
+        void paused.admitted.then(() => setTimeout(paused.release, 50));
+      }
+      if (reason === "failure_kind_not_recoverable") f.transform((result) => ({ ...result, failureKind: "provider_auth" }));
+      if (reason === "post_seal_contradiction") f.transform((result) => {
+        f.fake.calls.at(-1)!.options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "late" }] } }); return result;
+      });
+      if (reason === "receipt_missing") f.transform(({ providerSessionRecovery: _receipt, ...result }) => result);
+      if (reason === "receipt_mismatch") f.transform((result) => ({ ...result, providerSessionRecovery: { ...result.providerSessionRecovery!, revision: 99 } }));
+      if (reason === "recover_returned_false") f.denyRecovery();
+      if (reason === "recover_threw") f.runtime.recoverSession = async () => { throw new Error("recover failed"); };
+      if (reason === "attempt_not_coordinated") {
+        outcome = "provider_unavailable";
+        let first = true;
+        f.transform((result) => { if (!first) return result; first = false; return { ...result, error: "missing", failureKind: "session_not_found" }; });
+      }
+      if (reason === "history_ownership_transferred") {
+        outcome = "success";
+        const begin = f.historyStore.beginProviderSessionTurn.bind(f.historyStore);
+        f.historyStore.beginProviderSessionTurn = async (...args) => {
+          const turn = await begin(...args);
+          return { ...turn, prepareCommit: async (...params) => {
+            const append = await turn.prepareCommit(...params);
+            // Trigger after the prepare await resumes and transfers ownership.
+            queueMicrotask(() => queueMicrotask(() => f.cancel()));
+            return append;
+          } };
+        };
+      }
+      const response = await f.run(outcome, "interrupted");
+      const warnings = (response.metadata?.runtime as { runtimeWarnings?: unknown[] } | undefined)?.runtimeWarnings;
+      expect(warnings).toEqual([expect.objectContaining({ warning_kind: "terminal_recovery_skipped", source: "harness", reason })]);
+      expect(f.events.filter((event) => event.warning_kind === "terminal_recovery_skipped")).toEqual([
+        expect.objectContaining({ reason }),
+      ]);
+    } finally { release?.(); await f.close(); }
+  });
+
+  it.each(["cancelled", "provider_unavailable"] as const)("emits a one-shot cold boundary after an unrecovered %s turn", async (outcome) => {
+    const f = await fixture();
+    try {
+      f.denyRecovery(); await f.run(outcome, "interrupted"); await f.run("success", "next"); await f.run("success", "warm");
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_reseed`)).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it("gives model change precedence over a pending terminal reseed boundary", async () => {
+    const f = await fixture();
+    try {
+      f.denyRecovery(); await f.run("cancelled", "interrupted"); await f.run("success", "next", "anthropic:claude-opus-4-8");
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === "model_change")).toHaveLength(1);
+      expect(f.events.filter((event) => event.reason === "cancelled_turn_reseed")).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+
   it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects invalid terminalRecoverySettlementMs: %s", (terminalRecoverySettlementMs) => {
     expect(() => createAgentHarness({ identityPath: "IDENTITY.md", model,
       runtime: createSessionFakeRuntime(async () => ({ text: "unused" })).runtime,
