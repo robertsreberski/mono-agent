@@ -98,6 +98,21 @@ export function createToolHistoryArtifactSink(options: {
   readonly artifactRoot: string;
   readonly runId: string;
 }): (artifact: ToolHistoryArtifactSinkInput) => string | null {
+  return createToolHistoryArtifactSinkWithValidator(options, validatedToolHistoryArtifactPath);
+}
+
+/** @internal Source-module fault injection; intentionally not exported by the package barrel. */
+export function createToolHistoryArtifactSinkForTests(
+  options: { readonly artifactRoot: string; readonly runId: string },
+  validateArtifactPath: typeof validatedToolHistoryArtifactPath,
+): (artifact: ToolHistoryArtifactSinkInput) => string | null {
+  return createToolHistoryArtifactSinkWithValidator(options, validateArtifactPath);
+}
+
+function createToolHistoryArtifactSinkWithValidator(
+  options: { readonly artifactRoot: string; readonly runId: string },
+  validateArtifactPath: typeof validatedToolHistoryArtifactPath,
+): (artifact: ToolHistoryArtifactSinkInput) => string | null {
   return (artifact) => {
     let descriptor: number | undefined;
     let createdPath: string | undefined;
@@ -107,7 +122,7 @@ export function createToolHistoryArtifactSink(options: {
       const artifactRoot = canonicalToolArtifactRoot(options.artifactRoot);
       ensurePrivateDirectory(artifactRoot);
       const runRoot = resolve(artifactRoot, sanitizeRunId(options.runId));
-      ensurePrivateDirectory(runRoot);
+      const runRootIdentity = ensurePrivateDirectory(runRoot);
       const candidate = join(runRoot, artifact.filename);
       if (dirname(candidate) !== runRoot) return null;
 
@@ -120,6 +135,11 @@ export function createToolHistoryArtifactSink(options: {
       const opened = fstatSync(descriptor);
       assertPrivateArtifactFile(opened, 0);
       createdIdentity = { dev: opened.dev, ino: opened.ino };
+      const currentRunRoot = lstatSync(runRoot);
+      assertPrivateDirectory(currentRunRoot);
+      if (currentRunRoot.dev !== runRootIdentity.dev || currentRunRoot.ino !== runRootIdentity.ino) {
+        throw new Error("Tool artifact run directory changed during publication.");
+      }
       let offset = 0;
       while (offset < artifact.buffer.length) {
         const written = writeSync(descriptor, artifact.buffer, offset, artifact.buffer.length - offset);
@@ -137,7 +157,9 @@ export function createToolHistoryArtifactSink(options: {
       if (named.dev !== complete.dev || named.ino !== complete.ino) {
         throw new Error("Tool artifact path changed during publication.");
       }
-      return validatedToolHistoryArtifactPath(candidate, artifactRoot, options.runId) ?? null;
+      const validated = validateArtifactPath(candidate, artifactRoot, options.runId);
+      if (validated === undefined) throw new Error("Tool artifact failed final containment validation.");
+      return validated;
     } catch {
       try {
         if (descriptor !== undefined) closeSync(descriptor);
@@ -210,9 +232,33 @@ function validArtifactFilename(value: unknown): value is string {
     && !/[\u0000-\u001f\u007f]/u.test(value);
 }
 
-function ensurePrivateDirectory(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
+function ensurePrivateDirectory(path: string): { readonly dev: number; readonly ino: number } {
+  const missing: string[] = [];
+  let existing = path;
+  for (;;) {
+    try {
+      const info = lstatSync(existing);
+      assertPrivateDirectory(info);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      missing.push(existing);
+      const parent = dirname(existing);
+      if (parent === existing) throw error;
+      existing = parent;
+    }
+  }
+
+  for (const component of missing.reverse()) {
+    mkdirSync(component, { mode: 0o700 });
+    assertPrivateDirectory(lstatSync(component));
+  }
   const info = lstatSync(path);
+  assertPrivateDirectory(info);
+  return { dev: info.dev, ino: info.ino };
+}
+
+function assertPrivateDirectory(info: Stats): void {
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Tool artifact directory must be a non-symlink directory.");
   const uid = process.getuid?.();
   if (uid !== undefined && info.uid !== uid) throw new Error("Tool artifact directory must be owned by the current user.");

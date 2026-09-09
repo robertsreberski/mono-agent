@@ -490,8 +490,14 @@ over-limit count after secure omission, retained byte counts, and truncation,
 plus opaque artifact ids;
 artifact availability is recomputed and the reference does not extend artifact
 lifetime. `createToolHistoryArtifactSink({ artifactRoot, runId })` creates a
-best-effort synchronous sink whose owner-private files pass the same run-root
-containment checks. Those raw, untrusted files have no automatic cleanup owner;
+best-effort synchronous sink that creates missing directories one component at
+a time, verifies owner-private directory and file identities around publication,
+and requires the final path to pass the same run-root containment checks. Node
+does not expose an fd-relative `openat` API, so these checks narrow but cannot
+eliminate the residual window in which another process running as the same user
+renames a verified directory. A failed final validation removes only the
+just-created file whose device/inode identity is still provable. Those raw,
+untrusted files have no automatic cleanup owner;
 run-artifact and tool-history retention do not delete them. Retention independently bounds completed calls (100,000), age (365
 days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
 days). Isolated/proactive runs persist but are excluded from default reads.

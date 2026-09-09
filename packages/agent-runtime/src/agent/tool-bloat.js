@@ -25,6 +25,7 @@ export const DEFAULT_TOOL_BLOAT_CONFIG = Object.freeze({
 const RETAINED_UNTRUSTED_BEGIN = "[BEGIN RETAINED UNTRUSTED TOOL RESULT]";
 const RETAINED_UNTRUSTED_END = "[END RETAINED UNTRUSTED TOOL RESULT]";
 const RETAINED_MIDDLE_NOTICE = "[Omitted middle may contain additional source content; retained tail is not the source ending.]";
+const RETAINED_OMISSION_RE = /\[\.\.\. (\d+) source bytes omitted \.\.\.\]/gu;
 
 function blockBytes(block) {
   if (!block || typeof block !== "object") return 0;
@@ -116,40 +117,61 @@ function summaryOnly(toolName, originalBytes, maxBytes, savedPaths) {
 }
 
 function neutralizeRetainedFrames(value) {
-  return value
+  return wellFormedText(value)
     .replaceAll(RETAINED_UNTRUSTED_BEGIN, `(BEGIN RETAINED UNTRUSTED TOOL RESULT)`)
     .replaceAll(RETAINED_UNTRUSTED_END, `(END RETAINED UNTRUSTED TOOL RESULT)`)
-    .replaceAll(RETAINED_MIDDLE_NOTICE, `(Omitted middle may contain additional source content; retained tail is not the source ending.)`);
+    .replaceAll(RETAINED_MIDDLE_NOTICE, `(Omitted middle may contain additional source content; retained tail is not the source ending.)`)
+    .replace(RETAINED_OMISSION_RE, `(... $1 source bytes omitted ...)`);
 }
 
-function utf8Head(value, maxBytes) {
-  if (maxBytes <= 0) return "";
-  let bytes = 0;
+function wellFormedText(value) {
   let out = "";
-  for (const point of value) {
-    const size = Buffer.byteLength(point, "utf8");
-    if (bytes + size > maxBytes) break;
-    out += point;
-    bytes += size;
+  for (const point of String(value || "")) {
+    const unit = point.charCodeAt(0);
+    out += point.length === 1 && unit >= 0xd800 && unit <= 0xdfff ? "\uFFFD" : point;
   }
   return out;
 }
 
-function utf8Tail(value, maxBytes) {
-  if (maxBytes <= 0) return "";
+function utf8Head(segments, maxBytes) {
+  if (maxBytes <= 0) return { text: "", sourceBytes: 0 };
+  let bytes = 0;
+  let out = "";
+  let sourceBytes = 0;
+  outer: for (const segment of segments) {
+    for (const point of segment.text) {
+      const size = Buffer.byteLength(point, "utf8");
+      if (bytes + size > maxBytes) break outer;
+      out += point;
+      bytes += size;
+      if (segment.source) sourceBytes += size;
+    }
+  }
+  return { text: out, sourceBytes };
+}
+
+function utf8Tail(segments, maxBytes) {
+  if (maxBytes <= 0) return { text: "", sourceBytes: 0 };
   let bytes = 0;
   const out = [];
-  for (const point of [...value].reverse()) {
-    const size = Buffer.byteLength(point, "utf8");
-    if (bytes + size > maxBytes) break;
-    out.push(point);
-    bytes += size;
+  let sourceBytes = 0;
+  outer: for (const segment of [...segments].reverse()) {
+    for (const point of [...segment.text].reverse()) {
+      const size = Buffer.byteLength(point, "utf8");
+      if (bytes + size > maxBytes) break outer;
+      out.push(point);
+      bytes += size;
+      if (segment.source) sourceBytes += size;
+    }
   }
-  return out.reverse().join("");
+  return { text: out.reverse().join(""), sourceBytes };
 }
 
 function retainedTextPayload(toolName, blocks, originalBytes, maxBytes, savedPaths) {
-  const source = neutralizeRetainedFrames(blocks.map((block) => String(block.text || "")).join("\n\n"));
+  const segments = blocks.flatMap((block, index) => [
+    ...(index === 0 ? [] : [{ text: "\n\n", source: false }]),
+    { text: neutralizeRetainedFrames(block.text), source: true },
+  ]);
   const maximumDigits = String(originalBytes).length;
   const retainedPlaceholder = "9".repeat(maximumDigits);
   const omittedPlaceholder = "9".repeat(maximumDigits);
@@ -169,18 +191,18 @@ function retainedTextPayload(toolName, blocks, originalBytes, maxBytes, savedPat
   }
 
   const sourceBudget = maxBytes - Buffer.byteLength(fixedBody, "utf8");
-  const head = utf8Head(source, Math.floor(sourceBudget * 0.6));
-  const tail = utf8Tail(source, sourceBudget - Buffer.byteLength(head, "utf8"));
-  const retainedBytes = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
+  const head = utf8Head(segments, Math.floor(sourceBudget * 0.6));
+  const tail = utf8Tail(segments, sourceBudget - Buffer.byteLength(head.text, "utf8"));
+  const retainedBytes = head.sourceBytes + tail.sourceBytes;
   const omittedBytes = Math.max(0, originalBytes - retainedBytes);
   summary = summaryText(toolName, originalBytes, retainedBytes, maxBytes, savedPaths, true);
   const rendered = [
     summary,
     RETAINED_UNTRUSTED_BEGIN,
-    head,
+    head.text,
     `[... ${omittedBytes} source bytes omitted ...]`,
     RETAINED_MIDDLE_NOTICE,
-    tail,
+    tail.text,
     RETAINED_UNTRUSTED_END,
   ].join("\n");
   if (Buffer.byteLength(rendered, "utf8") <= maxBytes) return rendered;

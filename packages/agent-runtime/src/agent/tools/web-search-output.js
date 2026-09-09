@@ -9,21 +9,32 @@ const RESULT_OMISSION_MARKER = "[additional search results omitted by WebSearch 
 
 /** @param {unknown} value */
 function collapseWhitespace(value) {
-  return String(value || "").replace(/\s+/gu, " ").trim();
+  return toWellFormedText(value).replace(/\s+/gu, " ").trim();
 }
 
-/** @param {string} value @param {number} maxChars */
-function sliceCodePoints(value, maxChars) {
-  return [...value].slice(0, Math.max(0, maxChars)).join("");
+/** Replace isolated UTF-16 surrogates while preserving valid astral pairs. @param {unknown} value */
+export function toWellFormedText(value) {
+  let out = "";
+  for (const point of String(value || "")) {
+    const unit = point.charCodeAt(0);
+    out += point.length === 1 && unit >= 0xd800 && unit <= 0xdfff ? "\uFFFD" : point;
+  }
+  return out;
+}
+
+/** @param {unknown} value @param {number} maxChars */
+export function sliceWellFormedCodePoints(value, maxChars) {
+  return [...toWellFormedText(value)].slice(0, Math.max(0, maxChars)).join("");
 }
 
 /** @param {string} value @param {number} maxBytes */
 export function sliceUtf8(value, maxBytes) {
   const budget = Math.max(0, Math.floor(maxBytes));
-  if (Buffer.byteLength(value, "utf8") <= budget) return value;
+  const text = toWellFormedText(value);
+  if (Buffer.byteLength(text, "utf8") <= budget) return text;
   let used = 0;
   let out = "";
-  for (const point of value) {
+  for (const point of text) {
     const bytes = Buffer.byteLength(point, "utf8");
     if (used + bytes > budget) break;
     out += point;
@@ -38,7 +49,7 @@ export function boundWebSearchSnippet(value, maxChars = WEB_SEARCH_SNIPPET_MAX_C
   if ([...text].length <= maxChars) return { text, truncated: false };
   const markerChars = [...WEB_SEARCH_SNIPPET_TRUNCATION_MARKER].length;
   const prefixChars = Math.max(0, maxChars - markerChars - 1);
-  const prefix = sliceCodePoints(text, prefixChars).trimEnd();
+  const prefix = sliceWellFormedCodePoints(text, prefixChars).trimEnd();
   return {
     text: `${prefix}${prefix ? " " : ""}${WEB_SEARCH_SNIPPET_TRUNCATION_MARKER}`,
     truncated: true,
@@ -50,7 +61,7 @@ function boundTitle(value) {
   const text = collapseWhitespace(value);
   if ([...text].length <= WEB_SEARCH_TITLE_MAX_CHARS) return { text, truncated: false };
   return {
-    text: `${sliceCodePoints(text, WEB_SEARCH_TITLE_MAX_CHARS - 1).trimEnd()}…`,
+    text: `${sliceWellFormedCodePoints(text, WEB_SEARCH_TITLE_MAX_CHARS - 1).trimEnd()}…`,
     truncated: true,
   };
 }

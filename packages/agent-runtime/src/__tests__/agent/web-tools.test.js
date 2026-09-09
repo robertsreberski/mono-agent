@@ -21,6 +21,7 @@ import { createWebSearchRunState } from "../../agent/tools/web-search-state.js";
 import {
   boundWebSearchSnippet,
   renderBoundedWebSearchBody,
+  sliceUtf8,
   WEB_SEARCH_BODY_MAX_BYTES,
   WEB_SEARCH_SNIPPET_MAX_CHARS,
   WEB_SEARCH_SNIPPET_TRUNCATION_MARKER,
@@ -56,6 +57,16 @@ describe("WebSearch output bounds", () => {
     expect([...overflow.text]).toHaveLength(WEB_SEARCH_SNIPPET_MAX_CHARS);
     expect(overflow.text.endsWith(WEB_SEARCH_SNIPPET_TRUNCATION_MARKER)).toBe(true);
     expect(overflow.truncated).toBe(true);
+  });
+
+  it("normalizes lone surrogates and keeps astral code points intact at character and byte bounds", () => {
+    const malformed = `ab\ud800🙂\udfffcd`;
+    const bounded = boundWebSearchSnippet(malformed);
+
+    expect(bounded.text).toBe("ab�🙂�cd");
+    expect(bounded.text).not.toMatch(/[\ud800-\udfff]/u);
+    expect(sliceUtf8(`x\ud800🙂y`, 8)).toBe("x�🙂");
+    expect(sliceUtf8(`x\ud800🙂y`, 8)).not.toMatch(/[\ud800-\udfff]/u);
   });
 
   it("omits a pathological trailing result as a whole instead of cutting its Markdown link", () => {

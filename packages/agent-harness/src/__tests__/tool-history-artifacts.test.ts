@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   canonicalToolArtifactRoot,
   createToolHistoryArtifactSink,
+  createToolHistoryArtifactSinkForTests,
   toolHistoryArtifactAvailable,
   validatedToolHistoryArtifactPath,
 } from "../tool-history-artifacts.js";
@@ -169,7 +170,7 @@ describe("createToolHistoryArtifactSink", () => {
     }
   });
 
-  it("rejects traversal, separators, collisions, and symlinked run roots without writing outside", async () => {
+  it("rejects traversal and separators without writing outside", async () => {
     const root = await tempRoot();
     const artifactRoot = join(root, "tool-output");
     const sink = createToolHistoryArtifactSink({ artifactRoot, runId: "safe-run" });
@@ -177,19 +178,60 @@ describe("createToolHistoryArtifactSink", () => {
 
     expect(sink({ ...input, filename: "../outside.txt" })).toBeNull();
     expect(sink({ ...input, filename: "nested/out.txt" })).toBeNull();
+    await expect(readFile(join(root, "outside.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects an EEXIST collision without overwriting the first artifact", async () => {
+    const root = await tempRoot();
+    const artifactRoot = join(root, "tool-output");
+    const sink = createToolHistoryArtifactSink({ artifactRoot, runId: "safe-run" });
+    const input = { buffer: Buffer.from("body"), toolName: "Bash", toolUseId: "call-1" };
+
     const path = sink({ ...input, filename: "result.txt" });
     expect(path).not.toBeNull();
     expect(sink({ ...input, filename: "result.txt" })).toBeNull();
     expect(await readFile(path!, "utf8")).toBe("body");
+  });
 
+  it.skipIf(process.platform === "win32")("rejects a pre-existing symlinked run directory", async () => {
+    const root = await tempRoot();
     const linkedRoot = join(root, "linked-tool-output");
     const target = join(root, "outside-target");
     await mkdir(linkedRoot, { mode: 0o700 });
     await mkdir(target, { mode: 0o700 });
     await symlink(target, join(linkedRoot, "linked-run"), "dir");
     const linkedSink = createToolHistoryArtifactSink({ artifactRoot: linkedRoot, runId: "linked-run" });
+    const input = { buffer: Buffer.from("body"), toolName: "Bash", toolUseId: "call-1" };
+
     expect(linkedSink({ ...input, filename: "escaped.txt" })).toBeNull();
     await expect(readFile(join(target, "escaped.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a wrong-mode pre-existing directory component", async () => {
+    const root = await tempRoot();
+    const artifactRoot = join(root, "tool-output");
+    const runRoot = join(artifactRoot, "unsafe-mode-run");
+    await mkdir(runRoot, { recursive: true, mode: 0o755 });
+    const sink = createToolHistoryArtifactSink({ artifactRoot, runId: "unsafe-mode-run" });
+
+    expect(sink({ filename: "result.txt", buffer: Buffer.from("body"), toolName: "Bash", toolUseId: "call-1" }))
+      .toBeNull();
+    await expect(readFile(join(runRoot, "result.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("removes the identity-matching file when final validation returns undefined", async () => {
+    const root = await tempRoot();
+    const artifactRoot = join(root, "tool-output");
+    const runRoot = join(artifactRoot, "validation-run");
+    const candidate = join(runRoot, "result.txt");
+    const sink = createToolHistoryArtifactSinkForTests(
+      { artifactRoot, runId: "validation-run" },
+      () => undefined,
+    );
+
+    expect(sink({ filename: "result.txt", buffer: Buffer.from("body"), toolName: "Bash", toolUseId: "call-1" }))
+      .toBeNull();
+    await expect(readFile(candidate)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 

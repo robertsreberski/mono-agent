@@ -13,7 +13,11 @@
   trust framing. Oversized text tool results now retain a framed UTF-8-safe
   head/tail sample, while configured app runs persist raw blocks best-effort in
   owner-private `tool-output/<runId>` files that can become opaque
-  `SessionHistory` references. These raw files have no automatic cleanup owner.
+  `SessionHistory` references. Publication creates and verifies directory
+  components individually, rechecks the run-directory identity after opening,
+  and removes identity-proven files after final validation failure; Node's lack
+  of fd-relative `openat` leaves a documented residual same-user rename window.
+  These raw files have no automatic cleanup owner.
 - **Breaking: framework self-configuration has been removed.** The dedicated
   SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
   `/configure`, host-side proposal review/apply/restart transaction, and bundled

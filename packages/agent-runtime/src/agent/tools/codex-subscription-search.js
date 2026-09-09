@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createCodexAppServerClient } from "../../ai/providers/codex/app-server-client.js";
-import { boundWebSearchSnippet } from "./web-search-output.js";
+import { boundWebSearchSnippet, sliceWellFormedCodePoints, toWellFormedText } from "./web-search-output.js";
 
 export const DEFAULT_CODEX_SEARCH_MODEL = "gpt-5.6-luna";
 
@@ -483,7 +483,8 @@ function normalizeModel(value) {
 }
 
 function boundedText(value, max) {
-  return typeof value === "string" ? value.replace(/\s+/gu, " ").trim().slice(0, max) : "";
+  const text = typeof value === "string" ? toWellFormedText(value).replace(/\s+/gu, " ").trim() : "";
+  return sliceWellFormedCodePoints(text, max);
 }
 
 function safeReason(error) {

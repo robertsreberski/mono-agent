@@ -232,6 +232,27 @@ describe("Codex subscription search broker", () => {
     expect(result.results[0].snippet.endsWith("[snippet truncated; use WebFetch for full source]")).toBe(true);
     expect(result.results[0].snippetTruncated).toBe(true);
   });
+
+  it("bounds titles by well-formed code points without splitting astral characters", async () => {
+    const fake = fakeFactory({
+      items: [{
+        type: "webSearch",
+        query: "bounded title",
+        results: [{
+          type: "text_result",
+          title: `${"t".repeat(499)}🙂\ud800ignored`,
+          url: "https://example.com/bounded-title",
+          snippet: "evidence",
+        }],
+      }],
+    });
+    const result = await searchCodexSubscription("bounded title", { clientFactory: fake.factory });
+
+    expect(result.ok).toBe(true);
+    expect([...result.results[0].title]).toHaveLength(500);
+    expect(result.results[0].title.endsWith("🙂")).toBe(true);
+    expect(result.results[0].title).not.toMatch(/[\ud800-\udfff]/u);
+  });
 });
 
 describe("Codex quota and structured result validation", () => {
