@@ -15,9 +15,10 @@ allowBuilds:
 
 # Security floors for transitive Starlight/Astro dependencies.
 overrides:
-  js-yaml: 4.3.1
+  js-yaml: 4.3.2
   nanoid: 3.3.18
-  svgo: 4.0.2
+  sharp: 0.35.4
+  svgo: 4.1.0
 
 # Pre-approve native/postinstall build scripts so install is non-interactive.
 onlyBuiltDependencies:
