@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Extend the configured app's startup-and-hourly artifact retention sweep to
+  own raw `tool-output/<runId>/` directories under the existing
+  `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime
+  based so aged recordless orphans are cleaned; running, uncertain, or recently
+  modified directories are kept conservatively, symlinked or unsafe paths fail closed, and
+  pruned opaque `SessionHistory` references degrade to `available: false`.
 - Resolve inherited reasoning effort per selected model route. Model-only web,
   Slack, Telegram, cron, and webhook overrides now keep `runtime.effort` only
   for the configured primary or a model whose advertised ladder admits it;
@@ -19,7 +25,6 @@
   run-directory identity after opening, and removes identity-proven files after
   final validation failure; Node's lack
   of fd-relative `openat` leaves a documented residual same-user rename window.
-  These raw files have no automatic cleanup owner.
 - **Breaking: framework self-configuration has been removed.** The dedicated
   SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
   `/configure`, host-side proposal review/apply/restart transaction, and bundled

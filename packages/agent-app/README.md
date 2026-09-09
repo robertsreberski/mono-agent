@@ -114,7 +114,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   `mono-agent web-control status|reset` inspects or clears idle operational state.
 - Bind oversized tool-block persistence to the harness's authoritative run id,
   writing owner-private raw payloads under `artifacts.dir/tool-output/<runId>/`.
-  The sink is not injected into out-of-harness child callbacks.
+  The sink is not injected into out-of-harness child callbacks. The hourly
+  artifact sweep bounds run directories with the existing `artifacts.retention`
+  policy while conservatively retaining active, uncertain, or recently modified runs.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and a console label
   that defaults to the hostname and can be restored with `--name -`; on macOS
@@ -582,8 +584,14 @@ Configured harness runs install the run-bound tool-output sink. When a tool
 lifecycle record persists too, `SessionHistory` exposes only its opaque id and
 current availability, never the host path or contents. The immediate truncation
 summary still names a successfully saved path. These files contain raw,
-untrusted data and are not automatically removed by either run-artifact or
-tool-history retention.
+untrusted data. The hourly artifact sweep removes eligible run directories by
+the existing `artifacts.retention` age/count policy, with dry-run parity; it
+protects directories projected from running or uncertain summaries and can
+clean an aged orphan without a tool-history row. Recently modified directories
+are held through the next hourly interval, even under count pressure, and are
+revalidated before removal. Tool-history retention itself
+still owns only its database records and tombstones. After file pruning,
+`SessionHistory` recomputes the opaque reference as unavailable.
 
 For tool evidence from a failed, cancelled, or interrupted `RunHistory` candidate, use
 `{ "action": "search", "runIds": ["..."], "includeIsolated": true }` without
