@@ -1806,7 +1806,11 @@ describe("durable provider model binding", () => {
     expect(await store.load("legacy-unbound")).toHaveLength(2);
     const old = await readHistoryRecord(root, "legacy-unbound");
     const turn = await store.beginProviderSessionTurn("legacy-unbound", "bind", b);
-    expect(turn).toMatchObject({ modelKey: b.modelKey, providerSessionRevision: 0 });
+    expect(turn).toMatchObject({
+      modelKey: b.modelKey,
+      previousModelWasUnbound: true,
+      providerSessionRevision: 0,
+    });
     expect(turn.previousModelKey).toBeUndefined();
     expect(retired).toEqual([[expect.any(String), undefined]]);
     await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();

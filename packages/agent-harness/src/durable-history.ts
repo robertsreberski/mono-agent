@@ -618,6 +618,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const modelKey = binding?.modelKey ?? existingProvider?.modelKey;
       const previousModelKey = binding !== undefined && existingProvider?.modelKey !== modelKey
         ? existingProvider?.modelKey : undefined;
+      const previousModelWasUnbound = binding !== undefined
+        && existingProvider !== undefined
+        && existingProvider.modelKey === undefined
+        && (existingProvider.revision ?? 0) > 0;
       const conversationKey = historyKey(normalizedId);
       const locksIdentity = await this.ensureLocksRoot();
       let fence: DirtyFence;
@@ -678,6 +682,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         providerSessionId,
         ...modelBinding(modelKey),
         ...(previousModelKey === undefined ? {} : { previousModelKey }),
+        ...(previousModelWasUnbound ? { previousModelWasUnbound: true } : {}),
         providerSessionRevision: revision,
         prepareCommit: async (
           messages: readonly HistoryMessage[],

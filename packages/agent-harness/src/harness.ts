@@ -384,6 +384,7 @@ export class MonoAgentHarness implements AgentHarness {
       request.onLiveInputOwnership?.({ status: "closed", reason: "unsupported" });
     }
     let sessionRecord = !isolated && this.sessionsEnabled() ? this.sessionStore?.acquire(request.conversationId) : undefined;
+    const startedWithoutLocalSession = sessionRecord === undefined;
     let context: BuiltAgentContext | undefined;
     const emit = (event: RuntimeEventLike): void => {
       if (!turnContinuityCollector.observeRuntimeEvent(event)) return;
@@ -662,13 +663,7 @@ export class MonoAgentHarness implements AgentHarness {
           snapshot: this.sessionStoreSnapshot(),
         });
       } else if (this.sessionsEnabled()) {
-        if (sessionRecord === undefined) {
-          this.publishSessionEvent({
-            kind: "cold",
-            conversationId: request.conversationId,
-            snapshot: this.sessionStoreSnapshot(),
-          });
-        } else {
+        if (sessionRecord !== undefined) {
           this.publishSessionEvent(sessionEventFromRecord("acquired", sessionRecord, undefined, this.sessionStoreSnapshot()));
         }
       }
@@ -826,12 +821,20 @@ export class MonoAgentHarness implements AgentHarness {
       }
 
       if (!confirmedWarmSession) sessionRecord = undefined;
-      if (changedModel !== undefined) {
+      const coldReason = changedModel !== undefined
+        ? "model_change"
+        : providerHistoryTurn?.previousModelWasUnbound === true
+          ? "legacy_unbound_model"
+          : undefined;
+      if (coldReason !== undefined) {
         emit({ type: "session_boundary", kind: "resume_replay",
           conversationId: request.conversationId, providerSessionId: providerAttributionSessionId,
-          reason: "model_change", timestamp: this.nowIso() });
+          reason: coldReason, timestamp: this.nowIso() });
         this.publishSessionEvent({ kind: "cold", conversationId: request.conversationId,
-          reason: "model_change", snapshot: this.sessionStoreSnapshot() });
+          modelKey: requestedModelKey, reason: coldReason, snapshot: this.sessionStoreSnapshot() });
+      } else if (!isolated && startedWithoutLocalSession && this.sessionsEnabled()) {
+        this.publishSessionEvent({ kind: "cold", conversationId: request.conversationId,
+          modelKey: requestedModelKey, snapshot: this.sessionStoreSnapshot() });
       }
 
       // Omit history only for a confirmed live mapping to the exact epoch-owned
