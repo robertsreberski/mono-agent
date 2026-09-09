@@ -8,6 +8,7 @@ import { searchCodexSubscription } from "./codex-subscription-search.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { createCountingSemaphore } from "./shared/semaphore.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { renderBoundedWebSearchBody } from "./web-search-output.js";
 import {
   claimWebSearchRequest,
   createWebSearchRunState,
@@ -191,6 +192,7 @@ async function performSearch(
         codexSearch,
         searchState,
         callClaims,
+        maxResults: max,
       },
     );
   };
@@ -316,13 +318,8 @@ async function performSearch(
   const backend = providersUsed.size === 1
     ? [...providersUsed][0]
     : providersUsed.size > 1 ? "mixed" : config.backend;
-  const body = merged.length === 0
-    ? "No results."
-    : merged.map((result, index) => {
-        const snippet = result.snippet ? `\n   ${collapseWhitespace(result.snippet)}` : "";
-        return `${index + 1}. [${escapeMarkdownLabel(result.title || result.url)}](${result.url})${snippet}`;
-      }).join("\n\n");
-  const nextAction = merged.length > 0
+  const rendered = renderBoundedWebSearchBody(merged);
+  const nextAction = rendered.renderedResultCount > 0
     ? "fetch_existing_sources"
     : searchState.requestsUsed < searchState.maxRequests ? "refine_query" : "use_available_evidence";
   const text = [
@@ -334,23 +331,23 @@ async function performSearch(
       query: actualQueries[0] || normalizedQuery,
       providerFailures,
     }),
-    ...(language || time_range ? [`[Requested filters: language=${JSON.stringify(language || "default")}; time_range=${time_range || "any"}; provider-dependent, verify dates in sources.]`] : []),
-    body,
+    ...(language || time_range ? [`[Requested filters: language=${JSON.stringify(collapseWhitespace(language || "default").slice(0, 100))}; time_range=${collapseWhitespace(time_range || "any").slice(0, 100)}; provider-dependent, verify dates in sources.]`] : []),
+    rendered.body,
     "[END UNTRUSTED WEB SEARCH RESULTS]",
   ].join("\n");
   return {
     text,
     outcome: {
       status: "ok",
-      code: merged.length === 0 ? "no_results" : "ok",
+      code: rendered.renderedResultCount === 0 ? "no_results" : "ok",
       retryable: false,
       attempts,
       backend,
       cacheHit: false,
       durationMs: Date.now() - startedAt,
       bytes: Buffer.byteLength(text, "utf8"),
-      truncated: false,
-      resultCount: merged.length,
+      truncated: rendered.truncated,
+      resultCount: rendered.renderedResultCount,
       queueWaitMs, backendDurationMs,
       cooldownSkipCount: providerFailures.filter((r) => r.cooldown).length,
       quotaSkipCount: providerFailures.filter((r) => r.quotaSkipped).length,
@@ -680,7 +677,7 @@ async function searchOllama(query, options) {
           "User-Agent": "mono-agent-web/1",
           ...(official ? { Authorization: `Bearer ${config.apiKey}` } : {}),
         },
-        body: JSON.stringify({ query, max_results: 10 }),
+        body: JSON.stringify({ query, max_results: options.maxResults }),
         signal: requestSignal(options.signal),
         redirect: "error",
       });

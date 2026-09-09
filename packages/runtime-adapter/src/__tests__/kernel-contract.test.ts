@@ -58,6 +58,7 @@ type RuntimeRunComparableKeys =
   | "abortSignal"
   | "onEvent"
   | "toolLifecycleSink"
+  | "persistArtifact"
   | "effort"
   | "cwd"
   | "mcpServers"
@@ -127,6 +128,18 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
         options: {
           // @ts-expect-error route plugins cannot replace the mono sandbox implementation.
           sandbox: {},
+        },
+      };
+      assertAssignable<MonoRuntimeAttemptResolution>(resolution);
+    }
+  });
+
+  it("keeps the run-bound artifact sink out of attempt-resolver ownership", () => {
+    if (false) {
+      const resolution: MonoRuntimeAttemptResolution = {
+        options: {
+          // @ts-expect-error route plugins cannot replace the host's run-bound artifact sink.
+          persistArtifact: () => "/tmp/resolver-owned",
         },
       };
       assertAssignable<MonoRuntimeAttemptResolution>(resolution);

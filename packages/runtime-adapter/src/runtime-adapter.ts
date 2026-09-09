@@ -249,6 +249,8 @@ export interface MonoRuntimeAttemptResolution {
     readonly processJobs?: never;
     /** Attempt plugins cannot replace the host's durable monitor owner. */
     readonly monitors?: never;
+    /** Attempt plugins cannot replace the host's run-bound artifact sink. */
+    readonly persistArtifact?: never;
   };
   /** Provider-specific projection of the logical tool policy for this attempt. */
   readonly policyOptions?: Readonly<Pick<
@@ -406,8 +408,14 @@ function protectAttemptResolver(
 
 function withoutProtectedAttemptOptions<T extends Readonly<Record<string, unknown>>>(
   input: T,
-): Omit<T, "sandbox" | "processJobs" | "monitors"> {
-  const { sandbox: _callerSandbox, processJobs: _processJobs, monitors: _monitors, ...rest } = input;
+): Omit<T, "sandbox" | "processJobs" | "monitors" | "persistArtifact"> {
+  const {
+    sandbox: _callerSandbox,
+    processJobs: _processJobs,
+    monitors: _monitors,
+    persistArtifact: _persistArtifact,
+    ...rest
+  } = input;
   return rest;
 }
 

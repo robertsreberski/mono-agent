@@ -733,6 +733,7 @@ Per-call options (a non-exhaustive selection):
 | `abortSignal` | `AbortSignal` | Cancel the run. |
 | `liveInput` | `AsyncIterable<RuntimeLiveInputMessage>` | Stream of in-flight user messages. `accepted` reports native queue acceptance; `acknowledge` reports exact owned-operation transcript consumption; `uncertain` fences ambiguous delivery; proved-safe `reject` permits identified router replay. Stable nonblank IDs are required for cross-attempt replay. |
 | `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
+| `persistArtifact` | `({ filename, buffer, toolName, toolUseId }) => path \| null` | Synchronous artifact sink for this run. A run value overrides the host default and route-attempt resolvers cannot replace it. |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
 | `runArtifactDir` | `string` | Used as the Playwright MCP filename target. |
@@ -782,7 +783,7 @@ by one lazily started Node.js REPL child per run. You select them via
 
 - `cwd` (required for path-based tools)
 - The runtime context's `workspace` / `repoRoot` allow-list (paths outside both, plus `/tmp` and `process.cwd()`, are rejected), with optional `additionalReadRoots` / `additionalWriteRoots` for narrowly scoped managed file-tool access. Additional roots require both the requested path and its realpath to stay inside the configured roots, so a symlink cannot escape them.
-- Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
+- Output truncation with optional host-provided artifact persistence. The configured app binds this per run under `artifacts.dir/tool-output/<runId>/`.
 
 The Pi-native tool context may structurally receive a host process-job
 controller. Only then do Exec and Bash add optional `background` and
@@ -819,6 +820,13 @@ across route retries in one logical run. Cache hits, in-flight followers,
 cooldown skips, and quota skips do not spend it. Rate-limited providers are
 deferred for that run, with retry timing and an explicit next action returned
 to the model; children and later runs receive fresh budgets.
+
+Each normalized WebSearch result caps its title at 500 characters and its
+snippet at 4,000 characters, including a visible truncation marker directing
+the model to `WebFetch`. The ranked result body is capped at 64 KiB UTF-8;
+lower-ranked snippets shrink before whole results are omitted, while the
+control, metadata, filter, and balanced untrusted-result framing always remain.
+Ollama receives the caller's effective 1–10 result limit as `max_results`.
 
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete
 skill instructions by default, including content beyond the former
@@ -1002,10 +1010,17 @@ boundary, not approving the call.
 The kernel's tool-bloat guard (`agent/tool-bloat.js`, internal) enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
 
 1. Calls your `persistArtifact({ filename, buffer, toolName, toolUseId })` callback (if you supplied one).
-2. Substitutes a compact text reference in the agent's transcript.
+2. For text-only overflow, substitutes a compact summary plus a UTF-8-safe
+   60/40 head/tail sample inside a new balanced untrusted frame. The explicit
+   notice says the omitted middle may contain content and the retained tail is
+   not the source ending. Image, binary, and mixed payloads stay summary-only.
 3. Emits a `runtime_warning` with `warning_kind: "tool_payload_truncated"` and the saved-paths array.
 
-Hosts that don't supply `persistArtifact` get the truncation summary but no on-disk capture.
+Hosts that don't supply `persistArtifact`, or whose sink fails, get honest
+`persistence unavailable` text and no on-disk capture; the tool call still
+completes. The configured app writes owner-private raw, untrusted files under
+`artifacts.dir/tool-output/<runId>/`. Neither run-artifact retention nor
+tool-history retention cleans them up automatically.
 
 Before that byte cap runs, the builtin `Read` tool normalizes raster images with an edge longer than 8,000 px to fit within an 8,000 × 8,000 px box. Resizing preserves aspect ratio and the source format (resized BMP input becomes PNG), retains GIF/WebP animation, and never modifies the source file. Images already within the limit are embedded byte-for-byte unchanged.
 

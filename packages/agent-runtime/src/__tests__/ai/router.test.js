@@ -483,6 +483,22 @@ describe("createRouterRuntime — fallback on retryable", () => {
     expect(executeMock).not.toHaveBeenCalled();
   });
 
+  it("rejects an attempt resolver that tries to replace the run-bound artifact sink", async () => {
+    const router = createRouterRuntime({
+      chain: [modelRef("opencode-go", "deepseek-v4-pro")],
+      resolveAttempt: () => ({ options: { persistArtifact: () => "/tmp/resolver-owned" } }),
+    });
+
+    const result = await router.run("sys", {
+      messages: [],
+      persistArtifact: () => "/tmp/host-owned",
+    });
+
+    expect(result.failureKind).toBe("provider_unavailable_exhausted");
+    expect(result.error).toBe("route attempt resolver cannot override persistArtifact");
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
   it("normalizes auth-shaped provider_unavailable failures before falling back", async () => {
     executeMock
       .mockResolvedValueOnce({

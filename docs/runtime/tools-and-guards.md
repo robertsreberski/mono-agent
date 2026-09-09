@@ -210,7 +210,9 @@ pipes and avoids relying on Node's special IPC file descriptor.
 
 ## Tool-output bloat guard (auto)
 
-Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a result exceeds the budget, the guard attempts to save each original block through the artifact sink. The compact replacement references only paths the sink successfully returned; if the sink is absent or a write fails, omitted bytes are not recoverable. Successful files land under `artifacts.dir/tool-output/` and are separate from JSONL replay.
+Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a text-only result exceeds the budget, the guard keeps a UTF-8-safe 60/40 head/tail sample inside a new balanced untrusted-content frame. A host notice says that the omitted middle may contain more content, so the retained tail is not mistaken for the source ending. Image, binary, and mixed payloads retain the summary-only fallback.
+
+Before rewriting the result, the guard offers every original block to the configured app's per-run artifact sink. Successful files land as owner-private files under `artifacts.dir/tool-output/<runId>/`; only returned paths appear in the summary. A missing or failed sink is reported as `persistence unavailable` and never fails the tool call. These files contain raw, untrusted payloads: keep the artifact directory access-controlled. No automatic cleanup owns `tool-output/<runId>` today, and JSONL or tool-history retention does not delete these files.
 
 Images get a separate, larger budget than text so vision payloads are not clipped at the text limit.
 

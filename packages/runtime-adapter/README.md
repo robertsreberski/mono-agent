@@ -115,6 +115,10 @@ metadata, and opaque artifact references. Hosts should make this sink
 idempotent: a retry of an identical phase returns the same record and a
 conflicting retry fails rather than overwriting history.
 
+`RuntimeRunOptions.persistArtifact` is the synchronous, host-owned artifact
+sink for oversized tool blocks. A per-run value overrides the kernel host
+default. Fallback route-attempt resolvers cannot supply or replace it.
+
 ## Architecture
 
 `MonitorStartRequest` carries optional `wakeOn`, `dedupe`, and

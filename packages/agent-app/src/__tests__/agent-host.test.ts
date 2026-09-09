@@ -1364,6 +1364,7 @@ describe("agent host composition helpers", () => {
       render: "auto",
       browserCommand: "/opt/homebrew/bin/agent-browser",
     });
+    expect(fake.calls[0]?.options.persistArtifact).toBeTypeOf("function");
   });
 
   it("threads the same WebSearch and WebFetch config into subagent runs", async () => {
@@ -1429,6 +1430,8 @@ describe("agent host composition helpers", () => {
       render: "auto",
       browserCommand: "/opt/homebrew/bin/agent-browser",
     });
+    expect(fake.calls[0]?.options.persistArtifact).toBeTypeOf("function");
+    expect(childCall?.options.persistArtifact).toBeUndefined();
   });
 
   it("creates the default Mono runtime with config workspace and artifact directory", () => {

@@ -50,9 +50,8 @@ import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
  */
 
 // Host-integration callbacks bound onto every request. This list is the runtime
-// half of the `Pick<AgentRuntimeHostOptions, ...>` clause in the `RuntimeRequest`
-// typedef (ai/types.js) -- the two must stay identical, or hosts get keys the
-// declared request shape does not admit.
+// host-default half of `RuntimeRequest` in ai/types.js. Every entry must be
+// admitted either by RuntimeRunOptions itself or by its host-option Pick.
 const HOST_KEYS = [
   "resolveCustomPricing",
   "resolvePiApiKey",
