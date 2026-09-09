@@ -23,6 +23,8 @@ import type { SkillsCache } from "../skills/index.js";
 
 const tempDirs: string[] = [];
 const model = { sdk: "pi", provider: "openai-codex", model: "gpt-5.5", reference: "pi:openai-codex:gpt-5.5" } as const;
+// Canonical binding persisted beside the durable epoch for the requested primary.
+const modelKey = "openai-codex:gpt-5.5";
 const HISTORY_MARKER = "EARLIER-HISTORY-MARKER";
 
 afterEach(async () => {
@@ -754,13 +756,13 @@ describe("AgentHarness continuous sessions", () => {
         { role: "user", content: expect.stringContaining("third question") },
       ]);
       expect((await readHistoryRecord(historyRoot, conversationId)).providerSession).toEqual({
-        epoch: rotated.providerSession.epoch, revision: 1,
+        epoch: rotated.providerSession.epoch, revision: 1, modelKey,
       });
       await run("fourth question");
       expect(fake.calls[3]?.options.sessionId).toBe(newId);
       expect(fake.calls[3]?.options.messages).toEqual([{ role: "user", content: expect.stringContaining("fourth question") }]);
       expect((await readHistoryRecord(historyRoot, conversationId)).providerSession).toEqual({
-        epoch: rotated.providerSession.epoch, revision: 2,
+        epoch: rotated.providerSession.epoch, revision: 2, modelKey,
       });
       expect(events.filter((event) => event.type === "session_boundary")).toEqual([]);
     } finally {
@@ -781,7 +783,7 @@ describe("AgentHarness continuous sessions", () => {
       expect(first.providerSession.revision).toBe(1);
       await harness.run(request("primary", "second"));
       expect((await readHistoryRecord(historyRoot, "primary")).providerSession).toEqual({
-        epoch: first.providerSession.epoch, revision: 2,
+        epoch: first.providerSession.epoch, revision: 2, modelKey,
       });
       expect(fake.calls[1]?.options.sessionId).toBe(fake.calls[0]?.options.sessionId);
       expect(fake.calls[1]?.options.messages).toEqual([{ role: "user", content: expect.stringContaining("second") }]);
