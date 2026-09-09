@@ -42,8 +42,14 @@ export interface ProviderSessionTurnCommitOptions {
   readonly providerSessionSynced: boolean;
 }
 
+export interface ProviderSessionTurnBinding {
+  readonly modelKey: string;
+}
+
 /** A conversation-exclusive provider turn owned by durable history state. */
 export interface ConversationHistoryProviderSessionTurn {
+  readonly modelKey?: string;
+  readonly previousModelKey?: string;
   /** Epoch-derived, filesystem-safe provider session id for this turn. */
   readonly providerSessionId: string;
   /** Durable transcript revision present before this turn starts. */
@@ -88,6 +94,8 @@ export interface ConversationHistoryContextImport {
 }
 
 export interface ConversationHistoryStore {
+  /** Checks, persists and retires requested-primary model bindings. */
+  readonly providerSessionModelBinding?: "v1";
   /**
    * Present only when epoch rotation/retention can fail closed while removing
    * provider-owned durable transcripts that canonical history supersedes.
@@ -127,6 +135,7 @@ export interface ConversationHistoryStore {
   beginProviderSessionTurn?(
     conversationId: string,
     runId: string,
+    binding?: ProviderSessionTurnBinding,
   ): Promise<ConversationHistoryProviderSessionTurn>;
 }
 
@@ -245,6 +254,7 @@ export interface AgentHarnessSessionBoundary {
 export type AgentHarnessSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
 
 export interface AgentHarnessSessionSnapshot {
+  readonly modelKey?: string;
   readonly conversationId: string;
   readonly providerSessionId: string;
   /** Durable provider transcript revision held by this process, when coordinated. */
@@ -257,6 +267,7 @@ export interface AgentHarnessSessionSnapshot {
 }
 
 export interface AgentHarnessSessionEvent {
+  readonly modelKey?: string;
   readonly kind: AgentHarnessSessionEventKind;
   readonly conversationId: string;
   readonly providerSessionId?: string;

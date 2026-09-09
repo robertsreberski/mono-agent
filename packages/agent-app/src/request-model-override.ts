@@ -345,6 +345,8 @@ function applyLocalProviderBlock(
 }
 
 /**
+ * Metadata precedence must match harness requestSessionModel so the declared
+ * session primary and executed model agree before context assembly.
  * Read model/effort from webhook, cron, web-console, TUI, Telegram, or Slack request metadata.
  * Webhook takes precedence, then cron, then the web block, then its optional TUI
  * compatibility mirror, then Telegram, then Slack. A turn carrying none of these blocks

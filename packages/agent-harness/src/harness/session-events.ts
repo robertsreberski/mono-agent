@@ -15,6 +15,7 @@ export function sessionEventFromRecord(
 ): AgentHarnessSessionEvent {
   return {
     kind,
+    ...(record.modelKey === undefined ? {} : { modelKey: record.modelKey }),
     conversationId: record.conversationId,
     providerSessionId: record.providerSessionId,
     ...(record.providerSessionRevision === undefined

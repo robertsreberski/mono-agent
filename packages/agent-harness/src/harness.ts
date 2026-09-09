@@ -8,6 +8,7 @@ import type {
 import { randomUUID } from "node:crypto";
 import {
   monoRuntimeSupportsSessionResume,
+  modelReferenceKey,
   type RuntimeResult,
 } from "@mono-agent/runtime-adapter";
 
@@ -60,7 +61,7 @@ import {
 import { buildSuccessfulTurn, persistSuccessfulMemory } from "./harness/memory-persistence.js";
 import {
   createDefaultRunId,
-  interactiveModelOverrideCanOwnLiveInput,
+  requestSessionModel,
   isCronRequest,
   requestOverridesModel,
   runSourceFromRequest,
@@ -81,6 +82,7 @@ import {
 } from "./harness/run-results.js";
 import { runHarnessRuntime } from "./harness/runtime-execution.js";
 import { sessionEventFromRecord, withSessionBoundaryTimestamp } from "./harness/session-events.js";
+import { createSessionRuntimeResolver, sessionModelKey, type ProviderSessionHandle, type SessionRuntimeResolver } from "./session-runtime.js";
 import { retireRunResultSession } from "./harness/session-retirement.js";
 import { validateOptions, validateRequest } from "./harness/validation.js";
 import { appendVerbatimHistoryTurn } from "./harness/verbatim-history.js";
@@ -108,6 +110,7 @@ interface TurnContinuityPublicationBarrier {
 export class MonoAgentHarness implements AgentHarness {
   readonly liveInputOwnership = { version: 1 } as const;
   private readonly options: AgentHarnessOptions;
+  private readonly runtimeForSession: SessionRuntimeResolver;
   private readonly sessionStore: RuntimeSessionStore | undefined;
   private readonly liveSessionManager: LiveSessionManager | undefined;
   private readonly activeLiveInputs = new Map<string, LiveInputMailbox>();
@@ -134,6 +137,7 @@ export class MonoAgentHarness implements AgentHarness {
   constructor(options: AgentHarnessOptions, internalOptions: MonoAgentHarnessInternalOptions = {}) {
     validateOptions(options);
     this.options = options;
+    this.runtimeForSession = createSessionRuntimeResolver(options);
     const shutdownDrainTimeoutMs = internalOptions.shutdownDrainTimeoutMs ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
     if (!Number.isSafeInteger(shutdownDrainTimeoutMs) || shutdownDrainTimeoutMs <= 0) {
       throw new TypeError("shutdownDrainTimeoutMs must be a positive safe integer.");
@@ -147,7 +151,7 @@ export class MonoAgentHarness implements AgentHarness {
         idleTimeoutMs: options.session.idleTimeoutMs,
         onEvict: async (record, reason) => {
           this.publishSessionEvent(sessionEventFromRecord("evicted", record, reason, this.sessionStoreSnapshot()));
-          await this.options.runtime.disposeSession?.(record.providerSessionId);
+          await this.runtimeForSession(record.modelKey).disposeSession?.(record.providerSessionId);
         },
       })
       : undefined;
@@ -301,22 +305,12 @@ export class MonoAgentHarness implements AgentHarness {
     // Computed before recorder construction so even running/early-failed summaries
     // carry the run's session identity.
     //
-    // A per-request MODEL override is isolated, regardless of the opt-in, ONLY
-    // when it names a model DIFFERENT from the harness default: the turn runs on a
-    // different model (often a different runtime) and the provider session is keyed
-    // by conversationId + bound to a model, so resuming or persisting it against
-    // the shared session would mix two models' lineage (durable-session corruption
-    // / wrong-runtime disposal). Effort-only, same-model, and invalid overrides
-    // leave the model chain unchanged, so they keep the shared session — matching
-    // the runtime/session-key decision taken later in runRuntime.
+    // Model changes rotate the bound epoch; only proactive and continuation
+    // policy isolates a turn from the conversation's provider session.
     const proactiveIsolated = this.isProactiveIsolated(request);
-    const modelOverrideIsolated = requestOverridesModel(request, this.options.model);
     const continuationIsolated = request.continuation !== undefined;
-    const isolated = proactiveIsolated || modelOverrideIsolated || continuationIsolated;
-    const mailboxEligible = !isolated || (
-      modelOverrideIsolated
-      && interactiveModelOverrideCanOwnLiveInput(request, this.options.model)
-    );
+    const isolated = proactiveIsolated || continuationIsolated;
+    const mailboxEligible = !isolated;
     const turnContinuityCollector = new UncommittedTurnCollector();
     let liveInputMailbox: LiveInputMailbox | undefined;
     let liveInputCloseReason: "closed" | "failed" = "failed";
@@ -424,7 +418,21 @@ export class MonoAgentHarness implements AgentHarness {
     let providerSessionSynced = false;
     let coordinatedProviderAttemptEligibleForSync = false;
     let providerAttemptStarted = false;
-    const providerAttemptSessionIds = new Set<string>();
+    const providerAttemptSessionIds = new Map<string, ProviderSessionHandle>();
+    let requestedModelKey = sessionModelKey(this.options.model);
+    let activeAttemptModelKey = requestedModelKey;
+    const retireSessions = async (record: RuntimeSessionRecord | undefined, ...ids: readonly unknown[]): Promise<void> => {
+      const handles = ids.flatMap((id): ProviderSessionHandle[] => {
+        if (typeof id !== "string" || id.trim().length === 0) return [];
+        if (record?.providerSessionId === id) return [record];
+        return [providerAttemptSessionIds.get(id) ?? {
+          providerSessionId: id,
+          modelKey: id === coordinatedProviderSessionId ? requestedModelKey : activeAttemptModelKey,
+        }];
+      });
+      await retireRunResultSession(this.options, this.runtimeForSession, this.sessionStore,
+        this.sessionsEnabled(), request.conversationId, record, ...handles);
+    };
     let runtimeResult: RuntimeResult | undefined;
     let persistText = request.userMessage;
     let terminalOwner: "running" | "success" | "cancelled" | "failed" = "running";
@@ -455,12 +463,12 @@ export class MonoAgentHarness implements AgentHarness {
     };
     const noteProviderStart = (providerSessionId: string | undefined): void => {
       providerAttemptStarted = true;
-      if (providerSessionId !== undefined) providerAttemptSessionIds.add(providerSessionId);
+      if (providerSessionId !== undefined) providerAttemptSessionIds.set(providerSessionId, { providerSessionId, modelKey: activeAttemptModelKey });
       leavePending();
     };
     const noteProviderResultSession = (providerSessionId: unknown): void => {
       if (typeof providerSessionId === "string" && providerSessionId.trim().length > 0) {
-        providerAttemptSessionIds.add(providerSessionId);
+        providerAttemptSessionIds.set(providerSessionId, { providerSessionId, modelKey: activeAttemptModelKey });
       }
     };
     const throwIfCancellationOwned = (): void => {
@@ -543,10 +551,9 @@ export class MonoAgentHarness implements AgentHarness {
           await this.sessionStore?.evict(request.conversationId, "stale", sessionRecord.providerSessionId);
         }
       } else {
-        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-          request.conversationId,
+        await retireSessions(
           sessionRecord,
-          ...providerAttemptSessionIds,
+          ...providerAttemptSessionIds.keys(),
           coordinatedProviderSessionId,
           runtimeResult?.providerSessionId,
         );
@@ -632,15 +639,15 @@ export class MonoAgentHarness implements AgentHarness {
     request.abortSignal.addEventListener("abort", onAbort, { once: true });
     if (request.abortSignal.aborted) onAbort();
     try {
+      requestedModelKey = modelReferenceKey(requestSessionModel(request, this.options.model));
+      activeAttemptModelKey = requestedModelKey;
+      // Resolve inside the guarded lifecycle, before any history is omitted.
+      this.runtimeForSession(requestedModelKey);
       if (request.sessionBoundary !== undefined) {
         emit(withSessionBoundaryTimestamp(request.sessionBoundary, this.nowIso()));
       }
       if (isolated) {
-        const reason = continuationIsolated
-          ? "continuation"
-          : proactiveIsolated
-            ? "proactive"
-            : "model_override";
+        const reason = continuationIsolated ? "continuation" : "proactive";
         emit({
           type: "session_boundary",
           kind: "isolated",
@@ -684,6 +691,7 @@ export class MonoAgentHarness implements AgentHarness {
       // JSONL before host history, and the stale transcript would then resurrect.
       // Custom history stores keep process-local warm sessions, but never receive
       // piSessionsRoot unless they implement this coordinator contract.
+      const localPreviousModelKey = sessionRecord?.modelKey;
       const historyStore = this.options.historyStore;
       const contextImportSupport = eligibleContextImport(this.options);
       const beginProviderSessionTurn = historyStore?.beginProviderSessionTurn?.bind(historyStore);
@@ -691,10 +699,17 @@ export class MonoAgentHarness implements AgentHarness {
         && this.sessionsEnabled()
         && this.options.piSessionsRoot !== undefined
         && historyStore?.providerSessionRetirement === "fail-closed"
-        && beginProviderSessionTurn !== undefined;
+        && beginProviderSessionTurn !== undefined
+        && (historyStore?.providerSessionModelBinding === "v1"
+          || requestedModelKey === sessionModelKey(this.options.model));
       if (durableProviderSessionsEnabled) {
         const beginMutation = (async () => {
-          providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId);
+          providerHistoryTurn = await beginProviderSessionTurn(request.conversationId, runId,
+            ...(historyStore?.providerSessionModelBinding === "v1" ? [{ modelKey: requestedModelKey }] : []));
+          if (historyStore?.providerSessionModelBinding === "v1" && providerHistoryTurn.modelKey !== requestedModelKey) {
+            throw new AgentHarnessError("provider_session_model_binding_mismatch",
+              "Durable history did not acknowledge the requested session model binding.");
+          }
         })();
         historyMutation = beginMutation.then(() => undefined, () => undefined);
         await beginMutation;
@@ -734,8 +749,7 @@ export class MonoAgentHarness implements AgentHarness {
           && sessionRecord.historyVersion !== exclusiveHistoryTurn?.historyVersion
         ) {
           const stale = sessionRecord;
-          await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-            request.conversationId,
+          await retireSessions(
             stale,
             stale.providerSessionId,
           );
@@ -743,11 +757,20 @@ export class MonoAgentHarness implements AgentHarness {
         }
       }
 
+      const changedModel = providerHistoryTurn?.previousModelKey
+        ?? (providerHistoryTurn === undefined && localPreviousModelKey !== requestedModelKey
+          ? localPreviousModelKey : undefined);
+      if (sessionRecord !== undefined && sessionRecord.modelKey !== requestedModelKey) {
+        await retireSessions(sessionRecord, sessionRecord.providerSessionId);
+        sessionRecord = undefined;
+      }
+
       let resumeSessionId = providerHistoryTurn?.providerSessionId ?? sessionRecord?.providerSessionId;
       let providerAttributionSessionId = !isolated && this.sessionsEnabled()
         ? resumeSessionId ?? randomUUID()
         : undefined;
       const confirmedWarmSession = sessionRecord !== undefined
+        && sessionRecord.modelKey === requestedModelKey
         && sessionRecord.providerSessionId === resumeSessionId
         && (exclusiveHistoryTurn === undefined
           || sessionRecord.historyVersion === exclusiveHistoryTurn.historyVersion)
@@ -761,7 +784,7 @@ export class MonoAgentHarness implements AgentHarness {
         // constructed harness whose local RuntimeSessionStore is empty. Without
         // this barrier, that harness could adopt an older live Pi object for the
         // same epoch and silently bypass the now-current JSONL on disk.
-        if (this.options.runtime.refreshSession === undefined) {
+        if (this.runtimeForSession(requestedModelKey).refreshSession === undefined) {
           if (sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId) {
             this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
           }
@@ -771,7 +794,7 @@ export class MonoAgentHarness implements AgentHarness {
           );
         }
         try {
-          await this.options.runtime.refreshSession(providerHistoryTurn.providerSessionId);
+          await this.runtimeForSession(requestedModelKey).refreshSession!(providerHistoryTurn.providerSessionId);
         } catch (error) {
           if (sessionRecord?.providerSessionId === providerHistoryTurn.providerSessionId) {
             this.sessionStore?.forget(request.conversationId, sessionRecord.providerSessionId);
@@ -795,12 +818,20 @@ export class MonoAgentHarness implements AgentHarness {
           // A dirty/migrated/missing host record rotates the provider epoch. Drop a
           // stale process-local mapping immediately; it can never be authoritative
           // for the newly-issued durable provider id.
-          await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-            request.conversationId,
+          await retireSessions(
             sessionRecord,
             sessionRecord.providerSessionId,
           );
         }
+      }
+
+      if (!confirmedWarmSession) sessionRecord = undefined;
+      if (changedModel !== undefined) {
+        emit({ type: "session_boundary", kind: "resume_replay",
+          conversationId: request.conversationId, providerSessionId: providerAttributionSessionId,
+          reason: "model_change", timestamp: this.nowIso() });
+        this.publishSessionEvent({ kind: "cold", conversationId: request.conversationId,
+          reason: "model_change", snapshot: this.sessionStoreSnapshot() });
       }
 
       // Omit history only for a confirmed live mapping to the exact epoch-owned
@@ -834,6 +865,8 @@ export class MonoAgentHarness implements AgentHarness {
           providerAttributionSessionId,
           providerHistoryTurn === undefined ? undefined : this.options.piSessionsRoot,
           isolated,
+          { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
+            onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },
           prepared.skillDisclosureEntries,
           prepared.history,
           prepared.historyOmitted,
@@ -869,10 +902,9 @@ export class MonoAgentHarness implements AgentHarness {
           reason: shouldRetrySessionResumeError(resumeError) ? "resume_error" : "runtime_result",
           timestamp: this.nowIso(),
         });
-        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-          request.conversationId,
+        await retireSessions(
           sessionRecord,
-          ...providerAttemptSessionIds,
+          ...providerAttemptSessionIds.keys(),
           resumeSessionId,
         );
         resumeSessionId = undefined;
@@ -898,6 +930,8 @@ export class MonoAgentHarness implements AgentHarness {
           providerAttributionSessionId,
           undefined,
           isolated,
+          { modelKey: requestedModelKey, runtimeForSession: this.runtimeForSession,
+            onRuntimeSelected: (key) => { activeAttemptModelKey = key; } },
           prepared.skillDisclosureEntries,
           prepared.history,
           prepared.historyOmitted,
@@ -925,8 +959,7 @@ export class MonoAgentHarness implements AgentHarness {
       // retirement below), and return a cancelled failure instead.
       if (request.abortSignal.aborted) {
         onAbort();
-        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-          request.conversationId,
+        await retireSessions(
           sessionRecord,
           runtimeResult.providerSessionId,
         );
@@ -987,10 +1020,9 @@ export class MonoAgentHarness implements AgentHarness {
         // Failure-shaped results may still have appended provider transcript
         // state. Isolated turns do not publish shared continuity, so retire every
         // attempted identity directly.
-        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-          request.conversationId,
+        await retireSessions(
           sessionRecord,
-          ...providerAttemptSessionIds,
+          ...providerAttemptSessionIds.keys(),
           runtimeResult.providerSessionId,
         );
         const summary = await recorder.finish({
@@ -1033,10 +1065,9 @@ export class MonoAgentHarness implements AgentHarness {
         const summary = await recorder.finish(failedResult);
         // Isolated empty turns do not append shared history, so retire any
         // retained provider session directly.
-        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-          request.conversationId,
+        await retireSessions(
           sessionRecord,
-          ...providerAttemptSessionIds,
+          ...providerAttemptSessionIds.keys(),
           runtimeResult.providerSessionId,
         );
         return {
@@ -1056,10 +1087,9 @@ export class MonoAgentHarness implements AgentHarness {
         // An isolated proactive turn must not warm the shared conversation's
         // session. Retire its one-shot provider session before the final commit
         // check so an abort during disposal still persists no history/memory.
-        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-          request.conversationId,
+        await retireSessions(
           sessionRecord,
-          ...providerAttemptSessionIds,
+          ...providerAttemptSessionIds.keys(),
           runtimeResult.providerSessionId,
         );
       }
@@ -1114,10 +1144,10 @@ export class MonoAgentHarness implements AgentHarness {
               providerSessionId.length > 0
               && providerSessionId === providerHistoryTurn.providerSessionId
               && coordinatedProviderAttemptEligibleForSync
-              && this.options.runtime.syncSession !== undefined
+              && this.runtimeForSession(requestedModelKey).syncSession !== undefined
             ) {
               try {
-                providerSessionSynced = await this.options.runtime.syncSession(providerSessionId) === true;
+                providerSessionSynced = await this.runtimeForSession(requestedModelKey).syncSession!(providerSessionId) === true;
               } catch {
                 providerSessionSynced = false;
               }
@@ -1126,10 +1156,9 @@ export class MonoAgentHarness implements AgentHarness {
               // The answer can still commit through canonical host history, but
               // this provider epoch must never resume. prepareCommit(false)
               // rotates the next epoch; destructive cleanup is only reclamation.
-              await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-                request.conversationId,
+              await retireSessions(
                 sessionRecord,
-                ...providerAttemptSessionIds,
+                ...providerAttemptSessionIds.keys(),
                 providerHistoryTurn.providerSessionId,
                 runtimeResult.providerSessionId,
               );
@@ -1175,10 +1204,9 @@ export class MonoAgentHarness implements AgentHarness {
           await preparedHistoryAppend?.abort().catch(() => undefined);
           preparedHistoryAppend = undefined;
           if (!isolated) {
-            await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-              request.conversationId,
+            await retireSessions(
               sessionRecord,
-              ...providerAttemptSessionIds,
+              ...providerAttemptSessionIds.keys(),
               runtimeResult.providerSessionId,
             );
           }
@@ -1224,10 +1252,9 @@ export class MonoAgentHarness implements AgentHarness {
           // both newly-created and already-warm session identities before the
           // failed turn is exposed.
           if (!isolated) {
-            await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-              request.conversationId,
+            await retireSessions(
               sessionRecord,
-              ...providerAttemptSessionIds,
+              ...providerAttemptSessionIds.keys(),
               runtimeResult.providerSessionId,
             );
           }
@@ -1243,6 +1270,7 @@ export class MonoAgentHarness implements AgentHarness {
             ? (coordinatedProviderSessionRevision as number) + 1
             : undefined,
           providerHistoryOwnershipTransferred ? undefined : committedHistoryVersion,
+          requestedModelKey,
         );
       }
 
@@ -1317,10 +1345,9 @@ export class MonoAgentHarness implements AgentHarness {
       // Isolated pre-commit failures have no shared continuity account. Retire
       // any provider transcript they may have changed before returning.
       if (!conversationCommitStarted && providerAttemptStarted) {
-        await retireRunResultSession(this.options, this.sessionStore, this.sessionsEnabled(),
-          request.conversationId,
+        await retireSessions(
           sessionRecord,
-          ...providerAttemptSessionIds,
+          ...providerAttemptSessionIds.keys(),
           providerHistoryTurn?.providerSessionId,
           runtimeResult?.providerSessionId,
         );
@@ -1568,6 +1595,7 @@ export class MonoAgentHarness implements AgentHarness {
     owner: RuntimeSessionRecord | undefined,
     providerSessionRevision?: number,
     historyVersion?: string,
+    modelKey?: string,
   ): void {
     if (!this.sessionsEnabled()) {
       return;
@@ -1575,7 +1603,7 @@ export class MonoAgentHarness implements AgentHarness {
     if (typeof providerSessionId !== "string" || providerSessionId.trim().length === 0) {
       return;
     }
-    this.sessionStore?.save(conversationId, providerSessionId, owner, providerSessionRevision, historyVersion);
+    this.sessionStore?.save(conversationId, providerSessionId, owner, providerSessionRevision, historyVersion, modelKey);
     const snapshot = this.sessionStoreSnapshot();
     const saved = snapshot.find((entry) => entry.conversationId === conversationId && entry.providerSessionId === providerSessionId);
     if (saved !== undefined) {

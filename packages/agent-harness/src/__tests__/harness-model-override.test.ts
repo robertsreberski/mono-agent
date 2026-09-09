@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { RuntimeModelReference, RuntimeResult, RuntimeRunOptions } from "@mono-agent/runtime-adapter";
 
-import { createAgentHarness, createInMemoryHistoryStore } from "../index.js";
+import { createAgentHarness, createDurableHistoryStore, createInMemoryHistoryStore } from "../index.js";
 import type { AgentHarnessRequest, AgentHarnessSessionEvent, AgentHarnessSessionOptions } from "../index.js";
 
 const tempDirs: string[] = [];
@@ -298,8 +298,8 @@ function hostWakeMetadata(
   return metadata;
 }
 
-describe("AgentHarness per-request override session isolation", () => {
-  it("gives an interactive different-model run same-run live input without joining the default session", async () => {
+describe("AgentHarness per-request override session binding", () => {
+  it("warms an interactive override and records same-run live input before reseeding the default", async () => {
     const identityPath = await identityFixture();
     const historyStore = createInMemoryHistoryStore({ maxMessages: 20 });
     const sessionEvents: AgentHarnessSessionEvent[] = [];
@@ -316,9 +316,9 @@ describe("AgentHarness per-request override session isolation", () => {
         overrideCalls.push({ prompt, options });
         overrideStarted();
         const iterator = options.liveInput?.[Symbol.asyncIterator]();
-        if (iterator === undefined) throw new Error("Expected an isolated interactive mailbox.");
+        if (iterator === undefined) throw new Error("Expected an interactive mailbox.");
         const next = await iterator.next();
-        if (next.done) throw new Error("Isolated interactive mailbox closed before delivery.");
+        if (next.done) throw new Error("Interactive mailbox closed before delivery.");
         consumed.push({ id: next.value.id, body: next.value.body });
         next.value.acknowledge?.();
         return { text: "override answer", providerSessionId: "override-session" };
@@ -372,12 +372,12 @@ describe("AgentHarness per-request override session isolation", () => {
     expect(overrideCalls[0]?.options).toMatchObject({ model: claudeModel });
     expect(overrideCalls[0]?.options.sessionId).toBeUndefined();
     expect(overrideCalls[0]?.options.providerSessionId).toBeUndefined();
-    expect(overrideCalls[0]?.options.sessionKeepAlive).toBeUndefined();
+    expect(overrideCalls[0]?.options.sessionKeepAlive).toBe(true);
     expect(overrideCalls[0]?.options.piSessionsRoot).toBeUndefined();
     expect(sessionEvents).toContainEqual(expect.objectContaining({
-      kind: "isolated",
+      kind: "cold",
       conversationId: "conv",
-      reason: "model_override",
+      reason: "model_change",
     }));
     expect((await historyStore.load("conv")).filter((message) => message.runId === "run-2")).toMatchObject([
       { role: "user", content: "different-model request", runId: "run-2" },
@@ -386,9 +386,9 @@ describe("AgentHarness per-request override session isolation", () => {
     ]);
 
     await harness.run(request("conv", "resume default"));
-    expect(base.calls[1]?.options.sessionId).toBe("base-session-1");
-    expect(base.calls[1]?.options.providerSessionId).toBe("base-session-1");
-    expect(JSON.stringify(base.calls[1]?.options.messages)).not.toContain("same-run constraint");
+    expect(base.calls[1]?.options.sessionId).toBeUndefined();
+    expect(base.calls[1]?.options.providerSessionId).toBeUndefined();
+    expect(JSON.stringify(base.calls[1]?.options.messages)).toContain("same-run constraint");
   });
 
   it.each([
@@ -440,7 +440,7 @@ describe("AgentHarness per-request override session isolation", () => {
       ),
     })],
   ] satisfies ReadonlyArray<readonly [string, () => Pick<AgentHarnessRequest, "metadata" | "continuation">]>)(
-    "keeps %s isolated model work mailbox-ineligible",
+    "uses the ordinary mailbox policy for %s model work",
     async (_name, requestFields) => {
       const identityPath = await identityFixture();
       let runtimeStarted!: () => void;
@@ -472,21 +472,23 @@ describe("AgentHarness per-request override session isolation", () => {
       });
       await started;
 
-      expect(calls[0]?.options.liveInput).toBeUndefined();
-      expect(harness.offerLiveInput?.({
+      const isolated = _name === "continuation";
+      expect(calls[0]?.options.liveInput !== undefined).toBe(!isolated);
+      const offer = harness.offerLiveInput?.({
         conversationId: "conv-excluded",
         targetRunId: "run-excluded",
         id: "input-excluded",
         text: "must not be delivered",
         receivedAt: "2026-09-07T14:31:00.000Z",
-      })).toEqual({ status: "unavailable", reason: "inactive" });
+      });
+      expect(offer?.status).toBe(isolated ? "unavailable" : "accepted");
 
       releaseRuntime();
       await expect(running).resolves.toMatchObject({ text: "isolated result" });
     },
   );
 
-  it("a model-override turn neither resumes nor persists the shared session", async () => {
+  it("rotates process-local sessions for webhook model changes", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime();
@@ -519,22 +521,22 @@ describe("AgentHarness per-request override session isolation", () => {
     await harness.run(request("conv"));
     expect(base.calls[0]?.options.sessionKeepAlive).toBe(true);
 
-    // A webhook model-override turn runs on the override runtime and is isolated:
-    // no resume keys, so it cannot inherit or corrupt the base-model session.
+    // A webhook model change starts a new warm-capable session on its owner:
+    // no old resume id may cross the model boundary.
     await harness.run(webhookOverrideRequest("conv", claudeModel.reference));
     expect(override.calls).toHaveLength(1);
     expect(override.calls[0]?.options.sessionId).toBeUndefined();
     expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
-    expect(override.calls[0]?.options.sessionKeepAlive).toBeUndefined();
+    expect(override.calls[0]?.options.sessionKeepAlive).toBe(true);
     expect(override.calls[0]?.options.piSessionsRoot).toBeUndefined();
 
-    // A following interactive turn resumes the FIRST interactive turn's session —
-    // the override turn persisted nothing into the shared store.
+    // Returning to the default starts a fresh model-bound epoch.
     await harness.run(request("conv"));
-    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+    expect(base.calls[1]?.options.sessionId).toBeUndefined();
+    expect(base.disposed).toContain("ps-1");
   });
 
-  it("isolates a different-model Telegram turn from the chat's shared session", async () => {
+  it("rotates process-local sessions for Telegram model changes", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime();
@@ -565,14 +567,15 @@ describe("AgentHarness per-request override session isolation", () => {
     expect(override.calls).toHaveLength(1);
     expect(override.calls[0]?.options.sessionId).toBeUndefined();
     expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
-    expect(override.calls[0]?.options.sessionKeepAlive).toBeUndefined();
+    expect(override.calls[0]?.options.sessionKeepAlive).toBe(true);
     expect(override.calls[0]?.options.effort).toBe("high");
 
     await harness.run(request("telegram:42", "resume chat"));
-    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+    expect(base.calls[1]?.options.sessionId).toBeUndefined();
+    expect(base.disposed).toContain("ps-1");
   });
 
-  it("isolates a metadata.slack.model override without triggering the undeclared-model guard", async () => {
+  it("rotates process-local sessions for Slack model changes without triggering the undeclared-model guard", async () => {
     const identityPath = await identityFixture();
     const base = createSessionFakeRuntime(async (call) => ({ text: `a${call}`, providerSessionId: `ps-${call}` }));
     const override = createFakeRuntime();
@@ -595,10 +598,11 @@ describe("AgentHarness per-request override session isolation", () => {
     expect(override.calls).toHaveLength(1);
     expect(override.calls[0]?.options.sessionId).toBeUndefined();
     expect(override.calls[0]?.options.providerSessionId).toBeUndefined();
-    expect(override.calls[0]?.options.sessionKeepAlive).toBeUndefined();
+    expect(override.calls[0]?.options.sessionKeepAlive).toBe(true);
 
     await harness.run(request("slack:C1", "resume chat"));
-    expect(base.calls[1]?.options.sessionId).toBe("ps-1");
+    expect(base.calls[1]?.options.sessionId).toBeUndefined();
+    expect(base.disposed).toContain("ps-1");
   });
 
   it("keeps same-model and effort-only Telegram turns on the shared session", async () => {
@@ -713,4 +717,69 @@ describe("AgentHarness per-request override session isolation", () => {
     await harness.run(effortOnlyCronRequest("conv"));
     expect(base.calls[1]?.options.sessionId).toBe("ps-shared");
   });
+});
+
+describe("model binding admission and attribution", () => {
+  it.each([codexModel, defaultModel])("rejects a declared override executed as $reference before provider execution", async (executedModel) => {
+    const base = createFakeRuntime();
+    const alternate = createFakeRuntime();
+    const harness = createAgentHarness({ identityPath: await identityFixture(), model: defaultModel, runtime: base.runtime,
+      session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000 }, runtimeForModel: () => alternate.runtime,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { model: executedModel } }) });
+    const response = await harness.run({ ...request(), metadata: { web: { model: claudeModel.reference } } });
+    expect(response.failure?.kind).toBe("undeclared_model_override");
+    expect(base.calls).toEqual([]);
+    expect(alternate.calls).toEqual([]);
+    await harness.dispose?.();
+  });
+
+  it("keeps a requested primary binding when a runtime reports a backup answer", async () => {
+    const calls: RuntimeRunOptions[] = [];
+    const events: AgentHarnessSessionEvent[] = [];
+    const base = createFakeRuntime();
+    const identityPath = await identityFixture();
+    const harness = createAgentHarness({ identityPath, model: defaultModel, runtime: base.runtime,
+      historyStore: createDurableHistoryStore({ root: join(identityPath, "..", "history"), retireProviderSession: async () => undefined }),
+      piSessionsRoot: join(identityPath, "..", "pi"),
+      session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60_000,
+        onSessionEvent: (event) => { events.push(event); } },
+      runtimeForModel: () => ({ refreshSession: async () => undefined, syncSession: async () => true, run: async (_prompt, options) => {
+        calls.push(options);
+        // This fake explicitly returns the coordinated handle as synchronized.
+        // Warm reuse here proves attribution, not real fallback-chain policy.
+        return { text: "backup answer", model: codexModel.reference, providerSessionId: String(options.sessionId ?? "primary-id") };
+      } }),
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { model: claudeModel } }) });
+    for (let i = 0; i < 3; i++) {
+      expect((await harness.run({ ...request(), metadata: { web: { model: claudeModel.reference } } })).text).toBe("backup answer");
+    }
+    expect(calls[1]?.sessionId).toBe(calls[0]?.sessionId);
+    expect(calls[2]?.sessionId).toBe(calls[0]?.sessionId);
+    expect(events.filter((event) => event.reason === "model_change")).toEqual([]);
+    expect(events.filter((event) => event.modelKey !== undefined).every((event) => event.modelKey === claudeModel.reference)).toBe(true);
+    await harness.dispose?.();
+  });
+});
+
+
+it("keeps a pinned proactive override isolated and mailbox-ineligible", async () => {
+  const calls: RuntimeRunOptions[] = [];
+  const events: Array<Record<string, unknown>> = [];
+  const harness = createAgentHarness({ identityPath: await identityFixture(), model: defaultModel,
+    historyStore: createInMemoryHistoryStore(),
+    session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000, isolateProactive: true },
+    runtime: { run: async (_prompt, options) => { calls.push(options); return { text: "ok", providerSessionId: "base-id" }; } },
+    runtimeOptionsForRequest: ({ request: current }) => ({ runtimeOptions: { model: current.metadata?.cron ? claudeModel : defaultModel } }) });
+  try {
+    await harness.run(request());
+    const result = await harness.run({ ...request(), metadata: { cron: { model: claudeModel.reference } },
+      onLiveInputOwnership: (event) => { expect(event).toMatchObject({ status: "closed", reason: "unsupported" }); },
+      onEvent: (event) => { if (event.type === "session_boundary") events.push(event); } });
+    expect(result.text).toBe("ok");
+    expect(calls[1]?.sessionId).toBeUndefined();
+    expect(calls[1]?.sessionKeepAlive).toBeUndefined();
+    expect(events).toMatchObject([{ kind: "isolated", reason: "proactive" }]);
+    await harness.run(request());
+    expect(calls[2]?.sessionId).toBe("base-id");
+  } finally { await harness.dispose?.(); }
 });

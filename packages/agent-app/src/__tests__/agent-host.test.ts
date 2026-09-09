@@ -2112,3 +2112,40 @@ function monoConfig(input: {
     ...(input.observability === undefined ? {} : { observability: input.observability }),
   };
 }
+
+it("retires configured override history through the cached owning runtime", async () => {
+  const dir = await tempDir();
+  const identityPath = join(dir, "IDENTITY.md");
+  await writeFile(identityPath, "You are Mono.");
+  const original = monoConfig({ dir, identityPath, artifactDir: join(dir, "artifacts") });
+  const model = { provider: "faux", model: "base", reference: "faux:base" };
+  const override = { provider: "faux", model: "override", reference: "faux:override" };
+  const config: MonoAgentConfig = { ...original,
+    runtime: { ...original.runtime, model, session: { mode: "continuous", idleTimeoutMs: 60000 } },
+    providers: { piNative: { piSessionsRoot: join(dir, "pi") } } };
+  const owner = () => ({ run: vi.fn(async (_prompt: string, options: RuntimeRunOptions) => ({ text: "answer", providerSessionId: String(options.sessionId) })),
+    refreshSession: vi.fn(async () => undefined), syncSession: vi.fn(async () => true),
+    invalidateSession: vi.fn(async () => true), disposeSession: vi.fn(async () => true), retireDurableSession: vi.fn(async () => undefined) });
+  const base = owner();
+  const alternate = owner();
+  const factory = vi.fn(() => alternate);
+  const options = { config, cwd: dir, runtime: base, runtimeForModel: factory, sandboxEngine: fakeSandboxEngine,
+    runtimeOptionsForRequest: ({ request }: { request: { metadata?: Readonly<Record<string, unknown>> } }) => ({
+      runtimeOptions: { model: request.metadata?.web ? override : model } }) };
+  const request = { conversationId: "bound-configured", userMessage: "hello", abortSignal: new AbortController().signal,
+    metadata: { web: { model: override.reference } } };
+  const first = await createConfiguredAgentHarness(options);
+  expect((await first.run(request)).text).toBe("answer");
+  const id = alternate.run.mock.calls[0]![1].sessionId;
+  await first.dispose?.();
+  const next = await createConfiguredAgentHarness(options);
+  expect((await next.run(request)).text).toBe("answer");
+  expect(alternate.run.mock.calls[1]![1].sessionId).toBe(id);
+  await next.resetConversation?.(request.conversationId);
+  expect(alternate.invalidateSession).toHaveBeenCalledWith(id);
+  expect(alternate.retireDurableSession).toHaveBeenCalledWith(id, join(dir, "pi"));
+  expect(base.invalidateSession).not.toHaveBeenCalled();
+  expect(base.retireDurableSession).not.toHaveBeenCalled();
+  expect(factory).toHaveBeenCalledTimes(2); // Once per recreated configured harness lifetime.
+  await next.dispose?.();
+});

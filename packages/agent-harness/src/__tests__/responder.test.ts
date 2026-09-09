@@ -1836,3 +1836,10 @@ describe("bucketConversationId", () => {
       .toMatch(/^c#\d{4}-\d{2}-\d{2}$/);
   });
 });
+
+it("forwards model-change boundaries as runtime telemetry", () => {
+  const boundary = { type: "session_boundary", kind: "resume_replay", conversationId: "web:c",
+    providerSessionId: "new-id", reason: "model_change" };
+  const { type: _type, ...data } = boundary;
+  expect(streamEventFromRuntimeEvent(boundary)).toMatchObject({ type: "runtime_telemetry", kind: "session_boundary", data });
+});

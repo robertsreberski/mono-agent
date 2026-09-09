@@ -692,3 +692,34 @@ describe("per-request override warnings bound the value they echo", () => {
     expect(logged.reason).not.toContain("g".repeat(200));
   });
 });
+
+it("matches harness session-model declaration precedence", async () => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createAgentHarness, createInMemoryHistoryStore } = await import("@mono-agent/agent-harness");
+  const dir = await mkdtemp(join(tmpdir(), "override-precedence-"));
+  const identityPath = join(dir, "IDENTITY.md");
+  await writeFile(identityPath, "You are Mono.");
+  const base = parseMonoRuntimeModelReference("faux:base");
+  const primary = parseMonoRuntimeModelReference("faux:primary");
+  const sources = ["webhook", "cron", "web", "tui", "telegram", "slack"];
+  const logger = { warn: vi.fn() };
+  const calls: RuntimeModelReference[] = [];
+  const harness = createAgentHarness({ identityPath, model: base, historyStore: createInMemoryHistoryStore(),
+    session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000 },
+    runtime: { run: async (_prompt, options) => { calls.push(options.model); return { text: "ok", providerSessionId: "id" }; } },
+    runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: base, logger }) });
+  try {
+    for (const [index, source] of sources.entries()) {
+      for (const declared of [primary.reference, undefined, "", "invalid"]) {
+        const metadata = Object.fromEntries(sources.slice(index).map((key) => [key, { model: "faux:lower" }]));
+        metadata[source] = declared === undefined ? {} as { model: string } : { model: declared };
+        expect((await harness.run({ conversationId: `${source}:${String(declared)}`, userMessage: "hello",
+          abortSignal: new AbortController().signal, metadata })).text).toBe("ok");
+        expect(calls.at(-1)).toEqual(declared === primary.reference ? primary : base);
+      }
+    }
+    expect(logger.warn).toHaveBeenCalled();
+  } finally { await harness.dispose?.(); await rm(dir, { recursive: true, force: true }); }
+});

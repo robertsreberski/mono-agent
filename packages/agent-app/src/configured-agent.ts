@@ -1,6 +1,7 @@
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createAgentHarness,
+  createSessionRuntimeResolver,
   createAgentResponder,
   acquireToolHistoryWriter,
   createDurableHistoryStore,
@@ -1052,6 +1053,11 @@ async function createConfiguredAgentHarnessInternal(
   }, {
     suppressSandboxEngine: processJobsProtectionPosture.suppressSyntheticSandbox,
   });
+  const runtimeForSession = createSessionRuntimeResolver({ runtime, model,
+    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
+  });
+  const runtimeForModel = options.runtimeForModel === undefined ? undefined
+    : (target: RuntimeModelReference) => runtimeForSession(modelReferenceKey(target));
   const clearSessionsBoundaryOptions = {
     cwd: agentRoot,
     workspace: config.runtime.workspace,
@@ -1167,7 +1173,7 @@ async function createConfiguredAgentHarnessInternal(
   const subagents = subagentsRuntimeOptions(config, {
     runtime,
     baseModel: model,
-    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
+    ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
   });
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
@@ -1197,8 +1203,16 @@ async function createConfiguredAgentHarnessInternal(
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
-          retireProviderSession: async (providerSessionId: string): Promise<void> => {
-            await retireDurableSession(providerSessionId, piSessionsRoot);
+          retireProviderSession: async (providerSessionId: string, modelKey?: string): Promise<void> => {
+            const owner = runtimeForSession(modelKey);
+            if (owner.retireDurableSession === undefined) {
+              throw new Error("Session owner cannot retire durable provider state.");
+            }
+            // Durable retirement detaches an open Pi handle before unlinking;
+            // ordinary invalidation alone rejects while a cancelled turn unwinds.
+            await owner.retireDurableSession(providerSessionId, piSessionsRoot);
+            if (owner.invalidateSession !== undefined) await owner.invalidateSession(providerSessionId);
+            else await owner.disposeSession?.(providerSessionId);
           },
         }),
   });
@@ -1302,7 +1316,7 @@ async function createConfiguredAgentHarnessInternal(
             capabilityIssuer: options.continuationCapabilityIssuer,
           },
         }),
-    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
+    ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),

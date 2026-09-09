@@ -34,7 +34,8 @@ async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const compilerOptions = { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } as const;
   const contractsUrl = new URL("../../../agent-contracts/dist/index.js", import.meta.url).href;
   const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
-    .replace('"@mono-agent/agent-contracts"', JSON.stringify(contractsUrl));
+    .replace('"@mono-agent/agent-contracts"', JSON.stringify(contractsUrl))
+    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href));
   const livenessSource = await readFile(
     new URL("../history-process-liveness.ts", import.meta.url),
     "utf8",
@@ -878,7 +879,8 @@ describe("DurableConversationHistoryStore", () => {
     const retired: string[] = [];
     let victimPath: string | undefined;
     let savedVictimPath: string | undefined;
-    const retireProviderSession = async (providerSessionId: string): Promise<void> => {
+    const retireProviderSession = async (providerSessionId: string, modelKey?: string): Promise<void> => {
+      expect(modelKey).toBe("faux:override");
       retired.push(providerSessionId);
       if (victimPath === undefined || savedVictimPath !== undefined) return;
       savedVictimPath = `${victimPath}.saved`;
@@ -887,7 +889,7 @@ describe("DurableConversationHistoryStore", () => {
       await writeFile(join(victimPath, "blocks-unlink"), "occupied", { mode: 0o600 });
     };
     const seed = createDurableHistoryStore({ root, retireProviderSession });
-    const victim = await seed.beginProviderSessionTurn("victim", "run-victim");
+    const victim = await seed.beginProviderSessionTurn("victim", "run-victim", { modelKey: "faux:override" });
     const victimCommit = await victim.prepareCommit([
       { role: "assistant", content: "context that must replay" },
     ], { providerSessionSynced: true });
@@ -909,6 +911,8 @@ describe("DurableConversationHistoryStore", () => {
     expect(retired).toContain(victim.providerSessionId);
     await expect(seed.load("victim")).resolves.toMatchObject([{ content: "context that must replay" }]);
     expect(await dirtyFenceKeys(root)).toContain(historyKeyForTest("victim"));
+    expect(JSON.parse(await readFile(join(root, ".locks", `${historyKeyForTest("victim")}.dirty.json`), "utf8")))
+      .toMatchObject({ version: 4, modelKey: "faux:override" });
     const recovered = await seed.beginProviderSessionTurn("victim", "run-recovered");
     expect(recovered.providerSessionId).not.toBe(victim.providerSessionId);
     await recovered.abort();
@@ -1785,3 +1789,146 @@ async function dirtyFenceKeys(root: string): Promise<string[]> {
     })
     .sort();
 }
+
+describe("durable provider model binding", () => {
+  const a = { modelKey: "faux:base" };
+  const b = { modelKey: "faux:override" };
+
+  it("loads a pre-binding v2 history fixture and binds only after a cold reseed", async () => {
+    const root = join(await tempDir(), "history");
+    const retired: Array<[string, string | undefined]> = [];
+    const store = createDurableHistoryStore({ root,
+      retireProviderSession: async (id, key) => { retired.push([id, key]); } });
+    await store.append("legacy-unbound", []);
+    const file = (await historyRecords(root)).get("legacy-unbound")!;
+    const fixture = await readFile(new URL("./fixtures/history-v2-unbound.json", import.meta.url));
+    await writeFile(file, fixture, { mode: 0o600 });
+    expect(await store.load("legacy-unbound")).toHaveLength(2);
+    const old = await readHistoryRecord(root, "legacy-unbound");
+    const turn = await store.beginProviderSessionTurn("legacy-unbound", "bind", b);
+    expect(turn).toMatchObject({ modelKey: b.modelKey, providerSessionRevision: 0 });
+    expect(turn.previousModelKey).toBeUndefined();
+    expect(retired).toEqual([[expect.any(String), undefined]]);
+    await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+    expect((await readHistoryRecord(root, "legacy-unbound")).providerSession)
+      .toMatchObject({ modelKey: b.modelKey, revision: 1 });
+    expect((await readHistoryRecord(root, "legacy-unbound")).providerSession?.epoch).not.toBe(old.providerSession?.epoch);
+    const next = await createDurableHistoryStore({ root }).beginProviderSessionTurn("legacy-unbound", "next", b);
+    expect(next.providerSessionId).toBe(turn.providerSessionId);
+    await next.abort();
+  });
+
+  it("retires both committed and dirty-only epochs with their original model keys", async () => {
+    const root = join(await tempDir(), "history");
+    const retired: Array<[string, string | undefined]> = [];
+    const store = createDurableHistoryStore({ root,
+      retireProviderSession: async (id, key) => { retired.push([id, key]); } });
+    const first = await store.beginProviderSessionTurn("c", "one", a);
+    await (await first.prepareCommit([{ role: "user", content: "canonical" }], { providerSessionSynced: true })).commit();
+    const second = await store.beginProviderSessionTurn("c", "two", b);
+    expect(second.previousModelKey).toBe(a.modelKey);
+    await second.abort();
+    retired.length = 0;
+    const recovered = await store.beginProviderSessionTurn("c", "three", { modelKey: "faux:third" });
+    expect(retired).toContainEqual([first.providerSessionId, a.modelKey]);
+    expect(retired).toContainEqual([second.providerSessionId, b.modelKey]);
+    expect(recovered.providerSessionId).not.toBe(second.providerSessionId);
+    expect(await store.load("c")).toEqual([{ role: "user", content: "canonical" }]);
+    await recovered.abort();
+  });
+
+  it("fails closed when model-change retirement cannot complete", async () => {
+    const root = join(await tempDir(), "history");
+    let fail = false;
+    const store = createDurableHistoryStore({ root, retireProviderSession: async () => {
+      if (fail) throw new Error("owner unavailable");
+    } });
+    const first = await store.beginProviderSessionTurn("c", "one", a);
+    await (await first.prepareCommit([], { providerSessionSynced: true })).commit();
+    const before = await readHistoryRecord(root, "c");
+    fail = true;
+    await expect(store.beginProviderSessionTurn("c", "two", b)).rejects.toThrow("owner unavailable");
+    expect(await readHistoryRecord(root, "c")).toEqual(before);
+    fail = false;
+    const next = await store.beginProviderSessionTurn("c", "three", b);
+    expect(next.providerSessionId).not.toBe(first.providerSessionId);
+    await next.abort();
+  });
+
+  it("preserves binding through unsynced commit host-only rotation and revision overflow", async () => {
+    const root = join(await tempDir(), "history");
+    const store = createDurableHistoryStore({ root, retireProviderSession: async () => undefined });
+    const first = await store.beginProviderSessionTurn("c", "one", b);
+    await (await first.prepareCommit([], { providerSessionSynced: false })).commit();
+    expect((await readHistoryRecord(root, "c")).providerSession).toMatchObject({ ...b, revision: 0 });
+    await store.append("c", [{ role: "user", content: "host-only" }]);
+    const record = await readHistoryRecord(root, "c");
+    expect(record.providerSession).toMatchObject(b);
+    await writeFile((await historyRecords(root)).get("c")!, JSON.stringify({ ...record,
+      providerSession: { ...record.providerSession, revision: Number.MAX_SAFE_INTEGER } }));
+    const next = await store.beginProviderSessionTurn("c", "next", b);
+    expect(next).toMatchObject({ ...b, providerSessionRevision: 0 });
+    expect(next.previousModelKey).toBeUndefined();
+    await next.abort();
+  });
+
+  it("strictly validates bound history and version four dirty fences", async () => {
+    const root = join(await tempDir(), "history");
+    const store = createDurableHistoryStore({ root });
+    const turn = await store.beginProviderSessionTurn("c", "one", b);
+    const fencePath = join(root, ".locks", `${historyKeyForTest("c")}.dirty.json`);
+    const fence = JSON.parse(await readFile(fencePath, "utf8"));
+    expect(fence).toMatchObject({ version: 4, ...b });
+    await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+    const file = (await historyRecords(root)).get("c")!;
+    const record = await readHistoryRecord(root, "c");
+    for (const bad of [{ ...record.providerSession, extra: true }, { ...record.providerSession, modelKey: null },
+      { ...record.providerSession, modelKey: "pi:faux:override" }, { epoch: record.providerSession?.epoch, ...b }]) {
+      await writeFile(file, JSON.stringify({ ...record, providerSession: bad }));
+      await expect(store.load("c")).rejects.toThrow();
+    }
+    await writeFile(file, JSON.stringify(record));
+    await expect(store.beginProviderSessionTurn("c", "oversized", { modelKey: `faux:${"a".repeat(2000)}` })).rejects.toThrow();
+    for (const bad of [{ ...fence, extra: true }, { ...fence, modelKey: null },
+      { ...fence, modelKey: "pi:faux:override" }, { ...fence, runIdDigest: "invalid" }]) {
+      await writeFile(fencePath, JSON.stringify(bad), { mode: 0o600 });
+      await expect(store.beginProviderSessionTurn("c", "bad-fence", b)).rejects.toThrow();
+    }
+    await rm(fencePath);
+  });
+  it("carries model ownership through retention logical reset and fence recovery", async () => {
+    const root = join(await tempDir(), "history");
+    const retired: Array<[string, string | undefined]> = [];
+    const retireProviderSession = async (id: string, key?: string) => { retired.push([id, key]); };
+    const store = createDurableHistoryStore({ root, retireProviderSession });
+    const dirty = await store.beginProviderSessionTurn("c#2026-09-09", "dirty", b);
+    await dirty.abort();
+    await store.resetLogicalConversation("c");
+    expect(retired).toEqual([[dirty.providerSessionId, b.modelKey]]);
+    expect(await dirtyFenceKeys(root)).toEqual([]);
+    const first = await store.beginProviderSessionTurn("victim", "first", b);
+    await (await first.prepareCommit([], { providerSessionSynced: true })).commit();
+    const path = (await historyRecords(root)).get("victim")!;
+    await utimes(path, new Date(1000), new Date(1000));
+    const bounded = createDurableHistoryStore({ root, maxConversations: 1, retireProviderSession });
+    await bounded.append("new", [{ role: "user", content: "new" }]);
+    expect(retired).toContainEqual([first.providerSessionId, b.modelKey]);
+    expect(await store.load("victim")).toEqual([]);
+
+    // A matching epoch/revision with another model is not proof of commit.
+    const active = await store.beginProviderSessionTurn("proof", "one", b);
+    const fencePath = join(root, ".locks", `${historyKeyForTest("proof")}.dirty.json`);
+    const fence = JSON.parse(await readFile(fencePath, "utf8"));
+    await (await active.prepareCommit([], { providerSessionSynced: true })).commit();
+    await writeFile(fencePath, JSON.stringify({ ...fence, modelKey: a.modelKey }), { mode: 0o600 });
+    await expect(store.beginProviderSessionTurn("proof", "mismatch", b)).rejects.toThrow("conflicting model bindings");
+    expect(JSON.parse(await readFile(fencePath, "utf8")).modelKey).toBe(a.modelKey);
+    retired.length = 0;
+    // The unrelated mutation's maintenance sweep must reject the same conflict.
+    await expect(store.append("maintenance", [{ role: "user", content: "trigger" }]))
+      .rejects.toThrow("conflicting model bindings");
+    expect(retired).toEqual([]);
+    expect(JSON.parse(await readFile(fencePath, "utf8")).modelKey).toBe(a.modelKey);
+  });
+
+});

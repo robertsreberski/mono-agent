@@ -1,3 +1,4 @@
+import { uniqueSessionHandles, type ProviderSessionHandle, type SessionRuntimeResolver } from "../session-runtime.js";
 import type { RuntimeSessionRecord, RuntimeSessionStore } from "../sessions.js";
 import type { AgentHarnessOptions } from "../types.js";
 
@@ -7,33 +8,32 @@ import type { AgentHarnessOptions } from "../types.js";
  */
 export async function retireRunResultSession(
   options: AgentHarnessOptions,
+  runtimeForSession: SessionRuntimeResolver,
   sessionStore: RuntimeSessionStore | undefined,
   sessionsEnabled: boolean,
   conversationId: string,
   sessionRecord: RuntimeSessionRecord | undefined,
-  ...providerSessionIds: readonly unknown[]
+  ...handles: readonly ProviderSessionHandle[]
 ): Promise<void> {
   if (!sessionsEnabled) return;
-  const ids = new Set<string>();
-  if (sessionRecord !== undefined) ids.add(sessionRecord.providerSessionId);
-  for (const providerSessionId of providerSessionIds) {
-    if (typeof providerSessionId === "string" && providerSessionId.trim().length > 0) {
-      ids.add(providerSessionId);
-    }
-  }
-  for (const id of ids) {
+  for (const handle of uniqueSessionHandles([
+    ...(sessionRecord === undefined ? [] : [sessionRecord]),
+    ...handles,
+  ])) {
+    const id = handle.providerSessionId;
+    const runtime = runtimeForSession(handle.modelKey);
     try {
-      if (options.runtime.invalidateSession !== undefined) {
-        await options.runtime.invalidateSession(id);
+      if (runtime.invalidateSession !== undefined) {
+        await runtime.invalidateSession(id);
       } else {
-        await options.runtime.disposeSession?.(id);
+        await runtime.disposeSession?.(id);
       }
     } catch {
       // Cleanup is best-effort; the host mapping is still evicted below.
     }
-    if (options.piSessionsRoot !== undefined && options.runtime.retireDurableSession !== undefined) {
+    if (options.piSessionsRoot !== undefined && runtime.retireDurableSession !== undefined) {
       try {
-        await options.runtime.retireDurableSession(id, options.piSessionsRoot);
+        await runtime.retireDurableSession(id, options.piSessionsRoot);
       } catch {
         // An open provider may still be unwinding. The canonical epoch has
         // already rotated; a returned provider result retries this cleanup.

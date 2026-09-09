@@ -172,7 +172,7 @@ webhook's loopback-only default (`allowNonLoopback: false`). If you expose the
 endpoint beyond loopback, configure `apiKey` (required) and put the service
 behind TLS plus the reverse-proxy controls appropriate for the integration.
 
-A model-override request runs **ephemerally**: it does not resume or persist a shared continuous session, so the delegated model never mixes into a conversation's session lineage (the per-request `conversationId` default already keeps deploys separate). Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. An `effort`-only request keeps the same model chain and the shared provider session (only a model override isolates the turn).
+A pinned model can stay warm across requests with the same explicit `conversationId` when continuous sessions are enabled. The unique per-request default `conversationId` still starts separate conversations. Changing the requested model retires the old provider epoch and cold-seeds a new one from canonical history; repeated requests on that model can resume its durable transcript when `piSessionsRoot` is configured. Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. An `effort`-only request keeps the same model chain and the same provider-session binding.
 
 ## Multiple endpoints
 
