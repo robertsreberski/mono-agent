@@ -66,6 +66,19 @@ async function waitForSummary(
 }
 
 describe("JsonlRunRecorder", () => {
+  it("persists inexact compaction accounting and unknown estimates without weakening credential redaction", async () => {
+    const dir = await tempDir();
+    const recorder = createJsonlRunRecorder({ artifactDir: dir, runId: "compaction", conversationId: "c" });
+    const event = { type: "context_compaction", operationId: "op", status: "failed", tokenCountsExact: false,
+      accounting: { generatedSummaryTokens: null, tailEstimateTokens: null, requests: [{ requestId: "op:1", input: null, costUsd: null }] } };
+    recorder.onEvent(event);
+    const summary = await recorder.finish({});
+    const persisted = JSON.parse((await readFile(summary.artifactPaths[0]!, "utf8")).trim());
+    expect(persisted).toMatchObject(event);
+    expect(redactJsonValue({ tokenCountsExact: "PRIVATE", generatedSummaryTokens: { secret: "PRIVATE" }, tailEstimateTokens: "PRIVATE", api_token: null }))
+      .toEqual({ tokenCountsExact: "[redacted]", generatedSummaryTokens: "[redacted]", tailEstimateTokens: "[redacted]", api_token: "[redacted]" });
+  });
+
   it("removes old atomic-write temps on init while retaining fresh and unrelated temps", async () => {
     const dir = await tempDir();
     const oldTemp = `cleanup-run.summary.json.${process.pid}.999999997.tmp`;

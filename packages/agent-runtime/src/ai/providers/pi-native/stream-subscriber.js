@@ -140,6 +140,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           : undefined;
         onEvent({
           type: "context_usage",
+          ...harness?.getPromptCacheRequest?.(),
           sdk,
           model,
           timestamp: Date.now(),
@@ -147,6 +148,7 @@ export function createStreamSubscriber(runState, { onEvent, options, toolLimits,
           ...(contextWindow > 0 ? { contextWindow } : {}),
           tokens: contextTokens,
           costUsd,
+          providerCostUsd: typeof event.message.usage?.cost?.total === "number" && Number.isFinite(event.message.usage.cost.total) && event.message.usage.cost.total >= 0 ? event.message.usage.cost.total : null,
           costSource: "pi_usage",
         });
       }

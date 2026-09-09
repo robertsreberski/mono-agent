@@ -1,4 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+
+const activeRequests = new WeakMap();
+export const promptCacheRequest = (harness) => activeRequests.get(harness);
 
 const MAX_MESSAGE_FINGERPRINTS = 128;
 const safeString = (value) => typeof value === "string" ? value.slice(0, 160) : undefined;
@@ -62,11 +65,14 @@ function cacheMetadata(payload, family) {
 export function installPromptCacheDiagnostics(harness, options) {
   if (options.promptCacheDiagnostics !== true || typeof options.onEvent !== "function") return () => {};
   let ordinal = 0;
-  return harness.hooks.on("before_payload", (event) => {
+  const remove = harness.hooks.on("before_payload", (event) => {
+    const correlation = { phase: "assistant", requestId: randomUUID() };
+    activeRequests.set(harness, correlation);
     const normalized = normalizedPayload(event);
     const model = event?.model ?? options.model ?? {};
     const base = {
       type: "prompt_cache_diagnostic",
+      ...correlation,
       requestOrdinal: ++ordinal,
       model: [safeString(model.provider), safeString(model.id)].filter(Boolean).join(":") || "unknown",
       api: safeString(model.api) ?? "unknown",
@@ -93,4 +99,5 @@ export function installPromptCacheDiagnostics(harness, options) {
       inputInterpretationSource: codexWireUnknown ? "pre_transport_payload" : "provider_payload",
     });
   }, { id: "mono-agent-prompt-cache-diagnostics" });
+  return () => { activeRequests.delete(harness); remove(); };
 }

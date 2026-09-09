@@ -238,6 +238,19 @@ The tool-bloat guard is always on. When a large tool result is truncated in-cont
 
 ## Context compaction
 
+Pi supports native checkpoint/overflow compaction, which mono-agent disables in
+favor of its guarded bridge policy. Before summarization, copied long text tool
+results retain labelled heads and tails within Pi's 2,000-character allowance.
+Confirmed built-in file operations supplement bounded file metadata; failed writes
+remain unresolved evidence. A versioned focus asks both history and split-turn
+summaries to preserve intent, approval constraints, open work, decisions, exact
+paths/symbols, errors and the next action, while distinguishing superseded
+instructions and guesses. Tool text is evidence, not instructions. Retrievable
+record references are unavailable unless a host can prove resolution. Empty,
+malformed or truncated summary output is rejected before persistence. Pi's cut
+rules, recent tail and summary output budget are unchanged.
+
+
 Assembly produces the prompt; **compaction** keeps it within the model's context window over long conversations. On the pi-native bridge, the runtime drives `AgentHarness.compact()` proactively (before a turn at the adaptive trigger) and reactively (one compaction and one re-prompt only after a rebuilt-context preview proves positive reduction). Rejected previews are not persisted. Defaults derive from the active model window; configure overrides with `runtime.compaction.*` or `MONO_AGENT_COMPACTION_*`. Numeric provider limits and generic overflow estimates lower a process-local learned ceiling, while `contextWindowOverride` supplies a persistent metadata correction. Runs report `context_compaction_applied` as `true`/`false`/`null` (fired / enabled-but-not-needed / disabled), the complete proactive request estimate, and before/after effectiveness. A persistent overflow becomes `context_limit`, allowing the configured fallback chain to try a model with a different usable window. API and Telegram conversations remain independent because compaction operates on the exact channel conversation's own session history. See [Sessions and concurrency](/runtime/sessions-concurrency/).
 
 ## Related

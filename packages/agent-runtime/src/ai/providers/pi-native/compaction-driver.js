@@ -1,20 +1,10 @@
 // @ts-check
 // Context auto-compaction for the pi-native bridge.
 //
-// AUTO-COMPACTION. pi-agent-core performs NO automatic in-loop compaction
-// (shouldCompact/compact are exported helpers its loop never calls), so this
-// bridge DRIVES it: proactively before a turn when the running model's context
-// is near the window, and reactively (compact + single re-prompt) if a turn
-// still overflows. The window auto-tracks the model actually serving the request
-// and learns lower effective ceilings from numeric or generic overflow errors.
-//
-// DELEGATED to pi where pi provides the primitive: the proactive trigger
-// DECISION runs through pi's shouldCompact() (via piCompactionSettings) and the
-// context-size ESTIMATE runs through pi's estimateContextTokens(). Only the
-// pieces pi does not model stay hand-rolled here: the DRIVING (pi never invokes
-// compaction itself), the discovered-window ceiling learning, and the fixed
-// per-request overhead (system prompt + tool schemas) that estimateContextTokens
-// omits.
+// Pi supports checkpoint/overflow compaction. Mono-agent disables that native
+// path and drives guarded proactive compaction plus one overflow recovery here.
+// Pi owns preparation, cut rules, prompts and context token estimation.
+// The bridge owns policy, fixed overhead and persistence/savings guards.
 //
 // Pure moves out of pi-native.js: the discovered-window cache (kept at MODULE
 // scope, matching its bridge-level scope before the split), context estimation,
@@ -33,6 +23,7 @@ import {
   prepareCompaction,
   shouldCompact,
 } from "@earendil-works/pi-agent-core";
+import { prepareSummaryInput, summaryModels } from "./compaction-summary.js";
 import { randomUUID } from "node:crypto";
 import {
   estimateFixedOverheadTokens,
@@ -267,9 +258,18 @@ export async function tryCompact(harness, {
   model,
   session,
   policy,
+  fixedOverheadTokens = null,
 }) {
   const operationId = randomUUID();
-  emitCompactionEvent(onEvent, {
+  const started = performance.now();
+  const accounting = { version: 1, requests: [], splitTurn: null, generatedSummaryTokens: null,
+    appendedMetadataBytes: null, tailEstimateTokens: null, transcriptBefore: null, transcriptAfter: null,
+    fullRequestBefore: null, fullRequestAfter: null, afterSource: null, policy: null, preparation: null };
+  const emit = (observer, event) => emitCompactionEvent((value) => observer?.({ ...value,
+    tokenCountsExact: false, accounting: { ...accounting, requests: accounting.requests.map((row) => ({ ...row })),
+      durationMs: Math.round(performance.now() - started),
+      generatedSummaryTokens: accounting.requests.length && accounting.requests.every((row) => row.generatedSummaryTokens !== null) ? accounting.requests.reduce((sum, row) => sum + row.generatedSummaryTokens, 0) : null } }), event);
+  emit(onEvent, {
     operationId,
     status: "running",
     trigger,
@@ -284,6 +284,7 @@ export async function tryCompact(harness, {
       contextWindow: typeof harness?.getModel === "function" ? harness.getModel()?.contextWindow : undefined,
     });
     effectivePolicy = { ...adaptivePolicy, ...(policy || {}) };
+    accounting.policy = Object.fromEntries(["contextWindow", "triggerTokens", "keepRecentTokens", "summaryMaxTokens", "compactionMinSavingsTokens"].map((key) => [key, finiteTokenCount(effectivePolicy[key]) ?? null]));
     const compactionSettings = {
       enabled: true,
       reserveTokens: piSummaryReserveTokens(effectivePolicy.summaryMaxTokens, false),
@@ -322,9 +323,15 @@ export async function tryCompact(harness, {
             return { cancel: true };
           }
         }
+        accounting.splitTurn = prepared.value.isSplitTurn;
+        accounting.transcriptBefore = await estimateBuiltContextTokens(event.branchEntries);
+        accounting.fullRequestBefore = fixedOverheadTokens === null || accounting.transcriptBefore === null ? null : accounting.transcriptBefore + fixedOverheadTokens;
+        accounting.tailEstimateTokens = prepared.value.retainedTail.reduce((sum, message) => sum + estimateTokens(message), 0);
+        const input = prepareSummaryInput(prepared.value);
+        accounting.preparation = input.metadata;
         const compacted = await compactPreparedContext(
-          prepared.value,
-          harness.models,
+          input.preparation,
+          summaryModels(harness.models, { operationId, focus: input.focus, evidence: input.evidence, requests: accounting.requests }),
           harness.getModel(),
           event.customInstructions,
           typeof harness.getThinkingLevel === "function" ? harness.getThinkingLevel() : undefined,
@@ -338,6 +345,15 @@ export async function tryCompact(harness, {
         }
         const tokensBefore = await estimateBuiltContextTokens(event.branchEntries);
         const tokensAfter = await previewCompactedContext(event.branchEntries, compacted.value);
+        accounting.transcriptAfter = tokensAfter;
+        accounting.afterSource = "preview";
+        accounting.fullRequestAfter = fixedOverheadTokens === null || tokensAfter === null ? null : tokensAfter + fixedOverheadTokens;
+        accounting.generatedSummaryTokens = accounting.requests.reduce((sum, request) => sum + (request.generatedSummaryTokens || 0), 0);
+        const lists = /** @type {{readFiles: string[], modifiedFiles: string[]}} */ (compacted.value.details);
+        accounting.appendedMetadataBytes = Buffer.byteLength([
+          lists.readFiles.length ? `\n\n<read-files>\n${lists.readFiles.join("\n")}\n</read-files>` : "",
+          lists.modifiedFiles.length ? `\n\n<modified-files>\n${lists.modifiedFiles.join("\n")}\n</modified-files>` : "",
+        ].join(""));
         const savings = tokensBefore === null || tokensAfter === null ? null : tokensBefore - tokensAfter;
         const firstRetainedMessage = prepared.value.retainedTail[0];
         const firstKeptEntryId = firstRetainedMessage
@@ -363,10 +379,15 @@ export async function tryCompact(harness, {
     const tokensBefore = Number(result?.tokensBefore) || null;
     const measuredTokensAfter = await estimateSessionMessageTokens(session);
     const tokensAfter = measuredTokensAfter ?? hookDecision?.tokensAfter ?? null;
+    if (measuredTokensAfter !== null) {
+      accounting.transcriptAfter = measuredTokensAfter;
+      accounting.fullRequestAfter = fixedOverheadTokens === null ? null : measuredTokensAfter + fixedOverheadTokens;
+      accounting.afterSource = "persisted";
+    }
     const reduced = measuredTokensBefore === null || tokensAfter === null
       ? null
       : tokensAfter < measuredTokensBefore;
-    emitCompactionEvent(onEvent, {
+    emit(onEvent, {
       operationId,
       status: "succeeded",
       trigger,
@@ -424,7 +445,7 @@ export async function tryCompact(harness, {
           ? { minimum_savings_tokens: effectivePolicy.compactionMinSavingsTokens }
           : {}),
       });
-      emitCompactionEvent(onEvent, {
+      emit(onEvent, {
         operationId,
         status: "skipped",
         trigger,
@@ -448,7 +469,7 @@ export async function tryCompact(harness, {
         trigger,
         message: "Nothing to compact",
       });
-      emitCompactionEvent(onEvent, {
+      emit(onEvent, {
         operationId,
         status: "skipped",
         trigger,
@@ -474,7 +495,7 @@ export async function tryCompact(harness, {
           ? "context_compaction_busy"
           : "context_compaction_failed";
     runtimeWarnings?.push({ warning_kind: warningKind, source: "pi", trigger, message });
-    emitCompactionEvent(onEvent, {
+    emit(onEvent, {
       operationId,
       status: nothingToCompact ? "skipped" : "failed",
       trigger,
@@ -649,6 +670,7 @@ export async function runProactiveCompaction(runState, {
         model: reference,
         session: runState.session,
         policy,
+        fixedOverheadTokens: fixedOverhead.fixedOverheadTokens,
       });
       Object.assign(runState.compaction.diagnostics, {
         context_compaction_tokens_before: res.tokensBefore,
@@ -740,6 +762,8 @@ export async function runReactiveCompaction(runState, {
         model: reference,
         session: runState.session,
         policy: c.policy,
+        fixedOverheadTokens: c.diagnostics?.context_fixed_overhead_tokens == null ? null
+          : Math.max(0, c.diagnostics.context_fixed_overhead_tokens - (c.diagnostics.context_user_message_tokens || 0)),
       });
       Object.assign(c.diagnostics, {
         context_compaction_tokens_before: res.tokensBefore,

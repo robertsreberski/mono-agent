@@ -326,13 +326,23 @@ provider exposes queue-after-turn), not durability/cost:
 
 The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
 bridge was removed once native reached parity); it owns the session and
-pi-ai-managed retry. `AgentHarness` itself has **no** automatic compaction, so
-the pi bridge drives it through a one-shot `session_before_compact` hook: before
+pi-ai-managed retry. `AgentHarness` supports native checkpoint and overflow compaction; mono-agent
+disables that path and drives its own guarded policy through a one-shot `session_before_compact` hook: before
 each turn it compares the full request estimate with an adaptive trigger, and if
 a turn still overflows it retries exactly once only after a preview verifies a
 positive reduction. Runs report `context_compaction_applied` as `true` (a
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
+
+`ai/providers/pi-native/compaction-summary.js` prepares copies for Pi's public
+`compact()`: bounded tool-result heads/tails, confirmed built-in file operations,
+and supplemental summary focus. Its model facade changes only summary context;
+model, options, request context and other model methods are forwarded. Each
+completion is accounted once at return or rejection. The driver attaches these
+rows to terminal compaction events, preserving spend even when a preview rejects
+persistence. File metadata and generated prose are measured separately. Native
+cut rules and reserve math remain Pi-owned. Payload diagnostics correlate
+assistant usage independently of these operation-scoped summary requests.
 
 | Active bridge | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|
