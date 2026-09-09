@@ -9,6 +9,26 @@ const harnessMock = vi.fn((options: Record<string, unknown>) => ({
   dispose: vi.fn(async () => undefined),
 }));
 
+// The single-runtime app describes every parseable model as the Pi backend,
+// which supports skills. The skills guard below still has to fail closed for a
+// route that does not advertise them, so one canonical reference is described
+// as such here; an unparseable reference no longer reaches the guard because
+// the harness re-parses the pinned model when binding its session (#829).
+const NO_SKILLS_MODEL_REFERENCE = "opencode:glm-5.2";
+vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+  return {
+    ...actual,
+    describeMonoRuntimeSupport: (model: Parameters<typeof actual.describeMonoRuntimeSupport>[0]) => {
+      const support = actual.describeMonoRuntimeSupport(model);
+      if (model.reference !== NO_SKILLS_MODEL_REFERENCE || support.backend === undefined) return support;
+      return {
+        ...support,
+        backend: { ...support.backend, capabilities: { ...support.backend.capabilities, supports_skills: false } },
+      };
+    },
+  };
+});
 vi.mock("@mono-agent/agent-harness", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/agent-harness")>();
   return { ...actual, createAgentHarness: (options: unknown) => harnessMock(options as Record<string, unknown>) };
@@ -338,7 +358,7 @@ describe("subagent confinement and context inheritance", () => {
     // entry that lacks it is skipped — so threading skills onto a direct-OpenCode
     // child turns a working subagent into skipped_capability_mismatch. Do not
     // "simplify" this guard away.
-    const OPENCODE = { sdk: "opencode", provider: "opencode", model: "glm-5.2", reference: "opencode:opencode:glm-5.2" } as const;
+    const OPENCODE = { provider: "opencode", model: "glm-5.2", reference: NO_SKILLS_MODEL_REFERENCE } as const;
     const overrideRuntime = { run: vi.fn(async () => ({ text: "answer", events: [] })) };
     const { subagents } = await buildSubagents(
       monoConfig({ enabled: true, definitions: [{ ...RESEARCHER, model: OPENCODE }] }),
