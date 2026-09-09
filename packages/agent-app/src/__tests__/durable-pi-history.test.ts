@@ -392,7 +392,20 @@ it.each(["normal", "slow-writer"])("reopens a recovered tool-bearing Pi transcri
   expect(JSON.stringify(consumed.context.slice(0, produced.context.length))).toBe(JSON.stringify(produced.context));
   expect(consumed.context).toHaveLength(produced.context.length + 1);
   expect(JSON.stringify(consumed.context)).toContain("disk-signature");
-  expect(JSON.stringify(consumed.context)).toContain("DURABLE TOOL EVIDENCE");
+  const producerReadResult = produced.context.find((message: {
+    role?: unknown;
+    toolCallId?: unknown;
+    content?: Array<{ type?: unknown; text?: unknown }>;
+    isError?: unknown;
+  }) => message.role === "toolResult" && message.toolCallId === "disk-read");
+  const producerReadText = producerReadResult?.content
+    ?.filter((part: { type?: unknown; text?: unknown }) => part.type === "text" && typeof part.text === "string")
+    .map((part: { text?: unknown }) => part.text)
+    .join("\n");
+  expect(
+    JSON.stringify(consumed.context),
+    `Producer disk-read toolResult: ${JSON.stringify({ text: producerReadText, isError: producerReadResult?.isError })}; runtimeWarnings: ${JSON.stringify(produced.runtimeWarnings)}`,
+  ).toContain("DURABLE TOOL EVIDENCE");
   expect(JSON.stringify(consumed.context)).not.toContain("cancelled_turn_history");
   expect(produced.runtimeWarnings).not.toEqual(expect.arrayContaining([expect.objectContaining({ warning_kind: "terminal_recovery_skipped" })]));
   expect(produced.records[0].messages.at(-1).content).toContain('"state":"success"');
