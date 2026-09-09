@@ -85,6 +85,30 @@ function ExternallyOpenedSelector() {
 }
 
 describe("ModelSelector", () => {
+  it.each([
+    [true, true],
+    [false, false],
+  ])("renders the model-change hint only when requested (%s)", async (showModelChangeHint, visible) => {
+    render(
+      <ModelSelector
+        models={models}
+        value=""
+        effort=""
+        onValueChange={vi.fn()}
+        onEffortChange={vi.fn()}
+        showModelChangeHint={showModelChangeHint}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    await screen.findByRole("dialog", { name: "Model and reasoning effort" });
+    const hint = screen.queryByText(
+      "Changing the model rebuilds context on the next reply. Effort changes don't.",
+    );
+    if (visible) expect(hint).toBeVisible();
+    else expect(hint).toBeNull();
+  });
+
   it("renders the caller-supplied default option and searches model names", async () => {
     render(<ControlledSelector />);
 

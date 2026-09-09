@@ -1,12 +1,52 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useConsoleStore } from "../console-store";
+import type { ThreadDetail } from "../types";
 import { conversationConsoleUsage, type ConsoleUsage } from "../usage";
+import { sameModel } from "./model-comparison";
 import {
   buildSelectorModels,
   initialCatalogProviders,
   providerOfModel,
   type ModelSelectorOption,
 } from "./model-catalog";
+
+export interface ModelChangeNoticeInput {
+  readonly selectedModel: string | null | undefined;
+  readonly lastRequestedModel: string | null;
+  readonly hasAssistantMessage: boolean;
+}
+
+export function modelChangeNotice({
+  selectedModel,
+  lastRequestedModel,
+  hasAssistantMessage,
+}: ModelChangeNoticeInput): { readonly kind: "pending_cold_turn" } | null {
+  return hasAssistantMessage
+    && lastRequestedModel !== null
+    && !sameModel(selectedModel, lastRequestedModel)
+    ? { kind: "pending_cold_turn" }
+    : null;
+}
+
+export function modelChangeNoticeInput(
+  detail: ThreadDetail | null,
+  selectedModel: string | null | undefined,
+): ModelChangeNoticeInput {
+  let lastRequestedModel: string | null = null;
+  if (detail !== null) {
+    for (let index = detail.messages.length - 1; index >= 0; index -= 1) {
+      const message = detail.messages[index];
+      if (message?.role !== "assistant" || message.attribution === undefined) continue;
+      lastRequestedModel = message.attribution.requested.model ?? null;
+      break;
+    }
+  }
+  return {
+    selectedModel,
+    lastRequestedModel,
+    hasAssistantMessage: detail?.messages.some((message) => message.role === "assistant") ?? false,
+  };
+}
 
 /**
  * The model and context derivations, owned by neither surface that shows them.
@@ -73,6 +113,12 @@ export function useRunControls() {
     };
   }, [detail, effectiveModel, selectedThread]);
 
+  const changeNoticeInput = useMemo(
+    () => modelChangeNoticeInput(detail, effectiveModel),
+    [detail, effectiveModel],
+  );
+  const changeNotice = selectedThread === null ? null : modelChangeNotice(changeNoticeInput);
+
   const selectorModels = useMemo<readonly ModelSelectorOption[]>(() => {
     const catalogModels = Object.fromEntries(
       Object.entries(catalogByProvider ?? {}).map(([provider, state]) => [provider, state.models]),
@@ -131,6 +177,8 @@ export function useRunControls() {
     openCatalog,
     requestProvider,
     agentProviders,
+    changeNotice,
+    showModelChangeHint: selectedThread !== null && changeNoticeInput.hasAssistantMessage,
     // A running turn owns its model; changing it mid-flight would describe a
     // request the agent never received.
     disabled: selectedThread?.runState.status === "running",
