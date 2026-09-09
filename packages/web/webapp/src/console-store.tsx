@@ -4794,7 +4794,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           || receipt.jobId !== source.jobId
           || receipt.runId !== source.runId
           || receipt.thread.sourceId !== source.sourceId
-          || receipt.messages.length !== 2
+          || receipt.messages.length !== 1
           || receipt.messages.some((message) => message.threadId !== receipt.thread.id)) {
           throw new Error("Cron Reply returned a mismatched conversation receipt.");
         }

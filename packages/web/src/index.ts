@@ -91,6 +91,7 @@ export type {
   WebBootstrapScope,
   WebConsoleIdentity,
   WebCronReplyReceipt,
+  WebCronReplyContextPart,
   WebCronReplySnapshotKind,
   WebEvent,
   WebEventType,

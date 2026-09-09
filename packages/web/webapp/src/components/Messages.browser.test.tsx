@@ -75,6 +75,47 @@ const cronMessage: WebMessage = {
   }],
 };
 
+const cronReplyMessage: WebMessage = {
+  id: "imported-cron-result",
+  threadId: "reply-thread",
+  role: "assistant",
+  createdAt: "2026-09-08T10:00:03.000Z",
+  updatedAt: "2026-09-08T10:00:03.000Z",
+  status: "complete",
+  attachments: [],
+  parts: [{
+    type: "cron-reply-context",
+    schema: "mono-agent.web.cron-reply-context.v1",
+    untrusted: true,
+    source: { sourceId: "alpha", jobId: "daily:report", runId: "cron:daily:report:one" },
+    run: {
+      sequence: 1,
+      trigger: "scheduled",
+      status: "succeeded",
+      scheduledAt: "2026-09-08T10:00:00.000Z",
+      orderedAt: "2026-09-08T10:00:01.000Z",
+      completedAt: "2026-09-08T10:00:02.000Z",
+    },
+    snapshot: {
+      capturedAt: "2026-09-08T10:00:03.000Z",
+      kind: "summary",
+      sourceTruncationKnown: true,
+      sourceFieldsTruncated: [],
+      maxBytes: 32_768,
+      originalErrorBytes: 0,
+      retainedErrorBytes: 0,
+      originalResultBytes: 16,
+      retainedResultBytes: 16,
+      truncatedFields: [],
+    },
+    result: { text: "**Digest ready.**" },
+    failure: {},
+    prefix: "Imported cron result snapshot (mono-agent.web.cron-reply-context.v1)\n",
+    rawJson: '{"schema":"mono-agent.web.cron-reply-context.v1"}',
+    rawText: "Imported cron result snapshot (mono-agent.web.cron-reply-context.v1)\n{}",
+  }],
+};
+
 function Harness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [message("consumed", "applied"), message("uncertain", "uncertain")],
@@ -181,6 +222,23 @@ function CronHarness({ width }: { readonly width: number }) {
   );
 }
 
+function CronReplyHarness({ width }: { readonly width: number }) {
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages: [cronReplyMessage],
+    convertMessage: (value) => convertWebMessage(value),
+    onNew: async () => undefined,
+  });
+  return (
+    <div style={{ width, minHeight: 240 }}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ThreadPrimitive.Root>
+          <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
+        </ThreadPrimitive.Root>
+      </AssistantRuntimeProvider>
+    </div>
+  );
+}
+
 describe("live-input settlement labels in Chromium", () => {
   it.each([
     [1440, "desktop"],
@@ -243,5 +301,22 @@ describe("cron Reply footer in Chromium", () => {
     const row = screen.getByRole("group", { name: /Cron run/ });
     expect(row.getBoundingClientRect().right).toBeLessThanOrEqual(width);
     expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+  });
+});
+
+describe("imported cron Reply context in Chromium", () => {
+  it.each([760, 360] as const)("keeps the context card and Details within %ipx", (width) => {
+    const { container } = render(<CronReplyHarness width={width} />);
+
+    expect(screen.getByText("Digest ready.")).toBeVisible();
+    const summary = screen.getByText("Details");
+    fireEvent.click(summary);
+    expect(summary.closest("details")).toHaveAttribute("open");
+    expect(screen.getByText(cronReplyMessage.parts[0]?.type === "cron-reply-context"
+      ? cronReplyMessage.parts[0].rawJson
+      : "missing")).toBeVisible();
+    const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
+    expect(messageRoot.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+    expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
   });
 });

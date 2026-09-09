@@ -144,6 +144,8 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
       return part.event === "cron_run" || isContextCompactionPart(part);
     case "process-job":
       return false;
+    case "cron-reply-context":
+      return true;
     case "tool-call":
     case "subagent":
     case "monitor-activity":

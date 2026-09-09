@@ -767,8 +767,8 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-run-link { color: var(--accent); font-weight: 700; text-decoration: none; }
 .cron-run-link:hover { text-decoration: underline; }
 .cron-run-state { color: var(--text-soft); text-transform: capitalize; }
-.cron-run-row.is-failed .cron-run-state, .cron-run-row.is-dropped .cron-run-state { color: var(--danger); }
-.cron-run-row.is-skipped_overlap .cron-run-state, .cron-run-row.is-cancelled .cron-run-state { color: var(--warning); }
+.cron-run-row.is-failed .cron-run-state, .cron-run-row.is-dropped .cron-run-state, .cron-reply-context-header.is-failed .cron-run-state, .cron-reply-context-header.is-dropped .cron-run-state { color: var(--danger); }
+.cron-run-row.is-skipped_overlap .cron-run-state, .cron-run-row.is-cancelled .cron-run-state, .cron-reply-context-header.is-skipped_overlap .cron-run-state, .cron-reply-context-header.is-cancelled .cron-run-state { color: var(--warning); }
 .cron-run-row time { font-variant-numeric: tabular-nums; }
 .cron-activity-button { padding: 2px 7px; border-radius: 999px; font-size: 9px; }
 .cron-reply-button { padding: 3px 9px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; font-size: 9.5px; font-weight: 700; }
@@ -784,6 +784,29 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-artifact-link code { font-family: var(--font-mono); font-size: 9px; }
 .cron-session-button { display: inline-flex; align-items: center; gap: 4px; padding: 2px 5px; color: var(--text-muted); background: transparent; border-radius: 5px; cursor: pointer; font-size: 9.5px; }
 .cron-session-button:hover { color: var(--accent); background: var(--accent-soft); }
+.cron-reply-context-header, .cron-reply-context-footer { padding: 11px 13px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line-strong); overflow-wrap: anywhere; }
+.cron-reply-context-header { display: grid; gap: 6px; border-radius: 11px 11px 0 0; }
+.cron-reply-context-title, .cron-reply-context-times { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 10px; }
+.cron-reply-context-title strong { color: var(--text); font-size: 13px; }
+.cron-reply-context-title span, .cron-reply-context-times { font-size: 10px; }
+.cron-reply-context-state { color: var(--text-soft); text-transform: capitalize; }
+.cron-reply-context-times { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.cron-reply-context-header > p { margin: 0; color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
+.cron-reply-context-header + .markdown { margin: 0; padding: 14px 13px; background: var(--surface-raised); border-right: 1px solid var(--line-strong); border-left: 1px solid var(--line-strong); }
+.cron-reply-context-header + .cron-reply-context-footer { border-top: 0; }
+.cron-reply-context-footer { display: grid; gap: 8px; padding-top: 9px; border-top: 0; border-radius: 0 0 11px 11px; }
+.cron-reply-context-note, .cron-reply-context-truncation { margin: 0; font-size: 10px; line-height: 1.45; }
+.cron-reply-context-note { color: var(--text-muted); }
+.cron-reply-context-truncation { color: var(--warning); }
+.cron-reply-context-failure { display: grid; gap: 3px; padding: 8px 9px; color: var(--danger); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 25%, transparent); border-radius: 8px; font-size: 11px; line-height: 1.45; }
+.cron-reply-context-failure strong { font-family: var(--font-mono); font-size: 10px; }
+.cron-reply-context-details > summary { width: fit-content; color: var(--text-muted); cursor: pointer; font-size: 10px; user-select: none; }
+.cron-reply-context-details-body { min-width: 0; display: grid; gap: 10px; margin-top: 7px; padding: 9px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 8px; font-size: 10px; }
+.cron-reply-context-details-body dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 0; }
+.cron-reply-context-details-body dt { color: var(--text-muted); }
+.cron-reply-context-details-body dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.cron-reply-context-details-body code { font-family: var(--font-mono); font-size: 9.5px; }
+.cron-reply-context-details-body pre { max-height: 280px; margin: 5px 0 0; padding: 9px; overflow: auto; color: var(--text); background: var(--rail); border-radius: 7px; font-family: var(--font-mono); font-size: 9px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; user-select: text; }
 .context-compaction-row.is-skipped .context-compaction-status { background: var(--text-muted); }
 .context-compaction-label { color: var(--text-soft); font-weight: 650; }
 .context-compaction-trigger { color: var(--text-muted); }

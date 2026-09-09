@@ -160,6 +160,7 @@ const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
       case "telemetry":
         return part.event === "cron_run";
       case "process-job":
+      case "cron-reply-context":
       case "error":
       case "attachment":
       case "mcp_app":
@@ -287,6 +288,8 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
       return { type: "data-process-job", data: jsonObject(part) };
     case "monitor-activity":
       return { type: "data-monitor-activity", data: jsonObject(part) };
+    case "cron-reply-context":
+      return { type: "data-cron-reply-context", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
       // Compaction is user-visible activity, so expose that one canonical kind
@@ -424,6 +427,7 @@ export const convertWebMessage = (
   options: ConvertWebMessageOptions = {},
 ): ThreadMessageLike => {
   const hasMonitorActivity = message.parts.some((part) => part.type === "monitor-activity");
+  const hasCronReplyContext = message.parts.some((part) => part.type === "cron-reply-context");
   const legacyMonitorUpdates = hasMonitorActivity
     ? 0
     : message.parts.filter(isLegacyMonitorToolPart).length;
@@ -441,6 +445,14 @@ export const convertWebMessage = (
         type: "data-monitor-activity" as const,
         data: { type: "monitor-activity", monitors: [], legacyUpdateCount: legacyMonitorUpdates },
       }];
+    }
+    if (part.type === "cron-reply-context") {
+      const data = jsonObject(part);
+      return [
+        { type: "data-cron-reply-context" as const, data },
+        { type: "text" as const, text: part.result.text },
+        { type: "data-cron-reply-context-details" as const, data },
+      ];
     }
     // The service worker precaches this bundle, so a console left open across a
     // server upgrade can be handed a part type it does not know yet. `== null`
@@ -465,7 +477,7 @@ export const convertWebMessage = (
   // (the store finalizes all three with no final text), so its last prose is
   // narration: folding would invert the chronology and dress that narration up
   // as the answer. Both keep arrival order.
-  const ordered = message.role === "assistant" && message.status === "complete"
+  const ordered = message.role === "assistant" && message.status === "complete" && !hasCronReplyContext
     ? foldSettledActivity(converted)
     : converted;
   // Clustering runs after folding so a settled turn and the streaming turn that

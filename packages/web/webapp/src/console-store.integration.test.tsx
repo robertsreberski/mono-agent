@@ -8719,16 +8719,7 @@ describe("ConsoleStoreProvider integration", () => {
       messageCount: 2,
       lastMessagePreview: "Captured result",
     });
-    const importedMessages: readonly [WebMessage, WebMessage] = [{
-      id: "reply-provenance",
-      threadId: imported.id,
-      role: "system",
-      parts: [{ type: "text", text: "Imported context provenance" }],
-      attachments: [],
-      createdAt: "2026-09-08T10:00:00.000Z",
-      updatedAt: "2026-09-08T10:00:00.000Z",
-      status: "complete",
-    }, {
+    const importedMessages: readonly WebMessage[] = [{
       id: "reply-result",
       threadId: imported.id,
       role: "assistant",

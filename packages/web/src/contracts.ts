@@ -311,6 +311,52 @@ export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" |
 
 export type WebToolCallStatus = "running" | "complete" | "failed";
 
+export interface WebCronReplyContextPart {
+  readonly type: "cron-reply-context";
+  readonly schema: "mono-agent.web.cron-reply-context.v1";
+  readonly untrusted: true;
+  readonly source: {
+    readonly sourceId: string;
+    readonly jobId: string;
+    readonly runId: string;
+  };
+  readonly run: {
+    readonly sequence: number;
+    readonly trigger: WebCronRunTrigger;
+    readonly status: WebCronRunStatus;
+    readonly scheduledAt: string;
+    readonly orderedAt: string;
+    readonly startedAt?: string;
+    readonly completedAt?: string;
+    readonly blockedByRunId?: string;
+    readonly blockedByTrigger?: WebCronRunTrigger;
+    readonly queueDepth?: number;
+  };
+  readonly snapshot: {
+    readonly capturedAt: string;
+    readonly kind: WebCronReplySnapshotKind;
+    readonly sourceTruncationKnown: boolean;
+    readonly sourceFieldsTruncated: readonly WebCronRunTruncatedField[];
+    readonly maxBytes: number;
+    readonly originalErrorBytes: number;
+    readonly retainedErrorBytes: number;
+    readonly originalResultBytes: number;
+    readonly retainedResultBytes: number;
+    readonly truncatedFields: readonly ("failure.message" | "result.text")[];
+  };
+  readonly result: { readonly text: string };
+  readonly failure: {
+    readonly code?: string;
+    readonly message?: string;
+  };
+  /** Exact human-readable framing which precedes the JSON on the agent wire. */
+  readonly prefix: string;
+  /** Exact JSON substring from the imported wire text; never re-serialized. */
+  readonly rawJson: string;
+  /** Exact imported wire text retained for diagnostics and copy-safe display. */
+  readonly rawText: string;
+}
+
 /** One tool call, whether the agent made it or one of its subagents did. */
 export interface WebToolCall {
   readonly toolCallId: string;
@@ -363,6 +409,7 @@ export interface WebToolCall {
 export type WebMessagePart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
+  | WebCronReplyContextPart
   | ({ readonly type: "tool-call" } & WebToolCall)
   /**
    * One `Agent` delegation and the tool calls its subagent made. The children
@@ -601,7 +648,8 @@ export interface WebCronReplyReceipt {
   readonly runId: string;
   readonly duplicate: boolean;
   readonly thread: WebThread;
-  readonly messages: readonly [WebMessage, WebMessage];
+  /** Presentation-shaped messages. The two canonical stored rows fold to one card. */
+  readonly messages: readonly WebMessage[];
 }
 
 /** One provider an agent advertises as supported. */
