@@ -157,8 +157,10 @@ are optional bounded/redacted `untrustedCode` / `untrustedDetail`. Untrusted
 evidence appears only inside tag-safe JSON preceded by an explicit warning, and
 the notice never incorporates provider text or presents the partial answer as
 complete. A per-conversation publication barrier makes the next turn wait for
-the account, while the old provider epoch is retired so canonical history and
-provider-side state cannot diverge. Isolated proactive/continuation turns and
+the account and the provider recovery-or-retirement decision. Eligible durable
+Pi turns keep their native user/tool ancestry without a host-authored note; Pi
+filters interrupted assistant output. Unsafe tails reseed from the account. See
+[terminal session recovery](/runtime/sessions-concurrency/). Isolated proactive/continuation turns and
 queued requests that never start keep their existing behavior. Hard process
 loss without harness unwind remains outside canonical continuity recovery.
 

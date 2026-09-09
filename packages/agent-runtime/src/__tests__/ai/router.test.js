@@ -755,7 +755,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
     });
     const sessionKeys = {
       sessionId: "host-session", providerSessionId: "provider-session",
-      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000,
+      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
     };
     await router.run("sys", { messages: [], ...sessionKeys, providerAttributionSessionId: "epoch" });
     expect(executeMock).toHaveBeenCalledTimes(4);
@@ -775,7 +775,7 @@ describe("createRouterRuntime — production fallback contracts", () => {
       }
       const diagnostics = { provider_session_id: "coordinated-id" };
       const events = [{ type: "assistant", message: { content: [{ type: "text", text: "answer" }] } }];
-      executeMock.mockResolvedValueOnce({ text: "answer", providerSessionId: "coordinated-id", diagnostics, events });
+      executeMock.mockResolvedValueOnce({ text: "answer", providerSessionId: "coordinated-id", providerSessionRecovery: { runId: "forged", revision: 1, providerSessionId: "coordinated-id", modelKey: "wrong", tipId: "tip" }, diagnostics, events });
       const router = createRouterRuntime({
         chain: [
           { model: primary, attempts: outcome === "primary retry" ? 2 : 1,
@@ -786,16 +786,17 @@ describe("createRouterRuntime — production fallback contracts", () => {
       });
       const result = await router.run("sys", {
         messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
-        providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000,
+        providerAttributionSessionId: "coordinated-id", sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
       });
       expect(result.providerSessionId).toBeUndefined();
+      expect(result.providerSessionRecovery).toBeUndefined();
       expect(result.text).toBe("answer");
       expect(result.diagnostics).toMatchObject(diagnostics);
       expect(result.events).toEqual(expect.arrayContaining(events));
       const options = executeMock.mock.calls.at(-1)[1];
       expect(options.model).toEqual(outcome === "primary retry" ? primary : backup);
       expect(options.providerAttributionSessionId).toBe("coordinated-id");
-      for (const key of ["sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+      for (const key of ["sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
         expect(options).not.toHaveProperty(key);
       }
       expect(result.failoverHistory).toHaveLength(1);
@@ -821,9 +822,9 @@ describe("createRouterRuntime — production fallback contracts", () => {
     const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
     const result = await router.run("sys", {
       messages: [], sessionId: "coordinated-id", providerSessionId: "coordinated-id",
-      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000,
+      sessionKeepAlive: true, sessionIdleTimeoutMs: 60_000, sessionRecovery: { runId: "run", revision: 1 },
     });
-    for (const key of ["sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
+    for (const key of ["sessionRecovery", "sessionId", "providerSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs"]) {
       expect(executeMock.mock.calls[0][1]).not.toHaveProperty(key);
     }
     expect(result.providerSessionId).toBeUndefined();
@@ -1301,4 +1302,16 @@ describe("createRouterRuntime — same-model retry", () => {
         .toThrow(/attempts must be an integer between 1 and 10/u);
     }
   });
+});
+
+
+it.each(["cancelled", "provider_unavailable"])("strips recovery receipts on every non-primary terminal %s return", async (failureKind) => {
+  const receipt = { runId: "run", revision: 1, providerSessionId: "id", modelKey: "anthropic:backup", tipId: "tip" };
+  executeMock.mockResolvedValueOnce({ error: "temporary failure", failureKind: "provider_unavailable", events: [] });
+  executeMock.mockResolvedValueOnce({ error: "backup failed", failureKind, cancelled: failureKind === "cancelled", providerSessionRecovery: receipt, events: [] });
+  const router = createRouterRuntime({ chain: [modelRef("openai-codex", "primary"), modelRef("anthropic", "backup")] });
+  const result = await router.run("sys", { messages: [], sessionRecovery: { runId: "run", revision: 1 }, sessionId: "id", sessionKeepAlive: true });
+  expect(executeMock).toHaveBeenCalledTimes(2);
+  expect(executeMock.mock.calls[1][1]).not.toHaveProperty("sessionRecovery");
+  expect(result.providerSessionRecovery).toBeUndefined();
 });

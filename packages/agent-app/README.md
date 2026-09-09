@@ -37,7 +37,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   commit. Cancellation preserves operator, shutdown, stale-session, signal,
   timeout, generic, and unrecorded-reason provenance; failure records a trusted
   host settlement category while bounding/redacting runtime/provider code and
-  detail as untrusted evidence. The next turn sees the account automatically;
+  detail as untrusted evidence. Eligible durable Pi recovery retains native context
+  without appending the account to Pi; cold reseed includes the account. The
+  on-disk history shape is unchanged by recovery;
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical

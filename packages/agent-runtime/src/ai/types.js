@@ -132,6 +132,7 @@
  * @typedef {Object} RuntimeObserver
  * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
  * Loose on purpose: observer.js is not a kernel seam file.
+ * @property {(event: RuntimeToolLifecycleEvent) => void} [recordToolLifecycle] Synchronous admission before queued lifecycle persistence.
  * @property {(event: RuntimeEvent) => (void|Promise<void>)} [onEvent]
  * @property {() => (void|Promise<void>)} [flush]
  */
@@ -193,6 +194,7 @@
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
+ * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
  * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, acknowledge?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, uncertain?: (details: {reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}) => unknown, reject?: (error?: unknown) => unknown}>} [liveInput] Stream of in-flight user messages for steering an active run. Native acceptance, exact transcript consumption, and uncertain delivery are distinct synchronous callbacks; thenables are never awaited as settlement confirmation. An optional opaque logicalOwner object proves that a later same-id value is a fresh callback lease for the first logical owner, not an independent duplicate.
@@ -323,6 +325,7 @@
  * @property {string|null} [error]
  * @property {Object|null} [errorDetails]
  * @property {string|null} [failureKind]
+ * @property {{runId: string, revision: number, providerSessionId: string, modelKey: string, tipId: string}} [providerSessionRecovery]
  * @property {string|null} [providerSessionId]
  * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
  * @property {Array<Object>} [runtimeWarnings]
@@ -460,6 +463,7 @@
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
  * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.

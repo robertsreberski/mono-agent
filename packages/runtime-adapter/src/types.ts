@@ -255,6 +255,7 @@ export interface RuntimeResult {
   readonly errorDetails?: unknown;
   readonly failureKind?: string | null;
   readonly providerSessionId?: string | null;
+  readonly providerSessionRecovery?: { runId: string; revision: number; providerSessionId: string; modelKey: string; tipId: string };
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
@@ -397,6 +398,8 @@ export interface RuntimeMcpAppHost {
 }
 
 export interface RuntimeRunOptions {
+  /** Host-owned opt-in for settled durable terminal recovery. */
+  readonly sessionRecovery?: { runId: string; revision: number } | undefined;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
@@ -513,6 +516,7 @@ export interface MonoRuntimeLike {
   configureTools?(next?: RuntimeToolOptions): void;
   /** Flush provider-owned durable transcript state before host history commit. */
   syncSession?(providerSessionId: string): Promise<boolean>;
+  recoverSession?(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: { appliedInputIds: readonly string[] }): Promise<boolean>;
   /**
    * Guarantee that the next resume cannot reuse process-local provider state.
    * Resolves for both removed and already-absent handles; rejects if the

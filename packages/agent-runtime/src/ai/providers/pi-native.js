@@ -55,6 +55,7 @@ import {
   buildErrorDetails,
   buildErrorResult,
   buildSuccessResult,
+  failureKindForPiError,
   emitCapabilitiesResolved,
   emitUsageCostEvents,
   usageFromMessages,
@@ -62,6 +63,7 @@ import {
   withSubagentUsage,
 } from "./pi-native/result-builder.js";
 import {
+  captureSessionRecovery,
   cleanupSessionOnThrow,
   commitSession,
   discardUncommittedSession,
@@ -401,6 +403,9 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // (host/runtime-side throws after the session mutated) can roll back too, not
     // just the success path.
     baselineLeafId: null,
+    recoveryOperationId: undefined,
+    recoveryInputIds: null,
+    retainRecoveryTail: false,
   };
 
   const providerSessionId = options.sessionId
@@ -679,6 +684,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
 
     // Arm the main-prompt epoch after proactive compaction so compaction and
     // transcript seeding cannot be mistaken for live-input consumption.
+    runState.recoveryBaselineTipId = await runState.session.getLeafId();
     const liveInputEpoch = createLiveInputPromptEpoch({ harness, onEvent });
     const liveInput = startLiveInput({ harness, options, onEvent, promptEpoch: liveInputEpoch });
 
@@ -708,14 +714,20 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       // Own the operation at admission so steers consumed mid-run settle as
       // applied immediately; finish() re-checks the settled id at the end.
       const promptResult = await runHarnessPrompt(harness, promptText, promptImages, {
-        onOperationAdmitted: (operationId) => liveInputEpoch.confirm(operationId),
+        onOperationAdmitted: (operationId) => {
+          runState.recoveryOperationId = operationId;
+          liveInputEpoch.confirm(operationId);
+        },
       });
       runError = promptResult.runError;
       liveInputEpoch.finish(promptResult.operationId);
     } finally {
       // Stop joins unresolved native enqueue and reconciles every returned
       // entry before the exact-operation subscription is removed.
-      try { await liveInput.stop(); } finally { liveInputEpoch.close(); }
+      try { await liveInput.stop(); } finally {
+        runState.recoveryInputIds = liveInputEpoch.consumedInputIds();
+        liveInputEpoch.close();
+      }
     }
 
     runState.externalAbort ||= !!options.abortSignal?.aborted;
@@ -902,6 +914,12 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
     // tracks LIVENESS so disposeProviderSession / idle-TTL eviction can reach
     // native sessions, keep-alive registers the session, and a failed/aborted
     // resumed turn rolls back to its pre-turn leaf.
+    runState.retainRecoveryTail = !!durableRepo && options.sessionKeepAlive === true
+      && !runState.maxTurnsHit
+      && (!errorMessage || failureKindForPiError(errorMessage, diagnostics) === "provider_unavailable")
+      && typeof options.sessionRecovery?.runId === "string" && options.sessionRecovery.runId.length > 0
+      && Number.isSafeInteger(options.sessionRecovery?.revision) && options.sessionRecovery.revision >= 0
+      && typeof runState.recoveryOperationId === "string";
     await commitSession(runState, {
       options,
       requestedSessionId,
@@ -913,21 +931,21 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       onEvent,
     });
 
-    // Final abort guard (durable cancel TOCTOU): if a cancel raced the lifecycle
-    // commit above — landing AFTER the keep-alive/!externalAbort decision but
-    // before this return — the cancelled turn is still in the durable transcript
-    // and (for keep-alive) the live registry. Roll it back so the next resume sees
-    // the pre-turn state (rollbackAbortedTurn: a resumed session moves to its
-    // baseline leaf and drops its live entry; a fresh durable session deletes its
-    // jsonl). The abort re-check + return stay inline with NO await between the
-    // false-branch check and the return, so an external cancel cannot newly fire
-    // past it (I10).
+    // Uncoordinated calls keep their final rollback guard. Coordinated calls
+    // retain the tail and close it before granting a recovery receipt; recheck
+    // cancellation after that await as well.
     if (!runState.externalAbort && options.abortSignal?.aborted) {
       runState.externalAbort = true;
-      await rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo });
+      if (!runState.retainRecoveryTail) await rollbackAbortedTurn(runState, { requestedSessionId, providerSessionId, durableRepo });
     }
 
-    return buildSuccessResult({
+    // A receipt is proof of a successfully closed native operation, never a
+    // promise that the finally block will eventually close it.
+    const providerSessionRecovery = runState.retainRecoveryTail
+      ? await captureSessionRecovery(runState, { options, providerSessionId, modelKey: `${resolved.provider}:${resolved.model}`, model: runtime.model, pending: !!errorMessage || runState.externalAbort })
+      : undefined;
+    if (runState.retainRecoveryTail) runState.externalAbort ||= !!options.abortSignal?.aborted;
+    return { ...buildSuccessResult({
       finalText,
       finalThinking,
       events,
@@ -949,7 +967,7 @@ export async function generatePiNativeResponse(systemPrompt, options = {}) {
       usageMeasured: hasMeasuredUsage(runTranscript),
       structuredResult: runState.structuredResult,
       effectiveEffort: providerEffectiveEffort,
-    });
+    }), ...(providerSessionRecovery ? { providerSessionRecovery } : {}) };
   } catch (err) {
     runState.externalAbort ||= !!options.abortSignal?.aborted;
     // Drop a just-created fresh durable session, release a create-on-miss

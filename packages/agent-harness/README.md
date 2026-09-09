@@ -148,7 +148,7 @@ The harness is the request-to-runtime composition boundary:
    successful turn keeps the existing atomic history-and-memory commit boundary;
    an admitted, non-isolated turn that settles as cancelled or failed before
    that boundary seals its accepted prefix, closes dangling tool starts with the
-   real outcome, publishes its bounded continuity account, and retires the
+   real outcome, publishes its bounded continuity account, and recovers or retires the
    provider epoch.
 6. Serialize cancelled/failed continuity publication ahead of the next
    same-conversation context build without waiting for an abort-ignoring
@@ -374,9 +374,24 @@ are `status: "failed"`, one of `runtime_result`, `empty_response`, or
 `thrown_error`, and a fixed framework-authored notice. Runtime/provider codes
 and details for either outcome are bounded and redacted only as `untrustedCode`
 and `untrustedDetail` inside tag-safe JSON explicitly framed as untrusted
-evidence. The collector seals at settlement and rejects late runtime events.
-Provider epochs are retired and rotated even when an abort-ignoring provider is
-still unwinding, so the next turn seeds a consistent canonical transcript.
+evidence. The collector seals at settlement and rejects late runtime events. Native events
+admitted before the seal retain that admission while sidecar persistence is
+queued; continuity waits for those accepted writes before finalizing history.
+Eligible coordinated durable Pi turns retain their epoch after validated native
+settlement; the canonical revision advances once. Recovery adds no Pi message.
+Pi filters interrupted prose/reasoning and retains completed native tools and the
+cancelled user input. Cancellation permits 1,000 ms by default for provider settlement while
+the caller and mailbox close immediately. Hosts may override the window through
+`session.terminalRecoverySettlementMs` (a positive safe integer); the two-process
+smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
+reseed. A process-local budget allows one failed-turn recovery per epoch; user
+cancellation does not spend it, success does not reset it, and reconstruction may
+allow one extra attempt. Custom stores opt in with `providerSessionRecovery: "v1"`.
+A declined recovery reports a `terminal_recovery_skipped` runtime warning with
+`source: "harness"`, the terminal `outcome`, and the first failing gate in `reason`.
+The next cold turn reports `cancelled_turn_reseed` or `failed_turn_reseed` unless
+a prior boundary reason, such as model change, applies. These markers are process-local.
+The durable record shape is unchanged. See [session recovery](../../docs/runtime/sessions-concurrency.md).
 Cancelled and failed accounts never qualify for memory capture. Isolated
 proactive or continuation runs and queued requests that never started do not
 publish one. A hard process death that never unwinds through the harness remains

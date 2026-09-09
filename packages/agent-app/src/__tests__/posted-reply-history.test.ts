@@ -593,11 +593,12 @@ it("forwards provider-session binding capability arguments and returned ownershi
     history: [], abort: async () => undefined, prepareCommit: vi.fn() };
   const begin = vi.fn(async () => turn);
   const original: ConversationHistoryStore = { load: async () => [], append: async () => undefined,
-    providerSessionModelBinding: "v1", providerSessionRetirement: "fail-closed", beginProviderSessionTurn: begin };
+    providerSessionModelBinding: "v1", providerSessionRecovery: "v1", providerSessionRetirement: "fail-closed", beginProviderSessionTurn: begin };
   const wrap = createSlackPostedReplyHistory({ maxMessages: 10 }).wrapHistoryStore;
   const wrapped = wrap(original);
   const binding = { modelKey: "faux:override" };
   expect(wrapped.providerSessionModelBinding).toBe("v1");
+  expect(wrapped.providerSessionRecovery).toBe("v1");
   expect(wrapped.providerSessionRetirement).toBe("fail-closed");
   expect(await wrapped.beginProviderSessionTurn!("c", "run", binding)).toBe(turn);
   expect(begin).toHaveBeenCalledWith("c", "run", binding);

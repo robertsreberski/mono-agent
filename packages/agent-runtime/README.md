@@ -118,6 +118,13 @@ the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main
 
 ### Managed-tool lifecycle fidelity
 
+Native event admission precedes queued storage: observers receive `recordEvent`
+and optional `recordToolLifecycle` callbacks synchronously. The latter receives
+the normalized lifecycle event before persistence begins. This lets the harness
+retain work emitted before cancellation while its sidecar is busy. Persistence
+and client delivery remain serialized; later cancellation cannot reclassify an
+already admitted tool result.
+
 `RuntimeRunOptions.toolLifecycleSink` is an awaited host-owned boundary. The
 runtime sends redaction-eligible raw arguments/content plus stable provider call
 id and name; the host returns only record/sequence, persistence/truncation byte
@@ -699,7 +706,8 @@ Returns:
 - `configureTools(next)` — update the tool runtime context after construction.
 - `syncSession(id)` — fsync provider-owned durable state before canonical history commits.
 - `refreshSession(id)` — guarantee the next resume cannot reuse process-local state; absence succeeds and cleanup uncertainty rejects.
-- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. If the matching live session is still unwinding after cancellation or failure, refresh it out of the registry and unlink and fsync its current JSONL; a post-runtime retry also removes any headerless exact-name file recreated by a late append. Pi first rolls a resumed failed turn back to its previous leaf; host retirement then discards that entire epoch so the next turn can seed the canonical continuity account into a fresh one.
+- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable Pi tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts; retries/backups strip that option and every returned receipt. Pending recovery blocks native resume. Failed/aborted assistant messages stay on disk and are filtered by Pi; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
+- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. If the matching live session is still unwinding after cancellation or failure, refresh it out of the registry and unlink and fsync its current JSONL; a post-runtime retry also removes any headerless exact-name file recreated by a late append. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`

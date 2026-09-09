@@ -337,6 +337,9 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
           : (withoutCallerSandbox(next) as unknown as KernelToolOptions),
       );
     },
+    async recoverSession(receipt, context): Promise<boolean> {
+      return await runtime.recoverSession?.(receipt, context) === true;
+    },
     async syncSession(providerSessionId: string): Promise<boolean> {
       return await runtime.syncSession?.(providerSessionId) === true;
     },

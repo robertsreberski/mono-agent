@@ -16,6 +16,8 @@ export function assertConversationHistoryVersion(value: unknown): asserts value 
 
 export interface RuntimeSessionRecord {
   modelKey?: string;
+  /** Process-local budget and one-shot boundary; never serialized. */
+  recovery?: { failureUsed: boolean; nextOutcome?: "cancelled" | "failed" };
   readonly conversationId: string;
   readonly providerSessionId: string;
   providerSessionRevision?: number;
@@ -66,6 +68,7 @@ export interface RuntimeSessionStore {
     providerSessionRevision?: number,
     historyVersion?: string,
     modelKey?: string,
+    recovery?: RuntimeSessionRecord["recovery"],
   ): void;
   /**
    * When `providerSessionId` is given, evicts only if it still matches the
@@ -174,6 +177,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
       providerSessionRevision?: number,
       historyVersion?: string,
       modelKey?: string,
+      recovery?: RuntimeSessionRecord["recovery"],
     ): void {
       if (disposed) {
         return;
@@ -194,6 +198,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
           }
           stored.record.modelKey = modelKey;
         }
+        if (recovery !== undefined) stored.record.recovery = recovery;
         stored.record.lastActivityAt = now();
         if (providerSessionRevision === undefined) delete stored.record.providerSessionRevision;
         else stored.record.providerSessionRevision = providerSessionRevision;
@@ -220,6 +225,7 @@ export function createRuntimeSessionStore(options: RuntimeSessionStoreOptions): 
           ...(modelKey === undefined ? {} : { modelKey }),
           ...(providerSessionRevision === undefined ? {} : { providerSessionRevision }),
           ...(historyVersion === undefined ? {} : { historyVersion }),
+          ...(recovery === undefined ? {} : { recovery }),
           createdAt: timestamp,
           lastActivityAt: timestamp,
           busy: false,

@@ -202,6 +202,8 @@ export interface ConfiguredAgentHarnessOptions {
   /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
   readonly onToolHistoryWarning?: (message: string) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
+  /** Host-only provider settlement window; defaults to 1,000 ms. */
+  readonly terminalRecoverySettlementMs?: number;
   /**
    * Factory for a runtime bound to a per-request override model (cron/webhook
    * per-trigger model). Wired by the app so override runtimes share the
@@ -1195,6 +1197,9 @@ async function createConfiguredAgentHarnessInternal(
       ? {}
       : { isolateProactive: config.runtime.session.isolateProactive }),
     ...(options.onSessionEvent === undefined ? {} : { onSessionEvent: options.onSessionEvent }),
+    ...(options.terminalRecoverySettlementMs === undefined
+      ? {}
+      : { terminalRecoverySettlementMs: options.terminalRecoverySettlementMs }),
   };
   const piSessionsRoot = config.providers?.piNative?.piSessionsRoot;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);

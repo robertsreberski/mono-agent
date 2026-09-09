@@ -107,7 +107,7 @@ function contentMessages(options: RuntimeRunOptions): string[] {
 }
 
 describe("configured durable Pi history", () => {
-  it("replays canonical history once and reseeds fresh epochs after cancellation and failure", async () => {
+  it("replays canonical history once and retains valid epochs after cancellation and failure", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agent-app-durable-pi-history-"));
     tempDirs.push(dir);
     const identityPath = join(dir, "IDENTITY.md");
@@ -175,7 +175,7 @@ describe("configured durable Pi history", () => {
       (context) => {
         cancelledContext = context as PiContext;
         cancellation.abort(createChannelUserCancelReason("Web"));
-        return fauxAssistantMessage([fauxText("cancelled-provider-tail")]);
+        return fauxAssistantMessage([], { stopReason: "aborted" });
       },
       (context) => {
         freshAfterCancellationContext = context as PiContext;
@@ -279,9 +279,8 @@ describe("configured durable Pi history", () => {
         content: expect.stringContaining("Run stopped by the operator."),
       });
 
-      // Simulate process teardown. Cancellation rotated the durable provider
-      // epoch, so the next harness must seed a fresh Pi session from canonical
-      // history, including the host-authored stopped-turn account.
+      // A new harness must reopen the retained native transcript; canonical
+      // continuity remains available for cold reseeding and history tools.
       await firstHarness.dispose?.();
       firstHarness = undefined;
 
@@ -316,17 +315,10 @@ describe("configured durable Pi history", () => {
         expect.stringContaining("<cancelled_turn_history version=\"1\">") as unknown as string,
         expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-3-user$/u),
       ]);
-      expect(transcriptOf(freshAfterCancellationContext)).toEqual([
-        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?seed-user$/u),
-        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?seed-assistant$/u),
-        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-1-user$/u),
-        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-1-assistant$/u),
-        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-2-user$/u),
-        expect.stringMatching(/^assistant:(?:[\s\S]*\n\n)?turn-2-assistant$/u),
-        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?cancelled-turn-user$/u),
-        expect.stringContaining("<cancelled_turn_history version=\"1\">") as unknown as string,
-        expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-3-user$/u),
-      ]);
+      expect(JSON.stringify(freshAfterCancellationContext?.messages?.slice(0, cancelledContext?.messages?.length)))
+        .toBe(JSON.stringify(cancelledContext?.messages));
+      expect(JSON.stringify(freshAfterCancellationContext)).not.toContain("cancelled_turn_history");
+      expect(resumedRuntime.calls[0]?.options.sessionId).toBe(firstRuntime.calls[0]?.options.sessionId);
 
       const failed = await resumedHarness.run({
         conversationId: "durable-conversation",
@@ -373,10 +365,39 @@ describe("configured durable Pi history", () => {
         expect.stringContaining('<failed_turn_history version="1">') as unknown as string,
         expect.stringMatching(/^user:(?:[\s\S]*\n\n)?turn-4-user$/u),
       ]));
-      expect(transcriptOf(freshAfterFailureContext)).toEqual(seededAfterFailure);
+      expect(JSON.stringify(freshAfterFailureContext?.messages?.slice(0, failedContext?.messages?.length)))
+        .toBe(JSON.stringify(failedContext?.messages));
+      expect(JSON.stringify(freshAfterFailureContext)).not.toContain("failed_turn_history");
+      expect(afterFailureRuntime.calls[0]?.options.sessionId).toBe(resumedRuntime.calls[0]?.options.sessionId);
     } finally {
       await resumedHarness?.dispose?.();
       await firstHarness?.dispose?.();
     }
   });
+});
+
+it.each(["normal", "slow-writer"])("reopens a recovered tool-bearing Pi transcript in a second process (%s)", async (writerMode) => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { fileURLToPath } = await import("node:url");
+  const dir = await mkdtemp(join(tmpdir(), "terminal-recovery-process-")); tempDirs.push(dir);
+  const worker = fileURLToPath(new URL("./fixtures/terminal-recovery-worker.mjs", import.meta.url));
+  const run = async (mode: string) => JSON.parse((await promisify(execFile)(process.execPath, [worker, dir, mode, writerMode], { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 })).stdout);
+  const produced = await run("produce");
+  const consumed = await run("consume");
+  expect(produced.status).toBe("cancelled"); expect(consumed.status).toBe("success");
+  expect(consumed.pid).not.toBe(produced.pid);
+  expect(consumed.requests[0], `Producer providerSession: ${JSON.stringify(produced.records[0]?.providerSession)}; runtimeWarnings: ${JSON.stringify(produced.runtimeWarnings)}`)
+    .toBe(produced.requests[0]);
+  expect(JSON.stringify(consumed.context.slice(0, produced.context.length))).toBe(JSON.stringify(produced.context));
+  expect(consumed.context).toHaveLength(produced.context.length + 1);
+  expect(JSON.stringify(consumed.context)).toContain("disk-signature");
+  expect(JSON.stringify(consumed.context)).toContain("DURABLE TOOL EVIDENCE");
+  expect(JSON.stringify(consumed.context)).not.toContain("cancelled_turn_history");
+  expect(produced.runtimeWarnings).not.toEqual(expect.arrayContaining([expect.objectContaining({ warning_kind: "terminal_recovery_skipped" })]));
+  expect(produced.records[0].messages.at(-1).content).toContain('"state":"success"');
+  expect(produced.records[0].providerSession.revision).toBe(2);
+  expect(consumed.records[0].providerSession.revision).toBe(3);
+  expect(Object.keys(consumed.records[0].providerSession).sort()).toEqual(["epoch", "modelKey", "revision"]);
+  expect(JSON.stringify(consumed.records[0].messages)).toContain("cancelled_turn_history");
 });

@@ -98,6 +98,8 @@ export interface ConversationHistoryContextImport {
 export interface ConversationHistoryStore {
   /** Checks, persists and retires requested-primary model bindings. */
   readonly providerSessionModelBinding?: "v1";
+  /** Accepts synced terminal continuity without changing the durable record shape. */
+  readonly providerSessionRecovery?: "v1";
   /**
    * Present only when epoch rotation/retention can fail closed while removing
    * provider-owned durable transcripts that canonical history supersedes.
@@ -285,6 +287,8 @@ export interface AgentHarnessSessionEvent {
 export interface AgentHarnessSessionOptions {
   readonly mode: AgentSessionMode;
   readonly idleTimeoutMs: number;
+  /** Provider settlement window after cancellation or failure. Defaults to 1,000 ms. */
+  readonly terminalRecoverySettlementMs?: number;
   /**
    * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
    * — primarily for tests and custom runtimes.

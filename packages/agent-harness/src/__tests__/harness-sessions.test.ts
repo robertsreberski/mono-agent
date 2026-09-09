@@ -3,12 +3,13 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { MemoryBlock, MemoryStore, MemoryWriteResult } from "@mono-agent/agent-contracts";
 import type { HistoryMessage } from "../context/index.js";
 import type { RunRecorder, RunSummary, RuntimeEventLike, RuntimeResultLike } from "@mono-agent/observability";
 import type { RuntimeRunOptions, RuntimeResult } from "@mono-agent/runtime-adapter";
+import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import {
   AgentHarnessError,
@@ -1719,4 +1720,418 @@ describe("AgentHarness continuous sessions", () => {
     expect(memory.captureCalls()).toBe(0);
     expect(fake.invalidatedSessions).toContain("ps-e2e");
   });
+});
+
+describe("coordinated terminal recovery", () => {
+  async function fixture(sessionOverrides: Partial<AgentHarnessSessionOptions> = {}) {
+    const identityPath = await identityFixture();
+    const root = join(identityPath, "..");
+    const retired: string[] = [];
+    const historyStore = createCoordinatedDurableHistoryStore({ root: join(root, "history"), retireProviderSession: async (id) => { retired.push(id); } });
+    const native = new Map<string, string[]>();
+    const prefixes: string[][] = [];
+    const receipts: RuntimeResult["providerSessionRecovery"][] = [];
+    let selectedModel: RuntimeRunOptions["model"] = model;
+    let outcome: "success" | "cancelled" | "provider_unavailable" | "context_limit" = "success";
+    let controller = new AbortController();
+    let recoveryAllowed = true;
+    let failCommit = false;
+    let failSidecar = false;
+    let beforeTerminal = async (_options: RuntimeRunOptions): Promise<void> => {};
+    const begin = historyStore.beginProviderSessionTurn.bind(historyStore);
+    historyStore.beginProviderSessionTurn = async (...args: Parameters<typeof begin>) => {
+      const turn = await begin(...args);
+      return { ...turn, prepareCommit: async (...params: Parameters<typeof turn.prepareCommit>) => {
+        const append = await turn.prepareCommit(...params);
+        return { ...append, commit: async () => { if (failCommit) throw new Error("injected canonical commit failure"); await append.commit(); } };
+      } };
+    };
+    let pause: { started: () => void; wait: Promise<void> } | undefined;
+    let resultTransform: (result: RuntimeResult) => RuntimeResult | Promise<RuntimeResult> = (result) => result;
+    const events: RuntimeEventLike[] = [];
+    const fake = createSessionFakeRuntime(async (_prompt, options) => {
+      const id = options.sessionId as string;
+      const transcript = native.get(id) ?? [];
+      const last = String(options.messages.at(-1)?.content);
+      transcript.push(last);
+      native.set(id, transcript);
+      prefixes.push([...transcript]);
+      const receipt = options.sessionRecovery === undefined ? undefined : { ...options.sessionRecovery, providerSessionId: id, modelKey, tipId: `tip-${prefixes.length}` };
+      await beforeTerminal(options);
+      if (outcome === "cancelled") controller.abort(new Error("user cancel"));
+      if (outcome === "success") transcript.push("native answer");
+      const result: RuntimeResult = { providerSessionId: id, ...(receipt ? { providerSessionRecovery: receipt } : {}),
+        ...(outcome === "success" ? { text: "native answer" } : outcome === "cancelled"
+          ? { cancelled: true, failureKind: "cancelled" } : { error: "transport detail", failureKind: outcome }) };
+      if (pause !== undefined) { const held = pause; pause = undefined; held.started(); await held.wait; }
+      return resultTransform(result);
+    });
+    const runtime = { ...fake.runtime, async recoverSession(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>) { receipts.push(receipt); return recoveryAllowed; } };
+    const sidecar = toolHistoryStatusSpy(identityPath, []);
+    const finishRun = sidecar.writer.finishRun;
+    sidecar.writer.finishRun = async (...args) => { if (failSidecar) throw new Error("injected sidecar failure"); await finishRun(...args); };
+    const makeHarness = () => createAgentHarness({ identityPath, model, runtime, runtimeOptionsForRequest: () => ({ runtimeOptions: { model: selectedModel } }), historyStore, session: { ...session, ...sessionOverrides }, toolHistory: sidecar, piSessionsRoot: join(root, "pi") });
+    let harness = makeHarness();
+    return { fake, retired, native, prefixes, receipts, historyStore, events, runtime,
+      cancel() { controller.abort(new Error("injected cancel")); },
+      rejectCommit() { failCommit = true; },
+      rejectSidecar() { failSidecar = true; },
+      before(next: typeof beforeTerminal) { beforeTerminal = next; },
+      transform(next: typeof resultTransform) { resultTransform = next; },
+      pauseNext() {
+        let started!: () => void; let release!: () => void;
+        const admitted = new Promise<void>((resolve) => { started = resolve; });
+        pause = { started, wait: new Promise<void>((resolve) => { release = resolve; }) };
+        return { admitted, release };
+      },
+      denyRecovery() { recoveryAllowed = false; },
+      async reconstruct() { await harness.dispose?.(); harness = makeHarness(); },
+      async run(nextOutcome: typeof outcome, text: string, modelOverride?: string) {
+        selectedModel = modelOverride === undefined ? model : parseMonoRuntimeModelReference(modelOverride);
+        outcome = nextOutcome; controller = new AbortController();
+        return harness.run({ ...request("recovery", text), abortSignal: controller.signal, ...(modelOverride === undefined ? {} : { metadata: { source: "web", web: { model: modelOverride } } }), onEvent: (event) => { events.push(event); } });
+      },
+      async close() { await harness.dispose?.(); },
+    };
+  }
+
+  it.each([
+    { outcome: "cancelled", name: "resumes a cancelled durable turn with an unchanged native prefix" },
+    { outcome: "provider_unavailable", name: "resumes one transport-failed durable turn with an unchanged native prefix" },
+  ] as const)("$name", async ({ outcome }) => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm");
+      await f.run(outcome, "interrupted");
+      await f.run("success", "next");
+      expect(f.receipts).toHaveLength(1);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+      expect(f.prefixes[2]!.slice(0, f.prefixes[1]!.length)).toEqual(f.prefixes[1]);
+      expect(f.prefixes[2]).toHaveLength(f.prefixes[1]!.length + 1); // no host note
+      const history = await f.historyStore.load("recovery");
+      expect(history.filter((message) => message.content === "interrupted")).toHaveLength(1);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_resume`)).toHaveLength(1);
+      await f.run("success", "after boundary");
+      expect(f.events.filter((event) => event.type === "session_boundary" && String(event.reason).endsWith("_turn_resume"))).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds after context termination despite a recoverable-looking receipt", async () => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm"); await f.run("context_limit", "too much"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.fake.calls[2]!.options.sessionId).not.toBe(f.fake.calls[1]!.options.sessionId);
+      expect(f.retired).toContain(f.fake.calls[1]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds after the second failed turn on the same epoch", async () => {
+    const f = await fixture();
+    try {
+      await f.run("provider_unavailable", "failure one"); await f.run("success", "between");
+      await f.run("provider_unavailable", "failure two"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.fake.calls[3]!.options.sessionId).not.toBe(f.fake.calls[2]!.options.sessionId);
+      await f.run("provider_unavailable", "new epoch failure");
+      expect(f.receipts).toHaveLength(2); // rotation clears the process-local budget
+    } finally { await f.close(); }
+  });
+
+  it("preserves the epoch failure budget across a cross-process revision refresh", async () => {
+    const f = await fixture();
+    try {
+      await f.run("provider_unavailable", "first failure");
+      const other = await f.historyStore.beginProviderSessionTurn("recovery", "other-process", { modelKey });
+      await (await other.prepareCommit([{ role: "user", content: "other turn" }, { role: "assistant", content: "other answer" }], { providerSessionSynced: true })).commit();
+      await f.run("success", "refresh");
+      await f.run("provider_unavailable", "second failure");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("does not spend the failure recovery budget on user cancellation", async () => {
+    const f = await fixture();
+    try {
+      await f.run("cancelled", "cancel one"); await f.run("cancelled", "cancel two");
+      await f.run("provider_unavailable", "failure"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(3);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+    } finally { await f.close(); }
+  });
+
+  it("resets the in-memory failure recovery budget after harness reconstruction", async () => {
+    const f = await fixture();
+    try {
+      await f.run("provider_unavailable", "first"); await f.reconstruct();
+      await f.run("provider_unavailable", "second process lifetime"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(2);
+      expect(new Set(f.fake.calls.map((call) => call.options.sessionId)).size).toBe(1);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds when native recovery cannot prove the tail", async () => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm"); f.denyRecovery(); await f.run("provider_unavailable", "failed"); await f.run("success", "next");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.fake.calls[2]!.options.sessionId).not.toBe(f.fake.calls[1]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+  it.each([
+    "history_not_coordinated", "history_ownership_transferred", "store_capability", "attempt_not_coordinated",
+    "runtime_unsupported", "tool_history_finalize_failed", "failure_budget_spent", "settlement_timeout",
+    "failure_kind_not_recoverable", "post_seal_contradiction", "receipt_missing", "receipt_mismatch",
+    "recover_returned_false", "recover_threw",
+  ] as const)("reports the first terminal recovery skip reason: %s", async (reason) => {
+    const f = await fixture(reason === "settlement_timeout" ? { terminalRecoverySettlementMs: 1 } : {});
+    let release: (() => void) | undefined;
+    try {
+      let outcome: "cancelled" | "provider_unavailable" | "success" = "cancelled";
+      if (reason === "history_not_coordinated") Object.defineProperty(f.historyStore, "beginProviderSessionTurn", { value: undefined });
+      if (reason === "store_capability") Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      if (reason === "runtime_unsupported") Object.defineProperty(f.runtime, "recoverSession", { value: undefined });
+      if (reason === "tool_history_finalize_failed") f.rejectSidecar();
+      if (reason === "failure_budget_spent") { await f.run("provider_unavailable", "first failure"); outcome = "provider_unavailable"; }
+      if (reason === "settlement_timeout") {
+        const paused = f.pauseNext(); release = paused.release;
+        void paused.admitted.then(() => setTimeout(paused.release, 50));
+      }
+      if (reason === "failure_kind_not_recoverable") f.transform((result) => ({ ...result, failureKind: "provider_auth" }));
+      if (reason === "post_seal_contradiction") f.transform((result) => {
+        f.fake.calls.at(-1)!.options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "late" }] } }); return result;
+      });
+      if (reason === "receipt_missing") f.transform(({ providerSessionRecovery: _receipt, ...result }) => result);
+      if (reason === "receipt_mismatch") f.transform((result) => ({ ...result, providerSessionRecovery: { ...result.providerSessionRecovery!, revision: 99 } }));
+      if (reason === "recover_returned_false") f.denyRecovery();
+      if (reason === "recover_threw") f.runtime.recoverSession = async () => { throw new Error("recover failed"); };
+      if (reason === "attempt_not_coordinated") {
+        outcome = "provider_unavailable";
+        let first = true;
+        f.transform((result) => { if (!first) return result; first = false; return { ...result, error: "missing", failureKind: "session_not_found" }; });
+      }
+      if (reason === "history_ownership_transferred") {
+        outcome = "success";
+        const begin = f.historyStore.beginProviderSessionTurn.bind(f.historyStore);
+        f.historyStore.beginProviderSessionTurn = async (...args) => {
+          const turn = await begin(...args);
+          return { ...turn, prepareCommit: async (...params) => {
+            const append = await turn.prepareCommit(...params);
+            // Trigger after the prepare await resumes and transfers ownership.
+            queueMicrotask(() => queueMicrotask(() => f.cancel()));
+            return append;
+          } };
+        };
+      }
+      const response = await f.run(outcome, "interrupted");
+      const warnings = (response.metadata?.runtime as { runtimeWarnings?: unknown[] } | undefined)?.runtimeWarnings;
+      expect(warnings).toEqual([expect.objectContaining({ warning_kind: "terminal_recovery_skipped", source: "harness", reason })]);
+      expect(f.events.filter((event) => event.warning_kind === "terminal_recovery_skipped")).toEqual([
+        expect.objectContaining({ reason }),
+      ]);
+    } finally { release?.(); await f.close(); }
+  });
+
+  it.each(["cancelled", "provider_unavailable"] as const)("emits a one-shot cold boundary after an unrecovered %s turn", async (outcome) => {
+    const f = await fixture();
+    try {
+      f.denyRecovery(); await f.run(outcome, "interrupted"); await f.run("success", "next"); await f.run("success", "warm");
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === `${outcome === "cancelled" ? "cancelled" : "failed"}_turn_reseed`)).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it("gives model change precedence over a pending terminal reseed boundary", async () => {
+    const f = await fixture();
+    try {
+      f.denyRecovery(); await f.run("cancelled", "interrupted"); await f.run("success", "next", "anthropic:claude-opus-4-8");
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === "model_change")).toHaveLength(1);
+      expect(f.events.filter((event) => event.reason === "cancelled_turn_reseed")).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects invalid terminalRecoverySettlementMs: %s", (terminalRecoverySettlementMs) => {
+    expect(() => createAgentHarness({ identityPath: "IDENTITY.md", model,
+      runtime: createSessionFakeRuntime(async () => ({ text: "unused" })).runtime,
+      session: { ...session, terminalRecoverySettlementMs },
+    })).toThrow(new TypeError("terminalRecoverySettlementMs must be a positive safe integer."));
+  });
+
+  it.each([4_999, 5_000])("honours a 5,000 ms cancellation settlement window at %s ms", async (settledAfterMs) => {
+    const f = await fixture({ terminalRecoverySettlementMs: 5_000 });
+    let paused: ReturnType<typeof f.pauseNext> | undefined;
+    let timerSpy: { mockRestore(): void } | undefined;
+    try {
+      await f.run("success", "warm");
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      const fakeSetTimeout = globalThis.setTimeout;
+      let signalTimer!: () => void;
+      const timerScheduled = new Promise<void>((resolve) => { signalTimer = resolve; });
+      timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+        const timer = fakeSetTimeout(...args);
+        if (args[1] === 5_000) signalTimer();
+        return timer;
+      }) as typeof setTimeout);
+      paused = f.pauseNext();
+      const cancelled = f.run("cancelled", "cancelled ask");
+      await paused.admitted;
+      await timerScheduled; // publication has reached the settlement race
+      await vi.advanceTimersByTimeAsync(settledAfterMs);
+      paused.release();
+      expect((await cancelled).failure?.kind).toBe("cancelled");
+      await f.run("success", "next");
+      const cancelledId = f.fake.calls[1]!.options.sessionId;
+      const nextId = f.fake.calls[2]!.options.sessionId;
+      if (settledAfterMs < 5_000) {
+        expect(f.receipts).toHaveLength(1);
+        expect(nextId).toBe(cancelledId);
+      } else {
+        expect(f.receipts).toHaveLength(0);
+        expect(nextId).not.toBe(cancelledId);
+      }
+    } finally {
+      paused?.release();
+      timerSpy?.mockRestore();
+      vi.useRealTimers();
+      await f.close();
+    }
+  });
+
+  it("times out cancelled recovery without blocking a successor or retiring its session", async () => {
+    const f = await fixture();
+    try {
+      await f.run("success", "warm");
+      const paused = f.pauseNext();
+      const old = f.run("cancelled", "old cancelled");
+      await paused.admitted;
+      const next = await f.run("success", "successor");
+      expect(next.text).toBe("native answer");
+      const oldId = f.fake.calls[1]!.options.sessionId;
+      const nextId = f.fake.calls[2]!.options.sessionId;
+      expect(nextId).not.toBe(oldId);
+      paused.release(); await old;
+      expect(f.retired).not.toContain(nextId);
+      expect(f.receipts).toHaveLength(0);
+      await f.run("success", "still warm");
+      expect(f.fake.calls[3]!.options.sessionId).toBe(nextId);
+    } finally { await f.close(); }
+  });
+
+  it.each(["missing", "model", "revision", "extra-attempt", "auth", "context-exhausted"])("fails terminal recovery closed on unsafe evidence: %s", async (kind) => {
+    const f = await fixture();
+    try {
+      f.transform((result) => {
+        if (kind === "missing") { const { providerSessionRecovery: _receipt, ...rest } = result; return rest; }
+        if (kind === "auth") return { ...result, failureKind: "provider_auth" };
+        if (kind === "context-exhausted") return { ...result, failureKind: "provider_unavailable_exhausted", failoverHistory: [{ failureKind: "context_limit" }] };
+        if (kind === "extra-attempt") return { ...result, failoverHistory: [{ failureKind: "provider_unavailable" }, { failureKind: "provider_unavailable" }] };
+        return { ...result, providerSessionRecovery: { ...result.providerSessionRecovery!, ...(kind === "model" ? { modelKey: "faux:wrong" } : { revision: 99 }) } };
+      });
+      await f.run("provider_unavailable", "failed");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("reseeds when terminal sidecar finalization fails", async () => {
+    const f = await fixture();
+    try {
+      f.rejectSidecar(); await f.run("cancelled", "cancelled ask");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+      expect(await f.historyStore.load("recovery")).toHaveLength(2);
+    } finally { await f.close(); }
+  });
+
+  it("keeps the publication barrier closed when canonical commit fails after native recovery", async () => {
+    const f = await fixture();
+    try {
+      f.rejectCommit();
+      expect((await f.run("cancelled", "cancelled ask")).failure?.kind).toBe("cancelled");
+      expect(f.receipts).toHaveLength(1);
+      expect(f.fake.retiredSessions).toEqual(expect.arrayContaining([expect.objectContaining({ providerSessionId: f.fake.calls[0]!.options.sessionId })]));
+      expect((await f.run("success", "blocked successor")).failure).toBeDefined();
+      expect(f.fake.calls).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it("keeps custom coordinators without the recovery capability on the retirement path", async () => {
+    const f = await fixture();
+    try {
+      Object.defineProperty(f.historyStore, "providerSessionRecovery", { value: undefined });
+      await f.run("cancelled", "cancelled ask");
+      expect(f.fake.calls[0]!.options.sessionRecovery).toBeUndefined();
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("retains native evidence admitted before cancellation while sidecar delivery is queued", async () => {
+    const f = await fixture();
+    const assistant = { type: "assistant", message: { content: [{ type: "text", text: "accepted prose" }] } };
+    const invocation = { phase: "invocation", toolCallId: "queued-read", toolName: "Read", arguments: { path: "file" } } as const;
+    const completed = { phase: "result", toolCallId: "queued-read", toolName: "Read", content: "accepted tool evidence", state: "success" } as const;
+    try {
+      f.before(async (options) => {
+        for (const observer of Array.isArray(options.observers) ? options.observers : []) {
+          const admission = observer as { recordEvent(event: typeof assistant): void; recordToolLifecycle(event: typeof invocation | typeof completed): void };
+          admission.recordEvent(assistant);
+          admission.recordToolLifecycle(invocation);
+          admission.recordToolLifecycle(completed);
+        }
+      });
+      f.transform(async (result) => {
+        const options = f.fake.calls.at(-1)!.options;
+        await options.toolLifecycleSink?.(invocation);
+        await options.toolLifecycleSink?.(completed);
+        options.onEvent?.(assistant);
+        return result;
+      });
+      const response = await f.run("cancelled", "cancelled ask");
+      expect((response.metadata?.runtime as { runtimeWarnings?: unknown[] } | undefined)?.runtimeWarnings).toBeUndefined();
+      expect(f.receipts).toHaveLength(1);
+      const history = await f.historyStore.load("recovery");
+      expect(history.at(-1)?.content).toContain("accepted tool evidence");
+      expect(history.at(-1)?.content).toContain('"state":"success"');
+      expect(history.at(-1)?.content?.match(/accepted prose/g)).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it.each(["success", "error", "cancelled"] as const)("checks post-seal tool settlement against accepted evidence: %s", async (state) => {
+    const f = await fixture();
+    try {
+      f.before(async (options) => { await options.toolLifecycleSink?.({ phase: "invocation", toolCallId: "in-flight", toolName: "Read", arguments: { path: "file" } }); });
+      f.transform(async (result) => {
+        await f.fake.calls.at(-1)!.options.toolLifecycleSink?.({ phase: "result", toolCallId: "in-flight", toolName: "Read", content: "late result", state });
+        return result;
+      });
+      await f.run("cancelled", "cancelled ask");
+      expect(f.receipts).toHaveLength(state === "success" ? 0 : 1);
+      const history = await f.historyStore.load("recovery");
+      expect(history.at(-1)?.content).toContain("in_flight_at_cancellation");
+      expect(history.at(-1)?.content).not.toContain("late result");
+    } finally { await f.close(); }
+  });
+
+  it("reseeds when new assistant prose arrives after the cancellation seal", async () => {
+    const f = await fixture();
+    try {
+      f.transform((result) => { f.fake.calls.at(-1)!.options.onEvent?.({ type: "assistant", message: { content: [{ type: "text", text: "late prose" }] } }); return result; });
+      await f.run("cancelled", "cancelled ask");
+      expect(f.receipts).toHaveLength(0);
+      expect(f.retired).toContain(f.fake.calls[0]!.options.sessionId);
+    } finally { await f.close(); }
+  });
+
+  it("gives model change precedence over a pending recovery boundary", async () => {
+    const f = await fixture();
+    try {
+      await f.run("cancelled", "cancelled ask");
+      expect((await f.run("success", "new model", "anthropic:claude-opus-4-8")).failure).toBeUndefined();
+      expect(f.fake.calls[1]!.options.sessionId).not.toBe(f.fake.calls[0]!.options.sessionId);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === "model_change")).toHaveLength(1);
+      expect(f.events.filter((event) => event.type === "session_boundary" && event.reason === "cancelled_turn_resume")).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+
 });

@@ -524,6 +524,7 @@ export function createLiveInputPromptEpoch({ harness, onEvent }) {
 
   return {
     ownedRunId: () => runId,
+    consumedInputIds: () => invalid ? null : [...entries.values()].filter((entry) => entry.consumed).map((entry) => entry.message.id),
     register(entryId, message) {
       if (!entries.has(entryId)) entries.set(entryId, { message, observed: false, consumed: false });
       if (invalid) {

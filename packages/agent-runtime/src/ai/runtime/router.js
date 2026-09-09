@@ -97,7 +97,7 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "permissionMode", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
@@ -262,6 +262,7 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           // attempt may have appended to; backup routes never inherit that session.
           const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
           if (!sessionEligibleAttempt) {
+            delete callOptions.sessionRecovery;
             delete callOptions.sessionId;
             delete callOptions.providerSessionId;
             delete callOptions.sessionKeepAlive;
@@ -319,6 +320,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           }
 
           result = normalizeProviderAuthFailure(result);
+          if (!sessionEligibleAttempt) {
+            const { providerSessionRecovery: _receipt, ...unownedResult } = result;
+            result = unownedResult;
+          }
 
           const retryability = retryableProviderFailureInfo({
             errorText: result.error || "",
@@ -438,6 +443,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
     configureTools(next = {}) {
       configuredTools = { ...(configuredTools || {}), ...next };
       inner.configureTools?.(next);
+    },
+    async recoverSession(receipt, context) {
+      return await inner.recoverSession?.(receipt, context) === true;
     },
     async syncSession(providerSessionId) {
       return Boolean(await inner.syncSession?.(providerSessionId));
