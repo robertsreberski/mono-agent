@@ -40,6 +40,8 @@ export type ModelSelectorProps = {
   readonly agentProviders?: readonly AgentProvider[];
   /** Fetch state per provider, used to tell "still loading" from "no match". */
   readonly providerStatus?: Readonly<Record<string, ProviderCatalogStatus>>;
+  /** Explains the next-turn context rebuild for an existing conversation. */
+  readonly showModelChangeHint?: boolean;
 };
 
 /**
@@ -76,6 +78,7 @@ export function ModelSelector({
   onProviderRequest,
   providerStatus,
   agentProviders,
+  showModelChangeHint = false,
 }: ModelSelectorProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -387,6 +390,11 @@ export function ModelSelector({
                     })}
                   </Command.Group>
                 ))}
+                {showModelChangeHint && (
+                  <p className="model-selector__change-hint">
+                    Changing the model rebuilds context on the next reply. Effort changes don&apos;t.
+                  </p>
+                )}
               </Command.List>
 
               {(selectedModel?.efforts.length ?? 0) > 0 && (

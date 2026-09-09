@@ -1,4 +1,5 @@
 import type { RunAttribution as RunAttributionValue, RunStatus } from "../types";
+import { sameModel } from "./model-comparison";
 
 const effortLabel = (effort: string | undefined): string | undefined => {
   if (effort === undefined) return undefined;
@@ -40,7 +41,7 @@ export function shouldShowMessageRunAttribution(
     && selectedModel !== undefined
     && selectedModel !== null
     && selectedModel.length > 0
-    && runModel !== selectedModel;
+    && !sameModel(runModel, selectedModel);
 }
 
 export function RunAttribution({

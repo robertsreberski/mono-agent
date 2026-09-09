@@ -237,6 +237,7 @@ export function ModelControls() {
     usage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
+    changeNotice, showModelChangeHint,
   } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
   // `openCatalog` closes over the agent's providers and the shortlist, so its
@@ -291,8 +292,14 @@ export function ModelControls() {
           agentDefaultId={agentDefaultModel}
           providerStatus={catalogStatusByProvider}
           onProviderRequest={requestProvider}
+          showModelChangeHint={showModelChangeHint}
           {...(hasRunOverride ? { onReset: resetRunOverride } : {})}
         />
+      )}
+      {changeNotice !== null && (
+        <span className="composer-hint model-change-notice" role="status" aria-live="polite">
+          Model changed — the next reply rebuilds this conversation&apos;s context from its text history.
+        </span>
       )}
     </div>
   );
