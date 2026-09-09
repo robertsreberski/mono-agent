@@ -234,6 +234,27 @@ Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` eve
 
 ## Context compaction (Pi bridge-driven, configurable)
 
+Pi's native checkpoint and overflow compaction is disabled by mono-agent so only
+one guarded policy runs. Summary preparation preserves bounded tool-result heads
+and tails and distinguishes confirmed built-in file changes from failed attempts.
+Empty, malformed, aborted or output-truncated summaries retain the original
+context. Thresholds, tail size and output budgets are unchanged.
+
+`context_compaction.accounting` records operation duration, policy, comparable
+transcript/full-request estimates, tail estimate, summary text token estimates,
+appended file-metadata bytes and omission counts. Each summary request has its own
+ID, ordinal, status, duration and provider usage/cost when available, including
+requests whose summaries are rejected. Unknown values are `null`; estimates use
+`tokenCountsExact: false`. Accounting excludes prose, paths, arguments and raw
+cache keys. The recorder preserves boolean exactness and null summary/tail
+estimates through closed, typed redaction exceptions; strings under these field
+names remain redacted. With `providers.piNative.promptCacheDiagnostics: true`, assistant
+payload and usage events share request IDs; the prompt-cache summary script shows
+compaction boundaries and separates assistant and summary cost. Fingerprint
+changes do not prove cache misses, and delta/unsupported prefix comparisons remain
+unknown. Summary requests keep Pi's existing disabled-cache setting.
+
+
 Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
 
 - **Proactively** — before a turn when the running model is near its context window.

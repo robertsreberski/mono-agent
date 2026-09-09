@@ -36,7 +36,7 @@ describe("prompt cache diagnostics", () => {
   it("marks unknown payloads unsupported instead of fingerprinting empty projections", () => {
     const state = fixture();
     state.emit({ model: { api: "future-api", provider: "future", id: "m" }, payload: { request: "PRIVATE" } });
-    expect(state.onEvent.mock.calls[0][0]).toEqual({ type: "prompt_cache_diagnostic", requestOrdinal: 1, model: "future:m", api: "future-api", payloadFamily: "unsupported", supported: false, unsupportedReason: "unrecognized_api:future-api" });
+    expect(state.onEvent.mock.calls[0][0]).toEqual({ type: "prompt_cache_diagnostic", phase: "assistant", requestId: expect.any(String), requestOrdinal: 1, model: "future:m", api: "future-api", payloadFamily: "unsupported", supported: false, unsupportedReason: "unrecognized_api:future-api" });
   });
 
   it("marks known but unsupported Pi payload families explicitly", () => {

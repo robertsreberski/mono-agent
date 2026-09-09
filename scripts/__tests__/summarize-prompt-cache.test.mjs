@@ -70,10 +70,39 @@ describe("artifact prompt cache summary", () => {
     const line = (await readFile(summary.artifactPaths[0], "utf8")).trim();
     expect(JSON.parse(line)).toEqual({ ...emitted, timestamp: "1970-01-01T00:00:00.000Z" });
     expect(Object.keys(JSON.parse(line)).sort()).toEqual([
-      "type", "requestOrdinal", "model", "api", "payloadFamily", "supported", "systemBytes", "systemFingerprint", "toolDefinitionCount",
+      "type", "phase", "requestId", "requestOrdinal", "model", "api", "payloadFamily", "supported", "systemBytes", "systemFingerprint", "toolDefinitionCount",
       "toolDefinitionsFingerprint", "messageCount", "messageFingerprints", "messageFingerprintsTruncated", "cacheMode", "cacheKeyFingerprint",
       "logicalInputInterpretation", "inputInterpretation", "inputInterpretationSource", "timestamp",
     ].sort());
     expect(line).not.toMatch(/PRIVATE-|arguments|authorization|endpoint|previous_response_id|prompt_cache_key/u);
+  });
+});
+
+describe("compaction economics", () => {
+  it("separates summary spend, replaces snapshots, correlates assistant usage and reports boundaries", async () => {
+    const dir = await temp();
+    await writeFile(join(dir, "r.summary.json"), JSON.stringify({ runId: "r", conversationId: "c", startedAt: "2026-09-09T00:00:00Z" }));
+    const diag = (id, fingerprints, inputInterpretation = "full") => ({ type: "prompt_cache_diagnostic", phase: "assistant", requestId: id, requestOrdinal: id === "a" ? 1 : 2, supported: true, inputInterpretation, messageFingerprints: fingerprints });
+    const usage = (id, costUsd) => ({ type: "context_usage", phase: "assistant", requestId: id, costUsd, tokens: { input: 10, output: 1, cacheRead: 20, cacheCreation: 0 } });
+    const operation = { type: "context_compaction", operationId: "op", status: "failed", trigger: "proactive", accounting: { version: 1, transcriptBefore: 1000, transcriptAfter: null, requests: [
+      { requestId: "op:1", requestOrdinal: 1, input: 100, output: 5, cacheRead: 0, cacheWrite: 0, costUsd: 0.2, status: "succeeded" },
+      { requestId: "op:2", requestOrdinal: 2, input: 50, output: 3, cacheRead: 0, cacheWrite: 0, costUsd: 0.1, status: "rejected" },
+    ] } };
+    await writeFile(join(dir, "r.events.jsonl"), [diag("a", ["one", "two"]), usage("a", 0.4), operation, operation, diag("b", ["one", "changed"]), usage("a", 0.4), usage("b", 0.5)].map(JSON.stringify).join("\n"));
+    const report = await summarizePromptCache({ artifactsDir: dir });
+    expect(report.assistantCostUsd).toBe(0.9);
+    expect(report.summaryCostUsd).toBeCloseTo(0.3);
+    expect(report.summaryTotals.input).toBe(150);
+    expect(report.totals.input).toBe(20);
+    expect(report.runs[0].compactions).toHaveLength(1);
+    expect(report.runs[0].requests[1].firstChangedMessageIndex).toBe(1);
+    expect(formatPromptCache(report)).toContain("compaction op: failed");
+    expect(formatPromptCache(report)).toContain("not proof of a cache miss");
+    await writeFile(join(dir, "r.events.jsonl"), [diag("a", ["one"]), diag("b", ["changed"], "delta")].map(JSON.stringify).join("\n"));
+    const unknown = await summarizePromptCache({ artifactsDir: dir });
+    expect(unknown.assistantCostUsd).toBeNull();
+    expect(unknown.runs[0].requests[1].firstChangedMessageIndex).toBeNull();
+    await writeFile(join(dir, "r.events.jsonl"), JSON.stringify({ type: "context_compaction", operationId: "legacy", status: "succeeded" }));
+    expect((await summarizePromptCache({ artifactsDir: dir })).summaryCostUsd).toBeNull();
   });
 });

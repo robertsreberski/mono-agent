@@ -37,7 +37,7 @@ The composable factory behind an adapter (e.g. `createTelegramChannelDriver`, or
 
 ## Context compaction
 
-When a turn approaches the model's context window, the pi bridge drives `AgentHarness.compact()` — proactively at a model-window-derived trigger and reactively with one re-prompt only after a preview proves positive reduction. Rejected previews are not persisted. Configure the adaptive policy through `runtime.compaction.*`; numeric and generic provider overflows lower a learned process-local ceiling. Runs report request estimates and before/after effectiveness. Persistent overflow is `context_limit` and may advance to the next configured fallback. See [Tools and guards](/runtime/tools-and-guards/).
+When a turn approaches the model's context window, the pi bridge drives `AgentHarness.compact()` — proactively at a model-window-derived trigger and reactively with one re-prompt only after a preview proves positive reduction. Rejected previews and empty or output-truncated summaries are not persisted. Summary preparation preserves bounded tool-result tails, confirmed built-in file operations and a supplemental focus on active constraints and unfinished work. Operation accounting separates summary cost from assistant requests. Pi supports native checkpoint/overflow compaction, which mono-agent deliberately disables. Configure the adaptive policy through `runtime.compaction.*`; numeric and generic provider overflows lower a learned process-local ceiling. Runs report request estimates and before/after effectiveness. Persistent overflow is `context_limit` and may advance to the next configured fallback. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## Entity graph
 

@@ -9,7 +9,7 @@ import {
   createCompactionSummaryMessage,
   getOrThrow,
 } from "@earendil-works/pi-agent-core";
-import { installPromptCacheDiagnostics } from "./prompt-cache-diagnostics.js";
+import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 
 export const PI_CONTEXT = BACKGROUND_CONTEXT;
 
@@ -246,6 +246,7 @@ export async function createPiHarnessAdapter(session, options) {
   const manuallyAppendedEntryIds = new Set();
 
   const adapter = {
+    getPromptCacheRequest: () => promptCacheRequest(rawHarness),
     models: options.models,
     getModel: () => currentModel,
     getThinkingLevel: () => currentThinkingLevel,

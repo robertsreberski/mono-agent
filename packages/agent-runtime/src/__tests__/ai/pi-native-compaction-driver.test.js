@@ -666,3 +666,29 @@ describe("host envelopes at compaction boundaries", () => {
     expect(JSON.stringify(fixture.messages).includes('old skill body')).toBe(false);
   });
 });
+
+describe("terminal compaction accounting", () => {
+  it.each(["length", "empty", "aborted", "error", "throw", "no_savings", "success"])("retains operation accounting for %s and preserves context on rejection", async (mode) => {
+    const fixture = hookHarness();
+    const original = [...fixture.messages];
+    const events = [];
+    fixture.harness.models.completeSimple.mockImplementation(async () => {
+      if (mode === "throw") throw new Error("PRIVATE /secret/path");
+      return { ...assistantMessage(mode === "empty" ? "" : "private generated summary"), stopReason: ["length", "aborted", "error"].includes(mode) ? mode : "stop",
+        usage: { input: 30, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 35, cost: { total: 0.03 } } };
+    });
+    await tryCompact(fixture.harness, { trigger: "proactive", session: fixture.session, onEvent: (event) => events.push(event), runtimeWarnings: [], fixedOverheadTokens: 321,
+      policy: { keepRecentTokens: 4000, summaryMaxTokens: 2000, compactionMinSavingsTokens: mode === "no_savings" ? 500000 : 0 } });
+    expect(events.map((event) => event.status)).toEqual(["running", mode === "success" ? "succeeded" : mode === "no_savings" ? "skipped" : "failed"]);
+    const terminal = events[1];
+    expect(terminal.accounting.requests).toHaveLength(1);
+    expect(terminal.accounting.requests[0].costUsd).toBe(mode === "throw" ? null : 0.03);
+    expect(terminal.accounting.fullRequestBefore - terminal.accounting.transcriptBefore).toBe(321);
+    expect(terminal.accounting.policy.summaryMaxTokens).toBe(2000);
+    expect(terminal.accounting.afterSource).toBe(mode === "success" ? "persisted" : mode === "no_savings" ? "preview" : null);
+    expect(JSON.stringify(events)).not.toMatch(/PRIVATE|secret|private generated/u);
+    expect(fixture.persistedCount()).toBe(mode === "success" ? 1 : 0);
+    if (mode !== "success") expect(fixture.messages).toEqual(original);
+    expect(fixture.handlerCount()).toBe(0);
+  });
+});
