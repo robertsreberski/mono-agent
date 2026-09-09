@@ -291,6 +291,66 @@ describe("reply artifact publication", () => {
     expect(response.parts?.filter((part) => part.type === "failure")).toHaveLength(7);
   });
 
+  it("names the policy reason for a rejection so the caller can relocate the file, without leaking paths", async () => {
+    const root = await tempDir();
+    const workspace = join(root, "workspace");
+    const artifactDir = join(workspace, ".mono-agent", "artifacts");
+    const memoryRoot = join(workspace, "knowledge-store");
+    const outsideFile = join(root, "elsewhere", "report.pdf");
+    await Promise.all([
+      mkdir(join(artifactDir, "deliverables"), { recursive: true }),
+      mkdir(memoryRoot, { recursive: true }),
+      mkdir(join(workspace, "output"), { recursive: true }),
+      mkdir(join(root, "elsewhere"), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(artifactDir, "deliverables", "report.pdf"), "artifact-private"),
+      writeFile(join(memoryRoot, "report.pdf"), "memory-private"),
+      writeFile(outsideFile, "outside-private"),
+    ]);
+    const warnings: Array<{ message: string; metadata: Record<string, unknown> | undefined }> = [];
+    const service = createReplyArtifactService({
+      artifactDir,
+      workspace,
+      privateRoots: [memoryRoot],
+      logger: { warn: (message, metadata) => warnings.push({ message, metadata }) },
+    });
+    const publisher = await openPublisher(service, "run-reasons", "conversation");
+    const call = async (path: string) => await publisher.client.callTool({
+      name: PUBLISH_REPLY_FILE_TOOL_NAME,
+      arguments: { path },
+    });
+    try {
+      const results = {
+        artifact: await call(join(artifactDir, "deliverables", "report.pdf")),
+        memory: await call(join(memoryRoot, "report.pdf")),
+        outside: await call(outsideFile),
+        directory: await call("output"),
+        missing: await call("output/never-written.pdf"),
+      };
+      for (const [reason, result] of [
+        ["Generated file path contains a private component.", results.artifact],
+        ["Generated file path is private.", results.memory],
+        ["Generated file path is outside the authorized roots.", results.outside],
+        ["Only regular files can be published.", results.directory],
+        ["The generated file does not exist at that path.", results.missing],
+      ] as const) {
+        expect(result).toMatchObject({
+          isError: true,
+          content: [{ type: "text", text: reason }],
+          structuredContent: { published: false, code: "artifact_publish_failed" },
+        });
+      }
+      const serialized = JSON.stringify(results);
+      for (const secret of ["artifact-private", "memory-private", "outside-private", root]) {
+        expect(serialized).not.toContain(secret);
+      }
+    } finally {
+      await publisher.close();
+    }
+    expect(warnings).toEqual([]);
+  });
+
   it("rejects hidden, credential, key-store, state-database, and Unicode-disguised names at any depth", async () => {
     const root = await tempDir();
     const workspace = join(root, "workspace");
