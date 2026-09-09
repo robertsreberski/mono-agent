@@ -499,9 +499,11 @@ requires the final path to pass the same run-root containment checks. Node
 does not expose an fd-relative `openat` API, so these checks narrow but cannot
 eliminate the residual window in which another process running as the same user
 renames a verified directory. A failed final validation removes only the
-just-created file whose device/inode identity is still provable. Those raw,
-untrusted files have no automatic cleanup owner;
-run-artifact and tool-history retention do not delete them. Retention independently bounds completed calls (100,000), age (365
+just-created file whose device/inode identity is still provable. The configured
+app's artifact sweep bounds those raw, untrusted run directories under
+`artifacts.retention`, independently of tool-history records; running or
+uncertain summaries and recent writes protect a directory, while recordless
+aged orphans remain eligible. Tool-history retention itself does not delete the files. It independently bounds completed calls (100,000), age (365
 days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
 days). Isolated/proactive runs persist but are excluded from default reads.
 

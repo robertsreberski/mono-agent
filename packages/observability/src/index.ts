@@ -71,6 +71,10 @@ export type {
   PruneRunArtifactsResult,
 } from "./artifact-retention.js";
 export {
+  canonicalToolArtifactRoot,
+  toolOutputRunDirectoryName,
+} from "./tool-output-path.js";
+export {
   summarizeRecordedRunMetrics,
 } from "./metrics.js";
 export type {

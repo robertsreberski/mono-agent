@@ -69,6 +69,38 @@ describe("artifact retention app scheduler", () => {
     expect(meta.removedFilePaths).toHaveLength(42);
   });
 
+  it("prunes tool-output directories and reports them through the artifact-retention log", async () => {
+    const dir = await tempDir();
+    const toolOutputRoot = join(dir, "tool-output");
+    const runRoot = join(toolOutputRoot, "orphan-run");
+    await mkdir(toolOutputRoot, { mode: 0o755 });
+    await mkdir(runRoot, { mode: 0o700 });
+    await writeFile(join(runRoot, "raw.txt"), "untrusted", { encoding: "utf8", mode: 0o600 });
+    const old = new Date(NOW - 40 * DAY_MS);
+    await utimes(runRoot, old, old);
+    const logger = { info: vi.fn(), warn: vi.fn() };
+
+    const result = await runArtifactRetentionPass({
+      artifactDir: dir,
+      retention: { maxAgeDays: 30, maxCount: 5000, dryRun: false },
+      logger,
+      clock: () => NOW,
+    });
+
+    expect(result.prunedToolOutputDirectoryCount).toBe(1);
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(
+      "Artifact retention pruned tool-output artifacts.",
+      expect.objectContaining({
+        scannedToolOutputDirectoryCount: 1,
+        eligibleToolOutputDirectoryCount: 1,
+        skippedActiveToolOutputDirectoryCount: 0,
+        prunedToolOutputDirectoryCount: 1,
+      }),
+    );
+    await expectExists(runRoot, false);
+  });
+
   it("runs once on scheduler start, after stale-run reconciliation hook, and registers an unref interval", async () => {
     const dir = await tempDir();
     await writeRun(dir, "old-run", NOW - 40 * DAY_MS);

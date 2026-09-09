@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -6,6 +6,7 @@ import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  canonicalToolArtifactRoot,
   pruneRunArtifacts,
 } from "../index.js";
 import type { RunSummaryStatus } from "../index.js";
@@ -133,6 +134,101 @@ describe("pruneRunArtifacts", () => {
     await expectExists(join(dir, "old-running.events.jsonl"), true);
     await expectExists(join(dir, "old-terminal.summary.json"), false);
     await expectExists(join(dir, "old-terminal.events.jsonl"), false);
+  });
+
+  it("prunes aged and orphaned tool-output directories while keeping fresh and active directories", async () => {
+    const dir = await tempDir();
+    await chmod(dir, 0o755);
+    await writeRun(dir, "terminal-run", "succeeded", NOW - 30 * DAY_MS);
+    await writeRun(dir, "active run", "running", NOW - 30 * DAY_MS);
+    const old = await writeToolOutputRun(dir, "terminal-run", NOW - 30 * DAY_MS, 0o700);
+    const orphan = await writeToolOutputRun(dir, "orphan-run", NOW - 30 * DAY_MS, 0o700);
+    const fresh = await writeToolOutputRun(dir, "fresh-run", NOW - DAY_MS, 0o700);
+    const active = await writeToolOutputRun(dir, "active-run", NOW - 30 * DAY_MS, 0o700);
+
+    const result = await pruneRunArtifacts({
+      artifactDir: dir,
+      maxAgeDays: 7,
+      clock: () => NOW,
+    });
+
+    expect(result).toMatchObject({
+      scannedToolOutputDirectoryCount: 4,
+      eligibleToolOutputDirectoryCount: 3,
+      skippedActiveToolOutputDirectoryCount: 1,
+      prunedToolOutputDirectoryCount: 2,
+    });
+    expect(toolOutputRelatives(dir, result.removedDirectoryPaths)).toEqual(["orphan-run", "terminal-run"]);
+    await expectExists(old, false);
+    await expectExists(orphan, false);
+    await expectExists(fresh, true);
+    await expectExists(active, true);
+  });
+
+  it("applies maxCount independently to inactive tool-output directories", async () => {
+    const dir = await tempDir();
+    const oldest = await writeToolOutputRun(dir, "oldest", NOW - 3 * DAY_MS, 0o700);
+    const middle = await writeToolOutputRun(dir, "middle", NOW - 2 * DAY_MS, 0o700);
+    const newest = await writeToolOutputRun(dir, "newest", NOW - DAY_MS, 0o700);
+
+    const result = await pruneRunArtifacts({ artifactDir: dir, maxCount: 2, clock: () => NOW });
+
+    expect(result.prunedToolOutputDirectoryCount).toBe(1);
+    expect(toolOutputRelatives(dir, result.removedDirectoryPaths)).toEqual(["oldest"]);
+    await expectExists(oldest, false);
+    await expectExists(middle, true);
+    await expectExists(newest, true);
+  });
+
+  it("keeps recently modified tool-output directories even when maxCount would select them", async () => {
+    const dir = await tempDir();
+    const recent = await writeToolOutputRun(dir, "recent-write", NOW - 30 * 60 * 1_000, 0o700);
+
+    const result = await pruneRunArtifacts({ artifactDir: dir, maxCount: 0, clock: () => NOW });
+
+    expect(result).toMatchObject({
+      scannedToolOutputDirectoryCount: 1,
+      eligibleToolOutputDirectoryCount: 0,
+      skippedActiveToolOutputDirectoryCount: 1,
+      prunedToolOutputDirectoryCount: 0,
+    });
+    await expectExists(recent, true);
+  });
+
+  it("reports tool-output directory plans during dryRun without deleting them", async () => {
+    const dir = await tempDir();
+    const old = await writeToolOutputRun(dir, "dry-run", NOW - 30 * DAY_MS, 0o700);
+
+    const result = await pruneRunArtifacts({
+      artifactDir: dir,
+      maxAgeDays: 7,
+      dryRun: true,
+      clock: () => NOW,
+    });
+
+    expect(result.prunedToolOutputDirectoryCount).toBe(1);
+    expect(toolOutputRelatives(dir, result.removedDirectoryPaths)).toEqual(["dry-run"]);
+    await expectExists(old, true);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a symlinked tool-output run without touching its out-of-root target", async () => {
+    const dir = await tempDir();
+    const toolOutputRoot = join(dir, "tool-output");
+    const outside = join(dir, "outside");
+    await mkdir(toolOutputRoot, { mode: 0o755 });
+    await mkdir(outside, { mode: 0o700 });
+    const outsideFile = join(outside, "raw.txt");
+    await writeFile(outsideFile, "untrusted", { encoding: "utf8", mode: 0o600 });
+    await symlink(outside, join(toolOutputRoot, "linked-run"), "dir");
+
+    const result = await pruneRunArtifacts({ artifactDir: dir, maxCount: 0, clock: () => NOW });
+
+    expect(result.prunedToolOutputDirectoryCount).toBe(0);
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/Skipping unexpected tool-output entry .*linked-run/u),
+    ]);
+    await expectExists(outsideFile, true);
+    await expectExists(join(toolOutputRoot, "linked-run"), true);
   });
 
   it("prunes memory namespace and legacy top-level memory runs without pruning agent runs", async () => {
@@ -346,10 +442,31 @@ async function writeRun(
   await writeFile(join(dir, `${base}.events.jsonl`), `${JSON.stringify({ type: "test" })}\n`, "utf8");
 }
 
+async function writeToolOutputRun(
+  artifactDir: string,
+  directoryName: string,
+  updatedAtMs: number,
+  mode: number,
+): Promise<string> {
+  const toolOutputRoot = join(artifactDir, "tool-output");
+  await mkdir(toolOutputRoot, { recursive: true, mode: 0o755 });
+  const runRoot = join(toolOutputRoot, directoryName);
+  await mkdir(runRoot, { mode });
+  await writeFile(join(runRoot, "raw.txt"), "untrusted", { encoding: "utf8", mode: 0o600 });
+  const updatedAt = new Date(updatedAtMs);
+  await utimes(runRoot, updatedAt, updatedAt);
+  return runRoot;
+}
+
 async function expectExists(path: string, exists: boolean): Promise<void> {
   await expect(access(path, constants.F_OK).then(() => true, () => false)).resolves.toBe(exists);
 }
 
 function relatives(root: string, paths: readonly string[]): readonly string[] {
   return paths.map((path) => relative(root, path)).sort((a, b) => a.localeCompare(b));
+}
+
+function toolOutputRelatives(artifactDir: string, paths: readonly string[]): readonly string[] {
+  const root = canonicalToolArtifactRoot(join(artifactDir, "tool-output"));
+  return relatives(root, paths);
 }
