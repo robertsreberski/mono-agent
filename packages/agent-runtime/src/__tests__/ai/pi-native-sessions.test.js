@@ -14,6 +14,7 @@
 // catalog, so it is reachable only through an explicit collection).
 
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -25,6 +26,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sessionAdapter from "../../ai/providers/pi-native/harness-adapter.js";
 import { generatePiNativeResponse } from "../../ai/providers/pi-native.js";
 import { createRouterRuntime } from "../../ai/runtime/router.js";
 import {
@@ -42,6 +44,11 @@ import {
   invalidateProviderSession,
   syncProviderSession,
 } from "../../ai/runtime/sessions.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal();
+  return { ...fs, open: vi.fn(fs.open) };
+});
 
 let faux = null;
 let fauxModels = null;
@@ -246,6 +253,103 @@ describe("pi-native sessions", () => {
       await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
     } finally {
       if (sessionId) await retireDurableNativeSession(sessionId, root);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([false, true])("releases a cancelled durable session after recovery close rejects (resumed=%s)", async (resumed) => {
+    const root = mkdtempSync(join(tmpdir(), "pi-recovery-close-failure-"));
+    const sessionId = `capture-close-${resumed}-${Date.now()}`;
+    const model = setup();
+    const controller = new AbortController();
+    const { PI_CONTEXT, createPiSessionAdapter } = sessionAdapter;
+    const base = { cwd: root, piSessionsRoot: root, sessionKeepAlive: true, sessionId, compaction: { enabled: false } };
+    const repo = resolveDurableNativeSessionRepo(root);
+    let baseline;
+    let adapterSpy;
+    let closeSpy;
+    try {
+      if (resumed) {
+        faux.setResponses([fauxAssistantMessage([fauxText("warm answer")])]);
+        const warm = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "warm ask" }] }));
+        expect(warm.error).toBeNull();
+        const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
+        baseline = await (await raw.branch("main", PI_CONTEXT)).getTipId(PI_CONTEXT);
+        await raw.close(PI_CONTEXT);
+      }
+      // Reject at the adapter boundary before upstream closes. The outer catch
+      // must still roll back and close this real Pi handle through the legacy path.
+      adapterSpy = vi.spyOn(sessionAdapter, "createPiSessionAdapter").mockImplementationOnce((raw) => {
+        const session = createPiSessionAdapter(raw);
+        closeSpy = vi.spyOn(session, "close").mockRejectedValueOnce(new Error("capture close failed"));
+        return session;
+      });
+      faux.setResponses([() => {
+        controller.abort();
+        return fauxAssistantMessage([fauxText("interrupted prose")], { stopReason: "aborted" });
+      }]);
+      const cancelled = await generatePiNativeResponse("stable", runOptions(model, {
+        ...base, sessionRecovery: { runId: "cancel", revision: resumed ? 1 : 0 }, abortSignal: controller.signal,
+        messages: [{ role: "user", content: "cancelled ask" }],
+      }));
+      expect(cancelled.cancelled).toBe(true);
+      expect(cancelled.providerSessionRecovery).toBeUndefined();
+      expect(closeSpy.mock.calls.length).toBeGreaterThanOrEqual(2); // capture and legacy cleanup
+      if (resumed) {
+        const raw = await repo.open((await repo.list(undefined, PI_CONTEXT))[0], PI_CONTEXT);
+        expect(await (await raw.branch("main", PI_CONTEXT)).getTipId(PI_CONTEXT)).toBe(baseline);
+        await raw.close(PI_CONTEXT);
+      } else {
+        expect(countJsonlFiles(root)).toBe(0);
+      }
+      let nextContext;
+      faux.setResponses([(context) => { nextContext = context; return fauxAssistantMessage([fauxText("next answer")]); }]);
+      const next = await generatePiNativeResponse("stable", runOptions(model, { ...base, messages: [{ role: "user", content: "next ask" }] }));
+      expect(next.failureKind).not.toBe("session_busy");
+      expect(next.error).toBeNull();
+      expect(transcriptOf(nextContext)).toEqual(resumed
+        ? ["user:warm ask", "assistant:warm answer", "user:next ask"]
+        : ["user:next ask"]);
+    } finally {
+      adapterSpy?.mockRestore();
+      closeSpy?.mockRestore();
+      await disposeProviderSession(sessionId);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("consumes a recovered receipt without repeating repository or fsync work", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-recovery-consumed-"));
+    const model = setup();
+    let sessionId;
+    let listSpy;
+    let openSpy;
+    let fileOpenSpy;
+    try {
+      faux.setResponses([fauxAssistantMessage([fauxText("answer")])]);
+      const result = await generatePiNativeResponse("stable", runOptions(model, { piSessionsRoot: root, sessionKeepAlive: true,
+        sessionRecovery: { runId: "run", revision: 0 }, messages: [{ role: "user", content: "ask" }] }));
+      sessionId = result.providerSessionId;
+      expect(result.providerSessionRecovery).toBeDefined();
+      const repo = resolveDurableNativeSessionRepo(root);
+      listSpy = vi.spyOn(repo, "list");
+      openSpy = vi.spyOn(repo, "open");
+      fileOpenSpy = vi.mocked(fsPromises.open);
+      fileOpenSpy.mockClear();
+      const bytes = readFileSync(findJsonlFiles(root)[0], "utf8");
+      await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(true);
+      expect(listSpy).toHaveBeenCalledTimes(1);
+      expect(openSpy).toHaveBeenCalledTimes(1);
+      expect(fileOpenSpy).toHaveBeenCalledTimes(2); // transcript and directory fsync
+      listSpy.mockClear(); openSpy.mockClear(); fileOpenSpy.mockClear();
+      await expect(recoverDurableNativeSession(result.providerSessionRecovery, { appliedInputIds: [] })).resolves.toBe(false);
+      expect(listSpy).not.toHaveBeenCalled();
+      expect(openSpy).not.toHaveBeenCalled();
+      expect(fileOpenSpy).not.toHaveBeenCalled(); // fsync requires syncPath's open
+      expect(readFileSync(findJsonlFiles(root)[0], "utf8")).toBe(bytes);
+    } finally {
+      listSpy?.mockRestore(); openSpy?.mockRestore(); fileOpenSpy?.mockClear();
+      if (sessionId) await disposeProviderSession(sessionId);
       rmSync(root, { recursive: true, force: true });
     }
   });

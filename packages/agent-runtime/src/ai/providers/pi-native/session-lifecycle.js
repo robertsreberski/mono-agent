@@ -654,15 +654,25 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
 /** Capture only after close; pending entries cannot be driven by another turn. */
 export async function captureSessionRecovery(runState, { options, providerSessionId, modelKey, model, pending }) {
   const entry = runState.sessionEntry || runState.registeredSessionEntry;
-  if (!entry?.durable || !Array.isArray(runState.recoveryInputIds)) return undefined;
-  const tipId = await runState.session.getLeafId();
-  if (typeof tipId !== "string" || !tipId) return undefined;
-  const ancestry = createHash("sha256").update(JSON.stringify(await runState.session.getEntries())).digest("hex");
-  await runState.session.close();
-  const receipt = { runId: options.sessionRecovery.runId, revision: options.sessionRecovery.revision, providerSessionId, modelKey, tipId };
-  entry.recovery = { receipt: { ...receipt }, model: { ...model, input: [...model.input] }, ancestry, operationId: runState.recoveryOperationId, baselineTipId: runState.recoveryBaselineTipId, inputIds: runState.recoveryInputIds };
-  entry.recoveryPending = pending || !!options.abortSignal?.aborted;
-  return receipt;
+  if (!entry?.durable) return undefined;
+  try {
+    if (!Array.isArray(runState.recoveryInputIds)) throw new Error("Pi session recovery input identities are unavailable");
+    const tipId = await runState.session.getLeafId();
+    if (typeof tipId !== "string" || !tipId) throw new Error("Pi session recovery tip is unavailable");
+    const ancestry = createHash("sha256").update(JSON.stringify(await runState.session.getEntries())).digest("hex");
+    await runState.session.close();
+    const receipt = { runId: options.sessionRecovery.runId, revision: options.sessionRecovery.revision, providerSessionId, modelKey, tipId };
+    entry.recovery = { receipt: { ...receipt }, model: { ...model, input: [...model.input] }, ancestry, operationId: runState.recoveryOperationId, baselineTipId: runState.recoveryBaselineTipId, inputIds: runState.recoveryInputIds };
+    entry.recoveryPending = pending || !!options.abortSignal?.aborted;
+    return receipt;
+  } catch (error) {
+    // The run's outer catch performs legacy rollback/close or fresh deletion.
+    // Release provisional recovery state first so failed capture cannot strand
+    // an entry as busy without a receipt that could settle it.
+    entry.recoveryPending = false;
+    delete entry.recovery;
+    throw error;
+  }
 }
 
 /** Read-only settlement: never drive an operation or append host-authored prose. */
@@ -706,6 +716,7 @@ export async function recoverDurableNativeSession(receipt, context) {
     await syncPath(entry.metadata.path);
     await syncPath(dirname(entry.metadata.path));
     entry.recoveryPending = false;
+    delete entry.recovery;
     return true;
   } catch {
     return false;

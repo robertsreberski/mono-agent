@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { validRecoveryProjection } from "../../ai/providers/pi-native/terminal-recovery.js";
 import { captureSessionRecovery } from "../../ai/providers/pi-native/session-lifecycle.js";
@@ -26,11 +26,20 @@ describe("terminal native projection", () => {
   ])("rejects ambiguous or malformed native content %j", (...messages) => {
     expect(validRecoveryProjection(messages, model)).toBe(false);
   });
-  it("never grants a receipt when closing the native session fails", async () => {
-    const entry = { durable: true };
-    await expect(captureSessionRecovery({ sessionEntry: entry, recoveryInputIds: [], session: {
-      getLeafId: async () => "tip", getEntries: async () => [], close: async () => { throw new Error("close failed"); },
-    } }, { options: { sessionRecovery: { runId: "run", revision: 1 } }, providerSessionId: "id", modelKey: "faux:fixture", model, pending: true })).rejects.toThrow("close failed");
+  it.each(["getLeafId", "getEntries", "close"])("releases pending recovery when %s rejects", async (method) => {
+    const entry = { durable: true, recoveryPending: true };
+    const session = { getLeafId: async () => "tip", getEntries: async () => [], close: async () => undefined };
+    vi.spyOn(session, method).mockRejectedValue(new Error(`${method} failed`));
+    await expect(captureSessionRecovery({ sessionEntry: entry, recoveryInputIds: [], session },
+      { options: { sessionRecovery: { runId: "run", revision: 1 } }, providerSessionId: "id", modelKey: "faux:fixture", model, pending: true })).rejects.toThrow(`${method} failed`);
+    expect(entry.recoveryPending).toBe(false);
+    expect(entry.recovery).toBeUndefined();
+  });
+  it.each([undefined, ""])("releases pending recovery when the tip is unavailable (%j)", async (tip) => {
+    const entry = { durable: true, recoveryPending: true };
+    await expect(captureSessionRecovery({ registeredSessionEntry: entry, recoveryInputIds: [], session: { getLeafId: async () => tip } },
+      { options: { sessionRecovery: { runId: "run", revision: 0 } }, providerSessionId: "id", modelKey: "faux:fixture", model, pending: true })).rejects.toThrow("recovery tip is unavailable");
+    expect(entry.recoveryPending).toBe(false);
     expect(entry.recovery).toBeUndefined();
   });
 });
