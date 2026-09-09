@@ -50,6 +50,8 @@ export interface ProviderSessionTurnBinding {
 export interface ConversationHistoryProviderSessionTurn {
   readonly modelKey?: string;
   readonly previousModelKey?: string;
+  /** A pre-model-binding provider record was replaced without guessing its model owner. */
+  readonly previousModelWasUnbound?: boolean;
   /** Epoch-derived, filesystem-safe provider session id for this turn. */
   readonly providerSessionId: string;
   /** Durable transcript revision present before this turn starts. */

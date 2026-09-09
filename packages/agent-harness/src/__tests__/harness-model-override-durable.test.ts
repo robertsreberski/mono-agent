@@ -15,6 +15,7 @@ interface Evidence {
   contexts: Array<{ systemPrompt: string; messages: Array<Record<string, unknown>> }>;
   requests: Array<{ owner: string; messages: unknown[]; sessionId: string }>;
   events: Array<{ kind: string; reason: string }>;
+  sessionEvents: Array<{ kind: string; reason?: string; modelKey?: string; snapshot?: Array<{ modelKey?: string }> }>;
   records: Array<{ providerSession: { epoch: string; revision: number; modelKey: string } }>;
   jsonl: string[][];
   trace: Array<{ method: string; owner: string; id: string }>;
@@ -26,8 +27,8 @@ async function root(): Promise<string> {
   dirs.push(dir);
   return dir;
 }
-async function run(dir: string, sequence: Array<string | null>, origin = "web", start = 0, defaultName = "base", unrouted = false): Promise<Evidence> {
-  const result = await exec(process.execPath, [worker, dir, origin, JSON.stringify(sequence), String(start), defaultName, String(unrouted)],
+async function run(dir: string, sequence: Array<string | null>, origin = "web", start = 0, defaultName = "base", unrouted = false, legacyUnbound = false): Promise<Evidence> {
+  const result = await exec(process.execPath, [worker, dir, origin, JSON.stringify(sequence), String(start), defaultName, String(unrouted), String(legacyUnbound)],
     { timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
   return JSON.parse(result.stdout) as Evidence;
 }
@@ -102,6 +103,28 @@ describe("durable model override native sessions", () => {
     expect(next.requests[0]!.sessionId).not.toBe(first.requests[0]!.sessionId);
     expect(next.events).toMatchObject([{ reason: "model_change" }]);
     expect(next.trace).toContainEqual({ method: "retireDurableSession", owner: "faux:base", id: first.requests[0]!.sessionId });
+  });
+
+  it("emits one model-change cold event and boundary when a fresh process overrides a bound record", async () => {
+    const dir = await root();
+    await run(dir, ["base"]);
+    const next = await run(dir, ["override"], "web", 1);
+    expect(next.sessionEvents.filter((event) => event.kind === "cold")).toEqual([
+      expect.objectContaining({ kind: "cold", reason: "model_change", modelKey: "faux:override" }),
+    ]);
+    expect(next.events).toMatchObject([{ kind: "resume_replay", reason: "model_change" }]);
+    expect(next.events).toHaveLength(1);
+  });
+
+  it("marks the one-time cold migration from a legacy unbound durable record", async () => {
+    const next = await run(await root(), ["override"], "web", 0, "base", false, true);
+    expect(next.sessionEvents.filter((event) => event.kind === "cold")).toEqual([
+      expect.objectContaining({ kind: "cold", reason: "legacy_unbound_model", modelKey: "faux:override" }),
+    ]);
+    expect(next.events).toMatchObject([{ kind: "resume_replay", reason: "legacy_unbound_model" }]);
+    expect(next.events).toHaveLength(1);
+    expect(next.sessionEvents.filter((event) => event.kind === "saved").at(-1)?.snapshot?.[0])
+      .toMatchObject({ modelKey: "faux:override" });
   });
 
   it.each(["cron", "webhook"])("keeps pinned %s models warm when proactive isolation is off", async (origin) => {

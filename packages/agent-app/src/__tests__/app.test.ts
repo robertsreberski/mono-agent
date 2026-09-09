@@ -1031,6 +1031,70 @@ describe("startMonoAgentApp", () => {
     await app.stop();
   });
 
+  it("projects the owning model through session trace metadata and eviction logs", async () => {
+    await writeConfig(baseConfig());
+    const info = vi.fn();
+    const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [], logger: { info } });
+    const coreConfig = await loadAppCoreConfig({
+      env: {},
+      cwd: dir,
+      configPath: join(dir, "mono-agent.config.json"),
+    });
+    const controller = app as unknown as {
+      sessionMetadataValue?: {
+        readonly modelKey?: string;
+        readonly snapshot?: ReadonlyArray<{ readonly modelKey?: string }>;
+      };
+      recordSessionEvent(
+        event: {
+          readonly kind: "saved" | "evicted";
+          readonly conversationId: string;
+          readonly providerSessionId?: string;
+          readonly modelKey?: string;
+          readonly reason?: string;
+          readonly snapshot?: ReadonlyArray<{
+            readonly conversationId: string;
+            readonly providerSessionId: string;
+            readonly modelKey?: string;
+            readonly createdAt: number;
+            readonly lastActivityAt: number;
+            readonly busy: boolean;
+          }>;
+        },
+        config: typeof coreConfig,
+      ): void;
+    };
+    controller.recordSessionEvent({
+      kind: "saved",
+      conversationId: "session-model",
+      modelKey: "faux:override",
+      snapshot: [{
+        conversationId: "session-model",
+        providerSessionId: "provider-model",
+        modelKey: "faux:override",
+        createdAt: 1,
+        lastActivityAt: 2,
+        busy: false,
+      }],
+    }, coreConfig);
+    expect(controller.sessionMetadataValue).toMatchObject({
+      modelKey: "faux:override",
+      snapshot: [{ modelKey: "faux:override" }],
+    });
+
+    controller.recordSessionEvent({
+      kind: "evicted",
+      conversationId: "session-model",
+      providerSessionId: "provider-model",
+      modelKey: "faux:override",
+      reason: "stale",
+    }, coreConfig);
+    expect(info).toHaveBeenCalledWith("Provider session evicted.", expect.objectContaining({
+      modelKey: "faux:override",
+    }));
+    await app.stop();
+  });
+
   it("single-flights periodic publication and stops without waiting for a stalled health probe", async () => {
     await writeConfig(baseConfig());
     const app = await startMonoAgentApp({ cwd: dir, env: {}, drivers: [] });

@@ -135,6 +135,7 @@ export interface ConfiguredAgentRuntimeOptions {
 export type ConfiguredAgentSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
 
 export interface ConfiguredAgentSessionSnapshot {
+  readonly modelKey?: string;
   readonly conversationId: string;
   readonly providerSessionId: string;
   readonly createdAt: number;
@@ -143,6 +144,7 @@ export interface ConfiguredAgentSessionSnapshot {
 }
 
 export interface ConfiguredAgentSessionEvent {
+  readonly modelKey?: string;
   readonly kind: ConfiguredAgentSessionEventKind;
   readonly conversationId: string;
   readonly providerSessionId?: string;

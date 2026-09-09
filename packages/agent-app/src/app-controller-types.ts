@@ -44,6 +44,7 @@ export interface SessionTraceMetadata {
   readonly event: ConfiguredAgentSessionEvent["kind"];
   readonly updatedAt: string;
   readonly snapshot?: readonly ConfiguredAgentSessionSnapshot[];
+  readonly modelKey?: string;
   readonly providerSessionId?: string;
   readonly createdAt?: number;
   readonly lastActivityAt?: number;
