@@ -25,7 +25,7 @@ The Pi runtime that actually runs the model. mono-agent is Pi-only: every provid
 
 ## Bloat guard
 
-The automatic 256KB truncation of oversized tool output. Text-only overflow retains a UTF-8-safe head/tail sample inside balanced untrusted framing; image, binary, and mixed overflow remains summary-only. Each original block is also offered to a best-effort per-run sink under `artifacts.dir/tool-output/<runId>/`. Those raw, access-controlled files have no automatic cleanup owner. See [Tools and guards](/runtime/tools-and-guards/).
+The automatic 256KB truncation of oversized tool output. Text-only overflow retains a UTF-8-safe head/tail sample inside balanced untrusted framing; image, binary, and mixed overflow remains summary-only. Each original block is also offered to a best-effort per-run sink under `artifacts.dir/tool-output/<runId>/`. The hourly artifact sweep bounds those raw, access-controlled run directories with `artifacts.retention`, while active, uncertain, or recently modified runs are kept. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## BuJo
 

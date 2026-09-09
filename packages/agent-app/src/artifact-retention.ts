@@ -181,6 +181,8 @@ function logArtifactRetentionResult(
   }
   if (result.prunedRunCount > 0) {
     logger?.info?.(`${retentionLabel(scope)} pruned terminal run artifacts.`, resultMeta(result, scope));
+  } else if (result.prunedToolOutputDirectoryCount > 0) {
+    logger?.info?.(`${retentionLabel(scope)} pruned tool-output artifacts.`, resultMeta(result, scope));
   }
 }
 
@@ -199,14 +201,22 @@ function resultMeta(
   const removedFilePaths = options.includeCompletePlan === true
     ? result.removedFilePaths
     : result.removedFilePaths.slice(0, 20);
+  const removedDirectoryPaths = options.includeCompletePlan === true
+    ? result.removedDirectoryPaths
+    : result.removedDirectoryPaths.slice(0, 20);
   return {
     artifactDir: result.artifactDir,
     scope,
     prunedRunCount: result.prunedRunCount,
     removedFileCount: result.removedFileCount,
     skippedRunningCount: result.skippedRunningCount,
+    scannedToolOutputDirectoryCount: result.scannedToolOutputDirectoryCount,
+    eligibleToolOutputDirectoryCount: result.eligibleToolOutputDirectoryCount,
+    skippedActiveToolOutputDirectoryCount: result.skippedActiveToolOutputDirectoryCount,
+    prunedToolOutputDirectoryCount: result.prunedToolOutputDirectoryCount,
     prunedRunIds,
     removedFilePaths,
+    removedDirectoryPaths,
   };
 }
 
