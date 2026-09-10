@@ -61,6 +61,10 @@ export function ProcessJobStack() {
     : `${String(jobs.length)} ${jobs.length === 1 ? "job" : "jobs"}`;
   const countLabel = `${totalLabel} · ${String(activeCount)} active · ${String(historyCount)} history`;
   const hasHistoryDisclosure = historyIsBounded || historyCount > 0;
+  // Every terminal wrapper is hidden behind a closed history, so with nothing
+  // active the body renders nothing at all and its padding would be the only
+  // thing left under the header.
+  const bodyIsEmpty = activeCount === 0 && !historyOpen;
 
   if (threadId === null || jobs.length === 0) return null;
 
@@ -84,7 +88,7 @@ export function ProcessJobStack() {
           </button>
         )}
       </div>
-      <div className="process-job-stack-body">
+      <div className={`process-job-stack-body${bodyIsEmpty ? " is-empty" : ""}`}>
         {historyIsBounded && (
           <p className="process-job-stack-history" hidden={!historyOpen}>
             Showing jobs in loaded messages. Load earlier messages to reveal older jobs.

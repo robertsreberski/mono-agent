@@ -287,13 +287,12 @@ describe("ProcessJobPart", () => {
     // Secondary detail is behind the disclosure.
     expect(row).not.toHaveAttribute("open");
     expect(screen.getByText("Completed normally.")).not.toBeVisible();
-    expect(screen.getByText(/stdout\.log/u)).not.toBeVisible();
 
     fireEvent.click(within(row).getByText("Exec job").closest("summary")!);
     expect(screen.getByText("Completed normally.")).toBeVisible();
     expect(screen.getByText("done")).toBeVisible();
-    expect(screen.getByText(/artifacts\/11111111-1111-4111-8111-111111111111\/stdout\.log/u)).toBeVisible();
-    expect(screen.getByText(/artifacts\/11111111-1111-4111-8111-111111111111\/stderr\.log/u)).toBeVisible();
+    // The card shows the job's output, never the host-local files it was spooled to.
+    expect(screen.queryByText(/artifacts\/11111111-1111-4111-8111-111111111111\//u)).toBeNull();
     expect(screen.getByText("delivered (1 attempt)")).toBeVisible();
     expect(screen.getByText("Output")).toBeVisible();
     expect(screen.queryByText("Output (truncated)")).toBeNull();
@@ -491,7 +490,7 @@ describe("ProcessJobPart", () => {
     expect(threadJob).toHaveBeenCalledTimes(1);
   });
 
-  it("marks truncated output and shows the preview and refs it has", () => {
+  it("marks truncated output and shows the preview it has without the spool paths", () => {
     render(part({
       type: "process-job",
       job: processJob({
@@ -501,8 +500,8 @@ describe("ProcessJobPart", () => {
     fireEvent.click(screen.getByRole("group", { name: "Exec background job succeeded" }).querySelector("summary")!);
     expect(screen.getByText("Output (truncated)")).toBeVisible();
     expect(screen.getByText("partial")).toBeVisible();
-    expect(screen.getByText(/stdout\.log/u)).toBeVisible();
-    expect(screen.queryByText(/stderr\.log/u)).toBeNull();
+    expect(screen.queryByText("Artifacts")).toBeNull();
+    expect(screen.queryByText(/stdout\.log/u)).toBeNull();
   });
 
   it("ticks a running job once a second in server time and stops on a terminal poll", async () => {
