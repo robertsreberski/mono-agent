@@ -50,7 +50,7 @@ Use `--loopback` with `start` or `run` to bind `127.0.0.1` instead. Advanced `--
 ## Console identity and curated themes
 
 By default every console identifies itself with the operating-system hostname.
-The desktop rail and mobile agent-picker header show that name, the browser
+The Dashboard header shows that name above the selected agent, the browser
 title is `<name> · mono-agent`, and an installed PWA is named
 `<name> · mono-agent Console` with `<name>` as its short name. Android uses the
 short name as the home-screen label. This makes tabs and home-screen
@@ -249,7 +249,7 @@ the mount snapshot establishes its selection. This closes the interval between
 sampling that snapshot and registering the stream without reloading the whole
 bootstrap. After a later gap the browser revalidates what it holds with
 `If-None-Match`, marks
-kept conversations stale, refreshes the sidebar only after a real drop, and never
+kept conversations stale, refreshes the Dashboard's lists only after a real drop, and never
 reloads the bootstrap. Coming back from an iOS suspend — `visibilitychange`,
 `pageshow`, or `online` — takes the same path. Up to eight conversations are held
 in memory and merged by identity rather than replaced, so leaving one and coming
@@ -295,23 +295,28 @@ one.
 
 ## Agents, threads, and turns
 
-One **Dashboard** carries all navigation: a fixed 340-pixel left column on desktop and the single drawer at 900 pixels and below. Top to bottom it holds the console name and connection state, the selected agent with its settings and new-conversation actions, a horizontally scrolling strip of auto-discovered trace sources showing their current health, conversation search, a **Running** section, the **Recent** listing, and a footer with the data-mode indicator and the archive shelf. There is no rail width to choose and no stored layout preference.
+One **Dashboard** carries all navigation: a fixed 340-pixel left column on desktop and the entrance screen at 900 pixels and below. Top to bottom it holds the console name and connection state, the selected agent with the notifications, agent-settings and new-conversation controls, a horizontally scrolling strip of auto-discovered trace sources showing their current health, conversation search, a **Running** section, the **Recent** listing, and a footer with the data-mode indicator and the archive shelf. There is no rail width to choose and no stored layout preference.
 
 **Running** lists the conversations this browser is currently holding that have work in flight — a foreground turn or a queued, starting or running background job — grouped by agent, two cards per agent with the rest behind an inline `+N more` control. Selecting a card switches agent, archive shelf and conversation in one action. It is drawn from the browser's own conversation cache rather than a server-side query, so it can only speak for conversations this tab has loaded, and it renders nothing at all when that set is empty rather than claiming the fleet is idle.
 
-**Recent** is the selected agent's current archive shelf. The **All** and **Cron** chips narrow the rows already loaded, so paging stays available behind a chip that currently matches nothing, and the chip resets to All whenever the agent or the shelf changes. Each row carries a glyph for what it is: an alert for a presented failure, cancellation or interruption, otherwise a clock for cron, an activity trace for a webhook, and a conversation glyph for everything else. Trouble takes the glyph, and the trigger badge beside it still names where the conversation came from. Searching replaces these rows with server-side results and hides the chips.
+**Recent** is the selected agent's current archive shelf, and its head carries the list's two chips: **Chats** and **Automations**. Each row carries a glyph for what it is: an alert for a presented failure, cancellation or interruption, otherwise a clock for cron, an activity trace for a webhook, and a conversation glyph for everything else. Trouble takes the glyph, and the row's accessible name still says where the conversation came from. Searching replaces these rows with server-side results; the chips stay, and switching to Automations clears the query, which means something else there.
 
-On narrow touch screens, swipe right across the unoccupied chat surface to open
-the drawer. Swipe left across the open drawer to close it. Message content,
-controls, inputs, modal surfaces, and any native horizontal scroller — the agent
-strip included — keep their normal touch behavior in both directions. The
-gesture requires at least 64 pixels of clearly horizontal travel, so short drags
-and ordinary vertical scrolling do not change navigation. The header's single
-**Open dashboard** button remains available as a 44-pixel touch target.
+On narrow touch screens the console opens on the Dashboard. Tapping a row, a
+Running card or the new-conversation control pushes the conversation over it;
+the **Back to dashboard** control at the left edge of the conversation header,
+a right swipe across the unoccupied chat surface, or Escape pops it. Message
+content, controls, inputs, modal surfaces, and any native horizontal scroller —
+the agent strip included — keep their normal touch behavior. The gesture
+requires at least 64 pixels of clearly horizontal travel, so short drags and
+ordinary vertical scrolling do not change navigation. Neither screen is modal;
+the one not showing is hidden from assistive technology and out of the tab
+order. Only a cron channel has an address of its own, so only a URL naming one
+opens on the conversation. The Dashboard's gutters grow into the horizontal
+safe area on notched devices.
 
-Use the per-agent options control in the agent strip to add or remove an agent from favorites. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first and remain visible while offline.
+Add or remove the selected agent from favorites with the star in the agent settings dialog (behind the Dashboard header's gear) or the command palette's pin command. Pin state is persisted in the web service's SQLite settings rather than in browser storage, so favorites stay consistent when the same console is opened through localhost, a LAN address, or Tailscale. Pinned agents sort first and remain visible while offline.
 
-Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. The dashboard lists ordinary conversations under **Recent** and offers **Automations** as the list's second chip beside **Chats**, on desktop and in the mobile drawer; the chip swaps the rows in place, with no separate view to return from. Recent uses server-side scoped paging and search that excludes cron channels before limits and cursors are applied; webhook conversations remain ordinary conversations. The unscoped API default stays backward-compatible. Automations reads and searches the complete bounded agent-scoped cron overview instead, so configured jobs appear before their first run and independently of which conversation page is loaded. The shared search field changes meaning with the active chip and clears when the chip changes. This view does not add project persistence, membership, folders, tags, or runtime context. Unpinned agents that remain discovered but are temporarily offline are hidden by default behind a subtle **Show N offline** control shared by the agent strip and the command palette. Pinned agents and the currently selected agent remain visible while that source is still discovered. When a successful discovery refresh omits a source, the console removes it from every picker and from the offline count regardless of its prior pin or selection. Its rows, conversations, and pin remain retained in SQLite and return if the same source id is discovered again. A discovery error only marks current sources offline; it is not treated as an authoritative removal. The offline filter resets to hidden on a full page load, and sending stays disabled until the exact source is reachable again.
+Selecting an agent filters its conversations; each conversation is permanently bound to that source id so a label change or a different agent cannot inherit its history. The dashboard lists ordinary conversations under **Recent** and offers **Automations** as the list's second chip beside **Chats**, on desktop and on the phone's entrance screen; the chip swaps the rows in place, with no separate view to return from. Recent uses server-side scoped paging and search that excludes cron channels before limits and cursors are applied; webhook conversations remain ordinary conversations. The unscoped API default stays backward-compatible. Automations reads and searches the complete bounded agent-scoped cron overview instead, so configured jobs appear before their first run and independently of which conversation page is loaded. The shared search field changes meaning with the active chip and clears when the chip changes. This view does not add project persistence, membership, folders, tags, or runtime context. Unpinned agents that remain discovered but are temporarily offline are hidden by default behind a subtle **Show N offline** control shared by the agent strip and the command palette. Pinned agents and the currently selected agent remain visible while that source is still discovered. When a successful discovery refresh omits a source, the console removes it from every picker and from the offline count regardless of its prior pin or selection. Its rows, conversations, and pin remain retained in SQLite and return if the same source id is discovered again. A discovery error only marks current sources offline; it is not treated as an authoritative removal. The offline filter resets to hidden on a full page load, and sending stays disabled until the exact source is reachable again.
 
 Threads use the first prompt as their initial title and can be renamed. Active threads must be archived before deletion, and archived threads can be restored. The console permits one active turn per thread while different threads and agents can run concurrently.
 
@@ -374,7 +379,7 @@ duration is shown as nothing at all rather than as zero.
 
 ### Search conversations
 
-The sidebar search box searches the full text of an agent's conversations, not
+The Dashboard's search field searches the full text of an agent's conversations, not
 just their titles. It queries the web service rather than filtering the page the
 browser has already loaded, so a phrase used once in a conversation from months
 ago is reachable without paging back to it. Titles are matched as substrings;
@@ -536,7 +541,7 @@ await fetch(`/api/v1/threads/${threadId}/turns`, {
 
 ## Response notifications
 
-Use the header bell to opt into durable Web Push. The permission prompt and initial subscription are triggered only by that click. The server notifies for a completed response (including a cron/webhook-created **CRON** or **WEBHOOK** thread), a blocking `AskUser` question, and failed, cancelled, or interrupted runs. A test notification is queued immediately after registration. Notification clicks focus or open the exact same-origin conversation.
+Use the bell in the Dashboard header to opt into durable Web Push. The permission prompt and initial subscription are triggered only by that click. The server notifies for a completed response (including a cron/webhook-created **CRON** or **WEBHOOK** thread), a blocking `AskUser` question, and failed, cancelled, or interrupted runs. A test notification is queued immediately after registration. Notification clicks focus or open the exact same-origin conversation.
 
 The opt-in is stored per browser origin, so localhost, a LAN hostname, and a Tailscale HTTPS hostname have independent preferences and permissions. The browser keeps only the opaque server subscription id and a one-way digest of its endpoint, then reconciles its `PushManager` subscription with the server on load. A browser-reported subscription rotation is registered from the service worker even with no console window open and atomically retires the old endpoint; transient repair failures receive bounded in-event retries, and the page digest repairs rotations on the next load when that lifecycle event is unavailable or the retry window is exhausted. Application-server-key rotation unsubscribes and reconnects when browser permission allows it. Disabling the bell records the local opt-out first, retires the server subscription, and unsubscribes locally; an interrupted server deletion is retried on the next load, and an already-deleted record counts as complete cleanup. Browsers without a confirmed active push subscription keep the older hidden/unfocused response-notification path while the page is alive, avoiding a silent regression and disabling that fallback as soon as push is confirmed.
 
@@ -820,7 +825,7 @@ plist files absent, then takes their shared web lifecycle lock. It removes the
 web console's conversations, cron projection, notification ledger and stale ingress record,
 VAPID identity, push subscriptions/outbox, committed uploads, staged uploads,
 and server settings, including agent pins. It does not clear browser-local
-preferences such as rail expansion or notification opt-in, and it does not
+preferences such as the notification opt-in, and it does not
 remove an agent's config, durable conversation history, memory, or recorded run
 artifacts, or agent-owned `.mono-agent/cron-control-v1/` runtime overrides,
 audit, and idempotency state. After reset, browsers reconcile the missing or

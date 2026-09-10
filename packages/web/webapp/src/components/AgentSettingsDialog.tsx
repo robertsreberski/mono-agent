@@ -110,9 +110,23 @@ export function AgentSettingsDialog({
             <span className="eyebrow">Agent settings</span>
             <h2 id="agent-settings-title">{agent.label} settings</h2>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} aria-label="Close agent settings">
-            <Icon name="close" size={16} />
-          </button>
+          <div className="agent-settings-header-actions">
+            {/* Favourites sort first on the Dashboard's strip. The star is here,
+                with the agent's other settings, and in the command palette. */}
+            <button
+              type="button"
+              className={`icon-button agent-pin-toggle${agent.pinned ? " is-pinned" : ""}`}
+              aria-pressed={Boolean(agent.pinned)}
+              aria-label={agent.pinned ? `Unpin ${agent.label}` : `Pin ${agent.label} first`}
+              title={agent.pinned ? "Remove from favorites" : "Add to favorites"}
+              onClick={() => { void store.setAgentPinned(agent.sourceId, !agent.pinned).catch(() => undefined); }}
+            >
+              <Icon name="star" size={16} fill={agent.pinned ? "currentColor" : "none"} />
+            </button>
+            <button type="button" className="icon-button" onClick={onClose} aria-label="Close agent settings">
+              <Icon name="close" size={16} />
+            </button>
+          </div>
         </header>
         <div className="agent-settings-body">
           <div>

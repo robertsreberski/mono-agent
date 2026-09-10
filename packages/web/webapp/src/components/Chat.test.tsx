@@ -218,7 +218,7 @@ const chatStore = (
 
 const chatTree = () => (
   <WebRuntimeProvider>
-    <Chat onOpenDashboard={() => undefined} />
+    <Chat onBack={() => undefined} />
   </WebRuntimeProvider>
 );
 
@@ -389,7 +389,7 @@ describe("Chat conversation viewport", () => {
     render(<StrictMode>{chatTree()}</StrictMode>);
 
     expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open dashboard" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Back to dashboard" })).toBeVisible();
     expect(consoleError.mock.calls.filter(
       ([first]) => first === "[mono-agent] conversation render failed",
     )).toHaveLength(1);

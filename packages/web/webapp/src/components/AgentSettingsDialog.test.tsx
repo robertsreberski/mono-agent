@@ -9,6 +9,7 @@ const storeMock = vi.hoisted(() => ({
   selectedAgent: null as ReturnType<typeof agent> | null,
   catalogByProvider: {},
   ensureProviderCatalog: vi.fn(),
+  setAgentPinned: vi.fn().mockResolvedValue(undefined),
   setAgentRunDefaults: vi.fn(),
   clearAgentRunDefaults: vi.fn(),
 }));
@@ -190,6 +191,15 @@ describe("AgentSettingsDialog", () => {
       expect(storeMock.setAgentRunDefaults).toHaveBeenCalledWith("provider/other", "high");
       expect(close).toHaveBeenCalledOnce();
     });
+  });
+
+  it("pins and unpins the selected agent from its header", () => {
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+
+    const pin = screen.getByRole("button", { name: "Pin Alpha first" });
+    expect(pin).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(pin);
+    expect(storeMock.setAgentPinned).toHaveBeenCalledWith("alpha", true);
   });
 
   it("makes the normal settings body the dialog scroll boundary", () => {

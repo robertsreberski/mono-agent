@@ -130,7 +130,7 @@ start or mutate the service. Use `mono-agent web run` for a foreground process
 or `--loopback` to bind only `127.0.0.1`. The curated `--theme` values are
 `evergreen` (default), `ocean`, `plum`, and `terracotta`. `--name <label>` sets
 the console label used for the installed PWA name/short name, browser title, and
-rail brand, defaulting to the machine hostname. Managed starts persist both
+the Dashboard's eyebrow, defaulting to the machine hostname. Managed starts persist both
 selections, restarts retain them unless explicitly replaced, `--name -` clears
 the stored label back to the hostname default, and `web status` reports the
 effective values.
@@ -171,29 +171,35 @@ managed agent protects its loopback operator endpoint, discovery reads only
 `MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file.
 
 One Dashboard is the console's whole navigation surface: a fixed 340-pixel left
-column on desktop, and the single drawer on narrow touch screens. It holds the
-agent strip, conversation search, a Running section for the conversations this
-browser is holding that have work in flight, the Recent listing with its All and
-Cron chips, and a footer carrying the data-mode indicator and the archive shelf.
-On narrow touch screens, a deliberate right swipe across the unoccupied chat
-surface or ordinary unselected transcript text opens it, and a left swipe across
-the open drawer closes it. Controls, active text selections, inputs, and any
-native horizontal scroller keep their normal touch behavior in both directions;
-short drags and vertically dominant scrolling do not trigger navigation. The
-header's single **Open dashboard** control remains available as a 44-pixel touch
-target.
+column on desktop, and the entrance screen on narrow touch screens. Its header
+carries the console name, the selected agent, and the notifications, agent
+settings and new-conversation controls; below it sit the agent strip,
+conversation search, a Running section for the conversations this browser is
+holding that have work in flight, the Recent listing with its Chats and
+Automations chips, and a footer carrying the data-mode indicator and the archive
+shelf. On narrow touch screens the console opens on the Dashboard; a
+conversation is pushed over it when a row, a Running card or the new-conversation
+control is tapped, and popped by the 44-pixel **Back to dashboard** control at
+the left edge of the conversation header, by a deliberate right swipe across the
+unoccupied chat surface or ordinary unselected transcript text, or by Escape.
+Controls, active text selections, inputs, and any native horizontal scroller keep
+their normal touch behavior; short drags and vertically dominant scrolling do not
+navigate. Nothing is modal: neither screen traps focus, and the one not showing
+is simply out of reach. Only a cron channel has an address of its own, so only a
+URL naming one opens on the conversation.
 Offline agents that remain in the current discovery result are hidden behind a
 subtle count by default; pinned agents and the currently selected agent remain
 visible even while offline. An agent omitted by a successful discovery refresh
-is removed from every picker and from that count regardless of its prior pin or
+is removed from the strip and from that count regardless of its prior pin or
 selection. Its rows, conversations, and pin stay retained in SQLite and return
 if the same source id is discovered again. The same filter applies to the
-desktop rail, mobile picker, and command palette. Pin or unpin with the star
-control; pins live in the web service so favorites stay consistent over
-localhost, LAN, and Tailscale.
+agent strip and the command palette. Pin or unpin the selected agent with the
+star in the agent settings dialog or the palette's pin command; pins live in
+the web service so favorites stay consistent over localhost, LAN, and Tailscale,
+and pinned agents sort first on the strip.
 
-The single-row mobile header keeps navigation, title, notifications, and a
-conversation actions menu together. Run settings sit beside **Send** in the
+The single-row mobile conversation header keeps the back control, title, and
+the conversation actions menu together; notifications belong to the Dashboard. Run settings sit beside **Send** in the
 composer, where the compact trigger shows only the resolved model and effort.
 Its popover combines searchable model selection with the selected model's
 supported reasoning-effort choices and becomes a viewport-safe bottom sheet on
@@ -345,7 +351,7 @@ receives one completed `↪️ Steered: “<safe preview>”` tool row with resu
 `Consumed by current run`. The original follow-up remains the full human message;
 the synthetic activity carries only a one-line, redacted, 40-code-point preview.
 
-The header bell explicitly enables standards-based Web Push. Permission and
+The Dashboard header's bell explicitly enables standards-based Web Push. Permission and
 subscription creation happen only after that click; the server keeps one
 owner-private VAPID identity, subscription secrets, and a durable SQLite
 outbox. Completed responses, cron/webhook `web:new` results, blocking `AskUser`
@@ -392,9 +398,10 @@ Each row shows the job id, cadence and timezone, enabled state, last/active run,
 and an agent-authored next run only while live authority is available. Loading,
 unsupported, unavailable, offline/saved-snapshot, empty, and truncated-overview
 states remain distinct. Saved history stays openable read-only, while stale
-schedule state is labelled and never made actionable. The shared sidebar search
-queries conversations in the default view and filters the complete bounded
-overview under the Automations chip. The Recent list uses a server-side scope for paging
+schedule state is labelled and never made actionable. The Dashboard's one search
+field queries conversations under the Chats chip and filters the complete bounded
+overview under the Automations chip; the chips stay visible during a search, and
+switching chips clears the query. The Recent list uses a server-side scope for paging
 and search, so cron channels are excluded
 before limits and cursors are applied while ordinary and webhook conversations
 remain visible. Unscoped HTTP callers keep the backward-compatible mixed list.

@@ -123,6 +123,7 @@ beforeEach(async () => {
   vi.mocked(api.threads).mockResolvedValue({ threads: [] });
   vi.mocked(api.messages).mockResolvedValue({ messages: [] });
   vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
+  vi.mocked(api.cronOverview).mockResolvedValue({ generatedAt: "2026-09-08T08:00:00.000Z", actionsEnabled: false, jobs: [] });
 });
 
 afterEach(async () => {
@@ -186,108 +187,113 @@ describe("the dashboard as the desktop column", () => {
   });
 });
 
-describe("the dashboard as the mobile drawer", () => {
+describe("the dashboard as the mobile entrance screen", () => {
   beforeEach(async () => { await page.viewport(390, 844); });
 
-  /** The panel by class: while it is closed it has no accessible name to find. */
-  const panelElement = (): HTMLElement => {
-    const panel = document.querySelector<HTMLElement>(".dashboard-panel");
-    if (!panel) throw new Error("Expected one dashboard panel");
-    return panel;
+  /** By class: while the conversation is showing, the panel is hidden and has no role to query. */
+  const panel = (): HTMLElement => {
+    const found = document.querySelector<HTMLElement>(".dashboard-panel");
+    if (!found) throw new Error("Expected one dashboard panel");
+    return found;
+  };
+  const chatRegion = (): HTMLElement => {
+    const found = document.querySelector<HTMLElement>(".chat-region");
+    if (!found) throw new Error("Expected one chat region");
+    return found;
+  };
+  /** The transcript is on the pushed screen; it counts as settled once the store has it, visible or not. */
+  const loaded = async () => {
+    await waitFor(() => expect(screen.getByText("Alpha transcript", { ignore: false })).toBeInTheDocument());
+  };
+  /** Push the conversation and wait for the slide to finish, so a click cannot chase it. */
+  const openConversation = async (): Promise<HTMLElement> => {
+    await userEvent.click(within(panel()).getByRole("button", { name: "Open Alpha thread" }));
+    const region = chatRegion();
+    await waitFor(() => expect(region.getBoundingClientRect().left).toBe(0));
+    await waitFor(() => expect(screen.getByText("Alpha transcript")).toBeVisible());
+    return region;
   };
 
-  /** Open it and wait for the slide to finish, so a click cannot chase it. */
-  const openDrawer = async (): Promise<HTMLElement> => {
-    await userEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
-    const panel = await screen.findByRole("dialog", { name: "Dashboard" });
-    await waitFor(() => expect(panel.getBoundingClientRect().left).toBe(0));
-    return panel;
-  };
-
-  it("opens closed, hidden from assistive technology and out of the tab order", async () => {
+  it("lands on the Dashboard: a plain screen, with the conversation pushed away", async () => {
     openConsole();
-    await settled();
+    await loaded();
 
-    const panel = panelElement();
-    expect(panel).toHaveAttribute("role", "dialog");
-    expect(panel).toHaveAttribute("aria-modal", "true");
-    expect(panel).toHaveAttribute("aria-label", "Dashboard");
-    expect(panel).toHaveAttribute("aria-hidden", "true");
-    expect(panel).toHaveAttribute("inert");
-    // Off the left edge, and nothing of the conversation is blocked.
-    expect(panel.getBoundingClientRect().right).toBeLessThanOrEqual(0);
-    expect(document.querySelector(".chat-region")).not.toHaveAttribute("inert");
+    // A screen, not a drawer: nothing modal, nothing to dismiss, no scrim.
+    expect(screen.getByRole("navigation", { name: "Dashboard" })).toBe(panel());
+    expect(panel()).not.toHaveAttribute("aria-modal");
+    expect(panel()).not.toHaveAttribute("inert");
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.querySelector(".drawer-scrim")).toBeNull();
+    expect(panel().getBoundingClientRect().width).toBe(390);
+    expect(panel().getBoundingClientRect().left).toBe(0);
+    // The conversation is off the right edge and out of reach.
+    expect(chatRegion()).toHaveAttribute("inert");
+    expect(chatRegion()).toHaveAttribute("aria-hidden", "true");
+    expect(chatRegion().getBoundingClientRect().left).toBeGreaterThanOrEqual(390);
+    expect(screen.getByText("Alpha transcript")).not.toBeVisible();
   });
 
-  it("opens from the one header control, takes focus, and makes the chat inert", async () => {
+  it("pushes the conversation from a row and pops it from the header's back control", async () => {
     openConsole();
-    await settled();
+    await loaded();
 
-    const panel = await openDrawer();
+    const region = await openConversation();
+    expect(region).not.toHaveAttribute("inert");
+    expect(panel()).toHaveAttribute("inert");
+    expect(panel()).toHaveAttribute("aria-hidden", "true");
+    // The way back sits at the left edge of the conversation header, before the title.
+    const back = screen.getByRole("button", { name: "Back to dashboard" });
+    const header = back.closest(".chat-header");
+    expect(header).not.toBeNull();
+    expect(back.getBoundingClientRect().left).toBeLessThan(header!.getBoundingClientRect().left + 24);
+    expect(back.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
 
-    expect(panel).not.toHaveAttribute("inert");
-    expect(panel).toHaveAttribute("aria-hidden", "false");
-    expect(document.querySelector(".chat-region")).toHaveAttribute("inert");
-    await waitFor(() => expect(panel.contains(document.activeElement)).toBe(true));
-    expect(screen.getByRole("button", { name: "Close navigation" })).toBeVisible();
+    await userEvent.click(back);
+    await waitFor(() => expect(chatRegion().getBoundingClientRect().left).toBeGreaterThanOrEqual(390));
+    expect(panel()).not.toHaveAttribute("inert");
+    expect(chatRegion()).toHaveAttribute("inert");
   });
 
-  it("keeps Tab out of the conversation and gives focus back on Escape", async () => {
+  it("keeps Tab on the screen that is showing, and Escape pops the conversation", async () => {
     openConsole();
-    await settled();
-    const opener = screen.getByRole("button", { name: "Open dashboard" });
-    const panel = await openDrawer();
-    await waitFor(() => expect(panel.contains(document.activeElement)).toBe(true));
-    const chat = document.querySelector<HTMLElement>(".chat-region");
+    await loaded();
 
-    // The trap lets one step reach the scrim -- which is part of the modal,
-    // and the only pointer-free way out of it -- and takes the next one back.
     for (let step = 0; step < 12; step += 1) {
       await userEvent.keyboard("{Tab}");
-      expect(chat?.contains(document.activeElement)).toBe(false);
-      expect(
-        panel.contains(document.activeElement)
-        || document.activeElement?.classList.contains("drawer-scrim")
-        || document.activeElement === document.body,
-      ).toBe(true);
+      expect(chatRegion().contains(document.activeElement)).toBe(false);
+    }
+
+    await openConversation();
+    for (let step = 0; step < 12; step += 1) {
+      await userEvent.keyboard("{Tab}");
+      expect(panel().contains(document.activeElement)).toBe(false);
     }
 
     await userEvent.keyboard("{Escape}");
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dashboard" })).toBeNull());
-    expect(document.activeElement).toBe(opener);
+    await waitFor(() => expect(chatRegion()).toHaveAttribute("inert"));
+    await waitFor(() => expect(panel().contains(document.activeElement)).toBe(true));
   });
 
-  it("closes on a conversation and on the scrim, and stays open for the archive shelf", async () => {
+  it("stays on the Dashboard for the archive shelf and the chips, and leaves for a conversation", async () => {
     openConsole();
-    await settled();
+    await loaded();
 
-    const panel = await openDrawer();
-    await userEvent.click(within(panel).getByRole("button", { name: /^Archived/u }));
-    // A shelf switch is not going anywhere: the drawer stays put.
-    expect(screen.getByRole("dialog", { name: "Dashboard" })).toBeVisible();
-    await userEvent.click(within(panel).getByRole("button", { name: "Back to conversations" }));
-    expect(screen.getByRole("dialog", { name: "Dashboard" })).toBeVisible();
+    await userEvent.click(within(panel()).getByRole("button", { name: /^Archived/u }));
+    expect(chatRegion()).toHaveAttribute("inert");
+    await userEvent.click(within(panel()).getByRole("button", { name: "Back to conversations" }));
+    await userEvent.click(within(panel()).getByRole("button", { name: /^Automations/u }));
+    await userEvent.click(within(panel()).getByRole("button", { name: "Chats" }));
+    expect(chatRegion()).toHaveAttribute("inert");
 
-    // Dispatched rather than pointed at: the scrim covers the whole viewport
-    // and its centre is under the drawer, which is what a real tap avoids by
-    // landing on the strip beside it.
-    screen.getByRole("button", { name: "Close navigation" }).click();
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dashboard" })).toBeNull());
-
-    const reopened = await openDrawer();
-    await userEvent.click(
-      await within(reopened).findByRole("button", { name: "Open Alpha thread" }),
-    );
-
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dashboard" })).toBeNull());
+    await openConversation();
+    expect(chatRegion()).not.toHaveAttribute("inert");
   });
 
-  it("never lets the drawer push the page sideways", async () => {
+  it("never lets either screen push the page sideways", async () => {
     openConsole();
-    await settled();
-    await openDrawer();
-
+    await loaded();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390));
+    await openConversation();
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390));
   });
 });

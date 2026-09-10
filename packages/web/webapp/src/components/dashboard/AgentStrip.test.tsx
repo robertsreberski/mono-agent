@@ -40,10 +40,6 @@ const createStore = () => ({
 
 const store = () => storeMock.current as ReturnType<typeof createStore>;
 
-const openOptions = (label: string) => {
-  fireEvent.click(screen.getByRole("button", { name: `Agent options for ${label}` }));
-};
-
 describe("AgentStrip", () => {
   beforeEach(() => {
     storeMock.current = createStore();
@@ -64,56 +60,27 @@ describe("AgentStrip", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
 
-  it("keeps selection and pinning independent", () => {
+  it("selects on the square and never pins from the strip", () => {
     render(<AgentStrip />);
-
-    openOptions("A complete favorite agent name");
-    fireEvent.click(screen.getByRole("button", { name: "Unpin A complete favorite agent name" }));
-    expect(store().setAgentPinned).toHaveBeenCalledWith("favorite", false);
-    expect(store().selectAgent).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Other agent, online" }));
     expect(store().selectAgent).toHaveBeenCalledWith("other");
-    expect(store().setAgentPinned).toHaveBeenCalledTimes(1);
+    // Pinning is the agent's setting, behind the header's gear; the strip
+    // offers no per-agent control that could clip or hide on a phone.
+    expect(screen.queryByRole("button", { name: /Agent options for/u })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^(Pin|Unpin) /u })).toBeNull();
+    expect(store().setAgentPinned).not.toHaveBeenCalled();
   });
 
-  it("exposes selection and pin state through pressed semantics", () => {
+  it("exposes selection through pressed semantics and pin state through the name", () => {
     render(<AgentStrip />);
 
     expect(screen.getByRole("button", { name: "Current offline agent, offline" }))
       .toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Other agent, online" }))
       .toHaveAttribute("aria-pressed", "false");
-
-    openOptions("Other agent");
-    expect(screen.getByRole("button", { name: "Pin Other agent" }))
+    expect(screen.getByRole("button", { name: "A complete favorite agent name, offline, pinned" }))
       .toHaveAttribute("aria-pressed", "false");
-  });
-
-  it("opens one agent's options at a time and closes them on Escape", () => {
-    render(<AgentStrip />);
-
-    openOptions("Other agent");
-    expect(screen.getByRole("button", { name: "Pin Other agent" })).toBeVisible();
-
-    openOptions("Current offline agent");
-    expect(screen.queryByRole("button", { name: "Pin Other agent" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Pin Current offline agent" })).toBeVisible();
-
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(screen.queryByRole("button", { name: "Pin Current offline agent" })).toBeNull();
-    // The control that opened it gets the keyboard back.
-    expect(document.activeElement)
-      .toBe(screen.getByRole("button", { name: "Agent options for Current offline agent" }));
-  });
-
-  it("closes the options on a click somewhere else", () => {
-    render(<AgentStrip />);
-
-    openOptions("Other agent");
-    fireEvent.mouseDown(document.body);
-
-    expect(screen.queryByRole("button", { name: "Pin Other agent" })).toBeNull();
   });
 
   it("offers the hidden offline agents behind their count", () => {

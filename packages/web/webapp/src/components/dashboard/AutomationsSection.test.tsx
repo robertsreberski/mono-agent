@@ -12,6 +12,7 @@ const apiMock = vi.hoisted(() => ({ searchThreads: vi.fn() }));
 vi.mock("../../console-store", () => ({
   useConsoleStore: () => storeMock.current,
 }));
+vi.mock("../../notifications", () => ({ NotificationBell: () => null }));
 vi.mock("../../api", () => ({ api: apiMock }));
 // Keep the real list-row rendering; only assistant-ui's runtime bindings are
 // reduced to markup, so preview and activity regressions are observable here.

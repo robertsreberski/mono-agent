@@ -3,7 +3,6 @@ import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
 import { composerDraftKey } from "../composer-draft";
-import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import { ModelSelector } from "./assistant-ui/ModelSelector";
 import { SelectionToolbar } from "./assistant-ui/Quote";
@@ -426,7 +425,7 @@ function EmptyConversation() {
   );
 }
 
-export function Chat({ onOpenDashboard }: { readonly onOpenDashboard: () => void }) {
+export function Chat({ onBack }: { readonly onBack: () => void }) {
   const {
     selectedAgent,
     selectedThread,
@@ -471,9 +470,12 @@ export function Chat({ onOpenDashboard }: { readonly onOpenDashboard: () => void
   return (
     <main className="chat-panel">
       <header className="chat-header">
+        {/* On a phone this conversation is a screen pushed over the Dashboard,
+            and this is the way back -- at the left edge, before the title,
+            where a phone keeps it. */}
         <div className="mobile-navigation">
-          <button type="button" className="icon-button" onClick={onOpenDashboard} aria-label="Open dashboard">
-            <Icon name="menu" size={19} />
+          <button type="button" className="icon-button mobile-back" onClick={onBack} aria-label="Back to dashboard">
+            <Icon name="chevron-left" size={22} />
           </button>
         </div>
         <div className="chat-title-block">
@@ -484,7 +486,6 @@ export function Chat({ onOpenDashboard }: { readonly onOpenDashboard: () => void
           </span>
         </div>
         <div className="chat-header-actions">
-          <NotificationBell />
           <ConversationActions />
         </div>
       </header>

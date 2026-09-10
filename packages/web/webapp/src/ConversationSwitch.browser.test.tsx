@@ -125,35 +125,52 @@ const saveHydratedShell = async (
 };
 
 /**
- * The real shell opens closed. Nothing to dismiss -- but a mobile case that
- * assumed a drawer was up would now silently assert against the chat surface,
- * so this states the shape instead of no-oping.
+ * On a phone the console lands on the Dashboard, and the conversation is a
+ * screen pushed over it. Until a row is tapped the transcript is on the
+ * hidden screen: in the document, out of reach, and not visible.
  */
-const expectDrawerClosed = async (mobile: boolean) => {
-  if (!mobile) {
-    expect(screen.queryByRole("dialog", { name: "Dashboard" })).toBeNull();
-    return;
-  }
-  // By class: a closed drawer is `aria-hidden`, and an accessible name is not
-  // computed for a hidden element, so there is no role query that finds it.
-  await waitFor(() =>
-    expect(document.querySelector(".dashboard-panel")).toHaveAttribute("aria-hidden", "true"));
+const chatRegion = (): HTMLElement => {
+  const found = document.querySelector<HTMLElement>(".chat-region");
+  if (!found) throw new Error("Expected one chat region");
+  return found;
 };
+const conversationShowing = (): boolean =>
+  document.querySelector(".chat-region")?.classList.contains("is-open") === true;
 
-/** The one navigation surface, however this viewport is presenting it. */
-const dashboard = async (mobile: boolean): Promise<HTMLElement> => {
-  if (!mobile) return screen.getByRole("navigation", { name: "Dashboard" });
-  if (screen.queryByRole("dialog", { name: "Dashboard" }) === null) {
-    await userEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
-  }
-  return screen.findByRole("dialog", { name: "Dashboard" });
-};
-
-const closeDashboard = async (mobile: boolean) => {
+const expectEntrance = async (mobile: boolean) => {
   if (!mobile) return;
-  if (screen.queryByRole("button", { name: "Close navigation" }) === null) return;
-  screen.getByRole("button", { name: "Close navigation" }).click();
-  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dashboard" })).toBeNull());
+  await waitFor(() => expect(chatRegion()).toHaveAttribute("inert"));
+};
+
+/**
+ * The conversation as the test can observe it. On a phone that is the screen
+ * beneath unless a row has been tapped, so the assertion is presence there
+ * and visibility on desktop -- what the store did is the same either way.
+ */
+const expectTranscript = async (text: string, mobile: boolean) => {
+  const node = await screen.findByText(text);
+  if (mobile && !conversationShowing()) expect(node).toBeInTheDocument();
+  else expect(node).toBeVisible();
+};
+
+/** The composer's pending control, on whichever screen the conversation is. */
+const loadingControl = () => screen.findByText("Loading conversation…", { selector: "button" });
+
+/** The one navigation surface; on a phone, pop the conversation to reach it. */
+const dashboard = async (mobile: boolean): Promise<HTMLElement> => {
+  if (mobile && conversationShowing()) {
+    await userEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
+    await waitFor(() => expect(chatRegion()).toHaveAttribute("inert"));
+  }
+  return screen.findByRole("navigation", { name: "Dashboard" });
+};
+
+/** Push the conversation by tapping its row, the way a phone gets there. */
+const enterConversation = async (title: string, mobile: boolean) => {
+  if (!mobile || conversationShowing()) return;
+  const surface = await dashboard(mobile);
+  await userEvent.click(await within(surface).findByRole("button", { name: `Open ${title}` }));
+  await waitFor(() => expect(chatRegion()).not.toHaveAttribute("inert"));
 };
 
 /**
@@ -161,7 +178,9 @@ const closeDashboard = async (mobile: boolean) => {
  * reports a mutation error in a toast that is also `role="alert"`.
  */
 const conversationFailure = async (): Promise<HTMLElement> => {
-  const heading = await screen.findByRole("heading", { name: "Conversation could not be loaded" });
+  // By text: on a phone this may be on the hidden screen, and no accessible
+  // name is computed for a hidden element.
+  const heading = await screen.findByText("Conversation could not be loaded", { selector: "h2" });
   const alert = heading.closest<HTMLElement>('[role="alert"]');
   if (!alert) throw new Error("Expected the conversation failure to be an alert");
   return alert;
@@ -172,20 +191,23 @@ const waitForLiveConsole = async () => {
 };
 
 /**
- * Choosing an agent deliberately leaves the mobile drawer OPEN -- the operator
- * has said where to look, and the conversation they want is underneath -- so
- * every caller closes it itself when it is done navigating.
+ * Choosing an agent deliberately stays on the Dashboard -- the operator has
+ * said where to look, not what to look at -- so the conversation that follows
+ * is observed on the screen beneath until a row is tapped.
  */
 const chooseAgent = async (label: string, mobile: boolean) => {
   const surface = await dashboard(mobile);
   await userEvent.click(within(surface).getByRole("button", { name: `${label}, online` }));
-  await closeDashboard(mobile);
 };
 
+/** Checked wherever the Dashboard is: showing, or the screen beneath a pushed conversation. */
 const expectNewConversationDisabled = async (mobile: boolean) => {
+  if (mobile && conversationShowing()) {
+    expect(document.querySelector(".new-thread-button")).toBeDisabled();
+    return;
+  }
   const surface = await dashboard(mobile);
   expect(within(surface).getByRole("button", { name: "New conversation" })).toBeDisabled();
-  await closeDashboard(mobile);
 };
 
 beforeEach(async () => {
@@ -240,16 +262,15 @@ describe("conversation switching through the real Chromium store and runtime", (
         </WebRuntimeProvider>
       </ConsoleStoreProvider>,
     );
-    await expectDrawerClosed(mobile);
+    await expectEntrance(mobile);
+    await enterConversation("Alpha thread", mobile);
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
     await waitForLiveConsole();
 
     const surface = await dashboard(mobile);
     await userEvent.click(within(surface).getByRole("button", { name: "New conversation" }));
-    // Starting a conversation IS navigating, so on a phone the drawer goes.
-    if (mobile) {
-      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Dashboard" })).toBeNull());
-    }
+    // Starting a conversation IS navigating, so on a phone it is pushed.
+    if (mobile) await waitFor(() => expect(chatRegion()).not.toHaveAttribute("inert"));
 
     expect(await screen.findByRole("button", { name: "Creating conversation…" })).toBeDisabled();
     expect(screen.getByRole("status", { name: "Creating conversation" })).toBeVisible();
@@ -289,7 +310,8 @@ describe("conversation switching through the real Chromium store and runtime", (
         </WebRuntimeProvider>
       </ConsoleStoreProvider>,
     );
-    await expectDrawerClosed(mobile);
+    await expectEntrance(mobile);
+    await enterConversation("Alpha thread", mobile);
 
     expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
     expect(screen.queryByText("Start a new conversation")).toBeNull();
@@ -342,7 +364,8 @@ describe("conversation switching through the real Chromium store and runtime", (
         </WebRuntimeProvider>
       </ConsoleStoreProvider>,
     );
-    await expectDrawerClosed(mobile);
+    // A cron channel has an address, so a phone lands on the conversation.
+    if (mobile) await waitFor(() => expect(chatRegion()).not.toHaveAttribute("inert"));
 
     expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
     expect(screen.queryByText("Start a new conversation")).toBeNull();
@@ -422,13 +445,12 @@ describe("conversation switching through the real Chromium store and runtime", (
         </ConsoleStoreProvider>
       </StrictMode>,
     );
-    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await expectTranscript("Alpha transcript", mobile);
     await waitForLiveConsole();
     await waitFor(() => expect(api.cronOverview).toHaveBeenCalledTimes(1));
 
     const scope = await dashboard(mobile);
-    // The drawer slides in; its contents are visible once it has arrived.
-    await waitFor(() => expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible());
+    expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible();
     await userEvent.click(within(scope).getByRole("button", { name: "Automations, 1 job" }));
 
     expect(within(scope).getByRole("heading", { name: "Automations" })).toBeVisible();
@@ -464,23 +486,23 @@ describe("conversation switching through the real Chromium store and runtime", (
       </StrictMode>,
     );
 
-    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await expectTranscript("Alpha transcript", mobile);
     await waitForLiveConsole();
     await chooseAgent("Beta", mobile);
-    expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
+    expect(await loadingControl()).toBeDisabled();
     expect(screen.queryByText("Start a new conversation")).toBeNull();
     expect(screen.queryByText("Something went wrong")).toBeNull();
     await expectNewConversationDisabled(mobile);
     await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
 
     await chooseAgent("Alpha", mobile);
-    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await expectTranscript("Alpha transcript", mobile);
     await chooseAgent("Beta", mobile);
-    expect(await screen.findByRole("button", { name: "Loading conversation…" })).toBeDisabled();
+    expect(await loadingControl()).toBeDisabled();
     expect(api.threads).toHaveBeenCalledTimes(1);
 
     await act(async () => { resolveBeta({ threads: [betaThread] }); });
-    expect(await screen.findByText("Beta transcript")).toBeVisible();
+    await expectTranscript("Beta transcript", mobile);
     expect(screen.queryByText("Alpha transcript")).toBeNull();
     expect(screen.queryByText("Something went wrong")).toBeNull();
     expect(api.threads).toHaveBeenCalledTimes(1);
@@ -527,6 +549,7 @@ describe("conversation switching through the real Chromium store and runtime", (
       </StrictMode>,
     );
 
+    await enterConversation("Alpha thread", mobile);
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
     await waitForLiveConsole();
     // Filing a conversation happens from the conversation itself: the rows in
@@ -542,7 +565,7 @@ describe("conversation switching through the real Chromium store and runtime", (
     expect(screen.queryByText("Start a conversation")).toBeNull();
     await expectNewConversationDisabled(mobile);
 
-    const retry = screen.getByRole("button", { name: "Retry conversation" });
+    const retry = screen.getByText("Retry conversation", { selector: "button" });
     retry.scrollIntoView({ block: "center" });
     await userEvent.click(retry);
     expect(await screen.findByText("Older Alpha transcript")).toBeVisible();
@@ -577,7 +600,7 @@ describe("conversation switching through the real Chromium store and runtime", (
       </StrictMode>,
     );
 
-    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await expectTranscript("Alpha transcript", mobile);
     await waitForLiveConsole();
     await chooseAgent("Beta", mobile);
     await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
@@ -591,12 +614,15 @@ describe("conversation switching through the real Chromium store and runtime", (
     expect(api.threads).toHaveBeenCalledTimes(1);
     expect(betaReads).toBe(1);
 
-    const retry = screen.getByRole("button", { name: "Retry conversation" });
+    // The failure and its retry live on the conversation; a phone reaches
+    // them through the row the listing did deliver.
+    await enterConversation("Beta thread", mobile);
+    const retry = screen.getByText("Retry conversation", { selector: "button" });
     retry.scrollIntoView({ block: "center" });
     await userEvent.click(retry);
     await waitFor(() => expect(betaReads).toBe(2));
     expect(api.threads).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("Beta transcript")).toBeVisible();
+    await expectTranscript("Beta transcript", mobile);
     expect(document.querySelector(".chat-empty[role='alert']")).toBeNull();
     expect(screen.queryByText("Alpha transcript")).toBeNull();
     expect(consoleError.mock.calls.flat().some((value) =>

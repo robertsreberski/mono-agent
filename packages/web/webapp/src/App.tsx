@@ -70,12 +70,22 @@ const DRAWER_SWIPE_EXCLUDED = [
 ].join(",");
 const MOBILE_DRAWER_MEDIA = "(max-width: 900px)";
 
-/** Whether the shell owes the Dashboard a drawer rather than a column. */
+/** Whether the shell shows one screen at a time rather than two columns. */
 const isMobileViewport = (): boolean =>
   typeof window.matchMedia === "function" && window.matchMedia(MOBILE_DRAWER_MEDIA).matches;
 
+/**
+ * The two screens a phone shows one at a time. The Dashboard is the entrance;
+ * a conversation is pushed over it and popped with the header's back control
+ * or a right swipe. Only a cron channel has an address of its own, so only a
+ * URL that names one lands on the conversation directly.
+ */
+type MobileScreen = "dashboard" | "conversation";
+const initialMobileScreen = (): MobileScreen =>
+  /^\/agents\//u.test(window.location.pathname) ? "conversation" : "dashboard";
+
 interface DrawerGestureStart extends DrawerGesturePoint {
-  readonly intent: "close" | "open-dashboard";
+  readonly intent: "back";
 }
 
 function useModalFocus(
@@ -352,7 +362,7 @@ export function App() {
     hasRunningThread,
     retry,
   } = useConsoleStore();
-  const [drawer, setDrawer] = useState(false);
+  const [screen, setScreen] = useState<MobileScreen>(initialMobileScreen);
   const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
   const [agentSettings, setAgentSettings] = useState(false);
@@ -360,20 +370,16 @@ export function App() {
   const [leanOffer, setLeanOffer] = useState(false);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
+  const chatRef = useRef<HTMLDivElement>(null);
   const agentSettingsRef = useRef<HTMLElement>(null);
   const drawerGestureRef = useRef<DrawerGestureStart | null>(null);
+  const conversationOpen = mobile && screen === "conversation";
 
-  const closeDrawer = useCallback(() => setDrawer(false), []);
+  const openConversation = useCallback(() => setScreen("conversation"), []);
+  const showDashboard = useCallback(() => setScreen("dashboard"), []);
   const closePalette = useCallback(() => setPalette(false), []);
   const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
-  const togglePalette = useCallback(() => {
-    closeDrawer();
-    setPalette((current) => !current);
-  }, [closeDrawer]);
-  const openDashboard = useCallback(() => {
-    setPalette(false);
-    setDrawer(true);
-  }, []);
+  const togglePalette = useCallback(() => setPalette((current) => !current), []);
 
   const startDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     drawerGestureRef.current = null;
@@ -387,25 +393,19 @@ export function App() {
     if (!touch) return;
     const target = event.target instanceof Element ? event.target : null;
     const selection = window.getSelection();
+    // Only the pushed conversation has somewhere to go back to; the entrance
+    // screen owns no shell gesture, so its agent strip and lists keep every
+    // horizontal swipe for themselves.
+    if (screen !== "conversation") return;
     const excluded = target?.closest(DRAWER_SWIPE_EXCLUDED) ?? null;
-    // The exclusions apply in BOTH directions now that there is one drawer to
-    // swipe across: its agent strip is a native horizontal scroller and its
-    // options popover is a control, and a swipe meant for either of those was
-    // dismissing the drawer under the operator's thumb. The drawer's own root
-    // matches `[role="dialog"]` and is the one thing exempted -- a dialog
-    // nested INSIDE it is still excluded, because it owns that gesture.
-    if (excluded !== null && excluded !== dashboardRef.current) return;
+    if (excluded !== null) return;
     if (
       hasHorizontalScrollAncestor(target, event.currentTarget)
       || (selection !== null && !selection.isCollapsed)
     ) return;
 
-    drawerGestureRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-      intent: drawer ? "close" : "open-dashboard",
-    };
-  }, [drawer]);
+    drawerGestureRef.current = { x: touch.clientX, y: touch.clientY, intent: "back" };
+  }, [screen]);
 
   const finishDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     const start = drawerGestureRef.current;
@@ -415,37 +415,39 @@ export function App() {
     const touch = event.changedTouches[0];
     if (!touch) return;
     const end = { x: touch.clientX, y: touch.clientY };
-    const direction = start.intent === "open-dashboard" ? "right" : "left";
-    if (!isMobileDrawerSwipe(start, end, direction)) return;
+    if (!isMobileDrawerSwipe(start, end, "right")) return;
 
     event.preventDefault();
-    if (start.intent === "open-dashboard") openDashboard();
-    else closeDrawer();
-  }, [closeDrawer, openDashboard]);
+    showDashboard();
+  }, [showDashboard]);
 
   const cancelDrawerGesture = useCallback(() => {
     drawerGestureRef.current = null;
   }, []);
 
-  // The Dashboard is a modal drawer only while it IS one. On desktop it is the
-  // left column of the shell, and trapping focus in a column nobody opened
-  // would take the keyboard away from the conversation.
-  useModalFocus(mobile && drawer, dashboardRef, closeDrawer);
   useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
+
+  // Neither screen is a modal: nothing traps focus, and nothing needs to be
+  // dismissed. Focus just follows the screen that arrived, so a keyboard is
+  // not left on a surface that is now hidden.
+  const lastScreenRef = useRef<MobileScreen | null>(null);
+  useEffect(() => {
+    if (!mobile) { lastScreenRef.current = null; return; }
+    if (lastScreenRef.current === null) { lastScreenRef.current = screen; return; }
+    if (lastScreenRef.current === screen) return;
+    lastScreenRef.current = screen;
+    const root = screen === "conversation" ? chatRef.current : dashboardRef.current;
+    if (root && !root.contains(document.activeElement)) root.focus();
+  }, [mobile, screen]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const mobileDrawerViewport = window.matchMedia(MOBILE_DRAWER_MEDIA);
-    const onChange = (event: MediaQueryListEvent) => {
-      setMobile(event.matches);
-      // Crossing back to desktop turns the drawer into the column it always
-      // was; leaving `drawer` true would reopen it on the next narrow render.
-      if (!event.matches) closeDrawer();
-    };
+    const onChange = (event: MediaQueryListEvent) => setMobile(event.matches);
     setMobile(mobileDrawerViewport.matches);
     mobileDrawerViewport.addEventListener("change", onChange);
     return () => mobileDrawerViewport.removeEventListener("change", onChange);
-  }, [closeDrawer]);
+  }, []);
 
   useEffect(() => {
     const onCommand = () => togglePalette();
@@ -454,7 +456,6 @@ export function App() {
       if (detail?.message) setNotice(detail.message);
     };
     const onAgentSettings = () => {
-      closeDrawer();
       setPalette(false);
       setAgentSettings(true);
     };
@@ -466,7 +467,7 @@ export function App() {
       window.removeEventListener("mono-agent:notice", onNotice);
       window.removeEventListener("mono-agent:agent-settings", onAgentSettings);
     };
-  }, [closeDrawer, togglePalette]);
+  }, [togglePalette]);
 
   useEffect(() => {
     if (!notice && !actionError) return;
@@ -574,12 +575,14 @@ export function App() {
       }
       if (event.key === "Escape") {
         setPalette(false);
-        closeDrawer();
+        // On a phone, Escape is the keyboard's back: the pushed conversation
+        // pops to the Dashboard beneath it.
+        if (isMobileViewport()) showDashboard();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDrawer, palette, togglePalette]);
+  }, [palette, showDashboard, togglePalette]);
 
   const store = useConsoleStore();
   useEffect(() => {
@@ -604,35 +607,32 @@ export function App() {
     >
       {/*
         * ONE Dashboard, mounted once. It is the desktop left column and the
-        * mobile drawer, and the difference between them is these attributes --
-        * remounting it per breakpoint would throw away a query mid-typing and
-        * a list mid-scroll on every rotation.
+        * phone's entrance screen, and the difference between them is these
+        * attributes -- remounting it per breakpoint would throw away a query
+        * mid-typing and a list mid-scroll on every rotation. Whichever screen
+        * a phone is not showing is hidden from assistive technology and out
+        * of the tab order; nothing here is modal.
         */}
       <div
         ref={dashboardRef}
-        className={`dashboard-panel${drawer ? " is-open" : ""}`}
+        className="dashboard-panel"
+        role="navigation"
+        aria-label="Dashboard"
         tabIndex={-1}
-        {...(mobile
-          ? {
-              role: "dialog",
-              "aria-modal": true,
-              "aria-label": "Dashboard",
-              "aria-hidden": !drawer,
-              inert: !drawer,
-            }
-          : { role: "navigation", "aria-label": "Dashboard" })}
+        aria-hidden={conversationOpen || undefined}
+        inert={conversationOpen}
       >
-        <Dashboard onNavigate={closeDrawer} />
+        <Dashboard onNavigate={openConversation} />
       </div>
-      {/* Inert, not hidden: the conversation stays on screen behind the scrim,
-          and tabbing must not walk into it. */}
-      <div className="chat-region" inert={mobile && drawer}>
-        <Chat onOpenDashboard={openDashboard} />
+      <div
+        ref={chatRef}
+        className={`chat-region${conversationOpen ? " is-open" : ""}`}
+        tabIndex={-1}
+        aria-hidden={(mobile && !conversationOpen) || undefined}
+        inert={mobile && !conversationOpen}
+      >
+        <Chat onBack={showDashboard} />
       </div>
-
-      {drawer && (
-        <button className="drawer-scrim" type="button" onClick={closeDrawer} aria-label="Close navigation" />
-      )}
 
       {/*
         * The console draws before anything is asked for now, so a snapshot that

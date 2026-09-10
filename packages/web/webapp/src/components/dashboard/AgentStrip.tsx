@@ -1,19 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
 import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
 import { agentInitials, agentShortLabel } from "./dashboard-model";
 
 /**
- * Every agent as one 48-pixel square, on one horizontally scrolling line.
+ * Every agent as one square, on one horizontally scrolling line.
  *
- * Selecting an agent deliberately does NOT close the mobile drawer: the
- * operator has chosen where to look, not what to look at, and the list they
- * need next is directly underneath.
+ * Selecting an agent deliberately does NOT leave the Dashboard: the operator
+ * has chosen where to look, not what to look at, and the list they need next
+ * is directly underneath.
  *
- * Pinning is a second, independent action, so it lives behind an explicit
- * per-agent options button rather than a second target inside the square. No
- * long-press: there would be no way to discover it and no way to reach it from
- * a keyboard.
+ * Pinning is not on the strip. It is the selected agent's setting, in the
+ * agent settings dialog behind the header's gear and in the command palette;
+ * a control hanging off a square's corner was neither discoverable on a phone
+ * nor reachable without clipping.
  */
 export function AgentStrip({
   runningCounts,
@@ -27,48 +26,8 @@ export function AgentStrip({
     selectedAgentId,
     showOfflineAgents,
     selectAgent,
-    setAgentPinned,
     setShowOfflineAgents,
   } = useConsoleStore();
-  const [openOptions, setOpenOptions] = useState<string | null>(null);
-  const optionsRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-
-  const closeOptions = useCallback((restoreFocus: boolean) => {
-    setOpenOptions(null);
-    if (restoreFocus && triggerRef.current?.isConnected) triggerRef.current.focus();
-    triggerRef.current = null;
-  }, []);
-
-  useEffect(() => {
-    if (openOptions === null) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (event.target instanceof Node && optionsRef.current?.contains(event.target)) return;
-      closeOptions(false);
-    };
-    // CAPTURE, and it stops there: the drawer's own Escape handler is a
-    // bubble-phase listener on the same document, and dismissing a popover
-    // must not also dismiss the surface it is drawn on.
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeOptions(true);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown, true);
-    };
-  }, [closeOptions, openOptions]);
-
-  // An agent that stops being visible takes its popover with it.
-  useEffect(() => {
-    if (openOptions !== null && !visibleAgents.some((agent) => agent.sourceId === openOptions)) {
-      setOpenOptions(null);
-    }
-  }, [openOptions, visibleAgents]);
 
   return (
     <nav className="agent-strip" aria-label="Agents">
@@ -76,7 +35,6 @@ export function AgentStrip({
         {visibleAgents.map((agent) => {
           const pinned = Boolean(agent.pinned);
           const selected = selectedAgentId === agent.sourceId;
-          const open = openOptions === agent.sourceId;
           const running = runningCounts?.get(agent.sourceId) ?? 0;
           return (
             <div className={`agent-chip${selected ? " is-selected" : ""}`} role="listitem" key={agent.sourceId}>
@@ -94,35 +52,6 @@ export function AgentStrip({
                 )}
               </button>
               <span className="agent-chip-label" title={agent.label}>{agentShortLabel(agent.label)}</span>
-              <button
-                type="button"
-                className="agent-chip-more"
-                aria-label={`Agent options for ${agent.label}`}
-                aria-expanded={open}
-                onClick={(event) => {
-                  triggerRef.current = event.currentTarget;
-                  setOpenOptions(open ? null : agent.sourceId);
-                }}
-              >
-                <Icon name="more" size={13} />
-              </button>
-              {open && (
-                <div className="agent-chip-options" ref={optionsRef}>
-                  <button
-                    type="button"
-                    className={`agent-chip-pin${pinned ? " is-pinned" : ""}`}
-                    aria-pressed={pinned}
-                    aria-label={`${pinned ? "Unpin" : "Pin"} ${agent.label}`}
-                    onClick={() => {
-                      void setAgentPinned(agent.sourceId, !pinned).catch(() => {});
-                      closeOptions(true);
-                    }}
-                  >
-                    <Icon name="star" size={14} fill={pinned ? "currentColor" : "none"} />
-                    <span>{pinned ? "Remove from favorites" : "Add to favorites"}</span>
-                  </button>
-                </div>
-              )}
             </div>
           );
         })}

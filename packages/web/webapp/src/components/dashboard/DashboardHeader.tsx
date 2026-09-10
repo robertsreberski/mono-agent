@@ -1,10 +1,12 @@
 import { ThreadListPrimitive } from "@assistant-ui/react";
 import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
+import { NotificationBell } from "../../notifications";
 
 /**
- * Who this console is, which agent it is pointed at, and the two things an
- * operator does most: change that agent's defaults, or start talking to it.
+ * Who this console is, which agent it is pointed at, and the three controls
+ * that belong to the console rather than to one conversation: notifications,
+ * the agent's defaults, and a new conversation.
  *
  * The command palette keeps its shortcut (⌘K) and has no button here; the
  * connection state is announced, not drawn.
@@ -32,6 +34,7 @@ export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => vo
         <span className="sr-only" role="status" aria-label={`Console connection: ${connection}`} />
       </div>
       <div className="dashboard-header-actions">
+        <NotificationBell />
         <button
           type="button"
           className="agent-settings-button"

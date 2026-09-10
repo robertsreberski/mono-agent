@@ -12,6 +12,7 @@ const apiMock = vi.hoisted(() => ({ searchThreads: vi.fn() }));
 vi.mock("../../console-store", () => ({
   useConsoleStore: () => storeMock.current,
 }));
+vi.mock("../../notifications", () => ({ NotificationBell: () => null }));
 vi.mock("../../api", () => ({ api: apiMock }));
 // Keep the real list-row rendering; only assistant-ui's runtime bindings are
 // reduced to markup, so preview and activity regressions are observable here.
@@ -440,8 +441,22 @@ describe("Dashboard search", () => {
     expect(screen.queryByText(SEARCH_HIGHLIGHT_OPEN)).toBeNull();
     // Paging belongs to the list, not to a result set the server already ranked.
     expect(screen.queryByRole("button", { name: "Load older conversations" })).toBeNull();
-    // Nor do the chips: they narrow what is LOADED, and this is not that.
-    expect(screen.queryByRole("button", { name: "Cron" })).toBeNull();
+    // The chips stay: the list's other face is one tap away during a search,
+    // and switching to it retires the query, which meant something else.
+    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: /^Automations/u }));
+    expect(store().setNavigationDestination).toHaveBeenCalledWith("automations");
+  });
+
+  it("clears a conversation query when the list switches to automations", () => {
+    const { rerender } = render(<Dashboard />);
+    type("tailscale");
+    expect(screen.getByRole("searchbox", { name: "Search conversations" })).toHaveValue("tailscale");
+
+    storeMock.current = { ...storeMock.current!, navigationDestination: "automations" as const };
+    rerender(<Dashboard />);
+    expect(screen.getByRole("searchbox", { name: "Search automations" })).toHaveValue("");
+    expect(apiMock.searchThreads).not.toHaveBeenCalled();
   });
 
   it("debounces to one request per settled query", async () => {

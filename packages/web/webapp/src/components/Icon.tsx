@@ -18,7 +18,6 @@ export type IconName =
   | "clock"
   | "download"
   | "close"
-  | "clock"
   | "command"
   | "copy"
   | "eye"

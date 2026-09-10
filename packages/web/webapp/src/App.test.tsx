@@ -52,10 +52,10 @@ vi.mock("./components/BrandMark", () => ({
 }));
 
 vi.mock("./components/Chat", () => ({
-  Chat: ({ onOpenDashboard }: { readonly onOpenDashboard: () => void }) => (
+  Chat: ({ onBack }: { readonly onBack: () => void }) => (
     <main>
       Chat
-      <button type="button" onClick={onOpenDashboard}>Open dashboard</button>
+      <button type="button" onClick={onBack}>Back to dashboard</button>
     </main>
   ),
 }));
@@ -160,7 +160,7 @@ describe("App viewport layout", () => {
   });
 });
 
-describe("App mobile drawer", () => {
+describe("App mobile screens", () => {
   beforeEach(() => {
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
@@ -171,6 +171,7 @@ describe("App mobile drawer", () => {
         removeEventListener: () => undefined,
       }),
     });
+    window.history.replaceState(null, "", "/");
   });
 
   afterEach(() => {
@@ -191,88 +192,98 @@ describe("App mobile drawer", () => {
     });
   };
 
-  const drawer = (container: HTMLElement): HTMLElement => {
+  const panel = (container: HTMLElement): HTMLElement => {
     const found = container.querySelector<HTMLElement>(".dashboard-panel");
     if (!found) throw new Error("Expected one dashboard panel");
     return found;
   };
+  const chat = (container: HTMLElement): HTMLElement => {
+    const found = container.querySelector<HTMLElement>(".chat-region");
+    if (!found) throw new Error("Expected one chat region");
+    return found;
+  };
+  const openConversation = () => fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
 
-  it("is one closed modal drawer until something opens it", () => {
+  it("lands on the Dashboard, with the conversation pushed away and out of reach", () => {
     const { container } = render(<App />);
 
-    const panel = drawer(container);
-    expect(panel).toHaveAttribute("role", "dialog");
-    expect(panel).toHaveAttribute("aria-modal", "true");
-    expect(panel).toHaveAttribute("aria-label", "Dashboard");
-    expect(panel).toHaveAttribute("aria-hidden", "true");
-    expect(panel).toHaveAttribute("inert");
-    expect(screen.queryByRole("button", { name: "Close navigation" })).toBeNull();
+    // A screen, not a drawer: a navigation region and nothing modal.
+    expect(panel(container)).toHaveAttribute("role", "navigation");
+    expect(panel(container)).toHaveAttribute("aria-label", "Dashboard");
+    expect(panel(container)).not.toHaveAttribute("aria-modal");
+    expect(panel(container)).not.toHaveAttribute("aria-hidden");
+    expect(panel(container)).not.toHaveAttribute("inert");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(chat(container)).not.toHaveClass("is-open");
+    expect(chat(container)).toHaveAttribute("aria-hidden", "true");
+    expect(chat(container)).toHaveAttribute("inert");
   });
 
-  it("opens from the one header control and closes on a navigation action", () => {
+  it("lands on the conversation when the address names a cron channel", () => {
+    window.history.replaceState(null, "", "/agents/alpha/cron/nightly");
     const { container } = render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
-    const panel = drawer(container);
-    expect(panel).toHaveAttribute("aria-hidden", "false");
-    expect(panel).not.toHaveAttribute("inert");
-    // The conversation stays on screen and out of the tab order behind it.
-    expect(container.querySelector(".chat-region")).toHaveAttribute("inert");
-
-    fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
-    expect(panel).toHaveAttribute("aria-hidden", "true");
-    expect(container.querySelector(".chat-region")).not.toHaveAttribute("inert");
+    expect(chat(container)).toHaveClass("is-open");
+    expect(panel(container)).toHaveAttribute("inert");
   });
 
-  it("closes from the scrim and from Escape", () => {
+  it("pushes the conversation on a navigation action and pops it from the header", () => {
     const { container } = render(<App />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
-    // Queried by class rather than by role: jsdom's viewport is wider than the
-    // breakpoint that gives the scrim a box, so it is display:none here even
-    // though the drawer is open. Its accessible name is covered in Chromium.
-    const scrim = container.querySelector<HTMLElement>(".drawer-scrim");
-    expect(scrim).toHaveAttribute("aria-label", "Close navigation");
-    fireEvent.click(scrim!);
-    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
+    openConversation();
+    expect(chat(container)).toHaveClass("is-open");
+    expect(chat(container)).not.toHaveAttribute("inert");
+    expect(panel(container)).toHaveAttribute("aria-hidden", "true");
+    expect(panel(container)).toHaveAttribute("inert");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
+    expect(chat(container)).not.toHaveClass("is-open");
+    expect(panel(container)).not.toHaveAttribute("inert");
+  });
+
+  it("pops the conversation on Escape", () => {
+    const { container } = render(<App />);
+    openConversation();
     fireEvent.keyDown(document, { key: "Escape" });
-    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
+    expect(chat(container)).not.toHaveClass("is-open");
   });
 
-  it("opens the dashboard after a deliberate right swipe across the chat surface", () => {
+  it("pops the conversation after a deliberate right swipe across it", () => {
     const { container } = render(<App />);
+    openConversation();
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
     swipe(shell!, { x: 180, y: 240 }, { x: 256, y: 250 });
 
-    expect(drawer(container)).toHaveAttribute("aria-hidden", "false");
+    expect(chat(container)).not.toHaveClass("is-open");
   });
 
-  it("does not open for a short drag or a vertical scroll", () => {
+  it("ignores a short drag or a vertical scroll", () => {
     const { container } = render(<App />);
+    openConversation();
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
     swipe(shell!, { x: 180, y: 240 }, { x: 243, y: 245 });
     swipe(shell!, { x: 180, y: 240 }, { x: 250, y: 320 });
 
-    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
+    expect(chat(container)).toHaveClass("is-open");
   });
 
   it("does not compete with interactive controls", () => {
     const { container } = render(<App />);
-    const openDashboard = screen.getByRole("button", { name: "Open dashboard" });
+    openConversation();
+    const back = screen.getByRole("button", { name: "Back to dashboard" });
 
-    swipe(openDashboard, { x: 12, y: 30 }, { x: 100, y: 32 });
+    swipe(back, { x: 12, y: 30 }, { x: 100, y: 32 });
 
-    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
+    expect(chat(container)).toHaveClass("is-open");
   });
 
-  it("opens from ordinary transcript text", () => {
+  it("pops from ordinary transcript text", () => {
     const { container } = render(<App />);
+    openConversation();
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
@@ -284,14 +295,18 @@ describe("App mobile drawer", () => {
     shell!.append(message);
     swipe(messageContent, { x: 40, y: 200 }, { x: 130, y: 204 });
 
-    expect(drawer(container)).toHaveAttribute("aria-hidden", "false");
+    expect(chat(container)).not.toHaveClass("is-open");
   });
 
   it("leaves active text selections and native horizontal scrollers in control", () => {
     const { container } = render(<App />);
+    openConversation();
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
+    // The pushed screen took focus; jsdom collapses a range added while a
+    // focusable element holds it, which no browser does, so let go first.
+    (document.activeElement as HTMLElement | null)?.blur();
     const selected = document.createElement("p");
     selected.textContent = "Selected response text";
     shell!.append(selected);
@@ -300,6 +315,7 @@ describe("App mobile drawer", () => {
     window.getSelection()?.addRange(range);
     swipe(selected, { x: 40, y: 200 }, { x: 130, y: 204 });
     window.getSelection()?.removeAllRanges();
+    expect(chat(container)).toHaveClass("is-open");
 
     const scroller = document.createElement("div");
     const scrollContent = document.createElement("span");
@@ -312,41 +328,21 @@ describe("App mobile drawer", () => {
     shell!.append(scroller);
     swipe(scrollContent, { x: 40, y: 240 }, { x: 130, y: 244 });
 
-    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
+    expect(chat(container)).toHaveClass("is-open");
   });
 
-  it("closes the open drawer with a deliberate left swipe across it", () => {
+  it("owns no gesture on the entrance screen, so its strip keeps every swipe", () => {
+    // The agent strip is a horizontal scroller and the lists scroll; a swipe
+    // on the Dashboard is theirs. Only the pushed conversation has a back.
     const { container } = render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
-    const panel = drawer(container);
-    expect(panel).toHaveAttribute("aria-hidden", "false");
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toBeNull();
 
-    swipe(panel, { x: 220, y: 240 }, { x: 140, y: 245 });
+    swipe(panel(container), { x: 220, y: 240 }, { x: 140, y: 245 });
+    swipe(panel(container), { x: 140, y: 240 }, { x: 220, y: 245 });
 
-    expect(panel).toHaveAttribute("aria-hidden", "true");
-  });
-
-  it("leaves a horizontal scroller inside the open drawer in control of its own swipe", () => {
-    // The agent strip is one, and a swipe meant to reach the agent at the end
-    // of it was closing the drawer instead. The exclusions apply while closing
-    // now, and the drawer's own root is the one thing exempted from them.
-    const { container } = render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
-    const panel = drawer(container);
-
-    const strip = document.createElement("div");
-    const chip = document.createElement("span");
-    strip.style.overflowX = "auto";
-    Object.defineProperties(strip, {
-      clientWidth: { configurable: true, value: 300 },
-      scrollWidth: { configurable: true, value: 620 },
-    });
-    strip.append(chip);
-    panel.append(strip);
-
-    swipe(chip, { x: 220, y: 240 }, { x: 140, y: 245 });
-
-    expect(panel).toHaveAttribute("aria-hidden", "false");
+    expect(chat(container)).not.toHaveClass("is-open");
+    expect(panel(container)).not.toHaveAttribute("inert");
   });
 });
 

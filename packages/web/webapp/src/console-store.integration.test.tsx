@@ -454,7 +454,7 @@ describe("ConsoleStoreProvider integration", () => {
               <WebRuntimeProvider>
                 <div className="app-shell">
                   <Dashboard />
-                  <Chat onOpenDashboard={() => {}} />
+                  <Chat onBack={() => {}} />
                 </div>
               </WebRuntimeProvider>
             </NotificationsProvider>
@@ -8800,6 +8800,72 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedAgentId).toBe("alpha");
       expect(store.current.visibleThreads.map((item) => item.id)).not.toContain(runningGamma.id);
       expect(store.current.cachedRunningThreads[0]?.sourceId).toBe("beta");
+    });
+
+    it("opens another agent's archived running conversation from its card, and the selection holds", async () => {
+      // The riskiest path a card can take: the conversation belongs to another
+      // agent, sits in that agent's ARCHIVED bucket, and is nowhere in the
+      // listing on screen. The card points the console at all three in one
+      // handler -- agent, bucket, conversation -- and none of the reads that
+      // follow may quietly move the selection back.
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        archivedAt: "2026-08-14T08:30:00.000Z",
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      const betaLive = thread("beta-live", "beta", { title: "Beta live", updatedAt: "2026-08-14T08:00:00.000Z" });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockImplementation(async (_signal, scope) => bootstrap(
+        agents,
+        scope?.sourceId === "beta"
+          ? (scope.archived ? [runningGamma] : [betaLive])
+          : [alpha, runningGamma],
+        undefined,
+        { threadsSourceId: scope?.sourceId ?? "alpha" },
+      ));
+      vi.mocked(api.threads).mockImplementation(async (sourceId, archived) => ({
+        threads: sourceId === "beta" ? (archived ? [runningGamma] : [betaLive]) : [alpha],
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === runningGamma.id
+        ? { thread: runningGamma, messages: [kept("g1", "gamma", runningGamma.id)], etag: 'W/"gamma-1"' }
+        : { thread: alpha, messages: [kept("m1", "kept transcript")], etag: 'W/"alpha-1"' });
+
+      vi.stubGlobal("Notification", { permission: "default", requestPermission: vi.fn() });
+      let current: Store | undefined;
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={(store) => { current = store; }} />
+          <NotificationsProvider>
+            <WebRuntimeProvider>
+              <Dashboard />
+            </WebRuntimeProvider>
+          </NotificationsProvider>
+        </ConsoleStoreProvider>,
+      );
+      const store = { get current() { if (!current) throw new Error("Store did not initialize."); return current; } };
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.showArchived).toBe(false);
+
+      fireEvent.click(await screen.findByRole("button", { name: /^Open Gamma work/u }));
+
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(runningGamma.id));
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.showArchived).toBe(true);
+      expect(store.current.selectedThreadId).toBe(runningGamma.id);
+      expect(store.current.detail?.thread.id).toBe(runningGamma.id);
+      expect(store.current.navigationDestination).toBe("chats");
     });
 
     it("drops a conversation from the projection when its work finishes", async () => {
