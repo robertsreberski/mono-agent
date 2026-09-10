@@ -72,9 +72,15 @@ async function createThread(baseUrl: string, sourceId: string): Promise<string> 
   return ((await json(response)).thread as { id: string }).id;
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(
+  // Awaited, so a predicate that has to ASK the server -- a read of the running
+  // listing, of a conversation -- is not read as "true" because a promise is
+  // truthy.
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for server state.");
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
@@ -2842,6 +2848,144 @@ describe("web HTTP server", () => {
     }
     await reader.cancel();
   });
+
+  it("answers the cross-agent running listing on its own literal route", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+            controller.enqueue(encoder.encode(`${JSON.stringify({
+              kind: "event",
+              event: { type: "tool_call_started", id: "call-1", name: "Read" },
+            })}\n`));
+          },
+        }),
+      }),
+    });
+    const running = await createThread(baseUrl, "agent-one");
+    const idle = await createThread(baseUrl, "agent-one");
+    try {
+      await fetch(`${baseUrl}/api/v1/threads/${running}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "read it" }),
+      });
+      // "active" is a LITERAL route: registered under `/threads/:id` it would
+      // be read as a conversation id and answered with a 404.
+      await waitFor(async () => {
+        const probe = await json(await fetch(`${baseUrl}/api/v1/threads/active`));
+        const listed = probe.threads as Array<{ runState: { activity?: { toolCallCount: number } } }>;
+        return listed.length === 1 && listed[0]?.runState.activity?.toolCallCount === 1;
+      });
+      const response = await fetch(`${baseUrl}/api/v1/threads/active`);
+      expect(response.status).toBe(200);
+      const listing = await json(response);
+      expect((listing.threads as Array<{ id: string }>).map((thread) => thread.id)).toEqual([running]);
+      expect(listing).toMatchObject({
+        total: 1,
+        truncated: false,
+        runningCounts: { "agent-one": 1 },
+      });
+      // The bounded activity a card draws, from the frame this turn streamed.
+      expect((listing.threads as Array<{ runState: Record<string, unknown> }>)[0]?.runState.activity)
+        .toMatchObject({ toolCallCount: 1, phase: "working" });
+      // The unscoped listing and its `chats` behavior are untouched.
+      const bucket = await json(await fetch(
+        `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&scope=chats`,
+      ));
+      // Both, newest first: the running one was touched by its own turn.
+      expect((bucket.threads as Array<{ id: string }>).map((thread) => thread.id)).toEqual([running, idle]);
+      // And the conversation read under the same prefix still resolves by id.
+      expect((await fetch(`${baseUrl}/api/v1/threads/${idle}`)).status).toBe(200);
+
+      // One bootstrap carries the listing AND the per-agent count, from the
+      // same store snapshot.
+      const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap`));
+      expect(bootstrap.activeThreads).toMatchObject({ total: 1, runningCounts: { "agent-one": 1 } });
+      expect((bootstrap.agents as Array<{ sourceId: string; runningCount?: number }>)
+        .map((item) => [item.sourceId, item.runningCount]))
+        .toEqual([["agent-one", 1]]);
+    } finally {
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "read" })}\n`));
+      stream?.close();
+    }
+  });
+
+  it("announces a running turn's activity as one turn.changed and not per text delta", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const frame = (value: unknown) => encoder.encode(`${JSON.stringify(value)}\n`);
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+      }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    // Deliberately UNSUBSCRIBED: a running card belongs to whichever
+    // conversation the operator is not in, and `turn.changed` is global.
+    const events = await fetch(`${baseUrl}/api/v1/events`);
+    const reader = events.body!.getReader();
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+    try {
+      await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "go" }),
+      });
+      await waitFor(() => stream !== undefined);
+      // The start of a turn is announced too, and is not what this is about.
+      for (;;) {
+        const event = await next();
+        if (event.type === "turn.changed") {
+          expect(event).toMatchObject({
+            payload: { turn: { status: "running", activity: { toolCallCount: 0, phase: "working" } } },
+          });
+          break;
+        }
+      }
+      // Prose only, and PERSISTED before the tool call goes out: every one of
+      // these rewrites the message and moves nothing the status line shows.
+      for (const delta of ["Reading", " the", " file."]) {
+        stream?.enqueue(frame({ kind: "append", delta }));
+      }
+      await waitFor(async () => {
+        const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+        return JSON.stringify(detail.messages).includes("Reading the file.");
+      });
+      stream?.enqueue(frame({
+        kind: "event",
+        event: { type: "tool_call_started", id: "call-1", name: "mcp__host__ask_user" },
+      }));
+      const seen: Record<string, unknown>[] = [];
+      for (;;) {
+        const event = await next();
+        seen.push(event);
+        const turn = (event.payload as { turn?: { activity?: { phase?: string } } } | undefined)?.turn;
+        if (event.type === "turn.changed" && turn?.activity?.phase === "asking") break;
+      }
+      // Exactly ONE further turn.changed reached this console, and it was the
+      // tool call rather than any of the three text writes before it.
+      expect(seen.filter((event) => event.type === "turn.changed")).toHaveLength(1);
+      expect(seen.at(-1)).toMatchObject({
+        type: "turn.changed",
+        threadId,
+        payload: { turn: { status: "running", activity: { toolCallCount: 1, phase: "asking" } } },
+      });
+    } finally {
+      stream?.enqueue(frame({ kind: "finish", finalText: "done" }));
+      stream?.close();
+      await reader.cancel();
+    }
+  });
+
 });
 
 function sseEventReader(

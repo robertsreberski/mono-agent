@@ -24,6 +24,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import {
+  WEB_ACTIVE_THREAD_LIMIT,
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
@@ -47,6 +48,8 @@ import {
   type WebMessagePage,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
+  type WebActiveThreads,
+  type WebRunActivity,
   type WebRunState,
   type WebRunAttribution,
   type WebRunExecution,
@@ -66,6 +69,7 @@ import {
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
 import { WebConsoleError } from "./errors.js";
+import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
@@ -684,6 +688,14 @@ export interface StoredMessageWrite {
   readonly message: WebMessage;
   readonly delta?: WebMessageDelta;
   readonly attributionChanged?: true;
+  /**
+   * The run's bounded {@link WebRunActivity} projection MOVED with this write.
+   *
+   * Set only when the status line a card draws would now read differently, so
+   * the announcement the service makes from it is a semantic change rather than
+   * a per-delta heartbeat.
+   */
+  readonly activityChanged?: true;
 }
 
 /**
@@ -2722,6 +2734,66 @@ export class WebStore {
     };
   }
 
+  /**
+   * Every conversation in the store with work in flight, whichever agent owns
+   * it -- bounded, and counted before it is bounded.
+   *
+   * The console's Running section used to be built from whatever the browser
+   * happened to be holding, so a turn on an agent that tab had never opened was
+   * invisible and an empty section proved nothing. This is the server's answer
+   * to the same question, and it is the only listing here that crosses agents
+   * and archive buckets: "what is running" is not a question about either.
+   *
+   * Membership is ONE relation, so the cards and the badges can never disagree:
+   * a conversation with a running foreground turn, or with a retained process
+   * job that is queued, starting or running. `UNION` is what deduplicates a
+   * conversation that is both. The join to `agents` is the discovery filter --
+   * a conversation retained for a source id discovery no longer reports has
+   * nowhere to be drawn, so it is not counted either.
+   *
+   * The counts come off the whole relation and the cards off its first
+   * {@link WEB_ACTIVE_THREAD_LIMIT} rows. A count that obeyed the cap would
+   * report a busy fleet as a quiet one, which is the failure this replaces.
+   */
+  listActiveThreads(): WebActiveThreads {
+    const rows = this.database.prepare(`
+      WITH active AS (
+        SELECT thread_id FROM turns WHERE status = 'running'
+        UNION
+        SELECT c.thread_id
+          FROM messages m
+          JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
+          JOIN json_each(m.parts_json) part
+         WHERE json_extract(part.value, '$.type') = 'process-job'
+           AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+      )
+      SELECT t.id AS id, t.source_id AS source_id
+        FROM active a
+        JOIN threads t ON t.id = a.thread_id
+        JOIN agents ag ON ag.source_id = t.source_id AND ag.discovered = 1
+       ORDER BY t.updated_at DESC, t.id DESC
+    `).all() as unknown as Array<{ id: string; source_id: string }>;
+    // Seeded with a zero for every discovered agent: a key that is simply
+    // missing cannot be told apart from an agent the listing forgot, and the
+    // badge a console draws from it would go blank rather than read nought.
+    const runningCounts: Record<string, number> = Object.fromEntries(
+      (this.database.prepare("SELECT source_id FROM agents WHERE discovered = 1")
+        .all() as unknown as Array<{ source_id: string }>).map((row) => [row.source_id, 0]),
+    );
+    for (const row of rows) runningCounts[row.source_id] = (runningCounts[row.source_id] ?? 0) + 1;
+    const selectThread = this.database.prepare(threadSelectSql("WHERE t.id = ?"));
+    const threads = rows.slice(0, WEB_ACTIVE_THREAD_LIMIT).flatMap((row) => {
+      const thread = selectThread.get(row.id) as unknown as ThreadRow | undefined;
+      return thread === undefined ? [] : [this.mapThread(thread)];
+    });
+    return {
+      threads,
+      total: rows.length,
+      truncated: rows.length > WEB_ACTIVE_THREAD_LIMIT,
+      runningCounts,
+    };
+  }
+
   resolveThreadId(id: string): string {
     let resolved = id;
     const seen = new Set<string>();
@@ -3815,9 +3887,19 @@ export class WebStore {
           turnId,
         );
       }
+      // Diffed on the parts already in hand, before and after: a text delta
+      // moves neither the tool-call count nor the phase nor the cost, and it is
+      // what nearly every one of these writes is. Announcing the projection per
+      // flush would put a `turn.changed` on every connected console several
+      // times a second for a status line that changes a handful of times a run.
+      const activityChanged = !sameRunActivity(
+        runActivityFromParts(message.parts),
+        runActivityFromParts(parts),
+      );
       return {
         delta: this.writeMessageDelta(message, parts, this.now()),
         ...(attributionChanged ? { attributionChanged: true as const } : {}),
+        ...(activityChanged ? { activityChanged: true as const } : {}),
       };
     });
     return { message: this.requireMessage(turn.assistant_message_id), ...write };
@@ -5471,7 +5553,29 @@ export class WebStore {
       ...(row.model === null ? {} : { model: row.model }),
       ...(row.effort === null ? {} : { effort: row.effort }),
       ...(attribution === undefined ? {} : { attribution }),
+      // The newest turn IS the foreground turn, so a running one here is the
+      // only run whose activity the console can be watching. A terminal turn
+      // gets none at all: see `WebRunState.activity`.
+      ...(status === "running"
+        ? { activity: this.runActivity(row.assistant_message_id) }
+        : {}),
     };
+  }
+
+  /**
+   * The bounded status-line projection of one running assistant message.
+   *
+   * Reads the parts of that ONE row. The same message is the thread's newest,
+   * so `lastMessagePreview` is already reading it for every listed
+   * conversation; this adds no transcript to a listing that was not being read
+   * anyway. Deliberately not aggregated in SQL: the AskUser rule normalizes a
+   * tool name that arrives spelled three ways, and one shared reading of it in
+   * `run-activity.ts` is worth more than saving a parse.
+   */
+  private runActivity(assistantMessageId: string): WebRunActivity {
+    const row = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
+      .get(assistantMessageId) as unknown as { parts_json: string } | undefined;
+    return runActivityFromParts(row === undefined ? [] : parseParts(row.parts_json));
   }
 
   private lastMessagePreview(threadId: string): string | undefined {
