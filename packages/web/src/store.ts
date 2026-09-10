@@ -230,6 +230,7 @@ export interface StoredCronReplyOperation {
   readonly snapshotText?: string;
   readonly snapshotSha256?: string;
   readonly failureReason?: string;
+  readonly createdAt: string;
 }
 
 export type CronReplyReservationResult =
@@ -5850,6 +5851,7 @@ function mapCronReplyOperation(row: CronReplyOperationRow): StoredCronReplyOpera
     ...(row.snapshot_text === null ? {} : { snapshotText: row.snapshot_text }),
     ...(row.snapshot_sha256 === null ? {} : { snapshotSha256: row.snapshot_sha256 }),
     ...(row.failure_reason === null ? {} : { failureReason: row.failure_reason }),
+    createdAt: row.created_at,
   };
 }
 

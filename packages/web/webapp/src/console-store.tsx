@@ -360,6 +360,24 @@ const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): 
 const cronReplyKey = (sourceId: string, jobId: string, runId: string): string =>
   JSON.stringify([sourceId, jobId, runId]);
 
+/**
+ * A `409 cron_reply_pending` collision means a previous Reply for the same
+ * cron result is still being delivered under a server-owned operation id.
+ * The raw server string names the mechanism, not the action, so the footer
+ * gets actionable copy instead. The retry path already adopts the
+ * server-owned id (see `replyToCronRun`), so this changes wording only.
+ */
+const cronReplyPendingMessage = (error: unknown): string | undefined => {
+  if (!(error instanceof ApiError) || error.code !== "cron_reply_pending") return undefined;
+  const base = "Another Reply for this result is still being delivered. "
+    + "Use Retry Reply to continue it — no duplicate conversation will be created.";
+  const pendingSince = error.details?.pendingSince;
+  if (typeof pendingSince !== "string" || pendingSince.length === 0) return base;
+  const when = new Date(pendingSince);
+  if (Number.isNaN(when.getTime())) return base;
+  return `${base} (since ${when.toLocaleString()})`;
+};
+
 const initialCronReplyStates = (): Record<string, CronReplyUiState> => Object.fromEntries(
   readCronReplyRecoveryReferences().map((reference) => [
     cronReplyKey(reference.sourceId, reference.jobId, reference.runId),
@@ -4876,7 +4894,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           || replyError.code === "cron_reply_pending"
           || replyError.status >= 500));
         if (retryable) {
-          const message = errorMessage(replyError);
+          const message = cronReplyPendingMessage(replyError) ?? errorMessage(replyError);
           setCronReplyStates((current) => ({ ...current, [key]: { status: "retry", message } }));
         } else if (currentReference?.operationId === reference.operationId) {
           forgetCronReplyRecoveryReference(reference.operationId);

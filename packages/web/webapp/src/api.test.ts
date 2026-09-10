@@ -336,7 +336,10 @@ describe("cron Reply API", () => {
       error: {
         code: "cron_reply_pending",
         message: "A Reply is already pending.",
-        details: { operationId: "77777777-7777-4777-8777-777777777777" },
+        details: {
+          operationId: "77777777-7777-4777-8777-777777777777",
+          pendingSince: "2026-09-10T18:03:36.024Z",
+        },
       },
     }, { status: 409 })));
 
@@ -345,7 +348,10 @@ describe("cron Reply API", () => {
       snapshotKind: "summary",
     })).rejects.toMatchObject({
       code: "cron_reply_pending",
-      details: { operationId: "77777777-7777-4777-8777-777777777777" },
+      details: {
+        operationId: "77777777-7777-4777-8777-777777777777",
+        pendingSince: "2026-09-10T18:03:36.024Z",
+      },
     });
   });
 });

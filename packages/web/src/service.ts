@@ -1411,7 +1411,7 @@ export class WebService {
           "cron_reply_pending",
           "A Reply for this cron result is already pending. Retry it explicitly.",
           409,
-          { operationId: state.operation.operationId },
+          { operationId: state.operation.operationId, pendingSince: state.operation.createdAt },
         );
       }
     }
