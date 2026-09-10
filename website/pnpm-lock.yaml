@@ -8,6 +8,7 @@ overrides:
   js-yaml: 4.3.2
   nanoid: 3.3.18
   sharp: 0.35.4
+  smol-toml: 1.7.1
   svgo: 4.1.0
 
 importers:
@@ -1824,8 +1825,8 @@ packages:
     engines: {node: '>=20.19.5', npm: '>=10.8.2'}
     hasBin: true
 
-  smol-toml@1.6.1:
-    resolution: {integrity: sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg==, tarball: https://registry.npmjs.org/smol-toml/-/smol-toml-1.6.1.tgz}
+  smol-toml@1.7.1:
+    resolution: {integrity: sha512-PPlsspAZ4jbMBu5DMFhfUGDQLu/vrL4SyBROVS37x8ynnVmFIs1VPBz1Co8Xks3TvpIaZXmU85y4DrQ+UyVFoQ==, tarball: https://registry.npmjs.org/smol-toml/-/smol-toml-1.7.1.tgz}
     engines: {node: '>= 18'}
 
   source-map-js@1.2.1:
@@ -2150,7 +2151,7 @@ snapshots:
       picomatch: 4.0.5
       retext-smartypants: 6.2.0
       shiki: 4.3.1
-      smol-toml: 1.6.1
+      smol-toml: 1.7.1
       unified: 11.0.5
 
   '@astrojs/internal-helpers@0.11.0':
@@ -2161,7 +2162,7 @@ snapshots:
       picomatch: 4.0.5
       retext-smartypants: 6.2.0
       shiki: 4.3.1
-      smol-toml: 1.6.1
+      smol-toml: 1.7.1
       unified: 11.0.5
 
   '@astrojs/markdown-remark@7.2.1':
@@ -2905,7 +2906,7 @@ snapshots:
       picomatch: 4.0.5
       semver: 7.8.5
       shiki: 4.3.1
-      smol-toml: 1.6.1
+      smol-toml: 1.7.1
       svgo: 4.1.0
       tinyclip: 0.1.15
       tinyexec: 1.2.4
@@ -4391,7 +4392,7 @@ snapshots:
       arg: 5.0.2
       sax: 1.6.0
 
-  smol-toml@1.6.1: {}
+  smol-toml@1.7.1: {}
 
   source-map-js@1.2.1: {}
 
