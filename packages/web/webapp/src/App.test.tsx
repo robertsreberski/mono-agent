@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetComposerDraft, writeComposerDraft } from "./composer-draft";
+import { noteComposerAttachments, resetComposerDraft, writeComposerDraft } from "./composer-draft";
 import { readDataModeSetting, resetDataModeSession, writeDataModeSetting } from "./data-mode";
 import { recordDataUsage, resetDataUsage } from "./data-usage";
 import {
@@ -534,19 +534,22 @@ describe("App service worker update", () => {
     expect(screen.getByRole("status")).toHaveTextContent("new version");
   });
 
-  it("does not throw away a message the operator has not sent yet", () => {
-    // assistant-ui's composer is in-memory: a reload destroys whatever is typed
-    // in it and whatever is staged beside it, and nothing anywhere puts them
-    // back.
+  it("does not throw away composer content nothing puts back", () => {
+    // Typed text is retained on the device and comes back after the reload, so
+    // it must NOT hold a build back: a draft forgotten in one conversation would
+    // otherwise pin this console to an old shell for as long as it sat there.
+    // Staged attachments are the opposite — their bytes live in the assistant-ui
+    // runtime alone, and a reload is the end of them.
     writeComposerDraft("agent", "thread", "unsent");
+    noteComposerAttachments(true);
     const apply = stageUpdate();
     render(<App />);
 
     visibility("visible");
     expect(apply).not.toHaveBeenCalled();
 
-    // Sent, or cleared: now there is nothing to lose.
-    writeComposerDraft("agent", "thread", "");
+    // The attachment is gone; the text stays, and no longer defers anything.
+    noteComposerAttachments(false);
     visibility("hidden");
     visibility("visible");
     expect(apply).toHaveBeenCalledTimes(1);

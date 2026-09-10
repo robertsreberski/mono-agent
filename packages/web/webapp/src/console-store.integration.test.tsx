@@ -491,6 +491,82 @@ describe("ConsoleStoreProvider integration", () => {
     }
   });
 
+  it("keeps unsent composer text when the operator switches conversations in the real shell", async () => {
+    const alphaAgent = agent("alpha", { label: "Alpha" });
+    const first = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
+    const second = thread("alpha-second", "alpha", { title: "Alpha second", messageCount: 1 });
+    const detail = (summary: ThreadSummary): ThreadDetail => ({
+      thread: summary,
+      messages: [{
+        id: `${summary.id}-assistant-1`,
+        threadId: summary.id,
+        role: "assistant",
+        parts: [{ type: "text", text: `${summary.title} answer` }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete",
+      }],
+    });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: first.id }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [alphaAgent],
+      [first, second],
+      first.id,
+      { threadsSourceId: "alpha" },
+    ));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [first, second] });
+    vi.mocked(api.thread).mockImplementation(async (threadId) => {
+      if (threadId === first.id) return detail(first);
+      if (threadId === second.id) return detail(second);
+      throw new Error(`Unexpected detail read: ${threadId}`);
+    });
+    vi.stubGlobal("Notification", {
+      permission: "default",
+      requestPermission: vi.fn().mockResolvedValue("default"),
+    });
+    const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
+
+    try {
+      render(
+        <ConsoleStoreProvider>
+          <NotificationsProvider>
+            <WebRuntimeProvider>
+              <div className="app-shell">
+                <ThreadSidebar />
+                <Chat onOpenAgents={() => {}} onOpenThreads={() => {}} />
+              </div>
+            </WebRuntimeProvider>
+          </NotificationsProvider>
+        </ConsoleStoreProvider>,
+      );
+
+      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      const input = () => screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
+      fireEvent.change(input(), { target: { value: "unfinished thought" } });
+      await waitFor(() => expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Alpha second" }));
+      expect(await screen.findByText("Alpha second answer")).toBeInTheDocument();
+      await waitFor(() => expect(input().value).toBe(""));
+      // The other conversation's composer must not have inherited the text, and
+      // the draft must survive being switched away from.
+      expect(readComposerDraft("alpha", second.id)).toBe("");
+      expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Alpha first" }));
+      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      await waitFor(() => expect(input().value).toBe("unfinished thought"));
+      expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
+    } finally {
+      cleanupDom();
+      if (scrollToDescriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+      else Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
+    }
+  });
+
   it("publishes an owned pending create immediately and reconciles the server identity", async () => {
     localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
     const prior = thread("prior", "alpha");

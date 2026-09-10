@@ -22,7 +22,7 @@ import {
   useDataModeSetting,
   writeDataModeSetting,
 } from "./data-mode";
-import { hasUnsentComposerDraft } from "./composer-draft";
+import { hasUnrecoverableComposerContent } from "./composer-draft";
 import { formatDataBytes, useDataUsage } from "./data-usage";
 import {
   hasHorizontalScrollAncestor,
@@ -530,12 +530,14 @@ export function App() {
       // A reload takes the page apart. Two things it would destroy, and neither
       // is recoverable: a turn this tab is WATCHING -- any held conversation,
       // not just the listed ones, because the listing is one agent's one
-      // bucket -- and whatever the operator has typed or staged in the composer,
-      // which lives only in assistant-ui's in-memory runtime.
+      // bucket -- and whatever the operator has STAGED in the composer, whose
+      // attachment bytes live only in assistant-ui's in-memory runtime.
+      // Composer TEXT is retained on the device and comes back after the
+      // reload, so it defers a build only where the browser refused to keep it.
       //
       // Either one defers it. The notice stays on screen throughout, so an
       // operator who would rather have the new build now still can.
-      if (busyRef.current || hasUnsentComposerDraft()) return;
+      if (busyRef.current || hasUnrecoverableComposerContent()) return;
       applyServiceWorkerUpdate();
     };
     document.addEventListener("visibilitychange", onVisibility);

@@ -287,11 +287,13 @@ configuration.
 **Staged updates.** The service worker precaches the console shell and is
 registered in `prompt` mode, so a new build is downloaded and held rather than
 applied on arrival. It takes over when the tab becomes visible with nothing
-running in any conversation this tab holds and no unsent draft in the composer,
-or immediately when you choose **Reload now** on the notice. That notice stays on
-screen until the build is applied or dismissed. Applying it reloads the page,
-which is why neither a streaming turn nor an unsent draft can be interrupted by
-one.
+running in any conversation this tab holds and nothing unsent that a reload would
+destroy — staged attachments, or composer text on a browser that refuses local
+storage — or immediately when you choose **Reload now** on the notice. That notice
+stays on screen until the build is applied or dismissed. Applying it reloads the
+page, which is why a streaming turn is never interrupted by one. Ordinary composer
+text is retained on the device (see [Unsent composer text](#unsent-composer-text))
+and comes back after the reload, so it no longer holds a new build back.
 
 ## Agents, threads, and turns
 
@@ -428,6 +430,27 @@ Typing `$` at a token boundary opens a keyboard-navigable list of skills availab
 Choosing a result by keyboard, mouse, or touch inserts its exact `$skill-name` reference at the saved caret and returns focus to the draft. It does not submit the message or execute the skill. A sent reference is ordinary turn text plus model-facing intent; the agent prompt defines exact `$skill-name` tokens as explicit requests to use matching instructions. See [Selected skills](/context/skills/#canonical-skill-references) for the syntax and availability rules.
 
 The registry is scoped to the active agent and comes from that running agent's `skillsRoot`, disclosure mode, selected skills, and `ReadSkill` policy. The agent refreshes its in-memory snapshot every five seconds when installed skill files change; the web service never persists a second skill list. Agent switches, registry invalidations, and event-stream reconnects refetch the active snapshot. Loading, empty, unsupported, offline, refresh-error, and stale states leave ordinary composition usable; stale entries are visible but cannot be inserted until a live refresh succeeds.
+
+### Unsent composer text
+
+Text you have typed but not sent belongs to the conversation you typed it in.
+Switching conversations or agents puts each one's own unfinished message back in
+the composer, and so does closing the console, reloading it, or having the system
+evict the installed app from memory: the console writes the text to that browser
+origin's local storage as you type — debounced, and again the moment the page is
+hidden, which on a phone is the only warning it gets. Sending the message, or
+deleting its conversation, removes it.
+
+This is device-local and deliberately plain: the text sits in that browser
+profile's storage in the clear until it is sent, cleared or expires, it is never
+uploaded, and a draft typed on the phone does not appear on the laptop. A draft
+nobody returns to expires after 30 days, the newest 40 conversations are kept, a
+single draft is retained up to 32,768 characters, and a browser that refuses
+storage (Safari private browsing, a locked-down profile) still keeps the text for
+as long as the tab lives. Clearing that origin's site data removes drafts;
+**Clear cached data** deliberately does not, because unsent writing is not a
+cached copy of anything. Attachments are not part of this: their bytes belong to
+the open tab and are staged again after a reload.
 
 ### Send while a turn is running
 
@@ -780,7 +803,7 @@ compatible pre-upgrade backup and therefore loses subsequent writes.
 
 ## Local state and reset
 
-The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, durable copies of generated images, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer and independent from the agents' provider-side sessions. The browser also keeps a copy of its own in IndexedDB on that origin: the last eight conversations' transcripts, one listing row per agent view it has opened, and a snapshot of the agent list with the console's host identity, upload limits and push application key. That is what lets a cold start draw before the first request answers. **Clear cached data** in the command palette (⌘K) removes all of it, and so does clearing that origin's site data — the listing rows in particular are removed by nothing else, because ordinary use only ever adds to them. The service's own store is unaffected either way. That store is versioned (`mono-agent-web`, version 2) and every row records which tab wrote it, so a tab sweeps only its own rows and two open tabs cannot delete the conversation the other one is live in. It is bounded once per page load, as it is read: rows more than thirty days older than the newest row are dropped, conversations beyond the newest 24 are dropped oldest first, and listing rows belonging to agents no longer in the discovered fleet go with them. Nothing restored from the device is treated as current — a restored transcript draws immediately and stays marked stale until an ordinary conditional read confirms it — and a database written under a different console host identity is cleared rather than read. No capability URL is ever written to it, which is why a restored picture asks for access again before it can be shown. One thing **Clear cached data** cannot reach: reply-attachment bytes are served with a short private `max-age`, so the browser's own HTTP cache may still hold a copy on disk after the capability that fetched it has expired. That is the browser's private cache rather than console state, and clearing that origin's site data removes it. The selected data mode, notification opt-in, opaque subscription id, and one-way endpoint digest are intentionally browser-origin-local preferences and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
+The service keeps its owner-private SQLite store, settings, notification idempotency ledger, VAPID private key, push subscriptions/outbox, upload stages, durable copies of generated images, logs, and live notification-ingress record under `~/.mono-agent/web/`. Stored messages, quote metadata, attachment metadata, revisions, run state, and pinned agents are local to this computer and independent from the agents' provider-side sessions. The browser also keeps a copy of its own in IndexedDB on that origin: the last eight conversations' transcripts, one listing row per agent view it has opened, and a snapshot of the agent list with the console's host identity, upload limits and push application key. That is what lets a cold start draw before the first request answers. **Clear cached data** in the command palette (⌘K) removes all of it, and so does clearing that origin's site data — the listing rows in particular are removed by nothing else, because ordinary use only ever adds to them. The service's own store is unaffected either way. That store is versioned (`mono-agent-web`, version 2) and every row records which tab wrote it, so a tab sweeps only its own rows and two open tabs cannot delete the conversation the other one is live in. It is bounded once per page load, as it is read: rows more than thirty days older than the newest row are dropped, conversations beyond the newest 24 are dropped oldest first, and listing rows belonging to agents no longer in the discovered fleet go with them. Nothing restored from the device is treated as current — a restored transcript draws immediately and stays marked stale until an ordinary conditional read confirms it — and a database written under a different console host identity is cleared rather than read. No capability URL is ever written to it, which is why a restored picture asks for access again before it can be shown. One thing **Clear cached data** cannot reach: reply-attachment bytes are served with a short private `max-age`, so the browser's own HTTP cache may still hold a copy on disk after the capability that fetched it has expired. That is the browser's private cache rather than console state, and clearing that origin's site data removes it. The selected data mode, notification opt-in, opaque subscription id, one-way endpoint digest, and unsent composer text (`mono-agent.web.composer-drafts`, see [Unsent composer text](#unsent-composer-text)) are intentionally browser-origin-local and are removed when that origin's site data is cleared. Raw push endpoints and key material are never stored in browser preferences.
 
 Durable copies of generated images are retained for as long as their conversation
 is, with no size ceiling and no expiry — that is what makes an image you generated
