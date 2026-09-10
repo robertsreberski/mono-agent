@@ -243,4 +243,3 @@ describe("Dashboard Automations collection", () => {
     expect(screen.getByText(copy)).toBeVisible();
   });
 });
-

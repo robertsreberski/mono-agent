@@ -427,7 +427,8 @@ describe("conversation switching through the real Chromium store and runtime", (
     await waitFor(() => expect(api.cronOverview).toHaveBeenCalledTimes(1));
 
     const scope = await dashboard(mobile);
-    expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible();
+    // The drawer slides in; its contents are visible once it has arrived.
+    await waitFor(() => expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible());
     const collection = within(scope).getByRole("button", { name: "Open Automations collection" });
     expect(within(collection).getByLabelText("1 automation job")).toHaveTextContent("1");
     await userEvent.click(collection);

@@ -166,8 +166,8 @@ describe("the dashboard as the desktop column", () => {
     openConsole();
     await settled();
 
-    const cron = screen.getByRole("button", { name: "Open Nightly report" });
-    expect(cron.querySelector(".thread-kind.is-cron")).not.toBeNull();
+    // A cron channel is an automation's history and is not a Recent row.
+    expect(screen.queryByRole("button", { name: "Open Nightly report" })).toBeNull();
     const failed = screen.getByRole("button", { name: "Open Broken deploy" });
     expect(failed.querySelector(".thread-kind.is-alert")).not.toBeNull();
     expect(failed).toHaveTextContent("Failed");
