@@ -61,16 +61,24 @@ export function ProcessJobStack() {
     : `${String(jobs.length)} ${jobs.length === 1 ? "job" : "jobs"}`;
   const countLabel = `${totalLabel} · ${String(activeCount)} active · ${String(historyCount)} history`;
   const hasHistoryDisclosure = historyIsBounded || historyCount > 0;
+  // Every terminal wrapper is hidden behind a closed history, so with nothing
+  // active the body renders nothing at all and its padding would be the only
+  // thing left under the header.
+  const bodyIsEmpty = activeCount === 0 && !historyOpen;
 
   if (threadId === null || jobs.length === 0) return null;
 
   return (
     <section className="process-job-stack" aria-labelledby={`${stackId}-label`}>
       <div className="process-job-stack-header">
-        <span id={`${stackId}-label`} className="process-job-stack-title">Background jobs</span>
-        <span className="process-job-stack-counts" aria-live="polite" aria-atomic="true">
-          {countLabel}
-        </span>
+        {/* Title and counts are one label: kept in their own box so a taller
+            control beside them cannot stretch the line spacing between them. */}
+        <div className="process-job-stack-heading">
+          <span id={`${stackId}-label`} className="process-job-stack-title">Background jobs</span>
+          <span className="process-job-stack-counts" aria-live="polite" aria-atomic="true">
+            {countLabel}
+          </span>
+        </div>
         {hasHistoryDisclosure && (
           <button
             type="button"
@@ -84,7 +92,7 @@ export function ProcessJobStack() {
           </button>
         )}
       </div>
-      <div className="process-job-stack-body">
+      <div className={`process-job-stack-body${bodyIsEmpty ? " is-empty" : ""}`}>
         {historyIsBounded && (
           <p className="process-job-stack-history" hidden={!historyOpen}>
             Showing jobs in loaded messages. Load earlier messages to reveal older jobs.

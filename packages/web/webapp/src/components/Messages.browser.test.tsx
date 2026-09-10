@@ -205,6 +205,34 @@ function ActivityHarness({ width }: { readonly width: number }) {
   );
 }
 
+function ErrorHarness({ width, errorMessage }: { readonly width: number; readonly errorMessage: string }) {
+  const response: WebMessage = {
+    id: "failed-response",
+    threadId: "thread",
+    role: "assistant",
+    createdAt: "2026-09-10T10:00:00.000Z",
+    updatedAt: "2026-09-10T10:00:01.000Z",
+    finishedAt: "2026-09-10T10:00:01.000Z",
+    status: "complete",
+    attachments: [],
+    parts: [{ type: "error", code: "AGENT_ERROR", message: errorMessage }],
+  };
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages: [response],
+    convertMessage: (value) => convertWebMessage(value),
+    onNew: async () => undefined,
+  });
+  return (
+    <div style={{ width, minHeight: 200 }}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ThreadPrimitive.Root>
+          <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
+        </ThreadPrimitive.Root>
+      </AssistantRuntimeProvider>
+    </div>
+  );
+}
+
 function CronHarness({ width }: { readonly width: number }) {
   const runtime = useExternalStoreRuntime<WebMessage>({
     messages: [cronMessage],
@@ -272,6 +300,19 @@ describe("process-job response Activity in Chromium", () => {
     }
     expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
     expect(screen.getAllByRole("button", { name: "Copy response" })).toHaveLength(1);
+  });
+});
+
+describe("agent error presentation in Chromium", () => {
+  it("wraps one unbroken path inside a narrow response", () => {
+    const path = `/Users/example/${"single-unbroken-path-segment".repeat(20)}/result.json`;
+    const { container } = render(<ErrorHarness width={360} errorMessage={path} />);
+    const error = screen.getByRole("alert");
+    const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
+
+    expect(error).toHaveTextContent(path);
+    expect(error.scrollWidth).toBeLessThanOrEqual(error.clientWidth);
+    expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
   });
 });
 

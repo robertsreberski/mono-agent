@@ -283,7 +283,7 @@ it("keeps a failed selection explicit after its transient notice is gone", () =>
 });
 
 describe("Chat conversation viewport", () => {
-  it("places one loaded job stack after transcript messages and before the footer", () => {
+  it("places one loaded job stack in the footer above the composer", () => {
     const selected = thread("thread-a", "agent");
     const ordinary = chatMessage("ordinary", selected.id);
     const jobOnly: WebMessage = {
@@ -302,17 +302,17 @@ describe("Chat conversation viewport", () => {
     storeMock.current = {
       ...chatStore(selected, { thread: selected, messages: [ordinary, jobOnly] }),
       hasOlderMessages: true,
+      selectionError: null,
     };
 
     const view = render(chatTree());
 
     expect(screen.getAllByTestId("thread-message")).toHaveLength(1);
-    const column = view.container.querySelector(".message-column")!;
-    const stack = view.container.querySelector(".process-job-stack")!;
-    const footer = view.container.querySelector(".thread-footer")!;
-    expect(stack.parentElement).toBe(column);
-    expect(column.lastElementChild).toBe(stack);
-    expect(stack.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const column = view.container.querySelector<HTMLElement>(".message-column")!;
+    const stack = view.container.querySelector<HTMLElement>(".process-job-stack")!;
+    const footer = view.container.querySelector<HTMLElement>(".thread-footer")!;
+    expect(column).not.toContainElement(stack);
+    expect(stack.parentElement).toBe(footer);
     expect(stack.querySelector(".message-actions")).toBeNull();
     expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
     expect(screen.getByRole("button", { name: "Background job history" }))

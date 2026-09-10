@@ -475,7 +475,9 @@ export function ProcessJobCard({
     : undefined;
   const status = processJobStatus(live.state);
   const stateLabel = processJobStateLabel(live.state);
-  const outputRefs = [live.output.stdoutRef, live.output.stderrRef].filter((ref): ref is string => ref !== null);
+  // The card shows the job's output, not where the host spooled it: the artifact
+  // paths are host-local files an operator in the console cannot open, and they
+  // pushed the one section worth reading off a phone screen.
   return (
     <ActivityRow
       variant="job"
@@ -509,12 +511,6 @@ export function ProcessJobCard({
                 followOutput.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
               }}
             >{live.output.preview}</pre>
-          </>
-        )}
-        {outputRefs.length > 0 && (
-          <>
-            <span>Artifacts</span>
-            <pre>{outputRefs.join("\n")}</pre>
           </>
         )}
         {live.lastError !== null && (

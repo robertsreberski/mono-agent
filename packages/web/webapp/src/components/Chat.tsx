@@ -542,12 +542,17 @@ export function Chat({
                     SystemMessage,
                   }}
                 />
-                <ProcessJobStack />
               </div>
-              <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
-                <Icon name="arrow-down" size={16} />
-              </ThreadPrimitive.ScrollToBottom>
+              {/* The dock: what the operator acts on lives with the input, not
+                  at the end of the transcript. Background jobs are the surface
+                  a running turn keeps updating, so they ride above the composer
+                  and the scroll control anchors to whatever the dock's top edge
+                  currently is. */}
               <ThreadPrimitive.ViewportFooter className="thread-footer">
+                <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
+                  <Icon name="arrow-down" size={16} />
+                </ThreadPrimitive.ScrollToBottom>
+                <ProcessJobStack />
                 {selectionError !== null ? (
                   <div className="cron-readonly-footer" role="status">
                     Retry this conversation or choose another one before sending.
