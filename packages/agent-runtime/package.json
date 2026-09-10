@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-runtime",
-  "version": "0.20.14",
+  "version": "0.21.0",
   "description": "Agent runtime backed by the Pi SDK provider catalog",
   "type": "module",
   "license": "GPL-3.0-only",
