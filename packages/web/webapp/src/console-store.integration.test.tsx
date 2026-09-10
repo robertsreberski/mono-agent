@@ -535,8 +535,8 @@ describe("ConsoleStoreProvider integration", () => {
           <NotificationsProvider>
             <WebRuntimeProvider>
               <div className="app-shell">
-                <ThreadSidebar />
-                <Chat onOpenAgents={() => {}} onOpenThreads={() => {}} />
+                <Dashboard />
+                <Chat onBack={() => {}} />
               </div>
             </WebRuntimeProvider>
           </NotificationsProvider>
