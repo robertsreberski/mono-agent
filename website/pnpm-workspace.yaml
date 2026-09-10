@@ -18,6 +18,7 @@ overrides:
   js-yaml: 4.3.2
   nanoid: 3.3.18
   sharp: 0.35.4
+  smol-toml: 1.7.1
   svgo: 4.1.0
 
 # Pre-approve native/postinstall build scripts so install is non-interactive.
