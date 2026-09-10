@@ -301,38 +301,40 @@ describe("Dashboard conversation rows", () => {
   });
 });
 
-describe("Dashboard collections", () => {
-  it("offers Automations with its job count and opens it in place", () => {
+describe("Dashboard list chips", () => {
+  it("offers Automations with its job count beside Chats, and switches in place", () => {
     storeMock.current = {
       ...createStore(),
       cronOverview: { generatedAt: "2026-09-08T08:00:00.000Z", actionsEnabled: false, jobs: [
         { jobId: "daily", expression: "0 8 * * *", timezone: "UTC", conversationId: "cron:daily",
-          configured: true, declaredEnabled: true, effectiveEnabled: true, health: "healthy" },
+          configured: true, declaredEnabled: true, effectiveEnabled: true, health: "healthy", threadId: "cron-daily" },
       ] },
     };
     render(<Dashboard />);
 
-    const row = screen.getByRole("button", { name: "Open Automations collection" });
-    expect(within(row).getByLabelText("1 automation job")).toHaveTextContent("1");
-    fireEvent.click(row);
+    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-pressed", "true");
+    const chip = screen.getByRole("button", { name: "Automations, 1 job" });
+    expect(chip).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(chip);
     expect(store().setNavigationDestination).toHaveBeenCalledWith("automations");
   });
 
-  it("keeps the collection off the archive shelf", () => {
+  it("keeps the chips on the archive shelf", () => {
     storeMock.current = { ...createStore(), showArchived: true };
     render(<Dashboard />);
-    expect(screen.queryByRole("button", { name: "Open Automations collection" })).toBeNull();
     expect(screen.getByRole("heading", { name: "Archived" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("shows the collection in place of Running and Recent, with its own search and a way back", () => {
+  it("shows the automations in the list's place, with its own search and Running still above", () => {
     storeMock.current = { ...createStore(), navigationDestination: "automations" as const };
     render(<Dashboard />);
     expect(screen.getByRole("heading", { name: "Automations" })).toBeVisible();
     expect(screen.queryByRole("heading", { name: "Recent" })).toBeNull();
     expect(screen.getByRole("searchbox", { name: "Search automations" })).toBeVisible();
     expect(screen.queryByRole("button", { name: /Archived/u })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "All conversations" }));
+    expect(screen.getByRole("button", { name: "Automations" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Chats" }));
     expect(store().setNavigationDestination).toHaveBeenCalledWith("chats");
   });
 });

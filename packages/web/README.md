@@ -382,10 +382,10 @@ come only from the running agent. Delivery is idempotent, best-effort, attempted
 once with a five-second bound, and has no outbox when the web service is
 unavailable. Other `web:*` destinations are not accepted.
 
-The unified agent sidebar lists ordinary conversations under **Recent** and
-exposes **Automations** as a folder-style system collection. Opening the
-collection drills into the same sidebar area with a clear return to all
-conversations. Its contents come from the agent-scoped cron overview rather
+The dashboard lists ordinary conversations under **Recent** and offers
+**Automations** as the list's second chip beside **Chats**; the chip swaps the
+rows in place, with no separate view to return from. Its contents come from the
+agent-scoped cron overview rather
 than the currently loaded conversation page, so configured jobs appear before
 their first run and every overview job links to its stable read-only history channel.
 Each row shows the job id, cadence and timezone, enabled state, last/active run,
@@ -394,11 +394,11 @@ unsupported, unavailable, offline/saved-snapshot, empty, and truncated-overview
 states remain distinct. Saved history stays openable read-only, while stale
 schedule state is labelled and never made actionable. The shared sidebar search
 queries conversations in the default view and filters the complete bounded
-overview inside Automations. The Recent list uses a server-side scope for paging
+overview under the Automations chip. The Recent list uses a server-side scope for paging
 and search, so cron channels are excluded
 before limits and cursors are applied while ordinary and webhook conversations
 remain visible. Unscoped HTTP callers keep the backward-compatible mixed list.
-Automations is a special system collection; this package does not define project
+Automations is a system view of the list; this package does not define project
 persistence, membership, folders, or runtime context.
 
 Cron channels are non-sendable and non-uploadable. Configured channels may be

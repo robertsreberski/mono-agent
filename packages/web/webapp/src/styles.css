@@ -310,6 +310,13 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .dashboard-section-label { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; color: var(--text-muted); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; line-height: 1; text-transform: uppercase; }
 .dashboard-section-label.is-running { color: var(--accent); }
 .dashboard-section-count { color: var(--text-muted); font-size: 10px; font-weight: 500; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+/* The list's chips: the model picker's option pills, at the head's height. */
+.dashboard-chips { display: flex; align-items: center; gap: 5px; }
+.dashboard-chip { height: 26px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 650; line-height: 1; white-space: nowrap; }
+.dashboard-chip:hover { border-color: var(--line-strong); }
+/* Pressed reads like the model trigger while open: the neutral fill of the design, not an accent. */
+.dashboard-chip.is-active { color: var(--text); background: var(--surface-hover); border-color: var(--line-strong); }
+.dashboard-chip-count { font-weight: 500; opacity: 0.8; font-variant-numeric: tabular-nums; }
 
 /* Running cards: a model-picker row inside a job card's border, tinted. */
 .running-card { min-height: 52px; display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 9px; color: var(--text); background: color-mix(in srgb, var(--accent) 7%, var(--surface-raised)); border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--line)); border-radius: 12px; cursor: pointer; text-align: left; transition: border-color 150ms ease; }
@@ -323,18 +330,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .running-more { height: 27px; margin: 4px 0 0 -7px; padding: 0 7px; color: var(--text-muted); background: transparent; border-radius: 7px; cursor: pointer; font-size: 10px; text-align: left; }
 .running-more:hover { color: var(--text); background: var(--surface-subtle); }
 
-/* Collections and conversation rows: the composer's trigger rows and the
-   model picker's items. Rows bleed 8px into the gutter for their hover
-   surface so their text sits on the same line as the labels above them. */
-.dashboard-collections { gap: 2px; }
-.collection-row { width: calc(100% + 16px); min-height: 49px; display: flex; align-items: center; gap: 10px; margin: 0 -8px; padding: 6px 8px; color: var(--text); background: transparent; border: 0; border-radius: 9px; cursor: pointer; text-align: left; }
-.collection-row:hover { background: var(--surface-hover); }
-.collection-icon { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--warning); background: var(--surface-subtle); border-radius: 8px; }
-.collection-label { min-width: 0; flex: 1; overflow: hidden; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.collection-count { flex: none; color: var(--text-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
-.collection-row > svg { flex: none; color: var(--text-muted); }
-.collection-back { height: 27px; display: flex; align-items: center; gap: 4px; margin: -4px 0 4px -7px; padding: 0 7px 0 4px; color: var(--text-muted); background: transparent; border-radius: 7px; cursor: pointer; font-size: 10px; font-weight: 600; }
-.collection-back:hover { color: var(--text); background: var(--surface-subtle); }
+/* Conversation rows: the model picker's items. Rows bleed 8px into the gutter
+   for their hover surface so their text sits on the same line as the labels
+   above them. */
 .thread-list { display: flex; flex-direction: column; }
 .thread-item { position: relative; display: flex; align-items: stretch; margin: 0 -8px; border-radius: 9px; transition: background 130ms ease; }
 .thread-item + .thread-item::before { content: ""; position: absolute; top: 0; left: 8px; right: 8px; height: 1px; background: var(--line); }

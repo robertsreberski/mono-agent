@@ -3,8 +3,6 @@ import { useConsoleStore } from "../../console-store";
 import { MIN_SEARCH_QUERY, useThreadSearch } from "../../thread-search";
 import type { ThreadSummary } from "../../types";
 import { AgentStrip } from "./AgentStrip";
-import { AutomationsSection } from "./AutomationsSection";
-import { CollectionsSection } from "./CollectionsSection";
 import { DashboardFooter } from "./DashboardFooter";
 import { DashboardHeader } from "./DashboardHeader";
 import { DashboardSearch } from "./DashboardSearch";
@@ -40,8 +38,8 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
 
   // Searching goes to the server, which reads every conversation of this agent
   // rather than only the page the list has loaded.
-  // Inside Automations the same field narrows the cron overview locally, and
-  // no request is made for it.
+  // With the Automations chip down the same field narrows the cron overview
+  // locally, and no request is made for it.
   const searching = chats && query.trim().length >= MIN_SEARCH_QUERY;
   const search = useThreadSearch(selectedAgentId, chats ? query : "");
 
@@ -49,7 +47,7 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
   // across a switch would flash another agent's conversations under the new
   // agent's name for as long as the next request takes.
   useEffect(() => { setQuery(""); }, [selectedAgentId]);
-  // The field means something else on the other side of the collection.
+  // The field means something else under the other chip.
   useEffect(() => { setQuery(""); }, [navigationDestination]);
 
   const groups = useMemo(
@@ -94,26 +92,19 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
         label={chats ? "Search conversations" : "Search automations"}
       />
       <div className="dashboard-scroll">
-        {chats ? (
-          <>
-            <RunningSection
-              groups={groups}
-              expandedAgentIds={expandedAgentIds}
-              onToggleAgent={toggleAgentExpansion}
-              onOpen={openRunning}
-            />
-            {/* Projects will sit beside Automations here. */}
-            <CollectionsSection />
-            <RecentSection
-              searching={searching}
-              query={query}
-              search={search}
-              onNavigate={onNavigate}
-            />
-          </>
-        ) : (
-          <AutomationsSection query={query} onNavigate={onNavigate} />
-        )}
+        <RunningSection
+          groups={groups}
+          expandedAgentIds={expandedAgentIds}
+          onToggleAgent={toggleAgentExpansion}
+          onOpen={openRunning}
+        />
+        {/* Projects will take the labelled section between Running and Recent. */}
+        <RecentSection
+          searching={searching}
+          query={query}
+          search={search}
+          onNavigate={onNavigate}
+        />
       </div>
       <DashboardFooter archiveShelf={chats} />
     </div>

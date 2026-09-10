@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { Fragment, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, thread } from "../../test/fixtures";
@@ -94,7 +94,7 @@ afterEach(() => {
 
 // Ported from the retired ThreadSidebar suite (PR #847): the Automations
 // collection behaves the same inside the Dashboard.
-describe("Dashboard Automations collection", () => {
+describe("Dashboard Automations chip", () => {
   const overview: CronOverview = {
     generatedAt: "2026-09-10T08:00:00.000Z",
     actionsEnabled: false,
@@ -121,23 +121,22 @@ describe("Dashboard Automations collection", () => {
     storeMock.current!.cronOverview = overview;
   });
 
-  it("drills into and back out of the collection while resetting search semantics", () => {
+  it("switches between the chips while resetting search semantics", () => {
     storeMock.current!.navigationDestination = "chats";
     const { rerender } = render(<Dashboard />);
 
     const chatSearch = screen.getByRole("searchbox", { name: "Search conversations" });
     fireEvent.change(chatSearch, { target: { value: "release" } });
-    const collection = screen.getByRole("button", { name: "Open Automations collection" });
-    expect(collection).toHaveTextContent("Automations");
-    expect(within(collection).getByLabelText("1 automation job")).toHaveTextContent("1");
-    fireEvent.click(collection);
+    const chip = screen.getByRole("button", { name: "Automations, 1 job" });
+    expect(chip).toHaveTextContent("Automations1");
+    fireEvent.click(chip);
     expect(storeMock.current!.setNavigationDestination).toHaveBeenCalledWith("automations");
 
     storeMock.current!.navigationDestination = "automations";
     rerender(<Dashboard />);
     expect(screen.getByRole("searchbox", { name: "Search automations" })).toHaveValue("");
     expect(screen.getByRole("heading", { name: "Automations" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "All conversations" }));
+    fireEvent.click(screen.getByRole("button", { name: "Chats" }));
     expect(storeMock.current!.setNavigationDestination).toHaveBeenCalledWith("chats");
   });
 

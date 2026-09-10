@@ -384,7 +384,7 @@ describe("conversation switching through the real Chromium store and runtime", (
   it.each([
     { width: 1_280, height: 800, label: "desktop" },
     { width: 390, height: 844, label: "mobile" },
-  ])("drills into the Automations smart collection without refetching at $label size", async ({ width, height, label }) => {
+  ])("switches the list to Automations without refetching at $label size", async ({ width, height, label }) => {
     await page.viewport(width, height);
     const mobile = label === "mobile";
     const cronAgent = agent("alpha", {
@@ -429,16 +429,14 @@ describe("conversation switching through the real Chromium store and runtime", (
     const scope = await dashboard(mobile);
     // The drawer slides in; its contents are visible once it has arrived.
     await waitFor(() => expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible());
-    const collection = within(scope).getByRole("button", { name: "Open Automations collection" });
-    expect(within(collection).getByLabelText("1 automation job")).toHaveTextContent("1");
-    await userEvent.click(collection);
+    await userEvent.click(within(scope).getByRole("button", { name: "Automations, 1 job" }));
 
     expect(within(scope).getByRole("heading", { name: "Automations" })).toBeVisible();
     const search = within(scope).getByRole("searchbox", { name: "Search automations" });
     await userEvent.type(search, "daily");
     expect(within(scope).getByRole("button", { name: "Open run history for daily:report" })).toBeVisible();
     expect(api.cronOverview).toHaveBeenCalledTimes(1);
-    await userEvent.click(within(scope).getByRole("button", { name: "All conversations" }));
+    await userEvent.click(within(scope).getByRole("button", { name: "Chats" }));
     expect(within(scope).getByRole("searchbox", { name: "Search conversations" })).toHaveValue("");
     expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible();
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
