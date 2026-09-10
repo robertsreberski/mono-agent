@@ -1,4 +1,4 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@vitest/browser/context";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -92,6 +92,9 @@ const chatStore = (
     selectedThreadId: selectedThread.id,
     loading: false,
     detailLoading,
+    selectionLoading: detailLoading,
+    creatingThread: false,
+    selectionError: null,
     connection: "live" as const,
     model: "",
     effort: "",
@@ -182,7 +185,7 @@ afterEach(() => {
 
 describe("Chat conversation viewport in Chromium", () => {
   it("follows stack disclosure at bottom and preserves an operator reading above", async () => {
-    const selectedThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
+    const selectedThread = thread("thread-a", "agent");
     const base = chatDetail(selectedThread, messageIds(18));
     const terminal = processJob({
       jobId: "terminal-job",
@@ -264,7 +267,7 @@ describe("Chat conversation viewport in Chromium", () => {
   });
 
   it("keeps the expanded stack inside a 360px conversation column", async () => {
-    const selectedThread = thread("thread-a", "agent", { trigger: { kind: "cron" } });
+    const selectedThread = thread("thread-a", "agent");
     const job = processJob({
       summary: "a deliberately long command summary that must not widen the mobile conversation",
       origin: {
@@ -306,8 +309,12 @@ describe("Chat conversation viewport in Chromium", () => {
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     const column = getMessageColumn(container);
     const stack = container.querySelector<HTMLElement>(".process-job-stack")!;
+    const footer = getFooter(container);
+    const composer = screen.getByTestId("thread-composer");
     await waitForFrames(2);
 
+    expect(stack.parentElement).toBe(footer);
+    expect(stack.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(stack.getBoundingClientRect().left).toBeGreaterThanOrEqual(column.getBoundingClientRect().left);
     expect(stack.getBoundingClientRect().right).toBeLessThanOrEqual(column.getBoundingClientRect().right);
     expect(getViewport(container).scrollWidth).toBeLessThanOrEqual(getViewport(container).clientWidth);

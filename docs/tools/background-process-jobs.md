@@ -576,8 +576,9 @@ every queued, starting, and running projection and add a deterministic
 newest-terminal prefix within the 16 MiB response ceiling. The web console
 collects running and terminal jobs from the loaded transcript window into one
 stack after the conversation (tool, purpose, state and elapsed time on each
-card; output tail, artifact paths, wake state and the wake's response behind
-it). Queued, starting, and running work stays visible by default. Every terminal
+card; output tail, wake state and the wake's response behind it, without the
+host-local artifact paths an operator cannot open from a browser). Queued,
+starting, and running work stays visible by default. Every terminal
 outcome remains mounted but hidden until the operator expands history; that
 choice is remembered per conversation for the browser session. The stack labels
 its active and history counts as loaded and points to **Load earlier messages**

@@ -122,6 +122,23 @@ describe("ProcessJobStack", () => {
     expect(screen.getAllByRole("group")).toHaveLength(states.length);
   });
 
+  it("marks the body empty while nothing is visible under the header", () => {
+    vi.spyOn(api, "threadJob").mockReturnValue(new Promise(() => {}));
+    const view = render(<StackHarness
+      threadId="thread"
+      jobs={[entry(processJob({ jobId: "done-job" })), entry(activeJob("thread", "running", { jobId: "live-job" }))]}
+    />);
+    const body = view.container.querySelector<HTMLElement>(".process-job-stack-body")!;
+    // One card is still running, so the body has something to hold.
+    expect(body).not.toHaveClass("is-empty");
+
+    view.rerender(<StackHarness threadId="thread" jobs={[entry(processJob({ jobId: "done-job" }))]} />);
+    expect(body).toHaveClass("is-empty");
+
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+    expect(body).not.toHaveClass("is-empty");
+  });
+
   it("hides a polling card before the next frame when it settles and does not remount it", async () => {
     vi.useFakeTimers();
     const running = activeJob("thread", "running", { jobId: "live-job" });

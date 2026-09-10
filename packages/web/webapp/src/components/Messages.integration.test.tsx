@@ -1247,7 +1247,8 @@ describe("message actions", () => {
     fireEvent.click(row.querySelector("summary")!);
     expect(screen.getByText("Completed normally.")).toBeVisible();
     expect(screen.getByText("done")).toBeVisible();
-    expect(screen.getByText(/stdout\.log/u)).toBeVisible();
+    // Host-local spool paths are not part of the preview.
+    expect(screen.queryByText(/stdout\.log/u)).toBeNull();
 
     expect(screen.getByRole("region", { name: "File attachment: report.txt" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Interactive app: Job chart" })).toBeVisible();
