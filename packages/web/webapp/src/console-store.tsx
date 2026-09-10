@@ -83,6 +83,11 @@ export { holdsToolCall, mergeToolCallPart } from "./thread-cache";
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
 export type ConsoleNavigationDestination = "chats" | "automations";
 
+/** The sidebar collection follows the selected thread, not the action that selected it. */
+const navigationDestinationForThread = (
+  thread: Pick<ThreadSummary, "trigger">,
+): ConsoleNavigationDestination => thread.trigger?.kind === "cron" ? "automations" : "chats";
+
 /** One reply attachment, as the store hands it back after minting access. */
 type ReplyAttachmentMessagePart = Extract<MessagePart, { readonly type: "attachment" }>;
 
@@ -1641,6 +1646,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
   const selectedAgentCronReadRef = useRef(false);
   const navigationDestinationRef = useRef<ConsoleNavigationDestination>(navigationDestination);
+  const setNavigationScope = useCallback((destination: ConsoleNavigationDestination) => {
+    navigationDestinationRef.current = destination;
+    setNavigationDestinationState(destination);
+  }, []);
   /** The catalog scope a page walk was started under. See `catalogScope`. */
   const catalogScopeRef = useRef<string>("");
   const skillRequestGenerationRef = useRef(0);
@@ -2558,14 +2567,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   useEffect(() => {
     const onPopState = () => {
-      setNavigationDestinationState(
+      setNavigationScope(
         cronRouteSelection() === undefined ? "chats" : "automations",
       );
       setRouteRevision((value) => value + 1);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [setNavigationScope]);
 
   /**
    * One page of one (agent, archived) bucket, and the rows it surfaced.
@@ -4586,9 +4595,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       }
       setDetailLoading(threadCacheRef.current.get(threadId) === undefined);
       if (thread) {
-        setNavigationDestinationState(
-          thread.trigger?.kind === "cron" ? "automations" : "chats",
-        );
+        setNavigationScope(navigationDestinationForThread(thread));
         selectedAgentRef.current = thread.sourceId;
         setSelectedAgentId(thread.sourceId);
         localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, thread.sourceId);
@@ -4637,9 +4644,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           );
           selectedAgentRef.current = canonical.sourceId;
           selectedThreadRef.current = canonical.id;
-          setNavigationDestinationState(
-            canonical.trigger?.kind === "cron" ? "automations" : "chats",
-          );
+          setNavigationScope(navigationDestinationForThread(canonical));
           setSelectedAgentId(canonical.sourceId);
           setSelectedThreadId(canonical.id);
           localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
@@ -4675,28 +4680,27 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       closeMissingThread,
       failOwnedSelection,
       publishDetail,
+      setNavigationScope,
       setSelectionRequest,
       threads,
     ],
   );
 
   const selectCronJob = useCallback((sourceId: string, jobId: string, threadId: string) => {
-    navigationDestinationRef.current = "automations";
-    setNavigationDestinationState("automations");
+    setNavigationScope("automations");
     updateCronRoute(sourceId, jobId);
     selectThread(threadId);
-  }, [selectThread]);
+  }, [selectThread, setNavigationScope]);
 
   const setNavigationDestination = useCallback((destination: ConsoleNavigationDestination) => {
-    navigationDestinationRef.current = destination;
-    setNavigationDestinationState(destination);
+    setNavigationScope(destination);
     if (destination === "automations" && !selectedAgentCronReadRef.current) {
       setCronRefreshToken((revision) => revision + 1);
     }
     if (destination === "chats" && cronRouteSelection() !== undefined) {
       updateThreadRoute(undefined);
     }
-  }, []);
+  }, [setNavigationScope]);
 
   const retrySelection = useCallback(() => {
     const failure = selectionFailureRef.current;
@@ -4753,7 +4757,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
-    setNavigationDestinationState("chats");
+    setNavigationScope("chats");
     const unresolved = selectionRequestRef.current;
     const supersedesRestoredRead = unresolved?.kind === "thread"
       && restoredSelectionRef.current === unresolved.threadId;
@@ -4845,6 +4849,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     requireResolvedSelection,
     selectedAgentId,
     setCreateThreadRequest,
+    setNavigationScope,
   ]);
 
   const cronReplyState = useCallback((sourceId: string, jobId: string, runId: string) =>
@@ -4923,6 +4928,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         );
         threadCacheRef.current.setSelected(receipt.thread.id);
         forgetComposerDraft(receipt.thread.sourceId, receipt.thread.id);
+        setNavigationScope(navigationDestinationForThread(receipt.thread));
         setSelectedAgentId(receipt.thread.sourceId);
         setSelectedThreadId(receipt.thread.id);
         setShowArchived(false);
@@ -4992,7 +4998,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       }
     }).catch(() => undefined);
     return operation;
-  }, [beginOperatorSelection, connection, publishDetail, setActionError]);
+  }, [beginOperatorSelection, connection, publishDetail, setActionError, setNavigationScope]);
 
   const applyAgentUpdate = useCallback((agent: AgentSummary) => {
     setBootstrap((current) => current === null

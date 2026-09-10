@@ -8797,6 +8797,8 @@ describe("ConsoleStoreProvider integration", () => {
       const store = await renderStore();
       act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
       await waitFor(() => expect(store.current.connection).toBe("live"));
+      act(() => store.current.setNavigationDestination("automations"));
+      expect(store.current.navigationDestination).toBe("automations");
 
       const first = store.current.replyToCronRun(source);
       const second = store.current.replyToCronRun(source);
@@ -8813,6 +8815,8 @@ describe("ConsoleStoreProvider integration", () => {
       });
       expect(store.current.selectedAgentId).toBe("alpha");
       expect(store.current.selectedThreadId).toBe(imported.id);
+      expect(store.current.navigationDestination).toBe("chats");
+      expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
       expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");
