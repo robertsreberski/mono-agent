@@ -1,9 +1,18 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { api } from "../api";
 import { useConsoleStore } from "../console-store";
-import type { CronJob, CronOverview } from "../types";
-import styles from "../styles.css?raw";
+import type { CronJob, CronOverview, CronRun } from "../types";
 import { CronChannelHeader } from "./CronChannelHeader";
+
+vi.mock("../api", () => ({
+  api: {
+    cronRunNow: vi.fn(),
+    cronSetEnabled: vi.fn(),
+    cronConfigView: vi.fn(),
+  },
+}));
 
 vi.mock("../console-store", () => ({ useConsoleStore: vi.fn() }));
 
@@ -23,6 +32,18 @@ const overview: CronOverview = {
   generatedAt: "2026-08-14T10:00:00.000Z",
   actionsEnabled: true,
   jobs: [job],
+};
+
+const run: CronRun = {
+  projection: "summary",
+  runId: "cron:daily%3Areport:2026-08-14T10:00:00.000Z:m1",
+  jobId: job.jobId,
+  scheduledAt: "2026-08-14T10:00:00.000Z",
+  orderedAt: "2026-08-14T10:00:00.000Z",
+  sequence: 1,
+  trigger: "manual",
+  status: "admitted",
+  eventCount: 0,
 };
 
 const store = (overrides: Record<string, unknown> = {}) => ({
@@ -45,103 +66,169 @@ const store = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 }) as unknown as ReturnType<typeof useConsoleStore>;
 
-const nextRunAt = "2026-09-07T14:30:00.000Z";
-const withJob = (overrides: Partial<CronJob> = {}) => store({
-  cronOverview: { ...overview, jobs: [{ ...job, nextRunAt, ...overrides }] },
-});
-
 describe("CronChannelHeader", () => {
   beforeEach(() => {
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-06T12:00:00.000Z"));
-    vi.mocked(useConsoleStore).mockReturnValue(withJob());
+    vi.clearAllMocks();
+    vi.mocked(useConsoleStore).mockReturnValue(store());
   });
+
   afterEach(() => vi.restoreAllMocks());
 
-  it("renders only cadence and an agent-authored absolute time in the viewer timezone", () => {
-    const NativeFormatter = Intl.DateTimeFormat;
-    vi.spyOn(Intl, "DateTimeFormat").mockImplementation((_locale, options) =>
-      new NativeFormatter("en-GB", { ...options, timeZone: "America/New_York" }));
-    vi.mocked(useConsoleStore).mockReturnValue(withJob({ expression: "30 16 * * *" }));
+  it("renders an agent-unknown next run without deriving it from the expression", () => {
     render(<CronChannelHeader />);
-    const section = screen.getByRole("region", { name: "Cron schedule" });
-    expect(section).toHaveTextContent("Every day at 16:30 (Europe/Amsterdam)");
-    const time = section.querySelector("time");
-    expect(time).toHaveAttribute("datetime", nextRunAt);
-    expect(time).toHaveAttribute("title", "Your timezone: America/New_York");
-    expect(time).toHaveTextContent("7 Sept, 10:30");
-    expect(section.querySelectorAll("button, a, dialog, [role=dialog], [role=status], [role=alert]"))
-      .toHaveLength(0);
-    expect(section).not.toHaveTextContent(/healthy|last run|session|configuration|daily:report/iu);
+
+    expect(screen.getByRole("group", { name: "Cron controls" })).toBeVisible();
+    expect(document.querySelector(".cron-channel-facts")?.tagName).toBe("DL");
+    expect(screen.queryByText(/^Session\b/u)).toBeNull();
+    const nextRun = screen.getByText("Next run").parentElement;
+    expect(nextRun).not.toBeNull();
+    expect(within(nextRun!).getByText("Unknown")).toBeInTheDocument();
+    expect(screen.getByText("*/5 * * * *")).toBeInTheDocument();
   });
 
-  it.each([undefined, "bad", "2099", "2099-01-01", "2099-02-30T12:00:00Z",
-    "2099-01-01T24:00:00Z", "2099-01-01T12:00:00+99:00",
-    "2026-09-05T12:00:00Z", "2026-09-06T12:00:00Z"])("rejects unavailable next instant %s", (value) => {
-    vi.mocked(useConsoleStore).mockReturnValue(withJob({ nextRunAt: value }));
+  it("reuses the same idempotency key and the agent-issued confirmation token", async () => {
+    const idempotencyKey = "00000000-0000-4000-8000-000000000001";
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(idempotencyKey);
+    vi.mocked(api.cronRunNow)
+      .mockResolvedValueOnce({
+        kind: "confirmation_required",
+        confirmation: {
+          token: "agent-token",
+          expiresAt: "2026-08-14T10:01:00.000Z",
+          message: "A scheduled firing during this manual run will be recorded as skipped_overlap.",
+        },
+      })
+      .mockResolvedValueOnce({ kind: "completed", value: { run }, replayed: false });
+
     render(<CronChannelHeader />);
-    expect(screen.getByText("Next run unavailable")).toBeInTheDocument();
-    expect(document.querySelector("time")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(await screen.findByText(/scheduled firing during this manual run/u)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+
+    await waitFor(() => expect(api.cronRunNow).toHaveBeenCalledTimes(2));
+    expect(api.cronRunNow).toHaveBeenNthCalledWith(
+      1,
+      "alpha",
+      job.jobId,
+      idempotencyKey,
+      undefined,
+    );
+    expect(api.cronRunNow).toHaveBeenNthCalledWith(
+      2,
+      "alpha",
+      job.jobId,
+      idempotencyKey,
+      "agent-token",
+    );
   });
 
-  it.each([
-    { connection: "reconnecting" }, { connection: "offline" }, { cronError: "Unavailable" },
-    { selectedAgent: { sourceId: "alpha", status: "offline", cron: { read: true } } },
-    { selectedAgent: { sourceId: "beta", status: "online", cron: { read: true } } },
-    { selectedAgent: { sourceId: "alpha", status: "online", cron: { read: false } } },
-    { cronOverview: { ...overview, degradedReason: "Unavailable", jobs: [{ ...job, nextRunAt }] } },
-    { cronOverview: { ...overview, jobs: [{ ...job, nextRunAt, threadId: "other-thread" }] } },
-    { cronOverview: null },
-  ])("does not advertise a future prediction with stale or unavailable authority: %j", (overrides) => {
-    vi.mocked(useConsoleStore).mockReturnValue({ ...withJob(), ...overrides } as ReturnType<typeof useConsoleStore>);
+  it("keeps actions unavailable without capability while retaining the redacted config view", async () => {
+    vi.mocked(useConsoleStore).mockReturnValue(store({
+      selectedAgent: {
+        sourceId: "alpha",
+        label: "Alpha",
+        status: "online",
+        cron: { read: true, actions: false },
+      },
+      cronOverview: { ...overview, actionsEnabled: false },
+    }));
+    vi.mocked(api.cronConfigView).mockResolvedValue({
+      id: "cron",
+      label: "Cron",
+      status: "active",
+      fields: [{ id: "prompt", label: "Prompt", value: "[redacted]", source: "json", redacted: true }],
+    });
+
     render(<CronChannelHeader />);
-    expect(screen.getByText("Next run unavailable")).toBeInTheDocument();
-    expect(document.querySelector("time")).toBeNull();
+    expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Disable" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "View config" }));
+
+    const configDialog = await screen.findByRole("dialog", { name: "Cron configuration" });
+    expect(configDialog).toHaveClass("agent-settings-dialog", "cron-dialog");
+    expect(configDialog.querySelector(".cron-config-fields")?.tagName).toBe("DL");
+    await waitFor(() => expect(configDialog).toHaveFocus());
+    expect(screen.getByText("[redacted]")).toBeInTheDocument();
+    expect(screen.getByText("json · redacted")).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
-  it("prefers removed to disabled and unavailable", () => {
-    vi.mocked(useConsoleStore).mockReturnValue({ ...withJob({ configured: false, effectiveEnabled: false }), connection: "reconnecting" });
+  it("returns focus to the control that opened the dialog, not to whatever a re-render saw", async () => {
+    vi.mocked(useConsoleStore).mockReturnValue(store({
+      selectedAgent: {
+        sourceId: "alpha",
+        label: "Alpha",
+        status: "online",
+        cron: { read: true, actions: false },
+      },
+      cronOverview: { ...overview, actionsEnabled: false },
+    }));
+    vi.mocked(api.cronConfigView).mockResolvedValue({
+      id: "cron",
+      label: "Cron",
+      status: "active",
+      fields: [{ id: "prompt", label: "Prompt", value: "[redacted]", source: "json", redacted: true }],
+    });
+
     render(<CronChannelHeader />);
-    expect(screen.getByText("Job removed")).toBeInTheDocument();
-    expect(document.querySelector("time")).toBeNull();
+    const opener = screen.getByRole("button", { name: "View config" });
+    opener.focus();
+    expect(opener).toHaveFocus();
+
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog", { name: "Cron configuration" });
+    await waitFor(() => expect(dialog).toHaveFocus());
+
+    // Closing must return focus to the control that opened the dialog.
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 
-  it("uses effective enabled state rather than declared state", () => {
-    vi.mocked(useConsoleStore).mockReturnValue(withJob({ effectiveEnabled: false }));
-    const { rerender } = render(<CronChannelHeader />);
-    expect(screen.getByText("Disabled")).toBeInTheDocument();
-    vi.mocked(useConsoleStore).mockReturnValue(withJob({ declaredEnabled: false, effectiveEnabled: true }));
-    rerender(<CronChannelHeader />);
-    expect(document.querySelector("time")).not.toBeNull();
-  });
+  it("ties both disabled actions to a focusable missing-key explanation without relying on title", () => {
+    vi.mocked(useConsoleStore).mockReturnValue(store({
+      selectedAgent: {
+        sourceId: "alpha",
+        label: "Alpha",
+        status: "online",
+        cron: { read: true, actions: false },
+      },
+    }));
 
-  it("retains the thread's removed state when the job is absent from the overview", () => {
-    const removed = store({ cronOverview: { ...overview, jobs: [] } });
-    vi.mocked(useConsoleStore).mockReturnValue({ ...removed, selectedThread: {
-      ...removed.selectedThread!, trigger: { kind: "cron", jobId: job.jobId, configured: false },
-    } });
     render(<CronChannelHeader />);
-    expect(screen.getByText("Job removed")).toBeInTheDocument();
-    expect(screen.getByText("Schedule unavailable")).toBeInTheDocument();
+    const reason = screen.getByText(/operator api key/iu);
+    expect(reason).toHaveAttribute("role", "status");
+    reason.focus();
+    expect(reason).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Run now" })).toHaveAttribute("aria-describedby", reason.id);
+    expect(screen.getByRole("button", { name: "Disable" })).toHaveAttribute("aria-describedby", reason.id);
+    expect(screen.getByRole("button", { name: "Run now" })).not.toHaveAttribute("title");
   });
 
-  it("allows narrow layouts to wrap cadence and next state without clipped text or controls", () => {
-    vi.mocked(useConsoleStore).mockReturnValue(withJob({ expression: "0,30 9 * * MON,WED,FRI" }));
+  it("uses the authoritative degraded reason for actions and exposes offline configuration help", () => {
+    const degradedReason = "Cron control state failed its integrity check.";
+    vi.mocked(useConsoleStore).mockReturnValue(store({
+      connection: "stale",
+      cronOverview: { ...overview, degradedReason },
+    }));
+
     render(<CronChannelHeader />);
-    const section = screen.getByRole("region", { name: "Cron schedule" });
-    expect(section).toHaveClass("cron-channel-header");
-    expect(section.querySelectorAll(":scope > span")).toHaveLength(3);
-    const headerStyle = styles.match(/\.cron-channel-header \{([^}]+)\}/u)?.[1];
-    expect(headerStyle).toMatch(/flex-wrap: wrap/u);
-    expect(headerStyle).toMatch(/min-width: 0/u);
-    expect(headerStyle).toMatch(/color: var\(--text-muted\)/u);
-    const textStyle = styles.match(/\.cron-channel-header > span \{([^}]+)\}/u)?.[1];
-    expect(textStyle).toMatch(/overflow-wrap: anywhere/u);
-    expect(textStyle).not.toMatch(/nowrap|hidden|ellipsis/u);
-  });
-
-  it("does not render for a non-cron conversation", () => {
-    vi.mocked(useConsoleStore).mockReturnValue(store({ selectedThread: { trigger: { kind: "monitor" } } }));
-    const { container } = render(<CronChannelHeader />);
-    expect(container).toBeEmptyDOMElement();
+    const run = screen.getByRole("button", { name: "Run now" });
+    const toggle = screen.getByRole("button", { name: "Disable" });
+    const configuration = screen.getByRole("button", { name: "View config" });
+    expect(run).toBeDisabled();
+    expect(toggle).toBeDisabled();
+    expect(configuration).toBeDisabled();
+    const actionReasonId = run.getAttribute("aria-describedby");
+    const actionReason = actionReasonId === null ? null : document.getElementById(actionReasonId);
+    expect(actionReason).not.toBeNull();
+    expect(actionReason).toHaveTextContent(degradedReason);
+    const configReason = screen.getByText("Cron configuration is unavailable while the agent is offline.");
+    expect(run).toHaveAttribute("aria-describedby", actionReason!.id);
+    expect(toggle).toHaveAttribute("aria-describedby", actionReason!.id);
+    expect(configuration).toHaveAttribute("aria-describedby", configReason.id);
+    configReason.focus();
+    expect(configReason).toHaveFocus();
   });
 });

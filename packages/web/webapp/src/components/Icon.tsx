@@ -3,6 +3,7 @@ import type { SVGProps } from "react";
 export type IconName =
   | "activity"
   | "agent"
+  | "alert"
   | "archive"
   | "arrow-down"
   | "attach"
@@ -14,6 +15,7 @@ export type IconName =
   | "chevron"
   | "chevron-down"
   | "chevron-left"
+  | "clock"
   | "download"
   | "close"
   | "command"
@@ -42,6 +44,12 @@ const paths: Record<IconName, React.ReactNode> = {
     <>
       <rect x="5" y="7" width="14" height="12" rx="4" />
       <path d="M9 7V5m6 2V5M8.5 12h.01M15.5 12h.01M9 16c2 1 4 1 6 0" />
+    </>
+  ),
+  alert: (
+    <>
+      <path d="M12 4.5 2.8 20h18.4z" />
+      <path d="M12 10v4M12 17h.01" />
     </>
   ),
   archive: (
@@ -79,6 +87,12 @@ const paths: Record<IconName, React.ReactNode> = {
   chevron: <path d="m9 18 6-6-6-6" />,
   "chevron-down": <path d="m6 9 6 6 6-6" />,
   "chevron-left": <path d="m15 18-6-6 6-6" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
   download: <path d="M12 4v11m0 0-4-4m4 4 4-4M5 19h14" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   command: (

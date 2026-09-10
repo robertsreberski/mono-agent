@@ -71,12 +71,11 @@ import type {
 import { WebRuntimeProvider } from "./runtime";
 import { threadPresentation } from "./thread-presentation";
 import { NotificationsProvider } from "./notifications";
-import { AgentRail } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
 import { Composer } from "./components/Composer";
 import { AssistantMessage, SystemMessage, UserMessage } from "./components/Messages";
 import { ProcessJobStack } from "./components/ProcessJobStack";
-import { ThreadSidebar } from "./components/ThreadSidebar";
+import { Dashboard } from "./components/dashboard/Dashboard";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
 // `instanceof ApiError` and on its status to tell a server that refused a
@@ -284,6 +283,15 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.threadIfChanged).mockReset();
     vi.mocked(api.submit).mockReset();
     vi.mocked(api.submission).mockReset();
+    vi.mocked(api.cronOverview).mockReset().mockRejectedValue(
+      new ApiError(
+        "This agent does not expose first-class cron operator state.",
+        404,
+        "cron_unavailable",
+      ),
+    );
+    vi.mocked(api.cronRuns).mockReset();
+    vi.mocked(api.cronRun).mockReset();
     vi.mocked(api.cronReply).mockReset();
     localStorage.clear();
     sessionStorage.clear();
@@ -445,9 +453,8 @@ describe("ConsoleStoreProvider integration", () => {
             <NotificationsProvider>
               <WebRuntimeProvider>
                 <div className="app-shell">
-                  <AgentRail expanded />
-                  <ThreadSidebar />
-                  <Chat onOpenAgents={() => {}} onOpenThreads={() => {}} />
+                  <Dashboard />
+                  <Chat onBack={() => {}} />
                 </div>
               </WebRuntimeProvider>
             </NotificationsProvider>
@@ -472,7 +479,7 @@ describe("ConsoleStoreProvider integration", () => {
         (value) => String(value).includes("useClientLookup"),
       )).toBe(false);
       expect(screen.getByRole("navigation", { name: "Agents" })).toBeInTheDocument();
-      expect(screen.getByRole("complementary", { name: "Conversations" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Recent" })).toBeInTheDocument();
       expect(screen.getByRole("main")).toBeInTheDocument();
       expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
     } finally {
@@ -528,8 +535,8 @@ describe("ConsoleStoreProvider integration", () => {
           <NotificationsProvider>
             <WebRuntimeProvider>
               <div className="app-shell">
-                <ThreadSidebar />
-                <Chat onOpenAgents={() => {}} onOpenThreads={() => {}} />
+                <Dashboard />
+                <Chat onBack={() => {}} />
               </div>
             </WebRuntimeProvider>
           </NotificationsProvider>
@@ -1222,9 +1229,10 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
     expect(store.current.selectedAgentId).toBe("alpha");
     expect(store.current.selectedThread?.canSend).toBe(false);
+    expect(store.current.navigationDestination).toBe("automations");
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
     expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).toEqual([cronThread.id]);
   });
@@ -1251,6 +1259,38 @@ describe("ConsoleStoreProvider integration", () => {
     expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
     expect(api.thread).toHaveBeenCalledTimes(1);
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+  });
+
+  it("opens an overview job on its canonical durable history route", async () => {
+    const ordinary = thread("ordinary", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], [ordinary], ordinary.id));
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
+    vi.mocked(api.thread).mockImplementation(async (threadId) =>
+      threadId === cronThread.id ? detail() : detail(ordinary, "ordinary"));
+
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    await waitFor(() => expect(api.cronOverview).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      store.current.setNavigationDestination("automations");
+      await Promise.resolve();
+    });
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+
+    act(() => store.current.selectCronJob("alpha", "daily:report", cronThread.id));
+
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    expect(store.current.navigationDestination).toBe("automations");
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
+    expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api.cronRuns).toHaveBeenCalledWith("alpha", "daily:report"));
+
+    act(() => store.current.setNavigationDestination("chats"));
+    expect(window.location.pathname).toBe("/");
   });
 
   it("reports a truncated cron overview honestly without selecting a bootstrap fallback", async () => {
@@ -1283,10 +1323,10 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose cron/iu));
+    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose first-class cron/iu));
     expect(store.current.selectedThreadId).toBeNull();
     expect(store.current.selectionLoading).toBe(false);
-    expect(api.cronOverview).not.toHaveBeenCalled();
+    expect(api.cronOverview).toHaveBeenCalledWith("alpha");
     expect(api.thread).not.toHaveBeenCalled();
   });
 
@@ -1303,15 +1343,18 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.navigationDestination).toBe("automations");
 
     act(() => store.current.selectThread(ordinary.id));
     await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    expect(store.current.navigationDestination).toBe("chats");
     expect(window.location.pathname).toBe("/");
 
     window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
     act(() => window.dispatchEvent(new PopStateEvent("popstate")));
 
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.navigationDestination).toBe("automations");
     expect(store.current.selectionLoading).toBe(false);
     expect(store.current.selectionError).toBeNull();
   });
@@ -1608,21 +1651,24 @@ describe("ConsoleStoreProvider integration", () => {
 
     expect(await screen.findByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(await screen.findByText("1 loaded · 0 active · 1 history")).toBeVisible();
     expect(api.cronRuns).toHaveBeenCalled();
   });
 
-  it("keeps a cached cron channel read-only when paired with an old agent", async () => {
+  it("loads a stored cron overview and keeps its cached channel read-only with an old agent", async () => {
     window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [cronThread]));
     vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
     vi.mocked(api.thread).mockResolvedValue(detail());
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
 
     const store = await renderStore();
 
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
-    expect(store.current.cronOverview).toBeNull();
-    expect(api.cronOverview).not.toHaveBeenCalled();
+    await waitFor(() => expect(store.current.cronOverview?.actionsEnabled).toBe(false));
+    expect(api.cronOverview).toHaveBeenCalledWith("alpha");
+    expect(api.cronRuns).toHaveBeenCalledWith("alpha", "daily:report");
+    expect(store.current.navigationDestination).toBe("automations");
     expect(store.current.selectedThread?.canSend).toBe(false);
   });
 
@@ -3644,6 +3690,7 @@ describe("ConsoleStoreProvider integration", () => {
         sourceId: "alpha",
         archived: false,
         limit: THREAD_PAGE_LIMIT,
+        scope: "chats",
       });
       // The bucket the bootstrap carried is not re-read...
       expect(api.threads).not.toHaveBeenCalled();
@@ -8786,6 +8833,254 @@ describe("ConsoleStoreProvider integration", () => {
       expect(stored?.threads.flatMap((item) => item.messages.map((message) => message.id)))
         .toEqual(["m2"]);
     });
+
+    it("keeps another agent's confirmed activity in the dashboard projection, and the device's out of it", async () => {
+      // The Running section is the CACHE's set, not the listing's: a turn on an
+      // agent whose rows are nowhere on screen is still one this tab is
+      // watching. And a restored entry says nothing about it -- `runState` is
+      // stored verbatim, so the device's word alone must not put a card up.
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(
+          agents,
+          [alpha, runningGamma],
+          undefined,
+          { threadsSourceId: "alpha" },
+        ));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+      // Drawn from the device and confirmed by nothing.
+      expect(store.current.cachedRunningThreads).toEqual([]);
+
+      act(() => { release(); });
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+      // The listing on screen is alpha's, and the projection is not the listing.
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.visibleThreads.map((item) => item.id)).not.toContain(runningGamma.id);
+      expect(store.current.cachedRunningThreads[0]?.sourceId).toBe("beta");
+    });
+
+    it("opens another agent's archived running conversation from its card, and the selection holds", async () => {
+      // The riskiest path a card can take: the conversation belongs to another
+      // agent, sits in that agent's ARCHIVED bucket, and is nowhere in the
+      // listing on screen. The card points the console at all three in one
+      // handler -- agent, bucket, conversation -- and none of the reads that
+      // follow may quietly move the selection back.
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        archivedAt: "2026-08-14T08:30:00.000Z",
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      const betaLive = thread("beta-live", "beta", { title: "Beta live", updatedAt: "2026-08-14T08:00:00.000Z" });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockImplementation(async (_signal, scope) => bootstrap(
+        agents,
+        scope?.sourceId === "beta"
+          ? (scope.archived ? [runningGamma] : [betaLive])
+          : [alpha, runningGamma],
+        undefined,
+        { threadsSourceId: scope?.sourceId ?? "alpha" },
+      ));
+      vi.mocked(api.threads).mockImplementation(async (sourceId, archived) => ({
+        threads: sourceId === "beta" ? (archived ? [runningGamma] : [betaLive]) : [alpha],
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === runningGamma.id
+        ? { thread: runningGamma, messages: [kept("g1", "gamma", runningGamma.id)], etag: 'W/"gamma-1"' }
+        : { thread: alpha, messages: [kept("m1", "kept transcript")], etag: 'W/"alpha-1"' });
+
+      vi.stubGlobal("Notification", { permission: "default", requestPermission: vi.fn() });
+      let current: Store | undefined;
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={(store) => { current = store; }} />
+          <NotificationsProvider>
+            <WebRuntimeProvider>
+              <Dashboard />
+            </WebRuntimeProvider>
+          </NotificationsProvider>
+        </ConsoleStoreProvider>,
+      );
+      const store = { get current() { if (!current) throw new Error("Store did not initialize."); return current; } };
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.showArchived).toBe(false);
+
+      fireEvent.click(await screen.findByRole("button", { name: /^Open Gamma work/u }));
+
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(runningGamma.id));
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.showArchived).toBe(true);
+      expect(store.current.selectedThreadId).toBe(runningGamma.id);
+      expect(store.current.detail?.thread.id).toBe(runningGamma.id);
+      expect(store.current.navigationDestination).toBe("chats");
+    });
+
+    it("drops a conversation from the projection when its work finishes", async () => {
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningGamma], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+
+      emit("turn.changed", {
+        threadId: runningGamma.id,
+        payload: { turn: { id: "turn-g", status: "complete", finishedAt: "2026-08-14T09:30:00.000Z" } },
+      });
+
+      await waitFor(() => expect(store.current.cachedRunningThreads).toEqual([]));
+      // The reload guard and the projection answer different questions, and
+      // both of them agree that nothing is in flight now.
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("counts a background job the foreground turn has already left behind", async () => {
+      // `hasRunningThread` guards a reload and asks about foreground turns
+      // only. The dashboard asks what has WORK in flight, which a queued or
+      // running background job is.
+      const working = thread("job-thread", "beta", {
+        title: "Worker",
+        runState: { status: "complete" },
+        jobActivity: { queued: 0, starting: 0, running: 2 },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(working, [kept("j1", "job", working.id)], 'W/"job-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, working], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([working.id]));
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("empties the projection when the operator clears what this browser kept", async () => {
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningGamma], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+
+      // `clear` announces no commit of its own -- the caller recomputes what it
+      // derives from the held set, and this projection is one of those things.
+      await act(async () => { await store.current.clearCachedData(); });
+
+      expect(store.current.cachedRunningThreads).toEqual([]);
+    });
+
+    it("does not republish the projection for a message this tab streamed in", async () => {
+      // A running turn commits several times a second. What the section draws
+      // is a title, a status line and a time, and a message body moving is none
+      // of them -- so a delta must not re-render every consumer of the store.
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-1", status: "running", startedAt: "2026-08-14T09:00:00.000Z" } },
+      });
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([alpha.id]));
+
+      const published = store.current.cachedRunningThreads;
+      for (const seq of [2, 3, 4]) {
+        emit("message.delta", {
+          threadId: alpha.id,
+          payload: {
+            messageId: "m1",
+            baseSeq: seq - 1,
+            seq,
+            status: "running",
+            updatedAt: "2026-08-14T09:00:00.000Z",
+            ops: [{ op: "append", path: "0", text: "." }],
+          },
+        });
+      }
+      await quiet();
+
+      // Same array, by reference: nothing the section draws moved.
+      expect(store.current.cachedRunningThreads).toBe(published);
+    });
   });
 
   describe("cron Reply navigation and recovery", () => {
@@ -8825,6 +9120,8 @@ describe("ConsoleStoreProvider integration", () => {
       const store = await renderStore();
       act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
       await waitFor(() => expect(store.current.connection).toBe("live"));
+      act(() => store.current.setNavigationDestination("automations"));
+      expect(store.current.navigationDestination).toBe("automations");
 
       const first = store.current.replyToCronRun(source);
       const second = store.current.replyToCronRun(source);
@@ -8841,6 +9138,8 @@ describe("ConsoleStoreProvider integration", () => {
       });
       expect(store.current.selectedAgentId).toBe("alpha");
       expect(store.current.selectedThreadId).toBe(imported.id);
+      expect(store.current.navigationDestination).toBe("chats");
+      expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
       expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");

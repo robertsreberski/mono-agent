@@ -76,6 +76,7 @@ import {
   type WebThreadChangedPayload,
   type WebThreadDetail,
   type WebThreadPage,
+  type WebThreadListScope,
   type WebThreadSearchPage,
   type WebToolCall,
   type SearchWebThreadsInput,
@@ -757,6 +758,7 @@ export class WebService {
         sourceId: threadsSourceId,
         archived,
         limit: scope.limit ?? WEB_THREAD_PAGE_DEFAULT,
+        ...(scope.scope === undefined ? {} : { scope: scope.scope }),
       });
     return {
       version: WEB_API_VERSION,
@@ -874,6 +876,7 @@ export class WebService {
     readonly archived: boolean;
     readonly limit?: number;
     readonly before?: string;
+    readonly scope?: WebThreadListScope;
   }): WebThreadPage {
     return this.store.listThreadsPage(input);
   }

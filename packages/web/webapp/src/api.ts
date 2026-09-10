@@ -5,9 +5,13 @@ import type {
   AskSnapshot,
   AskSubmissionResult,
   Bootstrap,
+  ChannelConfigView,
+  CronJob,
+  CronMutationResult,
   CronOverview,
   CronReplyReceipt,
   CronReplySnapshotKind,
+  CronRun,
   CronRunPage,
   LiveInputReceipt,
   McpAppPart,
@@ -130,6 +134,23 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     throw new ApiError("The server answered a read that quoted no validator with 304.", 304);
   }
   return await readJson<T>(response);
+};
+
+const cronMutation = async <T>(
+  path: string,
+  body: Readonly<Record<string, unknown>>,
+): Promise<CronMutationResult<T>> => {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Mono-Agent-Web-Origin": window.location.origin,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok && response.status !== 428) throw await readError(response);
+  return await readJson<CronMutationResult<T>>(response);
 };
 
 /**
@@ -352,6 +373,7 @@ export interface BootstrapScope {
   readonly sourceId?: string;
   readonly archived?: boolean;
   readonly limit?: number;
+  readonly scope?: "chats";
 }
 
 export const api = {
@@ -360,6 +382,7 @@ export const api = {
     if (scope?.sourceId !== undefined) query.set("sourceId", scope.sourceId);
     if (scope?.archived !== undefined) query.set("archived", String(scope.archived));
     if (scope?.limit !== undefined) query.set("limit", String(scope.limit));
+    if (scope?.scope !== undefined) query.set("scope", scope.scope);
     const search = query.toString();
     return request<Bootstrap>(
       search === "" ? "/api/v1/bootstrap" : `/api/v1/bootstrap?${search}`,
@@ -415,6 +438,7 @@ export const api = {
       sourceId,
       archived: String(archived),
       limit: String(limit),
+      scope: "chats",
     });
     if (before !== undefined) query.set("before", before);
     return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
@@ -426,7 +450,7 @@ export const api = {
    * older than the sidebar has fetched.
    */
   searchThreads: (sourceId: string, query: string, signal?: AbortSignal) => {
-    const params = new URLSearchParams({ sourceId, q: query });
+    const params = new URLSearchParams({ sourceId, q: query, scope: "chats" });
     return request<ThreadSearchPage>(
       `/api/v1/threads/search?${params.toString()}`,
       { signal },
@@ -808,6 +832,35 @@ export const api = {
     );
     return result.message;
   },
+
+  cronConfigView: async (sourceId: string, signal?: AbortSignal) => {
+    const result = await request<{ configView: ChannelConfigView }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/config-view`,
+      { signal },
+    );
+    return result.configView;
+  },
+
+  cronRunNow: (
+    sourceId: string,
+    jobId: string,
+    idempotencyKey: string,
+    confirmationToken?: string,
+  ) => cronMutation<{ readonly run: CronRun }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/run`,
+    { idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
+  ),
+
+  cronSetEnabled: (
+    sourceId: string,
+    jobId: string,
+    enabled: boolean,
+    idempotencyKey: string,
+    confirmationToken?: string,
+  ) => cronMutation<{ readonly job: CronJob }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/effective-enabled`,
+    { enabled, idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
+  ),
 
   registerPushSubscription: async (subscription: PushSubscription, previousSubscriptionId?: string) => {
     const serialized = subscription.toJSON();
