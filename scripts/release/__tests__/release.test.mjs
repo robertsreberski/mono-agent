@@ -236,10 +236,10 @@ describe("release graph validation", () => {
       throw new Error("validateRelease did not reject stale Node engine metadata");
     } catch (error) {
       expect(error.issues).toEqual([
-        "root package.json engines.node must be >=22.19.0; found >=20",
-        ".nvmrc must be 22.19.0; found 22.18.0",
-        "@mono-agent/agent-contracts engines.node must be >=22.19.0; found (missing)",
-        "@mono-agent/agent-runtime engines.node must be >=22.19.0; found >=20",
+        "root package.json engines.node must be >=24.15.0; found >=20",
+        ".nvmrc must be 24.15.0; found 22.18.0",
+        "@mono-agent/agent-contracts engines.node must be >=24.15.0; found (missing)",
+        "@mono-agent/agent-runtime engines.node must be >=24.15.0; found >=20",
       ]);
     }
   });

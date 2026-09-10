@@ -14,7 +14,7 @@ interface AgentAppManifest {
  * future change to agent-app's bin location. We resolve it through CJS
  * `require.resolve` of `@mono-agent/agent-app/package.json` (which agent-app
  * exports), so this works throughout the supported Node range without depending on
- * synchronous `import.meta.resolve` (available throughout the supported Node 22.19.0+ range).
+ * synchronous `import.meta.resolve` (available throughout the supported Node 24.15.0+ range).
  */
 export function resolveAgentAppCliEntry(from: string | URL = import.meta.url): string {
   const require = createRequire(from);

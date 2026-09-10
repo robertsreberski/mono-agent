@@ -54,7 +54,7 @@ The install command pairs every available Codex/Claude target by default and
 prints an exact later command for a missing target. Use `--no-docs-mcp` only
 when a file-only skill install is intentional.
 
-To run an unreleased build instead, use a clone of the mono-agent workspace with Node 22.19.0+ and pnpm 10 or newer already installed:
+To run an unreleased build instead, use a clone of the mono-agent workspace with Node 24.15.0+ and pnpm 10 or newer already installed:
 
 ```bash
 git clone <mono-agent-repo> ~/mono-agent && cd ~/mono-agent
