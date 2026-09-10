@@ -3624,6 +3624,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             initialStreamSyncOwedRef.current = true;
           }
           const gapped = resyncOnReadyRef.current;
+          const refreshCronAfterRecovery = staleBucketRef.current;
           resyncOnReadyRef.current = false;
           if (gapped) resyncAfterGap();
           else if (initialBootstrapRef.current === "answered" && !hasBootstrapRef.current) {
@@ -3636,11 +3637,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // "stale" by that same transition made a "refetch only when it is not
           // ready" guard true every single time, putting two requests on the
           // wire per reconnect with the first aborted mid-flight.
-          // The initial selected-agent effect already owns the first overview
-          // read. Refresh only on a later stream recovery; otherwise a slow
-          // first `ready` arriving just after the operator opens a job buys a
-          // duplicate overview and flashes background status.
-          if (!firstReady && selectedCronJobIdRef.current !== undefined) {
+          // Re-pointing the stream at another conversation also produces a
+          // later `ready`, but cannot invalidate this agent-wide overview.
+          // `staleBucketRef` distinguishes a real drop/resume from that normal
+          // subscription change, while both still reconcile their transcript.
+          if (refreshCronAfterRecovery && (
+            navigationDestinationRef.current === "automations"
+            || selectedCronJobIdRef.current !== undefined
+          )) {
             setCronRefreshToken((value) => value + 1);
           }
           return;
