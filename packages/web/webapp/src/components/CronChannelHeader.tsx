@@ -73,7 +73,7 @@ function CronDialog({
     <div className="dialog-layer" role="presentation" onMouseDown={onClose}>
       <section
         ref={dialogRef}
-        className="cron-dialog"
+        className="agent-settings-dialog cron-dialog"
         role="dialog"
         aria-modal="true"
         aria-label={label}
@@ -271,53 +271,54 @@ export function CronChannelHeader() {
             </dd>
           </div>
         </dl>
-        <div className="cron-channel-actions" aria-label="Cron controls">
-          <button
-            type="button"
-            className="cron-action-primary"
-            disabled={!actionsAvailable || busy}
-            aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
-            onClick={() => void begin({ kind: "run", idempotencyKey: actionKey() })}
-          >
-            <Icon name="spark" size={14} />
-            Run now
-          </button>
-          <button
-            type="button"
-            disabled={!actionsAvailable || busy}
-            aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
-            onClick={() => void begin({
-              kind: "enabled",
-              enabled: !(job?.effectiveEnabled ?? false),
-              idempotencyKey: actionKey(),
-            })}
-          >
-            {job?.effectiveEnabled ? "Disable" : "Enable"}
-          </button>
-          <button
-            type="button"
-            disabled={!configAvailable || busy}
-            aria-describedby={configUnavailableReason === undefined ? undefined : configUnavailableId}
-            onClick={() => void openConfig()}
-          >
-            View config
-          </button>
-          {job !== undefined && (
-            <span className="cron-session-link" title={job.conversationId}>
-              Session <code>{job.conversationId}</code>
-            </span>
-          )}
+        <div className="cron-control-panel">
+          <div className="cron-channel-actions" role="group" aria-label="Cron controls">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!actionsAvailable || busy}
+              aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
+              onClick={() => void begin({ kind: "run", idempotencyKey: actionKey() })}
+            >
+              <Icon name="spark" size={14} />
+              Run now
+            </button>
+            <button
+              type="button"
+              className="cron-secondary-button"
+              disabled={!actionsAvailable || busy}
+              aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
+              onClick={() => void begin({
+                kind: "enabled",
+                enabled: !(job?.effectiveEnabled ?? false),
+                idempotencyKey: actionKey(),
+              })}
+            >
+              {job?.effectiveEnabled ? "Disable" : "Enable"}
+            </button>
+            <button
+              type="button"
+              className="cron-secondary-button"
+              disabled={!configAvailable || busy}
+              aria-describedby={configUnavailableReason === undefined ? undefined : configUnavailableId}
+              onClick={() => void openConfig()}
+            >
+              View config
+            </button>
+          </div>
+          <div className="cron-control-status">
+            {actionUnavailableReason !== undefined && (
+              <p id={actionUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
+                {actionUnavailableReason}
+              </p>
+            )}
+            {configUnavailableReason !== undefined && (
+              <p id={configUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
+                {configUnavailableReason}
+              </p>
+            )}
+          </div>
         </div>
-        {actionUnavailableReason !== undefined && (
-          <p id={actionUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
-            {actionUnavailableReason}
-          </p>
-        )}
-        {configUnavailableReason !== undefined && (
-          <p id={configUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
-            {configUnavailableReason}
-          </p>
-        )}
         {cronOverview?.jobsTruncated === true && (
           <p className="cron-unavailable-reason" role="status">
             Older historical jobs are omitted from this bounded overview; their saved conversations remain available.
@@ -336,12 +337,14 @@ export function CronChannelHeader() {
               <Icon name="close" size={17} />
             </button>
           </header>
-          <p>{pending.confirmation.message}</p>
-          <small>Confirmation expires {displayTime(pending.confirmation.expiresAt)}.</small>
-          {error !== undefined && <p className="cron-action-error" role="alert">{error}</p>}
+          <div className="cron-dialog-body">
+            <p>{pending.confirmation.message}</p>
+            <small>Confirmation expires {displayTime(pending.confirmation.expiresAt)}.</small>
+            {error !== undefined && <p className="cron-action-error" role="alert">{error}</p>}
+          </div>
           <footer>
-            <button type="button" disabled={busy} onClick={() => setPending(undefined)}>Cancel</button>
-            <button type="button" className="cron-action-primary" disabled={busy} onClick={() => void confirm()}>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setPending(undefined)}>Cancel</button>
+            <button type="button" className="primary-button" disabled={busy} onClick={() => void confirm()}>
               {busy ? "Applying…" : "Confirm"}
             </button>
           </footer>
@@ -365,7 +368,7 @@ export function CronChannelHeader() {
               </div>
             ))}
           </dl>
-          <footer><button type="button" onClick={() => setConfigOpen(false)}>Close</button></footer>
+          <footer><button type="button" className="primary-button" onClick={() => setConfigOpen(false)}>Close</button></footer>
         </CronDialog>
       )}
     </>

@@ -11,6 +11,7 @@ import type { ThreadSummary } from "../types";
 import { AutomationsList } from "./AutomationsList";
 import { DataModeIndicator } from "./DataModeIndicator";
 import { Icon } from "./Icon";
+import { SidebarSearch } from "./SidebarSearch";
 import { ThreadSearchResults } from "./ThreadSearchResults";
 import { relativeTime } from "./time";
 
@@ -168,21 +169,12 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
       </nav>
       {navigationDestination === "chats" ? (
         <>
-          <label className="thread-search">
-            <Icon name="search" size={16} />
-            <span className="sr-only">Search conversations</span>
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search conversations"
-              type="search"
-            />
-            {query && (
-              <button type="button" onClick={() => setQuery("")} aria-label="Clear search">
-                <Icon name="close" size={13} />
-              </button>
-            )}
-          </label>
+          <SidebarSearch
+            label="Search conversations"
+            placeholder="Search conversations"
+            value={query}
+            onChange={setQuery}
+          />
           {threadListError !== null && (
             <div className="thread-list-error" role="alert">
               <span>Conversations could not be refreshed. {threadListError}</span>

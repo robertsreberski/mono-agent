@@ -304,6 +304,34 @@ describe("ThreadSidebar Automations destination", () => {
     expect(screen.queryByText(/Loading automations/iu)).toBeNull();
   });
 
+  it("searches the complete overview locally without refreshing the agent", () => {
+    storeMock.current!.cronOverview = {
+      ...overview,
+      jobs: [
+        ...overview.jobs,
+        {
+          ...overview.jobs[0]!,
+          jobId: "weekly-review",
+          expression: "0 9 * * 1",
+          timezone: "UTC",
+          effectiveEnabled: false,
+          health: "warning",
+          threadId: "cron-weekly",
+        },
+      ],
+    };
+    render(<ThreadSidebar />);
+
+    const search = screen.getByRole("searchbox", { name: "Search automations" });
+    fireEvent.change(search, { target: { value: "warning" } });
+    expect(screen.getByRole("button", { name: "Open run history for weekly-review" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open run history for daily:brief" })).toBeNull();
+    fireEvent.change(search, { target: { value: "does not exist" } });
+    expect(screen.getByText("No matching automations")).toBeVisible();
+    expect(storeMock.current!.refreshCron).not.toHaveBeenCalled();
+    expect(apiMock.searchThreads).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       name: "loading",

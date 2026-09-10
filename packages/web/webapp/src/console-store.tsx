@@ -3635,8 +3635,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           // "stale" by that same transition made a "refetch only when it is not
           // ready" guard true every single time, putting two requests on the
           // wire per reconnect with the first aborted mid-flight.
-          // Only a cron channel reads the overview.
-          if (selectedCronJobIdRef.current !== undefined) {
+          // The initial selected-agent effect already owns the first overview
+          // read. Refresh only on a later stream recovery; otherwise a slow
+          // first `ready` arriving just after the operator opens a job buys a
+          // duplicate overview and flashes background status.
+          if (!firstReady && selectedCronJobIdRef.current !== undefined) {
             setCronRefreshToken((value) => value + 1);
           }
           return;

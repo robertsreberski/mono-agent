@@ -77,6 +77,9 @@ describe("CronChannelHeader", () => {
   it("renders an agent-unknown next run without deriving it from the expression", () => {
     render(<CronChannelHeader />);
 
+    expect(screen.getByRole("group", { name: "Cron controls" })).toBeVisible();
+    expect(document.querySelector(".cron-channel-facts")?.tagName).toBe("DL");
+    expect(screen.queryByText(/^Session\b/u)).toBeNull();
     const nextRun = screen.getByText("Next run").parentElement;
     expect(nextRun).not.toBeNull();
     expect(within(nextRun!).getByText("Unknown")).toBeInTheDocument();
@@ -142,6 +145,8 @@ describe("CronChannelHeader", () => {
     fireEvent.click(screen.getByRole("button", { name: "View config" }));
 
     const configDialog = await screen.findByRole("dialog", { name: "Cron configuration" });
+    expect(configDialog).toHaveClass("agent-settings-dialog", "cron-dialog");
+    expect(configDialog.querySelector(".cron-config-fields")?.tagName).toBe("DL");
     await waitFor(() => expect(configDialog).toHaveFocus());
     expect(screen.getByText("[redacted]")).toBeInTheDocument();
     expect(screen.getByText("json · redacted")).toBeInTheDocument();
