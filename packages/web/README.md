@@ -170,15 +170,18 @@ Tailscale DNS name); suffix wildcards are intentionally not trusted. When a
 managed agent protects its loopback operator endpoint, discovery reads only
 `MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file.
 
-On desktop, the agent rail has fixed compact and expanded layouts selected by
-an explicit expand/collapse control. That choice is remembered by the browser.
+One Dashboard is the console's whole navigation surface: a fixed 340-pixel left
+column on desktop, and the single drawer on narrow touch screens. It holds the
+agent strip, conversation search, a Running section for the conversations this
+browser is holding that have work in flight, the Recent listing with its All and
+Cron chips, and a footer carrying the data-mode indicator and the archive shelf.
 On narrow touch screens, a deliberate right swipe across the unoccupied chat
-surface or ordinary unselected transcript text opens the conversation drawer.
-A left swipe across either open navigation drawer closes it. Controls, active
-text selections, inputs, and any native horizontal scroller keep their normal
-touch behavior; short drags and vertically dominant scrolling do not trigger
-navigation. The two header navigation controls remain available as 44-pixel
-touch targets.
+surface or ordinary unselected transcript text opens it, and a left swipe across
+the open drawer closes it. Controls, active text selections, inputs, and any
+native horizontal scroller keep their normal touch behavior in both directions;
+short drags and vertically dominant scrolling do not trigger navigation. The
+header's single **Open dashboard** control remains available as a 44-pixel touch
+target.
 Offline agents that remain in the current discovery result are hidden behind a
 subtle count by default; pinned agents and the currently selected agent remain
 visible even while offline. An agent omitted by a successful discovery refresh
@@ -239,7 +242,7 @@ level. Configured subagents keep independent attribution in their own Activity
 row. The browser never infers a fallback from selector state, and the
 route-attribution payload never carries raw provider errors or request identifiers.
 
-The agent rail's settings action opens a separate **Agent settings** dialog.
+The dashboard header's settings action opens a separate **Agent settings** dialog.
 Its model and effort choices become the defaults for subsequently created web
 console conversations for that agent. Either field may inherit resolved config,
 and **Revert to config** clears both overrides in one action. These settings live
@@ -452,7 +455,7 @@ expanding fetches the whole part from the message-bound tool-call route, and a
 device-restored repair is accepted only when that digest still matches.
 
 The console runs in a browser-local data mode — Auto, Lean, or Full — cycled
-from the sidebar-footer indicator or the command palette, alongside a session
+from the dashboard-footer indicator or the command palette, alongside a session
 byte total and per-minute rate marked estimated whenever any component is not a
 browser measurement. `Auto` reads the Network Information API and resolves to
 Full where there is none (Safari, and so iOS), which is why an installed PWA is

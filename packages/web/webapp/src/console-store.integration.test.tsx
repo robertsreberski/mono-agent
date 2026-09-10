@@ -71,12 +71,11 @@ import type {
 import { WebRuntimeProvider } from "./runtime";
 import { threadPresentation } from "./thread-presentation";
 import { NotificationsProvider } from "./notifications";
-import { AgentRail } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
 import { Composer } from "./components/Composer";
 import { AssistantMessage, SystemMessage, UserMessage } from "./components/Messages";
 import { ProcessJobStack } from "./components/ProcessJobStack";
-import { ThreadSidebar } from "./components/ThreadSidebar";
+import { Dashboard } from "./components/dashboard/Dashboard";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
 // `instanceof ApiError` and on its status to tell a server that refused a
@@ -445,9 +444,8 @@ describe("ConsoleStoreProvider integration", () => {
             <NotificationsProvider>
               <WebRuntimeProvider>
                 <div className="app-shell">
-                  <AgentRail expanded />
-                  <ThreadSidebar />
-                  <Chat onOpenAgents={() => {}} onOpenThreads={() => {}} />
+                  <Dashboard />
+                  <Chat onOpenDashboard={() => {}} />
                 </div>
               </WebRuntimeProvider>
             </NotificationsProvider>
@@ -472,7 +470,7 @@ describe("ConsoleStoreProvider integration", () => {
         (value) => String(value).includes("useClientLookup"),
       )).toBe(false);
       expect(screen.getByRole("navigation", { name: "Agents" })).toBeInTheDocument();
-      expect(screen.getByRole("complementary", { name: "Conversations" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Recent" })).toBeInTheDocument();
       expect(screen.getByRole("main")).toBeInTheDocument();
       expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
     } finally {

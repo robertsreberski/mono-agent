@@ -1,6 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AGENT_RAIL_STORAGE_KEY } from "./agent-rail-layout";
 import { resetComposerDraft, writeComposerDraft } from "./composer-draft";
 import { readDataModeSetting, resetDataModeSession, writeDataModeSetting } from "./data-mode";
 import { recordDataUsage, resetDataUsage } from "./data-usage";
@@ -48,40 +47,25 @@ vi.mock("./console-store", () => ({
   useConsoleStore: () => storeMock,
 }));
 
-vi.mock("./components/AgentRail", () => ({
-  AgentRail: ({
-    expanded,
-    onToggleExpanded,
-  }: {
-    readonly expanded?: boolean;
-    readonly onToggleExpanded?: () => void;
-  }) => (
-    <div data-testid="agent-rail" data-expanded={String(Boolean(expanded))}>
-      <button type="button" onClick={onToggleExpanded}>Toggle agent sidebar</button>
-    </div>
-  ),
+vi.mock("./components/BrandMark", () => ({
   BrandMark: () => <span>mono-agent</span>,
-  MobileAgentPicker: () => <div>Agents</div>,
 }));
 
 vi.mock("./components/Chat", () => ({
-  Chat: ({
-    onOpenAgents,
-    onOpenThreads,
-  }: {
-    readonly onOpenAgents: () => void;
-    readonly onOpenThreads: () => void;
-  }) => (
+  Chat: ({ onOpenDashboard }: { readonly onOpenDashboard: () => void }) => (
     <main>
       Chat
-      <button type="button" onClick={onOpenAgents}>Choose agent</button>
-      <button type="button" onClick={onOpenThreads}>Open conversations</button>
+      <button type="button" onClick={onOpenDashboard}>Open dashboard</button>
     </main>
   ),
 }));
 
-vi.mock("./components/ThreadSidebar", () => ({
-  ThreadSidebar: () => <aside>Threads</aside>,
+vi.mock("./components/dashboard/Dashboard", () => ({
+  Dashboard: ({ onNavigate }: { readonly onNavigate?: () => void }) => (
+    <div data-testid="dashboard">
+      <button type="button" onClick={onNavigate}>Open a conversation</button>
+    </div>
+  ),
 }));
 
 import { App } from "./App";
@@ -132,30 +116,34 @@ describe("App new-conversation shortcut", () => {
   });
 });
 
-describe("App agent sidebar toggle", () => {
-  it("toggles between the two fixed states and persists the result", () => {
-    render(<App />);
-    const toggle = screen.getByRole("button", { name: "Toggle agent sidebar" });
-
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "false");
-    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
-    fireEvent.click(toggle);
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "true");
-    expect(localStorage.getItem(AGENT_RAIL_STORAGE_KEY)).toBe("240");
-
-    fireEvent.click(toggle);
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "false");
-    expect(localStorage.getItem(AGENT_RAIL_STORAGE_KEY)).toBe("72");
-  });
-
-  it("treats a legacy expanded width as the expanded state", () => {
-    localStorage.setItem(AGENT_RAIL_STORAGE_KEY, "204");
-    render(<App />);
-    expect(screen.getByTestId("agent-rail")).toHaveAttribute("data-expanded", "true");
-  });
-});
+/** What the retired agent rail wrote, and what a returning browser still has. */
+const LEGACY_RAIL_WIDTH_KEY = "mono-agent.web.agent-rail-width";
 
 describe("App viewport layout", () => {
+  it("gives the desktop shell one navigation column and no width preference", () => {
+    // There is one navigation surface now, at one width. Nothing reads or
+    // writes a stored rail width any more, and a browser that has one is not
+    // owed a migration -- only silence.
+    localStorage.setItem(LEGACY_RAIL_WIDTH_KEY, "204");
+    const { container } = render(<App />);
+    const shell = container.querySelector<HTMLElement>(".app-shell");
+
+    expect(shell).not.toBeNull();
+    expect(getComputedStyle(shell!).gridTemplateColumns).toBe("340px minmax(0, 1fr)");
+    expect(screen.getAllByTestId("dashboard")).toHaveLength(1);
+    expect(localStorage.getItem(LEGACY_RAIL_WIDTH_KEY)).toBe("204");
+  });
+
+  it("is a navigation region on desktop rather than a modal drawer", () => {
+    const { container } = render(<App />);
+
+    const panel = container.querySelector<HTMLElement>(".dashboard-panel");
+    expect(panel).toHaveAttribute("role", "navigation");
+    expect(panel).not.toHaveAttribute("aria-modal");
+    expect(panel).not.toHaveAttribute("inert");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it("constrains the grid row so long conversation lists cannot push the composer off-screen", () => {
     const { container } = render(<App />);
     const shell = container.querySelector<HTMLElement>(".app-shell");
@@ -172,7 +160,7 @@ describe("App viewport layout", () => {
   });
 });
 
-describe("App mobile drawer gestures", () => {
+describe("App mobile drawer", () => {
   beforeEach(() => {
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
@@ -203,17 +191,64 @@ describe("App mobile drawer gestures", () => {
     });
   };
 
-  it("opens conversations after a deliberate right swipe across the chat surface", () => {
+  const drawer = (container: HTMLElement): HTMLElement => {
+    const found = container.querySelector<HTMLElement>(".dashboard-panel");
+    if (!found) throw new Error("Expected one dashboard panel");
+    return found;
+  };
+
+  it("is one closed modal drawer until something opens it", () => {
+    const { container } = render(<App />);
+
+    const panel = drawer(container);
+    expect(panel).toHaveAttribute("role", "dialog");
+    expect(panel).toHaveAttribute("aria-modal", "true");
+    expect(panel).toHaveAttribute("aria-label", "Dashboard");
+    expect(panel).toHaveAttribute("aria-hidden", "true");
+    expect(panel).toHaveAttribute("inert");
+    expect(screen.queryByRole("button", { name: "Close navigation" })).toBeNull();
+  });
+
+  it("opens from the one header control and closes on a navigation action", () => {
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    const panel = drawer(container);
+    expect(panel).toHaveAttribute("aria-hidden", "false");
+    expect(panel).not.toHaveAttribute("inert");
+    // The conversation stays on screen and out of the tab order behind it.
+    expect(container.querySelector(".chat-region")).toHaveAttribute("inert");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
+    expect(panel).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".chat-region")).not.toHaveAttribute("inert");
+  });
+
+  it("closes from the scrim and from Escape", () => {
+    const { container } = render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    // Queried by class rather than by role: jsdom's viewport is wider than the
+    // breakpoint that gives the scrim a box, so it is display:none here even
+    // though the drawer is open. Its accessible name is covered in Chromium.
+    const scrim = container.querySelector<HTMLElement>(".drawer-scrim");
+    expect(scrim).toHaveAttribute("aria-label", "Close navigation");
+    fireEvent.click(scrim!);
+    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("opens the dashboard after a deliberate right swipe across the chat surface", () => {
     const { container } = render(<App />);
     const shell = container.querySelector(".app-shell");
     expect(shell).not.toBeNull();
 
     swipe(shell!, { x: 180, y: 240 }, { x: 256, y: 250 });
 
-    expect(container.querySelector(".mobile-thread-drawer"))
-      .toHaveAttribute("aria-hidden", "false");
-    expect(container.querySelector(".mobile-agent-drawer"))
-      .toHaveAttribute("aria-hidden", "true");
+    expect(drawer(container)).toHaveAttribute("aria-hidden", "false");
   });
 
   it("does not open for a short drag or a vertical scroll", () => {
@@ -224,18 +259,16 @@ describe("App mobile drawer gestures", () => {
     swipe(shell!, { x: 180, y: 240 }, { x: 243, y: 245 });
     swipe(shell!, { x: 180, y: 240 }, { x: 250, y: 320 });
 
-    expect(container.querySelector(".mobile-thread-drawer"))
-      .toHaveAttribute("aria-hidden", "true");
+    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
   });
 
   it("does not compete with interactive controls", () => {
     const { container } = render(<App />);
-    const chooseAgent = screen.getByRole("button", { name: "Choose agent" });
+    const openDashboard = screen.getByRole("button", { name: "Open dashboard" });
 
-    swipe(chooseAgent, { x: 12, y: 30 }, { x: 100, y: 32 });
+    swipe(openDashboard, { x: 12, y: 30 }, { x: 100, y: 32 });
 
-    expect(container.querySelector(".mobile-thread-drawer"))
-      .toHaveAttribute("aria-hidden", "true");
+    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
   });
 
   it("opens from ordinary transcript text", () => {
@@ -251,8 +284,7 @@ describe("App mobile drawer gestures", () => {
     shell!.append(message);
     swipe(messageContent, { x: 40, y: 200 }, { x: 130, y: 204 });
 
-    expect(container.querySelector(".mobile-thread-drawer"))
-      .toHaveAttribute("aria-hidden", "false");
+    expect(drawer(container)).toHaveAttribute("aria-hidden", "false");
   });
 
   it("leaves active text selections and native horizontal scrollers in control", () => {
@@ -280,25 +312,41 @@ describe("App mobile drawer gestures", () => {
     shell!.append(scroller);
     swipe(scrollContent, { x: 40, y: 240 }, { x: 130, y: 244 });
 
-    expect(container.querySelector(".mobile-thread-drawer"))
-      .toHaveAttribute("aria-hidden", "true");
+    expect(drawer(container)).toHaveAttribute("aria-hidden", "true");
   });
 
-  it("closes either open drawer with a deliberate left swipe", () => {
+  it("closes the open drawer with a deliberate left swipe across it", () => {
     const { container } = render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Choose agent" }));
-    const agentDrawer = container.querySelector(".mobile-agent-drawer");
-    expect(agentDrawer).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    const panel = drawer(container);
+    expect(panel).toHaveAttribute("aria-hidden", "false");
 
-    swipe(agentDrawer!, { x: 220, y: 240 }, { x: 140, y: 245 });
-    expect(agentDrawer).toHaveAttribute("aria-hidden", "true");
+    swipe(panel, { x: 220, y: 240 }, { x: 140, y: 245 });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open conversations" }));
-    const threadDrawer = container.querySelector(".mobile-thread-drawer");
-    expect(threadDrawer).not.toBeNull();
-    swipe(threadDrawer!, { x: 220, y: 240 }, { x: 140, y: 245 });
+    expect(panel).toHaveAttribute("aria-hidden", "true");
+  });
 
-    expect(threadDrawer).toHaveAttribute("aria-hidden", "true");
+  it("leaves a horizontal scroller inside the open drawer in control of its own swipe", () => {
+    // The agent strip is one, and a swipe meant to reach the agent at the end
+    // of it was closing the drawer instead. The exclusions apply while closing
+    // now, and the drawer's own root is the one thing exempted from them.
+    const { container } = render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Open dashboard" }));
+    const panel = drawer(container);
+
+    const strip = document.createElement("div");
+    const chip = document.createElement("span");
+    strip.style.overflowX = "auto";
+    Object.defineProperties(strip, {
+      clientWidth: { configurable: true, value: 300 },
+      scrollWidth: { configurable: true, value: 620 },
+    });
+    strip.append(chip);
+    panel.append(strip);
+
+    swipe(chip, { x: 220, y: 240 }, { x: 140, y: 245 });
+
+    expect(panel).toHaveAttribute("aria-hidden", "false");
   });
 });
 

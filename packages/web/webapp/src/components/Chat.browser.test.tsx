@@ -116,7 +116,7 @@ const chatStore = (
 const chatTree = (width = 760) => (
   <div style={{ width, height: 520 }}>
     <WebRuntimeProvider>
-      <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />
+      <Chat onOpenDashboard={() => undefined} />
     </WebRuntimeProvider>
   </div>
 );
