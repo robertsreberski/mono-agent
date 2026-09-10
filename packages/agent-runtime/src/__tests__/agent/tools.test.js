@@ -214,11 +214,11 @@ describe("ai tool helpers", () => {
     expect(result.data).toBe(jpgBytes.toString("base64"));
   });
 
-  it("normalizes image edges above 8,000 px without modifying the source file", async () => {
+  it("normalizes image edges above 2,000 px without modifying the source file", async () => {
     const root = tempWorkspace();
     const sourcePath = join(root, "tall.png");
     const pngBytes = await sharp({
-      create: { width: 4, height: 8_001, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
+      create: { width: 4, height: 2_001, channels: 4, background: { r: 20, g: 40, b: 60, alpha: 1 } },
     }).png().toBuffer();
     writeFileSync(sourcePath, pngBytes);
 
@@ -229,7 +229,7 @@ describe("ai tool helpers", () => {
     expect(result.kind).toBe("image");
     expect(result.mimeType).toBe("image/png");
     expect(metadata.width).toBe(4);
-    expect(metadata.height).toBe(8_000);
+    expect(metadata.height).toBe(2_000);
     expect(normalized.equals(pngBytes)).toBe(false);
     expect(readFileSync(sourcePath).equals(pngBytes)).toBe(true);
   });
@@ -240,7 +240,7 @@ describe("ai tool helpers", () => {
   ])("preserves %s format when normalizing", async (_label, extension, format, mimeType) => {
     const root = tempWorkspace();
     const source = sharp({
-      create: { width: 2, height: 8_001, channels: 3, background: { r: 80, g: 100, b: 120 } },
+      create: { width: 2, height: 2_001, channels: 3, background: { r: 80, g: 100, b: 120 } },
     });
     const imageBytes = await source.toFormat(format).toBuffer();
     writeFileSync(join(root, `tall.${extension}`), imageBytes);
@@ -250,16 +250,16 @@ describe("ai tool helpers", () => {
 
     expect(result.mimeType).toBe(mimeType);
     expect(metadata.format).toBe(format);
-    expect(metadata.height).toBe(8_000);
+    expect(metadata.height).toBe(2_000);
   });
 
   it("preserves all frames when normalizing animated GIF images", async () => {
     const root = tempWorkspace();
     const firstFrame = await sharp({
-      create: { width: 2, height: 8_001, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } },
+      create: { width: 2, height: 2_001, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } },
     }).png().toBuffer();
     const secondFrame = await sharp({
-      create: { width: 2, height: 8_001, channels: 4, background: { r: 0, g: 0, b: 255, alpha: 1 } },
+      create: { width: 2, height: 2_001, channels: 4, background: { r: 0, g: 0, b: 255, alpha: 1 } },
     }).png().toBuffer();
     const gifBytes = await sharp([firstFrame, secondFrame], { join: { animated: true } })
       .gif({ delay: [50, 100], loop: 0 })
@@ -272,13 +272,13 @@ describe("ai tool helpers", () => {
 
     expect(result.mimeType).toBe("image/gif");
     expect(metadata.pages).toBe(2);
-    expect(metadata.pageHeight).toBe(8_000);
+    expect(metadata.pageHeight).toBe(2_000);
   });
 
   it("converts resized BMP images to PNG", async () => {
     const root = tempWorkspace();
     const width = 2;
-    const height = 8_001;
+    const height = 2_001;
     const bmpBytes = encodeBmp({
       width,
       height,
@@ -293,7 +293,7 @@ describe("ai tool helpers", () => {
     expect(result.mimeType).toBe("image/png");
     expect(metadata.format).toBe("png");
     expect(metadata.width).toBe(2);
-    expect(metadata.height).toBe(8_000);
+    expect(metadata.height).toBe(2_000);
   });
 
   it("returns an actionable Read error for undecodable image files", async () => {
