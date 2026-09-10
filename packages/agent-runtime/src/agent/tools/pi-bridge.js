@@ -31,6 +31,7 @@ import {
 import { formatSkillBodyWithPathNote } from "../prompt/skill-index.js";
 import { MAX_TOOL_RESULT_BYTES, summarisePayload, wrapToolsWithBloatGuard } from "../tool-bloat.js";
 import { wrapToolsWithApprovalGate } from "../approval.js";
+import { normalizeImageForModel } from "./shared/image.js";
 import { isInsidePath } from "./shared/path-resolver.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
@@ -850,7 +851,27 @@ async function connectMcpClient(name, cfg, { cwd, sandboxPolicy, sandboxEngine, 
   }
 }
 
-export function coerceMcpContent(out, {
+// MCP servers hand back screenshots at whatever size they captured — the
+// Playwright browser tools in particular follow browser_resize, so a wide desktop
+// capture arrives well past the provider ceiling while staying tiny in bytes and
+// sailing through the byte cap below. Normalize pixels before measuring bytes: a
+// shrunk screenshot may now fit the inline budget instead of being dropped for a
+// text pointer.
+async function normalizeMcpImage(data, mimeType) {
+  const raw = typeof data === "string" ? data : String(data ?? "");
+  const source = Buffer.from(raw, "base64");
+  if (source.length === 0) return { data: raw, mimeType };
+  const normalized = await normalizeImageForModel(source, mimeType);
+  // Shrinking is best-effort. An undecodable payload keeps the block exactly as
+  // the server sent it: losing the tool result would be worse than an oversized one.
+  if (normalized.reason !== undefined) return { data: raw, mimeType };
+  // Images already within the ceiling come back as the same buffer. Return the
+  // original base64 so the common path stays byte-identical and re-encodes nothing.
+  if (normalized.data === source) return { data: raw, mimeType };
+  return { data: normalized.data.toString("base64"), mimeType: normalized.mimeType };
+}
+
+export async function coerceMcpContent(out, {
   textLimit = MCP_TEXT_RESULT_LIMIT,
   imageInlineMaxBytes = MCP_IMAGE_INLINE_MAX_BYTES,
   persistArtifact = null,
@@ -859,15 +880,16 @@ export function coerceMcpContent(out, {
   onTruncate = null,
 } = {}) {
   if (Array.isArray(out?.content) && out.content.length) {
-    return out.content.map((part) => {
+    return await Promise.all(out.content.map(async (part) => {
       if (part.type === "text") return { type: "text", text: truncateMcpText(part.text || "", textLimit).text };
       if (part.type === "image") {
-        const bytes = base64Bytes(part.data);
+        const image = await normalizeMcpImage(part.data, part.mimeType || part.mime_type || "image/png");
+        const bytes = base64Bytes(image.data);
         if (bytes > imageInlineMaxBytes) {
           const summary = summarisePayload(toolName, [{
             type: "image",
-            data: part.data,
-            mimeType: part.mimeType || part.mime_type || "image/png",
+            data: image.data,
+            mimeType: image.mimeType,
           }], persistArtifact, { maxBytes: imageInlineMaxBytes, toolUseId });
           if (summary.truncated && typeof onTruncate === "function") {
             try {
@@ -887,21 +909,24 @@ export function coerceMcpContent(out, {
         }
         return {
           type: "image",
-          data: part.data,
-          mimeType: part.mimeType || part.mime_type || "image/png",
+          data: image.data,
+          mimeType: image.mimeType,
         };
       }
       return { type: "text", text: truncateMcpText(JSON.stringify(part), textLimit).text };
-    });
+    }));
   }
   return [{ type: "text", text: truncateMcpText(JSON.stringify(out || {}), textLimit).text }];
 }
 
-function mcpContentWasTruncated(out, { textLimit = MCP_TEXT_RESULT_LIMIT, imageInlineMaxBytes = MCP_IMAGE_INLINE_MAX_BYTES } = {}) {
+// Text-only. Images are measured after dimension normalization inside
+// coerceMcpContent, which reports a real truncation through onTruncate; judging
+// the raw part here would flag a screenshot that shrinking brought back under budget.
+function mcpContentWasTruncated(out, { textLimit = MCP_TEXT_RESULT_LIMIT } = {}) {
   if (Array.isArray(out?.content) && out.content.length) {
     return out.content.some((part) => {
       if (part.type === "text") return truncateMcpText(part.text || "", textLimit).truncated;
-      if (part.type === "image") return base64Bytes(part.data) > imageInlineMaxBytes;
+      if (part.type === "image") return false;
       return truncateMcpText(JSON.stringify(part), textLimit).truncated;
     });
   }
@@ -1116,7 +1141,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
           }
           const imageTruncations = [];
           return {
-            content: coerceMcpContent(out, {
+            content: await coerceMcpContent(out, {
               textLimit,
               imageInlineMaxBytes,
               persistArtifact,
@@ -1136,7 +1161,7 @@ export async function initPiMcpTools(mcpConfig, reservedNames = new Set(), {
               // throwing away the bounded content or structuredContent below.
               ...(out?.isError === true ? { mcp_result_is_error: true } : {}),
               mcp_call_duration_ms: mcpCallDurationMs,
-              result_truncated: mcpContentWasTruncated(out, { textLimit, imageInlineMaxBytes }),
+              result_truncated: mcpContentWasTruncated(out, { textLimit }) || imageTruncations.length > 0,
               raw: compactRawMcpResult(out),
               ...(imageTruncations.length ? {
                 tool_payload_truncated: true,

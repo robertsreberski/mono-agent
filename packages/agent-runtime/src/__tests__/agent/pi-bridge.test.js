@@ -52,9 +52,9 @@ afterEach(() => {
 });
 
 describe("pi MCP tool helpers", () => {
-  it("truncates oversized text results before returning them to the model", () => {
+  it("truncates oversized text results before returning them to the model", async () => {
     const large = "x".repeat(80_000);
-    const content = coerceMcpContent({ content: [{ type: "text", text: large }] });
+    const content = await coerceMcpContent({ content: [{ type: "text", text: large }] });
 
     expect(content).toHaveLength(1);
     expect(content[0].text.length).toBeLessThan(large.length);
@@ -62,19 +62,19 @@ describe("pi MCP tool helpers", () => {
     expect(content[0].text).toContain("Use a more specific MCP tool");
   });
 
-  it("leaves small text results unchanged", () => {
-    const content = coerceMcpContent({ content: [{ type: "text", text: "ok" }] });
+  it("leaves small text results unchanged", async () => {
+    const content = await coerceMcpContent({ content: [{ type: "text", text: "ok" }] });
 
     expect(content).toEqual([{ type: "text", text: "ok" }]);
   });
 
-  it("persists oversized MCP images before replacing them with compact text", () => {
+  it("persists oversized MCP images before replacing them with compact text", async () => {
     const root = tempWorkspace();
     const runArtifactDir = join(root, ".mono-agent", "artifacts", "run-image");
     const imageBytes = Buffer.from("large screenshot payload");
     const truncations = [];
 
-    const content = coerceMcpContent(
+    const content = await coerceMcpContent(
       { content: [{ type: "image", data: imageBytes.toString("base64"), mimeType: "image/png" }] },
       {
         imageInlineMaxBytes: 10,
@@ -98,6 +98,41 @@ describe("pi MCP tool helpers", () => {
       original_bytes: imageBytes.length,
       max_bytes: 10,
     });
+  });
+
+  it("caps MCP screenshot dimensions that clear the byte budget", async () => {
+    // The exact shape that broke a maintainer run: a wide desktop capture, only
+    // tens of kilobytes, so every byte-based guard let it through while its
+    // 2700 px edge blew the provider ceiling for a many-image request.
+    const wide = await sharp({
+      create: { width: 2_700, height: 648, channels: 3, background: { r: 12, g: 34, b: 56 } },
+    }).png().toBuffer();
+
+    const content = await coerceMcpContent(
+      { content: [{ type: "image", data: wide.toString("base64"), mimeType: "image/png" }] },
+      { imageInlineMaxBytes: 5_000_000, toolName: "mcp__playwright__browser_take_screenshot" },
+    );
+
+    expect(content).toHaveLength(1);
+    expect(content[0].type).toBe("image");
+    expect(content[0].mimeType).toBe("image/png");
+    const metadata = await sharp(Buffer.from(content[0].data, "base64")).metadata();
+    expect(metadata.width).toBe(2_000);
+    expect(metadata.height).toBe(480);
+  });
+
+  it("returns MCP images already within the ceiling byte-identical", async () => {
+    const shot = await sharp({
+      create: { width: 1_280, height: 900, channels: 3, background: { r: 200, g: 180, b: 160 } },
+    }).png().toBuffer();
+    const data = shot.toString("base64");
+
+    const content = await coerceMcpContent(
+      { content: [{ type: "image", data, mimeType: "image/png" }] },
+      { imageInlineMaxBytes: 5_000_000 },
+    );
+
+    expect(content).toEqual([{ type: "image", data, mimeType: "image/png" }]);
   });
 
   it("hard-caps model-supplied built-in tool budgets during execution without schema maxima", () => {

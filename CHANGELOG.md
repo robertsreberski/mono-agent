@@ -11,6 +11,18 @@
   Node line that decodes retrieved documents correctly. Upgrade Node before
   installing or updating mono-agent.
 
+- Cap every inline image handed to a model at 2,000 px per edge, down from
+  8,000 px, and apply the same normalization to MCP tool results. Anthropic
+  tightens its per-image dimension limit from 8,000 px to 2,000 px once a single
+  request carries more than 20 image blocks, counting images inside tool results
+  and every image replayed from earlier turns. A screenshot-heavy conversation
+  crosses that threshold easily, and one oversized capture then rejected the
+  whole request with an `invalid_request_error` that no retry or model failover
+  could clear, leaving the conversation permanently stuck. MCP screenshots
+  previously bypassed dimension checks entirely because they were measured only
+  in bytes, so a wide desktop capture passed every guard. Images already within
+  the ceiling are forwarded byte-identical, and source files are never modified.
+
 - Extend the configured app's startup-and-hourly artifact retention sweep to
   own raw `tool-output/<runId>/` directories under the existing
   `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime
