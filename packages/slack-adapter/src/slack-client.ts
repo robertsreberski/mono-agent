@@ -182,9 +182,14 @@ export class SlackWebApiClient implements SlackWebApi {
     try {
       response = await this.fetchImpl(params.uploadUrl, {
         method: "POST",
+        // No manual content-length. fetch derives it from the byte-array body,
+        // and supplying it as well makes undici reject the request with
+        // UND_ERR_INVALID_ARG ("invalid content-length header") whenever the
+        // process dispatches Node's built-in fetch through the undici package:
+        // importing undici replaces the global dispatcher that built-in fetch
+        // resolves, and the two layers then each contribute a length.
         headers: {
           "content-type": "application/octet-stream",
-          "content-length": String(params.data.byteLength),
         },
         body: params.data as unknown as NonNullable<RequestInit["body"]>,
         ...(signal === undefined ? {} : { signal }),
