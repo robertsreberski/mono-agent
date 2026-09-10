@@ -567,8 +567,11 @@ ledger; postconditions check the required effects.
    cold start draws before the first response. Its service worker precaches the
    shell, handles background push delivery and same-origin clicks, and is
    registered in `prompt` mode: a new build is staged and applied on the next
-   idle foreground moment or an explicit reload, never over a running turn or an
-   unsent draft.
+   idle foreground moment or an explicit reload, never over a running turn or
+   staged attachments. Unsent composer text is kept per agent and conversation
+   and retained on the device (`localStorage`, `mono-agent.web.composer-drafts`,
+   newest 40 conversations, 30-day expiry), so closing, reloading or evicting the
+   app returns it to the composer it was typed in.
 5. `deliverWebNotification` reads the owner-private live ingress record and
    performs one bearer-authenticated loopback delivery. Cron/webhook delivery
    first appends the result to agent history, then atomically exposes an

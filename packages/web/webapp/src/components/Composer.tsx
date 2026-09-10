@@ -121,27 +121,47 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
   );
 
   const draftContextKey = composerDraftKey(selectedAgentId, selectedThreadId);
+  /**
+   * Which conversation the assistant-ui runtime itself is on.
+   *
+   * The console store selects a conversation immediately; the runtime follows
+   * only once that conversation's detail resolves. Between the two, the visible
+   * composer still belongs to the PREVIOUS conversation: restoring into it wrote
+   * one conversation's text into another's composer, and the runtime's own reset
+   * -- arriving after the restore -- was then mirrored back as "the operator
+   * emptied this", which deleted the draft that had just been restored.
+   *
+   * `remoteId` is this console's conversation id; a conversation that does not
+   * exist yet has none, which is exactly the store's `null` selection.
+   */
+  const runtimeThreadId = useAuiState((state) => state.threadListItem?.remoteId ?? null);
+  const settled = runtimeThreadId === selectedThreadId;
   const restorationRef = useRef<{ readonly key: string | null; readonly text: string } | null>(null);
   useLayoutEffect(() => {
+    if (!settled) return;
     const text = readComposerDraft(selectedAgentId, selectedThreadId);
     restorationRef.current = { key: draftContextKey, text };
     if (composer.value !== text) composer.setText(text);
     setSelection({ start: text.length, end: text.length });
     savedBrowseSelection.current = { start: text.length, end: text.length };
-  }, [draftContextKey]);
+  }, [draftContextKey, settled]);
+
+  useEffect(() => {
+    noteComposerAttachments(attachmentCount > 0);
+  }, [attachmentCount]);
 
   // The layout restoration must be observed before passive mirroring starts;
   // otherwise assistant-ui's previous context value can overwrite the saved
   // target draft during a rapid A -> B -> A switch.
   useEffect(() => {
+    if (!settled) return;
     const restoration = restorationRef.current;
     if (restoration !== null && restoration.key === draftContextKey) {
       if (composer.value !== restoration.text) return;
       restorationRef.current = null;
     }
     writeComposerDraft(selectedAgentId, selectedThreadId, composer.value);
-    noteComposerAttachments(attachmentCount > 0);
-  }, [attachmentCount, composer.value, draftContextKey, selectedAgentId, selectedThreadId]);
+  }, [composer.value, draftContextKey, selectedAgentId, selectedThreadId, settled]);
 
   useEffect(() => {
     if (selectedThreadId === null || store.composerFocusThreadId !== selectedThreadId) return;
@@ -247,7 +267,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
               unstable_focusOnScrollToBottom={false}
               unstable_focusOnThreadSwitched={false}
               onChange={(event) => {
-                writeComposerDraft(selectedAgentId, selectedThreadId, event.currentTarget.value);
+                if (settled) writeComposerDraft(selectedAgentId, selectedThreadId, event.currentTarget.value);
                 captureSelection(event.currentTarget);
               }}
               onSelect={(event) => captureSelection(event.currentTarget)}
