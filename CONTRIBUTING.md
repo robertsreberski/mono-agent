@@ -7,7 +7,7 @@
 3. Find the owning package in [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`PACKAGES.md`](./PACKAGES.md).
 4. Keep the change typed, focused, and covered by behavior tests.
 
-The workspace uses pnpm and requires Node.js 22.19.0 or newer:
+The workspace uses pnpm and requires Node.js 24.15.0 or newer:
 
 ```bash
 npm install --global pnpm

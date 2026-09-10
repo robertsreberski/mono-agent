@@ -2,7 +2,7 @@
 
 import { pathToFileURL } from "node:url";
 
-export const MINIMUM_NODE_VERSION = "22.19.0";
+export const MINIMUM_NODE_VERSION = "24.15.0";
 export const SUPPORTED_NODE_ENGINE = `>=${MINIMUM_NODE_VERSION}`;
 
 export function parseNodeVersion(value) {

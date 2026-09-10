@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
+  22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
+  bytes to raw control characters instead of the WHATWG code points, so
+  `WebFetch` returned `U+0093`/`U+0094` where a cp1252 page meant curly quotes.
+  ICU 78, shipped from Node 24.14.0 onward, decodes them correctly. Rather than
+  carry two decoding behaviours across the supported range, the floor moves to a
+  Node line that decodes retrieved documents correctly. Upgrade Node before
+  installing or updating mono-agent.
+
 - Extend the configured app's startup-and-hourly artifact retention sweep to
   own raw `tool-output/<runId>/` directories under the existing
   `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime

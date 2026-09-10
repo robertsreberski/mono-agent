@@ -491,9 +491,9 @@ for an existing local agent, with one backend-specific branch in step 6.
 1. Confirm Node.js meets the supported floor. The repository `.nvmrc` pins the exact minimum; an existing agent directory may not contain that file, so select the version explicitly there:
 
    ```bash
-   node --version                 # must be >= 22.19.0
-   nvm install 22.19.0            # only if it is not installed
-   nvm use 22.19.0
+   node --version                 # must be >= 24.15.0
+   nvm install 24.15.0            # only if it is not installed
+   nvm use 24.15.0
    ```
 
 2. Stop the old agent before changing its installed packages. Then upgrade the
