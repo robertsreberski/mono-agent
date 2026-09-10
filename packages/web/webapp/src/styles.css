@@ -1029,7 +1029,10 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-row.is-job { background: color-mix(in srgb, var(--accent) 3%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line)); }
 .activity-row.is-job .activity-row-glyph { color: var(--accent); }
 .activity-row.is-job.is-running .activity-row-glyph { color: var(--warning); }
-.activity-row.is-job.is-failed { background: color-mix(in srgb, var(--danger) 3%, transparent); border-color: color-mix(in srgb, var(--danger) 20%, var(--line)); }
+/* Failure is the one outcome worth reading from across the row, and in a warm
+   theme --danger and --accent are close enough that a whisper of a border does
+   not say it. This one line is louder than the succeeded outline on purpose. */
+.activity-row.is-job.is-failed { background: color-mix(in srgb, var(--danger) 7%, transparent); border-color: color-mix(in srgb, var(--danger) 42%, var(--line)); }
 .activity-row.is-job.is-failed .activity-row-glyph { color: var(--danger); }
 .activity-row-label { flex: none; color: var(--text); font-size: 11.5px; font-weight: 650; white-space: nowrap; }
 .activity-row-summary { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1041,12 +1044,13 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
    Active cards stay visible while terminal wrappers remain mounted behind the
    history preference, preserving one card-owned polling and disclosure state. */
 .process-job-stack { min-width: 0; margin: 4px 0 12px; overflow: hidden; background: color-mix(in srgb, var(--panel) 24%, var(--surface)); border: 1px solid var(--line); border-radius: 14px; }
-.process-job-stack-header { min-height: 44px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 4px 5px 4px 12px; }
+.process-job-stack-header { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 4px 5px 4px 12px; }
+.process-job-stack-heading { min-width: 0; flex: 1; display: flex; align-items: center; gap: 10px; }
 .process-job-stack-toggle { min-height: 44px; display: flex; align-items: center; gap: 5px; padding: 0 9px; color: var(--text-muted); background: transparent; border-radius: 10px; cursor: pointer; font-size: 10px; font-weight: 650; }
 .process-job-stack-toggle:hover { background: var(--surface-subtle); }
 .process-job-stack-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
-.process-job-stack-title { font-size: 12px; font-weight: 700; white-space: nowrap; }
-.process-job-stack-counts { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.process-job-stack-title { font-size: 12px; font-weight: 700; line-height: 1.25; white-space: nowrap; }
+.process-job-stack-counts { min-width: 0; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .process-job-stack-chevron { color: var(--text-muted); transition: transform 150ms ease; }
 .process-job-stack-toggle[aria-pressed="true"] .process-job-stack-chevron { transform: rotate(180deg); }
 .process-job-stack-body { padding: 0 8px 8px; }
@@ -1205,10 +1209,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .model-selector__effort-option { min-height: 38px; padding-inline: 12px; font-size: 11px; }
   .message-column { --column-padding: 12px; padding-block: 24px 8px; }
   .message { margin-bottom: 23px; }
-  .process-job-stack-header { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding-left: 12px; }
-  .process-job-stack-title { grid-area: 1 / 1; }
-  .process-job-stack-counts { grid-area: 2 / 1; white-space: normal; }
-  .process-job-stack-toggle { grid-area: 1 / 2 / 3; }
+  /* The two lines are one label, so they stay tight to each other; the header's
+     own padding is what separates them from the card edge. */
+  .process-job-stack-header { gap: 8px; padding-left: 12px; }
+  .process-job-stack-heading { display: grid; gap: 1px; }
+  .process-job-stack-counts { white-space: normal; }
   .message-user-content { max-width: 88%; padding: 9px 12px; }
   .assistant-content > :is(.activity-root, .activity-row.is-job):first-child { margin-top: -6px; }
   .reply-attachment { align-items: flex-start; flex-wrap: wrap; }

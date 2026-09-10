@@ -71,10 +71,14 @@ export function ProcessJobStack() {
   return (
     <section className="process-job-stack" aria-labelledby={`${stackId}-label`}>
       <div className="process-job-stack-header">
-        <span id={`${stackId}-label`} className="process-job-stack-title">Background jobs</span>
-        <span className="process-job-stack-counts" aria-live="polite" aria-atomic="true">
-          {countLabel}
-        </span>
+        {/* Title and counts are one label: kept in their own box so a taller
+            control beside them cannot stretch the line spacing between them. */}
+        <div className="process-job-stack-heading">
+          <span id={`${stackId}-label`} className="process-job-stack-title">Background jobs</span>
+          <span className="process-job-stack-counts" aria-live="polite" aria-atomic="true">
+            {countLabel}
+          </span>
+        </div>
         {hasHistoryDisclosure && (
           <button
             type="button"
