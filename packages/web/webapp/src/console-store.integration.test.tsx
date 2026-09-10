@@ -3616,6 +3616,7 @@ describe("ConsoleStoreProvider integration", () => {
         sourceId: "alpha",
         archived: false,
         limit: THREAD_PAGE_LIMIT,
+        scope: "chats",
       });
       // The bucket the bootstrap carried is not re-read...
       expect(api.threads).not.toHaveBeenCalled();

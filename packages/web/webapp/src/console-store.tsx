@@ -4399,11 +4399,25 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [cancelPersist]);
 
   useEffect(() => {
-    const signature = `${selectedAgentId ?? ""}\0${selectedAgent?.cron?.read === true ? "read" : "stored"}\0${cronRefreshToken}`;
+    // A source-qualified cron URL can name its agent before bootstrap has
+    // supplied that agent's capability row. Keep that unresolved shell
+    // distinct from a resolved legacy/offline agent: an early overview read
+    // may fail before bootstrap creates the route-owned selection request, and
+    // the resolved row must get one retry so the route can settle honestly.
+    const cronReadState = selectedAgent == null
+      ? "unknown"
+      : selectedAgent.cron?.read === true ? "read" : "stored";
+    const signature = `${selectedAgentId ?? ""}\0${cronReadState}\0${cronRefreshToken}`;
     if (cronEffectSignatureRef.current === signature) return;
     cronEffectSignatureRef.current = signature;
     void refreshCron();
-  }, [cronRefreshToken, refreshCron, selectedAgent?.cron?.read, selectedAgentId]);
+  }, [
+    cronRefreshToken,
+    refreshCron,
+    selectedAgent?.cron?.read,
+    selectedAgent?.sourceId,
+    selectedAgentId,
+  ]);
 
   useEffect(() => {
     const generation = ++skillRequestGenerationRef.current;
