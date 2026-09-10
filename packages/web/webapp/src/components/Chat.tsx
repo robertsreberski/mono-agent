@@ -426,13 +426,7 @@ function EmptyConversation() {
   );
 }
 
-export function Chat({
-  onOpenAgents,
-  onOpenThreads,
-}: {
-  readonly onOpenAgents: () => void;
-  readonly onOpenThreads: () => void;
-}) {
+export function Chat({ onOpenDashboard }: { readonly onOpenDashboard: () => void }) {
   const {
     selectedAgent,
     selectedThread,
@@ -478,10 +472,7 @@ export function Chat({
     <main className="chat-panel">
       <header className="chat-header">
         <div className="mobile-navigation">
-          <button type="button" className="icon-button" onClick={onOpenAgents} aria-label="Choose agent">
-            <Icon name="agent" size={19} />
-          </button>
-          <button type="button" className="icon-button" onClick={onOpenThreads} aria-label="Open conversations">
+          <button type="button" className="icon-button" onClick={onOpenDashboard} aria-label="Open dashboard">
             <Icon name="menu" size={19} />
           </button>
         </div>

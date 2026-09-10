@@ -1,5 +1,4 @@
 import {
-  type CSSProperties,
   type RefObject,
   type TouchEvent as ReactTouchEvent,
   useCallback,
@@ -8,16 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  agentRailWidth,
-  readAgentRailExpanded,
-  writeAgentRailExpanded,
-} from "./agent-rail-layout";
-import { AgentRail, BrandMark, MobileAgentPicker } from "./components/AgentRail";
 import { AgentSettingsDialog } from "./components/AgentSettingsDialog";
+import { BrandMark } from "./components/BrandMark";
 import { Chat } from "./components/Chat";
+import { Dashboard } from "./components/dashboard/Dashboard";
 import { Icon, type IconName } from "./components/Icon";
-import { ThreadSidebar } from "./components/ThreadSidebar";
 import { useConsoleStore } from "./console-store";
 import {
   cycleDataModeSetting,
@@ -76,8 +70,12 @@ const DRAWER_SWIPE_EXCLUDED = [
 ].join(",");
 const MOBILE_DRAWER_MEDIA = "(max-width: 900px)";
 
+/** Whether the shell owes the Dashboard a drawer rather than a column. */
+const isMobileViewport = (): boolean =>
+  typeof window.matchMedia === "function" && window.matchMedia(MOBILE_DRAWER_MEDIA).matches;
+
 interface DrawerGestureStart extends DrawerGesturePoint {
-  readonly intent: "close" | "open-threads";
+  readonly intent: "close" | "open-dashboard";
 }
 
 function useModalFocus(
@@ -354,49 +352,27 @@ export function App() {
     hasRunningThread,
     retry,
   } = useConsoleStore();
-  const [agentDrawer, setAgentDrawer] = useState(false);
-  const [threadDrawer, setThreadDrawer] = useState(false);
+  const [drawer, setDrawer] = useState(false);
+  const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
   const [agentSettings, setAgentSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [leanOffer, setLeanOffer] = useState(false);
   const [updateDismissed, setUpdateDismissed] = useState(false);
-  const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
-  const agentDrawerRef = useRef<HTMLDivElement>(null);
-  const threadDrawerRef = useRef<HTMLDivElement>(null);
+  const dashboardRef = useRef<HTMLDivElement>(null);
   const agentSettingsRef = useRef<HTMLElement>(null);
   const drawerGestureRef = useRef<DrawerGestureStart | null>(null);
-  const appStyle = {
-    "--agent-rail-width": `${agentRailWidth(agentRailExpanded)}px`,
-  } as CSSProperties;
 
-  const toggleAgentRail = useCallback(() => {
-    setAgentRailExpanded((current) => {
-      const next = !current;
-      writeAgentRailExpanded(next);
-      return next;
-    });
-  }, []);
-
-  const closeDrawers = useCallback(() => {
-    setAgentDrawer(false);
-    setThreadDrawer(false);
-  }, []);
+  const closeDrawer = useCallback(() => setDrawer(false), []);
   const closePalette = useCallback(() => setPalette(false), []);
   const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
   const togglePalette = useCallback(() => {
-    closeDrawers();
+    closeDrawer();
     setPalette((current) => !current);
-  }, [closeDrawers]);
-  const openAgents = useCallback(() => {
+  }, [closeDrawer]);
+  const openDashboard = useCallback(() => {
     setPalette(false);
-    setThreadDrawer(false);
-    setAgentDrawer(true);
-  }, []);
-  const openThreads = useCallback(() => {
-    setPalette(false);
-    setAgentDrawer(false);
-    setThreadDrawer(true);
+    setDrawer(true);
   }, []);
 
   const startDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
@@ -409,24 +385,27 @@ export function App() {
 
     const touch = event.touches[0];
     if (!touch) return;
-    const drawerOpen = agentDrawer || threadDrawer;
     const target = event.target instanceof Element ? event.target : null;
     const selection = window.getSelection();
+    const excluded = target?.closest(DRAWER_SWIPE_EXCLUDED) ?? null;
+    // The exclusions apply in BOTH directions now that there is one drawer to
+    // swipe across: its agent strip is a native horizontal scroller and its
+    // options popover is a control, and a swipe meant for either of those was
+    // dismissing the drawer under the operator's thumb. The drawer's own root
+    // matches `[role="dialog"]` and is the one thing exempted -- a dialog
+    // nested INSIDE it is still excluded, because it owns that gesture.
+    if (excluded !== null && excluded !== dashboardRef.current) return;
     if (
-      !drawerOpen
-      && (
-        target?.closest(DRAWER_SWIPE_EXCLUDED)
-        || hasHorizontalScrollAncestor(target, event.currentTarget)
-        || (selection !== null && !selection.isCollapsed)
-      )
+      hasHorizontalScrollAncestor(target, event.currentTarget)
+      || (selection !== null && !selection.isCollapsed)
     ) return;
 
     drawerGestureRef.current = {
       x: touch.clientX,
       y: touch.clientY,
-      intent: drawerOpen ? "close" : "open-threads",
+      intent: drawer ? "close" : "open-dashboard",
     };
-  }, [agentDrawer, threadDrawer]);
+  }, [drawer]);
 
   const finishDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     const start = drawerGestureRef.current;
@@ -436,31 +415,37 @@ export function App() {
     const touch = event.changedTouches[0];
     if (!touch) return;
     const end = { x: touch.clientX, y: touch.clientY };
-    const direction = start.intent === "open-threads" ? "right" : "left";
+    const direction = start.intent === "open-dashboard" ? "right" : "left";
     if (!isMobileDrawerSwipe(start, end, direction)) return;
 
     event.preventDefault();
-    if (start.intent === "open-threads") openThreads();
-    else closeDrawers();
-  }, [closeDrawers, openThreads]);
+    if (start.intent === "open-dashboard") openDashboard();
+    else closeDrawer();
+  }, [closeDrawer, openDashboard]);
 
   const cancelDrawerGesture = useCallback(() => {
     drawerGestureRef.current = null;
   }, []);
 
-  useModalFocus(agentDrawer, agentDrawerRef, closeDrawers);
-  useModalFocus(threadDrawer, threadDrawerRef, closeDrawers);
+  // The Dashboard is a modal drawer only while it IS one. On desktop it is the
+  // left column of the shell, and trapping focus in a column nobody opened
+  // would take the keyboard away from the conversation.
+  useModalFocus(mobile && drawer, dashboardRef, closeDrawer);
   useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const mobileDrawerViewport = window.matchMedia(MOBILE_DRAWER_MEDIA);
     const onChange = (event: MediaQueryListEvent) => {
-      if (!event.matches) closeDrawers();
+      setMobile(event.matches);
+      // Crossing back to desktop turns the drawer into the column it always
+      // was; leaving `drawer` true would reopen it on the next narrow render.
+      if (!event.matches) closeDrawer();
     };
+    setMobile(mobileDrawerViewport.matches);
     mobileDrawerViewport.addEventListener("change", onChange);
     return () => mobileDrawerViewport.removeEventListener("change", onChange);
-  }, [closeDrawers]);
+  }, [closeDrawer]);
 
   useEffect(() => {
     const onCommand = () => togglePalette();
@@ -469,7 +454,7 @@ export function App() {
       if (detail?.message) setNotice(detail.message);
     };
     const onAgentSettings = () => {
-      closeDrawers();
+      closeDrawer();
       setPalette(false);
       setAgentSettings(true);
     };
@@ -481,7 +466,7 @@ export function App() {
       window.removeEventListener("mono-agent:notice", onNotice);
       window.removeEventListener("mono-agent:agent-settings", onAgentSettings);
     };
-  }, [closeDrawers, togglePalette]);
+  }, [closeDrawer, togglePalette]);
 
   useEffect(() => {
     if (!notice && !actionError) return;
@@ -589,12 +574,12 @@ export function App() {
       }
       if (event.key === "Escape") {
         setPalette(false);
-        closeDrawers();
+        closeDrawer();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDrawers, palette, togglePalette]);
+  }, [closeDrawer, palette, togglePalette]);
 
   const store = useConsoleStore();
   useEffect(() => {
@@ -613,44 +598,41 @@ export function App() {
   return (
     <div
       className="app-shell"
-      style={appStyle}
       onTouchStart={startDrawerGesture}
       onTouchEnd={finishDrawerGesture}
       onTouchCancel={cancelDrawerGesture}
     >
-      <div className="desktop-agent-rail">
-        <AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} />
+      {/*
+        * ONE Dashboard, mounted once. It is the desktop left column and the
+        * mobile drawer, and the difference between them is these attributes --
+        * remounting it per breakpoint would throw away a query mid-typing and
+        * a list mid-scroll on every rotation.
+        */}
+      <div
+        ref={dashboardRef}
+        className={`dashboard-panel${drawer ? " is-open" : ""}`}
+        tabIndex={-1}
+        {...(mobile
+          ? {
+              role: "dialog",
+              "aria-modal": true,
+              "aria-label": "Dashboard",
+              "aria-hidden": !drawer,
+              inert: !drawer,
+            }
+          : { role: "navigation", "aria-label": "Dashboard" })}
+      >
+        <Dashboard onNavigate={closeDrawer} />
       </div>
-      <div className="desktop-thread-sidebar"><ThreadSidebar /></div>
-      <Chat onOpenAgents={openAgents} onOpenThreads={openThreads} />
+      {/* Inert, not hidden: the conversation stays on screen behind the scrim,
+          and tabbing must not walk into it. */}
+      <div className="chat-region" inert={mobile && drawer}>
+        <Chat onOpenDashboard={openDashboard} />
+      </div>
 
-      {(agentDrawer || threadDrawer) && (
-        <button className="drawer-scrim" type="button" onClick={closeDrawers} aria-label="Close navigation" />
+      {drawer && (
+        <button className="drawer-scrim" type="button" onClick={closeDrawer} aria-label="Close navigation" />
       )}
-      <div
-        ref={agentDrawerRef}
-        className={`mobile-agent-drawer${agentDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Choose agent"
-        aria-hidden={!agentDrawer}
-        inert={!agentDrawer}
-        tabIndex={-1}
-      >
-        <MobileAgentPicker onSelect={closeDrawers} />
-      </div>
-      <div
-        ref={threadDrawerRef}
-        className={`mobile-thread-drawer${threadDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Conversations"
-        aria-hidden={!threadDrawer}
-        inert={!threadDrawer}
-        tabIndex={-1}
-      >
-        <ThreadSidebar onSelect={closeDrawers} />
-      </div>
 
       {/*
         * The console draws before anything is asked for now, so a snapshot that
