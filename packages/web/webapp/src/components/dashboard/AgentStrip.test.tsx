@@ -52,13 +52,15 @@ describe("AgentStrip", () => {
   it("names every visible agent in full and keeps hidden offline agents out", () => {
     render(<AgentStrip />);
 
-    // The square carries a monogram; the full name is the accessible name and
-    // the label under it, so nothing is reachable only by two letters.
+    // The square carries a monogram and its caption is the label's first
+    // word; the full name is the accessible name and the caption's title, so
+    // nothing is reachable only by two letters.
     expect(screen.getByRole("button", { name: "A complete favorite agent name, offline, pinned" }))
       .toBeVisible();
-    expect(screen.getByText("A complete favorite agent name")).toBeVisible();
-    expect(screen.getByText("Current offline agent")).toBeVisible();
-    expect(screen.queryByText("Hidden offline agent")).not.toBeInTheDocument();
+    expect(screen.getByTitle("A complete favorite agent name")).toHaveTextContent(/^A$/);
+    expect(screen.getByTitle("Current offline agent")).toHaveTextContent(/^Current$/);
+    expect(screen.queryByTitle("Hidden offline agent")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Hidden offline agent, offline/ })).not.toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
 

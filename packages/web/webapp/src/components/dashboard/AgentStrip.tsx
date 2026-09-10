@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
-import { agentInitials } from "./dashboard-model";
+import { agentInitials, agentShortLabel } from "./dashboard-model";
 
 /**
  * Every agent as one 48-pixel square, on one horizontally scrolling line.
@@ -93,7 +93,7 @@ export function AgentStrip({
                   <span className="agent-chip-badge" aria-hidden="true">{running}</span>
                 )}
               </button>
-              <span className="agent-chip-label" title={agent.label}>{agent.label}</span>
+              <span className="agent-chip-label" title={agent.label}>{agentShortLabel(agent.label)}</span>
               <button
                 type="button"
                 className="agent-chip-more"

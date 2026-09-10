@@ -3,6 +3,7 @@ import { agent, thread } from "../../test/fixtures";
 import type { ThreadSummary } from "../../types";
 import {
   agentInitials,
+  agentShortLabel,
   dashboardKindIcon,
   dashboardThreadKind,
   groupRunningThreads,
@@ -21,6 +22,13 @@ describe("agent initials", () => {
     ["Alpha Beta Gamma", "AB"],
   ])("renders %s as %s", (label, expected) => {
     expect(agentInitials(label)).toBe(expected);
+  });
+
+  it("captions the square with the label's first word", () => {
+    expect(agentShortLabel("Personal Agent")).toBe("Personal");
+    expect(agentShortLabel("Mono Maintainer")).toBe("Mono");
+    expect(agentShortLabel("mono-agent")).toBe("mono-agent");
+    expect(agentShortLabel("   ")).toBe("   ");
   });
 
   it("never leaves the square empty", () => {

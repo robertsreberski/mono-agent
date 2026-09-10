@@ -45,6 +45,14 @@ export const agentInitials = (label: string): string => {
 };
 
 /**
+ * The word under the square: the label's first word, as the design shows
+ * "Personal" under PA and "Mono" under MM. The square's accessible name and
+ * the header carry the whole label; a 48-pixel caption cannot.
+ */
+export const agentShortLabel = (label: string): string =>
+  label.split(/\s+/u).filter(Boolean)[0] ?? label;
+
+/**
  * Trouble first, then how the conversation started.
  *
  * A failed cron run is a failure the operator has to see, so the alert wins the
