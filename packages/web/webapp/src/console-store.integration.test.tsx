@@ -8710,6 +8710,188 @@ describe("ConsoleStoreProvider integration", () => {
       expect(stored?.threads.flatMap((item) => item.messages.map((message) => message.id)))
         .toEqual(["m2"]);
     });
+
+    it("keeps another agent's confirmed activity in the dashboard projection, and the device's out of it", async () => {
+      // The Running section is the CACHE's set, not the listing's: a turn on an
+      // agent whose rows are nowhere on screen is still one this tab is
+      // watching. And a restored entry says nothing about it -- `runState` is
+      // stored verbatim, so the device's word alone must not put a card up.
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(
+          agents,
+          [alpha, runningGamma],
+          undefined,
+          { threadsSourceId: "alpha" },
+        ));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+      // Drawn from the device and confirmed by nothing.
+      expect(store.current.cachedRunningThreads).toEqual([]);
+
+      act(() => { release(); });
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+      // The listing on screen is alpha's, and the projection is not the listing.
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.visibleThreads.map((item) => item.id)).not.toContain(runningGamma.id);
+      expect(store.current.cachedRunningThreads[0]?.sourceId).toBe("beta");
+    });
+
+    it("drops a conversation from the projection when its work finishes", async () => {
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningGamma], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+
+      emit("turn.changed", {
+        threadId: runningGamma.id,
+        payload: { turn: { id: "turn-g", status: "complete", finishedAt: "2026-08-14T09:30:00.000Z" } },
+      });
+
+      await waitFor(() => expect(store.current.cachedRunningThreads).toEqual([]));
+      // The reload guard and the projection answer different questions, and
+      // both of them agree that nothing is in flight now.
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("counts a background job the foreground turn has already left behind", async () => {
+      // `hasRunningThread` guards a reload and asks about foreground turns
+      // only. The dashboard asks what has WORK in flight, which a queued or
+      // running background job is.
+      const working = thread("job-thread", "beta", {
+        title: "Worker",
+        runState: { status: "complete" },
+        jobActivity: { queued: 0, starting: 0, running: 2 },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(working, [kept("j1", "job", working.id)], 'W/"job-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, working], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([working.id]));
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("empties the projection when the operator clears what this browser kept", async () => {
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningGamma], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+
+      // `clear` announces no commit of its own -- the caller recomputes what it
+      // derives from the held set, and this projection is one of those things.
+      await act(async () => { await store.current.clearCachedData(); });
+
+      expect(store.current.cachedRunningThreads).toEqual([]);
+    });
+
+    it("does not republish the projection for a message this tab streamed in", async () => {
+      // A running turn commits several times a second. What the section draws
+      // is a title, a status line and a time, and a message body moving is none
+      // of them -- so a delta must not re-render every consumer of the store.
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-1", status: "running", startedAt: "2026-08-14T09:00:00.000Z" } },
+      });
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([alpha.id]));
+
+      const published = store.current.cachedRunningThreads;
+      for (const seq of [2, 3, 4]) {
+        emit("message.delta", {
+          threadId: alpha.id,
+          payload: {
+            messageId: "m1",
+            baseSeq: seq - 1,
+            seq,
+            status: "running",
+            updatedAt: "2026-08-14T09:00:00.000Z",
+            ops: [{ op: "append", path: "0", text: "." }],
+          },
+        });
+      }
+      await quiet();
+
+      // Same array, by reference: nothing the section draws moved.
+      expect(store.current.cachedRunningThreads).toBe(published);
+    });
   });
 
   describe("cron Reply navigation and recovery", () => {

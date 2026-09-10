@@ -53,6 +53,7 @@ import {
   type PersistableState,
   type ThreadPersistence,
 } from "./thread-persistence";
+import { threadPresentation } from "./thread-presentation";
 import { API_VERSION, DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   AgentSummary,
@@ -189,6 +190,27 @@ interface ConsoleStoreValue {
    * whose stream a reload would drop.
    */
   readonly hasRunningThread: boolean;
+  /**
+   * Every conversation this tab is HOLDING that has work in flight, newest
+   * first, whatever agent or archive bucket it belongs to.
+   *
+   * What the dashboard's Running section is built from, and deliberately a
+   * different question from {@link ConsoleStoreValue.hasRunningThread}: that
+   * one guards a reload and counts only foreground turns, this one counts
+   * anything {@link threadPresentation} calls active, background jobs included.
+   *
+   * The CACHE's set, so it is bounded by what this browser happens to hold --
+   * the bootstrap page, conversations that have been opened, summaries the
+   * stream has moved. It is not a cross-agent listing and must never be drawn
+   * as if it were one. Entries the DEVICE restored are excluded until a server
+   * answer has touched them, for the same reason `hasRunningThread` excludes
+   * them: a tab killed mid-turn stored `running` for a turn that has finished.
+   *
+   * Discovery-UNFILTERED: an agent can leave discovery while this browser is
+   * still holding its conversations, and dropping those rows is the dashboard's
+   * job, where the current agent list lives.
+   */
+  readonly cachedRunningThreads: readonly ThreadSummary[];
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
@@ -276,6 +298,35 @@ const ConsoleStore = createContext<ConsoleStoreValue | null>(null);
 
 const byMostRecent = (a: ThreadSummary, b: ThreadSummary) =>
   Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+/**
+ * Deterministic order for the held-activity projection.
+ *
+ * Two conversations updated in the same millisecond -- which a page that lands
+ * as one response makes ordinary -- would otherwise swap places on any
+ * recompute, and every swap is a published change and a re-render.
+ */
+const byMostRecentThenId = (a: ThreadSummary, b: ThreadSummary) =>
+  byMostRecent(a, b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/**
+ * Everything the dashboard's Running section DRAWS for one conversation.
+ *
+ * The comparison key for publication: the cache commits several times a second
+ * during a turn, and a message body moving is not something this section shows.
+ */
+const runningProjectionKey = (thread: ThreadSummary): string => [
+  thread.id,
+  thread.sourceId,
+  thread.title,
+  thread.updatedAt,
+  thread.archivedAt ?? "",
+  threadPresentation(thread).text,
+].join(" ");
+const sameRunningProjection = (
+  a: readonly ThreadSummary[],
+  b: readonly ThreadSummary[],
+): boolean => a.length === b.length
+  && a.every((thread, index) => runningProjectionKey(thread) === runningProjectionKey(b[index]!));
+const NO_RUNNING_THREADS: readonly ThreadSummary[] = [];
 /** How the console names one (agent, archived) listing, on the wire and on the device. */
 export const threadBucketKey = (sourceId: string, archived: boolean): string =>
   `${sourceId}\0${archived ? "archived" : "active"}`;
@@ -2005,6 +2056,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
   const [hasRunningThread, setHasRunningThread] = useState(false);
   const hasRunningThreadRef = useRef(false);
+  const [cachedRunningThreads, setCachedRunningThreads] =
+    useState<readonly ThreadSummary[]>(NO_RUNNING_THREADS);
+  const cachedRunningThreadsRef = useRef<readonly ThreadSummary[]>(NO_RUNNING_THREADS);
   /**
    * Recomputed on every cache mutation, and published only when it MOVED.
    *
@@ -2024,11 +2078,24 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * keyed on `stale`, which `markAllStale` sets on genuinely live entries.
    */
   const noteHeldRunState = useCallback(() => {
-    const running = threadCacheRef.current.snapshot()
-      .some((entry) => entry.fromDevice !== true && entry.thread.runState.status === "running");
-    if (running === hasRunningThreadRef.current) return;
-    hasRunningThreadRef.current = running;
-    setHasRunningThread(running);
+    const confirmed = threadCacheRef.current.snapshot()
+      .filter((entry) => entry.fromDevice !== true);
+    const running = confirmed.some((entry) => entry.thread.runState.status === "running");
+    if (running !== hasRunningThreadRef.current) {
+      hasRunningThreadRef.current = running;
+      setHasRunningThread(running);
+    }
+    // Guarded separately, and on a different question: the reload guard is
+    // about foreground turns only, and the two must be able to move without
+    // each other. See `cachedRunningThreads`.
+    const active = confirmed
+      .filter((entry) => threadPresentation(entry.thread).active)
+      .map((entry) => entry.thread)
+      .sort(byMostRecentThenId);
+    if (sameRunningProjection(cachedRunningThreadsRef.current, active)) return;
+    const next = active.length === 0 ? NO_RUNNING_THREADS : active;
+    cachedRunningThreadsRef.current = next;
+    setCachedRunningThreads(next);
   }, []);
   // Assigned during render, like `schedulePersistRef`: the cache's commit hook
   // is created once, and an effect would leave it a commit behind.
@@ -5899,6 +5966,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       cronError,
       hasMoreThreads,
       hasRunningThread,
+      cachedRunningThreads,
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
@@ -5971,6 +6039,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hiddenOfflineAgentCount,
       hasMoreThreads,
       hasRunningThread,
+      cachedRunningThreads,
       hasOlderMessages,
       hasServerSnapshot,
       loadBootstrap,
