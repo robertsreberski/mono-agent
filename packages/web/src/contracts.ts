@@ -587,6 +587,9 @@ export interface WebThreadPage {
   readonly nextCursor?: string;
 }
 
+/** Which durable conversation classes a list or search includes. */
+export type WebThreadListScope = "all" | "chats";
+
 export interface WebMessagePage {
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
@@ -618,6 +621,8 @@ export interface SearchWebThreadsInput {
   readonly sourceId: string;
   readonly query: string;
   readonly limit?: number;
+  /** Defaults to `all` for clients written before scoped navigation. */
+  readonly scope?: WebThreadListScope;
 }
 
 export type WebCronRunTrigger = CronOperatorRunTrigger;
@@ -755,6 +760,8 @@ export interface WebBootstrapScope {
   readonly sourceId?: string;
   readonly archived?: boolean;
   readonly limit?: number;
+  /** Defaults to `all` for clients written before scoped navigation. */
+  readonly scope?: WebThreadListScope;
 }
 
 export interface WebBootstrap {

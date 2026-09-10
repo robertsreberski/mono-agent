@@ -1,5 +1,4 @@
 import {
-  type CSSProperties,
   type RefObject,
   type TouchEvent as ReactTouchEvent,
   useCallback,
@@ -8,16 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  agentRailWidth,
-  readAgentRailExpanded,
-  writeAgentRailExpanded,
-} from "./agent-rail-layout";
-import { AgentRail, BrandMark, MobileAgentPicker } from "./components/AgentRail";
 import { AgentSettingsDialog } from "./components/AgentSettingsDialog";
+import { BrandMark } from "./components/BrandMark";
 import { Chat } from "./components/Chat";
+import { Dashboard } from "./components/dashboard/Dashboard";
 import { Icon, type IconName } from "./components/Icon";
-import { ThreadSidebar } from "./components/ThreadSidebar";
 import { useConsoleStore } from "./console-store";
 import {
   cycleDataModeSetting,
@@ -76,8 +70,22 @@ const DRAWER_SWIPE_EXCLUDED = [
 ].join(",");
 const MOBILE_DRAWER_MEDIA = "(max-width: 900px)";
 
+/** Whether the shell shows one screen at a time rather than two columns. */
+const isMobileViewport = (): boolean =>
+  typeof window.matchMedia === "function" && window.matchMedia(MOBILE_DRAWER_MEDIA).matches;
+
+/**
+ * The two screens a phone shows one at a time. The Dashboard is the entrance;
+ * a conversation is pushed over it and popped with the header's back control
+ * or a right swipe. Only a cron channel has an address of its own, so only a
+ * URL that names one lands on the conversation directly.
+ */
+type MobileScreen = "dashboard" | "conversation";
+const initialMobileScreen = (): MobileScreen =>
+  /^\/agents\//u.test(window.location.pathname) ? "conversation" : "dashboard";
+
 interface DrawerGestureStart extends DrawerGesturePoint {
-  readonly intent: "close" | "open-threads";
+  readonly intent: "back";
 }
 
 function useModalFocus(
@@ -354,50 +362,24 @@ export function App() {
     hasRunningThread,
     retry,
   } = useConsoleStore();
-  const [agentDrawer, setAgentDrawer] = useState(false);
-  const [threadDrawer, setThreadDrawer] = useState(false);
+  const [screen, setScreen] = useState<MobileScreen>(initialMobileScreen);
+  const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
   const [agentSettings, setAgentSettings] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [leanOffer, setLeanOffer] = useState(false);
   const [updateDismissed, setUpdateDismissed] = useState(false);
-  const [agentRailExpanded, setAgentRailExpanded] = useState(readAgentRailExpanded);
-  const agentDrawerRef = useRef<HTMLDivElement>(null);
-  const threadDrawerRef = useRef<HTMLDivElement>(null);
+  const dashboardRef = useRef<HTMLDivElement>(null);
+  const chatRef = useRef<HTMLDivElement>(null);
   const agentSettingsRef = useRef<HTMLElement>(null);
   const drawerGestureRef = useRef<DrawerGestureStart | null>(null);
-  const appStyle = {
-    "--agent-rail-width": `${agentRailWidth(agentRailExpanded)}px`,
-  } as CSSProperties;
+  const conversationOpen = mobile && screen === "conversation";
 
-  const toggleAgentRail = useCallback(() => {
-    setAgentRailExpanded((current) => {
-      const next = !current;
-      writeAgentRailExpanded(next);
-      return next;
-    });
-  }, []);
-
-  const closeDrawers = useCallback(() => {
-    setAgentDrawer(false);
-    setThreadDrawer(false);
-  }, []);
+  const openConversation = useCallback(() => setScreen("conversation"), []);
+  const showDashboard = useCallback(() => setScreen("dashboard"), []);
   const closePalette = useCallback(() => setPalette(false), []);
   const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
-  const togglePalette = useCallback(() => {
-    closeDrawers();
-    setPalette((current) => !current);
-  }, [closeDrawers]);
-  const openAgents = useCallback(() => {
-    setPalette(false);
-    setThreadDrawer(false);
-    setAgentDrawer(true);
-  }, []);
-  const openThreads = useCallback(() => {
-    setPalette(false);
-    setAgentDrawer(false);
-    setThreadDrawer(true);
-  }, []);
+  const togglePalette = useCallback(() => setPalette((current) => !current), []);
 
   const startDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     drawerGestureRef.current = null;
@@ -409,24 +391,21 @@ export function App() {
 
     const touch = event.touches[0];
     if (!touch) return;
-    const drawerOpen = agentDrawer || threadDrawer;
     const target = event.target instanceof Element ? event.target : null;
     const selection = window.getSelection();
+    // Only the pushed conversation has somewhere to go back to; the entrance
+    // screen owns no shell gesture, so its agent strip and lists keep every
+    // horizontal swipe for themselves.
+    if (screen !== "conversation") return;
+    const excluded = target?.closest(DRAWER_SWIPE_EXCLUDED) ?? null;
+    if (excluded !== null) return;
     if (
-      !drawerOpen
-      && (
-        target?.closest(DRAWER_SWIPE_EXCLUDED)
-        || hasHorizontalScrollAncestor(target, event.currentTarget)
-        || (selection !== null && !selection.isCollapsed)
-      )
+      hasHorizontalScrollAncestor(target, event.currentTarget)
+      || (selection !== null && !selection.isCollapsed)
     ) return;
 
-    drawerGestureRef.current = {
-      x: touch.clientX,
-      y: touch.clientY,
-      intent: drawerOpen ? "close" : "open-threads",
-    };
-  }, [agentDrawer, threadDrawer]);
+    drawerGestureRef.current = { x: touch.clientX, y: touch.clientY, intent: "back" };
+  }, [screen]);
 
   const finishDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     const start = drawerGestureRef.current;
@@ -436,31 +415,39 @@ export function App() {
     const touch = event.changedTouches[0];
     if (!touch) return;
     const end = { x: touch.clientX, y: touch.clientY };
-    const direction = start.intent === "open-threads" ? "right" : "left";
-    if (!isMobileDrawerSwipe(start, end, direction)) return;
+    if (!isMobileDrawerSwipe(start, end, "right")) return;
 
     event.preventDefault();
-    if (start.intent === "open-threads") openThreads();
-    else closeDrawers();
-  }, [closeDrawers, openThreads]);
+    showDashboard();
+  }, [showDashboard]);
 
   const cancelDrawerGesture = useCallback(() => {
     drawerGestureRef.current = null;
   }, []);
 
-  useModalFocus(agentDrawer, agentDrawerRef, closeDrawers);
-  useModalFocus(threadDrawer, threadDrawerRef, closeDrawers);
   useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
+
+  // Neither screen is a modal: nothing traps focus, and nothing needs to be
+  // dismissed. Focus just follows the screen that arrived, so a keyboard is
+  // not left on a surface that is now hidden.
+  const lastScreenRef = useRef<MobileScreen | null>(null);
+  useEffect(() => {
+    if (!mobile) { lastScreenRef.current = null; return; }
+    if (lastScreenRef.current === null) { lastScreenRef.current = screen; return; }
+    if (lastScreenRef.current === screen) return;
+    lastScreenRef.current = screen;
+    const root = screen === "conversation" ? chatRef.current : dashboardRef.current;
+    if (root && !root.contains(document.activeElement)) root.focus();
+  }, [mobile, screen]);
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const mobileDrawerViewport = window.matchMedia(MOBILE_DRAWER_MEDIA);
-    const onChange = (event: MediaQueryListEvent) => {
-      if (!event.matches) closeDrawers();
-    };
+    const onChange = (event: MediaQueryListEvent) => setMobile(event.matches);
+    setMobile(mobileDrawerViewport.matches);
     mobileDrawerViewport.addEventListener("change", onChange);
     return () => mobileDrawerViewport.removeEventListener("change", onChange);
-  }, [closeDrawers]);
+  }, []);
 
   useEffect(() => {
     const onCommand = () => togglePalette();
@@ -469,7 +456,6 @@ export function App() {
       if (detail?.message) setNotice(detail.message);
     };
     const onAgentSettings = () => {
-      closeDrawers();
       setPalette(false);
       setAgentSettings(true);
     };
@@ -481,7 +467,7 @@ export function App() {
       window.removeEventListener("mono-agent:notice", onNotice);
       window.removeEventListener("mono-agent:agent-settings", onAgentSettings);
     };
-  }, [closeDrawers, togglePalette]);
+  }, [togglePalette]);
 
   useEffect(() => {
     if (!notice && !actionError) return;
@@ -591,12 +577,14 @@ export function App() {
       }
       if (event.key === "Escape") {
         setPalette(false);
-        closeDrawers();
+        // On a phone, Escape is the keyboard's back: the pushed conversation
+        // pops to the Dashboard beneath it.
+        if (isMobileViewport()) showDashboard();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeDrawers, palette, togglePalette]);
+  }, [palette, showDashboard, togglePalette]);
 
   const store = useConsoleStore();
   useEffect(() => {
@@ -615,43 +603,37 @@ export function App() {
   return (
     <div
       className="app-shell"
-      style={appStyle}
       onTouchStart={startDrawerGesture}
       onTouchEnd={finishDrawerGesture}
       onTouchCancel={cancelDrawerGesture}
     >
-      <div className="desktop-agent-rail">
-        <AgentRail expanded={agentRailExpanded} onToggleExpanded={toggleAgentRail} />
-      </div>
-      <div className="desktop-thread-sidebar"><ThreadSidebar /></div>
-      <Chat onOpenAgents={openAgents} onOpenThreads={openThreads} />
-
-      {(agentDrawer || threadDrawer) && (
-        <button className="drawer-scrim" type="button" onClick={closeDrawers} aria-label="Close navigation" />
-      )}
+      {/*
+        * ONE Dashboard, mounted once. It is the desktop left column and the
+        * phone's entrance screen, and the difference between them is these
+        * attributes -- remounting it per breakpoint would throw away a query
+        * mid-typing and a list mid-scroll on every rotation. Whichever screen
+        * a phone is not showing is hidden from assistive technology and out
+        * of the tab order; nothing here is modal.
+        */}
       <div
-        ref={agentDrawerRef}
-        className={`mobile-agent-drawer${agentDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Choose agent"
-        aria-hidden={!agentDrawer}
-        inert={!agentDrawer}
+        ref={dashboardRef}
+        className="dashboard-panel"
+        role="navigation"
+        aria-label="Dashboard"
         tabIndex={-1}
+        aria-hidden={conversationOpen || undefined}
+        inert={conversationOpen}
       >
-        <MobileAgentPicker onSelect={closeDrawers} />
+        <Dashboard onNavigate={openConversation} />
       </div>
       <div
-        ref={threadDrawerRef}
-        className={`mobile-thread-drawer${threadDrawer ? " is-open" : ""}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Conversations"
-        aria-hidden={!threadDrawer}
-        inert={!threadDrawer}
+        ref={chatRef}
+        className={`chat-region${conversationOpen ? " is-open" : ""}`}
         tabIndex={-1}
+        aria-hidden={(mobile && !conversationOpen) || undefined}
+        inert={mobile && !conversationOpen}
       >
-        <ThreadSidebar onSelect={closeDrawers} />
+        <Chat onBack={showDashboard} />
       </div>
 
       {/*

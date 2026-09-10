@@ -204,6 +204,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         ...(sourceId === undefined ? {} : { sourceId }),
         archived: optionalArchivedQuery(req.query.archived) ?? false,
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
+        scope: optionalThreadListScope(req.query.scope),
       })
         .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
         .catch(next);
@@ -508,6 +509,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       res.status(200).json(service.threadsPage({
         sourceId,
         archived,
+        scope: optionalThreadListScope(req.query.scope),
         // A sidebar shows a handful of rows and pages from there. This used to
         // answer with the whole per-bucket cap by default.
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
@@ -527,6 +529,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         sourceId,
         query: optionalSearchQuery(req.query.q, 512),
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_SEARCH_MAX, WEB_THREAD_SEARCH_MAX),
+        scope: optionalThreadListScope(req.query.scope),
       }));
     } catch (error) {
       next(error);
@@ -1865,6 +1868,13 @@ function optionalArchivedQuery(value: unknown): boolean | undefined {
   if (value === "false") return false;
   if (value === undefined) return undefined;
   throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+}
+
+/** Absent preserves the mixed listing older clients requested. */
+function optionalThreadListScope(value: unknown): "all" | "chats" {
+  if (value === undefined || value === "all") return "all";
+  if (value === "chats") return "chats";
+  throw new WebConsoleError("invalid_page", "scope must be all or chats.", 400);
 }
 
 function optionalEmptyOnlyQuery(value: unknown): boolean {
