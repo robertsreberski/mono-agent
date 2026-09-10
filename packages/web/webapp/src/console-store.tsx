@@ -283,7 +283,7 @@ const byMostRecent = (a: ThreadSummary, b: ThreadSummary) =>
   Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
 /** How the console names one (agent, archived) listing, on the wire and on the device. */
 export const threadBucketKey = (sourceId: string, archived: boolean): string =>
-  `${sourceId}\0${archived ? "archived" : "active"}`;
+  `${sourceId}\0chats-v1\0${archived ? "archived" : "active"}`;
 const cronChannelKey = (sourceId: string, jobId: string): string => `${sourceId}\0${jobId}`;
 /**
  * "This conversation is not in THIS bucket" -- see {@link UNLISTED_THREAD_MEMORY}.
@@ -1639,10 +1639,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const createThreadRequestRef = useRef<CreateThreadRequest | null>(null);
   const selectionFailureRef = useRef<SelectionFailure | null>(null);
   const selectedAgentRef = useRef<string | null>(selectedAgentId);
+  const selectedAgentCronReadRef = useRef(false);
+  const navigationDestinationRef = useRef<ConsoleNavigationDestination>(navigationDestination);
   /** The catalog scope a page walk was started under. See `catalogScope`. */
   const catalogScopeRef = useRef<string>("");
   const skillRequestGenerationRef = useRef(0);
   const cronRequestGenerationRef = useRef(0);
+  const cronRunCursorRequestGenerationRef = useRef(0);
   const skillRegistryStateRef = useRef(skillRegistryState);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -2515,6 +2518,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ...(selectedAgentRef.current === null ? {} : { sourceId: selectedAgentRef.current }),
     archived: showArchivedRef.current,
     limit: threadPageLimit(),
+    scope: "chats",
   }), []);
 
   const loadBootstrap = useCallback(async () => {
@@ -4022,6 +4026,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   threadsRef.current = threads;
   const selectedAgent =
     agents.find((agent) => agent.sourceId === selectedAgentId) ?? null;
+  selectedAgentCronReadRef.current = selectedAgent?.cron?.read === true;
+  navigationDestinationRef.current = navigationDestination;
   // The catalog cache is per agent AND per agent PROCESS. A source id outlives
   // the process behind it: reconfigure an agent and restart it and the next
   // generation advertises a different catalog under the same id. Keyed on the
@@ -4057,7 +4063,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       [...threads]
         .filter(
           (thread) =>
-            thread.sourceId === selectedAgentId && Boolean(thread.archivedAt) === showArchived,
+            thread.sourceId === selectedAgentId
+            && thread.trigger?.kind !== "cron"
+            && Boolean(thread.archivedAt) === showArchived,
         )
         .sort(byMostRecent),
     [selectedAgentId, showArchived, threads],
@@ -4171,12 +4179,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   ]);
 
   const refreshCron = useCallback(async () => {
-    const sourceId = selectedAgentId;
-    const jobId = selectedCronJobId;
+    const sourceId = selectedAgentRef.current;
+    const jobId = selectedCronJobIdRef.current;
     const route = cronRouteSelection();
     const shouldRead = sourceId !== null && (
-      selectedAgent?.cron?.read === true
-      || navigationDestination === "automations"
+      selectedAgentCronReadRef.current
+      || navigationDestinationRef.current === "automations"
       || jobId !== undefined
       || route?.sourceId === sourceId
     );
@@ -4235,14 +4243,30 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       if (requestGeneration === cronRequestGenerationRef.current) setCronLoading(false);
     }
-  }, [
-    failOwnedSelection,
-    navigationDestination,
-    selectedAgent?.cron?.read,
-    selectedAgent?.sourceId,
-    selectedAgentId,
-    selectedCronJobId,
-  ]);
+  }, [failOwnedSelection]);
+
+  useEffect(() => {
+    const sourceId = selectedAgentId;
+    const jobId = selectedCronJobId;
+    const threadId = selectedCronThreadId;
+    if (sourceId === null || jobId === undefined || threadId === undefined) return;
+    const generation = ++cronRunCursorRequestGenerationRef.current;
+    const issuedAt = threadCacheRef.current.clock();
+    void api.cronRuns(sourceId, jobId).then((page) => {
+      if (generation !== cronRunCursorRequestGenerationRef.current
+        || selectedAgentRef.current !== sourceId
+        || selectedCronJobIdRef.current !== jobId
+        || !threadCacheRef.current.accepts(threadId, issuedAt)) return;
+      const channelKey = cronChannelKey(sourceId, jobId);
+      setCronRunCursorByChannel((current) => Object.prototype.hasOwnProperty.call(current, channelKey)
+        ? current
+        : { ...current, [channelKey]: page.nextCursor ?? null });
+    }).catch(() => {
+      // The selected transcript still has its ordinary persisted message page.
+      // The next explicit overview refresh or cron event retries this cursor.
+    });
+    return () => { cronRunCursorRequestGenerationRef.current += 1; };
+  }, [selectedAgentId, selectedCronJobId, selectedCronThreadId]);
 
   const loadCronRunActivity = useCallback(async (runId: string) => {
     const sourceId = selectedAgentId;
@@ -4359,7 +4383,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   useEffect(() => {
     void refreshCron();
-  }, [cronRefreshToken, refreshCron]);
+  }, [cronRefreshToken, refreshCron, selectedAgent?.cron?.read, selectedAgentId]);
 
   useEffect(() => {
     const generation = ++skillRequestGenerationRef.current;
@@ -4646,13 +4670,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
 
   const selectCronJob = useCallback((sourceId: string, jobId: string, threadId: string) => {
+    navigationDestinationRef.current = "automations";
     setNavigationDestinationState("automations");
     updateCronRoute(sourceId, jobId);
     selectThread(threadId);
   }, [selectThread]);
 
   const setNavigationDestination = useCallback((destination: ConsoleNavigationDestination) => {
+    navigationDestinationRef.current = destination;
     setNavigationDestinationState(destination);
+    if (destination === "automations" && !selectedAgentCronReadRef.current) {
+      setCronRefreshToken((revision) => revision + 1);
+    }
     if (destination === "chats" && cronRouteSelection() !== undefined) {
       updateThreadRoute(undefined);
     }

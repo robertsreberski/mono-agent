@@ -1198,6 +1198,13 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    await waitFor(() => expect(api.cronOverview).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      store.current.setNavigationDestination("automations");
+      await Promise.resolve();
+    });
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
 
     act(() => store.current.selectCronJob("alpha", "daily:report", cronThread.id));
 
@@ -1205,6 +1212,8 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.navigationDestination).toBe("automations");
     await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
     expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api.cronRuns).toHaveBeenCalledWith("alpha", "daily:report"));
 
     act(() => store.current.setNavigationDestination("chats"));
     expect(window.location.pathname).toBe("/");

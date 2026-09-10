@@ -63,6 +63,88 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
 }
 
 describe("WebStore", () => {
+  it("scopes chats before pagination and search while retaining webhook conversations", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+    const chats = Array.from({ length: 3 }, (_, index) => {
+      const row = store.createThread("agent-one");
+      return store.patchThread(row.id, { title: `scopedmatch chat ${String(index)}` });
+    });
+    const webhook = store.completeNotification(store.reserveNotification({
+      sourceId: "agent-one",
+      deliveryKey: "scoped-webhook",
+      triggerKind: "webhook",
+      text: "scopedmatch webhook result",
+    })).thread!;
+    store.syncCronOverview({
+      sourceId: "agent-one",
+      generatedAt: new Date(clockMs).toISOString(),
+      actionsEnabled: true,
+      jobs: Array.from({ length: 51 }, (_, index) => ({
+        jobId: `scopedmatch-cron-${String(index).padStart(2, "0")}`,
+        expression: "0 * * * *",
+        timezone: "UTC",
+        conversationId: `cron:scoped-${String(index)}`,
+        configured: true,
+        declaredEnabled: true,
+        effectiveEnabled: true,
+        health: "healthy" as const,
+      })),
+    });
+
+    // More than one ordinary page of newer cron channels must not consume the
+    // chat page's LIMIT or cursor window.
+    const first = store.listThreadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      limit: 2,
+      scope: "chats",
+    });
+    expect(first.threads.map((thread) => thread.trigger?.kind ?? "chat"))
+      .toEqual(["webhook", "chat"]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = store.listThreadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      limit: 2,
+      before: first.nextCursor!,
+      scope: "chats",
+    });
+    expect([...first.threads, ...second.threads].map((thread) => thread.id))
+      .toEqual([webhook.id, ...chats.map((thread) => thread.id).reverse()]);
+    expect([...first.threads, ...second.threads].some((thread) => thread.trigger?.kind === "cron"))
+      .toBe(false);
+
+    const mixed = store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 1 });
+    expect(mixed.threads[0]?.trigger?.kind).toBe("cron");
+    expect(() => store.listThreadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      before: mixed.nextCursor!,
+      scope: "chats",
+    })).toThrowError(expect.objectContaining({ code: "invalid_page" }));
+
+    const hits = store.searchThreads({
+      sourceId: "agent-one",
+      query: "scopedmatch",
+      scope: "chats",
+    }).hits;
+    expect(hits.map((hit) => hit.thread.id).sort())
+      .toEqual([webhook.id, ...chats.map((thread) => thread.id)].sort());
+    expect(hits.find((hit) => hit.thread.id === webhook.id)?.thread.trigger?.kind).toBe("webhook");
+    expect(hits.some((hit) => hit.thread.trigger?.kind === "cron")).toBe(false);
+    const mixedHits = store.searchThreads({ sourceId: "agent-one", query: "scopedmatch" }).hits;
+    expect(mixedHits).toHaveLength(WEB_THREAD_SEARCH_MAX);
+    expect(mixedHits.some((hit) => hit.thread.trigger?.kind === "cron")).toBe(true);
+    store.close();
+  });
+
   it("persists the provider-auth capability in agent projections", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

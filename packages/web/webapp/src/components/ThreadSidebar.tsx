@@ -96,12 +96,16 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
   const searching = query.trim().length >= MIN_SEARCH_QUERY;
   const search = useThreadSearch(selectedAgentId, query);
   const threadById = useMemo(
-    () => new Map(threads.map((thread) => [thread.id, thread])),
+    () => new Map(threads
+      .filter((thread) => thread.trigger?.kind !== "cron")
+      .map((thread) => [thread.id, thread])),
     [threads],
   );
   const visibleCount = threads.filter(
     (thread) =>
-      thread.sourceId === selectedAgentId && Boolean(thread.archivedAt) === showArchived,
+      thread.sourceId === selectedAgentId
+      && thread.trigger?.kind !== "cron"
+      && Boolean(thread.archivedAt) === showArchived,
   ).length;
 
   return (

@@ -89,6 +89,7 @@ export type {
   WebAttachment,
   WebBootstrap,
   WebBootstrapScope,
+  WebThreadListScope,
   WebConsoleIdentity,
   WebCronReplyReceipt,
   WebCronReplyContextPart,

@@ -212,9 +212,6 @@ export function AutomationsList({ onSelect }: { readonly onSelect?: () => void }
           )}
         </div>
       )}
-      {cronLoading && cronOverview.jobs.length > 0 && (
-        <span className="automation-refreshing" role="status">Refreshing automation status…</span>
-      )}
       {cronOverview.jobsTruncated && (
         <div className="automation-notice is-warning" role="note">
           <Icon name="archive" size={15} />

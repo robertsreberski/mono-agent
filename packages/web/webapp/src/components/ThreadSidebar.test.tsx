@@ -88,9 +88,13 @@ afterEach(() => {
 });
 
 describe("ThreadSidebar conversation rows", () => {
-  it("keeps the mixed Chats page intact, including cron rows and paging", () => {
+  it("keeps webhook conversations in Chats without showing cron channels", () => {
     storeMock.current!.threads = [
       thread("ordinary", "agent-one", { title: "Ordinary chat" }),
+      thread("webhook", "agent-one", {
+        title: "Webhook result",
+        trigger: { kind: "webhook" },
+      }),
       thread("cron", "agent-one", {
         title: "Cron history",
         trigger: { kind: "cron", jobId: "daily" },
@@ -100,7 +104,8 @@ describe("ThreadSidebar conversation rows", () => {
     render(<ThreadSidebar />);
 
     expect(screen.getByRole("button", { name: "Open Ordinary chat" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open Cron history" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Webhook result" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open Cron history" })).toBeNull();
     expect(screen.getByRole("button", { name: "Load older conversations" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
   });
@@ -288,6 +293,15 @@ describe("ThreadSidebar Automations destination", () => {
     expect(row).toHaveTextContent("Enabled in snapshot");
     expect(row).toHaveTextContent("Next run unavailable");
     expect(row.querySelector("time")).toBeNull();
+  });
+
+  it("keeps an already loaded automation list stable during a background refresh", () => {
+    storeMock.current!.cronLoading = true;
+    render(<ThreadSidebar />);
+
+    expect(screen.getByRole("button", { name: "Open run history for daily:brief" })).toBeVisible();
+    expect(screen.queryByText(/Refreshing automation status/iu)).toBeNull();
+    expect(screen.queryByText(/Loading automations/iu)).toBeNull();
   });
 
   it.each([

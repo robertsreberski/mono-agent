@@ -417,6 +417,42 @@ describe("cron activity API", () => {
       "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/runs/cron%3Adaily%2Fone",
     );
   });
+
+  it("uses the existing redacted config and confirmed cron action routes", async () => {
+    const confirmation = {
+      kind: "confirmation_required" as const,
+      confirmation: {
+        token: "confirmation-token",
+        expiresAt: "2026-08-14T10:01:00.000Z",
+        message: "Confirm this action.",
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        configView: { id: "cron", label: "Cron", status: "active", fields: [] },
+      }))
+      .mockResolvedValueOnce(Response.json(confirmation, { status: 428 }))
+      .mockResolvedValueOnce(Response.json(confirmation, { status: 428 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.cronConfigView("agent/one")).resolves.toMatchObject({ id: "cron" });
+    await expect(api.cronRunNow("agent/one", "daily:brief", "run-key"))
+      .resolves.toEqual(confirmation);
+    await expect(api.cronSetEnabled("agent/one", "daily:brief", false, "toggle-key"))
+      .resolves.toEqual(confirmation);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/agents/agent%2Fone/cron/config-view",
+      "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/run",
+      "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/effective-enabled",
+    ]);
+    for (const [, init] of fetchMock.mock.calls.slice(1)) {
+      expect(init).toMatchObject({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+      });
+    }
+  });
 });
 
 describe("push subscription API", () => {
@@ -808,11 +844,15 @@ describe("listing requests", () => {
 
     await api.threads("agent/one", false);
     expect(fetchMock.mock.calls[0]?.[0])
-      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=false&limit=50");
+      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=false&limit=50&scope=chats");
 
     await api.threads("agent/one", true, "cursor-1", undefined, 200);
     expect(fetchMock.mock.calls[1]?.[0])
-      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=true&limit=200&before=cursor-1");
+      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=true&limit=200&scope=chats&before=cursor-1");
+
+    await api.searchThreads("agent/one", "daily report");
+    expect(fetchMock.mock.calls[2]?.[0])
+      .toBe("/api/v1/threads/search?sourceId=agent%2Fone&q=daily+report&scope=chats");
   });
 
   it("sends a bootstrap scope only when one is asked for", async () => {
@@ -823,9 +863,14 @@ describe("listing requests", () => {
     await api.bootstrap();
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/bootstrap");
 
-    await api.bootstrap(undefined, { sourceId: "agent/one", archived: false, limit: 50 });
+    await api.bootstrap(undefined, {
+      sourceId: "agent/one",
+      archived: false,
+      limit: 50,
+      scope: "chats",
+    });
     expect(fetchMock.mock.calls[1]?.[0])
-      .toBe("/api/v1/bootstrap?sourceId=agent%2Fone&archived=false&limit=50");
+      .toBe("/api/v1/bootstrap?sourceId=agent%2Fone&archived=false&limit=50&scope=chats");
   });
 });
 
