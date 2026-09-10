@@ -107,7 +107,8 @@ describe("ThreadSidebar conversation rows", () => {
     expect(screen.getByRole("button", { name: "Open Webhook result" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Open Cron history" })).toBeNull();
     expect(screen.getByRole("button", { name: "Load older conversations" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Open Automations collection" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Recent" })).toBeVisible();
   });
 
   it("turns the new-conversation action into an immediate pending indicator", () => {
@@ -231,7 +232,7 @@ describe("ThreadSidebar conversation rows", () => {
   });
 });
 
-describe("ThreadSidebar Automations destination", () => {
+describe("ThreadSidebar Automations smart collection", () => {
   const overview: CronOverview = {
     generatedAt: "2026-09-10T08:00:00.000Z",
     actionsEnabled: false,
@@ -256,6 +257,26 @@ describe("ThreadSidebar Automations destination", () => {
       cron: { read: true, actions: false },
     });
     storeMock.current!.cronOverview = overview;
+  });
+
+  it("drills into and back out of the collection while resetting search semantics", () => {
+    storeMock.current!.navigationDestination = "chats";
+    const { rerender } = render(<ThreadSidebar />);
+
+    const chatSearch = screen.getByRole("searchbox", { name: "Search conversations" });
+    fireEvent.change(chatSearch, { target: { value: "release" } });
+    const collection = screen.getByRole("button", { name: "Open Automations collection" });
+    expect(collection).toHaveTextContent("Automations");
+    expect(within(collection).getByLabelText("1 automation job")).toHaveTextContent("1");
+    fireEvent.click(collection);
+    expect(storeMock.current!.setNavigationDestination).toHaveBeenCalledWith("automations");
+
+    storeMock.current!.navigationDestination = "automations";
+    rerender(<ThreadSidebar />);
+    expect(screen.getByRole("searchbox", { name: "Search automations" })).toHaveValue("");
+    expect(screen.getByRole("heading", { name: "Automations" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "All conversations" }));
+    expect(storeMock.current!.setNavigationDestination).toHaveBeenCalledWith("chats");
   });
 
   it("shows each configured overview job once before its first run and opens durable history", () => {

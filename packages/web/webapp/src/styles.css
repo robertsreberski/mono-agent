@@ -406,17 +406,21 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .agent-settings-button { width: 34px; height: 34px; display: grid; place-items: center; color: var(--text-muted); background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
 .agent-settings-button:hover:not(:disabled) { color: var(--accent); background: var(--surface-hover); }
 .agent-settings-button:disabled, .new-thread-button:disabled { opacity: .45; cursor: default; }
-.sidebar-navigation { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 0 14px 10px; padding: 3px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 10px; }
-.sidebar-navigation button { min-width: 0; min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 0 8px; color: var(--text-muted); background: transparent; border-radius: 7px; cursor: pointer; font-size: 11px; font-weight: 650; }
-.sidebar-navigation button:hover { color: var(--text); background: var(--surface-hover); }
-.sidebar-navigation button.is-active { color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line); }
-.sidebar-navigation button.is-active svg { color: var(--accent); }
 .thread-search { height: 38px; display: flex; align-items: center; gap: 8px; margin: 0 14px 10px; padding: 0 10px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid transparent; border-radius: 9px; }
 .thread-search:focus-within { color: var(--accent); background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .thread-search input { min-width: 0; height: 100%; flex: 1; padding: 0; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 13px; }
 .thread-search input::placeholder { color: var(--text-muted); }
 .thread-search input::-webkit-search-cancel-button { display: none; }
 .thread-search button { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; color: var(--text-muted); background: transparent; border-radius: 7px; cursor: pointer; }
+.collection-row { width: auto; min-height: 50px; display: flex; align-items: center; gap: 10px; margin: 0 10px 8px; padding: 7px 10px; color: var(--text); background: transparent; border: 1px solid transparent; border-radius: 10px; cursor: pointer; text-align: left; }
+.collection-row:hover { background: var(--surface-hover); border-color: var(--line); }
+.collection-icon { width: 32px; height: 32px; display: grid; place-items: center; flex: none; color: var(--accent); background: var(--accent-soft); border-radius: 9px; }
+.collection-label { min-width: 0; flex: 1; font-size: 12.5px; font-weight: 650; }
+.collection-count { min-width: 21px; padding: 2px 6px; color: var(--text-muted); background: var(--surface-subtle); border-radius: 999px; font-family: var(--font-mono); font-size: 9.5px; text-align: center; }
+.collection-row > svg { flex: none; color: var(--text-muted); }
+.collection-back { min-height: 34px; display: flex; align-items: center; gap: 6px; margin: -2px 10px 2px; padding: 0 8px; color: var(--text-muted); background: transparent; border-radius: 8px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.collection-back:hover { color: var(--text); background: var(--surface-hover); }
+.sidebar-section-heading { margin: 7px 14px 5px; color: var(--text-muted); font-size: 9px; font-weight: 750; letter-spacing: .11em; text-transform: uppercase; }
 .thread-list { min-height: 0; flex: 1; }
 .thread-list-scroll { height: 100%; padding: 2px 8px 12px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .thread-item { position: relative; display: flex; align-items: stretch; min-height: 68px; margin: 2px 0; border-radius: 10px; transition: background 130ms ease; }

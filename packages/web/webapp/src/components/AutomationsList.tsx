@@ -1,9 +1,8 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useConsoleStore } from "../console-store";
 import { formatCronSchedule } from "../cron-schedule";
 import type { CronJob, CronRunStatus } from "../types";
 import { Icon } from "./Icon";
-import { SidebarSearch } from "./SidebarSearch";
 import { relativeTime } from "./time";
 
 const RUN_STATUS: Readonly<Record<CronRunStatus, string>> = {
@@ -138,7 +137,13 @@ function AutomationEmptyState({
   );
 }
 
-export function AutomationsList({ onSelect }: { readonly onSelect?: () => void }) {
+export function AutomationsList({
+  query,
+  onSelect,
+}: {
+  readonly query: string;
+  readonly onSelect?: () => void;
+}) {
   const {
     selectedAgent,
     selectedAgentId,
@@ -150,7 +155,6 @@ export function AutomationsList({ onSelect }: { readonly onSelect?: () => void }
     refreshCron,
     selectCronJob,
   } = useConsoleStore();
-  const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleJobs = useMemo(() => cronOverview?.jobs.filter((job) => {
     if (normalizedQuery.length === 0) return true;
@@ -214,14 +218,7 @@ export function AutomationsList({ onSelect }: { readonly onSelect?: () => void }
   const snapshotTime = formatSnapshotTime(cronOverview.generatedAt);
 
   return (
-    <>
-      <SidebarSearch
-        label="Search automations"
-        placeholder="Search automations"
-        value={query}
-        onChange={setQuery}
-      />
-      <div className="automation-list-scroll">
+    <div className="automation-list-scroll">
       {!live && (
         <div className="automation-notice" role="status">
           <Icon name="clock" size={15} />
@@ -273,7 +270,6 @@ export function AutomationsList({ onSelect }: { readonly onSelect?: () => void }
           ))}
         </div>
       )}
-      </div>
-    </>
+    </div>
   );
 }

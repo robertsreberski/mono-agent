@@ -9,6 +9,7 @@ import { MIN_SEARCH_QUERY, useThreadSearch } from "../thread-search";
 import { threadPresentation } from "../thread-presentation";
 import type { ThreadSummary } from "../types";
 import { AutomationsList } from "./AutomationsList";
+import { CollectionRow } from "./CollectionRow";
 import { DataModeIndicator } from "./DataModeIndicator";
 import { Icon } from "./Icon";
 import { SidebarSearch } from "./SidebarSearch";
@@ -85,6 +86,7 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     selectionError,
     threadListError,
     navigationDestination,
+    cronOverview,
     retryThreadList,
     setNavigationDestination,
     setShowArchived,
@@ -95,7 +97,10 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
   // Searching goes to the server, which reads every conversation of this agent
   // rather than only the page the sidebar has loaded.
   const searching = query.trim().length >= MIN_SEARCH_QUERY;
-  const search = useThreadSearch(selectedAgentId, query);
+  const search = useThreadSearch(
+    selectedAgentId,
+    navigationDestination === "chats" ? query : "",
+  );
   const threadById = useMemo(
     () => new Map(threads
       .filter((thread) => thread.trigger?.kind !== "cron")
@@ -147,34 +152,31 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           </ThreadListPrimitive.New>
         </div>
       </div>
-      <nav className="sidebar-navigation" aria-label="Agent workspace">
-        <button
-          type="button"
-          className={navigationDestination === "chats" ? "is-active" : ""}
-          aria-current={navigationDestination === "chats" ? "page" : undefined}
-          onClick={() => setNavigationDestination("chats")}
-        >
-          <Icon name="threads" size={16} />
-          <span>Chats</span>
-        </button>
-        <button
-          type="button"
-          className={navigationDestination === "automations" ? "is-active" : ""}
-          aria-current={navigationDestination === "automations" ? "page" : undefined}
-          onClick={() => setNavigationDestination("automations")}
-        >
-          <Icon name="clock" size={16} />
-          <span>Automations</span>
-        </button>
-      </nav>
+      <SidebarSearch
+        label={navigationDestination === "chats" ? "Search conversations" : "Search automations"}
+        placeholder={navigationDestination === "chats" ? "Search conversations" : "Search automations"}
+        value={query}
+        onChange={setQuery}
+      />
       {navigationDestination === "chats" ? (
         <>
-          <SidebarSearch
-            label="Search conversations"
-            placeholder="Search conversations"
-            value={query}
-            onChange={setQuery}
-          />
+          {!showArchived && (
+            <CollectionRow
+              label="Automations"
+              icon="clock"
+              count={cronOverview?.jobs.length}
+              countA11yLabel={cronOverview === null
+                ? undefined
+                : `${String(cronOverview.jobs.length)} automation ${cronOverview.jobs.length === 1 ? "job" : "jobs"}`}
+              onSelect={() => {
+                setQuery("");
+                setNavigationDestination("automations");
+              }}
+            />
+          )}
+          <h2 className="sidebar-section-heading">
+            {showArchived ? "Archived" : "Recent"}
+          </h2>
           {threadListError !== null && (
             <div className="thread-list-error" role="alert">
               <span>Conversations could not be refreshed. {threadListError}</span>
@@ -227,7 +229,21 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           </ThreadListPrimitive.Root>
         </>
       ) : (
-        <AutomationsList onSelect={onSelect} />
+        <>
+          <button
+            type="button"
+            className="collection-back"
+            onClick={() => {
+              setQuery("");
+              setNavigationDestination("chats");
+            }}
+          >
+            <Icon name="chevron-left" size={15} />
+            <span>All conversations</span>
+          </button>
+          <h2 className="sidebar-section-heading">Automations</h2>
+          <AutomationsList query={query} onSelect={onSelect} />
+        </>
       )}
       <div className="sidebar-footer">
         {navigationDestination === "chats" && (

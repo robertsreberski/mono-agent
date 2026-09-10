@@ -415,6 +415,71 @@ describe("conversation switching through the real Chromium store and runtime", (
   it.each([
     { width: 1_280, height: 800, label: "desktop" },
     { width: 390, height: 844, label: "mobile" },
+  ])("drills into the Automations smart collection without refetching at $label size", async ({ width, height, label }) => {
+    await page.viewport(width, height);
+    const mobile = label === "mobile";
+    const cronAgent = agent("alpha", {
+      label: "Alpha",
+      cron: { read: true, actions: false },
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [cronAgent, agent("beta", { label: "Beta" })],
+      [alphaThread],
+      alphaThread.id,
+      { threadsSourceId: "alpha" },
+    ));
+    vi.mocked(api.cronOverview).mockResolvedValue({
+      generatedAt: "2026-09-08T08:00:00.000Z",
+      actionsEnabled: false,
+      jobs: [{
+        jobId: "daily:report",
+        expression: "0 8 * * *",
+        timezone: "Europe/Amsterdam",
+        conversationId: "cron:daily:report",
+        configured: true,
+        declaredEnabled: true,
+        effectiveEnabled: true,
+        health: "healthy",
+        threadId: cronThread.id,
+      }],
+    });
+
+    render(
+      <ConsoleStoreProvider>
+        <WebRuntimeProvider>
+          <ConversationSwitchFixture width={width} height={height} mobile={mobile} />
+        </WebRuntimeProvider>
+      </ConsoleStoreProvider>,
+    );
+    await closeInitialMobileDrawer(mobile);
+    expect(await screen.findByText("Alpha transcript")).toBeVisible();
+    await waitForLiveConsole();
+    await waitFor(() => expect(api.cronOverview).toHaveBeenCalledTimes(1));
+
+    let scope: HTMLElement = document.body;
+    if (mobile) {
+      await userEvent.click(screen.getByRole("button", { name: "Open conversations" }));
+      scope = await screen.findByRole("dialog", { name: "Conversations" });
+    }
+    expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible();
+    const collection = within(scope).getByRole("button", { name: "Open Automations collection" });
+    expect(within(collection).getByLabelText("1 automation job")).toHaveTextContent("1");
+    await userEvent.click(collection);
+
+    expect(within(scope).getByRole("heading", { name: "Automations" })).toBeVisible();
+    const search = within(scope).getByRole("searchbox", { name: "Search automations" });
+    await userEvent.type(search, "daily");
+    expect(within(scope).getByRole("button", { name: "Open run history for daily:report" })).toBeVisible();
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+    await userEvent.click(within(scope).getByRole("button", { name: "All conversations" }));
+    expect(within(scope).getByRole("searchbox", { name: "Search conversations" })).toHaveValue("");
+    expect(within(scope).getByRole("heading", { name: "Recent" })).toBeVisible();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width));
+  });
+
+  it.each([
+    { width: 1_280, height: 800, label: "desktop" },
+    { width: 390, height: 844, label: "mobile" },
   ])("keeps a synthetic delayed B to A to B switch owned at $label size", async ({ width, height, label }) => {
     await page.viewport(width, height);
     const mobile = label === "mobile";
