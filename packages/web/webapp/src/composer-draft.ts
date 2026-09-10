@@ -131,11 +131,16 @@ const readStored = (): Map<string, DraftEntry> => {
     if (document.version !== 1 || !Array.isArray(document.drafts)) {
       throw new TypeError("Unsupported composer drafts.");
     }
-    const expiredBefore = Date.now() - MAX_DRAFT_AGE_MS;
+    const now = Date.now();
+    const expiredBefore = now - MAX_DRAFT_AGE_MS;
     for (const value of document.drafts) {
       if (!isStoredDraft(value)) throw new TypeError("Invalid composer draft.");
       if (value.updatedAt < expiredBefore) continue;
-      entries.set(value.key, { text: value.text, updatedAt: value.updatedAt });
+      // A stamp from the future is a clock that was wrong when it was written.
+      // Left alone it would outrank everything typed afterwards and survive
+      // every eviction; read as "now" it keeps its place at the front and
+      // expires on schedule.
+      entries.set(value.key, { text: value.text, updatedAt: Math.min(value.updatedAt, now) });
     }
   } catch {
     try {
@@ -243,7 +248,13 @@ const listenForTeardown = (): void => {
 const hydrate = (): void => {
   if (hydrated) return;
   hydrated = true;
-  for (const [key, entry] of readStored()) textDrafts.set(key, entry);
+  for (const [key, entry] of readStored()) {
+    textDrafts.set(key, entry);
+    // Anything typed from here has to outrank what is already stored, even
+    // where the device clock has since moved backwards; otherwise eviction
+    // would keep old drafts and drop the one being written right now.
+    lastStamp = Math.max(lastStamp, entry.updatedAt);
+  }
   listenForTeardown();
 };
 
@@ -270,14 +281,19 @@ export const writeComposerDraft = (
   if (text.trim().length === 0) {
     if (current === undefined) return;
     textDrafts.delete(key);
-  } else {
-    // An oversized paste is retained in the tab exactly as typed; only what the
-    // device keeps is truncated, and it is truncated rather than dropped so the
-    // operator gets the thought back instead of nothing.
-    const retained = text.length > MAX_DRAFT_CHARACTERS ? text.slice(0, MAX_DRAFT_CHARACTERS) : text;
-    if (current?.text === retained) return;
-    textDrafts.set(key, { text: retained, updatedAt: stamp() });
+    touchedKeys.add(key);
+    // A send or a clear is written NOW. Debouncing a removal risks the app being
+    // killed in that window and handing the operator back a message they had
+    // already sent.
+    flushComposerDrafts();
+    return;
   }
+  // An oversized paste is retained in the tab exactly as typed; only what the
+  // device keeps is truncated, and it is truncated rather than dropped so the
+  // operator gets the thought back instead of nothing.
+  const retained = text.length > MAX_DRAFT_CHARACTERS ? text.slice(0, MAX_DRAFT_CHARACTERS) : text;
+  if (current?.text === retained) return;
+  textDrafts.set(key, { text: retained, updatedAt: stamp() });
   touchedKeys.add(key);
   scheduleFlush();
 };
@@ -310,7 +326,7 @@ export const forgetComposerDraft = (
   if (key === null) return;
   textDrafts.delete(key);
   touchedKeys.add(key);
-  scheduleFlush();
+  flushComposerDrafts();
 };
 
 /** Attachments are not restorable, but still make a service-worker reload unsafe. */

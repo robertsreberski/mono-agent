@@ -148,6 +148,39 @@ describe("composer drafts across app restarts", () => {
     reopened.resetComposerDraft();
   });
 
+  it("removes a sent draft from the device immediately, without waiting for the debounce", async () => {
+    vi.useFakeTimers();
+    writeComposerDraft("alpha", "one", "about to be sent");
+    vi.advanceTimersByTime(500);
+    expect(storedDocument().drafts).toHaveLength(1);
+
+    // No timer advance and no page-hide event: a send is written through.
+    writeComposerDraft("alpha", "one", "");
+    expect(localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBeNull();
+  });
+
+  it("keeps a draft typed after the device clock moved backwards", async () => {
+    const drafts = [{
+      key: JSON.stringify(["alpha", "wrong-clock"]),
+      text: "written while the clock was ahead",
+      updatedAt: Date.now() + 60 * 60 * 1_000,
+    }];
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({ version: 1, drafts }));
+
+    const reopened = await reopenApp();
+    expect(reopened.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+    for (let index = 0; index < 40; index += 1) {
+      reopened.writeComposerDraft("alpha", `thread-${index}`, `draft ${index}`);
+    }
+    reopened.flushComposerDrafts();
+
+    // The future-stamped draft is the one evicted, not the newest real edit.
+    const reopenedAgain = await reopenApp();
+    expect(reopenedAgain.readComposerDraft("alpha", "thread-39")).toBe("draft 39");
+    expect(reopenedAgain.readComposerDraft("alpha", "wrong-clock")).toBe("");
+    reopenedAgain.resetComposerDraft();
+  });
+
   it("discards a malformed stored document instead of failing to start", async () => {
     localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, '{"version":1,"drafts":[{"key":5}]}');
 
