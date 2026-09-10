@@ -732,6 +732,7 @@ WebTheme
 WebThread
 WebThreadChangedPayload
 WebThreadDetail
+WebThreadListScope
 WebThreadNotificationTriggerKind
 WebThreadSearchHit
 WebThreadSearchPage
