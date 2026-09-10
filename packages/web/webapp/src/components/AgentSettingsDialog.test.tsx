@@ -194,6 +194,8 @@ describe("AgentSettingsDialog", () => {
   });
 
   it("pins and unpins the selected agent from its header", () => {
+    // `resetAllMocks` above strips the resolved value; the click awaits it.
+    storeMock.setAgentPinned.mockResolvedValue(undefined);
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
     const pin = screen.getByRole("button", { name: "Pin Alpha first" });

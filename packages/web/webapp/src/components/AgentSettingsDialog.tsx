@@ -119,7 +119,7 @@ export function AgentSettingsDialog({
               aria-pressed={Boolean(agent.pinned)}
               aria-label={agent.pinned ? `Unpin ${agent.label}` : `Pin ${agent.label} first`}
               title={agent.pinned ? "Remove from favorites" : "Add to favorites"}
-              onClick={() => { void store.setAgentPinned(agent.sourceId, !agent.pinned).catch(() => undefined); }}
+              onClick={() => { void Promise.resolve(store.setAgentPinned(agent.sourceId, !agent.pinned)).catch(() => undefined); }}
             >
               <Icon name="star" size={16} fill={agent.pinned ? "currentColor" : "none"} />
             </button>
