@@ -1646,6 +1646,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const skillRequestGenerationRef = useRef(0);
   const cronRequestGenerationRef = useRef(0);
   const cronRunCursorRequestGenerationRef = useRef(0);
+  const cronEffectSignatureRef = useRef<string | undefined>(undefined);
   const skillRegistryStateRef = useRef(skillRegistryState);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -4385,6 +4386,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [cancelPersist]);
 
   useEffect(() => {
+    const signature = `${selectedAgentId ?? ""}\0${selectedAgent?.cron?.read === true ? "read" : "stored"}\0${cronRefreshToken}`;
+    if (cronEffectSignatureRef.current === signature) return;
+    cronEffectSignatureRef.current = signature;
     void refreshCron();
   }, [cronRefreshToken, refreshCron, selectedAgent?.cron?.read, selectedAgentId]);
 
