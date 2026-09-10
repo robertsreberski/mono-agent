@@ -64,6 +64,9 @@ const createStore = (threads: readonly ThreadSummary[] = [thread("loaded", "agen
   hiddenOfflineAgentCount: 0,
   showOfflineAgents: false,
   cachedRunningThreads: [] as readonly ThreadSummary[],
+  navigationDestination: "chats" as const,
+  cronOverview: null,
+  setNavigationDestination: vi.fn(),
   selectedAgent: agent("agent-one"),
   selectedAgentId: "agent-one",
   selectedThreadId: null,
@@ -257,26 +260,32 @@ describe("Dashboard conversation rows", () => {
     expect(within(row).queryByRole("img", { name: "Cancelled" })).toBeNull();
   });
 
-  it("marks what a conversation is, with trouble ahead of its trigger", () => {
-    const failedCron = thread("nightly", "agent-one", {
-      title: "Nightly report",
-      trigger: { kind: "cron", jobId: "nightly" },
+  it("marks what a conversation is, with trouble ahead of its trigger, and keeps cron out", () => {
+    const failedWebhook = thread("delivery", "agent-one", {
+      title: "Webhook delivery",
+      trigger: { kind: "webhook" },
       runState: { status: "failed" },
     });
-    const healthyCron = thread("daily", "agent-one", {
-      title: "Daily report",
-      trigger: { kind: "cron", jobId: "daily" },
+    const healthyWebhook = thread("ping", "agent-one", {
+      title: "Webhook ping",
+      trigger: { kind: "webhook" },
     });
-    storeMock.current = createStore([failedCron, healthyCron]);
+    const cron = thread("nightly", "agent-one", {
+      title: "Nightly report",
+      trigger: { kind: "cron", jobId: "nightly" },
+    });
+    storeMock.current = createStore([failedWebhook, healthyWebhook, cron]);
     render(<Dashboard />);
 
-    const failed = screen.getByRole("button", { name: "Open Nightly report" });
+    const failed = screen.getByRole("button", { name: "Open Webhook delivery" });
     expect(failed.querySelector(".thread-kind.is-alert")).not.toBeNull();
     // The alert takes the glyph; its name still says where the run came from.
-    expect(within(failed).getByRole("img", { name: /cron conversation/u })).toBeVisible();
+    expect(within(failed).getByRole("img", { name: /webhook conversation/u })).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "Open Daily report" }).querySelector(".thread-kind.is-cron"),
+      screen.getByRole("button", { name: "Open Webhook ping" }).querySelector(".thread-kind.is-webhook"),
     ).not.toBeNull();
+    // A cron channel is an automation's history: it lives in that collection.
+    expect(screen.queryByRole("button", { name: "Open Nightly report" })).toBeNull();
   });
 
   it("closes the drawer when a row opens a conversation, and not when the list pages", () => {
@@ -292,57 +301,39 @@ describe("Dashboard conversation rows", () => {
   });
 });
 
-describe("Dashboard recent chips", () => {
-  const cronRow = thread("nightly", "agent-one", {
-    title: "Nightly report",
-    trigger: { kind: "cron", jobId: "nightly" },
-  });
-  const plainRow = thread("loaded", "agent-one", { title: "Ordinary chat" });
-  const webhookRow = thread("hooked", "agent-one", {
-    title: "Webhook delivery",
-    trigger: { kind: "webhook" },
-  });
-
-  beforeEach(() => {
-    storeMock.current = createStore([plainRow, cronRow, webhookRow]);
-  });
-
-  it("narrows the loaded rows to cron and back, and keeps paging available", () => {
+describe("Dashboard collections", () => {
+  it("offers Automations with its job count and opens it in place", () => {
+    storeMock.current = {
+      ...createStore(),
+      cronOverview: { generatedAt: "2026-09-08T08:00:00.000Z", actionsEnabled: false, jobs: [
+        { jobId: "daily", expression: "0 8 * * *", timezone: "UTC", conversationId: "cron:daily",
+          configured: true, declaredEnabled: true, effectiveEnabled: true, health: "healthy" },
+      ] },
+    };
     render(<Dashboard />);
 
-    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(screen.getByRole("button", { name: "Cron" }));
-
-    expect(screen.getByRole("button", { name: "Open Nightly report" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Open Ordinary chat" })).toBeNull();
-    // A webhook is a different trigger, not a quiet member of Cron.
-    expect(screen.queryByRole("button", { name: "Open Webhook delivery" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Load older conversations" })).toBeVisible();
-
-    fireEvent.click(screen.getByRole("button", { name: "All" }));
-    expect(screen.getByRole("button", { name: "Open Ordinary chat" })).toBeVisible();
+    const row = screen.getByRole("button", { name: "Open Automations collection" });
+    expect(within(row).getByLabelText("1 automation job")).toHaveTextContent("1");
+    fireEvent.click(row);
+    expect(store().setNavigationDestination).toHaveBeenCalledWith("automations");
   });
 
-  it("says the chip found nothing here without claiming the shelf is empty", () => {
-    storeMock.current = createStore([plainRow]);
+  it("keeps the collection off the archive shelf", () => {
+    storeMock.current = { ...createStore(), showArchived: true };
     render(<Dashboard />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Cron" }));
-
-    expect(screen.getByText("No cron conversations loaded")).toBeVisible();
-    expect(screen.queryByText("Start a conversation")).toBeNull();
-    expect(screen.getByRole("button", { name: "Load older conversations" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open Automations collection" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Archived" })).toBeVisible();
   });
 
-  it("resets to All when the listing underneath it changes", () => {
-    const { rerender } = render(<Dashboard />);
-    fireEvent.click(screen.getByRole("button", { name: "Cron" }));
-    expect(screen.getByRole("button", { name: "Cron" })).toHaveAttribute("aria-pressed", "true");
-
-    storeMock.current = { ...createStore([plainRow, cronRow]), selectedAgentId: "agent-two" };
-    rerender(<Dashboard />);
-
-    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+  it("shows the collection in place of Running and Recent, with its own search and a way back", () => {
+    storeMock.current = { ...createStore(), navigationDestination: "automations" as const };
+    render(<Dashboard />);
+    expect(screen.getByRole("heading", { name: "Automations" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Recent" })).toBeNull();
+    expect(screen.getByRole("searchbox", { name: "Search automations" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Archived/u })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "All conversations" }));
+    expect(store().setNavigationDestination).toHaveBeenCalledWith("chats");
   });
 });
 

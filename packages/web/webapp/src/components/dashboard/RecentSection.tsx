@@ -15,18 +15,8 @@ import {
   dashboardKindIcon,
   dashboardKindLabel,
   dashboardThreadKind,
-  matchesRecentFilter,
-  type RecentFilter,
+  isRecentThread,
 } from "./dashboard-model";
-
-const CHIPS: readonly {
-  readonly id: RecentFilter;
-  readonly label: string;
-  readonly icon?: "clock";
-}[] = [
-  { id: "all", label: "All" },
-  { id: "cron", label: "Cron", icon: "clock" },
-];
 
 function ThreadListItem({
   thread,
@@ -79,23 +69,19 @@ function ThreadListItem({
 }
 
 /**
- * The selected agent's current archive bucket, and nothing else.
+ * The selected agent's current archive bucket, and nothing else. Cron channels
+ * are not in it: the listing is server-scoped to chats, and the rows defend
+ * that here for anything an older page or event still carries.
  *
  * A search REPLACES these rows -- it goes to the server and reads every
- * conversation of the agent rather than the page this list has loaded -- so the
- * chips go with them: they filter what is loaded, and a result set the server
- * already ranked is not that.
+ * conversation of the agent rather than the page this list has loaded.
  */
 export function RecentSection({
-  filter,
-  onFilterChange,
   searching,
   query,
   search,
   onNavigate,
 }: {
-  readonly filter: RecentFilter;
-  readonly onFilterChange: (filter: RecentFilter) => void;
   readonly searching: boolean;
   readonly query: string;
   readonly search: ThreadSearchState;
@@ -116,30 +102,14 @@ export function RecentSection({
     () => new Map(threads.map((thread) => [thread.id, thread])),
     [threads],
   );
-  const visibleCount = visibleThreads.filter(
-    (thread) => matchesRecentFilter(thread, filter),
-  ).length;
+  const visibleCount = visibleThreads.filter(isRecentThread).length;
 
   return (
     <section className="dashboard-section" aria-labelledby="dashboard-recent-label">
       <div className="dashboard-section-head">
-        <h2 className="dashboard-section-label" id="dashboard-recent-label">Recent</h2>
-        {!searching && (
-          <div className="dashboard-chips" role="group" aria-label="Filter conversations">
-            {CHIPS.map((chip) => (
-              <button
-                key={chip.id}
-                type="button"
-                className={`dashboard-chip${filter === chip.id ? " is-active" : ""}`}
-                aria-pressed={filter === chip.id}
-                onClick={() => onFilterChange(chip.id)}
-              >
-                {chip.icon && <Icon name={chip.icon} size={11} />}
-                {chip.label}
-              </button>
-            ))}
-          </div>
-        )}
+        <h2 className="dashboard-section-label" id="dashboard-recent-label">
+          {showArchived ? "Archived" : "Recent"}
+        </h2>
       </div>
       {threadListError !== null && (
         <div className="thread-list-error" role="alert">
@@ -155,7 +125,7 @@ export function RecentSection({
             <ThreadListPrimitive.Items archived={showArchived}>
               {({ threadListItem }) => {
                 const thread = threadById.get(threadListItem.id);
-                return thread && matchesRecentFilter(thread, filter) ? (
+                return thread && isRecentThread(thread) ? (
                   <ThreadListItem thread={thread} onNavigate={onNavigate} />
                 ) : null;
               }}
@@ -168,11 +138,9 @@ export function RecentSection({
                     ? "Conversations unavailable"
                     : selectionLoading
                     ? "Loading conversations…"
-                    : filter === "cron"
-                      ? "No cron conversations loaded"
-                      : showArchived
-                        ? "No archived conversations"
-                        : "Start a conversation"}
+                    : showArchived
+                      ? "No archived conversations"
+                      : "Start a conversation"}
                 </span>
               </div>
             )}

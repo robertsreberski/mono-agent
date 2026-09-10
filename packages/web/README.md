@@ -382,6 +382,25 @@ come only from the running agent. Delivery is idempotent, best-effort, attempted
 once with a five-second bound, and has no outbox when the web service is
 unavailable. Other `web:*` destinations are not accepted.
 
+The unified agent sidebar lists ordinary conversations under **Recent** and
+exposes **Automations** as a folder-style system collection. Opening the
+collection drills into the same sidebar area with a clear return to all
+conversations. Its contents come from the agent-scoped cron overview rather
+than the currently loaded conversation page, so configured jobs appear before
+their first run and every overview job links to its stable read-only history channel.
+Each row shows the job id, cadence and timezone, enabled state, last/active run,
+and an agent-authored next run only while live authority is available. Loading,
+unsupported, unavailable, offline/saved-snapshot, empty, and truncated-overview
+states remain distinct. Saved history stays openable read-only, while stale
+schedule state is labelled and never made actionable. The shared sidebar search
+queries conversations in the default view and filters the complete bounded
+overview inside Automations. The Recent list uses a server-side scope for paging
+and search, so cron channels are excluded
+before limits and cursors are applied while ordinary and webhook conversations
+remain visible. Unscoped HTTP callers keep the backward-compatible mixed list.
+Automations is a special system collection; this package does not define project
+persistence, membership, folders, or runtime context.
+
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
 deleted only after archival. Deletion leaves delivery receipts threadless and
@@ -390,13 +409,13 @@ late or replayed delivery cannot recreate the channel. Bootstrap and paging are
 bounded per source and archive state, with redirect-resolving thread fetches for selections
 or mutations outside the current window.
 
-The cron header is read-only: a quiet line shows human-language cadence and the
-agent-authored next run in the viewer's local date/time, with the viewer timezone
-available on the time label. Wall-clock cadence includes the scheduler timezone
-(UTC by default); unsupported expressions retain normalized cron text and timezone.
-Disabled or removed jobs say so. Missing, invalid, past, or offline/stale next-run
-state says **Next run unavailable**. Configuration stays in files/config JSON;
-the browser neither edits it nor computes a schedule.
+The cron header shows schedule, timezone, effective state, last and next run,
+and health from the agent-authored overview. **Run now** and **Enable/Disable**
+use the existing confirmed operator APIs when the live agent advertises action
+capability; otherwise they stay visible but disabled with the authoritative
+reason. **View config** exposes the existing redacted, read-only config view.
+Configuration stays file/config-JSON owned, and the browser neither edits it nor
+computes a schedule or promotes stale snapshot data into actionable live state.
 
 Each visible terminal run keeps **Reply**, status, and local time in its compact
 footer; secondary artifact, originating-session, activity, and truncation
@@ -722,6 +741,7 @@ WebTheme
 WebThread
 WebThreadChangedPayload
 WebThreadDetail
+WebThreadListScope
 WebThreadNotificationTriggerKind
 WebThreadSearchHit
 WebThreadSearchPage

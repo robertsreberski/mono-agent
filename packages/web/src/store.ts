@@ -58,6 +58,7 @@ import {
   type WebToolCall,
   type WebThreadDetail,
   type WebThreadPage,
+  type WebThreadListScope,
   type WebThreadSearchHit,
   type WebThreadSearchPage,
   type WebPushSubscriptionState,
@@ -2568,13 +2569,16 @@ export class WebStore {
     readonly archived: boolean;
     readonly limit?: number;
     readonly before?: string;
+    readonly scope?: WebThreadListScope;
   }): WebThreadPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const limit = boundedPageLimit(input.limit, WEB_THREAD_PAGE_MAX);
-    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before);
+    const scope = input.scope ?? "all";
+    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope);
     const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
+    const scopeSql = threadListScopeSql(scope);
     const beforeSql = cursor === undefined
       ? ""
       : "AND (t.updated_at < ? OR (t.updated_at = ? AND t.id < ?))";
@@ -2582,7 +2586,7 @@ export class WebStore {
     if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     values.push(limit + 1);
     const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.source_id = ? AND ${archivedSql} ${beforeSql}
+      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${beforeSql}
       ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
     `)).all(...values) as unknown as ThreadRow[];
     const hasMore = rows.length > limit;
@@ -2591,7 +2595,11 @@ export class WebStore {
     return {
       threads: pageRows.map((row) => this.mapThread(row)),
       ...(hasMore && last !== undefined
-        ? { nextCursor: encodeCursor({ updatedAt: last.updated_at, id: last.id }) }
+        ? { nextCursor: encodeCursor({
+            updatedAt: last.updated_at,
+            id: last.id,
+            ...(scope === "chats" ? { scope } : {}),
+          }) }
         : {}),
     };
   }
@@ -2609,12 +2617,14 @@ export class WebStore {
     readonly sourceId: string;
     readonly query: string;
     readonly limit?: number;
+    readonly scope?: WebThreadListScope;
   }): WebThreadSearchPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const query = input.query.trim();
     const limit = boundedPageLimit(input.limit, WEB_THREAD_SEARCH_MAX);
+    const scopeSql = threadListScopeSql(input.scope ?? "all");
     const match = query.length < WEB_THREAD_SEARCH_MIN_QUERY
       ? undefined
       : messageSearchMatchExpression(query);
@@ -2627,7 +2637,7 @@ export class WebStore {
         FROM message_search
         JOIN messages m ON m.rowid = message_search.rowid
         JOIN threads t ON t.id = m.thread_id
-       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")}
+       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")} ${scopeSql}
        ORDER BY rank
        LIMIT ?
     `).all(
@@ -2660,7 +2670,7 @@ export class WebStore {
     // because a title is short enough to scan and short enough to type part of.
     const titleRows = this.database.prepare(`
       SELECT t.id AS id FROM threads t
-       WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\'
+       WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\' ${scopeSql}
        ORDER BY t.updated_at DESC, t.id DESC
        LIMIT ?
     `).all(input.sourceId, escapeLikeTerm(query), limit + 1) as unknown as Array<{ id: string }>;
@@ -6309,9 +6319,17 @@ function decodeCursor(value: string): Record<string, unknown> {
   }
 }
 
-function decodeThreadCursor(value: string): { readonly updatedAt: string; readonly id: string } {
+function threadListScopeSql(scope: WebThreadListScope): string {
+  return scope === "chats" ? "AND (t.trigger_kind IS NULL OR t.trigger_kind <> 'cron')" : "";
+}
+
+function decodeThreadCursor(
+  value: string,
+  scope: WebThreadListScope,
+): { readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
-  if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string") {
+  if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string"
+    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)) {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return { updatedAt: cursor.updatedAt, id: cursor.id };

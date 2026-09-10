@@ -6,7 +6,7 @@ import {
   dashboardKindIcon,
   dashboardThreadKind,
   groupRunningThreads,
-  matchesRecentFilter,
+  isRecentThread,
   mergeRunningThreads,
   runningThreadCount,
 } from "./dashboard-model";
@@ -80,16 +80,10 @@ describe("recent filter", () => {
   const webhook = thread("hook", "alpha", { trigger: { kind: "webhook" } });
   const plain = thread("plain", "alpha");
 
-  it("passes everything under All, including cron", () => {
-    for (const row of [cron, webhook, plain]) {
-      expect(matchesRecentFilter(row, "all")).toBe(true);
-    }
-  });
-
-  it("matches only cron under Cron -- a webhook is a different trigger", () => {
-    expect(matchesRecentFilter(cron, "cron")).toBe(true);
-    expect(matchesRecentFilter(webhook, "cron")).toBe(false);
-    expect(matchesRecentFilter(plain, "cron")).toBe(false);
+  it("keeps a cron channel out of Recent, and nothing else", () => {
+    expect(isRecentThread(cron)).toBe(false);
+    expect(isRecentThread(webhook)).toBe(true);
+    expect(isRecentThread(plain)).toBe(true);
   });
 });
 

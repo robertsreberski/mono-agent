@@ -7,7 +7,7 @@ import { Icon } from "../Icon";
  * right. Both are console-wide switches rather than navigation, so neither one
  * dismisses the mobile drawer.
  */
-export function DashboardFooter() {
+export function DashboardFooter({ archiveShelf = true }: { readonly archiveShelf?: boolean } = {}) {
   const { threads, selectedAgentId, showArchived, setShowArchived } = useConsoleStore();
   const archivedCount = threads.filter(
     (thread) => thread.sourceId === selectedAgentId && Boolean(thread.archivedAt),
@@ -18,7 +18,7 @@ export function DashboardFooter() {
       {/* The one place the operator can see what this session has cost and
           change what it is allowed to spend. */}
       <DataModeIndicator />
-      <button
+      {archiveShelf && <button
         type="button"
         className={`archive-toggle${showArchived ? " is-active" : ""}`}
         onClick={() => setShowArchived(!showArchived)}
@@ -28,7 +28,7 @@ export function DashboardFooter() {
         {archivedCount > 0 && !showArchived && (
           <span className="archive-count">{archivedCount}</span>
         )}
-      </button>
+      </button>}
     </div>
   );
 }

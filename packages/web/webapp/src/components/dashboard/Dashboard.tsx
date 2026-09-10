@@ -3,10 +3,12 @@ import { useConsoleStore } from "../../console-store";
 import { MIN_SEARCH_QUERY, useThreadSearch } from "../../thread-search";
 import type { ThreadSummary } from "../../types";
 import { AgentStrip } from "./AgentStrip";
+import { AutomationsSection } from "./AutomationsSection";
+import { CollectionsSection } from "./CollectionsSection";
 import { DashboardFooter } from "./DashboardFooter";
 import { DashboardHeader } from "./DashboardHeader";
 import { DashboardSearch } from "./DashboardSearch";
-import { groupRunningThreads, mergeRunningThreads, type RecentFilter } from "./dashboard-model";
+import { groupRunningThreads, mergeRunningThreads } from "./dashboard-model";
 import { RecentSection } from "./RecentSection";
 import { RunningSection } from "./RunningSection";
 
@@ -25,28 +27,30 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
   const {
     agents,
     cachedRunningThreads,
+    navigationDestination,
     selectedAgentId,
     selectAgent,
     selectThread,
     setShowArchived,
-    showArchived,
     threads,
   } = useConsoleStore();
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<RecentFilter>("all");
+  const chats = navigationDestination === "chats";
   const [expandedAgentIds, setExpandedAgentIds] = useState<ReadonlySet<string>>(new Set());
 
   // Searching goes to the server, which reads every conversation of this agent
   // rather than only the page the list has loaded.
-  const searching = query.trim().length >= MIN_SEARCH_QUERY;
-  const search = useThreadSearch(selectedAgentId, query);
+  // Inside Automations the same field narrows the cron overview locally, and
+  // no request is made for it.
+  const searching = chats && query.trim().length >= MIN_SEARCH_QUERY;
+  const search = useThreadSearch(selectedAgentId, chats ? query : "");
 
   // A query is about ONE agent, and its hits are that agent's. Carrying them
   // across a switch would flash another agent's conversations under the new
   // agent's name for as long as the next request takes.
   useEffect(() => { setQuery(""); }, [selectedAgentId]);
-  // A chip narrows a listing. A different listing has not been narrowed.
-  useEffect(() => { setFilter("all"); }, [selectedAgentId, showArchived]);
+  // The field means something else on the other side of the collection.
+  useEffect(() => { setQuery(""); }, [navigationDestination]);
 
   const groups = useMemo(
     () => groupRunningThreads(mergeRunningThreads(cachedRunningThreads, threads), agents),
@@ -84,26 +88,34 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
     <div className="dashboard">
       <DashboardHeader onNavigate={onNavigate} />
       <AgentStrip runningCounts={runningCounts} />
-      <DashboardSearch value={query} onChange={setQuery} />
+      <DashboardSearch
+        value={query}
+        onChange={setQuery}
+        label={chats ? "Search conversations" : "Search automations"}
+      />
       <div className="dashboard-scroll">
-        <RunningSection
-          groups={groups}
-          expandedAgentIds={expandedAgentIds}
-          onToggleAgent={toggleAgentExpansion}
-          onOpen={openRunning}
-        />
-        {/* PROJECTS goes here. Nothing draws it yet, and nothing pretends to. */}
-        {null}
-        <RecentSection
-          filter={filter}
-          onFilterChange={setFilter}
-          searching={searching}
-          query={query}
-          search={search}
-          onNavigate={onNavigate}
-        />
+        {chats ? (
+          <>
+            <RunningSection
+              groups={groups}
+              expandedAgentIds={expandedAgentIds}
+              onToggleAgent={toggleAgentExpansion}
+              onOpen={openRunning}
+            />
+            {/* Projects will sit beside Automations here. */}
+            <CollectionsSection />
+            <RecentSection
+              searching={searching}
+              query={query}
+              search={search}
+              onNavigate={onNavigate}
+            />
+          </>
+        ) : (
+          <AutomationsSection query={query} onNavigate={onNavigate} />
+        )}
       </div>
-      <DashboardFooter />
+      <DashboardFooter archiveShelf={chats} />
     </div>
   );
 }

@@ -283,6 +283,15 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.threadIfChanged).mockReset();
     vi.mocked(api.submit).mockReset();
     vi.mocked(api.submission).mockReset();
+    vi.mocked(api.cronOverview).mockReset().mockRejectedValue(
+      new ApiError(
+        "This agent does not expose first-class cron operator state.",
+        404,
+        "cron_unavailable",
+      ),
+    );
+    vi.mocked(api.cronRuns).mockReset();
+    vi.mocked(api.cronRun).mockReset();
     vi.mocked(api.cronReply).mockReset();
     localStorage.clear();
     sessionStorage.clear();
@@ -1144,9 +1153,10 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
     expect(store.current.selectedAgentId).toBe("alpha");
     expect(store.current.selectedThread?.canSend).toBe(false);
+    expect(store.current.navigationDestination).toBe("automations");
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
     expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).toEqual([cronThread.id]);
   });
@@ -1173,6 +1183,38 @@ describe("ConsoleStoreProvider integration", () => {
     expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
     expect(api.thread).toHaveBeenCalledTimes(1);
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+  });
+
+  it("opens an overview job on its canonical durable history route", async () => {
+    const ordinary = thread("ordinary", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], [ordinary], ordinary.id));
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
+    vi.mocked(api.thread).mockImplementation(async (threadId) =>
+      threadId === cronThread.id ? detail() : detail(ordinary, "ordinary"));
+
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    await waitFor(() => expect(api.cronOverview).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      store.current.setNavigationDestination("automations");
+      await Promise.resolve();
+    });
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+
+    act(() => store.current.selectCronJob("alpha", "daily:report", cronThread.id));
+
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    expect(store.current.navigationDestination).toBe("automations");
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
+    expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api.cronRuns).toHaveBeenCalledWith("alpha", "daily:report"));
+
+    act(() => store.current.setNavigationDestination("chats"));
+    expect(window.location.pathname).toBe("/");
   });
 
   it("reports a truncated cron overview honestly without selecting a bootstrap fallback", async () => {
@@ -1205,10 +1247,10 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose cron/iu));
+    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose first-class cron/iu));
     expect(store.current.selectedThreadId).toBeNull();
     expect(store.current.selectionLoading).toBe(false);
-    expect(api.cronOverview).not.toHaveBeenCalled();
+    expect(api.cronOverview).toHaveBeenCalledWith("alpha");
     expect(api.thread).not.toHaveBeenCalled();
   });
 
@@ -1225,15 +1267,18 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.navigationDestination).toBe("automations");
 
     act(() => store.current.selectThread(ordinary.id));
     await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    expect(store.current.navigationDestination).toBe("chats");
     expect(window.location.pathname).toBe("/");
 
     window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
     act(() => window.dispatchEvent(new PopStateEvent("popstate")));
 
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.navigationDestination).toBe("automations");
     expect(store.current.selectionLoading).toBe(false);
     expect(store.current.selectionError).toBeNull();
   });
@@ -1530,21 +1575,24 @@ describe("ConsoleStoreProvider integration", () => {
 
     expect(await screen.findByRole("button", { name: "Background job history" }))
       .toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(await screen.findByText("1 loaded · 0 active · 1 history")).toBeVisible();
     expect(api.cronRuns).toHaveBeenCalled();
   });
 
-  it("keeps a cached cron channel read-only when paired with an old agent", async () => {
+  it("loads a stored cron overview and keeps its cached channel read-only with an old agent", async () => {
     window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [cronThread]));
     vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
     vi.mocked(api.thread).mockResolvedValue(detail());
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
 
     const store = await renderStore();
 
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
-    expect(store.current.cronOverview).toBeNull();
-    expect(api.cronOverview).not.toHaveBeenCalled();
+    await waitFor(() => expect(store.current.cronOverview?.actionsEnabled).toBe(false));
+    expect(api.cronOverview).toHaveBeenCalledWith("alpha");
+    expect(api.cronRuns).toHaveBeenCalledWith("alpha", "daily:report");
+    expect(store.current.navigationDestination).toBe("automations");
     expect(store.current.selectedThread?.canSend).toBe(false);
   });
 
@@ -3566,6 +3614,7 @@ describe("ConsoleStoreProvider integration", () => {
         sourceId: "alpha",
         archived: false,
         limit: THREAD_PAGE_LIMIT,
+        scope: "chats",
       });
       // The bucket the bootstrap carried is not re-read...
       expect(api.threads).not.toHaveBeenCalled();
@@ -8929,6 +8978,8 @@ describe("ConsoleStoreProvider integration", () => {
       const store = await renderStore();
       act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
       await waitFor(() => expect(store.current.connection).toBe("live"));
+      act(() => store.current.setNavigationDestination("automations"));
+      expect(store.current.navigationDestination).toBe("automations");
 
       const first = store.current.replyToCronRun(source);
       const second = store.current.replyToCronRun(source);
@@ -8945,6 +8996,8 @@ describe("ConsoleStoreProvider integration", () => {
       });
       expect(store.current.selectedAgentId).toBe("alpha");
       expect(store.current.selectedThreadId).toBe(imported.id);
+      expect(store.current.navigationDestination).toBe("chats");
+      expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
       expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");

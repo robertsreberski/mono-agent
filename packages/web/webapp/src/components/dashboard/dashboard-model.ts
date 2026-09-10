@@ -11,9 +11,6 @@ import type { IconName } from "../Icon";
 /** What a conversation row's glyph says this conversation IS. */
 export type DashboardThreadKind = "alert" | "cron" | "webhook" | "chat";
 
-/** The Recent section's chips. `all` is every kind, including cron. */
-export type RecentFilter = "all" | "cron";
-
 /** How many cards one agent contributes to Running before the rest fold away. */
 export const RUNNING_CARDS_PER_AGENT = 2;
 
@@ -68,13 +65,12 @@ export const dashboardKindIcon = (kind: DashboardThreadKind): IconName => ICON_B
 export const dashboardKindLabel = (kind: DashboardThreadKind): string => LABEL_BY_KIND[kind];
 
 /**
- * The chips filter the rows already LOADED, and nothing else.
- *
- * They are not a query: paging stays available behind an empty chip, because
- * the next page is where its matches would come from.
+ * Recent is conversations; a cron channel is an automation's history and lives
+ * in that collection. The listing is server-scoped the same way -- this is the
+ * row-level guard for whatever an older page or event still carries.
  */
-export const matchesRecentFilter = (thread: ThreadSummary, filter: RecentFilter): boolean =>
-  filter === "all" || thread.trigger?.kind === "cron";
+export const isRecentThread = (thread: ThreadSummary): boolean =>
+  thread.trigger?.kind !== "cron";
 
 /**
  * What Running has to draw from: the cache's held activity, plus whatever the
