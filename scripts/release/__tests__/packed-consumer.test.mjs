@@ -40,8 +40,8 @@ describe("packed consumer verification", () => {
   });
 
   test("requires the exact minimum when the proof flag is used", () => {
-    expect(() => assertMinimumNodeRuntime("22.19.0")).not.toThrow();
-    expect(() => assertMinimumNodeRuntime("22.18.0")).toThrow(/must run on Node\.js 22\.19\.0/u);
+    expect(() => assertMinimumNodeRuntime("24.15.0")).not.toThrow();
+    expect(() => assertMinimumNodeRuntime("24.14.0")).toThrow(/must run on Node\.js 24\.15\.0/u);
     expect(() => assertMinimumNodeRuntime("24.0.0")).toThrow(/current Node\.js is 24\.0\.0/u);
   });
 
@@ -49,7 +49,7 @@ describe("packed consumer verification", () => {
     const manifest = buildPackedConsumerManifest(
       {
         name: "consumer",
-        engines: { node: ">=22.19.0" },
+        engines: { node: ">=24.15.0" },
       },
       [
         { name: "@mono-agent/z", tarballPath: "/tmp/z.tgz" },
@@ -62,7 +62,7 @@ describe("packed consumer verification", () => {
       "@mono-agent/z": "file:/tmp/z.tgz",
     });
     expect(() => buildPackedConsumerManifest({ engines: { node: ">=20" } }, [])).toThrow(
-      /template engines\.node must be >=22\.19\.0/u,
+      /template engines\.node must be >=24\.15\.0/u,
     );
   });
 
@@ -91,7 +91,7 @@ describe("packed consumer verification", () => {
   });
 
   test("builds an isolated manifest with only the target as a direct dependency", () => {
-    const template = { name: "consumer", engines: { node: ">=22.19.0" } };
+    const template = { name: "consumer", engines: { node: ">=24.15.0" } };
     const packedPackages = [
       { name: "@mono-agent/target", tarballPath: "/tmp/target.tgz" },
       { name: "@mono-agent/declared", tarballPath: "/tmp/declared.tgz" },
@@ -139,7 +139,7 @@ describe("packed consumer verification", () => {
         version: "0.0.0",
         private: true,
         type: "module",
-        engines: { node: ">=22.19.0" },
+        engines: { node: ">=24.15.0" },
       },
       packedRuntime,
       [packedRuntime],
@@ -262,7 +262,7 @@ describe("packed consumer verification", () => {
       version: "0.0.0",
       private: true,
       type: "module",
-      engines: { node: ">=22.19.0" },
+      engines: { node: ">=24.15.0" },
     };
 
     const combinedDir = path.join(root, "combined");
