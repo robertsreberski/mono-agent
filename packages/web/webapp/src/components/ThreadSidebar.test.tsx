@@ -6,7 +6,7 @@ import { readDataModeSetting } from "../data-mode";
 import { recordDataUsage, resetDataUsage } from "../data-usage";
 import { agent, thread } from "../test/fixtures";
 import { SEARCH_HIGHLIGHT_CLOSE, SEARCH_HIGHLIGHT_OPEN } from "../thread-search";
-import type { ThreadSearchHit, ThreadSummary } from "../types";
+import type { CronOverview, ThreadSearchHit, ThreadSummary } from "../types";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 const apiMock = vi.hoisted(() => ({ searchThreads: vi.fn() }));
@@ -66,19 +66,45 @@ beforeEach(() => {
     creatingThread: false,
     selectionError: null,
     threadListError: null,
+    navigationDestination: "chats",
     retryThreadList: vi.fn(),
+    setNavigationDestination: vi.fn(),
     setShowArchived: vi.fn(),
     hasMoreThreads: true,
     loadMoreThreads: vi.fn().mockResolvedValue(undefined),
     selectThread: vi.fn(),
+    selectCronJob: vi.fn(),
+    cronOverview: null,
+    cronLoading: false,
+    cronError: null,
+    connection: "live",
+    refreshCron: vi.fn().mockResolvedValue(undefined),
   };
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("ThreadSidebar conversation rows", () => {
+  it("keeps the mixed Chats page intact, including cron rows and paging", () => {
+    storeMock.current!.threads = [
+      thread("ordinary", "agent-one", { title: "Ordinary chat" }),
+      thread("cron", "agent-one", {
+        title: "Cron history",
+        trigger: { kind: "cron", jobId: "daily" },
+      }),
+    ];
+
+    render(<ThreadSidebar />);
+
+    expect(screen.getByRole("button", { name: "Open Ordinary chat" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Cron history" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Load older conversations" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-current", "page");
+  });
+
   it("turns the new-conversation action into an immediate pending indicator", () => {
     storeMock.current!.selectionLoading = true;
     storeMock.current!.creatingThread = true;
@@ -197,6 +223,98 @@ describe("ThreadSidebar conversation rows", () => {
     expect(row).toHaveTextContent("Cancelled");
     expect(row).not.toHaveTextContent("Previous reply");
     expect(within(row).queryByRole("img")).toBeNull();
+  });
+});
+
+describe("ThreadSidebar Automations destination", () => {
+  const overview: CronOverview = {
+    generatedAt: "2026-09-10T08:00:00.000Z",
+    actionsEnabled: false,
+    jobs: [{
+      jobId: "daily:brief",
+      expression: "0 8 * * *",
+      timezone: "Europe/Budapest",
+      conversationId: "cron:daily:brief",
+      configured: true,
+      declaredEnabled: true,
+      effectiveEnabled: true,
+      nextRunAt: "2026-09-11T06:00:00.000Z",
+      health: "healthy",
+      threadId: "cron-daily",
+    }],
+  };
+
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-10T10:00:00.000Z"));
+    storeMock.current!.navigationDestination = "automations";
+    storeMock.current!.selectedAgent = agent("agent-one", {
+      cron: { read: true, actions: false },
+    });
+    storeMock.current!.cronOverview = overview;
+  });
+
+  it("shows each configured overview job once before its first run and opens durable history", () => {
+    render(<ThreadSidebar />);
+
+    const rows = screen.getAllByRole("button", { name: "Open run history for daily:brief" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!).toHaveTextContent("Every day at 08:00 (Europe/Budapest)");
+    expect(rows[0]!).toHaveTextContent("Enabled");
+    expect(rows[0]!).toHaveTextContent("No runs yet");
+    expect(rows[0]!).toHaveTextContent("Next");
+    expect(screen.queryByPlaceholderText("Search conversations")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Load older conversations" })).toBeNull();
+
+    fireEvent.click(rows[0]!);
+    expect(storeMock.current!.selectCronJob).toHaveBeenCalledWith(
+      "agent-one",
+      "daily:brief",
+      "cron-daily",
+    );
+  });
+
+  it("keeps snapshot and truncation limits visible without advertising a next run", () => {
+    storeMock.current!.connection = "offline";
+    storeMock.current!.selectedAgent = agent("agent-one", {
+      status: "offline",
+    });
+    storeMock.current!.cronOverview = { ...overview, jobsTruncated: true };
+
+    render(<ThreadSidebar />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("saved snapshot");
+    expect(screen.getByRole("note")).toHaveTextContent("removed historical jobs may not be shown");
+    const row = screen.getByRole("button", { name: "Open run history for daily:brief" });
+    expect(row).toHaveTextContent("Enabled in snapshot");
+    expect(row).toHaveTextContent("Next run unavailable");
+    expect(row.querySelector("time")).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "loading",
+      overrides: { cronOverview: null, cronLoading: true, cronError: null },
+      copy: "Loading automations…",
+    },
+    {
+      name: "unsupported",
+      overrides: {
+        selectedAgent: agent("agent-one"),
+        cronOverview: null,
+        cronLoading: false,
+        cronError: "unsupported",
+      },
+      copy: "Automations not supported",
+    },
+    {
+      name: "empty",
+      overrides: { cronOverview: { ...overview, jobs: [] }, cronLoading: false, cronError: null },
+      copy: "No automations configured",
+    },
+  ])("distinguishes the $name state", ({ overrides, copy }) => {
+    Object.assign(storeMock.current!, overrides);
+    render(<ThreadSidebar />);
+    expect(screen.getByText(copy)).toBeVisible();
   });
 });
 

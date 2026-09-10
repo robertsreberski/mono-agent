@@ -81,6 +81,7 @@ import {
 export { holdsToolCall, mergeToolCallPart } from "./thread-cache";
 
 export type ConnectionState = "connecting" | "live" | "reconnecting" | "offline";
+export type ConsoleNavigationDestination = "chats" | "automations";
 
 /** One reply attachment, as the store hands it back after minting access. */
 type ReplyAttachmentMessagePart = Extract<MessagePart, { readonly type: "attachment" }>;
@@ -159,6 +160,8 @@ interface ConsoleStoreValue {
   readonly error: string | null;
   readonly actionError: string | null;
   readonly connection: ConnectionState;
+  /** The agent-scoped list shown in the middle navigation column. */
+  readonly navigationDestination: ConsoleNavigationDestination;
   readonly showArchived: boolean;
   readonly showOfflineAgents: boolean;
   readonly hiddenOfflineAgentCount: number;
@@ -194,6 +197,8 @@ interface ConsoleStoreValue {
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
   readonly clearAgentRunDefaults: () => Promise<void>;
   readonly selectThread: (threadId: string) => void;
+  readonly selectCronJob: (sourceId: string, jobId: string, threadId: string) => void;
+  readonly setNavigationDestination: (destination: ConsoleNavigationDestination) => void;
   readonly retrySelection: () => void;
   readonly retryThreadList: () => void;
   readonly createThread: () => Promise<ThreadSummary>;
@@ -355,6 +360,12 @@ const updateThreadRoute = (thread: ThreadSummary | undefined, replace = false): 
   const path = threadRoute(thread);
   if (window.location.pathname === path) return;
   window.history[replace ? "replaceState" : "pushState"](window.history.state, "", path);
+};
+
+const updateCronRoute = (sourceId: string, jobId: string): void => {
+  const path = cronChannelPath(sourceId, jobId);
+  if (window.location.pathname === path) return;
+  window.history.pushState(window.history.state, "", path);
 };
 
 const cronReplyKey = (sourceId: string, jobId: string, runId: string): string =>
@@ -1471,6 +1482,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     cronRouteSelection()?.sourceId ?? localStorage.getItem(SELECTED_AGENT_STORAGE_KEY),
   );
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [navigationDestination, setNavigationDestinationState] =
+    useState<ConsoleNavigationDestination>(() =>
+      cronRouteSelection() === undefined ? "chats" : "automations");
   /**
    * The conversation the OPEN stream names, which lags the selection by
    * {@link STREAM_SUBSCRIPTION_DEBOUNCE_MS}.
@@ -1546,6 +1560,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const [threadCursorByBucket, setThreadCursorByBucket] = useState<Record<string, string | null | undefined>>({});
   const [cronRunCursorByChannel, setCronRunCursorByChannel] = useState<Record<string, string | null | undefined>>({});
   const [cronOverview, setCronOverview] = useState<CronOverview | null>(null);
+  const [cronOverviewSourceId, setCronOverviewSourceId] = useState<string | null>(null);
   const [cronLoading, setCronLoading] = useState(false);
   const [cronError, setCronError] = useState<string | null>(null);
   const [cronReplyStates, setCronReplyStates] = useState<Record<string, CronReplyUiState>>(
@@ -1627,6 +1642,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   /** The catalog scope a page walk was started under. See `catalogScope`. */
   const catalogScopeRef = useRef<string>("");
   const skillRequestGenerationRef = useRef(0);
+  const cronRequestGenerationRef = useRef(0);
   const skillRegistryStateRef = useRef(skillRegistryState);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -2421,20 +2437,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       };
       setSelectionRequest(ownedRouteRequest);
     }
-    // The snapshot is the first authority on whether the route's agent can
-    // answer at all. `refreshCron` refuses to fail an owned route before the
-    // snapshot lands, and its effect re-runs only when the agent's cron
-    // capability CHANGES -- which an agent that never had one does not do.
-    if (route !== undefined && resolvedRouteThread === undefined && ownedRouteRequest !== null) {
-      const routeAgent = next.agents.find((agent) => agent.sourceId === route.sourceId);
-      if (routeAgent?.cron?.read !== true) {
-        failOwnedSelection(ownedRouteRequest, new Error(
-          routeAgent === undefined
-            ? "The agent for this cron conversation was not found."
-            : "This agent does not expose cron conversations.",
-        ));
-      }
-    }
+    // Capability discovery describes the running agent, not the web service's
+    // durable projection. A legacy or offline agent can still have a stored
+    // overview and transcript, so the cron overview request is the authority
+    // that resolves or rejects a source-qualified route.
     const selection = resolvedRouteThread !== undefined
       ? { agentId: resolvedRouteThread.sourceId, threadId: resolvedRouteThread.id }
       : ownedRouteRequest !== null && route !== undefined
@@ -2546,7 +2552,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [loadBootstrap]);
 
   useEffect(() => {
-    const onPopState = () => setRouteRevision((value) => value + 1);
+    const onPopState = () => {
+      setNavigationDestinationState(
+        cronRouteSelection() === undefined ? "chats" : "automations",
+      );
+      setRouteRevision((value) => value + 1);
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -4035,6 +4046,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   );
   const selectedThread =
     threads.find((thread) => thread.id === selectedThreadId) ?? detail?.thread ?? null;
+  const selectedCronOverview = cronOverviewSourceId === selectedAgentId
+    ? cronOverview
+    : null;
   // Assigned during render, like `threadsRef`: a removal event has to be able
   // to name a conversation the listing has moved past.
   detailThreadRef.current = detail?.thread ?? null;
@@ -4159,8 +4173,17 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const refreshCron = useCallback(async () => {
     const sourceId = selectedAgentId;
     const jobId = selectedCronJobId;
-    if (sourceId === null || selectedAgent?.cron?.read !== true) {
+    const route = cronRouteSelection();
+    const shouldRead = sourceId !== null && (
+      selectedAgent?.cron?.read === true
+      || navigationDestination === "automations"
+      || jobId !== undefined
+      || route?.sourceId === sourceId
+    );
+    const requestGeneration = ++cronRequestGenerationRef.current;
+    if (!shouldRead || sourceId === null) {
       setCronOverview(null);
+      setCronOverviewSourceId(null);
       setCronError(null);
       const request = selectionRequestRef.current;
       if (hasBootstrapRef.current
@@ -4169,7 +4192,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         failOwnedSelection(request, new Error(
           sourceId === null
             ? "The agent for this cron conversation was not found."
-            : "This agent does not expose cron conversations.",
+            : "This cron conversation is unavailable.",
         ));
       }
       return;
@@ -4184,18 +4207,25 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // the bootstrap's, and the conversation is refreshed by the event that
       // actually changed it -- see the `cron.changed` arm of the event table.
       const overview = await api.cronOverview(sourceId);
+      if (requestGeneration !== cronRequestGenerationRef.current
+        || selectedAgentRef.current !== sourceId) return;
+      setCronOverviewSourceId(sourceId);
       setCronOverview(overview);
       if (jobId !== undefined) {
         const threadId = overview.jobs.find((job) => job.jobId === jobId)?.threadId;
         const issuedAt = threadCacheRef.current.clock();
         const page = await api.cronRuns(sourceId, jobId);
-        if (threadId !== undefined && !threadCacheRef.current.accepts(threadId, issuedAt)) return;
+        if (requestGeneration !== cronRequestGenerationRef.current
+          || selectedAgentRef.current !== sourceId
+          || (threadId !== undefined && !threadCacheRef.current.accepts(threadId, issuedAt))) return;
         const channelKey = cronChannelKey(sourceId, jobId);
         setCronRunCursorByChannel((current) => Object.prototype.hasOwnProperty.call(current, channelKey)
           ? current
           : { ...current, [channelKey]: page.nextCursor ?? null });
       }
     } catch (cronError) {
+      if (requestGeneration !== cronRequestGenerationRef.current
+        || selectedAgentRef.current !== sourceId) return;
       const message = errorMessage(cronError);
       setCronError(message);
       const request = selectionRequestRef.current;
@@ -4203,9 +4233,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         failOwnedSelection(request, cronError);
       }
     } finally {
-      setCronLoading(false);
+      if (requestGeneration === cronRequestGenerationRef.current) setCronLoading(false);
     }
-  }, [failOwnedSelection, selectedAgent?.cron?.read, selectedAgentId, selectedCronJobId]);
+  }, [
+    failOwnedSelection,
+    navigationDestination,
+    selectedAgent?.cron?.read,
+    selectedAgent?.sourceId,
+    selectedAgentId,
+    selectedCronJobId,
+  ]);
 
   const loadCronRunActivity = useCallback(async (runId: string) => {
     const sourceId = selectedAgentId;
@@ -4514,6 +4551,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       }
       setDetailLoading(threadCacheRef.current.get(threadId) === undefined);
       if (thread) {
+        setNavigationDestinationState(
+          thread.trigger?.kind === "cron" ? "automations" : "chats",
+        );
         selectedAgentRef.current = thread.sourceId;
         setSelectedAgentId(thread.sourceId);
         localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, thread.sourceId);
@@ -4562,6 +4602,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           );
           selectedAgentRef.current = canonical.sourceId;
           selectedThreadRef.current = canonical.id;
+          setNavigationDestinationState(
+            canonical.trigger?.kind === "cron" ? "automations" : "chats",
+          );
           setSelectedAgentId(canonical.sourceId);
           setSelectedThreadId(canonical.id);
           localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, canonical.sourceId);
@@ -4602,6 +4645,19 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ],
   );
 
+  const selectCronJob = useCallback((sourceId: string, jobId: string, threadId: string) => {
+    setNavigationDestinationState("automations");
+    updateCronRoute(sourceId, jobId);
+    selectThread(threadId);
+  }, [selectThread]);
+
+  const setNavigationDestination = useCallback((destination: ConsoleNavigationDestination) => {
+    setNavigationDestinationState(destination);
+    if (destination === "chats" && cronRouteSelection() !== undefined) {
+      updateThreadRoute(undefined);
+    }
+  }, []);
+
   const retrySelection = useCallback(() => {
     const failure = selectionFailureRef.current;
     if (failure === null) return;
@@ -4628,8 +4684,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   useEffect(() => {
     const route = cronRouteSelection();
     if (route === undefined) return;
-    if (route.sourceId !== selectedAgentId || cronOverview === null) return;
-    const job = cronOverview.jobs.find(
+    if (route.sourceId !== selectedAgentId || selectedCronOverview === null) return;
+    const job = selectedCronOverview.jobs.find(
       (candidate) => candidate.jobId === route.jobId,
     );
     const request = selectionRequestRef.current;
@@ -4646,17 +4702,18 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     if (job === undefined) {
       failOwnedSelection(request, new Error(
-        cronOverview.jobsTruncated
+        selectedCronOverview.jobsTruncated
           ? "This cron conversation is not in the jobs loaded by the console. Retry after the cron overview changes."
           : "This cron conversation was not found.",
       ));
       return;
     }
     if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
-  }, [cronOverview, failOwnedSelection, routeRevision, selectThread, selectedAgentId]);
+  }, [failOwnedSelection, routeRevision, selectThread, selectedAgentId, selectedCronOverview]);
 
   const createThread = useCallback(async () => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
+    setNavigationDestinationState("chats");
     const unresolved = selectionRequestRef.current;
     const supersedesRestoredRead = unresolved?.kind === "thread"
       && restoredSelectionRef.current === unresolved.threadId;
@@ -5880,6 +5937,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       error,
       actionError,
       connection,
+      navigationDestination,
       showArchived,
       showOfflineAgents,
       hiddenOfflineAgentCount,
@@ -5894,7 +5952,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       catalogByProvider,
       ensureProviderCatalog,
       skillRegistry,
-      cronOverview,
+      cronOverview: selectedCronOverview,
       cronLoading,
       cronError,
       hasMoreThreads,
@@ -5905,6 +5963,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setAgentRunDefaults,
       clearAgentRunDefaults,
       selectThread,
+      selectCronJob,
+      setNavigationDestination,
       retrySelection,
       retryThreadList,
       createThread,
@@ -5953,7 +6013,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       createThread,
       cronLoading,
       cronError,
-      cronOverview,
+      selectedCronOverview,
       catalogByProvider,
       ensureProviderCatalog,
       detail,
@@ -5995,6 +6055,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       retryThreadList,
       refreshCron,
       selectAgent,
+      selectCronJob,
       selectThread,
       selectedAgent,
       selectedAgentId,
@@ -6007,6 +6068,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setAgentPinned,
       setAgentRunDefaults,
       setModel,
+      navigationDestination,
       showArchived,
       showOfflineAgents,
       threads,

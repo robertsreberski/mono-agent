@@ -379,6 +379,19 @@ come only from the running agent. Delivery is idempotent, best-effort, attempted
 once with a five-second bound, and has no outbox when the web service is
 unavailable. Other `web:*` destinations are not accepted.
 
+The agent sidebar has separate **Chats** and **Automations** destinations.
+Automations is populated from the agent-scoped cron overview rather than the
+currently loaded conversation page, so configured jobs appear before their
+first run and every overview job links to its stable read-only history channel.
+Each row shows the job id, cadence and timezone, enabled state, last/active run,
+and an agent-authored next run only while live authority is available. Loading,
+unsupported, unavailable, offline/saved-snapshot, empty, and truncated-overview
+states remain distinct. Saved history stays openable read-only, while stale
+schedule state is labelled and never made actionable. The Chats destination
+intentionally keeps its existing mixed search and server-paginated listing;
+cron rows are not client-filtered because that could hide older ordinary chats
+outside the loaded page.
+
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
 deleted only after archival. Deletion leaves delivery receipts threadless and

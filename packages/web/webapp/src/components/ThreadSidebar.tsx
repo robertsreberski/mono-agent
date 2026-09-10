@@ -8,6 +8,7 @@ import { useConsoleStore } from "../console-store";
 import { MIN_SEARCH_QUERY, useThreadSearch } from "../thread-search";
 import { threadPresentation } from "../thread-presentation";
 import type { ThreadSummary } from "../types";
+import { AutomationsList } from "./AutomationsList";
 import { DataModeIndicator } from "./DataModeIndicator";
 import { Icon } from "./Icon";
 import { ThreadSearchResults } from "./ThreadSearchResults";
@@ -82,7 +83,9 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
     creatingThread,
     selectionError,
     threadListError,
+    navigationDestination,
     retryThreadList,
+    setNavigationDestination,
     setShowArchived,
     hasMoreThreads,
     loadMoreThreads,
@@ -102,10 +105,13 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
   ).length;
 
   return (
-    <aside className="thread-sidebar" aria-label="Conversations">
+    <aside
+      className="thread-sidebar"
+      aria-label={navigationDestination === "chats" ? "Conversations" : "Automations"}
+    >
       <div className="sidebar-header">
         <div>
-          <span className="eyebrow">Conversations</span>
+          <span className="eyebrow">Agent workspace</span>
           <h1>{selectedAgent?.label ?? "No agent"}</h1>
         </div>
         <div className="sidebar-header-actions">
@@ -136,85 +142,113 @@ export function ThreadSidebar({ onSelect }: { readonly onSelect?: () => void }) 
           </ThreadListPrimitive.New>
         </div>
       </div>
-      <label className="thread-search">
-        <Icon name="search" size={16} />
-        <span className="sr-only">Search conversations</span>
-        <input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search conversations"
-          type="search"
-        />
-        {query && (
-          <button type="button" onClick={() => setQuery("")} aria-label="Clear search">
-            <Icon name="close" size={13} />
-          </button>
-        )}
-      </label>
-      {threadListError !== null && (
-        <div className="thread-list-error" role="alert">
-          <span>Conversations could not be refreshed. {threadListError}</span>
-          <button type="button" onClick={retryThreadList}>Retry conversations</button>
-        </div>
-      )}
-      <ThreadListPrimitive.Root className="thread-list">
-        <div className="thread-list-scroll" onClick={searching ? undefined : onSelect}>
-          {searching ? (
-            <ThreadSearchResults query={query} search={search} onSelect={onSelect} />
-          ) : (
-            <>
-              <ThreadListPrimitive.Items archived={showArchived}>
-                {({ threadListItem }) => {
-                  const thread = threadById.get(threadListItem.id);
-                  return thread ? (
-                    <ThreadListItem thread={thread} archived={showArchived} />
-                  ) : null;
-                }}
-              </ThreadListPrimitive.Items>
-              {visibleCount === 0 && (
-                <div className="thread-list-empty">
-                  <Icon name={showArchived ? "archive" : "threads"} size={19} />
-                  <span>
-                    {selectionError !== null || threadListError !== null
-                      ? "Conversations unavailable"
-                      : selectionLoading
-                      ? "Loading conversations…"
-                      : showArchived
-                        ? "No archived conversations"
-                        : "Start a conversation"}
-                  </span>
-                </div>
-              )}
-              {hasMoreThreads && (
-                <button
-                  type="button"
-                  className="thread-load-more"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void loadMoreThreads().catch(() => undefined);
-                  }}
-                >
-                  Load older conversations
-                </button>
-              )}
-            </>
-          )}
-        </div>
-      </ThreadListPrimitive.Root>
-      <div className="sidebar-footer">
+      <nav className="sidebar-navigation" aria-label="Agent workspace">
         <button
           type="button"
-          className={`archive-toggle${showArchived ? " is-active" : ""}`}
-          onClick={() => setShowArchived(!showArchived)}
+          className={navigationDestination === "chats" ? "is-active" : ""}
+          aria-current={navigationDestination === "chats" ? "page" : undefined}
+          onClick={() => setNavigationDestination("chats")}
         >
-          <Icon name={showArchived ? "threads" : "archive"} size={16} />
-          <span>{showArchived ? "Back to conversations" : "Archived"}</span>
-          <span className="archive-count">
-            {threads.filter(
-              (thread) => thread.sourceId === selectedAgentId && Boolean(thread.archivedAt),
-            ).length || ""}
-          </span>
+          <Icon name="threads" size={16} />
+          <span>Chats</span>
         </button>
+        <button
+          type="button"
+          className={navigationDestination === "automations" ? "is-active" : ""}
+          aria-current={navigationDestination === "automations" ? "page" : undefined}
+          onClick={() => setNavigationDestination("automations")}
+        >
+          <Icon name="clock" size={16} />
+          <span>Automations</span>
+        </button>
+      </nav>
+      {navigationDestination === "chats" ? (
+        <>
+          <label className="thread-search">
+            <Icon name="search" size={16} />
+            <span className="sr-only">Search conversations</span>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search conversations"
+              type="search"
+            />
+            {query && (
+              <button type="button" onClick={() => setQuery("")} aria-label="Clear search">
+                <Icon name="close" size={13} />
+              </button>
+            )}
+          </label>
+          {threadListError !== null && (
+            <div className="thread-list-error" role="alert">
+              <span>Conversations could not be refreshed. {threadListError}</span>
+              <button type="button" onClick={retryThreadList}>Retry conversations</button>
+            </div>
+          )}
+          <ThreadListPrimitive.Root className="thread-list">
+            <div className="thread-list-scroll" onClick={searching ? undefined : onSelect}>
+              {searching ? (
+                <ThreadSearchResults query={query} search={search} onSelect={onSelect} />
+              ) : (
+                <>
+                  <ThreadListPrimitive.Items archived={showArchived}>
+                    {({ threadListItem }) => {
+                      const thread = threadById.get(threadListItem.id);
+                      return thread ? (
+                        <ThreadListItem thread={thread} archived={showArchived} />
+                      ) : null;
+                    }}
+                  </ThreadListPrimitive.Items>
+                  {visibleCount === 0 && (
+                    <div className="thread-list-empty">
+                      <Icon name={showArchived ? "archive" : "threads"} size={19} />
+                      <span>
+                        {selectionError !== null || threadListError !== null
+                          ? "Conversations unavailable"
+                          : selectionLoading
+                          ? "Loading conversations…"
+                          : showArchived
+                            ? "No archived conversations"
+                            : "Start a conversation"}
+                      </span>
+                    </div>
+                  )}
+                  {hasMoreThreads && (
+                    <button
+                      type="button"
+                      className="thread-load-more"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void loadMoreThreads().catch(() => undefined);
+                      }}
+                    >
+                      Load older conversations
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </ThreadListPrimitive.Root>
+        </>
+      ) : (
+        <AutomationsList onSelect={onSelect} />
+      )}
+      <div className="sidebar-footer">
+        {navigationDestination === "chats" && (
+          <button
+            type="button"
+            className={`archive-toggle${showArchived ? " is-active" : ""}`}
+            onClick={() => setShowArchived(!showArchived)}
+          >
+            <Icon name={showArchived ? "threads" : "archive"} size={16} />
+            <span>{showArchived ? "Back to conversations" : "Archived"}</span>
+            <span className="archive-count">
+              {threads.filter(
+                (thread) => thread.sourceId === selectedAgentId && Boolean(thread.archivedAt),
+              ).length || ""}
+            </span>
+          </button>
+        )}
         {/* The one place the operator can see what this session has cost and
             change what it is allowed to spend. */}
         <DataModeIndicator />

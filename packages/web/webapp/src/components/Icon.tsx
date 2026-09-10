@@ -16,6 +16,7 @@ export type IconName =
   | "chevron-left"
   | "download"
   | "close"
+  | "clock"
   | "command"
   | "copy"
   | "eye"
@@ -81,6 +82,12 @@ const paths: Record<IconName, React.ReactNode> = {
   "chevron-left": <path d="m15 18-6-6 6-6" />,
   download: <path d="M12 4v11m0 0-4-4m4 4 4-4M5 19h14" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7v5l3.5 2" />
+    </>
+  ),
   command: (
     <>
       <path d="M9 6V5a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v14a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3z" />
