@@ -1,4 +1,5 @@
 import type {
+  ActiveThreads,
   AgentSkillRegistry,
   AgentSummary,
   AskAnswer,
@@ -443,6 +444,18 @@ export const api = {
     if (before !== undefined) query.set("before", before);
     return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
   },
+
+  /**
+   * What the WHOLE fleet has in flight -- the one read on this client that is
+   * not scoped to an agent or an archive bucket.
+   *
+   * No parameters, by contract: the scope and the cap are fixed server-side, so
+   * there is nothing here for a console to walk. It is re-read after any event
+   * that could have changed what is running, and the response settles
+   * membership, truncation and the per-agent counts together.
+   */
+  activeThreads: (signal?: AbortSignal) =>
+    request<ActiveThreads>("/api/v1/threads/active", { signal }),
 
   /**
    * Server-side search over titles and message prose. Unlike `threads`, this is
