@@ -320,7 +320,7 @@ const runningProjectionKey = (thread: ThreadSummary): string => [
   thread.updatedAt,
   thread.archivedAt ?? "",
   threadPresentation(thread).text,
-].join(" ");
+].join("\u0000");
 const sameRunningProjection = (
   a: readonly ThreadSummary[],
   b: readonly ThreadSummary[],

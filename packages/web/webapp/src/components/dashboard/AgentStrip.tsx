@@ -15,7 +15,12 @@ import { agentInitials } from "./dashboard-model";
  * long-press: there would be no way to discover it and no way to reach it from
  * a keyboard.
  */
-export function AgentStrip() {
+export function AgentStrip({
+  runningCounts,
+}: {
+  /** Cached conversations with work in flight, per agent; drawn as a badge. */
+  readonly runningCounts?: ReadonlyMap<string, number>;
+} = {}) {
   const {
     visibleAgents,
     hiddenOfflineAgentCount,
@@ -72,19 +77,24 @@ export function AgentStrip() {
           const pinned = Boolean(agent.pinned);
           const selected = selectedAgentId === agent.sourceId;
           const open = openOptions === agent.sourceId;
+          const running = runningCounts?.get(agent.sourceId) ?? 0;
           return (
-            <div className="agent-chip" role="listitem" key={agent.sourceId}>
+            <div className={`agent-chip${selected ? " is-selected" : ""}`} role="listitem" key={agent.sourceId}>
               <button
                 type="button"
                 className={`agent-chip-square${selected ? " is-active" : ""}`}
                 aria-pressed={selected}
-                aria-label={`${agent.label}, ${agent.status}${pinned ? ", pinned" : ""}`}
+                aria-label={`${agent.label}, ${agent.status}${pinned ? ", pinned" : ""}${running > 0 ? `, ${String(running)} running` : ""}`}
                 title={`${agent.label} · ${agent.status}`}
                 onClick={() => selectAgent(agent.sourceId)}
               >
                 <span className="agent-chip-initials">{agentInitials(agent.label)}</span>
-                <span className={`agent-status is-${agent.status}`} />
+                {/* Online is the ordinary case and says nothing; only trouble gets a light. */}
+                {agent.status !== "online" && <span className={`agent-status is-${agent.status}`} />}
                 {pinned && <span className="agent-chip-pinned" aria-hidden="true" />}
+                {running > 0 && (
+                  <span className="agent-chip-badge" aria-hidden="true">{running}</span>
+                )}
               </button>
               <span className="agent-chip-label" title={agent.label}>{agent.label}</span>
               <button

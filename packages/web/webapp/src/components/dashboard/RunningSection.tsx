@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { Icon } from "../Icon";
 import { threadPresentation } from "../../thread-presentation";
 import type { AgentSummary, ThreadSummary } from "../../types";
 import { relativeTime } from "../time";
@@ -29,10 +30,7 @@ function RunningCard({
       <span className="running-card-agent" aria-hidden="true">{agentInitials(agent.label)}</span>
       <span className="running-card-copy">
         <span className="running-card-title">{thread.title}</span>
-        <span className="running-card-status">
-          <i className="thread-running" aria-hidden="true" />
-          {presentation.text}
-        </span>
+        <span className="running-card-status">{presentation.text}</span>
       </span>
       <time className="running-card-time" dateTime={thread.updatedAt}>
         {relativeTime(thread.updatedAt)}
@@ -71,6 +69,7 @@ export function RunningSection({
         id="dashboard-running-label"
         aria-label={`Running, ${String(total)} cached`}
       >
+        <Icon name="activity" size={13} />
         Running
         <span className="dashboard-section-count" title="Conversations this browser is holding">
           {total}

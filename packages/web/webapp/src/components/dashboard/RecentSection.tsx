@@ -19,18 +19,20 @@ import {
   type RecentFilter,
 } from "./dashboard-model";
 
-const CHIPS: readonly { readonly id: RecentFilter; readonly label: string }[] = [
+const CHIPS: readonly {
+  readonly id: RecentFilter;
+  readonly label: string;
+  readonly icon?: "clock";
+}[] = [
   { id: "all", label: "All" },
-  { id: "cron", label: "Cron" },
+  { id: "cron", label: "Cron", icon: "clock" },
 ];
 
 function ThreadListItem({
   thread,
-  archived,
   onNavigate,
 }: {
   readonly thread: ThreadSummary;
-  readonly archived: boolean;
   /** Closing the drawer belongs to the row that navigated, not to a click that
       happened to bubble through the list container. */
   readonly onNavigate?: () => void;
@@ -40,6 +42,11 @@ function ThreadListItem({
   );
   const presentation = threadPresentation(thread);
   const kind = dashboardThreadKind(thread);
+  // The glyph says what the row IS; when a failure has taken the glyph, the
+  // accessible name still says where the conversation came from.
+  const kindName = thread.trigger && kind === "alert"
+    ? `${dashboardKindLabel(kind)}, ${thread.trigger.kind} conversation`
+    : dashboardKindLabel(kind);
   return (
     <ThreadListItemPrimitive.Root
       className={`thread-item${isActive ? " is-active" : ""}`}
@@ -49,19 +56,14 @@ function ThreadListItem({
         aria-label={`Open ${thread.title}`}
         onClick={onNavigate}
       >
-        <span className={`thread-kind is-${kind}`} title={dashboardKindLabel(kind)}>
-          <Icon name={dashboardKindIcon(kind)} size={15} />
+        <span className={`thread-kind is-${kind}`} role="img" aria-label={kindName} title={kindName}>
+          <Icon name={dashboardKindIcon(kind)} size={16} />
         </span>
         <span className="thread-copy">
           <span className="thread-title-line">
             <span className="thread-title">
               <ThreadListItemPrimitive.Title fallback="Untitled conversation" />
             </span>
-            {thread.trigger && (
-              <span className="trigger-badge" aria-label={`${thread.trigger.kind} notification`}>
-                {thread.trigger.kind}
-              </span>
-            )}
             <time dateTime={thread.updatedAt}>{relativeTime(thread.updatedAt)}</time>
           </span>
           <span className="thread-preview">
@@ -72,24 +74,6 @@ function ThreadListItem({
           </span>
         </span>
       </ThreadListItemPrimitive.Trigger>
-      {archived ? (
-        <ThreadListItemPrimitive.Unarchive
-          className="thread-action"
-          aria-label={`Restore ${thread.title}`}
-          title="Restore conversation"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <Icon name="restore" size={15} />
-        </ThreadListItemPrimitive.Unarchive>
-      ) : (
-        <ThreadListItemPrimitive.Archive
-          className="thread-action"
-          aria-label={`Archive ${thread.title}`}
-          title="Archive conversation"
-        >
-          <Icon name="archive" size={15} />
-        </ThreadListItemPrimitive.Archive>
-      )}
     </ThreadListItemPrimitive.Root>
   );
 }
@@ -150,6 +134,7 @@ export function RecentSection({
                 aria-pressed={filter === chip.id}
                 onClick={() => onFilterChange(chip.id)}
               >
+                {chip.icon && <Icon name={chip.icon} size={11} />}
                 {chip.label}
               </button>
             ))}
@@ -171,11 +156,7 @@ export function RecentSection({
               {({ threadListItem }) => {
                 const thread = threadById.get(threadListItem.id);
                 return thread && matchesRecentFilter(thread, filter) ? (
-                  <ThreadListItem
-                    thread={thread}
-                    archived={showArchived}
-                    onNavigate={onNavigate}
-                  />
+                  <ThreadListItem thread={thread} onNavigate={onNavigate} />
                 ) : null;
               }}
             </ThreadListPrimitive.Items>

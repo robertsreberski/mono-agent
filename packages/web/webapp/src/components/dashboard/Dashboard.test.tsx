@@ -236,7 +236,7 @@ describe("Dashboard conversation rows", () => {
     }]);
     rerender(<Dashboard />);
     expect(row).toHaveTextContent("Results are ready");
-    expect(within(row).queryByRole("img")).toBeNull();
+    expect(within(row).queryByRole("img", { name: /running|Working/u })).toBeNull();
   });
 
   it("shows cancellation status in archived conversations", () => {
@@ -255,7 +255,7 @@ describe("Dashboard conversation rows", () => {
     const row = screen.getByRole("button", { name: "Open cancelled" });
     expect(row).toHaveTextContent("Cancelled");
     expect(row).not.toHaveTextContent("Previous reply");
-    expect(within(row).queryByRole("img")).toBeNull();
+    expect(within(row).queryByRole("img", { name: "Cancelled" })).toBeNull();
   });
 
   it("marks what a conversation is, with trouble ahead of its trigger", () => {
@@ -273,14 +273,14 @@ describe("Dashboard conversation rows", () => {
 
     const failed = screen.getByRole("button", { name: "Open Nightly report" });
     expect(failed.querySelector(".thread-kind.is-alert")).not.toBeNull();
-    // The alert takes the glyph; the badge still says where the run came from.
-    expect(within(failed).getByLabelText("cron notification")).toBeVisible();
+    // The alert takes the glyph; its name still says where the run came from.
+    expect(within(failed).getByRole("img", { name: /cron conversation/u })).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Open Daily report" }).querySelector(".thread-kind.is-cron"),
     ).not.toBeNull();
   });
 
-  it("closes the drawer when a row opens a conversation, and not when one is archived", () => {
+  it("closes the drawer when a row opens a conversation, and not when the list pages", () => {
     const onNavigate = vi.fn();
     render(<Dashboard onNavigate={onNavigate} />);
 

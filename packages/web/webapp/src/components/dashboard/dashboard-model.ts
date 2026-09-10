@@ -1,4 +1,4 @@
-import { threadOutcomeError } from "../../thread-presentation";
+import { threadOutcomeError, threadPresentation } from "../../thread-presentation";
 import type { AgentSummary, ThreadSummary } from "../../types";
 import type { IconName } from "../Icon";
 
@@ -75,6 +75,25 @@ export const dashboardKindLabel = (kind: DashboardThreadKind): string => LABEL_B
  */
 export const matchesRecentFilter = (thread: ThreadSummary, filter: RecentFilter): boolean =>
   filter === "all" || thread.trigger?.kind === "cron";
+
+/**
+ * What Running has to draw from: the cache's held activity, plus whatever the
+ * LISTING already says is active. The listing is the page the operator is
+ * looking at, refreshed by the same events; a conversation working there and
+ * absent from Running would contradict the row directly under it. The cache's
+ * copy wins a tie because it is the one a detail read has touched.
+ */
+export const mergeRunningThreads = (
+  cached: readonly ThreadSummary[],
+  listed: readonly ThreadSummary[],
+): readonly ThreadSummary[] => {
+  const byId = new Map<string, ThreadSummary>();
+  for (const thread of listed) {
+    if (threadPresentation(thread).active) byId.set(thread.id, thread);
+  }
+  for (const thread of cached) byId.set(thread.id, thread);
+  return [...byId.values()];
+};
 
 export interface RunningAgentGroup {
   readonly agent: AgentSummary;

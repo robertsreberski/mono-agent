@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { agent, thread } from "../../test/fixtures";
+import type { ThreadSummary } from "../../types";
 import {
   agentInitials,
   dashboardKindIcon,
   dashboardThreadKind,
   groupRunningThreads,
   matchesRecentFilter,
+  mergeRunningThreads,
   runningThreadCount,
 } from "./dashboard-model";
 
@@ -132,5 +134,28 @@ describe("running groups", () => {
     expect(groupRunningThreads([], agents)).toEqual([]);
     expect(groupRunningThreads([running[1]!], agents).map((group) => group.agent.sourceId))
       .toEqual(["alpha"]);
+  });
+});
+
+describe("mergeRunningThreads", () => {
+  const base = (id: string, extra: Partial<ThreadSummary> = {}): ThreadSummary => ({
+    id, sourceId: "alpha", title: id, archivedAt: null,
+    createdAt: "2026-09-01T00:00:00.000Z", updatedAt: "2026-09-01T00:00:00.000Z",
+    revision: 1, messageCount: 0, runState: { status: "idle" }, canSend: true, canUpload: true,
+    runModel: null, runEffort: null, ...extra,
+  } as ThreadSummary);
+
+  it("adds listed conversations that are active, and only those", () => {
+    const merged = mergeRunningThreads([], [
+      base("idle"),
+      base("working", { runState: { status: "running", id: "t" } }),
+    ]);
+    expect(merged.map((thread) => thread.id)).toEqual(["working"]);
+  });
+
+  it("lets the cache's copy win over the listing's", () => {
+    const listed = base("shared", { runState: { status: "running", id: "t" }, title: "listed" });
+    const cached = { ...listed, title: "cached" };
+    expect(mergeRunningThreads([cached], [listed]).map((thread) => thread.title)).toEqual(["cached"]);
   });
 });

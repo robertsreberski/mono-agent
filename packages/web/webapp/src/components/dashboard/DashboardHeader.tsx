@@ -1,6 +1,5 @@
 import { ThreadListPrimitive } from "@assistant-ui/react";
 import { useConsoleStore } from "../../console-store";
-import { BrandMark } from "../BrandMark";
 import { Icon } from "../Icon";
 
 /**
@@ -25,10 +24,7 @@ export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => vo
   return (
     <header className="dashboard-header">
       <div className="dashboard-utility">
-        <span className="dashboard-brand" title={consoleName}>
-          <BrandMark />
-          <span className="eyebrow">{consoleName}</span>
-        </span>
+        <span className="dashboard-brand eyebrow" title={consoleName}>{consoleName}</span>
         <button
           type="button"
           className="dashboard-command"

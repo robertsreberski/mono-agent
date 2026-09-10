@@ -25,7 +25,9 @@ export function DashboardFooter() {
       >
         <Icon name={showArchived ? "threads" : "archive"} size={16} />
         <span>{showArchived ? "Back to conversations" : "Archived"}</span>
-        <span className="archive-count">{archivedCount || ""}</span>
+        {archivedCount > 0 && !showArchived && (
+          <span className="archive-count">{archivedCount}</span>
+        )}
       </button>
     </div>
   );

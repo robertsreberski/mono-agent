@@ -6,7 +6,7 @@ import { AgentStrip } from "./AgentStrip";
 import { DashboardFooter } from "./DashboardFooter";
 import { DashboardHeader } from "./DashboardHeader";
 import { DashboardSearch } from "./DashboardSearch";
-import { groupRunningThreads, type RecentFilter } from "./dashboard-model";
+import { groupRunningThreads, mergeRunningThreads, type RecentFilter } from "./dashboard-model";
 import { RecentSection } from "./RecentSection";
 import { RunningSection } from "./RunningSection";
 
@@ -30,6 +30,7 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
     selectThread,
     setShowArchived,
     showArchived,
+    threads,
   } = useConsoleStore();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<RecentFilter>("all");
@@ -48,8 +49,14 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
   useEffect(() => { setFilter("all"); }, [selectedAgentId, showArchived]);
 
   const groups = useMemo(
-    () => groupRunningThreads(cachedRunningThreads, agents),
-    [agents, cachedRunningThreads],
+    () => groupRunningThreads(mergeRunningThreads(cachedRunningThreads, threads), agents),
+    [agents, cachedRunningThreads, threads],
+  );
+  // The badge on each agent's square: how many of ITS conversations this
+  // browser is holding with work in flight. Same source, same honesty.
+  const runningCounts = useMemo(
+    () => new Map(groups.map((group) => [group.agent.sourceId, group.threads.length])),
+    [groups],
   );
 
   const toggleAgentExpansion = useCallback((sourceId: string) => {
@@ -76,7 +83,7 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
   return (
     <div className="dashboard">
       <DashboardHeader onNavigate={onNavigate} />
-      <AgentStrip />
+      <AgentStrip runningCounts={runningCounts} />
       <DashboardSearch value={query} onChange={setQuery} />
       <div className="dashboard-scroll">
         <RunningSection

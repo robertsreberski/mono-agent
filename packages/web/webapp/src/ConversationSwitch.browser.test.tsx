@@ -468,12 +468,12 @@ describe("conversation switching through the real Chromium store and runtime", (
 
     expect(await screen.findByText("Alpha transcript")).toBeVisible();
     await waitForLiveConsole();
-    const scope = await dashboard(mobile);
-    await userEvent.click(within(scope).getByRole("button", { name: "Archive Alpha thread" }));
-    // Filing a conversation is not going anywhere; the drawer stays where the
-    // operator left it, and the test closes it to look at the conversation.
-    if (mobile) expect(screen.getByRole("dialog", { name: "Dashboard" })).toBeVisible();
-    await closeDashboard(mobile);
+    // Filing a conversation happens from the conversation itself: the rows in
+    // the dashboard are for going somewhere, and carry no archive control.
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Archive conversation" }));
+    confirmSpy.mockRestore();
 
     const failure = await conversationFailure();
     expect(failure).toHaveTextContent("Archive replacement unavailable");
