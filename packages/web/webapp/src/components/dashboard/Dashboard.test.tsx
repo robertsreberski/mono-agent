@@ -118,14 +118,13 @@ describe("Dashboard header", () => {
     expect(pending.querySelector(".new-thread-spinner")).not.toBeNull();
   });
 
-  it("closes the drawer for settings and for a new conversation, not for the palette", () => {
+  it("closes the drawer for settings and for a new conversation", () => {
     const onNavigate = vi.fn();
     const settings = vi.fn();
     window.addEventListener("mono-agent:agent-settings", settings);
     render(<Dashboard onNavigate={onNavigate} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open command palette" }));
-    expect(onNavigate).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Open command palette" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Agent settings" }));
     expect(settings).toHaveBeenCalledTimes(1);

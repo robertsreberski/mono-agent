@@ -6,9 +6,8 @@ import { Icon } from "../Icon";
  * Who this console is, which agent it is pointed at, and the two things an
  * operator does most: change that agent's defaults, or start talking to it.
  *
- * The utility row above carries what used to sit at the foot of the agent rail
- * -- the connection light and the command palette -- because there is no rail
- * any more and both belong to the console rather than to the agent.
+ * The command palette keeps its shortcut (⌘K) and has no button here; the
+ * connection state is announced, not drawn.
  */
 export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => void }) {
   const {
@@ -25,20 +24,9 @@ export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => vo
     <header className="dashboard-header">
       <div className="dashboard-utility">
         <span className="dashboard-brand eyebrow" title={consoleName}>{consoleName}</span>
-        <button
-          type="button"
-          className="dashboard-command"
-          aria-label="Open command palette"
-          title="Command palette (⌘K)"
-          onClick={() => window.dispatchEvent(new Event("mono-agent:command"))}
-        >
-          <Icon name="command" size={16} />
-        </button>
-        <span
-          className={`dashboard-connection is-${connection}`}
-          aria-label={`Console connection: ${connection}`}
-          title={`Console ${connection}`}
-        />
+        {/* Spoken, not drawn: the conversation's banner already shows trouble,
+            and a light that is green all day is decoration. */}
+        <span className="sr-only" role="status" aria-label={`Console connection: ${connection}`} />
       </div>
       <div className="dashboard-title-row">
         <h1 className="dashboard-agent-name">{selectedAgent?.label ?? "No agent"}</h1>
