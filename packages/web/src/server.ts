@@ -100,10 +100,10 @@ const IMMUTABLE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 const WEB_THEME_MANIFEST_COLORS: Readonly<
   Record<WebTheme, { readonly themeColor: string; readonly backgroundColor: string }>
 > = {
-  evergreen: { themeColor: "#191c1a", backgroundColor: "#0f1110" },
-  ocean: { themeColor: "#191c1a", backgroundColor: "#0d1115" },
-  plum: { themeColor: "#191c1a", backgroundColor: "#120f14" },
-  terracotta: { themeColor: "#191c1a", backgroundColor: "#130f0d" },
+  evergreen: { themeColor: "#141715", backgroundColor: "#0f1110" },
+  ocean: { themeColor: "#13191e", backgroundColor: "#0d1115" },
+  plum: { themeColor: "#18141a", backgroundColor: "#120f14" },
+  terracotta: { themeColor: "#191411", backgroundColor: "#130f0d" },
 };
 
 export interface StartWebServerOptions extends CreateWebServiceOptions {

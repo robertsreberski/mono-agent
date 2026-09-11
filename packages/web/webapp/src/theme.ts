@@ -1,12 +1,18 @@
 import type { ConsoleIdentity, WebTheme } from "./types";
 
+/**
+ * Browser chrome takes the colour of the header beneath it, which is the
+ * console's one surface: `--panel` in `styles.css`. Every theme states its own
+ * panel, so these are per theme rather than the single pair the chrome used
+ * while the conversation was drawn on `--surface`.
+ */
 export const THEME_CHROME_COLORS: Readonly<
   Record<WebTheme, { readonly light: string; readonly dark: string }>
 > = {
-  evergreen: { light: "#fdfdfb", dark: "#191c1a" },
-  ocean: { light: "#fdfdfb", dark: "#191c1a" },
-  plum: { light: "#fdfdfb", dark: "#191c1a" },
-  terracotta: { light: "#fdfdfb", dark: "#191c1a" },
+  evergreen: { light: "#f7f7f4", dark: "#141715" },
+  ocean: { light: "#f6f8fa", dark: "#13191e" },
+  plum: { light: "#faf7fa", dark: "#18141a" },
+  terracotta: { light: "#faf7f5", dark: "#191411" },
 };
 
 const THEME_COLOR_MEDIA = [
