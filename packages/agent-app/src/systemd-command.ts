@@ -7,8 +7,15 @@ import { listTraceSources } from "@mono-agent/observability";
 import type { TraceSourceListItem } from "@mono-agent/observability";
 
 import { canonicalBackgroundConfigPath, resolveInstanceTarget } from "./background.js";
-import { selectBackgroundOperationalEnvironment } from "./background-environment.js";
-import { loadDurableBackgroundEnvironment } from "./background-snapshot.js";
+import {
+  selectBackgroundOperationalEnvironment,
+  SYSTEMD_BACKGROUND_WORKER_ENV,
+} from "./background-environment.js";
+import {
+  captureBackgroundSnapshot,
+  encodeBackgroundSnapshot,
+  loadDurableBackgroundEnvironment,
+} from "./background-snapshot.js";
 import type { ParsedCliArgs } from "./cli-args.js";
 import { ensureStartable } from "./cli-background-command.js";
 import { hasCompletedManagedStartup } from "./managed-startup.js";
@@ -124,9 +131,24 @@ export async function runSystemdAgentCommand(
         : `Cannot start: ${preflight.report.sections.filter((section) => section.status === "error").map((section) => `${section.label}: ${section.details.join("; ")}`).join("\n")}\n`);
       return preflight.code;
     }
+    let expectedBackgroundSnapshot: string;
+    try {
+      expectedBackgroundSnapshot = encodeBackgroundSnapshot(await captureBackgroundSnapshot({
+        cwd,
+        configPath: identity,
+        envFile,
+        env: effective,
+      }));
+    } catch (error) {
+      throw new Error(
+        `Cannot capture the selected dotenv snapshot: ${error instanceof Error ? error.message : String(error)} `
+        + "Unset conflicting exported values or align them with the selected env file, then retry; no unit changes were made.",
+      );
+    }
     const definition: SystemdDefinition = { identity, cwd, environment: {}, argv: workerArgv([
       "start", "--foreground", "--config", identity, "--env-file", envFile,
-    ], environment) };
+      "--expected-background-snapshot", expectedBackgroundSnapshot,
+    ], { ...environment, [SYSTEMD_BACKGROUND_WORKER_ENV]: "1" }) };
     await withSystemdLock(identity, deps, async () => {
       // The foreground singleton lease is the final guard; fail before installing a unit when a live trace is already present.
       const current = await inspectSystemd(identity, deps);

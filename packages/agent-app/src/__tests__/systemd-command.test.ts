@@ -1,9 +1,13 @@
+import { resolve } from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
+import { decodeBackgroundSnapshot } from "../background-snapshot.js";
 import { parseCliArgs } from "../cli-args.js";
 
 const mocks = vi.hoisted(() => ({
   inspect: vi.fn(), read: vi.fn(), start: vi.fn(), stop: vi.fn(), traces: vi.fn(), preflight: vi.fn(), health: vi.fn(),
-  durable: vi.fn(), target: vi.fn(), lock: vi.fn(),
+  durable: vi.fn(), snapshot: vi.fn(), target: vi.fn(), lock: vi.fn(),
 }));
 vi.mock("../systemd.js", () => ({
   SYSTEMD_WEB_IDENTITY: "web", systemdUnitName: (id: string) => `${id}.service`,
@@ -13,7 +17,14 @@ vi.mock("../systemd.js", () => ({
 }));
 vi.mock("../background.js", () => ({ canonicalBackgroundConfigPath: async (_cwd: string, path: string) => path,
   resolveInstanceTarget: mocks.target }));
-vi.mock("../background-snapshot.js", () => ({ loadDurableBackgroundEnvironment: mocks.durable }));
+vi.mock("../background-snapshot.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../background-snapshot.js")>();
+  return {
+    ...actual,
+    captureBackgroundSnapshot: mocks.snapshot,
+    loadDurableBackgroundEnvironment: mocks.durable,
+  };
+});
 vi.mock("../cli-background-command.js", () => ({ ensureStartable: mocks.preflight }));
 vi.mock("../web-command.js", () => ({ webHealthcheck: mocks.health }));
 vi.mock("@mono-agent/observability", () => ({ listTraceSources: mocks.traces }));
@@ -31,6 +42,16 @@ beforeEach(() => {
   mocks.preflight.mockResolvedValue({ ok: true });
   mocks.target.mockResolvedValue({ registryDir: "/traces", staleAfterMs: 60_000 });
   mocks.durable.mockResolvedValue({});
+  mocks.snapshot.mockImplementation(async (input: { readonly cwd: string; readonly configPath: string; readonly envFile?: string }) => ({
+    schema: "mono-agent.background-snapshot.v1",
+    configPath: resolve(input.cwd, input.configPath),
+    configFingerprint: "config-fingerprint",
+    dotenvPath: resolve(input.cwd, input.envFile ?? ".env"),
+    dotenvFingerprint: "dotenv-fingerprint",
+    identityPath: resolve(input.cwd, "IDENTITY.md"),
+    identityFingerprint: "identity-fingerprint",
+    operationalEnvironmentFingerprint: "environment-fingerprint",
+  }));
   mocks.traces.mockResolvedValue({ sources: [] });
   mocks.lock.mockImplementation(async (_id, _deps, callback) => await callback());
   mocks.start.mockImplementation(async (_definition, _restart, ready) => {
@@ -49,7 +70,50 @@ describe("Linux agent command composition", () => {
     expect(definition.argv).toContain("--foreground");
     expect(definition.argv[definition.argv.indexOf(process.execPath) + 1]).toBe("--");
     expect(definition.argv).toContain("--env-file");
+    expect(definition.argv).toContain(`${SYSTEMD_BACKGROUND_WORKER_ENV}=1`);
+    const encoded = definition.argv[definition.argv.indexOf("--expected-background-snapshot") + 1];
+    expect(decodeBackgroundSnapshot(encoded)).toMatchObject({
+      configPath: "/agent/config.json",
+      dotenvPath: resolve(process.cwd(), ".env"),
+    });
+    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({
+      configPath: "/agent/config.json",
+      envFile: resolve(process.cwd(), ".env"),
+    }));
     expect(deps.stdout.write).toHaveBeenCalledWith(expect.stringContaining("dev (unmanaged)"));
+  });
+
+  it("pins a custom env file into the systemd snapshot transport", async () => {
+    mocks.traces.mockResolvedValue({ sources: [{ configPath: "/agent/config.json", pid: 42, health: "running", metadata: { lifecycle: { startupCompleted: true } } }] });
+    const customEnv = "/agent/production.env";
+    const customArgs = parseCliArgs(["start", "--config", "/agent/config.json", "--env-file", customEnv]);
+
+    expect(await runSystemdAgentCommand(customArgs, "start", { PATH: "/bin" }, output())).toBe(0);
+
+    const definition = mocks.start.mock.calls[0]![0];
+    const encoded = definition.argv[definition.argv.indexOf("--expected-background-snapshot") + 1];
+    expect(decodeBackgroundSnapshot(encoded)).toMatchObject({
+      configPath: "/agent/config.json",
+      dotenvPath: customEnv,
+    });
+    expect(definition.argv).toEqual(expect.arrayContaining(["--env-file", customEnv]));
+    expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({
+      configPath: "/agent/config.json",
+      envFile: customEnv,
+    }));
+  });
+
+  it("does not install a unit when the selected dotenv snapshot cannot be captured", async () => {
+    mocks.snapshot.mockRejectedValue(new Error("exported value disagrees"));
+    const deps = output();
+
+    expect(await runSystemdAgentCommand(args("start"), "start", {}, deps)).toBe(1);
+
+    expect(mocks.start).not.toHaveBeenCalled();
+    expect(mocks.lock).not.toHaveBeenCalled();
+    expect(deps.stderr.write).toHaveBeenCalledWith(expect.stringMatching(
+      /Linux lifecycle: Cannot capture the selected dotenv snapshot:.*Unset conflicting exported values.*no unit changes were made/u,
+    ));
   });
 
   it("refuses an existing worker owned by another supervisor", async () => {
