@@ -187,6 +187,23 @@ describe("the dashboard as the desktop column", () => {
     expect(active).toContainElement(screen.getByRole("button", { name: "Open Alpha thread" }));
   });
 
+  it("marks the open conversation among the search hits, as it does among the rows", async () => {
+    vi.mocked(api.searchThreads).mockResolvedValue({
+      hits: [{ thread: alphaThread, messageMatches: 0, titleMatch: true }],
+      truncated: false,
+    });
+    openConsole();
+    await settled();
+
+    await userEvent.fill(screen.getByPlaceholderText("Search conversations"), "alpha");
+
+    const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(hit).toHaveClass("thread-search-hit");
+    // The conversation is in the column beside this one, so the hit that opens
+    // it is marked exactly as its ordinary row would be.
+    await waitFor(() => expect(document.querySelector(".thread-search-hit.is-active")).toBe(hit));
+  });
+
   it("puts the running cards and the conversation rows on one left edge", async () => {
     const runningThread = thread("alpha-running", "alpha", {
       title: "Rebuild the checkout",
@@ -375,6 +392,25 @@ describe("the dashboard as the mobile entrance screen", () => {
     await userEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
     await waitFor(() => expect(chatRegion()).toHaveAttribute("inert"));
     expect(document.querySelector(".thread-item.is-active")).toBeNull();
+  });
+
+  it("marks no search hit either, while the list is the whole screen", async () => {
+    vi.mocked(api.searchThreads).mockResolvedValue({
+      hits: [{ thread: alphaThread, messageMatches: 0, titleMatch: true }],
+      truncated: false,
+    });
+    openConsole();
+    await loaded();
+
+    await userEvent.fill(within(panel()).getByPlaceholderText("Search conversations"), "alpha");
+
+    const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(hit).toHaveClass("thread-search-hit");
+    // Search is the other face of the same list: the store still holds this
+    // conversation -- its transcript is loaded behind the screen -- and this
+    // screen still declines to point at it.
+    expect(document.querySelector(".thread-search-hit.is-active")).toBeNull();
+    expect(screen.getByText("Alpha transcript")).toBeInTheDocument();
   });
 
   it("opens the settings dialog over this screen, and closing it stays here", async () => {

@@ -174,7 +174,12 @@ export function RecentSection({
       )}
       <ThreadListPrimitive.Root className="thread-list">
         {searching ? (
-          <ThreadSearchResults query={query} search={search} onSelect={onNavigate} />
+          <ThreadSearchResults
+            query={query}
+            search={search}
+            onSelect={onNavigate}
+            highlightSelected={highlightSelected}
+          />
         ) : (
           <>
             <ThreadListPrimitive.Items archived={showArchived}>
