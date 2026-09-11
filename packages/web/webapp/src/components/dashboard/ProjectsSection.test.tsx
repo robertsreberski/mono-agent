@@ -29,7 +29,7 @@ describe("ProjectsSection", () => {
     render(<ProjectsSection />);
 
     expect(screen.getByRole("heading", { name: "Projects" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "+ New" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "New" })).toBeVisible();
     expect(screen.queryByRole("button", { name: /Open project/u })).toBeNull();
   });
 
@@ -45,8 +45,10 @@ describe("ProjectsSection", () => {
     };
     render(<ProjectsSection />);
 
-    expect(screen.getByRole("button", { name: "Open project Web console" })).toHaveTextContent("6 conversations");
-    expect(screen.getByRole("button", { name: "Open project Solo" })).toHaveTextContent("1 conversation");
+    const web = screen.getByRole("button", { name: "Open project Web console" });
+    expect(web).toHaveTextContent("6 chats · updated");
+    expect(web).toHaveTextContent("1 running");
+    expect(screen.getByRole("button", { name: "Open project Solo" })).toHaveTextContent("1 chat · updated");
   });
 
   it("opens the project page from a row", () => {
@@ -68,7 +70,7 @@ describe("ProjectsSection", () => {
     window.addEventListener("mono-agent:project-settings", listener);
     try {
       render(<ProjectsSection />);
-      fireEvent.click(screen.getByRole("button", { name: "+ New" }));
+      fireEvent.click(screen.getByRole("button", { name: "New" }));
       expect(seen).toHaveLength(1);
       expect((seen[0] as CustomEvent).detail).toEqual({ mode: "create" });
     } finally {

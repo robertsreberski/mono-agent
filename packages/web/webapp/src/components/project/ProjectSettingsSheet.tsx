@@ -3,7 +3,8 @@ import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
 
 export type ProjectSettingsState =
-  | { readonly mode: "create"; readonly sourceId?: string }
+  /** `threadId`: the conversation the new project is made from; it becomes the first member. */
+  | { readonly mode: "create"; readonly sourceId?: string; readonly threadId?: string }
   | { readonly mode: "edit"; readonly projectId: string };
 
 const MAX_NAME_CHARACTERS = 120;
@@ -86,6 +87,7 @@ export function ProjectSettingsSheet({
           context,
           sheet.sourceId,
         );
+        if (sheet.threadId !== undefined) await store.setThreadProject(sheet.threadId, created.id);
         store.openProjectById(created.id);
       } else if (project !== null) {
         await store.patchProject(project.id, {

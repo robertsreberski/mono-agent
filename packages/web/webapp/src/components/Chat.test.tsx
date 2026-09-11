@@ -556,7 +556,7 @@ describe("Chat conversation actions", () => {
 
     render(chatTree());
     fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Add to project…" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add to project" }));
     expect(store.loadProjects).toHaveBeenCalledWith("agent");
 
     fireEvent.click(await screen.findByRole("menuitem", { name: "First" }));
@@ -564,6 +564,21 @@ describe("Chat conversation actions", () => {
     // Archived projects stay out of the picker.
     expect(screen.queryByRole("menuitem", { name: "Second" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Remove from project" })).toBeNull();
+  });
+
+  it("makes a new project from this chat", async () => {
+    const selected = thread("thread-a", "agent");
+    storeMock.current = { ...chatStore(selected, chatDetail(selected, 0)), projectsByAgent: {} };
+    const listener = vi.fn();
+    window.addEventListener("mono-agent:project-settings", listener);
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New project from this chat" }));
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail)
+      .toEqual({ mode: "create", sourceId: "agent", threadId: "thread-a" });
+    window.removeEventListener("mono-agent:project-settings", listener);
   });
 
   it("offers moving and removing a project member", async () => {
@@ -577,7 +592,8 @@ describe("Chat conversation actions", () => {
 
     render(chatTree());
     fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
-    expect(await screen.findByRole("menuitem", { name: "Move to…" })).toBeVisible();
+    // The row carries where the chat is now.
+    expect(await screen.findByRole("menuitem", { name: "Move to project First" })).toBeVisible();
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove from project" }));
     expect(store.setThreadProject).toHaveBeenCalledWith("thread-a", null);
   });

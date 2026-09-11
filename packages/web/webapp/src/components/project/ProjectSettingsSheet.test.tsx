@@ -21,6 +21,7 @@ const createStore = (overrides: Record<string, unknown> = {}) => ({
   archiveProject: vi.fn().mockResolvedValue(undefined),
   deleteProject: vi.fn().mockResolvedValue(undefined),
   openProjectById: vi.fn(),
+  setThreadProject: vi.fn().mockResolvedValue(undefined),
   ...overrides,
 });
 
@@ -50,6 +51,17 @@ describe("ProjectSettingsSheet", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(store().createProject).toHaveBeenCalledWith("Web console", "Stay sharp.", undefined));
+    expect(store().openProjectById).toHaveBeenCalledWith("web");
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("makes the originating chat the first member of a project created from it", async () => {
+    const onClose = vi.fn();
+    render(<ProjectSettingsSheet sheet={{ mode: "create", sourceId: "alpha", threadId: "thread-a" }} onClose={onClose} dialogRef={dialogRef} />);
+    fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Web console" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(store().setThreadProject).toHaveBeenCalledWith("thread-a", "web"));
     expect(store().openProjectById).toHaveBeenCalledWith("web");
     expect(onClose).toHaveBeenCalled();
   });

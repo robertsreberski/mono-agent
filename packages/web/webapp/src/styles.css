@@ -449,45 +449,49 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* Projects section: the agent's named conversation containers, between
    Running and Recent. Rows borrow the conversation rows' measures so a
    project name and a conversation title sit on the same lines. */
-.dashboard-new-action { flex: none; padding: 6px 8px; margin-right: -8px; color: var(--accent); background: transparent; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
+.dashboard-new-action { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 6px 8px; margin-right: -8px; color: var(--accent); background: transparent; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
 .dashboard-new-action:hover { background: var(--surface-hover); }
 .project-item { position: relative; display: flex; align-items: stretch; margin: 0 -8px; border-radius: 9px; transition: background 130ms ease; }
 .project-item + .project-item::before { content: ""; position: absolute; top: 0; left: 8px; right: 8px; height: 1px; background: var(--line); }
 .project-item:hover { background: var(--surface-hover); }
 .project-trigger { min-width: 0; min-height: 58px; flex: 1; display: flex; align-items: center; gap: 10px; padding: 7px 8px; text-align: left; background: transparent; cursor: pointer; }
-.project-kind { width: 30px; display: flex; justify-content: center; flex: none; color: var(--text-muted); }
+/* The Running card's agent tile (30px, the app background) with a folder in it. */
+.project-tile { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--text-soft); background: var(--app-bg); border-radius: 8px; box-shadow: inset 0 0 0 1px var(--line); }
 .project-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
-.project-title-line { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
-.project-title { min-width: 0; flex: 1; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.project-title { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .project-preview { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .project-preview-text { min-width: 0; flex: 1; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
+/* Work in flight, stated in the Running section's colour and the stamp's measure. */
+.project-status { flex: none; color: var(--accent); font-size: 10px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.project-chevron { display: flex; flex: none; color: var(--text-muted); opacity: 0.7; }
 
-/* Project page: the Dashboard's slot with a project's header, context card
-   and member conversations. The header tiles are the Dashboard header's own. */
+/* Project page: the Dashboard's column with one project in it. Its type sits
+   on the Dashboard's scale (the rows' 12px title, the labels' 10px caps), so
+   the page and the list it came from read as one surface. */
 .project-page { --gutter-left: 17px; --gutter-right: 17px; width: 100%; height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
 .project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, env(safe-area-inset-top)) var(--gutter-right) 10px var(--gutter-left); }
 /* Back is navigation, not a tile: the bare glyph and the thumb-sized target
    the conversation header's back control keeps. */
-.project-back { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 6px; flex: 1; padding: 0; color: var(--text-soft); background: transparent; cursor: pointer; text-align: left; font-size: 15px; }
+.project-back { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 4px; flex: 1; margin-left: -6px; padding: 0; color: var(--text-soft); background: transparent; cursor: pointer; text-align: left; font-size: 13px; font-weight: 500; }
 .project-back:hover { color: var(--text); }
 .project-back > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-scroll { min-height: 0; flex: 1; padding: 20px var(--gutter-right) 28px var(--gutter-left); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .project-title-block { display: flex; flex-direction: column; gap: 4px; }
 .project-title-block > .dashboard-section-label { margin-bottom: 0; }
-.project-name { margin: 0; color: var(--text); font-size: 26px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; overflow-wrap: anywhere; }
-.project-meta { margin: 0; color: var(--text-muted); font-size: 14px; }
-.project-context-card { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; padding: 14px 16px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 14px; }
+.project-name { margin: 0; color: var(--text); font-size: 22px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.15; overflow-wrap: anywhere; }
+.project-meta { margin: 0; color: var(--text-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.project-context-card { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding: 12px 14px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-sm); }
 .project-context-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .project-context-head > .dashboard-section-label { margin-bottom: 0; }
-.project-context-edit { flex: none; padding: 4px 2px; color: var(--accent); background: transparent; cursor: pointer; font-size: 13px; }
-.project-context-edit:hover { color: var(--accent-strong); }
-.project-context-text { margin: 0; color: var(--text-soft); font-size: 14px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.project-context-edit { flex: none; margin: -4px -6px -4px 0; padding: 4px 6px; color: var(--accent); background: transparent; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 650; }
+.project-context-edit:hover { color: var(--accent-strong); background: var(--surface-hover); }
+.project-context-text { margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .project-context-text.is-empty { color: var(--text-muted); }
 .project-context-text code, .project-context-card code { font-family: var(--font-mono); font-size: 0.92em; }
-.project-context-footnote { margin: 0; color: var(--text-muted); font-size: 12px; }
-.project-members-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 26px 0 10px; }
+.project-context-footnote { margin: 0; color: var(--text-muted); font-size: 10px; }
+.project-members-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 24px 0 8px; }
 .project-members-head > .dashboard-section-label { margin-bottom: 0; }
-.project-members-sort { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
+.project-members-sort { color: var(--text-muted); font-size: 10px; font-weight: 500; white-space: nowrap; }
 
 /* Project settings sheet: a bottom sheet on touch screens, a centered dialog
    beside them. One structure, and the viewport decides which it is. */
@@ -566,6 +570,12 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .conversation-menu-item { min-height: 40px; display: flex; align-items: center; gap: 9px; padding: 0 10px; color: var(--text-soft); border-radius: 8px; cursor: pointer; outline: 0; font-size: 11.5px; }
 .conversation-menu-item:hover, .conversation-menu-item[data-highlighted] { color: var(--text); background: var(--surface-subtle); }
 .conversation-menu-item.is-danger { color: var(--danger); }
+.conversation-menu-item.is-accent { color: var(--accent); }
+.conversation-menu-item > span:first-of-type { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Where the chat is now, on the row that moves it: the sheet rows' hint. */
+.conversation-menu-hint { max-width: 45%; flex: none; overflow: hidden; color: var(--text-muted); font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-menu-chevron { flex: none; margin-right: -3px; color: var(--text-muted); }
+.conversation-menu-empty { padding: 10px 10px; color: var(--text-muted); font-size: 11px; }
 .cron-channel-header { min-width: 0; display: grid; gap: 10px; padding: 12px max(17px, env(safe-area-inset-right)) 12px max(17px, env(safe-area-inset-left)); color: var(--text-muted); background: color-mix(in srgb, var(--panel) 92%, transparent); border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.45; }
 /* The overview's disclosure: the transcript's own `.activity-row` summary --
    its 38px row, its 8px gap, its 9px radius and its 150ms chevron rotation.

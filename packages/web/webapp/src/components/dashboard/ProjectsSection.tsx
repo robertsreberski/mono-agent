@@ -1,9 +1,10 @@
 import { useConsoleStore } from "../../console-store";
 import type { ProjectSummary } from "../../types";
 import { Icon } from "../Icon";
+import { relativeTime } from "../time";
 
-const conversationCountLabel = (count: number): string =>
-  `${String(count)} conversation${count === 1 ? "" : "s"}`;
+const chatCountLabel = (count: number): string =>
+  `${String(count)} chat${count === 1 ? "" : "s"}`;
 
 /**
  * The selected agent's projects, between Running and Recent.
@@ -38,7 +39,8 @@ export function ProjectsSection() {
             }));
           }}
         >
-          + New
+          <Icon name="new" size={12} />
+          New
         </button>
       </div>
       {projects.map((project) => (
@@ -60,25 +62,27 @@ function ProjectRow({ project, onOpen }: {
         aria-label={`Open project ${project.name}`}
         onClick={onOpen}
       >
-        <span className="project-kind" role="img" aria-label="Project" title="Project">
-          <Icon name="folder" size={16} />
+        {/* The Running card's agent tile, holding a folder: a project row and
+            a card sit on the same x, and the tile says what the row IS. */}
+        <span className="project-tile" aria-hidden="true">
+          <Icon name="folder" size={15} />
         </span>
         <span className="project-copy">
-          <span className="project-title-line">
-            <span className="project-title">{project.name}</span>
-          </span>
+          <span className="project-title">{project.name}</span>
           <span className="project-preview">
-            {project.runningCount > 0 && (
-              <i
-                className="thread-running"
-                role="img"
-                aria-label={`${String(project.runningCount)} running`}
-              />
-            )}
             <span className="project-preview-text">
-              {conversationCountLabel(project.conversationCount)}
+              {chatCountLabel(project.conversationCount)} · updated{" "}
+              <time dateTime={project.updatedAt}>{relativeTime(project.updatedAt)}</time>
             </span>
           </span>
+        </span>
+        {project.runningCount > 0 && (
+          <span className="project-status">
+            {String(project.runningCount)} running
+          </span>
+        )}
+        <span className="project-chevron" aria-hidden="true">
+          <Icon name="chevron" size={14} />
         </span>
       </button>
     </div>

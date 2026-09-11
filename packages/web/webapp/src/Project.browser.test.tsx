@@ -243,7 +243,8 @@ describe.each([
 
     await waitFor(() => expect(screen.getByText("Alpha transcript")).toBeVisible());
     await userEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "Move to…" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "Move to project Web console" }));
+    expect(screen.getByRole("menuitem", { name: "New project from this chat" })).toBeVisible();
     expect(await screen.findByRole("menuitem", { name: "Web console" })).toBeInTheDocument();
     await capture(`project-picker-${label}`);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);

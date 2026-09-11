@@ -304,15 +304,18 @@ export function ModelControls() {
   );
 }
 
-function ProjectPickerItems({ threadId, sourceId }: {
+function ProjectPickerItems({ threadId, sourceId, currentProjectId }: {
   readonly threadId: string;
   readonly sourceId: string;
+  readonly currentProjectId: string | null;
 }) {
-  const { projectsByAgent, selectedThread, setThreadProject } = useConsoleStore();
-  const currentProjectId = selectedThread?.id === threadId ? selectedThread.projectId : null;
+  const { projectsByAgent, setThreadProject } = useConsoleStore();
   const projects = (projectsByAgent[sourceId] ?? []).filter((project) => project.archivedAt === null);
   return (
     <>
+      {projects.length === 0 && (
+        <div className="conversation-menu-empty">No projects yet</div>
+      )}
       {projects.map((project) => (
         <Menu.Item
           key={project.id}
@@ -327,17 +330,6 @@ function ProjectPickerItems({ threadId, sourceId }: {
           <span>{project.name}</span>
         </Menu.Item>
       ))}
-      <Menu.Item
-        className="conversation-menu-item"
-        onClick={() => {
-          window.dispatchEvent(new CustomEvent("mono-agent:project-settings", {
-            detail: { mode: "create", sourceId },
-          }));
-        }}
-      >
-        <Icon name="new" size={16} />
-        <span>New project…</span>
-      </Menu.Item>
     </>
   );
 }
@@ -349,6 +341,7 @@ function ConversationActions() {
     unarchiveThread,
     deleteThread,
     loadProjects,
+    projectsByAgent,
     setThreadProject,
   } = useConsoleStore();
   if (selectedThread === null) return null;
@@ -356,6 +349,9 @@ function ConversationActions() {
   const canDelete = archived
     && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false);
   const memberProjectId = archived ? null : selectedThread.projectId;
+  const memberProjectName = memberProjectId === null
+    ? null
+    : (projectsByAgent[selectedThread.sourceId] ?? []).find((project) => project.id === memberProjectId)?.name ?? null;
 
   return (
     <Menu.Root
@@ -376,45 +372,51 @@ function ConversationActions() {
       <Menu.Portal>
         <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={5}>
           <Menu.Popup className="conversation-menu-popup" aria-label="Conversation actions">
-            {memberProjectId === null ? (
-              <Menu.SubmenuRoot>
-                <Menu.SubmenuTrigger className="conversation-menu-item">
-                  <Icon name="folder" size={16} />
-                  <span>Add to project…</span>
-                </Menu.SubmenuTrigger>
-                <Menu.Portal>
-                  <Menu.Positioner className="conversation-menu-positioner" side="right" align="start" sideOffset={5}>
-                    <Menu.Popup className="conversation-menu-popup" aria-label="Add to project">
-                      <ProjectPickerItems threadId={selectedThread.id} sourceId={selectedThread.sourceId} />
-                    </Menu.Popup>
-                  </Menu.Positioner>
-                </Menu.Portal>
-              </Menu.SubmenuRoot>
-            ) : (
-              <>
-                <Menu.SubmenuRoot>
-                  <Menu.SubmenuTrigger className="conversation-menu-item">
-                    <Icon name="folder" size={16} />
-                    <span>Move to…</span>
-                  </Menu.SubmenuTrigger>
-                  <Menu.Portal>
-                    <Menu.Positioner className="conversation-menu-positioner" side="right" align="start" sideOffset={5}>
-                      <Menu.Popup className="conversation-menu-popup" aria-label="Move to project">
-                        <ProjectPickerItems threadId={selectedThread.id} sourceId={selectedThread.sourceId} />
-                      </Menu.Popup>
-                    </Menu.Positioner>
-                  </Menu.Portal>
-                </Menu.SubmenuRoot>
-                <Menu.Item
-                  className="conversation-menu-item"
-                  onClick={() => {
-                    void setThreadProject(selectedThread.id, null).catch(() => undefined);
-                  }}
-                >
-                  <Icon name="close" size={16} />
-                  <span>Remove from project</span>
-                </Menu.Item>
-              </>
+            {/* The drawer's menu: one "project" row with where the chat is now
+                as its hint, the list beneath it, and a new project made from
+                this chat. */}
+            <Menu.SubmenuRoot>
+              <Menu.SubmenuTrigger className="conversation-menu-item">
+                <Icon name="folder" size={16} />
+                <span>{memberProjectId === null ? "Add to project" : "Move to project"}</span>
+                {memberProjectName !== null && (
+                  <span className="conversation-menu-hint">{memberProjectName}</span>
+                )}
+                <Icon name="chevron" size={14} className="conversation-menu-chevron" />
+              </Menu.SubmenuTrigger>
+              <Menu.Portal>
+                <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={4}>
+                  <Menu.Popup className="conversation-menu-popup" aria-label={memberProjectId === null ? "Add to project" : "Move to project"}>
+                    <ProjectPickerItems
+                      threadId={selectedThread.id}
+                      sourceId={selectedThread.sourceId}
+                      currentProjectId={memberProjectId}
+                    />
+                  </Menu.Popup>
+                </Menu.Positioner>
+              </Menu.Portal>
+            </Menu.SubmenuRoot>
+            <Menu.Item
+              className="conversation-menu-item is-accent"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent("mono-agent:project-settings", {
+                  detail: { mode: "create", sourceId: selectedThread.sourceId, threadId: selectedThread.id },
+                }));
+              }}
+            >
+              <Icon name="new" size={16} />
+              <span>New project from this chat</span>
+            </Menu.Item>
+            {memberProjectId !== null && (
+              <Menu.Item
+                className="conversation-menu-item"
+                onClick={() => {
+                  void setThreadProject(selectedThread.id, null).catch(() => undefined);
+                }}
+              >
+                <Icon name="close" size={16} />
+                <span>Remove from project</span>
+              </Menu.Item>
             )}
             <Menu.Item
               className="conversation-menu-item"
