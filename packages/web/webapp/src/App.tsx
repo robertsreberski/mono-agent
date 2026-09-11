@@ -640,7 +640,10 @@ export function App() {
         aria-hidden={conversationOpen || undefined}
         inert={conversationOpen}
       >
-        <Dashboard onNavigate={openConversation} />
+        {/* A row is marked as the open conversation only where that
+            conversation is on screen: beside the list on a desktop, and on a
+            phone only once it has been pushed over this one. */}
+        <Dashboard onNavigate={openConversation} highlightSelected={!mobile || conversationOpen} />
       </div>
       <div
         ref={chatRef}
