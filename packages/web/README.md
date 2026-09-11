@@ -193,8 +193,10 @@ retained `AskUser` call is running, and `· $2.44` when the runtime priced the
 run. It does not show a step ordinal, an estimate of how much longer, token or
 context percentages, or a subagent's own tool calls. Without a live answer
 behind it — the stream dropped, the read failed, or a cold start off the device
-— the section says **last known** and falls back to what this browser holds;
-only an authoritative empty listing takes it off screen.
+— the section says **last known** and falls back to what this browser holds. An
+authoritative empty listing takes it off screen as an answer: the fleet is
+idle. An empty fallback is omitted rather than drawn as a zero, which proves
+nothing either way.
 
 **Unread.** A Recent row shows a dot, and an agent square a muted count, for a
 conversation that has moved since this device last looked at it. It is
