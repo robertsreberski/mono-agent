@@ -12,7 +12,9 @@ import type { ThreadSummary } from "./types";
  *
  * What follows from that, and is not a defect:
  *
- * - It is per browser ORIGIN, and clearing site data clears it.
+ * - It is per browser ORIGIN, and clearing site data clears it. Every tab on
+ *   that origin shares it, so what one tab has seen the others adopt: the
+ *   device is the reader, not the tab.
  * - A conversation this device has never seen is NOT unread. First sight seeds
  *   the marker at whatever revision it is at, because the alternative is a
  *   fresh console where every conversation in the fleet is shouting.
@@ -41,6 +43,15 @@ export interface SeenRevision {
 export interface UnreadMarker {
   /** Adopt what the device remembered. Replaces whatever is held. */
   readonly restore: (seen: readonly SeenRevision[]) => void;
+  /**
+   * Adopt what ANOTHER tab on this device has seen.
+   *
+   * Merges rather than replaces, and only ever upward: two tabs are two
+   * readings of one device's memory, and the one that saw more of a
+   * conversation is the one that is right about it. Returns whether anything
+   * moved, so a caller can decide whether to redraw.
+   */
+  readonly adopt: (seen: readonly SeenRevision[]) => boolean;
   /** What to write back, least-recently-touched first. */
   readonly entries: () => readonly SeenRevision[];
   /** Whether this summary has moved since this device saw it. */
@@ -100,6 +111,16 @@ export const createUnreadMarker = (): UnreadMarker => {
       seen.clear();
       for (const row of restored) touch(row.id, row.revision);
     },
+    adopt: (adopted) => {
+      let moved = false;
+      for (const row of adopted) {
+        const marked = seen.get(row.id);
+        if (marked !== undefined && marked >= row.revision) continue;
+        touch(row.id, row.revision);
+        moved = true;
+      }
+      return moved;
+    },
     entries: () => [...seen].map(([id, revision]) => ({ id, revision })),
     unread: (thread) => {
       const marked = seen.get(thread.id);
@@ -133,6 +154,37 @@ export const createUnreadMarker = (): UnreadMarker => {
       return unread;
     },
   };
+};
+
+/**
+ * One device's seen map, merged by the highest revision each conversation was
+ * seen at.
+ *
+ * Every tab on the origin writes to the SAME row, and each one holds its own
+ * copy of the map -- so a tab that hydrated an hour ago and writes what it
+ * holds would put back the revisions every other tab has moved past since.
+ * Writing the maximum instead makes the row what the DEVICE has seen rather
+ * than what the last tab to flush had seen, and no read of it can go backwards.
+ *
+ * `held` is the flushing tab's own order, which is its recency; entries only
+ * the stored row knows about are older than all of them. The bound is the same
+ * {@link SEEN_THREAD_LIMIT} the marker keeps, applied to the merged row.
+ */
+export const mergeSeenRevisions = (
+  stored: readonly SeenRevision[],
+  held: readonly SeenRevision[],
+): readonly SeenRevision[] => {
+  const merged = new Map<string, number>();
+  for (const row of stored) merged.set(row.id, Math.max(merged.get(row.id) ?? row.revision, row.revision));
+  for (const row of held) {
+    const marked = merged.get(row.id);
+    // Delete before setting: insertion order is the recency order here too, and
+    // what this tab holds is more recently touched than what it did not.
+    merged.delete(row.id);
+    merged.set(row.id, marked === undefined ? row.revision : Math.max(marked, row.revision));
+  }
+  const rows = [...merged].map(([id, revision]) => ({ id, revision }));
+  return rows.length > SEEN_THREAD_LIMIT ? rows.slice(rows.length - SEEN_THREAD_LIMIT) : rows;
 };
 
 /** How many of these conversations are unread, per agent. */

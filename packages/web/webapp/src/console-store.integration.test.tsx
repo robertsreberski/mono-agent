@@ -9421,6 +9421,34 @@ describe("ConsoleStoreProvider integration", () => {
       await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([one.id]));
     });
 
+    it("adopts what another tab on this device has seen, without a reload", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(one.id));
+      emit("thread.changed", { threadId: two.id, payload: { thread: moved(two) } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+
+      // A SECOND tab on the same device reads that conversation and stores what
+      // it has seen. Two tabs are two readings of one device's memory, and they
+      // used to disagree for as long as both stayed open.
+      await act(async () => {
+        await deviceStore.save({
+          entries: [],
+          seen: [{ id: two.id, revision: moved(two).revision }],
+        });
+      });
+
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      expect([...store.current.unreadCountByAgent]).toEqual([]);
+
+      // Adopted UPWARD only: the next turn on it is unread again, so what was
+      // adopted is a revision rather than a conversation being dismissed.
+      emit("thread.changed", {
+        threadId: two.id,
+        payload: { thread: { ...moved(two), revision: 9 } },
+      });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+    });
+
     it("keeps what it has seen on the device, across a restart", async () => {
       const first = await renderStore();
       await waitFor(() => expect(first.current.selectedThreadId).toBe(one.id));

@@ -2176,6 +2176,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    */
   const unreadRef = useRef(createUnreadMarker());
   const seenDirtyRef = useRef(false);
+  /**
+   * Bumped when ANOTHER tab's seen map is adopted, purely to redraw.
+   *
+   * The marker itself is a ref, so nothing re-reads it on its own; this is what
+   * makes an adoption reach the two selectors below without the adopting tab
+   * having to reload to notice what the device already knows.
+   */
+  const [adoptedSeenEpoch, setAdoptedSeenEpoch] = useState(0);
   const [unreadThreadIds, setUnreadThreadIds] =
     useState<ReadonlySet<string>>(NO_UNREAD_THREADS);
   const [unreadCountByAgent, setUnreadCountByAgent] =
@@ -4510,7 +4518,26 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       seenDirtyRef.current = true;
       schedulePersistRef.current();
     }
-  }, [conversationVisible, observedThreads, selectedThreadId]);
+  }, [adoptedSeenEpoch, conversationVisible, observedThreads, selectedThreadId]);
+  /**
+   * What another tab on this device has seen, adopted as it is stored.
+   *
+   * Two tabs are two readings of ONE device's memory. Without this they only
+   * agreed on a reload: reading a conversation on the laptop's second tab left
+   * the first still showing it unread, and each of them wrote its own reading
+   * back. The write is now a merge, and this is the live half of the same rule
+   * -- adopted upward only, and never marked dirty, because the tab that sent
+   * it is the one that stored it.
+   */
+  useEffect(() => {
+    const persistence = persistenceRef.current;
+    if (persistence === null) return undefined;
+    return persistence.subscribeSeen((seen) => {
+      if (!mountedRef.current) return;
+      if (!unreadRef.current.adopt(seen)) return;
+      setAdoptedSeenEpoch((epoch) => epoch + 1);
+    });
+  }, []);
   const selectedThread =
     threads.find((thread) => thread.id === selectedThreadId) ?? detail?.thread ?? null;
   const selectedCronOverview = cronOverviewSourceId === selectedAgentId
