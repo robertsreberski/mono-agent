@@ -247,8 +247,16 @@ export function CronChannelHeader() {
             reads fit on one line. The conversation's own disclosure -- a native
             `details`, so `aria-expanded` and the keyboard come from the
             browser. Nothing is persisted; the summary is what is wanted by
-            default, each time. */}
-        <details className="cron-channel-overview">
+            default, each time.
+
+            Keyed by the channel it belongs to: this component stays mounted
+            across a direct cron-to-cron switch, and the browser's own `open`
+            lives on the element, so without the key the disclosure the last
+            job was left expanded on would open the next one expanded too. */}
+        <details
+          key={`${selectedAgent?.sourceId ?? ""}\u0000${jobId ?? ""}`}
+          className="cron-channel-overview"
+        >
           <summary>
             {/* One string, not three elements: the three facts read as one line,
                 and the six below keep the only copy of each label. */}

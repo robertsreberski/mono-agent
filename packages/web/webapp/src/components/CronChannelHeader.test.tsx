@@ -66,11 +66,17 @@ const store = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 }) as unknown as ReturnType<typeof useConsoleStore>;
 
-/** The overview is collapsed by default; anything below the summary needs this. */
+/**
+ * The overview is collapsed by default; anything below the summary needs this.
+ *
+ * Through the summary an operator can actually reach, not by assigning `open`:
+ * a control nobody can get to is not a control, and every action case below
+ * lives under this disclosure.
+ */
 const expandOverview = (): void => {
-  const overviewDisclosure = document.querySelector<HTMLDetailsElement>("details.cron-channel-overview");
-  if (overviewDisclosure === null) throw new Error("Expected one cron overview disclosure");
-  overviewDisclosure.open = true;
+  const summary = document.querySelector<HTMLElement>("details.cron-channel-overview > summary");
+  if (summary === null) throw new Error("Expected one cron overview disclosure");
+  fireEvent.click(summary);
 };
 
 describe("CronChannelHeader", () => {
@@ -105,6 +111,33 @@ describe("CronChannelHeader", () => {
     expect(screen.getByText("Schedule")).toBeVisible();
   });
 
+  it("opens the next cron channel collapsed, however the last one was left", () => {
+    const { rerender } = render(<CronChannelHeader />);
+    expandOverview();
+    expect(document.querySelector("details.cron-channel-overview")).toHaveAttribute("open");
+
+    // A direct cron-to-cron switch: the header is never unmounted, so the
+    // element the browser put `open` on is the element the next job gets.
+    const nextJob: CronJob = { ...job, jobId: "hourly:sweep", threadId: "other-cron-thread" };
+    vi.mocked(useConsoleStore).mockReturnValue(store({
+      cronOverview: { ...overview, jobs: [nextJob] },
+      selectedThread: {
+        id: "other-cron-thread",
+        sourceId: "alpha",
+        trigger: { kind: "cron", jobId: nextJob.jobId, configured: true },
+      },
+    }));
+    rerender(<CronChannelHeader />);
+
+    expect(document.querySelector("details.cron-channel-overview")).not.toHaveAttribute("open");
+    expect(screen.getByRole("group", { name: "Cron controls" })).not.toBeVisible();
+    // And the same job on the same agent is the same channel: a re-render for
+    // any other reason must not shut the disclosure under the operator.
+    expandOverview();
+    rerender(<CronChannelHeader />);
+    expect(document.querySelector("details.cron-channel-overview")).toHaveAttribute("open");
+  });
+
   it("renders an agent-unknown next run without deriving it from the expression", () => {
     render(<CronChannelHeader />);
     expandOverview();
@@ -133,6 +166,7 @@ describe("CronChannelHeader", () => {
       .mockResolvedValueOnce({ kind: "completed", value: { run }, replayed: false });
 
     render(<CronChannelHeader />);
+    expandOverview();
     fireEvent.click(screen.getByRole("button", { name: "Run now" }));
     expect(await screen.findByText(/scheduled firing during this manual run/u)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
@@ -172,6 +206,7 @@ describe("CronChannelHeader", () => {
     });
 
     render(<CronChannelHeader />);
+    expandOverview();
     expect(screen.getByRole("button", { name: "Run now" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Disable" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "View config" }));
@@ -204,6 +239,7 @@ describe("CronChannelHeader", () => {
     });
 
     render(<CronChannelHeader />);
+    expandOverview();
     const opener = screen.getByRole("button", { name: "View config" });
     opener.focus();
     expect(opener).toHaveFocus();
@@ -229,6 +265,7 @@ describe("CronChannelHeader", () => {
     }));
 
     render(<CronChannelHeader />);
+    expandOverview();
     const reason = screen.getByText(/operator api key/iu);
     expect(reason).toHaveAttribute("role", "status");
     reason.focus();
@@ -246,6 +283,7 @@ describe("CronChannelHeader", () => {
     }));
 
     render(<CronChannelHeader />);
+    expandOverview();
     const run = screen.getByRole("button", { name: "Run now" });
     const toggle = screen.getByRole("button", { name: "Disable" });
     const configuration = screen.getByRole("button", { name: "View config" });

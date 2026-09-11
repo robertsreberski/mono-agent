@@ -459,7 +459,8 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .conversation-menu-item.is-danger { color: var(--danger); }
 .cron-channel-header { min-width: 0; display: grid; gap: 10px; padding: 12px max(17px, env(safe-area-inset-right)) 12px max(17px, env(safe-area-inset-left)); color: var(--text-muted); background: color-mix(in srgb, var(--surface) 92%, transparent); border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.45; }
 /* The overview's disclosure: the transcript's own `.activity-row` summary --
-   its 38px row, its 8px gap and its chevron rotation. */
+   its 38px row, its 8px gap, its 9px radius and its 150ms chevron rotation.
+   The facts line takes the header's own 11px body size. */
 .cron-channel-overview { min-width: 0; }
 .cron-channel-overview > summary { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 8px; margin: 0 -8px; border-radius: 9px; cursor: pointer; list-style: none; }
 .cron-channel-overview > summary::-webkit-details-marker { display: none; }
@@ -467,7 +468,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .cron-channel-summary-facts { min-width: 0; flex: 1; overflow: hidden; color: var(--text-soft); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .cron-channel-chevron { flex: none; color: var(--text-muted); transition: transform 150ms ease; }
 .cron-channel-overview[open] > summary .cron-channel-chevron { transform: rotate(180deg); }
-.cron-channel-overview[open] > summary { margin-bottom: 2px; }
+/* The header's own grid gap, between the summary and what it reveals. */
 .cron-channel-overview > :not(summary) { margin-top: 10px; }
 .cron-channel-facts { min-width: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 7px; margin: 0; }
 .cron-channel-facts > div { min-width: 0; display: grid; align-content: start; gap: 4px; padding: 9px 10px; background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 9px; }
