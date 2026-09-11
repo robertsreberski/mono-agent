@@ -222,6 +222,50 @@ describe("composer drafts across app restarts", () => {
     vi.useRealTimers();
     expect(storedDocument().drafts.map((draft) => draft.key)).toEqual([JSON.stringify(["alpha", "elsewhere"])]);
     sent.resetComposerDraft();
+
+    // ...or retypes the very same words, with a real stamp: that edit's time
+    // is the other tab's to keep, not this tab's to roll back.
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: ahead }],
+    }));
+    const retyped = await reopenApp();
+    expect(retyped.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+    const realStamp = Date.now() + 1_000;
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: realStamp }],
+    }));
+    retyped.writeComposerDraft("alpha", "elsewhere", "an unrelated draft");
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    retyped.flushComposerDrafts();
+    vi.useRealTimers();
+    expect(storedDocument().drafts.find((draft) => draft.key === key)).toEqual({
+      key, text: "written while the clock was ahead", updatedAt: realStamp,
+    });
+    retyped.resetComposerDraft();
+  });
+
+  it("keeps the stored draft when the device refuses a clock correction alone", async () => {
+    const key = JSON.stringify(["alpha", "wrong-clock"]);
+    const document = JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: Date.now() + 60 * 60 * 1_000 }],
+    });
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, document);
+    const reopened = await reopenApp();
+    expect(reopened.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+
+    // Nothing was typed here; only the stamp would change. A full device says
+    // no to that write, and the answer must not be to remove the draft.
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded.", "QuotaExceededError");
+    });
+    reopened.flushComposerDrafts();
+    setItem.mockRestore();
+    expect(localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(document);
+    expect(reopened.hasUnrecoverableComposerContent()).toBe(false);
+    reopened.resetComposerDraft();
   });
 
   it("discards a malformed stored document instead of failing to start", async () => {

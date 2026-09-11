@@ -208,19 +208,27 @@ export const flushComposerDrafts = (): void => {
     persisting = false;
     return;
   }
-  const merged = readStored();
+  // The device's future stamps as stored, so a correction can tell the very
+  // entry it corrected from another tab's write of the same text since.
+  const future = new Map<string, DraftEntry>();
+  const merged = readStored((key, stored) => future.set(key, stored));
+  let corrections = 0;
   for (const [key, corrected] of clampedKeys) {
     if (touchedKeys.has(key)) continue;
-    const stored = merged.get(key);
+    const stored = future.get(key);
     const own = textDrafts.get(key);
-    // Still the future-stamped entry hydration read (the merge re-clamped it to
-    // a later "now"): write the correction. Anything else is another tab's.
-    if (own !== undefined && stored !== undefined && stored.text === corrected.text
-      && stored.updatedAt >= own.updatedAt) {
+    if (own !== undefined && stored !== undefined
+      && stored.text === corrected.text && stored.updatedAt === corrected.updatedAt) {
       merged.set(key, own);
+      corrections += 1;
     }
   }
-  clampedKeys.clear();
+  // Nothing authored and nothing left to correct: the device already holds
+  // what this tab would write.
+  if (touchedKeys.size === 0 && corrections === 0) {
+    clampedKeys.clear();
+    return;
+  }
   for (const key of touchedKeys) {
     const entry = textDrafts.get(key);
     if (entry === undefined) merged.delete(key);
@@ -228,9 +236,14 @@ export const flushComposerDrafts = (): void => {
   }
   if (write(store, merged)) {
     touchedKeys.clear();
+    clampedKeys.clear();
     persisting = true;
     return;
   }
+  // A refused correction with nothing authored: the stored draft, future stamp
+  // and all, is safer than a document without it. Keep the correction to try
+  // again, and keep trusting a device that still holds the text.
+  if (touchedKeys.size === 0) return;
   // A refused write is usually a full quota. Drop everything this tab is not
   // holding and try once more; a device that still says no keeps the text in
   // memory, and the staged-update guard stops trusting storage.
@@ -241,6 +254,7 @@ export const flushComposerDrafts = (): void => {
   }
   if (write(store, own)) {
     touchedKeys.clear();
+    clampedKeys.clear();
     persisting = true;
     return;
   }
