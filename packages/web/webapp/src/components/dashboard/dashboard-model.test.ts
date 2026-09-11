@@ -9,6 +9,8 @@ import {
   groupRunningThreads,
   isRecentThread,
   mergeRunningThreads,
+  runningCardPending,
+  runningCardStatus,
   runningThreadCount,
 } from "./dashboard-model";
 
@@ -159,5 +161,56 @@ describe("mergeRunningThreads", () => {
     const listed = base("shared", { runState: { status: "running", id: "t" }, title: "listed" });
     const cached = { ...listed, title: "cached" };
     expect(mergeRunningThreads([cached], [listed]).map((thread) => thread.title)).toEqual(["cached"]);
+  });
+});
+
+describe("runningCardStatus", () => {
+  const working = (activity?: ThreadSummary["runState"]["activity"]) =>
+    thread("card", "alpha", {
+      runState: { status: "running", id: "t", ...(activity === undefined ? {} : { activity }) },
+    });
+
+  it("counts tool calls, never steps, and never a step it cannot name", () => {
+    expect(runningCardStatus(working({ toolCallCount: 11, phase: "working" })))
+      .toBe("Working · 11 tool calls");
+    expect(runningCardStatus(working({ toolCallCount: 1, phase: "working" })))
+      .toBe("Working · 1 tool call");
+  });
+
+  it("says a question is waiting rather than counting through it", () => {
+    expect(runningCardStatus(working({ toolCallCount: 7, phase: "asking" })))
+      .toBe("Asking you a question");
+  });
+
+  it("adds a price only when the run was priced", () => {
+    expect(runningCardStatus(working({ toolCallCount: 2, phase: "working", cumulativeUsd: 2.44 })))
+      .toBe("Working · 2 tool calls · $2.44");
+    // Sub-cent turns keep their places: `$0.00` would read as free.
+    expect(runningCardStatus(working({ toolCallCount: 2, phase: "working", cumulativeUsd: 0.0042 })))
+      .toBe("Working · 2 tool calls · $0.0042");
+  });
+
+  it("keeps the shared wording while a turn has reported nothing", () => {
+    expect(runningCardStatus(working())).toBe("Working…");
+    expect(runningCardPending(working())).toBe(true);
+    // Reported, but with nothing done yet: still not "0 tool calls".
+    expect(runningCardStatus(working({ toolCallCount: 0, phase: "working" }))).toBe("Working…");
+    expect(runningCardPending(working({ toolCallCount: 0, phase: "working" }))).toBe(false);
+  });
+
+  it("keeps the background jobs the sidebar names, in its words", () => {
+    const withJobs = thread("card", "alpha", {
+      runState: { status: "running", id: "t", activity: { toolCallCount: 3, phase: "working" } },
+      jobActivity: { running: 1, starting: 0, queued: 2 },
+    });
+    expect(runningCardStatus(withJobs))
+      .toBe("Working · 3 tool calls · 1 background job running · 2 background jobs queued");
+  });
+
+  it("falls back to the shared status line for a card with no foreground turn", () => {
+    const jobOnly = thread("card", "alpha", {
+      jobActivity: { running: 1, starting: 0, queued: 0 },
+    });
+    expect(runningCardStatus(jobOnly)).toBe("1 background job running");
   });
 });

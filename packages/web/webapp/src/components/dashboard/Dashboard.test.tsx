@@ -65,6 +65,15 @@ const createStore = (threads: readonly ThreadSummary[] = [thread("loaded", "agen
   hiddenOfflineAgentCount: 0,
   showOfflineAgents: false,
   cachedRunningThreads: [] as readonly ThreadSummary[],
+  // No server answer by default: most cases are about the list, and the ones
+  // about Running say for themselves what the fleet reported.
+  activeThreads: null as {
+    readonly threads: readonly ThreadSummary[];
+    readonly total: number;
+    readonly truncated: boolean;
+    readonly runningCounts: Readonly<Record<string, number>>;
+    readonly authoritative: boolean;
+  } | null,
   navigationDestination: "chats" as const,
   cronOverview: null,
   setNavigationDestination: vi.fn(),
@@ -358,12 +367,72 @@ describe("Dashboard running section", () => {
   });
 
   it("names work on an agent whose conversations are nowhere in the listing", () => {
-    storeMock.current = { ...createStore(), cachedRunningThreads: [betaRunning] };
+    storeMock.current = {
+      ...createStore(),
+      activeThreads: {
+        threads: [betaRunning],
+        total: 1,
+        truncated: false,
+        runningCounts: { "agent-one": 0, "agent-two": 1 },
+        authoritative: true,
+      },
+    };
     render(<Dashboard />);
 
-    expect(screen.getByRole("heading", { name: "Running, 1 cached" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Running, 1" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Open Beta work on AGENT-TWO" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Open Beta work" })).toBeNull();
+    // The badge is the SERVER's count for that agent, not the cards' -- this
+    // browser holds none of beta's conversations.
+    expect(screen.getByRole("button", { name: /^AGENT-TWO, online, 1 running$/u })).toBeVisible();
+  });
+
+  it("says the fleet is idle only when the server said so, and keeps the cards when it did not", () => {
+    const idle = {
+      threads: [] as readonly ThreadSummary[],
+      total: 0,
+      truncated: false,
+      runningCounts: { "agent-one": 0, "agent-two": 0 },
+      authoritative: true,
+    };
+    storeMock.current = {
+      ...createStore(),
+      cachedRunningThreads: [betaRunning],
+      activeThreads: idle,
+    };
+    const view = render(<Dashboard />);
+    // An authoritative empty listing beats what this tab is still holding.
+    expect(screen.queryByRole("heading", { name: /Running/u })).toBeNull();
+
+    storeMock.current = {
+      ...createStore(),
+      cachedRunningThreads: [betaRunning],
+      activeThreads: { ...idle, authoritative: false },
+    };
+    view.rerender(<Dashboard />);
+
+    // The same empty answer, no longer standing: the cache speaks again and
+    // the section says what that is worth.
+    expect(screen.getByRole("heading", { name: "Running, 1, last known" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Beta work on AGENT-TWO" })).toBeVisible();
+  });
+
+  it("says how many of the fleet's running conversations it is showing", () => {
+    storeMock.current = {
+      ...createStore(),
+      activeThreads: {
+        threads: [alphaRunning, betaRunning],
+        total: 63,
+        truncated: true,
+        runningCounts: { "agent-one": 31, "agent-two": 32 },
+        authoritative: true,
+      },
+    };
+    render(<Dashboard />);
+
+    expect(screen.getByRole("heading", { name: "Running, 63" })).toBeVisible();
+    expect(screen.getByText("Showing 2 of 63")).toBeVisible();
+    expect(screen.getByRole("button", { name: /^AGENT-ONE, online, 31 running$/u })).toBeVisible();
   });
 
   it("switches agent, bucket and conversation in one action, then gets out of the way", () => {
@@ -399,6 +468,16 @@ describe("Dashboard running section", () => {
     expect(screen.getAllByRole("button", { name: /^Open Alpha/u })).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: "Show fewer · AGENT-ONE" }));
     expect(screen.getAllByRole("button", { name: /^Open Alpha/u })).toHaveLength(2);
+  });
+
+  it("keeps the cards a card-only fallback can still name, and labels them", () => {
+    // No server answer at all -- a cold start off the device, or a console that
+    // has never had a live stream. The cache is all there is.
+    storeMock.current = { ...createStore(), cachedRunningThreads: [betaRunning] };
+    render(<Dashboard />);
+
+    expect(screen.getByRole("heading", { name: "Running, 1, last known" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Beta work on AGENT-TWO" })).toBeVisible();
   });
 
   it("drops held work whose agent is no longer discovered", () => {

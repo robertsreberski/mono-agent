@@ -9280,6 +9280,60 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.activeThreads?.threads.map((item) => item.id)).toEqual([betaRun.id]);
     });
 
+    it("opens a card for a conversation in no page and no cache, and the selection holds", async () => {
+      // The card the cache could never have drawn: another agent's, ARCHIVED,
+      // absent from every listing this console has loaded and from every
+      // transcript it holds. One handler points the console at all three.
+      vi.mocked(api.bootstrap).mockImplementation(async (_signal, scope) => ({
+        ...bootstrap(
+          agents,
+          scope?.sourceId === "beta" ? (scope.archived ? [betaRun] : []) : [alpha],
+          undefined,
+          { threadsSourceId: scope?.sourceId ?? "alpha" },
+        ),
+        activeThreads: listing([betaRun]),
+      }));
+      vi.mocked(api.threads).mockImplementation(async (sourceId, archived) => ({
+        threads: sourceId === "beta" && archived === true ? [betaRun] : [],
+      }));
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: betaRun,
+        messages: [],
+        etag: 'W/"beta-1"',
+      });
+      vi.stubGlobal("Notification", { permission: "default", requestPermission: vi.fn() });
+      let current: Store | undefined;
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={(store) => { current = store; }} />
+          <NotificationsProvider>
+            <WebRuntimeProvider>
+              <Dashboard />
+            </WebRuntimeProvider>
+          </NotificationsProvider>
+        </ConsoleStoreProvider>,
+      );
+      const store = {
+        get current() {
+          if (!current) throw new Error("Store did not initialize.");
+          return current;
+        },
+      };
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      expect(store.current.cachedRunningThreads).toEqual([]);
+      // What the server said this turn is doing, on the card itself.
+      const card = await screen.findByRole("button", { name: /^Open Beta work/u });
+      expect(card).toHaveTextContent("Working · 3 tool calls · $2.44");
+
+      fireEvent.click(card);
+
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(betaRun.id));
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.showArchived).toBe(true);
+      expect(store.current.detail?.thread.id).toBe(betaRun.id);
+    });
+
     it("publishes nothing when a re-read draws the same section", async () => {
       const store = await renderStore();
       await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));

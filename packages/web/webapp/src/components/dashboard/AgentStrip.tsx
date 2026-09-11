@@ -17,7 +17,7 @@ import { agentInitials, agentShortLabel } from "./dashboard-model";
 export function AgentStrip({
   runningCounts,
 }: {
-  /** Cached conversations with work in flight, per agent; drawn as a badge. */
+  /** Conversations with work in flight, per agent; drawn as a badge. */
   readonly runningCounts?: ReadonlyMap<string, number>;
 } = {}) {
   const {
