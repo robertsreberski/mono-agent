@@ -74,6 +74,12 @@ compact log — one line per tool call with a short argument summary, ok/error,
 and duration — capped at roughly 24 KB. It does not receive raw tool output. A
 subagent that fails, times out, or returns nothing still reports its activity
 log, since that log is usually the most useful part of a failed delegation.
+When the answer exceeds 12,000 characters, the log is elided, or the result hits
+its byte cap, the complete result is written to the run's tool-output artifact
+directory through the same sink other oversized tool payloads use, and the
+retained text names that file directly under its header
+(`[result truncated; full result saved to: …]`) so the main agent can `Read` it.
+Without a configured artifact sink the text says the full result was not saved.
 
 **What operators see.** Every subagent tool call streams live to the TUI and web
 console as its own entry, named `<profile>▸<tool>` and bracketed by the

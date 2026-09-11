@@ -261,6 +261,68 @@ describe("Agent tool result budget", () => {
     expect(text).toContain("1. Read");
     expect(text).toContain("10000. Read");
     expect(text).toMatch(/… 9945 calls elided …/u);
+    // No sink was offered, so the model is told the file does not exist.
+    expect(text).toContain("[result truncated; full result not saved: artifact persistence unavailable]");
+  });
+
+  it("spills an over-cap answer to the host artifact sink and references the file", async () => {
+    const answer = `${"a".repeat(30_000)}\nTHE-LAST-LINE`;
+    const saved = [];
+    const persistArtifact = vi.fn(({ filename, buffer, toolName, toolUseId }) => {
+      saved.push({ filename, text: buffer.toString("utf8"), toolName, toolUseId });
+      return `/artifacts/tool-output/run-1/${filename}`;
+    });
+    const tool = createAgentTool(subagentOptions({ run: okRun(answer) }), { persistArtifact });
+    const result = await tool.execute("call/with:odd chars", { name: "researcher", prompt: "x", description: "long report" });
+    const text = result.content[0].text;
+
+    expect(persistArtifact).toHaveBeenCalledTimes(1);
+    expect(saved[0]).toMatchObject({ filename: "Agent__call_with_odd_chars__full.txt", toolName: "Agent", toolUseId: "call/with:odd chars" });
+    // The persisted file carries the complete, unelided result.
+    expect(saved[0].text).toContain("<subagent: researcher · long report · ok ·");
+    expect(saved[0].text).toContain(answer);
+    expect(saved[0].text).not.toContain("[truncated");
+    // The retained text stays bounded, references the file right under the
+    // header, and keeps the visible truncation marker on the answer.
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(24_000);
+    expect(text.split("\n")[1]).toBe("[result truncated; full result saved to: /artifacts/tool-output/run-1/Agent__call_with_odd_chars__full.txt]");
+    expect(text).toContain("… [truncated 18014 chars]");
+    expect(text).not.toContain("THE-LAST-LINE");
+    // Recorded as an artifact reference the same way the bloat guard does.
+    expect(result.details.tool_payload_truncated).toBe(true);
+    expect(result.details.tool_payload_saved_paths).toEqual(["/artifacts/tool-output/run-1/Agent__call_with_odd_chars__full.txt"]);
+  });
+
+  it("keeps the file reference when the remaining turn budget is at the floor", async () => {
+    const persistArtifact = vi.fn(({ filename }) => `/artifacts/${filename}`);
+    const options = subagentOptions({ run: okRun("z".repeat(20_000)) });
+    const tool = createAgentTool(options, { persistArtifact, parentRunId: "run-floor" });
+    // Each ~12 KB result eats into the 120 KB per-turn budget; once it is spent
+    // a call gets only the 512-byte floor and must still name its file.
+    for (let i = 0; i < 10; i += 1) await tool.execute(`c${i}`, { prompt: "x" });
+    const text = (await tool.execute("c-last", { prompt: "x" })).content[0].text;
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(512);
+    expect(text.split("\n")[1]).toBe("[result truncated; full result saved to: /artifacts/Agent__c-last__full.txt]");
+    expect(text).toContain("[result truncated]");
+  });
+
+  it("persists nothing and adds no reference when the result fits", async () => {
+    const persistArtifact = vi.fn(() => "/never");
+    const tool = createAgentTool(subagentOptions({ run: okRun("short answer") }), { persistArtifact });
+    const result = await tool.execute("c1", { prompt: "x" });
+    expect(persistArtifact).not.toHaveBeenCalled();
+    expect(result.content[0].text).not.toContain("[result truncated");
+    expect(result.details.tool_payload_truncated).toBeUndefined();
+    expect(result.details.tool_payload_saved_paths).toBeUndefined();
+  });
+
+  it("reports a failed sink write honestly instead of naming a missing file", async () => {
+    const persistArtifact = vi.fn(() => { throw new Error("disk full"); });
+    const tool = createAgentTool(subagentOptions({ run: okRun("q".repeat(20_000)) }), { persistArtifact });
+    const result = await tool.execute("c1", { prompt: "x" });
+    expect(result.content[0].text.split("\n")[1]).toBe("[result truncated; full result not saved: artifact persistence unavailable]");
+    expect(result.details.tool_payload_truncated).toBe(true);
+    expect(result.details.tool_payload_saved_paths).toBeUndefined();
   });
 
 describe("Agent tool activity forwarding", () => {

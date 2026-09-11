@@ -631,7 +631,9 @@ export function getPiBuiltinTools(allowedTools, {
       : null,
     // Built directly (not via createBuiltinTool) so a subagent answer starting
     // with "Error:" is not reclassified as a tool failure, discarding its log.
-    Agent: createAgentTool(subagents, { onEvent, ...(subagentContext || {}) }),
+    // The host artifact sink lets an over-cap subagent result spill its full
+    // text to the run's tool-output directory instead of being cut.
+    Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}) }),
     Monitor: monitorsController
       ? createBuiltinTool(
         "Monitor",
