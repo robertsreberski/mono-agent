@@ -85,6 +85,17 @@ describe("AgentStrip", () => {
       .toHaveAttribute("aria-pressed", "false");
   });
 
+  it("marks the pinned square, so the order it sorts into has a reason on it", () => {
+    render(<AgentStrip />);
+
+    const pinned = screen.getByRole("button", { name: "A complete favorite agent name, offline, pinned" });
+    expect(pinned.querySelector(".agent-chip-pin")).not.toBeNull();
+    // Decoration beside a name that already says it, and never a second count.
+    expect(pinned.querySelector(".agent-chip-pin")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("button", { name: "Other agent, online" }).querySelector(".agent-chip-pin"))
+      .toBeNull();
+  });
+
   it("offers the hidden offline agents behind their count", () => {
     render(<AgentStrip />);
 
