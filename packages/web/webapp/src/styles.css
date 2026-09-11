@@ -294,7 +294,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .agent-strip-offline:hover, .agent-strip-offline.is-active { color: var(--text); background: var(--surface-hover); box-shadow: none; }
 
 /* Dashboard search */
-.dashboard-search { position: relative; z-index: 2; height: 42px; display: flex; align-items: center; gap: 10px; flex: none; margin: 12px var(--gutter-right) 12px var(--gutter-left); padding: 0 14px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid transparent; border-radius: 12px; transition: border-color 150ms ease, box-shadow 150ms ease; }
+/* One field, on both screens: the composer's drawn edge over the subtle fill,
+   and the accent ring on focus. A stated border is what tells an input from a
+   card now that the whole console is one colour. */
+.dashboard-search { position: relative; z-index: 2; height: 42px; display: flex; align-items: center; gap: 10px; flex: none; margin: 12px var(--gutter-right) 12px var(--gutter-left); padding: 0 14px; color: var(--text-muted); background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 12px; transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }
+.dashboard-search:hover:not(:focus-within) { background: var(--surface-hover); }
 .dashboard-search:focus-within { color: var(--accent); background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .dashboard-search > svg { flex: none; }
 .dashboard-search input { min-width: 0; height: 100%; flex: 1; padding: 0; color: var(--text); background: transparent; border: 0; outline: 0; font-size: 14px; }
@@ -315,7 +319,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    card is cut flush on its bottom edge the moment the list moves. The
    conversation's own answer to the same problem, upside down: the
    `.thread-footer` gradient, over this column's background. */
-.dashboard-search::after { content: ""; position: absolute; top: 100%; left: calc(-1 * var(--gutter-left)); right: calc(-1 * var(--gutter-right)); height: 28px; background: linear-gradient(to bottom, var(--panel) 0, color-mix(in srgb, var(--panel) 94%, transparent) 14px, transparent 28px); pointer-events: none; }
+/* `top: 100%` resolves against the PADDING box, not the border box, so an
+   opaque fade starting there paints over the field's own bottom border. The
+   extra pixel is that border. */
+.dashboard-search::after { content: ""; position: absolute; top: calc(100% + 1px); left: calc(-1 * var(--gutter-left)); right: calc(-1 * var(--gutter-right)); height: 28px; background: linear-gradient(to bottom, var(--panel) 0, color-mix(in srgb, var(--panel) 94%, transparent) 14px, transparent 28px); pointer-events: none; }
 
 /* Dashboard sections: the message rhythm between them, the eyebrow above each. */
 .dashboard-scroll { min-height: 0; flex: 1; padding: 20px var(--gutter-right) 28px var(--gutter-left); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
@@ -426,7 +433,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    list is never cut on it. The scroll region's own bottom padding is the same
    28px, so a list scrolled to its end rests clear of the fade. */
 .dashboard-footer { position: relative; z-index: 2; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; padding: 0 calc(var(--gutter-right) - 7px) max(0px, env(safe-area-inset-bottom)) calc(var(--gutter-left) - 7px); border-top: 1px solid var(--line); }
-.dashboard-footer::before { content: ""; position: absolute; bottom: 100%; left: 0; right: 0; height: 28px; background: linear-gradient(to top, var(--panel) 0, color-mix(in srgb, var(--panel) 94%, transparent) 14px, transparent 28px); pointer-events: none; }
+/* Same padding-box rule as `.dashboard-search::after`, from the other side:
+   without the pixel the fade covers the footer's own top border. */
+.dashboard-footer::before { content: ""; position: absolute; bottom: calc(100% + 1px); left: 0; right: 0; height: 28px; background: linear-gradient(to top, var(--panel) 0, color-mix(in srgb, var(--panel) 94%, transparent) 14px, transparent 28px); pointer-events: none; }
 .archive-toggle, .data-mode-indicator { min-width: 0; height: 32px; display: flex; align-items: center; gap: 6px; flex: none; padding: 0 7px; color: var(--text-muted); background: transparent; border-radius: 8px; cursor: pointer; font-size: 10.5px; text-align: left; white-space: nowrap; }
 .archive-toggle:hover, .archive-toggle.is-active, .data-mode-indicator:hover { color: var(--text); background: var(--surface-subtle); }
 .archive-count { min-width: 14px; color: var(--text-muted); font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; }
@@ -891,7 +900,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* The one field of the conversation, drawn like the one field of the
    Dashboard: the same subtle fill, the same borderless rest, the same accent
    ring on focus. `.dashboard-search` is the rule it follows. */
-.composer-root { position: relative; width: min(100%, 820px); margin: 0 auto; background: var(--surface-subtle); border: 1px solid transparent; border-radius: 16px; transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }
+.composer-root { position: relative; width: min(100%, 820px); margin: 0 auto; background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 16px; transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease; }
 .composer-root:focus-within { background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
 .composer-quote { min-height: 38px; display: flex; align-items: center; gap: 8px; margin: 9px 9px 0; padding: 7px 8px 7px 10px; color: var(--text-muted); background: var(--surface-hover); border-left: 2px solid var(--accent); border-radius: 7px; font-size: 11px; }
 .composer-quote > svg { flex: none; color: var(--accent); }
