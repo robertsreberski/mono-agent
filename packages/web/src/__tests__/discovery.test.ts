@@ -10,6 +10,7 @@ import {
   isTrustedOperatorBaseUrl,
   operatorBaseUrlFromMetadata,
 } from "../discovery.js";
+import { OperatorClient } from "../operator-client.js";
 import { temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -213,40 +214,57 @@ describe("operator discovery", () => {
     expect(permissive[0]).not.toHaveProperty("monitorsBearer");
   });
 
-  it("resolves the documented per-agent dotenv key from an attested background snapshot", async () => {
-    const base = await temporaryRoot();
-    cleanup.push(base);
-    const registry = join(base, "registry");
-    await mkdir(registry);
-    const configPath = join(base, "mono-agent.config.json");
-    const dotenvPath = join(base, ".env");
-    await writeFile(configPath, JSON.stringify({ tui: { apiKey: "legacy-inline" } }), { mode: 0o600 });
-    await writeFile(dotenvPath, "MONO_AGENT_TUI_API_KEY=' durable-key '\nOTHER_SECRET=never-read\n", { mode: 0o600 });
-    await writeFile(join(registry, "agent-one.json"), JSON.stringify({
-      schema: "agent-runtime.trace-source.v1",
-      sourceId: "agent-one",
-      label: "Agent One",
-      artifactDir: join(base, "artifacts"),
-      status: "running",
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      configPath,
-      metadata: {
-        channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" } },
-        backgroundSnapshot: {
-          schema: "mono-agent.background-snapshot.v1",
-          configPath,
-          configFingerprint: "config-proof",
-          dotenvPath,
-          dotenvFingerprint: "dotenv-proof",
+  it.each([".env", "agent.production.env"])(
+    "resolves only the operator key from the snapshot-selected %s and sends it to /v1/info",
+    async (dotenvName) => {
+      const base = await temporaryRoot();
+      cleanup.push(base);
+      const registry = join(base, "registry");
+      await mkdir(registry);
+      const configPath = join(base, "mono-agent.config.json");
+      const dotenvPath = join(base, dotenvName);
+      await writeFile(configPath, JSON.stringify({ tui: { apiKey: "legacy-inline" } }), { mode: 0o600 });
+      await writeFile(dotenvPath, "MONO_AGENT_TUI_API_KEY=' durable-key '\nOTHER_SECRET=must-stay-unread\n", { mode: 0o600 });
+      await writeFile(join(registry, "agent-one.json"), JSON.stringify({
+        schema: "agent-runtime.trace-source.v1",
+        sourceId: "agent-one",
+        label: "Agent One",
+        artifactDir: join(base, "artifacts"),
+        status: "running",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        configPath,
+        metadata: {
+          channels: { tui: { kind: "running", baseUrl: "http://127.0.0.1:5555/gui" } },
+          backgroundSnapshot: {
+            schema: "mono-agent.background-snapshot.v1",
+            configPath,
+            configFingerprint: "config-proof",
+            dotenvPath,
+            dotenvFingerprint: "dotenv-proof",
+          },
         },
-      },
-    }));
+      }));
 
-    const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
-    expect(found[0]).toMatchObject({ apiKey: "durable-key" });
-    expect(found[0]?.source.metadata).not.toHaveProperty("apiKey");
-  });
+      const found = await discoverOperatorAgents({ registryDirs: [registry], env: {} });
+      expect(found[0]).toMatchObject({ apiKey: "durable-key" });
+      expect(found[0]?.source.metadata).not.toHaveProperty("apiKey");
+      expect(JSON.stringify(found)).not.toContain("must-stay-unread");
+
+      let authorization: string | null = null;
+      const client = new OperatorClient({
+        baseUrl: found[0]!.baseUrl!,
+        apiKey: found[0]!.apiKey!,
+        fetchImpl: (async (input, init) => {
+          expect(String(input)).toBe("http://127.0.0.1:5555/gui/v1/info");
+          authorization = new Headers(init?.headers).get("authorization");
+          return Response.json({ schema: 1, capabilities: { cron: { read: true, actions: true } } });
+        }) as typeof fetch,
+      });
+      await expect(client.info()).resolves.toMatchObject({ cron: { read: true, actions: true } });
+      expect(authorization).toBe("Bearer durable-key");
+    },
+  );
 
   it("does not follow a dotenv symlink advertised by trace metadata", async () => {
     const base = await temporaryRoot();

@@ -7,6 +7,7 @@ import {
   MANAGED_BACKGROUND_WORKER_ENV,
   sanitizeManagedBackgroundWorkerEnvironment,
 } from "./background-runtime.js";
+import { SYSTEMD_BACKGROUND_WORKER_ENV } from "./background-environment.js";
 import { readCliDotenvFile } from "./first-run-readiness.js";
 import { loadCliEnvFile, parseCliArgs } from "./cli-args.js";
 import type { ParsedCliArgs } from "./cli-args.js";
@@ -145,13 +146,18 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return 2;
   }
 
-  // Only the internal launchd foreground shape may honor the managed-worker
-  // marker. A hostile/global launchctl environment must not sanitize unrelated
-  // commands such as `mono-agent validate` or `mono-agent status`.
-  const managedBackgroundWorker =
-    args.command === "start" && args.foreground && process.env[MANAGED_BACKGROUND_WORKER_ENV] === "1";
-  if (args.expectedBackgroundSnapshot !== undefined && !managedBackgroundWorker) {
-    process.stderr.write(ui.errorLine("--expected-background-snapshot is reserved for the managed LaunchAgent worker."));
+  // Only an exact internal foreground-worker shape may honor either lifecycle
+  // marker. A stray global variable must not authorize snapshot transport on an
+  // unrelated command, and the launchd and systemd paths stay mutually exclusive.
+  const foregroundWorkerShape = args.command === "start" && args.foreground;
+  const managedBackgroundWorker = foregroundWorkerShape
+    && process.env[MANAGED_BACKGROUND_WORKER_ENV] === "1"
+    && process.env[SYSTEMD_BACKGROUND_WORKER_ENV] !== "1";
+  const systemdBackgroundWorker = foregroundWorkerShape
+    && process.env[SYSTEMD_BACKGROUND_WORKER_ENV] === "1"
+    && process.env[MANAGED_BACKGROUND_WORKER_ENV] !== "1";
+  if (args.expectedBackgroundSnapshot !== undefined && !managedBackgroundWorker && !systemdBackgroundWorker) {
+    process.stderr.write(ui.errorLine("--expected-background-snapshot is reserved for an installed background worker."));
     return 2;
   }
   if (args.expectedManagedRuntimeLaunch !== undefined && !managedBackgroundWorker && !managedWebLogMaintenance) {
@@ -249,7 +255,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     case "presets":
       return runPresets(args);
     case "start":
-      return await runStart(args, undefined, managedBackgroundWorker);
+      return await runStart(args, undefined, managedBackgroundWorker, systemdBackgroundWorker);
     case "restart":
     case "stop":
     case "status":

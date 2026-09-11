@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 export const MANAGED_BACKGROUND_WORKER_ENV = "MONO_AGENT_MANAGED_WORKER";
+/** Marks the scrubbed foreground worker installed by the Linux systemd lifecycle. */
+export const SYSTEMD_BACKGROUND_WORKER_ENV = "MONO_AGENT_SYSTEMD_WORKER";
 
 /**
  * Non-secret host variables that a managed worker may inherit durably.
