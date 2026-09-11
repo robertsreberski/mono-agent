@@ -799,6 +799,14 @@ export function cronChannelReadOnlyError(): WebConsoleError {
   );
 }
 
+/** One retained job card, with the projection it is currently drawing. */
+export interface WebProcessJobCardRef {
+  readonly jobId: string;
+  readonly threadId: string;
+  readonly deliveryKey: string;
+  readonly job: ProcessJobProjection;
+}
+
 export interface UpsertWebProcessJobCardInput {
   readonly sourceId: string;
   readonly threadId: string;
@@ -2563,6 +2571,42 @@ export class WebStore {
       DELETE FROM monitor_wake_deliveries
       WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
     `).run(input.sourceId, input.monitorId, input.deliveryKey);
+  }
+
+  /**
+   * One agent's retained job cards that have not settled, oldest first.
+   *
+   * A card is written `queued|starting|running` from the agent's notification
+   * and only leaves that state when a terminal projection arrives. If that
+   * notification never reaches this service -- the agent restarted while the
+   * console was disconnected, a wake was lost -- nothing else in the store
+   * would ever move it, and the card claims work that stopped days ago. This is
+   * what {@link WebService} re-asks the agent about.
+   *
+   * Bounded: a sweep that has more than this to settle settles the oldest and
+   * takes the rest on its next pass, because the retired ones leave this set.
+   */
+  listUnsettledProcessJobCards(sourceId: string, limit: number): readonly WebProcessJobCardRef[] {
+    const rows = this.database.prepare(`
+      SELECT c.job_id AS job_id, c.thread_id AS thread_id, c.delivery_key AS delivery_key,
+             json_extract(part.value, '$.job') AS job_json
+        FROM process_job_cards c
+        JOIN messages m ON m.id = c.message_id AND m.thread_id = c.thread_id
+        JOIN json_each(m.parts_json) part
+       WHERE c.source_id = ?
+         AND json_extract(part.value, '$.type') = 'process-job'
+         AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+       ORDER BY c.updated_at ASC, c.job_id ASC
+       LIMIT ?
+    `).all(sourceId, limit) as unknown as Array<{
+      job_id: string; thread_id: string; delivery_key: string; job_json: string;
+    }>;
+    return rows.map((row) => ({
+      jobId: row.job_id,
+      threadId: row.thread_id,
+      deliveryKey: row.delivery_key,
+      job: parseProcessJobProjection(JSON.parse(row.job_json)),
+    }));
   }
 
   /** Exact retained binding used before proxying a single operator job. */
@@ -8098,6 +8142,11 @@ function processJobCardParts(
 ): WebMessagePart[] {
   const card = processJobPart(job, responseText);
   return replyParts === undefined ? [card] : boundedWebReplyParts(replyParts, [card]);
+}
+
+/** Whether a process job has settled and will never report anything again. */
+export function isTerminalProcessJobState(state: ProcessJobState): boolean {
+  return isTerminalJobState(state);
 }
 
 function isTerminalJobState(state: ProcessJobState): boolean {

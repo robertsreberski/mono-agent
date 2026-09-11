@@ -6347,3 +6347,178 @@ describe("cron Reply import orchestration", () => {
     } finally { await service.stop(); }
   });
 });
+
+/**
+ * A card written `queued|starting|running` leaves that state only when a
+ * terminal projection arrives. When that notification never lands -- the agent
+ * restarted while this service was disconnected, a wake was lost -- nothing
+ * else in the store moves it, and the Dashboard reports work that stopped days
+ * ago. These are about re-asking the agent instead.
+ */
+describe("unsettled process-job card reconciliation", () => {
+  /** An agent that goes away for one discovery pass and comes back. */
+  const reconnecting = (): {
+    readonly discoverImpl: () => Promise<readonly ReturnType<typeof fakeDiscoveredAgent>[]>;
+    setPresent: (present: boolean) => void;
+  } => {
+    let present = true;
+    return {
+      discoverImpl: async () => present
+        ? [fakeDiscoveredAgent({ processJobsBearer: "owner-job-key" })]
+        : [],
+      setPresent: (next: boolean) => { present = next; },
+    };
+  };
+
+  const carded = async (service: WebService): Promise<{ threadId: string; jobId: string }> => {
+    const thread = service.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: running.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: running,
+    });
+    expect(service.activeThreads().threads.map((item) => item.id)).toEqual([thread.id]);
+    return { threadId: thread.id, jobId: running.jobId };
+  };
+
+  it("retires a card the agent reports finished, and the fleet listing loses it", async () => {
+    const agent = reconnecting();
+    let jobs = [fakeProcessJob({ conversationId: "web:placeholder" })];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({ supportsJobs: true, jobForRequest: () => jobs[0] }),
+    });
+    try {
+      const { threadId } = await carded(service);
+      jobs = [fakeProcessJob({
+        conversationId: `web:${threadId}`,
+        state: "succeeded",
+        wakeState: "delivered",
+      })];
+      const events: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+      unsubscribe();
+
+      const card = service.thread(threadId).messages[0]?.parts[0];
+      expect(card).toMatchObject({ type: "process-job", job: { state: "succeeded" } });
+      // Gone from both surfaces the stale card was showing up on.
+      expect(service.activeThreads()).toMatchObject({ threads: [], total: 0 });
+      expect(service.thread(threadId).thread.jobActivity)
+        .toMatchObject({ running: 0, latestTerminal: { state: "succeeded" } });
+      // An open console is told, exactly as a notification would have told it.
+      expect(events.filter((event) => event.type === "message.changed")).toHaveLength(1);
+      expect(events.some((event) => event.type === "thread.changed")).toBe(true);
+    } finally { await service.stop(); }
+  });
+
+  it("retires a card the agent no longer knows as interrupted, and says why", async () => {
+    const agent = reconnecting();
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({ supportsJobs: true, jobForRequest: () => undefined }),
+    });
+    try {
+      const { threadId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      expect(service.thread(threadId).messages[0]?.parts[0]).toMatchObject({
+        type: "process-job",
+        job: {
+          state: "interrupted",
+          lastError: { code: "process_job_agent_restarted" },
+        },
+      });
+      expect(service.activeThreads()).toMatchObject({ threads: [], total: 0 });
+    } finally { await service.stop(); }
+  });
+
+  it("leaves a card alone when the agent could not be asked", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => { throw new Error("connection reset"); },
+      }),
+    });
+    try {
+      const { threadId, jobId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      // The agent WAS asked, and answered with a transport failure. "This
+      // console could not ask" is not "the job ended".
+      expect(probes).toEqual([jobId]);
+      expect(service.thread(threadId).messages[0]?.parts[0])
+        .toMatchObject({ type: "process-job", job: { state: "running" } });
+      expect(service.activeThreads().threads.map((item) => item.id)).toEqual([threadId]);
+    } finally { await service.stop(); }
+  });
+
+  it("asks about a card once per sweep, and does not sweep a settled connection again", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => { throw new Error("connection reset"); },
+      }),
+    });
+    try {
+      const { jobId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+
+      // The connection did not move, and the slow floor has not passed.
+      await service.refreshAgents();
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves every card alone for an agent that does not support jobs", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => undefined,
+      }),
+    });
+    try {
+      const { threadId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      expect(probes).toEqual([]);
+      expect(service.activeThreads().threads.map((item) => item.id)).toEqual([threadId]);
+    } finally { await service.stop(); }
+  });
+});
