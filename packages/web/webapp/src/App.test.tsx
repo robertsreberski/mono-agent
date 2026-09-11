@@ -41,6 +41,7 @@ const storeMock = vi.hoisted(() => ({
   retry: vi.fn(),
   retrySelection: vi.fn(),
   hasServerSnapshot: true,
+  setConversationVisible: vi.fn(),
 }));
 
 vi.mock("./console-store", () => ({
@@ -203,6 +204,21 @@ describe("App mobile screens", () => {
     return found;
   };
   const openConversation = () => fireEvent.click(screen.getByRole("button", { name: "Open a conversation" }));
+
+  it("calls the conversation visible only while it is the screen being shown", () => {
+    storeMock.setConversationVisible.mockClear();
+    render(<App />);
+
+    // The chat region is mounted -- and inert, behind the dashboard. Nobody is
+    // looking at it, so nothing it holds may be marked read.
+    expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(false);
+
+    openConversation();
+    expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
+    expect(storeMock.setConversationVisible).toHaveBeenLastCalledWith(false);
+  });
 
   it("lands on the Dashboard, with the conversation pushed away and out of reach", () => {
     const { container } = render(<App />);

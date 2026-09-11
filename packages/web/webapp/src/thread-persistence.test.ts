@@ -339,7 +339,62 @@ describe("createThreadPersistence", () => {
     await tabA.clearAll();
 
     expect(await createThreadPersistence().hydrate())
-      .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+      .toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
+  });
+
+  it("keeps the highest revision two tabs have seen, whichever of them flushes last", async () => {
+    // Both tabs hydrated the same map. One looks at a conversation, the other
+    // -- still holding what it hydrated -- looks at a different one. Written
+    // wholesale, the second flush put the first tab's conversation back to the
+    // revision it was at before it was read, and the device showed it unread
+    // again on the next cold start.
+    const tabA = createThreadPersistence();
+    const tabB = createThreadPersistence();
+    await tabA.save({ entries: [], seen: [{ id: "one", revision: 1 }, { id: "two", revision: 1 }] });
+
+    await tabA.save({ entries: [], seen: [{ id: "one", revision: 2 }, { id: "two", revision: 1 }] });
+    await tabB.save({ entries: [], seen: [{ id: "one", revision: 1 }, { id: "two", revision: 2 }] });
+
+    const restored = await createThreadPersistence().hydrate();
+    expect(restored?.seen).toEqual([{ id: "one", revision: 2 }, { id: "two", revision: 2 }]);
+
+    // And back the other way, so this is a merge rather than an order.
+    await tabA.save({ entries: [], seen: [{ id: "one", revision: 3 }, { id: "two", revision: 1 }] });
+    expect((await createThreadPersistence().hydrate())?.seen)
+      .toEqual([{ id: "one", revision: 3 }, { id: "two", revision: 2 }]);
+    tabA.close();
+    tabB.close();
+  });
+
+  it("tells the other tabs on this device what it stored", async () => {
+    const tabA = createThreadPersistence();
+    const tabB = createThreadPersistence();
+    const heard: Array<readonly { id: string; revision: number }[]> = [];
+    const stop = tabB.subscribeSeen((seen) => { heard.push([...seen]); });
+
+    await tabA.save({ entries: [], seen: [{ id: "one", revision: 4 }] });
+    await vi.waitFor(() => { expect(heard).toHaveLength(1); });
+
+    // What it stored, not what it held: the tab that hears this adopts the same
+    // row its own next cold start would read.
+    expect(heard.at(0)).toEqual([{ id: "one", revision: 4 }]);
+    stop();
+    await tabA.save({ entries: [], seen: [{ id: "one", revision: 5 }] });
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+    expect(heard).toHaveLength(1);
+    tabA.close();
+    tabB.close();
+  });
+
+  it("keeps and reads the marker where the browser has no cross-tab signal", async () => {
+    const store = createThreadPersistence({ channel: () => null });
+
+    expect(store.subscribeSeen(() => undefined)).toBeTypeOf("function");
+    await store.save({ entries: [], seen: [{ id: "one", revision: 2 }] });
+
+    expect((await createThreadPersistence({ channel: () => null }).hydrate())?.seen)
+      .toEqual([{ id: "one", revision: 2 }]);
+    store.close();
   });
 
   it("drops the row for a conversation the cache stopped holding", async () => {
@@ -362,7 +417,7 @@ describe("createThreadPersistence", () => {
     await store.clearAll();
 
     const restored = await createThreadPersistence().hydrate();
-    expect(restored).toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+    expect(restored).toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
   });
 
   it("names the console that wrote what is stored", async () => {

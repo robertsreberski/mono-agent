@@ -23,6 +23,7 @@ import {
   writeDataModeSetting,
 } from "./data-mode";
 import { hasUnrecoverableComposerContent } from "./composer-draft";
+import { useDocumentVisible } from "./document-visibility";
 import { formatDataBytes, useDataUsage } from "./data-usage";
 import {
   hasHorizontalScrollAncestor,
@@ -361,6 +362,7 @@ export function App() {
     hasServerSnapshot,
     hasRunningThread,
     retry,
+    setConversationVisible,
   } = useConsoleStore();
   const [screen, setScreen] = useState<MobileScreen>(initialMobileScreen);
   const [mobile, setMobile] = useState(isMobileViewport);
@@ -374,6 +376,20 @@ export function App() {
   const agentSettingsRef = useRef<HTMLElement>(null);
   const drawerGestureRef = useRef<DrawerGestureStart | null>(null);
   const conversationOpen = mobile && screen === "conversation";
+  const documentVisible = useDocumentVisible();
+
+  /**
+   * Whether the operator is actually LOOKING at the conversation.
+   *
+   * The unread marker is cleared on this and not on the selection. On a phone
+   * the chat screen stays mounted behind the dashboard -- `inert`, out of the
+   * tab order, showing nobody anything -- and in a backgrounded tab neither
+   * screen is on show; a console that cleared the marker in either case would
+   * mark conversations read that nobody has opened.
+   */
+  useEffect(() => {
+    setConversationVisible(documentVisible && (!mobile || conversationOpen));
+  }, [conversationOpen, documentVisible, mobile, setConversationVisible]);
 
   const openConversation = useCallback(() => setScreen("conversation"), []);
   const showDashboard = useCallback(() => setScreen("dashboard"), []);

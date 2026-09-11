@@ -172,13 +172,100 @@ describe("composer drafts across app restarts", () => {
     for (let index = 0; index < 40; index += 1) {
       reopened.writeComposerDraft("alpha", `thread-${index}`, `draft ${index}`);
     }
+    // The flush merges with what is stored, a while after the app hydrated
+    // from it. The future stamp is still on the device; read as a fresher
+    // "now" than the edits, it would outrank all forty of them.
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
     reopened.flushComposerDrafts();
+    vi.useRealTimers();
 
     // The future-stamped draft is the one evicted, not the newest real edit.
     const reopenedAgain = await reopenApp();
     expect(reopenedAgain.readComposerDraft("alpha", "thread-39")).toBe("draft 39");
     expect(reopenedAgain.readComposerDraft("alpha", "wrong-clock")).toBe("");
     reopenedAgain.resetComposerDraft();
+  });
+
+  it("does not let a clock correction overwrite what another tab typed or sent since", async () => {
+    const key = JSON.stringify(["alpha", "wrong-clock"]);
+    const ahead = Date.now() + 60 * 60 * 1_000;
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: ahead }],
+    }));
+
+    // Between this tab's hydration and its flush, another tab edits the draft.
+    const edited = await reopenApp();
+    expect(edited.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "retyped in the other tab", updatedAt: Date.now() }],
+    }));
+    edited.writeComposerDraft("alpha", "elsewhere", "an unrelated draft");
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    edited.flushComposerDrafts();
+    vi.useRealTimers();
+    expect(storedDocument().drafts.find((draft) => draft.key === key)?.text).toBe("retyped in the other tab");
+    edited.resetComposerDraft();
+
+    // ...or sends it.
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: ahead }],
+    }));
+    const sent = await reopenApp();
+    expect(sent.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+    localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    sent.writeComposerDraft("alpha", "elsewhere", "an unrelated draft");
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    sent.flushComposerDrafts();
+    vi.useRealTimers();
+    expect(storedDocument().drafts.map((draft) => draft.key)).toEqual([JSON.stringify(["alpha", "elsewhere"])]);
+    sent.resetComposerDraft();
+
+    // ...or retypes the very same words, with a real stamp: that edit's time
+    // is the other tab's to keep, not this tab's to roll back.
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: ahead }],
+    }));
+    const retyped = await reopenApp();
+    expect(retyped.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+    const realStamp = Date.now() + 1_000;
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: realStamp }],
+    }));
+    retyped.writeComposerDraft("alpha", "elsewhere", "an unrelated draft");
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    retyped.flushComposerDrafts();
+    vi.useRealTimers();
+    expect(storedDocument().drafts.find((draft) => draft.key === key)).toEqual({
+      key, text: "written while the clock was ahead", updatedAt: realStamp,
+    });
+    retyped.resetComposerDraft();
+  });
+
+  it("keeps the stored draft when the device refuses a clock correction alone", async () => {
+    const key = JSON.stringify(["alpha", "wrong-clock"]);
+    const document = JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: Date.now() + 60 * 60 * 1_000 }],
+    });
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, document);
+    const reopened = await reopenApp();
+    expect(reopened.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+
+    // Nothing was typed here; only the stamp would change. A full device says
+    // no to that write, and the answer must not be to remove the draft.
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Quota exceeded.", "QuotaExceededError");
+    });
+    reopened.flushComposerDrafts();
+    setItem.mockRestore();
+    expect(localStorage.getItem(COMPOSER_DRAFTS_STORAGE_KEY)).toBe(document);
+    expect(reopened.hasUnrecoverableComposerContent()).toBe(false);
+    reopened.resetComposerDraft();
   });
 
   it("discards a malformed stored document instead of failing to start", async () => {

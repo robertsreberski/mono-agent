@@ -17,7 +17,7 @@ import { agentInitials, agentShortLabel } from "./dashboard-model";
 export function AgentStrip({
   runningCounts,
 }: {
-  /** Cached conversations with work in flight, per agent; drawn as a badge. */
+  /** Conversations with work in flight, per agent; drawn as a badge. */
   readonly runningCounts?: ReadonlyMap<string, number>;
 } = {}) {
   const {
@@ -27,6 +27,7 @@ export function AgentStrip({
     showOfflineAgents,
     selectAgent,
     setShowOfflineAgents,
+    unreadCountByAgent,
   } = useConsoleStore();
 
   return (
@@ -36,19 +37,30 @@ export function AgentStrip({
           const pinned = Boolean(agent.pinned);
           const selected = selectedAgentId === agent.sourceId;
           const running = runningCounts?.get(agent.sourceId) ?? 0;
+          // Work in flight WINS the corner. Both at once would be two numbers
+          // in one 16-pixel circle, and what is happening right now is the more
+          // urgent of the two; the unread count is still there underneath, and
+          // comes back the moment the work finishes.
+          const unread = running > 0 ? 0 : unreadCountByAgent.get(agent.sourceId) ?? 0;
+          const badge = running > 0 ? running : unread;
           return (
             <div className={`agent-chip${selected ? " is-selected" : ""}`} role="listitem" key={agent.sourceId}>
               <button
                 type="button"
                 className={`agent-chip-square is-${agent.status}${selected ? " is-active" : ""}`}
                 aria-pressed={selected}
-                aria-label={`${agent.label}, ${agent.status}${pinned ? ", pinned" : ""}${running > 0 ? `, ${String(running)} running` : ""}`}
+                aria-label={`${agent.label}, ${agent.status}${pinned ? ", pinned" : ""}${running > 0 ? `, ${String(running)} running` : ""}${unread > 0 ? `, ${String(unread)} unread` : ""}`}
                 title={`${agent.label} · ${agent.status}`}
                 onClick={() => selectAgent(agent.sourceId)}
               >
                 <span className="agent-chip-initials">{agentInitials(agent.label)}</span>
-                {running > 0 && (
-                  <span className="agent-chip-badge" aria-hidden="true">{running}</span>
+                {badge > 0 && (
+                  <span
+                    className={`agent-chip-badge${running > 0 ? "" : " is-unread"}`}
+                    aria-hidden="true"
+                  >
+                    {badge}
+                  </span>
                 )}
               </button>
               <span className="agent-chip-label" title={agent.label}>{agentShortLabel(agent.label)}</span>

@@ -24,6 +24,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import {
+  WEB_ACTIVE_THREAD_LIMIT,
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
@@ -47,6 +48,8 @@ import {
   type WebMessagePage,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
+  type WebActiveThreads,
+  type WebRunActivity,
   type WebRunState,
   type WebRunAttribution,
   type WebRunExecution,
@@ -66,6 +69,7 @@ import {
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
 import { WebConsoleError } from "./errors.js";
+import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
@@ -296,6 +300,21 @@ interface MessageRow {
   seq: number;
   /** `turns.finished_at`, when the query joined the turn; a single-row read looks it up instead. */
   turn_finished_at?: string | null;
+}
+
+/** A settled turn that may carry a conversation's prior meaningful outcome. */
+interface PriorOutcomeRow {
+  thread_id: string;
+  id: string;
+  status: string;
+  finished_at: string | null;
+  assistant_message_id: string;
+  started_at: string;
+  /** `turns.rowid`, so the candidate read can break a shared start stamp. */
+  ordinal: number;
+  has_user: number;
+  /** Whether a completed host-owned Monitor delivery claims this turn. */
+  claimed: number;
 }
 
 interface TurnRow {
@@ -587,6 +606,13 @@ export function escapeLikeTerm(raw: string): string {
 }
 
 const MAX_REVISIONS_PER_THREAD = 1_000;
+
+/**
+ * The Unicode whitespace SQLite's `trim` must strip for a candidate's reply
+ * text to be judged empty the same way JavaScript's `trim()` judges it.
+ */
+const OUTCOME_TEXT_TRIM = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
+  + "\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
 export const WEB_THREAD_PAGE_MAX = 200;
 /**
  * What one page is when the caller does not say.
@@ -684,6 +710,14 @@ export interface StoredMessageWrite {
   readonly message: WebMessage;
   readonly delta?: WebMessageDelta;
   readonly attributionChanged?: true;
+  /**
+   * The run's bounded {@link WebRunActivity} projection MOVED with this write.
+   *
+   * Set only when the status line a card draws would now read differently, so
+   * the announcement the service makes from it is a semantic change rather than
+   * a per-delta heartbeat.
+   */
+  readonly activityChanged?: true;
 }
 
 /**
@@ -2594,7 +2628,7 @@ export class WebStore {
     const pageRows = rows.slice(0, limit);
     const last = pageRows.at(-1);
     return {
-      threads: pageRows.map((row) => this.mapThread(row)),
+      threads: this.mapThreads(pageRows),
       ...(hasMore && last !== undefined
         ? { nextCursor: encodeCursor({
             updatedAt: last.updated_at,
@@ -2719,6 +2753,72 @@ export class WebStore {
       truncated: messageRows.length > MESSAGE_SEARCH_SCAN_LIMIT
         || titleRows.length > limit
         || ordering.length > hits.length,
+    };
+  }
+
+  /**
+   * Every conversation in the store with work in flight, whichever agent owns
+   * it -- bounded, and counted before it is bounded.
+   *
+   * The console's Running section used to be built from whatever the browser
+   * happened to be holding, so a turn on an agent that tab had never opened was
+   * invisible and an empty section proved nothing. This is the server's answer
+   * to the same question, and it is the only listing here that crosses agents
+   * and archive buckets: "what is running" is not a question about either.
+   *
+   * Membership is ONE relation, so the cards and the badges can never disagree:
+   * a conversation with a running foreground turn, or with a retained process
+   * job that is queued, starting or running. `UNION` is what deduplicates a
+   * conversation that is both. The join to `agents` is the discovery filter --
+   * a conversation retained for a source id discovery no longer reports has
+   * nowhere to be drawn, so it is not counted either.
+   *
+   * The counts come off the whole relation and the cards off its first
+   * {@link WEB_ACTIVE_THREAD_LIMIT} rows. A count that obeyed the cap would
+   * report a busy fleet as a quiet one, which is the failure this replaces.
+   */
+  listActiveThreads(): WebActiveThreads {
+    const rows = this.database.prepare(`
+      WITH active AS (
+        SELECT thread_id FROM turns WHERE status = 'running'
+        UNION
+        SELECT c.thread_id
+          FROM messages m
+          JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
+          JOIN json_each(m.parts_json) part
+         WHERE json_extract(part.value, '$.type') = 'process-job'
+           AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+      )
+      SELECT t.id AS id, t.source_id AS source_id
+        FROM active a
+        JOIN threads t ON t.id = a.thread_id
+        JOIN agents ag ON ag.source_id = t.source_id AND ag.discovered = 1
+       ORDER BY t.updated_at DESC, t.id DESC
+    `).all() as unknown as Array<{ id: string; source_id: string }>;
+    // Seeded with a zero for every discovered agent: a key that is simply
+    // missing cannot be told apart from an agent the listing forgot, and the
+    // badge a console draws from it would go blank rather than read nought.
+    const runningCounts: Record<string, number> = Object.fromEntries(
+      (this.database.prepare("SELECT source_id FROM agents WHERE discovered = 1")
+        .all() as unknown as Array<{ source_id: string }>).map((row) => [row.source_id, 0]),
+    );
+    for (const row of rows) runningCounts[row.source_id] = (runningCounts[row.source_id] ?? 0) + 1;
+    // The cards are read as ONE set, in the order the active relation gave
+    // them: a section refreshed about once a second cannot afford to expand
+    // fifty conversations one at a time. See `mapThreads`.
+    const carded = rows.slice(0, WEB_ACTIVE_THREAD_LIMIT).map((row) => row.id);
+    const byId = new Map((this.database
+      .prepare(threadSelectSql("WHERE t.id IN (SELECT value FROM json_each(?))"))
+      .all(JSON.stringify(carded)) as unknown as ThreadRow[]).map((row) => [row.id, row]));
+    const threads = this.mapThreads(carded.flatMap((id) => {
+      const row = byId.get(id);
+      return row === undefined ? [] : [row];
+    }));
+    return {
+      threads,
+      total: rows.length,
+      truncated: rows.length > WEB_ACTIVE_THREAD_LIMIT,
+      runningCounts,
     };
   }
 
@@ -3815,9 +3915,19 @@ export class WebStore {
           turnId,
         );
       }
+      // Diffed on the parts already in hand, before and after: a text delta
+      // moves neither the tool-call count nor the phase nor the cost, and it is
+      // what nearly every one of these writes is. Announcing the projection per
+      // flush would put a `turn.changed` on every connected console several
+      // times a second for a status line that changes a handful of times a run.
+      const activityChanged = !sameRunActivity(
+        runActivityFromParts(message.parts),
+        runActivityFromParts(parts),
+      );
       return {
         delta: this.writeMessageDelta(message, parts, this.now()),
         ...(attributionChanged ? { attributionChanged: true as const } : {}),
+        ...(activityChanged ? { activityChanged: true as const } : {}),
       };
     });
     return { message: this.requireMessage(turn.assistant_message_id), ...write };
@@ -5222,37 +5332,60 @@ export class WebStore {
   }
 
   private mapThread(row: ThreadRow): WebThread {
-    const runState = this.latestRunState(row.id);
-    const preview = this.lastMessagePreview(row.id);
-    const jobActivity = this.jobActivity(row.id);
-    return {
-      id: row.id,
-      sourceId: row.source_id,
-      title: row.title,
-      archivedAt: row.archived_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      revision: row.revision,
-      ...(row.trigger_kind === "cron"
-        ? {
-            trigger: {
-              kind: "cron" as const,
-              ...(row.cron_job_id === null ? {} : { jobId: row.cron_job_id }),
-              ...(row.cron_configured === null ? {} : { configured: row.cron_configured === 1 }),
-            },
-          }
-        : row.trigger_kind === "webhook"
-          ? { trigger: { kind: "webhook" as const } }
-          : {}),
-      ...(preview === undefined ? {} : { lastMessagePreview: preview }),
-      messageCount: row.message_count,
-      runState,
-      ...(jobActivity === undefined ? {} : { jobActivity }),
-      canSend: row.can_send === 1,
-      canUpload: row.can_upload === 1,
-      runModel: row.run_model,
-      runEffort: row.run_effort,
-    };
+    return this.mapThreads([row])[0] as WebThread;
+  }
+
+  /**
+   * Project conversation rows with a number of statements that does not grow
+   * with how many rows there are.
+   *
+   * Every listing used to expand its rows one at a time -- latest turn, prior
+   * outcome, last message, job cards, run activity -- so a fifty-card Running
+   * section cost hundreds of statements, and stream invalidation asks for that
+   * section about once a second. Each reader below is keyed by the whole id set
+   * instead, including the deep-history path that used to drop back to a
+   * single thread: one card and fifty cards issue the same statements, however
+   * deep any card's silent history runs. The order is the caller's, because
+   * only the caller knows what the listing is ordered by.
+   */
+  private mapThreads(rows: readonly ThreadRow[]): WebThread[] {
+    if (rows.length === 0) return [];
+    const ids = rows.map((row) => row.id);
+    const runStates = this.latestRunStates(ids);
+    const previews = this.lastMessagePreviews(ids);
+    const jobActivities = this.jobActivities(ids);
+    return rows.map((row) => {
+      const preview = previews.get(row.id);
+      const jobActivity = jobActivities.get(row.id);
+      return {
+        id: row.id,
+        sourceId: row.source_id,
+        title: row.title,
+        archivedAt: row.archived_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        revision: row.revision,
+        ...(row.trigger_kind === "cron"
+          ? {
+              trigger: {
+                kind: "cron" as const,
+                ...(row.cron_job_id === null ? {} : { jobId: row.cron_job_id }),
+                ...(row.cron_configured === null ? {} : { configured: row.cron_configured === 1 }),
+              },
+            }
+          : row.trigger_kind === "webhook"
+            ? { trigger: { kind: "webhook" as const } }
+            : {}),
+        ...(preview === undefined ? {} : { lastMessagePreview: preview }),
+        messageCount: row.message_count,
+        runState: runStates.get(row.id) ?? { status: "idle" },
+        ...(jobActivity === undefined ? {} : { jobActivity }),
+        canSend: row.can_send === 1,
+        canUpload: row.can_upload === 1,
+        runModel: row.run_model,
+        runEffort: row.run_effort,
+      };
+    });
   }
 
   /**
@@ -5411,127 +5544,261 @@ export class WebStore {
     return turn?.finished_at ?? undefined;
   }
 
-  private latestRunState(threadId: string): WebRunState {
-    const row = this.database.prepare("SELECT * FROM turns WHERE thread_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as unknown as TurnRow | undefined;
-    if (row === undefined) return { status: "idle" };
-    const status = normalizeRunStatus(row.status);
-    const attribution = runAttribution(row);
-    // Successful assistant-only turns without visible reply content are host
-    // no-ops, not a new conversation outcome. Keep their real run state while
-    // projecting the prior meaningful outcome for status priority. Derive this
-    // from retained provenance/normalized parts so old stores need no migration.
-    // Match hasMonitorReplyContent without loading transcript bodies into lists.
-    const candidates = status === "complete" ? this.database.prepare(`
-      SELECT t.id, t.status, t.finished_at, t.assistant_message_id,
-        EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
-      FROM turns t
-      WHERE t.thread_id = ? AND t.status <> 'running' AND (
-        t.status <> 'complete'
-        OR EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user')
-        OR EXISTS (
-          SELECT 1 FROM messages m, json_each(m.parts_json) p
-          WHERE m.id = t.assistant_message_id AND (
-            json_extract(p.value, '$.type') IN ('attachment', 'mcp_app', 'failure')
-            OR (json_extract(p.value, '$.type') = 'text'
-              AND length(trim(json_extract(p.value, '$.text'), ?)) > 0)
-          )
-        )
-      ) ORDER BY t.started_at DESC, t.rowid DESC
-    `).iterate(threadId, "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff") : [];
-    let outcome: { id: string; status: string; finished_at: string | null } | undefined;
-    for (const rawCandidate of candidates) {
-      const candidate = rawCandidate as unknown as { id: string; status: string; finished_at: string | null;
-        assistant_message_id: string; has_user: number };
-      // Legacy Monitor rows retain raw sentinel bytes and normalize only on
-      // read. Inspect one associated candidate at a time, never materialize the
-      // transcript or rewrite history merely to derive sidebar status.
-      if (candidate.status === "complete" && candidate.has_user === 0 && this.hasMonitorTurnAssociation(candidate.id)) {
-        const message = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
-          .get(candidate.assistant_message_id) as { parts_json: string };
-        if (!hasMonitorReplyContent(normalizeMonitorTerminalReply(parseParts(message.parts_json)).parts)) continue;
-      }
-      outcome = candidate;
-      break;
+  /** The newest turn of each listed conversation, by thread id. */
+  private latestRunStates(threadIds: readonly string[]): Map<string, WebRunState> {
+    const latest = this.database.prepare(`
+      SELECT * FROM (
+        SELECT t.*, ROW_NUMBER() OVER (
+          PARTITION BY t.thread_id ORDER BY t.started_at DESC, t.rowid DESC
+        ) AS rn
+        FROM turns t WHERE t.thread_id IN (SELECT value FROM json_each(?))
+      ) WHERE rn = 1
+    `).all(JSON.stringify(threadIds)) as unknown as TurnRow[];
+    const outcomes = this.priorOutcomes(latest.filter((row) => normalizeRunStatus(row.status) === "complete"));
+    // The newest turn IS the foreground turn, so a running one is the only run
+    // whose activity the console can be watching. A terminal turn gets none at
+    // all: see `WebRunState.activity`.
+    const activities = this.runActivities(latest.flatMap((row) =>
+      normalizeRunStatus(row.status) === "running" ? [row.assistant_message_id] : []));
+    const states = new Map<string, WebRunState>();
+    for (const row of latest) {
+      const status = normalizeRunStatus(row.status);
+      const attribution = runAttribution(row);
+      const outcome = outcomes.get(row.thread_id);
+      const lastOutcome = status !== "complete" || outcome?.id === row.id ? undefined
+        : outcome === undefined ? null : {
+          status: normalizeRunStatus(outcome.status),
+          ...(outcome.finished_at === null ? {} : { finishedAt: outcome.finished_at }),
+        };
+      states.set(row.thread_id, {
+        id: row.id,
+        status,
+        startedAt: row.started_at,
+        ...(lastOutcome === undefined ? {} : { lastOutcome }),
+        ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+        ...(row.error_message === null
+          ? {}
+          : { error: { ...(row.error_code === null ? {} : { code: row.error_code }), message: row.error_message } }),
+        ...(row.model === null ? {} : { model: row.model }),
+        ...(row.effort === null ? {} : { effort: row.effort }),
+        ...(attribution === undefined ? {} : { attribution }),
+        ...(status === "running"
+          ? { activity: activities.get(row.assistant_message_id) ?? runActivityFromParts([]) }
+          : {}),
+      });
     }
-    const lastOutcome = status !== "complete" || outcome?.id === row.id ? undefined
-      : outcome === undefined ? null : {
-        status: normalizeRunStatus(outcome.status),
-        ...(outcome.finished_at === null ? {} : { finishedAt: outcome.finished_at }),
-      };
-    return {
-      id: row.id,
-      status,
-      startedAt: row.started_at,
-      ...(lastOutcome === undefined ? {} : { lastOutcome }),
-      ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
-      ...(row.error_message === null
-        ? {}
-        : { error: { ...(row.error_code === null ? {} : { code: row.error_code }), message: row.error_message } }),
-      ...(row.model === null ? {} : { model: row.model }),
-      ...(row.effort === null ? {} : { effort: row.effort }),
-      ...(attribution === undefined ? {} : { attribution }),
-    };
+    return states;
   }
 
-  private lastMessagePreview(threadId: string): string | undefined {
-    const row = this.database.prepare(`SELECT * FROM messages WHERE thread_id = ? AND ${visibleMessageSql("messages")} ORDER BY created_at DESC, rowid DESC LIMIT 1`)
-      .get(threadId) as unknown as MessageRow | undefined;
-    if (row === undefined) return undefined;
-    const text = this.mapMessage(row).parts
-      .flatMap((part) => part.type === "text" ? [part.text]
-        : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
-      .join(" ")
-      .replace(/\s+/gu, " ")
-      .trim();
-    return text.length === 0 ? undefined : text.slice(0, 160);
+  /**
+   * The prior meaningful outcome of each settled conversation, by thread id.
+   *
+   * Successful assistant-only turns without visible reply content are host
+   * no-ops, not a new conversation outcome. Keep their real run state while
+   * projecting the prior meaningful outcome for status priority. Derive this
+   * from retained provenance/normalized parts so old stores need no migration.
+   * Match hasMonitorReplyContent without loading transcript bodies into lists.
+   *
+   * Two statements, whatever the listing holds and however deep its silence
+   * runs. Only a turn a completed Monitor delivery claims can be a no-op, and
+   * the candidate read knows which those are: it returns, for every thread at
+   * once, each candidate down to and including the first one nothing can
+   * silence. A second statement reads the parts of the claimed ones. Legacy
+   * rows keep their raw sentinel bytes and normalize only on read, so that
+   * read is the one place a silent turn is told apart from an answer.
+   */
+  private priorOutcomes(latest: readonly TurnRow[]): Map<string, PriorOutcomeRow> {
+    const threadIds = [...new Set(latest.map((row) => row.thread_id))];
+    if (threadIds.length === 0) return new Map();
+    const candidates = this.priorOutcomeCandidates(threadIds);
+    const noOps = this.monitorNoOpTurnIds(candidates);
+    const outcomes = new Map<string, PriorOutcomeRow>();
+    for (const candidate of candidates) {
+      if (!outcomes.has(candidate.thread_id) && !noOps.has(candidate.id)) {
+        outcomes.set(candidate.thread_id, candidate);
+      }
+    }
+    return outcomes;
   }
 
-  private jobActivity(threadId: string): WebJobActivity | undefined {
-    // Read only retained job cards, including those behind the message page.
-    // Aggregate in SQLite so neither transcripts nor output tails are loaded
-    // into the listing. These rows already advance the thread's revision.
-    const row = this.database.prepare(`
+  /**
+   * Every candidate of these threads that could still be the outcome, newest
+   * first within each thread.
+   *
+   * A candidate with a user message, an unsuccessful one, or one no Monitor
+   * delivery claims settles its thread on the spot; the read stops at it and
+   * carries only the claimed assistant-only completions above it, which are the
+   * only rows whose parts have to be asked.
+   */
+  private priorOutcomeCandidates(threadIds: readonly string[]): PriorOutcomeRow[] {
+    return this.database.prepare(`
+      SELECT thread_id, id, status, finished_at, assistant_message_id, started_at, ordinal, has_user, claimed
+      FROM (
+        SELECT r.*, MIN(CASE WHEN r.settles THEN r.rn END) OVER (PARTITION BY r.thread_id) AS settled_rn
+        FROM (
+          SELECT c.*,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
+                 ) AS rn,
+                 (c.status <> 'complete' OR c.has_user = 1 OR c.claimed = 0) AS settles
+          FROM (${priorOutcomeCandidateSql()}) c
+        ) r
+      ) WHERE settled_rn IS NULL OR rn <= settled_rn
+      ORDER BY thread_id, rn
+    `).all(JSON.stringify(threadIds), OUTCOME_TEXT_TRIM) as unknown as PriorOutcomeRow[];
+  }
+
+  /**
+   * Which of these candidates are Monitor no-ops, in one statement.
+   *
+   * Legacy Monitor rows retain raw sentinel bytes and normalize only on read, so
+   * the answer needs their parts -- but only for the candidates a host-owned
+   * delivery actually claims, which is a small fraction of any listing. Nothing
+   * here materializes a transcript or rewrites history to derive sidebar status.
+   */
+  private monitorNoOpTurnIds(candidates: readonly PriorOutcomeRow[]): Set<string> {
+    const claimed = candidates.filter((row) => row.status === "complete" && row.has_user === 0 && row.claimed === 1);
+    const parts = this.messageParts(claimed.map((row) => row.assistant_message_id));
+    return new Set(claimed.flatMap((row) => hasMonitorReplyContent(
+      normalizeMonitorTerminalReply(parts.get(row.assistant_message_id) ?? []).parts,
+    ) ? [] : [row.id]));
+  }
+
+  /**
+   * Which of these turns a host-owned Monitor delivery claims, in one statement.
+   *
+   * The batched readers never resolve an in-flight receipt by delivery key --
+   * that is {@link WebStore.hasMonitorTurnAssociation}'s single-turn question --
+   * so this asks only about deliveries that completed by steering or following
+   * up.
+   */
+  private monitorAssociatedTurnIds(turnIds: readonly string[]): Set<string> {
+    if (turnIds.length === 0) return new Set();
+    const rows = this.database.prepare(`
+      SELECT DISTINCT turns.id AS id FROM monitor_wake_deliveries AS deliveries
+      JOIN turns ON turns.id IN (SELECT value FROM json_each(?)) AND turns.thread_id = deliveries.thread_id
+      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
+      WHERE deliveries.state = 'completed' AND deliveries.turn_id = turns.id
+        AND deliveries.disposition IN ('steered', 'follow_up')
+    `).all(JSON.stringify(turnIds)) as unknown as Array<{ id: string }>;
+    return new Set(rows.map((row) => row.id));
+  }
+
+  /** The stored parts of these messages, by message id, in one statement. */
+  private messageParts(messageIds: readonly string[]): Map<string, WebMessagePart[]> {
+    if (messageIds.length === 0) return new Map();
+    const rows = this.database.prepare(
+      "SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))",
+    ).all(JSON.stringify(messageIds)) as unknown as Array<{ id: string; parts_json: string }>;
+    return new Map(rows.map((row) => [row.id, parseParts(row.parts_json)]));
+  }
+
+  /**
+   * The bounded status-line projection of each running assistant message.
+   *
+   * Reads the parts of those rows and nothing else. The same messages are their
+   * threads' newest, so `lastMessagePreviews` is already reading them for every
+   * listed conversation; this adds no transcript to a listing that was not being
+   * read anyway. Deliberately not aggregated in SQL: the AskUser rule normalizes
+   * a tool name that arrives spelled three ways, and one shared reading of it in
+   * `run-activity.ts` is worth more than saving a parse.
+   */
+  private runActivities(assistantMessageIds: readonly string[]): Map<string, WebRunActivity> {
+    return new Map([...this.messageParts(assistantMessageIds)]
+      .map(([id, parts]) => [id, runActivityFromParts(parts)]));
+  }
+
+  /**
+   * The newest visible message of each listed conversation, as preview prose.
+   *
+   * Only the prose is wanted, so this reads the rows themselves rather than
+   * mapping whole messages: a preview never needed a listing to fetch every
+   * conversation's attachments, turn row and finish stamp. The one thing a raw
+   * row does not already say is whether a settled assistant reply was a Monitor
+   * no-op, and that is asked about all of them at once.
+   */
+  private lastMessagePreviews(threadIds: readonly string[]): Map<string, string> {
+    const rows = this.database.prepare(`
+      SELECT * FROM (
+        SELECT m.*, ROW_NUMBER() OVER (
+          PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
+        ) AS rn
+        FROM messages m
+        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")}
+      ) WHERE rn = 1
+    `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
+    const monitor = this.monitorAssociatedTurnIds(rows.flatMap((row) =>
+      row.role === "assistant" && row.status === "complete" && row.turn_id !== null ? [row.turn_id] : []));
+    const previews = new Map<string, string>();
+    for (const row of rows) {
+      const stored = parseParts(row.parts_json);
+      const parts = row.turn_id !== null && monitor.has(row.turn_id)
+        ? normalizeMonitorTerminalReply(stored).parts : stored;
+      const text = parts
+        .flatMap((part) => part.type === "text" ? [part.text]
+          : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
+        .join(" ")
+        .replace(/\s+/gu, " ")
+        .trim();
+      if (text.length > 0) previews.set(row.thread_id, text.slice(0, 160));
+    }
+    return previews;
+  }
+
+  /**
+   * The retained job-card activity of each listed conversation, by thread id.
+   *
+   * Reads only retained job cards, including those behind the message page.
+   * Aggregates in SQLite so neither transcripts nor output tails are loaded into
+   * the listing. These rows already advance their thread's revision.
+   */
+  private jobActivities(threadIds: readonly string[]): Map<string, WebJobActivity> {
+    const rows = this.database.prepare(`
       WITH jobs AS (
-        SELECT json_extract(part.value, '$.job.state') AS state,
+        SELECT m.thread_id AS thread_id,
+               json_extract(part.value, '$.job.state') AS state,
                json_extract(part.value, '$.job.timestamps.completedAt') AS completed_at,
                c.response_text, m.rowid AS ordinal
         FROM messages m
         JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
         JOIN json_each(m.parts_json) part
-        WHERE m.thread_id = ? AND json_extract(part.value, '$.type') = 'process-job'
+        WHERE m.thread_id IN (SELECT value FROM json_each(?))
+          AND json_extract(part.value, '$.type') = 'process-job'
       )
-      SELECT count(*) AS total,
-             count(*) FILTER (WHERE state = 'queued') AS queued,
-             count(*) FILTER (WHERE state = 'starting') AS starting,
-             count(*) FILTER (WHERE state = 'running') AS running,
-             (SELECT json_object('state', state, 'completedAt', completed_at, 'reply', response_text)
-              FROM jobs WHERE completed_at IS NOT NULL
-              ORDER BY julianday(completed_at) DESC, (state <> 'succeeded') DESC, ordinal DESC
+      SELECT g.thread_id AS thread_id,
+             count(*) FILTER (WHERE g.state = 'queued') AS queued,
+             count(*) FILTER (WHERE g.state = 'starting') AS starting,
+             count(*) FILTER (WHERE g.state = 'running') AS running,
+             (SELECT json_object('state', j.state, 'completedAt', j.completed_at, 'reply', j.response_text)
+              FROM jobs j WHERE j.thread_id = g.thread_id AND j.completed_at IS NOT NULL
+              ORDER BY julianday(j.completed_at) DESC, (j.state <> 'succeeded') DESC, j.ordinal DESC
               LIMIT 1) AS latest_terminal
-      FROM jobs
-    `).get(threadId) as unknown as {
-      total: number; queued: number; starting: number; running: number; latest_terminal: string | null;
-    };
-    if (row.total === 0) return undefined;
-    const terminal = row.latest_terminal === null ? undefined : JSON.parse(row.latest_terminal) as {
-      state: NonNullable<WebJobActivity["latestTerminal"]>["state"];
-      completedAt: string;
-      reply: string | null;
-    };
-    const replyPreview = terminal?.reply?.replace(/\s+/gu, " ").trim().slice(0, 160);
-    return {
-      queued: row.queued,
-      starting: row.starting,
-      running: row.running,
-      ...(terminal === undefined ? {} : {
-        latestTerminal: {
-          state: terminal.state,
-          completedAt: terminal.completedAt,
-          ...(replyPreview ? { replyPreview } : {}),
-        },
-      }),
-    };
+      FROM jobs g GROUP BY g.thread_id
+    `).all(JSON.stringify(threadIds)) as unknown as Array<{
+      thread_id: string; queued: number; starting: number; running: number; latest_terminal: string | null;
+    }>;
+    const activities = new Map<string, WebJobActivity>();
+    for (const row of rows) {
+      const terminal = row.latest_terminal === null ? undefined : JSON.parse(row.latest_terminal) as {
+        state: NonNullable<WebJobActivity["latestTerminal"]>["state"];
+        completedAt: string;
+        reply: string | null;
+      };
+      const replyPreview = terminal?.reply?.replace(/\s+/gu, " ").trim().slice(0, 160);
+      activities.set(row.thread_id, {
+        queued: row.queued,
+        starting: row.starting,
+        running: row.running,
+        ...(terminal === undefined ? {} : {
+          latestTerminal: {
+            state: terminal.state,
+            completedAt: terminal.completedAt,
+            ...(replyPreview ? { replyPreview } : {}),
+          },
+        }),
+      });
+    }
+    return activities;
   }
 
   private cronChannel(sourceId: string, jobId: string): CronChannelRow | undefined {
@@ -5940,6 +6207,42 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Settled turns that could be a conversation's prior meaningful outcome, for
+ * whichever conversations the bound id set names.
+ *
+ * The predicate is the cheap half of the question: it excludes a successful
+ * assistant-only turn with no visible reply content without reading any
+ * transcript. Whether the visible content it did find is a Monitor sentinel is
+ * the expensive half, and only the rows this returns are ever asked.
+ */
+function priorOutcomeCandidateSql(): string {
+  return `
+    SELECT t.thread_id, t.id, t.status, t.finished_at, t.assistant_message_id,
+           t.started_at, t.rowid AS ordinal,
+           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user,
+           EXISTS (
+             SELECT 1 FROM monitor_wake_deliveries d
+             JOIN threads th ON th.id = t.thread_id AND th.source_id = d.source_id
+             WHERE d.thread_id = t.thread_id AND d.turn_id = t.id AND d.state = 'completed'
+               AND d.disposition IN ('steered', 'follow_up')
+           ) AS claimed
+    FROM turns t
+    WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND t.status <> 'running' AND (
+      t.status <> 'complete'
+      OR EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user')
+      OR EXISTS (
+        SELECT 1 FROM messages m, json_each(m.parts_json) p
+        WHERE m.id = t.assistant_message_id AND (
+          json_extract(p.value, '$.type') IN ('attachment', 'mcp_app', 'failure')
+          OR (json_extract(p.value, '$.type') = 'text'
+            AND length(trim(json_extract(p.value, '$.text'), ?)) > 0)
+        )
+      )
+    )
+  `;
 }
 
 function threadSelectSql(suffix: string): string {

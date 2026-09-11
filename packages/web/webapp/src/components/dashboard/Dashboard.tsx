@@ -23,6 +23,7 @@ import { RunningSection } from "./RunningSection";
  */
 export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) {
   const {
+    activeThreads,
     agents,
     cachedRunningThreads,
     navigationDestination,
@@ -50,15 +51,43 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
   // The field means something else under the other chip.
   useEffect(() => { setQuery(""); }, [navigationDestination]);
 
-  const groups = useMemo(
-    () => groupRunningThreads(mergeRunningThreads(cachedRunningThreads, threads), agents),
-    [agents, cachedRunningThreads, threads],
+  /**
+   * The server's answer while it stands, and only then.
+   *
+   * Authoritative, it IS the section: it covers agents this browser has never
+   * opened and conversations past every loaded page, and an empty one means the
+   * fleet is idle. Without it -- no stream, a failed read, a cold start off the
+   * device -- the section falls back to the last listing heard plus what this
+   * tab is holding, and says so.
+   */
+  const authoritative = activeThreads?.authoritative === true;
+  const running = useMemo(
+    () => authoritative && activeThreads !== null
+      ? activeThreads.threads
+      : mergeRunningThreads(
+          cachedRunningThreads,
+          [...(activeThreads?.threads ?? []), ...threads],
+        ),
+    [activeThreads, authoritative, cachedRunningThreads, threads],
   );
-  // The badge on each agent's square: how many of ITS conversations this
-  // browser is holding with work in flight. Same source, same honesty.
+  const groups = useMemo(
+    () => groupRunningThreads(running, agents),
+    [agents, running],
+  );
+  /**
+   * The badge on each agent's square.
+   *
+   * The server's per-agent count when there is one standing behind it --
+   * counted over everything that qualifies, not over the cards, so a truncated
+   * section still badges the right number. In fallback the badge counts what is
+   * actually drawn beneath it, because a last-known total beside a shorter list
+   * of cards is a contradiction the operator cannot resolve.
+   */
   const runningCounts = useMemo(
-    () => new Map(groups.map((group) => [group.agent.sourceId, group.threads.length])),
-    [groups],
+    () => authoritative && activeThreads !== null
+      ? new Map(Object.entries(activeThreads.runningCounts))
+      : new Map(groups.map((group) => [group.agent.sourceId, group.threads.length])),
+    [activeThreads, authoritative, groups],
   );
 
   const toggleAgentExpansion = useCallback((sourceId: string) => {
@@ -97,6 +126,10 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
           expandedAgentIds={expandedAgentIds}
           onToggleAgent={toggleAgentExpansion}
           onOpen={openRunning}
+          {...(authoritative && activeThreads !== null
+            ? { total: activeThreads.total, truncated: activeThreads.truncated }
+            : {})}
+          authoritative={authoritative}
         />
         {/* Projects will take the labelled section between Running and Recent. */}
         <RecentSection

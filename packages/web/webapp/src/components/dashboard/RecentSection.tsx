@@ -21,9 +21,12 @@ import {
 
 function ThreadListItem({
   thread,
+  unread,
   onNavigate,
 }: {
   readonly thread: ThreadSummary;
+  /** This device has not seen the conversation as it now stands. */
+  readonly unread: boolean;
   /** Closing the drawer belongs to the row that navigated, not to a click that
       happened to bubble through the list container. */
   readonly onNavigate?: () => void;
@@ -55,6 +58,7 @@ function ThreadListItem({
             <span className="thread-title">
               <ThreadListItemPrimitive.Title fallback="Untitled conversation" />
             </span>
+            {unread && <i className="thread-unread" role="img" aria-label="Unread" />}
             <time dateTime={thread.updatedAt}>{relativeTime(thread.updatedAt)}</time>
           </span>
           <span className="thread-preview">
@@ -101,6 +105,7 @@ export function RecentSection({
     navigationDestination,
     setNavigationDestination,
     cronOverview,
+    unreadThreadIds,
   } = useConsoleStore();
   const automations = navigationDestination === "automations";
   const jobs = cronOverview?.jobs.length;
@@ -162,7 +167,11 @@ export function RecentSection({
               {({ threadListItem }) => {
                 const thread = threadById.get(threadListItem.id);
                 return thread && isRecentThread(thread) ? (
-                  <ThreadListItem thread={thread} onNavigate={onNavigate} />
+                  <ThreadListItem
+                    thread={thread}
+                    unread={unreadThreadIds.has(thread.id)}
+                    onNavigate={onNavigate}
+                  />
                 ) : null;
               }}
             </ThreadListPrimitive.Items>

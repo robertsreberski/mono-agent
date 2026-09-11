@@ -54,13 +54,27 @@ export function threadOutcomeError(thread: ThreadSummary): string | undefined {
   return classifyOutcome(thread).error;
 }
 
-/** The sidebar's text and activity indicator must describe the same work. */
-export function threadPresentation(thread: ThreadSummary): { readonly text: string; readonly active: boolean } {
-  const { runState, jobActivity } = thread;
-  const jobs = (["running", "starting", "queued"] as const).flatMap((state) => {
+/**
+ * What this conversation's BACKGROUND jobs are doing, in the status line's own
+ * words, or nothing.
+ *
+ * Shared with the dashboard's running card, which replaces the foreground half
+ * of the line with the turn's activity and keeps this half verbatim. One
+ * implementation so the two lines can never disagree about how many jobs are
+ * queued.
+ */
+export function threadJobSummaries(thread: ThreadSummary): readonly string[] {
+  const { jobActivity } = thread;
+  return (["running", "starting", "queued"] as const).flatMap((state) => {
     const count = jobActivity?.[state] ?? 0;
     return count > 0 ? [`${count} background ${count === 1 ? "job" : "jobs"} ${state}`] : [];
   });
+}
+
+/** The sidebar's text and activity indicator must describe the same work. */
+export function threadPresentation(thread: ThreadSummary): { readonly text: string; readonly active: boolean } {
+  const { runState } = thread;
+  const jobs = threadJobSummaries(thread);
   if (runState.status === "running") {
     return { text: ["Working…", ...jobs].join(" · "), active: true };
   }

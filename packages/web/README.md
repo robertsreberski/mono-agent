@@ -174,10 +174,40 @@ One Dashboard is the console's whole navigation surface: a fixed 340-pixel left
 column on desktop, and the entrance screen on narrow touch screens. Its header
 carries the console name, the selected agent, and the notifications, agent
 settings and new-conversation controls; below it sit the agent strip,
-conversation search, a Running section for the conversations this browser is
-holding that have work in flight, the Recent listing with its Chats and
-Automations chips, and a footer carrying the data-mode indicator and the archive
-shelf. On narrow touch screens the console opens on the Dashboard; a
+conversation search, a Running section for what the whole fleet has in flight,
+the Recent listing with its Chats and Automations chips, and a footer carrying
+the data-mode indicator and the archive shelf. Running comes from the service
+rather than from this browser's cache, so it names conversations on agents the
+tab has never opened; see the Running section below for what its cards say and
+when they say "last known".
+
+**Running.** One card per conversation the service reports as having work in
+flight — a foreground turn, or a queued/starting/running background job —
+across every discovered agent and both archive shelves, grouped by agent, two
+cards each with the rest behind an inline `+N more`. Membership, the per-agent
+counts and the truncation all come from `GET /api/v1/threads/active`, counted
+before the fifty-card cap, so a capped section says `Showing 50 of 63` rather
+than reporting fifty. Each card's status line says only what the turn's own
+transcript supports: `Working · 11 tool calls`, `Asking you a question` while a
+retained `AskUser` call is running, and `· $2.44` when the runtime priced the
+run. It does not show a step ordinal, an estimate of how much longer, token or
+context percentages, or a subagent's own tool calls. Without a live answer
+behind it — the stream dropped, the read failed, or a cold start off the device
+— the section says **last known** and falls back to what this browser holds. An
+authoritative empty listing takes it off screen as an answer: the fleet is
+idle. An empty fallback is omitted rather than drawn as a zero, which proves
+nothing either way.
+
+**Unread.** A Recent row shows a dot, and an agent square a muted count, for a
+conversation that has moved since this device last looked at it. It is
+device-local: the service is not told, and each browser keeps its own. A
+conversation this browser has never seen is not unread, and the mark clears only
+while the conversation is on screen — on a phone, the conversation screen rather
+than the Dashboard. A running badge takes the agent square; the unread count
+comes back when the work ends. It is stored with the rest of this origin's
+console data and is cleared with it.
+
+On narrow touch screens the console opens on the Dashboard; a
 conversation is pushed over it when a row, a Running card or the new-conversation
 control is tapped, and popped by the 44-pixel **Back to dashboard** control at
 the left edge of the conversation header, by a deliberate right swipe across the
@@ -593,7 +623,10 @@ ledger; postconditions check the required effects.
    Monitor activity, tool cards, composer, attachments, and push-subscription
    UI, keeping a per-conversation cache that is also written to the device
    (IndexedDB `mono-agent-web`, version 2, swept per writer on hydration) so a
-   cold start draws before the first response. Its service worker precaches the
+   cold start draws before the first response. The same store holds this
+   device's unread marker — one seen revision per conversation, never sent to
+   the service — which is why it is cleared with the rest of this origin's
+   console data. Its service worker precaches the
    shell, handles background push delivery and same-origin clicks, and is
    registered in `prompt` mode: a new build is staged and applied on the next
    idle foreground moment or an explicit reload, never over a running turn or

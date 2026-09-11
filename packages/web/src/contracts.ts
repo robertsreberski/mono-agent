@@ -74,6 +74,15 @@ export const DEFAULT_WEB_THEME: WebTheme = "evergreen";
 /** Canonical upper bound on the operator-chosen console label. */
 export const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80;
 
+/**
+ * How many running conversations {@link WebActiveThreads} carries.
+ *
+ * A dashboard section, not a page: the cards fold behind a per-agent "more"
+ * control long before fifty of them, and the counts beside them are exact
+ * whatever this is. Raising it costs every connected console one bigger
+ * response per event.
+ */
+export const WEB_ACTIVE_THREAD_LIMIT = 50;
 export const WEB_MAX_FILES_PER_TURN = 10;
 export const WEB_MAX_TURN_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 export const WEB_STAGED_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -183,6 +192,18 @@ export interface WebAgentSummary {
   /** Absent when the addressed agent predates first-class cron operator routes. */
   readonly cron?: WebCronCapability;
   readonly supportsAskById?: boolean;
+  /**
+   * Conversations of THIS agent with work in flight, fleet-wide.
+   *
+   * The same aggregate {@link WebActiveThreads.runningCounts} carries, counted
+   * over the whole qualifying set rather than over the capped listing, and
+   * supplied on every bootstrap summary -- so a console drawing a badge per
+   * agent never has to infer one from the conversations it happens to hold.
+   *
+   * Absent on summaries an older server built and on the ones a discovery pass
+   * or a pin writes back, which describe a capability rather than a moment.
+   */
+  readonly runningCount?: number;
   readonly updatedAt: string;
 }
 
@@ -263,6 +284,46 @@ export interface WebRunAttribution {
   readonly truncated?: true;
 }
 
+/**
+ * The little a status line can honestly say about a turn that is still going.
+ *
+ * Derived from the retained parts of the running foreground turn's assistant
+ * message and from nothing else -- no agent is polled for it, and no counter is
+ * kept beside the transcript. What is NOT here is deliberate: a
+ * provider-neutral "step" ordinal, an estimate of how much longer, a token or
+ * context percentage, and any accounting of the calls a subagent made. Each of
+ * those either does not exist across runtimes or would be a number the console
+ * cannot stand behind.
+ */
+export interface WebRunActivity {
+  /**
+   * Retained TOP-LEVEL tool calls, each counted once.
+   *
+   * Model steps are not tool calls and are not counted. A delegation's own
+   * calls belong to the subagent group that owns them and are not counted
+   * either -- concurrent subagents interleave, so a flat total would be a
+   * number with no owner.
+   */
+  readonly toolCallCount: number;
+  /**
+   * `asking` iff a retained AskUser tool call is still running.
+   *
+   * That is the one interruption the console can name from the transcript
+   * alone. It is NOT a claim about approvals, permission prompts or any other
+   * pending interaction: those are not tool calls and leave nothing retained to
+   * read.
+   */
+  readonly phase: "working" | "asking";
+  /**
+   * The latest cumulative run cost the runtime reported, in USD.
+   *
+   * Absent whenever no `usage_update` priced this run, and absent rather than
+   * zero for a value that is not a finite non-negative number: a run whose
+   * model has no price is not a run that cost nothing.
+   */
+  readonly cumulativeUsd?: number;
+}
+
 export interface WebRunState {
   readonly id?: string;
   readonly status: WebRunStatus;
@@ -274,6 +335,14 @@ export interface WebRunState {
   readonly model?: string;
   readonly effort?: string;
   readonly attribution?: WebRunAttribution;
+  /**
+   * Present ONLY while this run is the foreground turn and it is running.
+   *
+   * A terminal run has no activity: what a finished turn did is in its
+   * transcript, and a status line that kept counting after the answer arrived
+   * would be describing the past in the present tense.
+   */
+  readonly activity?: WebRunActivity;
 }
 
 /** Bounded activity derived from every retained process-job card in a thread. */
@@ -590,6 +659,40 @@ export interface WebThreadPage {
 /** Which durable conversation classes a list or search includes. */
 export type WebThreadListScope = "all" | "chats";
 
+/**
+ * Every conversation in the fleet with work in flight -- bounded, and counted
+ * before it is bounded.
+ *
+ * The one listing on this API that is NOT scoped to an agent or to an archive
+ * bucket, because "what is running right now" is not a question about either.
+ * Membership is one row per conversation whose foreground turn is running OR
+ * that has a retained process job queued, starting or running, joined to the
+ * agents discovery currently reports. A conversation retained for a source id
+ * discovery no longer reports is excluded: the console has nowhere to draw it.
+ *
+ * `threads` is capped, so it can only ever be part of the answer;
+ * {@link WebActiveThreads.total} and {@link WebActiveThreads.runningCounts} are
+ * computed over the whole qualifying set and are what a client counts from. A
+ * cap the counts also obeyed would silently report a busy fleet as a quiet one.
+ *
+ * Fixed scope and a fixed cap: no filters, no cursor. A projection with a
+ * cursor invites a console to walk it on every event, which is the cost this
+ * whole listing exists to avoid.
+ */
+export interface WebActiveThreads {
+  /** At most {@link WEB_ACTIVE_THREAD_LIMIT}, `updated_at DESC, id DESC`. */
+  readonly threads: readonly WebThread[];
+  /** Distinct qualifying conversations, before the cap. */
+  readonly total: number;
+  /** `total` exceeded the cap, so `threads` is part of the answer. */
+  readonly truncated: boolean;
+  /**
+   * Per discovered agent, INCLUDING the ones with nothing running: a key that
+   * is simply missing cannot be told apart from an agent the listing forgot.
+   */
+  readonly runningCounts: Readonly<Record<string, number>>;
+}
+
 export interface WebMessagePage {
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
@@ -776,6 +879,16 @@ export interface WebBootstrap {
   readonly threadsSourceId: string | null;
   /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
   readonly threadsNextCursor: string | null;
+  /**
+   * What is running across the WHOLE fleet, from the same store snapshot the
+   * `agents` above were counted from.
+   *
+   * Carried here so a cold console can draw its running section on the first
+   * response instead of paying a second round trip for it. Absent only on a
+   * bootstrap an older server built, which is exactly when a client has to fall
+   * back to what it can see for itself -- and say so.
+   */
+  readonly activeThreads?: WebActiveThreads;
   readonly currentThreadId?: string;
   readonly limits: {
     readonly maxFileBytes: number;

@@ -249,6 +249,16 @@ export interface AgentSummary {
   readonly providers?: readonly AgentProvider[];
   readonly cron?: { readonly read: boolean; readonly actions: boolean };
   readonly supportsAskById?: boolean;
+  /**
+   * Conversations of THIS agent with work in flight, fleet-wide, mirrored from
+   * `WebAgentSummary`.
+   *
+   * A moment rather than a capability, and the only count on a summary: absent
+   * on the ones a pin writes back and on anything an older server built. What a
+   * device-restored snapshot carries is therefore LAST KNOWN, and has to be
+   * labelled as such wherever it is drawn.
+   */
+  readonly runningCount?: number;
   readonly updatedAt: string;
 }
 
@@ -398,6 +408,24 @@ export interface RunAttribution {
   readonly truncated?: true;
 }
 
+/**
+ * The little a status line can honestly say about a turn still in flight,
+ * mirrored from `WebRunActivity`.
+ *
+ * What is NOT here is the point: no provider-neutral step ordinal, no estimate
+ * of how much longer, no token or context percentage, and no accounting of the
+ * calls a subagent made. The card says "Working - 11 tool calls", never
+ * "step 11", because a step means something different in every runtime.
+ */
+export interface RunActivity {
+  /** Retained top-level tool calls, each counted once; subagent calls excluded. */
+  readonly toolCallCount: number;
+  /** `asking` iff a retained AskUser call is still running. Not an approval state. */
+  readonly phase: "working" | "asking";
+  /** Latest cumulative run cost in USD, when the runtime priced this run. */
+  readonly cumulativeUsd?: number;
+}
+
 export interface RunState {
   readonly id?: string;
   readonly status: RunStatus;
@@ -409,6 +437,8 @@ export interface RunState {
   readonly model?: string;
   readonly effort?: string;
   readonly attribution?: RunAttribution;
+  /** Present only while this run is the foreground turn AND it is running. */
+  readonly activity?: RunActivity;
 }
 
 /** Summary of retained jobs, independent of the loaded transcript page. */
@@ -779,6 +809,22 @@ export interface ThreadPage {
   readonly nextCursor?: string;
 }
 
+/**
+ * What the whole fleet has in flight, mirrored from `WebActiveThreads`.
+ *
+ * Not a page: fixed scope, fixed cap, no cursor. `total` and `runningCounts`
+ * are computed over every qualifying conversation, so they are exact even when
+ * `threads` is cut -- which is what lets the section say "Showing 50 of 63"
+ * instead of quietly reporting fifty.
+ */
+export interface ActiveThreads {
+  readonly threads: readonly ThreadSummary[];
+  readonly total: number;
+  readonly truncated: boolean;
+  /** Per discovered agent, zeroes included. */
+  readonly runningCounts: Readonly<Record<string, number>>;
+}
+
 /** One conversation that matched a search, with the evidence for the match. */
 export interface ThreadSearchHit {
   readonly thread: ThreadSummary;
@@ -918,6 +964,12 @@ export interface Bootstrap {
   readonly threadsSourceId: string | null;
   /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
   readonly threadsNextCursor: string | null;
+  /**
+   * What is running fleet-wide, from the same store snapshot `agents` was
+   * counted from. Absent only on a bootstrap an older server built, which is
+   * exactly when this console has to fall back to what it can see and say so.
+   */
+  readonly activeThreads?: ActiveThreads;
   readonly currentThreadId?: string;
   readonly limits: UploadLimits;
 }
