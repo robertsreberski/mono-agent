@@ -446,6 +446,91 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .data-mode-bytes { font-variant-numeric: tabular-nums; }
 .data-mode-bytes::before { content: "· "; }
 
+/* Projects section: the agent's named conversation containers, between
+   Running and Recent. Rows borrow the conversation rows' measures so a
+   project name and a conversation title sit on the same lines. */
+.dashboard-new-action { flex: none; padding: 6px 8px; margin-right: -8px; color: var(--accent); background: transparent; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
+.dashboard-new-action:hover { background: var(--surface-hover); }
+.project-item { position: relative; display: flex; align-items: stretch; margin: 0 -8px; border-radius: 9px; transition: background 130ms ease; }
+.project-item + .project-item::before { content: ""; position: absolute; top: 0; left: 8px; right: 8px; height: 1px; background: var(--line); }
+.project-item:hover { background: var(--surface-hover); }
+.project-trigger { min-width: 0; min-height: 58px; flex: 1; display: flex; align-items: center; gap: 10px; padding: 7px 8px; text-align: left; background: transparent; cursor: pointer; }
+.project-kind { width: 30px; display: flex; justify-content: center; flex: none; color: var(--text-muted); }
+.project-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.project-title-line { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.project-title { min-width: 0; flex: 1; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.project-preview { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.project-preview-text { min-width: 0; flex: 1; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Project page: the Dashboard's slot with a project's header, context card
+   and member conversations. The header tiles are the Dashboard header's own. */
+.project-page { --gutter-left: 17px; --gutter-right: 17px; width: 100%; height: 100%; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line); }
+.project-header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding: max(10px, env(safe-area-inset-top)) var(--gutter-right) 10px var(--gutter-left); }
+/* Back is navigation, not a tile: the bare glyph and the thumb-sized target
+   the conversation header's back control keeps. */
+.project-back { min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 6px; flex: 1; padding: 0; color: var(--text-soft); background: transparent; cursor: pointer; text-align: left; font-size: 15px; }
+.project-back:hover { color: var(--text); }
+.project-back > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-scroll { min-height: 0; flex: 1; padding: 20px var(--gutter-right) 28px var(--gutter-left); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.project-title-block { display: flex; flex-direction: column; gap: 4px; }
+.project-title-block > .dashboard-section-label { margin-bottom: 0; }
+.project-name { margin: 0; color: var(--text); font-size: 26px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.2; overflow-wrap: anywhere; }
+.project-meta { margin: 0; color: var(--text-muted); font-size: 14px; }
+.project-context-card { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; padding: 14px 16px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 14px; }
+.project-context-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.project-context-head > .dashboard-section-label { margin-bottom: 0; }
+.project-context-edit { flex: none; padding: 4px 2px; color: var(--accent); background: transparent; cursor: pointer; font-size: 13px; }
+.project-context-edit:hover { color: var(--accent-strong); }
+.project-context-text { margin: 0; color: var(--text-soft); font-size: 14px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.project-context-text.is-empty { color: var(--text-muted); }
+.project-context-text code, .project-context-card code { font-family: var(--font-mono); font-size: 0.92em; }
+.project-context-footnote { margin: 0; color: var(--text-muted); font-size: 12px; }
+.project-members-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 26px 0 10px; }
+.project-members-head > .dashboard-section-label { margin-bottom: 0; }
+.project-members-sort { color: var(--text-muted); font-size: 13px; white-space: nowrap; }
+
+/* Project settings sheet: a bottom sheet on touch screens, a centered dialog
+   beside them. One structure, and the viewport decides which it is. */
+.sheet-layer { position: fixed; inset: 0; display: flex; align-items: flex-end; justify-content: center; background: rgba(7, 10, 8, 0.42); backdrop-filter: blur(6px); z-index: 100; }
+.sheet { width: 100%; max-height: 92dvh; display: flex; flex-direction: column; gap: 22px; padding: 12px 16px calc(34px + env(safe-area-inset-bottom)); overflow-y: auto; color: var(--text); background: var(--panel); border-radius: 20px 20px 0 0; box-shadow: var(--shadow-lg); }
+.sheet-handle { width: 40px; height: 4px; flex: none; margin: 0 auto; background: var(--line-strong); border-radius: 2px; }
+.sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sheet-head h2 { margin: 0; font-size: 17px; font-weight: 600; }
+.sheet-cancel { padding: 8px 4px; color: var(--text-muted); background: transparent; cursor: pointer; font-size: 15px; }
+.sheet-cancel:hover { color: var(--text); }
+.sheet-save { padding: 8px 4px; color: var(--accent); background: transparent; cursor: pointer; font-size: 15px; font-weight: 600; }
+.sheet-save:hover:not(:disabled) { color: var(--accent-strong); }
+.sheet-save:disabled { opacity: 0.45; cursor: default; }
+.sheet-field { display: flex; flex-direction: column; gap: 8px; }
+.sheet-field > .dashboard-section-label { margin-bottom: 0; }
+.sheet-field-head { justify-content: space-between; }
+.sheet-char-count { font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.sheet-field input, .sheet-field textarea { width: 100%; padding: 12px 14px; color: var(--text); background: var(--surface-subtle); border: 1px solid transparent; border-radius: 12px; outline: 0; font: inherit; font-size: 14px; line-height: 1.5; transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease; }
+.sheet-field input { min-height: 48px; font-size: 16px; }
+.sheet-field textarea { min-height: 120px; resize: vertical; }
+.sheet-field input:focus, .sheet-field textarea:focus { background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.sheet-footnote { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+.sheet-error { margin: 0; color: var(--danger); font-size: 12px; line-height: 1.4; }
+.sheet-group { display: flex; flex-direction: column; overflow: hidden; background: var(--surface-subtle); border-radius: 12px; }
+.sheet-row { display: flex; align-items: center; gap: 12px; padding: 14px; color: var(--text); background: transparent; cursor: pointer; text-align: left; font-size: 15px; }
+.sheet-row + .sheet-row { border-top: 1px solid var(--line); }
+.sheet-row:hover:not(:disabled) { background: var(--surface-hover); }
+.sheet-row:disabled { opacity: 0.5; cursor: default; }
+.sheet-row-label { flex: 1; }
+.sheet-row-hint { color: var(--text-muted); font-size: 13px; }
+.sheet-row.is-danger { color: var(--danger); }
+.sheet-created { margin: 0; color: var(--text-muted); font-size: 12px; text-align: center; }
+@media (min-width: 901px) {
+  .sheet-layer { align-items: center; padding: 24px 16px; }
+  .sheet { width: min(100%, 520px); max-height: calc(100dvh - 48px); padding: 20px 20px 24px; border-radius: 18px; }
+  .sheet-handle { display: none; }
+}
+@media (max-width: 900px) {
+  .dashboard-panel .project-page { border-right: 0; }
+  .project-page { --gutter-left: max(17px, env(safe-area-inset-left)); --gutter-right: max(17px, env(safe-area-inset-right)); }
+  .project-header { min-height: 58px; padding-block: max(7px, env(safe-area-inset-top)) 7px; }
+}
+
 /* Chat shell
    The conversation is the same material as the Dashboard beside it -- one
    colour for the whole console, with the raised surfaces kept for what the

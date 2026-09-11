@@ -304,15 +304,67 @@ export function ModelControls() {
   );
 }
 
+function ProjectPickerItems({ threadId, sourceId }: {
+  readonly threadId: string;
+  readonly sourceId: string;
+}) {
+  const { projectsByAgent, selectedThread, setThreadProject } = useConsoleStore();
+  const currentProjectId = selectedThread?.id === threadId ? selectedThread.projectId : null;
+  const projects = (projectsByAgent[sourceId] ?? []).filter((project) => project.archivedAt === null);
+  return (
+    <>
+      {projects.map((project) => (
+        <Menu.Item
+          key={project.id}
+          className="conversation-menu-item"
+          onClick={() => {
+            if (project.id !== currentProjectId) {
+              void setThreadProject(threadId, project.id).catch(() => undefined);
+            }
+          }}
+        >
+          <Icon name={project.id === currentProjectId ? "check" : "folder"} size={16} />
+          <span>{project.name}</span>
+        </Menu.Item>
+      ))}
+      <Menu.Item
+        className="conversation-menu-item"
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent("mono-agent:project-settings", {
+            detail: { mode: "create", sourceId },
+          }));
+        }}
+      >
+        <Icon name="new" size={16} />
+        <span>New project…</span>
+      </Menu.Item>
+    </>
+  );
+}
+
 function ConversationActions() {
-  const { selectedThread, archiveThread, unarchiveThread, deleteThread } = useConsoleStore();
+  const {
+    selectedThread,
+    archiveThread,
+    unarchiveThread,
+    deleteThread,
+    loadProjects,
+    setThreadProject,
+  } = useConsoleStore();
   if (selectedThread === null) return null;
   const archived = selectedThread.archivedAt !== null;
   const canDelete = archived
     && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false);
+  const memberProjectId = archived ? null : selectedThread.projectId;
 
   return (
-    <Menu.Root>
+    <Menu.Root
+      onOpenChange={(open) => {
+        // The picker lists this conversation's agent projects; make sure the
+        // tab holds them before it opens.
+        if (open) void loadProjects(selectedThread.sourceId).catch(() => undefined);
+      }}
+    >
       <Menu.Trigger
         type="button"
         className="icon-button header-more"
@@ -324,6 +376,46 @@ function ConversationActions() {
       <Menu.Portal>
         <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={5}>
           <Menu.Popup className="conversation-menu-popup" aria-label="Conversation actions">
+            {memberProjectId === null ? (
+              <Menu.SubmenuRoot>
+                <Menu.SubmenuTrigger className="conversation-menu-item">
+                  <Icon name="folder" size={16} />
+                  <span>Add to project…</span>
+                </Menu.SubmenuTrigger>
+                <Menu.Portal>
+                  <Menu.Positioner className="conversation-menu-positioner" side="right" align="start" sideOffset={5}>
+                    <Menu.Popup className="conversation-menu-popup" aria-label="Add to project">
+                      <ProjectPickerItems threadId={selectedThread.id} sourceId={selectedThread.sourceId} />
+                    </Menu.Popup>
+                  </Menu.Positioner>
+                </Menu.Portal>
+              </Menu.SubmenuRoot>
+            ) : (
+              <>
+                <Menu.SubmenuRoot>
+                  <Menu.SubmenuTrigger className="conversation-menu-item">
+                    <Icon name="folder" size={16} />
+                    <span>Move to…</span>
+                  </Menu.SubmenuTrigger>
+                  <Menu.Portal>
+                    <Menu.Positioner className="conversation-menu-positioner" side="right" align="start" sideOffset={5}>
+                      <Menu.Popup className="conversation-menu-popup" aria-label="Move to project">
+                        <ProjectPickerItems threadId={selectedThread.id} sourceId={selectedThread.sourceId} />
+                      </Menu.Popup>
+                    </Menu.Positioner>
+                  </Menu.Portal>
+                </Menu.SubmenuRoot>
+                <Menu.Item
+                  className="conversation-menu-item"
+                  onClick={() => {
+                    void setThreadProject(selectedThread.id, null).catch(() => undefined);
+                  }}
+                >
+                  <Icon name="close" size={16} />
+                  <span>Remove from project</span>
+                </Menu.Item>
+              </>
+            )}
             <Menu.Item
               className="conversation-menu-item"
               onClick={() => {

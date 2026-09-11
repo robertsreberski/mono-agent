@@ -232,7 +232,7 @@ interface ConsoleStoreValue {
   readonly projectMembersError: string | null;
   readonly hasMoreProjectMembers: boolean;
   readonly loadProjects: (sourceId: string) => Promise<readonly ProjectSummary[]>;
-  readonly createProject: (name: string, context?: string) => Promise<ProjectSummary>;
+  readonly createProject: (name: string, context?: string, sourceId?: string) => Promise<ProjectSummary>;
   readonly patchProject: (
     projectId: string,
     patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean },
@@ -4137,11 +4137,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setProjectMemberSummaries({});
   }, []);
 
-  const createProject = useCallback(async (name: string, context?: string): Promise<ProjectSummary> => {
-    if (selectedAgentId === null) throw new Error("Select an agent before creating a project.");
+  const createProject = useCallback(async (name: string, context?: string, sourceId?: string): Promise<ProjectSummary> => {
+    const agentId = sourceId ?? selectedAgentId;
+    if (agentId === null) throw new Error("Select an agent before creating a project.");
     try {
       const project = await boundedRequest(
-        (signal) => api.createProject(selectedAgentId, { name, ...(context === undefined ? {} : { context }) }, signal),
+        (signal) => api.createProject(agentId, { name, ...(context === undefined ? {} : { context }) }, signal),
         THREAD_WRITE_TIMEOUT_MS,
       );
       applyProjectUpdate(project);

@@ -12,6 +12,7 @@ import { BrandMark } from "./components/BrandMark";
 import { Chat } from "./components/Chat";
 import { Dashboard } from "./components/dashboard/Dashboard";
 import { Icon, type IconName } from "./components/Icon";
+import { ProjectSettingsSheet, type ProjectSettingsState } from "./components/project/ProjectSettingsSheet";
 import { useConsoleStore } from "./console-store";
 import {
   cycleDataModeSetting,
@@ -368,12 +369,14 @@ export function App() {
   const [mobile, setMobile] = useState(isMobileViewport);
   const [palette, setPalette] = useState(false);
   const [agentSettings, setAgentSettings] = useState(false);
+  const [projectSettings, setProjectSettings] = useState<ProjectSettingsState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [leanOffer, setLeanOffer] = useState(false);
   const [updateDismissed, setUpdateDismissed] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const agentSettingsRef = useRef<HTMLElement>(null);
+  const projectSettingsRef = useRef<HTMLElement>(null);
   const drawerGestureRef = useRef<DrawerGestureStart | null>(null);
   const conversationOpen = mobile && screen === "conversation";
   const documentVisible = useDocumentVisible();
@@ -395,6 +398,7 @@ export function App() {
   const showDashboard = useCallback(() => setScreen("dashboard"), []);
   const closePalette = useCallback(() => setPalette(false), []);
   const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
+  const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
   const togglePalette = useCallback(() => setPalette((current) => !current), []);
 
   const startDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
@@ -442,6 +446,7 @@ export function App() {
   }, []);
 
   useModalFocus(agentSettings, agentSettingsRef, closeAgentSettings);
+  useModalFocus(projectSettings !== null, projectSettingsRef, closeProjectSettings);
 
   // Neither screen is a modal: nothing traps focus, and nothing needs to be
   // dismissed. Focus just follows the screen that arrived, so a keyboard is
@@ -475,13 +480,21 @@ export function App() {
       setPalette(false);
       setAgentSettings(true);
     };
+    const onProjectSettings = (event: Event) => {
+      setPalette(false);
+      const detail = (event as CustomEvent<ProjectSettingsState | undefined>).detail;
+      if (detail === undefined) return;
+      setProjectSettings(detail);
+    };
     window.addEventListener("mono-agent:command", onCommand);
     window.addEventListener("mono-agent:notice", onNotice);
     window.addEventListener("mono-agent:agent-settings", onAgentSettings);
+    window.addEventListener("mono-agent:project-settings", onProjectSettings);
     return () => {
       window.removeEventListener("mono-agent:command", onCommand);
       window.removeEventListener("mono-agent:notice", onNotice);
       window.removeEventListener("mono-agent:agent-settings", onAgentSettings);
+      window.removeEventListener("mono-agent:project-settings", onProjectSettings);
     };
   }, [togglePalette]);
 
@@ -726,6 +739,7 @@ export function App() {
       )}
       <CommandPalette open={palette} onClose={closePalette} />
       <AgentSettingsDialog open={agentSettings} onClose={closeAgentSettings} dialogRef={agentSettingsRef} />
+      <ProjectSettingsSheet sheet={projectSettings} onClose={closeProjectSettings} dialogRef={projectSettingsRef} />
       {(notice || actionError) && (
         <div className="toast" role="alert">
           <span>{notice ?? actionError}</span>

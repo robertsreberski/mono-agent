@@ -23,6 +23,7 @@ export type IconName =
   | "eye"
   | "eye-off"
   | "file"
+  | "folder"
   | "menu"
   | "more"
   | "new"
@@ -123,6 +124,7 @@ const paths: Record<IconName, React.ReactNode> = {
       <path d="M14 3v5h5M9 13h6M9 17h5" />
     </>
   ),
+  folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" />,
   new: <path d="M12 5v14M5 12h14" />,

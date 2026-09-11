@@ -7,8 +7,10 @@ import { DashboardFooter } from "./DashboardFooter";
 import { DashboardHeader } from "./DashboardHeader";
 import { DashboardSearch } from "./DashboardSearch";
 import { groupRunningThreads, mergeRunningThreads } from "./dashboard-model";
+import { ProjectsSection } from "./ProjectsSection";
 import { RecentSection } from "./RecentSection";
 import { RunningSection } from "./RunningSection";
+import { ProjectPage } from "../project/ProjectPage";
 
 /**
  * The console's one navigation surface: the desktop left column AND the mobile
@@ -37,6 +39,7 @@ export function Dashboard({
     agents,
     cachedRunningThreads,
     navigationDestination,
+    openProject,
     selectedAgentId,
     selectAgent,
     selectThread,
@@ -121,6 +124,12 @@ export function Dashboard({
     onNavigate?.();
   }, [onNavigate, selectAgent, selectThread, selectedAgentId, setShowArchived]);
 
+  // An open project takes this whole slot: the desktop left column and the
+  // mobile entrance screen draw the project page instead of the Dashboard.
+  if (openProject !== null) {
+    return <ProjectPage project={openProject} onNavigate={onNavigate} highlightSelected={highlightSelected} />;
+  }
+
   return (
     <div className="dashboard">
       <DashboardHeader onNavigate={onNavigate} />
@@ -141,7 +150,7 @@ export function Dashboard({
             : {})}
           authoritative={authoritative}
         />
-        {/* Projects will take the labelled section between Running and Recent. */}
+        <ProjectsSection />
         <RecentSection
           searching={searching}
           query={query}
