@@ -63,7 +63,16 @@ describe("Linux agent command composition", () => {
   it("requires matching PID/config startup proof and never persists exported secrets", async () => {
     mocks.traces.mockResolvedValue({ sources: [{ configPath: "/agent/config.json", pid: 42, health: "running", metadata: { lifecycle: { startupCompleted: true } } }] });
     const deps = output();
-    expect(await runSystemdAgentCommand(args("start"), "start", { PATH: "/bin", PROVIDER_API_KEY: "not-for-the-unit" }, deps)).toBe(0);
+    const linuxEnvironment = {
+      PATH: "/bin",
+      XDG_CONFIG_HOME: "/home/user/.config",
+      XDG_DATA_HOME: "/home/user/.local/share",
+      XDG_CACHE_HOME: "/home/user/.cache",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+      PROVIDER_API_KEY: "not-for-the-unit",
+    };
+    expect(await runSystemdAgentCommand(args("start"), "start", linuxEnvironment, deps)).toBe(0);
     const definition = mocks.start.mock.calls[0]![0];
     expect(definition.argv.slice(0, 2)).toEqual(["/usr/bin/env", "-i"]);
     expect(JSON.stringify(definition)).not.toContain("not-for-the-unit");
@@ -79,6 +88,11 @@ describe("Linux agent command composition", () => {
     expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({
       configPath: "/agent/config.json",
       envFile: resolve(process.cwd(), ".env"),
+      env: expect.objectContaining({
+        XDG_RUNTIME_DIR: "/run/user/1000",
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+      }),
+      operationalEnvironmentPolicy: "systemd",
     }));
     expect(deps.stdout.write).toHaveBeenCalledWith(expect.stringContaining("dev (unmanaged)"));
   });

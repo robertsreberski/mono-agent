@@ -8,7 +8,7 @@ import type { TraceSourceListItem } from "@mono-agent/observability";
 
 import { canonicalBackgroundConfigPath, resolveInstanceTarget } from "./background.js";
 import {
-  selectBackgroundOperationalEnvironment,
+  selectSystemdBackgroundOperationalEnvironment,
   SYSTEMD_BACKGROUND_WORKER_ENV,
 } from "./background-environment.js";
 import {
@@ -35,11 +35,9 @@ function workerArgv(args: readonly string[], environment: Readonly<Record<string
 }
 
 function operationalEnvironment(env: Record<string, string | undefined>): Record<string, string> {
-  const selected = { ...selectBackgroundOperationalEnvironment(env) };
-  for (const key of ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]) {
-    if (env[key] !== undefined) selected[key] = env[key];
-  }
-  return selected;
+  return {
+    ...selectSystemdBackgroundOperationalEnvironment(env),
+  };
 }
 
 function statusFields(identity: string, service: SystemdService, ready: boolean) {
@@ -138,6 +136,7 @@ export async function runSystemdAgentCommand(
         configPath: identity,
         envFile,
         env: effective,
+        operationalEnvironmentPolicy: "systemd",
       }));
     } catch (error) {
       throw new Error(
