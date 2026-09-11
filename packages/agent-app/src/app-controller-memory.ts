@@ -6,7 +6,6 @@ import {
   createConfiguredMemoryForApp,
 } from "./configured-agent.js";
 import { isSharedRecallStore, MemoryRetrievalService } from "./memory-retrieval.js";
-import type { BackgroundSnapshot } from "./background-snapshot.js";
 import type { ProcessJobsProtectionPosture } from "./process-jobs-protection.js";
 
 type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
@@ -14,7 +13,7 @@ type ConfiguredMemory = Awaited<ReturnType<typeof createConfiguredMemory>>;
 export interface MemoryControllerPort {
   readonly cwd: string;
   readonly logger: ChannelLogger | undefined;
-  readonly backgroundSnapshot: BackgroundSnapshot | undefined;
+  readonly trustedRuntimeReadRoots: readonly string[];
   readonly processJobsProtectionPosture?: ProcessJobsProtectionPosture | undefined;
   sharedMemory: ConfiguredMemory;
   sharedMemoryRetrieval: MemoryRetrievalService | undefined;
@@ -64,10 +63,10 @@ export async function memoryStore(
     };
     const deps = {
       cwd: controller.cwd,
-      // A managed worker receives a launch-attested snapshot and an exact
-      // plugin closure beside agent-app. Never let mutable agent-local
-      // node_modules replace that copied closure after launch.
-      preferAppPluginInstall: controller.backgroundSnapshot !== undefined,
+      // Only a verified managed runtime has an exact plugin closure beside
+      // agent-app. A systemd worker may publish a secret-free snapshot for
+      // discovery while retaining the unmanaged plugin resolution order.
+      preferAppPluginInstall: controller.trustedRuntimeReadRoots.length > 0,
       ...(logger === undefined ? {} : { logger }),
       observability,
     };
