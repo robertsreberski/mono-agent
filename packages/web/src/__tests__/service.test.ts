@@ -6347,3 +6347,410 @@ describe("cron Reply import orchestration", () => {
     } finally { await service.stop(); }
   });
 });
+
+/**
+ * A card written `queued|starting|running` leaves that state only when a
+ * terminal projection arrives. When that notification never lands -- the agent
+ * restarted while this service was disconnected, a wake was lost -- nothing
+ * else in the store moves it, and the Dashboard reports work that stopped days
+ * ago. These are about re-asking the agent instead.
+ */
+describe("unsettled process-job card reconciliation", () => {
+  /** An agent that goes away for one discovery pass and comes back. */
+  const reconnecting = (): {
+    readonly discoverImpl: () => Promise<readonly ReturnType<typeof fakeDiscoveredAgent>[]>;
+    setPresent: (present: boolean) => void;
+  } => {
+    let present = true;
+    return {
+      discoverImpl: async () => present
+        ? [fakeDiscoveredAgent({ processJobsBearer: "owner-job-key" })]
+        : [],
+      setPresent: (next: boolean) => { present = next; },
+    };
+  };
+
+  const carded = async (service: WebService): Promise<{ threadId: string; jobId: string }> => {
+    const thread = service.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: running.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: running,
+    });
+    expect(service.activeThreads().threads.map((item) => item.id)).toEqual([thread.id]);
+    return { threadId: thread.id, jobId: running.jobId };
+  };
+
+  it("retires a card the agent reports finished, and the fleet listing loses it", async () => {
+    const agent = reconnecting();
+    let jobs = [fakeProcessJob({ conversationId: "web:placeholder" })];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({ supportsJobs: true, jobForRequest: () => jobs[0] }),
+    });
+    try {
+      const { threadId } = await carded(service);
+      jobs = [fakeProcessJob({
+        conversationId: `web:${threadId}`,
+        state: "succeeded",
+        wakeState: "delivered",
+      })];
+      const events: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+      unsubscribe();
+
+      const card = service.thread(threadId).messages[0]?.parts[0];
+      expect(card).toMatchObject({ type: "process-job", job: { state: "succeeded" } });
+      // Gone from both surfaces the stale card was showing up on.
+      expect(service.activeThreads()).toMatchObject({ threads: [], total: 0 });
+      expect(service.thread(threadId).thread.jobActivity)
+        .toMatchObject({ running: 0, latestTerminal: { state: "succeeded" } });
+      // An open console is told, exactly as a notification would have told it.
+      expect(events.filter((event) => event.type === "message.changed")).toHaveLength(1);
+      expect(events.some((event) => event.type === "thread.changed")).toBe(true);
+    } finally { await service.stop(); }
+  });
+
+  it("retires a card the agent no longer knows as interrupted, and says why", async () => {
+    const agent = reconnecting();
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({ supportsJobs: true, jobForRequest: () => undefined }),
+    });
+    try {
+      const { threadId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      expect(service.thread(threadId).messages[0]?.parts[0]).toMatchObject({
+        type: "process-job",
+        job: {
+          state: "interrupted",
+          lastError: { code: "process_job_agent_restarted" },
+        },
+      });
+      expect(service.activeThreads()).toMatchObject({ threads: [], total: 0 });
+    } finally { await service.stop(); }
+  });
+
+  it("leaves a card alone when the agent could not be asked", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => { throw new Error("connection reset"); },
+      }),
+    });
+    try {
+      const { threadId, jobId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      // The agent WAS asked, and answered with a transport failure. "This
+      // console could not ask" is not "the job ended".
+      expect(probes).toEqual([jobId]);
+      expect(service.thread(threadId).messages[0]?.parts[0])
+        .toMatchObject({ type: "process-job", job: { state: "running" } });
+      expect(service.activeThreads().threads.map((item) => item.id)).toEqual([threadId]);
+    } finally { await service.stop(); }
+  });
+
+  it("asks about a card once per sweep, and does not sweep a settled connection again", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => { throw new Error("connection reset"); },
+      }),
+    });
+    try {
+      const { jobId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+
+      // The connection did not move, and the slow floor has not passed.
+      await service.refreshAgents();
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves every card alone for an agent that does not support jobs", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => undefined,
+      }),
+    });
+    try {
+      const { threadId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      expect(probes).toEqual([]);
+      expect(service.activeThreads().threads.map((item) => item.id)).toEqual([threadId]);
+    } finally { await service.stop(); }
+  });
+});
+
+describe("fleet-bounded process-job card reconciliation", () => {
+  /** The service's own floor under a connection that never dropped. */
+  const RECONCILE_INTERVAL_MS = 15 * 60 * 1_000;
+
+  /** Two job-capable agents that go away for one discovery pass and come back. */
+  const fleet = (sourceIds: readonly string[]): {
+    readonly discoverImpl: () => Promise<readonly ReturnType<typeof fakeDiscoveredAgent>[]>;
+    setPresent: (present: boolean) => void;
+  } => {
+    let present = true;
+    const base = fakeDiscoveredAgent();
+    return {
+      discoverImpl: async () => present
+        ? sourceIds.map((sourceId, index) => fakeDiscoveredAgent({
+          processJobsBearer: "owner-job-key",
+          baseUrl: `http://127.0.0.1:4520${String(index)}/gui`,
+          source: { ...base.source, sourceId, label: sourceId, pid: 1_000 + index },
+        }))
+        : [],
+      setPresent: (next: boolean) => { present = next; },
+    };
+  };
+
+  /** `count` unsettled cards for one agent, in the order the store will read them. */
+  const seedRunningCards = async (
+    service: WebService,
+    sourceId: string,
+    count: number,
+  ): Promise<readonly string[]> => {
+    const jobIds: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const thread = service.createThread(sourceId);
+      const jobId = `${sourceId}-job-${String(index).padStart(3, "0")}`;
+      const running = fakeProcessJob({ conversationId: `web:${thread.id}`, jobId });
+      // eslint-disable-next-line no-await-in-loop -- the cards' order is the point.
+      await service.deliverNotification({
+        sourceId,
+        triggerKind: "job",
+        deliveryKey: running.wake.deliveryKey,
+        threadId: thread.id,
+        processJob: running,
+      });
+      jobIds.push(jobId);
+    }
+    return jobIds;
+  };
+
+  /** One reconnect: the whole fleet drops out of discovery and comes back. */
+  const reconnect = async (
+    service: WebService,
+    agents: { setPresent: (present: boolean) => void },
+  ): Promise<void> => {
+    agents.setPresent(false);
+    await service.refreshAgents();
+    agents.setPresent(true);
+    await service.refreshAgents();
+  };
+
+  it("never has more than four job reads in flight for the whole fleet", async () => {
+    const agents = fleet(["agent-one", "agent-two"]);
+    const pending: Array<() => void> = [];
+    const probes: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const answer = operatorFetch({
+      supportsJobs: true,
+      onJobRequest: (jobId) => { probes.push(jobId); },
+      // Nothing settles, so no card can leave the set and shorten the pass.
+      jobForRequest: (jobId) => fakeProcessJob({ jobId }),
+    });
+    const service = await createService({
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (/\/v1\/jobs\//u.test(url)) {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise<void>((resolve) => { pending.push(resolve); });
+          inFlight -= 1;
+        }
+        return answer(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      await seedRunningCards(service, "agent-one", 8);
+      await seedRunningCards(service, "agent-two", 8);
+
+      agents.setPresent(false);
+      await service.refreshAgents();
+      agents.setPresent(true);
+      let finished = false;
+      const sweep = service.refreshAgents().then(() => { finished = true; });
+      // Everything the pool is willing to start has started by now.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const admitted = inFlight;
+
+      while (!finished) {
+        pending.splice(0).forEach((release) => { release(); });
+        // eslint-disable-next-line no-await-in-loop -- draining one wave at a time is the point.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await sweep;
+
+      // Four for the SERVICE, not four per agent: per agent this would be
+      // eight here, and four times the fleet size on a real reconnect.
+      expect(admitted).toBe(4);
+      expect(peak).toBe(4);
+      expect(probes).toHaveLength(16);
+    } finally { await service.stop(); }
+  });
+
+  it("spends one card budget across the fleet, evenly, instead of one budget each", async () => {
+    const agents = fleet(["agent-one", "agent-two"]);
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: (jobId) => fakeProcessJob({ jobId }),
+      }),
+    });
+    try {
+      await seedRunningCards(service, "agent-one", 30);
+      await seedRunningCards(service, "agent-two", 30);
+
+      await reconnect(service, agents);
+
+      // 50 for the pass, not 50 each, and neither agent takes the other's share.
+      expect(probes).toHaveLength(50);
+      expect(probes.filter((jobId) => jobId.startsWith("agent-one"))).toHaveLength(25);
+      expect(probes.filter((jobId) => jobId.startsWith("agent-two"))).toHaveLength(25);
+    } finally { await service.stop(); }
+  });
+
+  it("asks about the card behind the first full page instead of the same page for ever", async () => {
+    const agents = fleet(["agent-one"]);
+    const probes: string[] = [];
+    let now = Date.parse("2026-09-10T10:00:00.000Z");
+    const service = await createService({
+      clock: () => new Date(now),
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        // Every card but the last is still running; the last one ended while
+        // this console was not listening and nothing else will ever say so.
+        jobForRequest: (jobId) => fakeProcessJob({
+          jobId,
+          ...(jobId === "agent-one-job-050" ? { state: "succeeded" as const, wakeState: "delivered" as const } : {}),
+        }),
+      }),
+    });
+    try {
+      const jobIds = await seedRunningCards(service, "agent-one", 51);
+      const stale = jobIds.at(-1)!;
+
+      await reconnect(service, agents);
+      // The first pass spends the whole budget on the oldest page, and none of
+      // those cards leaves the set, so a fixed page would stop here for ever.
+      expect(probes).toHaveLength(50);
+      expect(probes).not.toContain(stale);
+
+      now += RECONCILE_INTERVAL_MS;
+      await service.refreshAgents();
+
+      expect(probes).toContain(stale);
+      expect(service.activeThreads().threads.map((item) => item.id)).toHaveLength(50);
+    } finally { await service.stop(); }
+  });
+
+  it("re-asks a still-connected agent only once the fifteen minutes have elapsed", async () => {
+    const agents = fleet(["agent-one"]);
+    const probes: string[] = [];
+    let now = Date.parse("2026-09-10T10:00:00.000Z");
+    const service = await createService({
+      clock: () => new Date(now),
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: (jobId) => fakeProcessJob({ jobId }),
+      }),
+    });
+    try {
+      const [jobId] = await seedRunningCards(service, "agent-one", 1);
+
+      await reconnect(service, agents);
+      expect(probes).toEqual([jobId]);
+
+      // One millisecond under the floor is still under it.
+      now += RECONCILE_INTERVAL_MS - 1;
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+
+      now += 1;
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId, jobId]);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves the cards of a source discovery no longer reports alone", async () => {
+    const agents = fleet(["agent-one"]);
+    const probes: string[] = [];
+    let now = Date.parse("2026-09-10T10:00:00.000Z");
+    const service = await createService({
+      clock: () => new Date(now),
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => undefined,
+      }),
+    });
+    try {
+      await seedRunningCards(service, "agent-one", 1);
+      const [threadId] = service.activeThreads().threads.map((item) => item.id);
+
+      // Gone, and staying gone: there is nobody to ask, and a card nobody can
+      // confirm is not evidence that the job ended.
+      agents.setPresent(false);
+      await service.refreshAgents();
+      now += RECONCILE_INTERVAL_MS;
+      await service.refreshAgents();
+
+      expect(probes).toEqual([]);
+      expect(service.thread(threadId!).messages[0]?.parts[0])
+        .toMatchObject({ type: "process-job", job: { state: "running" } });
+    } finally { await service.stop(); }
+  });
+});

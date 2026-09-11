@@ -242,83 +242,111 @@ export function CronChannelHeader() {
   return (
     <>
       <section className="cron-channel-header" aria-label="Cron job status">
-        <dl className="cron-channel-facts">
-          <div><dt>Schedule</dt><dd><code>{job?.expression ?? "Unknown"}</code></dd></div>
-          <div><dt>Timezone</dt><dd>{job?.timezone ?? "Unknown"}</dd></div>
-          <div>
-            <dt>State</dt>
-            <dd>
-              {stateLabel}
-              {declaredDifference && (
-                <small>Config {job.declaredEnabled ? "enabled" : "disabled"}; runtime override {job.effectiveEnabled ? "enabled" : "disabled"}</small>
+        {/* Collapsed by default: six facts and three buttons took half a phone
+            screen above every transcript, and the three the operator actually
+            reads fit on one line. The conversation's own disclosure -- a native
+            `details`, so `aria-expanded` and the keyboard come from the
+            browser. Nothing is persisted; the summary is what is wanted by
+            default, each time.
+
+            Keyed by the channel it belongs to: this component stays mounted
+            across a direct cron-to-cron switch, and the browser's own `open`
+            lives on the element, so without the key the disclosure the last
+            job was left expanded on would open the next one expanded too. */}
+        <details
+          key={`${selectedAgent?.sourceId ?? ""}\u0000${jobId ?? ""}`}
+          className="cron-channel-overview"
+        >
+          <summary>
+            {/* One string, not three elements: the three facts read as one line,
+                and the six below keep the only copy of each label. */}
+            <span className="cron-channel-summary-facts">
+              {[
+                job?.expression ?? "Unknown",
+                stateLabel,
+                `Next ${displayTime(authoritative ? job?.nextRunAt : undefined)}`,
+              ].join(" · ")}
+            </span>
+            <Icon className="cron-channel-chevron" name="chevron-down" size={13} />
+          </summary>
+          <dl className="cron-channel-facts">
+            <div><dt>Schedule</dt><dd><code>{job?.expression ?? "Unknown"}</code></dd></div>
+            <div><dt>Timezone</dt><dd>{job?.timezone ?? "Unknown"}</dd></div>
+            <div>
+              <dt>State</dt>
+              <dd>
+                {stateLabel}
+                {declaredDifference && (
+                  <small>Config {job.declaredEnabled ? "enabled" : "disabled"}; runtime override {job.effectiveEnabled ? "enabled" : "disabled"}</small>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Last run</dt>
+              <dd title={job?.lastRun?.orderedAt}>
+                {job?.lastRun === undefined ? "Unknown" : (
+                  <a href={`#${cronRunAnchor(job.lastRun.runId)}`}>{displayTime(job.lastRun.orderedAt)}</a>
+                )}
+              </dd>
+            </div>
+            <div><dt>Next run</dt><dd title={authoritative ? job?.nextRunAt : undefined}>{displayTime(authoritative ? job?.nextRunAt : undefined)}</dd></div>
+            <div>
+              <dt>Health</dt>
+              <dd className={`cron-health is-${job?.health ?? "unknown"}`}>
+                {job?.health ?? "unknown"}
+                {cronOverview?.degradedReason !== undefined && <small>{cronOverview.degradedReason}</small>}
+              </dd>
+            </div>
+          </dl>
+          <div className="cron-control-panel">
+            <div className="cron-channel-actions" role="group" aria-label="Cron controls">
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!actionsAvailable || busy}
+                aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
+                onClick={() => void begin({ kind: "run", idempotencyKey: actionKey() })}
+              >
+                <Icon name="spark" size={14} />
+                Run now
+              </button>
+              <button
+                type="button"
+                className="cron-secondary-button"
+                disabled={!actionsAvailable || busy}
+                aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
+                onClick={() => void begin({
+                  kind: "enabled",
+                  enabled: !(job?.effectiveEnabled ?? false),
+                  idempotencyKey: actionKey(),
+                })}
+              >
+                {job?.effectiveEnabled ? "Disable" : "Enable"}
+              </button>
+              <button
+                type="button"
+                className="cron-secondary-button"
+                disabled={!configAvailable || busy}
+                aria-describedby={configUnavailableReason === undefined ? undefined : configUnavailableId}
+                onClick={() => void openConfig()}
+              >
+                View config
+              </button>
+            </div>
+            <div className="cron-control-status">
+              {actionUnavailableReason !== undefined && (
+                <p id={actionUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
+                  {actionUnavailableReason}
+                </p>
               )}
-            </dd>
-          </div>
-          <div>
-            <dt>Last run</dt>
-            <dd title={job?.lastRun?.orderedAt}>
-              {job?.lastRun === undefined ? "Unknown" : (
-                <a href={`#${cronRunAnchor(job.lastRun.runId)}`}>{displayTime(job.lastRun.orderedAt)}</a>
+              {configUnavailableReason !== undefined && (
+                <p id={configUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
+                  {configUnavailableReason}
+                </p>
               )}
-            </dd>
+            </div>
           </div>
-          <div><dt>Next run</dt><dd title={authoritative ? job?.nextRunAt : undefined}>{displayTime(authoritative ? job?.nextRunAt : undefined)}</dd></div>
-          <div>
-            <dt>Health</dt>
-            <dd className={`cron-health is-${job?.health ?? "unknown"}`}>
-              {job?.health ?? "unknown"}
-              {cronOverview?.degradedReason !== undefined && <small>{cronOverview.degradedReason}</small>}
-            </dd>
-          </div>
-        </dl>
-        <div className="cron-control-panel">
-          <div className="cron-channel-actions" role="group" aria-label="Cron controls">
-            <button
-              type="button"
-              className="primary-button"
-              disabled={!actionsAvailable || busy}
-              aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
-              onClick={() => void begin({ kind: "run", idempotencyKey: actionKey() })}
-            >
-              <Icon name="spark" size={14} />
-              Run now
-            </button>
-            <button
-              type="button"
-              className="cron-secondary-button"
-              disabled={!actionsAvailable || busy}
-              aria-describedby={actionUnavailableReason === undefined ? undefined : actionUnavailableId}
-              onClick={() => void begin({
-                kind: "enabled",
-                enabled: !(job?.effectiveEnabled ?? false),
-                idempotencyKey: actionKey(),
-              })}
-            >
-              {job?.effectiveEnabled ? "Disable" : "Enable"}
-            </button>
-            <button
-              type="button"
-              className="cron-secondary-button"
-              disabled={!configAvailable || busy}
-              aria-describedby={configUnavailableReason === undefined ? undefined : configUnavailableId}
-              onClick={() => void openConfig()}
-            >
-              View config
-            </button>
-          </div>
-          <div className="cron-control-status">
-            {actionUnavailableReason !== undefined && (
-              <p id={actionUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
-                {actionUnavailableReason}
-              </p>
-            )}
-            {configUnavailableReason !== undefined && (
-              <p id={configUnavailableId} className="cron-unavailable-reason" role="status" tabIndex={0}>
-                {configUnavailableReason}
-              </p>
-            )}
-          </div>
-        </div>
+        </details>
         {cronOverview?.jobsTruncated === true && (
           <p className="cron-unavailable-reason" role="status">
             Older historical jobs are omitted from this bounded overview; their saved conversations remain available.

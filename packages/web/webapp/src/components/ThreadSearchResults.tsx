@@ -26,17 +26,20 @@ function SearchHit({
   hit,
   query,
   onSelect,
+  highlightSelected,
 }: {
   readonly hit: ThreadSearchHit;
   readonly query: string;
   readonly onSelect?: () => void;
+  readonly highlightSelected: boolean;
 }) {
   const { selectThread, selectedThreadId } = useConsoleStore();
   const { thread } = hit;
+  const active = highlightSelected && thread.id === selectedThreadId;
   return (
     <button
       type="button"
-      className={`thread-search-hit${thread.id === selectedThreadId ? " is-active" : ""}`}
+      className={`thread-search-hit${active ? " is-active" : ""}`}
       aria-label={`Open ${thread.title}`}
       onClick={() => {
         selectThread(thread.id);
@@ -78,10 +81,18 @@ export function ThreadSearchResults({
   query,
   search,
   onSelect,
+  highlightSelected = true,
 }: {
   readonly query: string;
   readonly search: ThreadSearchState;
   readonly onSelect?: () => void;
+  /**
+   * Whether the selected conversation is marked here. The phone Dashboard is
+   * the whole screen and the conversation it would be pointing at is not on
+   * it, so the mark is withheld -- the store's selection is untouched, exactly
+   * as it is for the ordinary rows this list replaces.
+   */
+  readonly highlightSelected?: boolean;
 }) {
   const active = search.hits.filter((hit) => hit.thread.archivedAt === null);
   const archived = search.hits.filter((hit) => hit.thread.archivedAt !== null);
@@ -110,7 +121,13 @@ export function ThreadSearchResults({
         <section>
           <h2 className="thread-search-group">Conversations</h2>
           {active.map((hit) => (
-            <SearchHit key={hit.thread.id} hit={hit} query={query} onSelect={onSelect} />
+            <SearchHit
+              key={hit.thread.id}
+              hit={hit}
+              query={query}
+              onSelect={onSelect}
+              highlightSelected={highlightSelected}
+            />
           ))}
         </section>
       )}
@@ -118,7 +135,13 @@ export function ThreadSearchResults({
         <section>
           <h2 className="thread-search-group">Archived</h2>
           {archived.map((hit) => (
-            <SearchHit key={hit.thread.id} hit={hit} query={query} onSelect={onSelect} />
+            <SearchHit
+              key={hit.thread.id}
+              hit={hit}
+              query={query}
+              onSelect={onSelect}
+              highlightSelected={highlightSelected}
+            />
           ))}
         </section>
       )}

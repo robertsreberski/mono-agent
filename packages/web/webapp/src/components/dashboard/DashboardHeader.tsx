@@ -41,10 +41,11 @@ export function DashboardHeader({ onNavigate }: { readonly onNavigate?: () => vo
           aria-label="Agent settings"
           title="Agent settings"
           disabled={!selectedAgent}
-          onClick={() => {
-            onNavigate?.();
-            window.dispatchEvent(new CustomEvent("mono-agent:agent-settings"));
-          }}
+          // The dialog is not a destination: it opens over the screen the
+          // operator is on, and closing it leaves them there. Navigating first
+          // pushed the phone's conversation underneath it, and popping the
+          // dialog revealed a conversation nobody asked for.
+          onClick={() => { window.dispatchEvent(new CustomEvent("mono-agent:agent-settings")); }}
         >
           <Icon name="settings" size={16} />
         </button>

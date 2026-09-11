@@ -19,6 +19,7 @@ import {
   type ChannelAskSnapshot,
   type ChannelAskSubmissionResult,
   type MonitorProjection,
+  processJobPublicError,
   type ProcessJobProjection,
   type ProviderAuthSessionInput,
   type ProviderAuthSessionSnapshot,
@@ -127,12 +128,30 @@ import {
   type StoredWebSubmission,
   type CronReplyReservationResult,
   type StoredWebPushEvent,
+  isTerminalProcessJobState,
+  type WebProcessJobCardCursor,
+  type WebProcessJobCardRef,
   type WebPushIdentity,
 } from "./store.js";
 
 const DEFAULT_DISCOVERY_INTERVAL_MS = 5_000;
 const DEFAULT_PURGE_INTERVAL_MS = 60 * 60 * 1_000;
 const INFO_TIMEOUT_MS = 2_500;
+/**
+ * How rarely a still-connected agent is re-asked about the job cards this
+ * console still draws as running. Reconnecting is the event that matters; this
+ * is only the floor under a console that never loses the connection but did
+ * lose a notification.
+ */
+const PROCESS_JOB_RECONCILE_INTERVAL_MS = 15 * 60 * 1_000;
+/**
+ * Cards ONE sweep re-asks about across the whole fleet; the rest wait for the
+ * next one. Per-agent it would be this many times the fleet size -- a 67-agent
+ * reconnect would admit thousands of job reads inside one discovery refresh.
+ */
+const PROCESS_JOB_RECONCILE_LIMIT = 50;
+/** Concurrent job reads during a sweep, across the whole fleet. */
+const PROCESS_JOB_RECONCILE_CONCURRENCY = 4;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
 /** Bounded per-agent catalog-admitted model refs; beyond it, oldest go first. */
 const MODEL_CATALOG_CACHE_CAP = 2_048;
@@ -652,6 +671,23 @@ export class WebService {
   private readonly modelCatalogCache = new Map<string, CatalogCacheEntry>();
   /** Parts whose durable copy is being fetched, so concurrent reads fetch once. */
   private persistingReplyImages = new Set<string>();
+  /**
+   * Source id -> when its unsettled job cards were last re-asked about, in ms.
+   * Deliberately in memory: it paces a sweep, and a process that has just
+   * started has by definition missed everything said while it was down.
+   */
+  private readonly jobCardSweepAt = new Map<string, number>();
+  /**
+   * Source id -> the card its last sweep stopped on, so the next one continues
+   * past it. Cards that answer "still running" or "could not ask" stay in the
+   * unsettled set, so without this the oldest page would be the only page ever
+   * asked about and a stale card behind it would never be repaired.
+   */
+  private readonly jobCardProbeCursor = new Map<string, WebProcessJobCardCursor>();
+  /** The agent the last sweep's budget reached last; the next one starts after it. */
+  private jobCardAgentCursor: string | undefined;
+  /** Set while a fleet sweep is in flight, so a sweep never overlaps itself. */
+  private sweepingJobCards = false;
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
   private purgeTimer: ReturnType<typeof setInterval> | undefined;
   private purgePromise: Promise<void> | undefined;
@@ -1684,17 +1720,7 @@ export class WebService {
         ...(input.text === undefined ? {} : { responseText: input.text }),
         ...(input.parts === undefined ? {} : { replyParts: input.parts }),
       });
-      // Addressed, not searched. Scanning a page of the conversation meant a job
-      // that finished behind thirty later messages emitted no invalidation at
-      // all, and its card sat at "running" until something else forced a read.
-      const message = this.store.getMessage(messageId);
-      if (!completed.duplicate && message !== undefined) {
-        this.emit("message.changed", input.threadId, { messageId: message.id, updatedAt: message.updatedAt });
-      }
-      // Read back rather than trusted: the shared notification result leaves the
-      // conversation optional, and an event that carries `undefined` is exactly
-      // the bare event this normalisation exists to remove.
-      this.emitStoredThread(input.threadId, ["threads.changed", "thread.changed"]);
+      this.emitProcessJobCardChange(input.threadId, messageId, completed.duplicate);
       if (input.wakePrompt === undefined) return completed;
       if (this.connections.get(input.sourceId) === undefined) await this.refreshAgents();
       if (this.stopped) {
@@ -1716,6 +1742,23 @@ export class WebService {
     });
     this.activeNotifications.set(activeKey, delivery);
     return delivery;
+  }
+
+  /**
+   * Announce one written job card. Addressed, not searched: scanning a page of
+   * the conversation meant a job that finished behind thirty later messages
+   * emitted no invalidation at all, and its card sat at "running" until
+   * something else forced a read.
+   */
+  private emitProcessJobCardChange(threadId: string, messageId: string, duplicate: boolean): void {
+    const message = this.store.getMessage(messageId);
+    if (!duplicate && message !== undefined) {
+      this.emit("message.changed", threadId, { messageId: message.id, updatedAt: message.updatedAt });
+    }
+    // Read back rather than trusted: the shared notification result leaves the
+    // conversation optional, and an event that carries `undefined` is exactly
+    // the bare event this normalisation exists to remove.
+    this.emitStoredThread(threadId, ["threads.changed", "thread.changed"]);
   }
 
   /** Proxy one authenticated retained card to its exact agent/thread owner. */
@@ -2885,6 +2928,196 @@ export class WebService {
     };
   }
 
+  /**
+   * Re-ask each due agent about the job cards this console still draws as
+   * running.
+   *
+   * A process-job card is written `queued|starting|running` from the agent's
+   * notification and leaves that state only when a terminal one arrives. If
+   * that notification never lands -- the agent restarted while this service was
+   * disconnected, a wake was lost -- nothing else reconciles it: the card sits
+   * in `listActiveThreads` and in the job-activity aggregate forever, and the
+   * Dashboard reports work that stopped days ago.
+   *
+   * Due means the connection was just (re)established, which is the event that
+   * loses notifications, or the slow floor has passed on a connection that
+   * never dropped. Agents that do not support jobs are left alone, and so are
+   * cards for a source id discovery no longer reports -- there is nothing to
+   * ask, and a card nobody can confirm is not evidence that the job ended.
+   *
+   * One sweep is bounded for the SERVICE, not per agent: one card budget and
+   * one worker pool cover the whole fleet, because a fleet reconnect is the
+   * very case this runs in. Agents the budget did not reach keep no sweep
+   * timestamp, so they stay due and the next refresh starts with them.
+   */
+  private async reconcileDueProcessJobCards(
+    previous: ReadonlyMap<string, AgentConnection>,
+    next: ReadonlyMap<string, AgentConnection>,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (this.sweepingJobCards) return;
+    const now = this.currentDate().getTime();
+    // Sorted, so the rotation below is over a stable order rather than over
+    // whatever order discovery happened to report the fleet in.
+    const due = [...next].filter(([sourceId, connection]) => {
+      if (connection.info.supportsJobs !== true) return false;
+      const before = previous.get(sourceId);
+      // A restart under the same source id is the same event as a reconnect:
+      // the process that owned those jobs is gone either way.
+      if (before === undefined || before.generation !== connection.generation) return true;
+      const swept = this.jobCardSweepAt.get(sourceId);
+      return swept === undefined || now - swept >= PROCESS_JOB_RECONCILE_INTERVAL_MS;
+    }).sort(([left], [right]) => left.localeCompare(right));
+    // Nothing is remembered about an agent discovery no longer reports: it
+    // comes back on a new generation, which is due on sight either way.
+    for (const sourceId of [...this.jobCardSweepAt.keys()]) {
+      if (!next.has(sourceId)) {
+        this.jobCardSweepAt.delete(sourceId);
+        this.jobCardProbeCursor.delete(sourceId);
+      }
+    }
+    if (due.length === 0) return;
+    this.sweepingJobCards = true;
+    try {
+      await this.sweepProcessJobCards(due, now, signal);
+    } finally {
+      this.sweepingJobCards = false;
+    }
+  }
+
+  /** One bounded fleet-wide pass; every card taken is asked about exactly once. */
+  private async sweepProcessJobCards(
+    due: ReadonlyArray<readonly [string, AgentConnection]>,
+    now: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    // An even share of the one budget, so no agent at the head of the order can
+    // spend it all, and every agent that is reached gets at least one card.
+    const share = Math.max(1, Math.floor(PROCESS_JOB_RECONCILE_LIMIT / due.length));
+    const start = Math.max(0, due.findIndex(([sourceId]) => sourceId === this.jobCardAgentCursor) + 1);
+    const ordered = [...due.slice(start), ...due.slice(0, start)];
+    const work: Array<{
+      readonly sourceId: string;
+      readonly connection: AgentConnection;
+      readonly card: WebProcessJobCardRef;
+    }> = [];
+    let reached: string | undefined;
+    for (const [sourceId, connection] of ordered) {
+      if (work.length >= PROCESS_JOB_RECONCILE_LIMIT) break;
+      reached = sourceId;
+      this.jobCardSweepAt.set(sourceId, now);
+      const take = Math.min(share, PROCESS_JOB_RECONCILE_LIMIT - work.length);
+      for (const card of this.nextProcessJobCardPage(sourceId, take)) {
+        work.push({ sourceId, connection, card });
+      }
+    }
+    this.jobCardAgentCursor = reached;
+    let cursor = 0;
+    const probe = async (): Promise<void> => {
+      for (let index = cursor++; index < work.length; index = cursor++) {
+        if (this.stopped || signal.aborted) return;
+        const { sourceId, connection, card } = work[index]!;
+        await this.reconcileProcessJobCard(sourceId, connection, card, signal);
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(PROCESS_JOB_RECONCILE_CONCURRENCY, work.length) },
+      async () => { await probe(); },
+    ));
+  }
+
+  /**
+   * One agent's next page of unsettled cards, continuing past the last sweep.
+   *
+   * A page shorter than asked for means the cursor has reached the end of this
+   * agent's set, so the rest is taken from the front -- the order stays the
+   * store's own, and a card that keeps answering "still running" cannot hold
+   * the page against the ones behind it.
+   */
+  private nextProcessJobCardPage(sourceId: string, limit: number): readonly WebProcessJobCardRef[] {
+    if (limit <= 0) return [];
+    const after = this.jobCardProbeCursor.get(sourceId);
+    const tail = this.store.listUnsettledProcessJobCards(sourceId, limit, after);
+    const cards = after === undefined || tail.length >= limit
+      ? tail
+      : [
+          ...tail,
+          ...this.store.listUnsettledProcessJobCards(sourceId, limit - tail.length)
+            .filter((card) => !tail.some((seen) => seen.jobId === card.jobId)),
+        ];
+    const last = cards.at(-1);
+    if (last === undefined) this.jobCardProbeCursor.delete(sourceId);
+    else this.jobCardProbeCursor.set(sourceId, { updatedAt: last.updatedAt, jobId: last.jobId });
+    return cards;
+  }
+
+  private async reconcileProcessJobCard(
+    sourceId: string,
+    connection: AgentConnection,
+    card: WebProcessJobCardRef,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let projection: ProcessJobProjection;
+    try {
+      projection = await connection.client.getJob(
+        card.jobId,
+        AbortSignal.any([signal, AbortSignal.timeout(INFO_TIMEOUT_MS)]),
+      );
+    } catch (error) {
+      if (errorCode(error) !== "process_job_not_found") {
+        // "This console could not ask" is not "the job ended". The card stays
+        // exactly as it is and the next sweep asks again.
+        this.options.logger?.debug?.("A retained process-job card could not be re-read from its agent.", {
+          sourceId,
+          jobId: card.jobId,
+          error: errorMessage(error),
+        });
+        return;
+      }
+      // The agent keeps no lifecycle for this job: it restarted, or the job
+      // aged out of its retained set. Nothing will ever settle this card, so
+      // this console settles it with the one terminal state the contract has
+      // for a job whose end nobody observed, and says why on the card.
+      this.applyReconciledProcessJob(sourceId, card, {
+        ...card.job,
+        state: "interrupted",
+        timestamps: { ...card.job.timestamps, completedAt: this.currentDate().toISOString() },
+        lastError: processJobPublicError("process_job_agent_restarted"),
+      });
+      return;
+    }
+    // A job the agent still has in flight is left to announce its own end.
+    if (!isTerminalProcessJobState(projection.state)) return;
+    this.applyReconciledProcessJob(sourceId, card, projection);
+  }
+
+  /** Write a reconciled projection exactly as its notification would have. */
+  private applyReconciledProcessJob(
+    sourceId: string,
+    card: WebProcessJobCardRef,
+    projection: ProcessJobProjection,
+  ): void {
+    try {
+      const written = this.store.upsertProcessJobCard({
+        sourceId,
+        threadId: card.threadId,
+        deliveryKey: card.deliveryKey,
+        processJob: projection,
+      });
+      if (written.duplicate) return;
+      this.emitProcessJobCardChange(card.threadId, written.messageId, false);
+    } catch (error) {
+      // The card's own contract refused the projection -- a changed identity
+      // field, or a lifecycle step the transition table does not allow. The
+      // card is left as it is rather than forced.
+      this.options.logger?.warn?.("A retained process-job card refused its agent's projection.", {
+        sourceId,
+        jobId: card.jobId,
+        error: errorMessage(error),
+      });
+    }
+  }
+
   private async refreshAgentsOnce(signal: AbortSignal): Promise<void> {
     const discover = this.options.discoverImpl ?? discoverOperatorAgents;
     let discovered: readonly DiscoveredOperatorAgent[];
@@ -2968,6 +3201,7 @@ export class WebService {
         return offlineSummary(agent, generation);
       }
     }));
+    const previousConnections = this.connections;
     this.connections = nextConnections;
     const agentsChanged = this.store.replaceAgents(summaries);
     // Usable provider authentication comes from the live connection, so when it
@@ -3007,6 +3241,7 @@ export class WebService {
     if (agentsChanged || capabilityChanged) this.emit("agents.changed");
     for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
     if (cronChangedSources.size > 0) this.emit("threads.changed");
+    await this.reconcileDueProcessJobCards(previousConnections, nextConnections, signal);
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);
     }

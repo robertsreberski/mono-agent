@@ -23,6 +23,7 @@ function ThreadListItem({
   thread,
   unread,
   onNavigate,
+  highlightSelected,
 }: {
   readonly thread: ThreadSummary;
   /** This device has not seen the conversation as it now stands. */
@@ -30,10 +31,14 @@ function ThreadListItem({
   /** Closing the drawer belongs to the row that navigated, not to a click that
       happened to bubble through the list container. */
   readonly onNavigate?: () => void;
+  /** The selected conversation is on screen, so saying which row it is means
+      something. See {@link RecentSection}. */
+  readonly highlightSelected: boolean;
 }) {
-  const isActive = useAuiState(
+  const selected = useAuiState(
     (state) => state.threads.mainThreadId === state.threadListItem.id,
   );
+  const isActive = selected && highlightSelected;
   const presentation = threadPresentation(thread);
   const kind = dashboardThreadKind(thread);
   // The glyph says what the row IS; when a failure has taken the glyph, the
@@ -80,17 +85,26 @@ function ThreadListItem({
  *
  * A search REPLACES these rows -- it goes to the server and reads every
  * conversation of the agent rather than the page this list has loaded.
+ *
+ * A row is marked as the open one only where the operator can SEE the
+ * conversation it names. The store always holds a selection, because the chat
+ * screen needs one; on a phone showing the Dashboard that conversation is on
+ * the screen behind, and a highlighted row there reads as a list that has
+ * already made the operator's choice for them.
  */
 export function RecentSection({
   searching,
   query,
   search,
   onNavigate,
+  highlightSelected = true,
 }: {
   readonly searching: boolean;
   readonly query: string;
   readonly search: ThreadSearchState;
   readonly onNavigate?: () => void;
+  /** See {@link Dashboard}. */
+  readonly highlightSelected?: boolean;
 }) {
   const {
     threads,
@@ -149,7 +163,7 @@ export function RecentSection({
         </div>
       </div>
       {automations ? (
-        <AutomationsList query={query} onSelect={onNavigate} />
+        <AutomationsList query={query} onSelect={onNavigate} highlightSelected={highlightSelected} />
       ) : (
       <>
       {threadListError !== null && (
@@ -160,7 +174,12 @@ export function RecentSection({
       )}
       <ThreadListPrimitive.Root className="thread-list">
         {searching ? (
-          <ThreadSearchResults query={query} search={search} onSelect={onNavigate} />
+          <ThreadSearchResults
+            query={query}
+            search={search}
+            onSelect={onNavigate}
+            highlightSelected={highlightSelected}
+          />
         ) : (
           <>
             <ThreadListPrimitive.Items archived={showArchived}>
@@ -171,6 +190,7 @@ export function RecentSection({
                     thread={thread}
                     unread={unreadThreadIds.has(thread.id)}
                     onNavigate={onNavigate}
+                    highlightSelected={highlightSelected}
                   />
                 ) : null;
               }}
