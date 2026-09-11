@@ -5006,6 +5006,111 @@ describe("WebStore message sequence and part deltas", () => {
     store.close();
   });
 
+  it("reads the running listing in the same number of statements for one card and fifty", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+
+    // Each pair is one of BOTH kinds of membership: a running foreground turn,
+    // and a settled turn whose conversation is only active because a retained
+    // job is queued. Growing the set by whole pairs keeps the work the listing
+    // has to do the same shape, so a count that still moves moved per row.
+    let jobs = 0;
+    const addPair = (): void => {
+      const running = store.createThread("agent-one");
+      const live = store.beginTurn({ threadId: running.id, text: "work", attachmentIds: [] });
+      store.applyStreamFrames(live.turnId, [
+        { kind: "append", delta: "reading the file" },
+        { kind: "event", event: { type: "tool_call_started", id: `call-${jobs}`, name: "Read" } },
+      ]);
+      const queued = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: queued.id, text: "ask", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "answered");
+      jobs += 1;
+      const job = fakeProcessJob({
+        state: "queued",
+        jobId: `${String(jobs).padStart(8, "0")}-1111-4111-8111-111111111111`,
+        conversationId: `web:${queued.id}`,
+      });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: queued.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    };
+
+    const measure = (): { statements: number; listed: ReturnType<WebStore["listActiveThreads"]> } => {
+      let statements = 0;
+      const holder = store as unknown as { database: DatabaseSync };
+      const real = holder.database;
+      // Count what the connection is actually asked to RUN, not what it is
+      // asked to compile: a reader that prepares once and executes per row is
+      // the shape this listing is not allowed to have.
+      holder.database = new Proxy(real, {
+        get(target, property) {
+          const value = Reflect.get(target, property) as unknown;
+          if (typeof value !== "function") return value;
+          if (property !== "prepare") return value.bind(target);
+          return (sql: string) => {
+            const statement = (value as (text: string) => object).call(target, sql);
+            return new Proxy(statement, {
+              get(inner, method) {
+                const run = Reflect.get(inner, method) as unknown;
+                if (typeof run !== "function") return run;
+                return (...args: unknown[]) => {
+                  if (method === "get" || method === "all" || method === "run" || method === "iterate") {
+                    statements += 1;
+                  }
+                  return (run as (...values: unknown[]) => unknown).apply(inner, args);
+                };
+              },
+            });
+          };
+        },
+      }) as DatabaseSync;
+      try {
+        // Read the listing FIRST: a count taken in the same object literal is
+        // taken before the call that moves it, and proves nothing.
+        const listed = store.listActiveThreads();
+        return { statements, listed };
+      } finally {
+        holder.database = real;
+      }
+    };
+
+    addPair();
+    const one = measure();
+    for (let index = 1; index < 5; index += 1) addPair();
+    const five = measure();
+    for (let index = 5; index < 25; index += 1) addPair();
+    const full = measure();
+
+    expect(one.listed.threads).toHaveLength(2);
+    expect(five.listed.threads).toHaveLength(10);
+    expect(full.listed.threads).toHaveLength(50);
+    expect(five.statements).toBe(one.statements);
+    expect(full.statements).toBe(one.statements);
+    // The projection is still the whole answer, not a cheaper one: both kinds
+    // of membership, the job activity that put half of them there, and the
+    // bounded activity that belongs only to a running turn.
+    expect(full.listed.total).toBe(50);
+    expect(full.listed.runningCounts).toEqual({ "agent-one": 50 });
+    expect(full.listed.threads.filter((thread) => thread.runState.status === "running")).toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.jobActivity?.queued === 1)).toHaveLength(25);
+    expect(full.listed.threads.every((thread) =>
+      (thread.runState.status === "running") === (thread.runState.activity !== undefined))).toBe(true);
+    // Each card's own newest message, not one thread's read spread over fifty.
+    expect(full.listed.threads.filter((thread) => thread.lastMessagePreview === "reading the file"))
+      .toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.lastMessagePreview === undefined)).toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.runState.activity?.toolCallCount === 1))
+      .toHaveLength(25);
+    store.close();
+  });
+
   it("caps the running cards at fifty while the counts stay exact", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
