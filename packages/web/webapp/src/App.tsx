@@ -362,6 +362,7 @@ export function App() {
     clearError,
     hasServerSnapshot,
     hasRunningThread,
+    openProjectId,
     retry,
     setConversationVisible,
   } = useConsoleStore();
@@ -400,6 +401,13 @@ export function App() {
   const closeAgentSettings = useCallback(() => setAgentSettings(false), []);
   const closeProjectSettings = useCallback(() => setProjectSettings(null), []);
   const togglePalette = useCallback(() => setPalette((current) => !current), []);
+
+  // A project page lives in the dashboard slot. Opening one from the pushed
+  // conversation screen on a phone must bring that slot back, or the page
+  // lands aria-hidden and inert behind the conversation.
+  useEffect(() => {
+    if (openProjectId !== null && mobile) setScreen("dashboard");
+  }, [mobile, openProjectId]);
 
   const startDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     drawerGestureRef.current = null;

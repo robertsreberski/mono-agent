@@ -9,10 +9,16 @@ export type ProjectSettingsState =
 const MAX_NAME_CHARACTERS = 120;
 const MAX_CONTEXT_CHARACTERS = 4000;
 
+/** Short month names, so the created line reads `d MMM` in every locale. */
+const SHORT_MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+] as const;
+
 const createdLabel = (createdAt: string): string => {
   const date = new Date(createdAt);
   if (Number.isNaN(date.getTime())) return createdAt;
-  return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  return `${String(date.getUTCDate())} ${SHORT_MONTHS[date.getUTCMonth()]}`;
 };
 
 /**

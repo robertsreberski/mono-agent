@@ -2509,33 +2509,63 @@ export class WebService {
       || this.drainingLiveInputThreads.has(threadId)) return;
     this.drainingLiveInputThreads.add(threadId);
     try {
-      const thread = this.store.getThread(threadId);
-      if (thread === undefined || thread.archivedAt !== null || !thread.canSend) return;
-      const connection = this.connections.get(thread.sourceId);
-      if (connection === undefined) return;
-      const started = this.store.promoteNextQueuedLiveInput(threadId);
-      if (started === undefined) return;
-      // Resolved anew: the queued text was stored unprefixed, and the
-      // membership or context may have changed while it waited.
-      this.launchTurn(started, connection.client, this.withProjectPrefix(threadId, started.text));
-      // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
-      // message (its live-input status becomes "applied") as well as opening
-      // the assistant row, and a console that heard only about the second was
-      // left showing a steer that still reads "queued".
-      this.emit("message.changed", threadId, {
-        messageId: started.userMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("message.changed", threadId, {
-        messageId: started.assistantMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("turn.changed", threadId, { turn: started.thread.runState });
-      this.emitThread("threads.changed", { thread: started.thread });
-      this.refreshMemberProject(started.thread);
+      for (;;) {
+        const thread = this.store.getThread(threadId);
+        if (thread === undefined || thread.archivedAt !== null || !thread.canSend) return;
+        const connection = this.connections.get(thread.sourceId);
+        if (connection === undefined) return;
+        const started = this.store.promoteNextQueuedLiveInput(threadId);
+        if (started === undefined) return;
+        // Resolved anew: the queued text was stored unprefixed, and the
+        // membership or context may have changed while it waited.
+        const operatorText = this.withProjectPrefix(threadId, started.text);
+        if (operatorText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+          // Never dispatch an over-limit turn, and never throw into the void
+          // drain: the promoted turn settles on the launch-failure path, which
+          // consumes this head so the next queued input still drains.
+          this.failTurnBeforeDispatch(threadId, started.turnId, operatorText.length);
+          continue;
+        }
+        this.launchTurn(started, connection.client, operatorText);
+        // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
+        // message (its live-input status becomes "applied") as well as opening
+        // the assistant row, and a console that heard only about the second was
+        // left showing a steer that still reads "queued".
+        this.emit("message.changed", threadId, {
+          messageId: started.userMessageId,
+          updatedAt: started.thread.updatedAt,
+        });
+        this.emit("message.changed", threadId, {
+          messageId: started.assistantMessageId,
+          updatedAt: started.thread.updatedAt,
+        });
+        this.emit("turn.changed", threadId, { turn: started.thread.runState });
+        this.emitThread("threads.changed", { thread: started.thread });
+        this.refreshMemberProject(started.thread);
+        return;
+      }
     } finally {
       this.drainingLiveInputThreads.delete(threadId);
     }
+  }
+
+  /**
+   * Settle a promoted turn that can never be dispatched, on the same path a
+   * launch failure takes: no operator call, no active turn, a visible failed
+   * turn naming the bound that stopped it.
+   */
+  private failTurnBeforeDispatch(threadId: string, turnId: string, composedLength: number): void {
+    const detail = this.store.failTurn(turnId, {
+      message: `The message is too large to send with this project's context `
+        + `(${String(composedLength)} of at most ${String(WEB_MAX_TURN_TEXT_CHARACTERS)} characters).`,
+      code: "operator_too_large",
+    });
+    this.emitMessageWrite(threadId, detail.write);
+    this.emit("turn.changed", threadId, { turn: detail.thread.runState });
+    this.emitThread("thread.changed", { thread: detail.thread });
+    this.emitThread("threads.changed", { thread: detail.thread });
+    this.refreshMemberProject(detail.thread);
+    this.announcePushEvent(`turn:${turnId}:terminal`);
   }
 
   private async deliverProcessJobWake(
@@ -2682,6 +2712,19 @@ export class WebService {
         });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
+      // Bounded before any turn exists: an over-limit composition fails the
+      // delivery the way an unstartable follow-up does, without an operator
+      // call. Abandoned rather than held, so a later redelivery with a smaller
+      // composition can still proceed.
+      const followUpText = this.withProjectPrefix(input.threadId, input.wakePrompt);
+      if (followUpText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+        this.store.abandonProcessJobWake({
+          sourceId: input.sourceId,
+          jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey,
+        });
+        return { delivered: false, code: "process_job_wake_failed", retryable: false };
+      }
       let started;
       try {
         const selection = this.resolveTurnSelection(input.threadId);
@@ -2713,7 +2756,7 @@ export class WebService {
       const { completion, admitted } = this.launchTurn(
         started,
         refreshedConnection.client,
-        this.withProjectPrefix(input.threadId, input.wakePrompt),
+        followUpText,
         input.deliveryKey,
       );
       // Receipt ownership moves to the durable turn below. The turn remains
@@ -2918,6 +2961,13 @@ export class WebService {
         abandon();
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
+      // Bounded before any turn exists, like the process-job follow-up: no
+      // operator call, and abandoned so a later redelivery can still proceed.
+      const followUpText = this.withProjectPrefix(input.threadId, input.wakePrompt);
+      if (followUpText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+        abandon();
+        return { delivered: false, code: "monitor_wake_failed", retryable: false };
+      }
       let started;
       try {
         const selection = this.resolveTurnSelection(input.threadId);
@@ -2941,7 +2991,7 @@ export class WebService {
       const { completion } = this.launchTurn(
         started,
         refreshedConnection.client,
-        this.withProjectPrefix(input.threadId, input.wakePrompt),
+        followUpText,
         input.deliveryKey,
       );
       this.emit("message.changed", input.threadId, {

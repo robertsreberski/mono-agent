@@ -65,6 +65,7 @@ import type {
   MessageDelta,
   MessagePart,
   ThreadDetail,
+  ThreadPage,
   ThreadSummary,
   WebEvent,
   WebMessage,
@@ -9824,6 +9825,111 @@ describe("ConsoleStoreProvider integration", () => {
     act(() => store.current.selectAgent("beta"));
     expect(store.current.openProjectId).toBeNull();
     expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("ignores a late member page for the previously open project", async () => {
+    const projectA = project("project-a", "alpha", { name: "A" });
+    const projectB = project("project-b", "alpha", { name: "B" });
+    const memberA = thread("member-a", "alpha", { title: "A member", projectId: projectA.id });
+    const memberB = thread("member-b", "alpha", { title: "B member", projectId: projectB.id });
+    vi.mocked(api.bootstrap).mockResolvedValue(
+      bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [],
+        undefined,
+        { threadsSourceId: "alpha", projects: [projectA, projectB], projectsSourceId: "alpha" },
+      ),
+    );
+    const store = await renderStore();
+    let resolveA!: (page: ThreadPage) => void;
+    let resolveB!: (page: ThreadPage) => void;
+    vi.mocked(api.projectThreads).mockImplementation(async (_sourceId, projectId) => {
+      if (projectId === projectA.id) return new Promise<ThreadPage>((resolve) => { resolveA = resolve; });
+      return new Promise<ThreadPage>((resolve) => { resolveB = resolve; });
+    });
+
+    act(() => store.current.openProjectById(projectA.id));
+    act(() => store.current.openProjectById(projectB.id));
+    await act(async () => { resolveB({ threads: [memberB] }); });
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([memberB.id]));
+    await act(async () => { resolveA({ threads: [memberA], nextCursor: "cursor-a" }); });
+
+    // A's slow page lands nowhere: not the ids, not the cursor, not loading.
+    expect(store.current.projectMembers.map((row) => row.id)).toEqual([memberB.id]);
+    expect(store.current.hasMoreProjectMembers).toBe(false);
+    expect(store.current.projectMembersLoading).toBe(false);
+  });
+
+  it("keeps newer event summaries and tombstoned removals across late listings", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("project.changed", {
+      version: 1,
+      type: "project.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A stale list response must not revert the newer event summary.
+    vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+    await act(async () => { await store.current.loadProjects("alpha"); });
+    expect(store.current.projectsByAgent.alpha).toEqual([updated]);
+
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+
+    // A resurrecting list response must not undo the tombstoned removal.
+    vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+    await act(async () => { await store.current.loadProjects("alpha"); });
+    expect(store.current.projectsByAgent.alpha).toEqual([]);
+  });
+
+  it("closes the open page when a remote archive lands", async () => {
+    const store = await renderProjectStore();
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+
+    const archived = {
+      ...webProject,
+      archivedAt: "2026-09-08T10:00:00.000Z",
+      revision: webProject.revision + 1,
+    };
+    act(() => FakeEventSource.latest?.emit("project.changed", {
+      version: 1,
+      type: "project.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: archived },
+    }));
+    await waitFor(() => expect(store.current.openProjectId).toBeNull());
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("derives membership from the reconciled projection, not the stale event", async () => {
+    const store = await renderProjectStore();
+    const held = { ...member, revision: 3, projectId: webProject.id };
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [held] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]));
+
+    // A stale detach event (rev 2) races a held attach (rev 3): the member stays.
+    const stale = { ...member, revision: 2, projectId: null as string | null };
+    act(() => FakeEventSource.latest?.emit("thread.changed", {
+      version: 1,
+      type: "thread.changed",
+      threadId: member.id,
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { thread: stale },
+    }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]);
+    expect(store.current.threads.find((row) => row.id === member.id)?.projectId).toBe(webProject.id);
   });
   });
 });

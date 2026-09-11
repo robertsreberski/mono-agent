@@ -14,6 +14,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../contracts.js";
+import { WEB_MAX_TURN_TEXT_CHARACTERS } from "../contracts.js";
 import { formatCronReplyContext } from "../cron-reply-context.js";
 import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
@@ -6957,6 +6958,79 @@ describe("conversation project context injection", () => {
       expect(detached.length).toBeGreaterThanOrEqual(2);
       expect(service.store.getThread(thread.id)?.projectId).toBeNull();
       unsubscribe();
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+describe("conversation project dispatch bounds", () => {
+  it("fails an oversized queued promotion without calling the operator", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onTurn(body) { turnBodies.push(body); },
+      }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Initial task" });
+      await waitFor(() => stream !== undefined);
+      // Queue while the first turn is active, then enlarge the context past
+      // the turn bound before the queue drains.
+      const receipt = service.submit(thread.id, {
+        submissionId: "11111111-1111-4111-8111-111111111111",
+        text: "Steer this",
+      });
+      expect(receipt.outcome).toBe("live-input");
+      service.patchProject(project.id, { context: `Enlarged ${"x".repeat(WEB_MAX_TURN_TEXT_CHARACTERS)}` });
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "failed");
+
+      expect(turnBodies).toHaveLength(1);
+      expect(service.store.getThread(thread.id)?.runState).toMatchObject({
+        status: "failed",
+        error: { code: "operator_too_large" },
+      });
+      const userMessages = service.thread(thread.id).messages.filter((message) => message.role === "user");
+      expect(userMessages.map((message) => message.parts)).toContainEqual([{ type: "text", text: "Steer this" }]);
+      expect(JSON.stringify(userMessages)).not.toContain("project_context");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("bounds an oversized wake follow-up without creating a turn", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      const receipt = await service.deliverNotification({
+        sourceId: "agent-one",
+        triggerKind: "job",
+        deliveryKey: terminal.wake.deliveryKey,
+        threadId: thread.id,
+        processJob: terminal,
+        wakePrompt: "x".repeat(WEB_MAX_TURN_TEXT_CHARACTERS),
+      });
+      expect(receipt).toMatchObject({
+        delivery: { delivered: false, code: "process_job_wake_failed", retryable: false },
+      });
+      expect(turnBodies).toHaveLength(0);
+      expect(service.store.getThread(thread.id)?.runState.status).toBe("idle");
+      // The durable job card is intake state, not a turn: nothing may carry a turn.
+      expect(service.thread(thread.id).messages.every((message) => message.turnId === undefined)).toBe(true);
     } finally {
       await service.stop();
     }

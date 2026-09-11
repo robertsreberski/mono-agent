@@ -72,7 +72,8 @@ describe("ProjectSettingsSheet", () => {
     expect(screen.getByRole("heading", { name: "Project settings" })).toBeVisible();
     expect(screen.getByLabelText("Project name")).toHaveValue("Web console");
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(screen.getByText(/Created .* · Alpha/u)).toBeVisible();
+    // Locale-independent `d MMM`, stable across machines and screenshots.
+    expect(screen.getByText("Created 17 Jul · Alpha")).toBeVisible();
 
     fireEvent.change(screen.getByLabelText("Project context"), { target: { value: "Stay sharper." } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
