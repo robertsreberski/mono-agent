@@ -2305,6 +2305,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const activeRefreshInFlightRef = useRef(false);
   const activeRefreshDirtyRef = useRef(false);
   const activeRefreshTimerRef = useRef<number | null>(null);
+  /** The read that is on the wire right now, so teardown can abandon it. */
+  const activeRefreshControllerRef = useRef<AbortController | null>(null);
   const activeRefreshedAtRef = useRef(0);
   const invalidateActiveThreadsRef = useRef<() => void>(() => undefined);
 
@@ -2331,6 +2333,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
 
   const refreshActiveThreads = useCallback(async () => {
+    if (!mountedRef.current) return;
     if (activeRefreshInFlightRef.current) {
       activeRefreshDirtyRef.current = true;
       return;
@@ -2339,23 +2342,35 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     activeRefreshDirtyRef.current = false;
     activeRefreshedAtRef.current = Date.now();
     const seq = ++activeThreadsSeqRef.current;
+    // OWNED, so teardown can abandon it. This read has no queue and no
+    // conversation behind it, so what it settles into is a state publication
+    // and a `finally` that arms the next one -- and both of those outlived the
+    // tree that asked for them.
+    const controller = new AbortController();
+    activeRefreshControllerRef.current = controller;
     try {
       const next = await boundedRequest(
-        (signal) => api.activeThreads(signal),
+        (signal) => api.activeThreads(anySignal(signal, controller.signal)),
         THREAD_READ_TIMEOUT_MS,
       );
+      if (!mountedRef.current || controller.signal.aborted) return;
       acceptActiveThreads(next, seq);
     } catch {
+      if (!mountedRef.current || controller.signal.aborted) return;
       // The one read whose FAILURE is itself information. The section keeps
       // its cards and says they are last known, because going quiet here would
       // read as "nothing is running".
       setActiveThreadsStale(true);
     } finally {
-      activeRefreshInFlightRef.current = false;
-      if (activeRefreshDirtyRef.current) {
-        activeRefreshDirtyRef.current = false;
-        invalidateActiveThreadsRef.current();
+      if (activeRefreshControllerRef.current === controller) {
+        activeRefreshControllerRef.current = null;
       }
+      activeRefreshInFlightRef.current = false;
+      // Consumed either way: a torn-down console owes nobody the trailing read
+      // its dirty bit stands for.
+      const dirty = activeRefreshDirtyRef.current;
+      activeRefreshDirtyRef.current = false;
+      if (dirty) invalidateActiveThreadsRef.current();
     }
   }, [acceptActiveThreads]);
 
@@ -2369,6 +2384,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * every one of them reaches here regardless of what is selected.
    */
   const invalidateActiveThreads = useCallback(() => {
+    // A read that settles after the tree is gone comes back through here. The
+    // cleanup below clears the timer pending AT teardown; this is what stops
+    // the one that would be armed after it.
+    if (!mountedRef.current) return;
     if (activeRefreshInFlightRef.current) {
       activeRefreshDirtyRef.current = true;
       return;
@@ -2388,6 +2407,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // handler is built once, and an effect would leave it a commit behind.
   invalidateActiveThreadsRef.current = invalidateActiveThreads;
   useEffect(() => () => {
+    // The read still on the wire goes with the timer. Its `catch` published
+    // staleness and its `finally` invalidated, so a console the operator had
+    // already closed put one more request on the wire and then kept the
+    // interval going.
+    activeRefreshControllerRef.current?.abort();
+    activeRefreshControllerRef.current = null;
+    activeRefreshDirtyRef.current = false;
     if (activeRefreshTimerRef.current === null) return;
     window.clearTimeout(activeRefreshTimerRef.current);
     activeRefreshTimerRef.current = null;

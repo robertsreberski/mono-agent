@@ -9184,6 +9184,45 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.activeThreads?.authoritative).toBe(true);
     });
 
+    it("abandons the read in flight when the tree goes, and asks for nothing more", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        // A read that has not answered yet, and a second event behind it that
+        // marks the listing dirty while it is out.
+        let settle: (value: ReturnType<typeof listing>) => void = () => undefined;
+        const signals: AbortSignal[] = [];
+        vi.mocked(api.activeThreads).mockImplementation(async (signal?: AbortSignal) => {
+          if (signal !== undefined) signals.push(signal);
+          return new Promise<ReturnType<typeof listing>>((resolve) => { settle = resolve; });
+        });
+        emit("threads.changed", { threadId: "beta-other" });
+        emit("threads.changed", { threadId: "beta-another" });
+        expect(signals).toHaveLength(1);
+        const issued = vi.mocked(api.activeThreads).mock.calls.length;
+
+        cleanupDom();
+
+        // The request goes with the tree rather than being left to answer into
+        // one that is gone.
+        expect(signals[0]?.aborted).toBe(true);
+
+        // It answers anyway, which is what a transport does. Its `finally`
+        // consumed the dirty bit and invalidated, and that is what used to arm
+        // the interval again and put one more request on the wire.
+        await act(async () => {
+          settle(listing([]));
+          await vi.advanceTimersByTimeAsync(ACTIVE_THREADS_REFRESH_INTERVAL_MS + 400);
+        });
+
+        expect(vi.mocked(api.activeThreads).mock.calls).toHaveLength(issued);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("moves the card's activity from the event, while the listing is still on the wire", async () => {
       const store = await renderStore();
       await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
