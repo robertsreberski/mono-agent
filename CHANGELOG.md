@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- An over-cap `Agent` (subagent) result is now spilled to the run's tool-output
+  artifact directory instead of being silently cut. The retained tool result
+  kept its 12,000-character answer cap and 24 KB byte cap, but the text beyond
+  them was simply dropped — a long research report from a subagent lost its
+  tail with no way to recover it. When the answer exceeds the cap, the activity
+  log is elided, or the byte cap fires, the complete result is written through
+  the same host artifact sink the tool-payload guard uses, the retained text
+  names the file directly under its header
+  (`[result truncated; full result saved to: …]`), and the path is recorded as
+  a `tool_payload_saved_paths` artifact reference in tool history. Without a
+  sink the text says the full result was not saved.
+
 - **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
   22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
   bytes to raw control characters instead of the WHATWG code points, so
