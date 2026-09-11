@@ -1434,6 +1434,25 @@ describe("getPiBuiltinTools Agent registration", () => {
 
     expect(run.mock.calls[0][0]).toMatchObject({ skills, skillsRoot: "/repo/skills" });
   });
+
+  it("spills an over-cap subagent answer through the run's artifact sink", async () => {
+    // Same sink the bloat guard is given; an Agent result stays under that
+    // guard's cap by design, so this is the only way its full text is kept.
+    const runArtifactDir = join(tempWorkspace(), ".mono-agent", "artifacts", "run-agent");
+    const answer = "r".repeat(40_000);
+    const agent = getPiBuiltinTools(["Agent"], {
+      subagents: { ...subagents(), run: async () => ({ text: answer, events: [] }) },
+      persistArtifact: makeSink(runArtifactDir),
+    }).find((tool) => tool.name === "Agent");
+
+    const result = await agent.execute("c-spill", { name: "researcher", prompt: "x" });
+
+    const [saved] = readdirSync(join(runArtifactDir, "tool-output"));
+    expect(saved).toBe("Agent__c-spill__full.txt");
+    expect(readFileSync(join(runArtifactDir, "tool-output", saved), "utf8")).toContain(answer);
+    expect(result.content[0].text).toContain(`full result saved to: ${join(runArtifactDir, "tool-output", saved)}`);
+    expect(result.details.tool_payload_saved_paths).toEqual([join(runArtifactDir, "tool-output", saved)]);
+  });
 });
 });
 

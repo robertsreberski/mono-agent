@@ -16,6 +16,30 @@
   `project.changed`/`projects.changed` events. Storage migrates to schema 26
   with `projects` and `threads.project_id`.
 
+- Per-tool output truncation now persists the full output in the configured
+  app. Bash, Exec, NodeRepl, Read, WebFetch, Grep and Glob trim oversized
+  results at their own character/line caps long before the 256 KiB tool-payload
+  guard, and the code path that saves the trimmed remainder to disk only knew
+  how to write under a `toolArtifactDir` that the configured app never sets —
+  so the console saw `[truncated Bash output …]` with no file behind it. The
+  per-run host artifact sink the payload guard already receives is now attached
+  to the run's tool context and preferred by that spill path, so the full output
+  lands under `artifacts.dir/tool-output/<runId>/` and the retained text ends
+  with `Full output saved to: <path>`. Hosts that configure `toolArtifactDir`
+  directly keep the previous behavior.
+
+- An over-cap `Agent` (subagent) result is now spilled to the run's tool-output
+  artifact directory instead of being silently cut. The retained tool result
+  kept its 12,000-character answer cap and 24 KB byte cap, but the text beyond
+  them was simply dropped — a long research report from a subagent lost its
+  tail with no way to recover it. When the answer exceeds the cap, the activity
+  log is elided, or the byte cap fires, the complete result is written through
+  the same host artifact sink the tool-payload guard uses, the retained text
+  names the file directly under its header
+  (`[result truncated; full result saved to: …]`), and the path is recorded as
+  a `tool_payload_saved_paths` artifact reference in tool history. Without a
+  sink the text says the full result was not saved.
+
 - **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
   22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
   bytes to raw control characters instead of the WHATWG code points, so

@@ -74,6 +74,12 @@ compact log — one line per tool call with a short argument summary, ok/error,
 and duration — capped at roughly 24 KB. It does not receive raw tool output. A
 subagent that fails, times out, or returns nothing still reports its activity
 log, since that log is usually the most useful part of a failed delegation.
+When the answer exceeds 12,000 characters, the log is elided, or the result hits
+its byte cap, the complete result is written to the run's tool-output artifact
+directory through the same sink other oversized tool payloads use, and the
+retained text names that file directly under its header
+(`[result truncated; full result saved to: …]`) so the main agent can `Read` it.
+Without a configured artifact sink the text says the full result was not saved.
 
 **What operators see.** Every subagent tool call streams live to the TUI and web
 console as its own entry, named `<profile>▸<tool>` and bracketed by the
@@ -215,6 +221,8 @@ Tool results are truncated at a 256KB budget so a single oversized result cannot
 Before rewriting the result, the guard offers every original block to the configured app's per-run artifact sink. Successful files land as owner-private files under `artifacts.dir/tool-output/<runId>/`; only returned paths appear in the summary. A missing or failed sink is reported as `persistence unavailable` and never fails the tool call. These files contain raw, untrusted payloads: keep the artifact directory access-controlled. The configured app's hourly artifact sweep owns each run directory under the existing `artifacts.retention` age/count/dry-run policy. A directory associated with a `running` or uncertain summary, or modified within the last sweep interval, is kept; an aged orphan needs no tool-history record to be removed. Tool-history retention still owns only lifecycle rows and tombstones, not these files.
 
 Images get a separate, larger budget than text so vision payloads are not clipped at the text limit.
+
+The per-tool caps that fire well before that budget — `max_output_chars` on Bash, Exec, NodeRepl, Read and WebFetch, and the line/char limits on Grep and Glob listings — spill through the same per-run sink. When a result is trimmed, the full output is written to `artifacts.dir/tool-output/<runId>/` and the retained text ends with `Full output saved to: <path>` so the agent can `Read` it or narrow its request. Without a sink the notice omits that line rather than naming a file that was never written.
 
 This guard is always on (coverage: `auto`). You do not enable it; you only choose where artifacts are written:
 
