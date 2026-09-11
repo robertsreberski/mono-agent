@@ -539,6 +539,48 @@ describe("Chat conversation actions", () => {
     expect(store.archiveThread).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
+
+  it("offers adding a loose conversation to a project", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent");
+    const store = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: {
+        agent: [
+          project("p-one", "agent", { name: "First" }),
+          project("p-two", "agent", { name: "Second", archivedAt: "2026-09-01T00:00:00.000Z" }),
+        ],
+      },
+    };
+    storeMock.current = store;
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add to project…" }));
+    expect(store.loadProjects).toHaveBeenCalledWith("agent");
+
+    fireEvent.click(await screen.findByRole("menuitem", { name: "First" }));
+    expect(store.setThreadProject).toHaveBeenCalledWith("thread-a", "p-one");
+    // Archived projects stay out of the picker.
+    expect(screen.queryByRole("menuitem", { name: "Second" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Remove from project" })).toBeNull();
+  });
+
+  it("offers moving and removing a project member", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent", { projectId: "p-one" });
+    const store = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: { agent: [project("p-one", "agent", { name: "First" })] },
+    };
+    storeMock.current = store;
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Move to…" })).toBeVisible();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from project" }));
+    expect(store.setThreadProject).toHaveBeenCalledWith("thread-a", null);
+  });
 });
 
 describe("ModelControls", () => {

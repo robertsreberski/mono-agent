@@ -445,8 +445,31 @@ switching chips clears the query. The Recent list uses a server-side scope for p
 and search, so cron channels are excluded
 before limits and cursors are applied while ordinary and webhook conversations
 remain visible. Unscoped HTTP callers keep the backward-compatible mixed list.
-Automations is a system view of the list; this package does not define project
-persistence, membership, folders, or runtime context.
+Automations is a system view of the list; this package defines project
+persistence and membership below, but no folders and no runtime context beyond
+the per-turn project envelope.
+
+**Projects.** One agent's named containers of conversations, listed in a
+**Projects** section between Running and Recent. A project carries a free-text
+context (at most 4,000 characters; names are one line of at most 120) that is
+prepended, operator-facing text only and at dispatch time, to every turn of
+every member conversation, so existing conversations pick it up on their next
+turn. The envelope is `<project_context name="…">…</project_context>` with
+reserved delimiters neutralised in prompt copies; it is never persisted in
+messages, turns, live-input text, or submission hashes, and never shown as part
+of the user's message. Membership is independent of archive state: archiving a
+project hides its navigation entry while keeping chats, membership, and
+injection. Deleting a project detaches its chats back to the agent — never
+deletes or stops them — and they reappear under the agent immediately. The
+project page lists members only; Recent stays agent-wide. Project summaries
+carry `conversationCount`, `runningCount`, and the current UTC month's
+recognised priced usage as `monthUsd` (omitted when no priced observation
+exists). The browser API is `GET/POST /api/v1/projects`,
+`PATCH/DELETE /api/v1/projects/:id`, `projectId` on thread create/patch (null
+detaches; never combined with `ifRunConfigUnset`) and as a `GET /threads`
+filter, membership in `WebThread.projectId`, the resolved agent's projects on
+the bootstrap, and `project.changed`/`projects.changed` events carrying the
+fresh summary or a removal.
 
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
@@ -620,7 +643,7 @@ ledger; postconditions check the required effects.
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, process-job card, Monitor wake claim, turn, live-input, upload, preference,
+   thread, project, message, part, process-job card, Monitor wake claim, turn, live-input, upload, preference,
    Web Push subscription/event/delivery, notification, and cron projection
    records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
@@ -731,6 +754,7 @@ AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
 CreateWebCronReplyInput
+CreateWebProjectInput
 CreateWebThreadInput
 CreateWebUploadInput
 DEFAULT_WEB_HOST
@@ -752,6 +776,7 @@ OperatorInfo
 OperatorTurnInput
 OperatorTurnResult
 PatchWebAgentInput
+PatchWebProjectInput
 PatchWebThreadInput
 PutWebAgentRunSettingsInput
 SearchWebThreadsInput
@@ -765,6 +790,8 @@ WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES
 WEB_MAX_CONCURRENT_UPLOADS
 WEB_MAX_FILES_PER_TURN
 WEB_MAX_LIVE_INPUTS_PER_THREAD
+WEB_MAX_PROJECT_CONTEXT_CHARACTERS
+WEB_MAX_PROJECT_NAME_CHARACTERS
 WEB_MAX_QUEUED_ATTACHMENT_TURNS
 WEB_MAX_STAGED_UPLOADS
 WEB_MAX_STAGED_UPLOAD_BYTES
@@ -798,6 +825,8 @@ WebMessagePart
 WebMessageStatus
 WebModelOption
 WebNotificationTriggerKind
+WebProject
+WebProjectChangedPayload
 WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Add Projects to the web console: per-agent named containers of conversations
+  with a free-text context (at most 4,000 characters) that is prepended,
+  operator-facing text only and at dispatch time, to every turn of every member
+  conversation, so existing conversations pick it up on their next turn. The
+  Dashboard lists projects between Running and Recent, a project page shows the
+  context card and member conversations, and the conversation menu moves chats
+  in and out. Archiving a project hides its entry while keeping chats,
+  membership, and injection; deleting one detaches its chats back to the agent.
+  Project summaries carry conversation, running, and monthly-priced-usage
+  counts over `GET/POST /api/v1/projects`, `PATCH/DELETE
+  /api/v1/projects/:id`, thread `projectId` membership, and
+  `project.changed`/`projects.changed` events. Storage migrates to schema 26
+  with `projects` and `threads.project_id`.
+
 - **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
   22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
   bytes to raw control characters instead of the WHATWG code points, so

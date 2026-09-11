@@ -47,7 +47,7 @@ import {
 } from "./console-store";
 import type { RequestLanding } from "./console-store";
 import { canSendInConsole } from "./capabilities";
-import { agent, bootstrap, processJob, thread, uploadLimits } from "./test/fixtures";
+import { agent, bootstrap, processJob, project, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
 import {
   acquireReplyImageBlob,
@@ -9724,5 +9724,106 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).not.toBe(imported.id);
       expect(store.current.detail?.thread.id).not.toBe(imported.id);
     });
+  });
+
+  describe("projects", () => {
+  const webProject = project("project-web", "alpha", { name: "Web console", conversationCount: 1 });
+  const member = thread("member-one", "alpha", { title: "Member", projectId: webProject.id });
+
+  async function renderProjectStore() {
+    vi.mocked(api.bootstrap).mockResolvedValue(
+      bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [member],
+        member.id,
+        { threadsSourceId: "alpha", projects: [webProject], projectsSourceId: "alpha" },
+      ),
+    );
+    return renderStore();
+  }
+
+  it("seeds one agent's projects from bootstrap and lists the next agent on switch", async () => {
+    const store = await renderProjectStore();
+    expect(store.current.projectsByAgent.alpha).toEqual([webProject]);
+    expect(store.current.openProjectId).toBeNull();
+
+    // Seeded by the bootstrap: no listing read for the resolved agent.
+    expect(api.projects).not.toHaveBeenCalledWith("alpha", expect.any(AbortSignal));
+    act(() => store.current.selectAgent("beta"));
+    await waitFor(() => expect(api.projects).toHaveBeenCalledWith("beta", expect.any(AbortSignal)));
+  });
+
+  it("opens a project page and merges its members into the listing", async () => {
+    const store = await renderProjectStore();
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    expect(store.current.openProject).toMatchObject({ id: webProject.id });
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]));
+    expect(store.current.threads.some((row) => row.id === member.id)).toBe(true);
+    expect(api.projectThreads).toHaveBeenCalledWith(
+      "alpha",
+      webProject.id,
+      undefined,
+      expect.any(AbortSignal),
+      expect.any(Number),
+    );
+
+    act(() => store.current.closeProject());
+    expect(store.current.openProjectId).toBeNull();
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("applies project summaries and removals from events", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("project.changed", {
+      version: 1,
+      type: "project.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A stale revision loses to the held summary.
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { project: webProject },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:02:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+    expect(store.current.openProjectId).toBeNull();
+  });
+
+  it("moves a conversation through setThreadProject and closes the page on agent switch", async () => {
+    const store = await renderProjectStore();
+    const moved = { ...member, projectId: null as string | null, revision: member.revision + 1 };
+    vi.mocked(api.patchThread).mockResolvedValue(moved);
+
+    await act(async () => { await store.current.setThreadProject(member.id, null); });
+    expect(api.patchThread).toHaveBeenCalledWith(member.id, { projectId: null }, expect.any(AbortSignal));
+    await waitFor(() => expect(
+      store.current.threads.find((row) => row.id === member.id)?.projectId,
+    ).toBeNull());
+
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    act(() => store.current.selectAgent("beta"));
+    expect(store.current.openProjectId).toBeNull();
+    expect(store.current.projectMembers).toEqual([]);
+  });
   });
 });

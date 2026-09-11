@@ -6754,3 +6754,211 @@ describe("fleet-bounded process-job card reconciliation", () => {
     } finally { await service.stop(); }
   });
 });
+
+describe("conversation project context injection", () => {
+  it("prefixes member turns and keeps the stored message clean", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const project = service.createProject({
+        sourceId: "agent-one",
+        name: "Web console",
+        context: "Stay sharp.",
+      });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Do the thing" });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+      expect(turnBodies).toHaveLength(1);
+      expect(turnBodies[0]).toMatchObject({
+        text: "<project_context name=\"Web console\">\nStay sharp.\n</project_context>\n\nDo the thing",
+      });
+      const userMessage = service.thread(thread.id).messages.find((message) => message.role === "user");
+      expect(userMessage?.parts).toEqual([{ type: "text", text: "Do the thing" }]);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("combines the prefix with quote formatting without persisting either", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "First message" });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      turnBodies.length = 0;
+      const first = service.thread(thread.id).messages;
+      await service.startTurn(thread.id, {
+        text: "Follow up",
+        quote: { text: "quoted line", messageId: first[0]!.id },
+      });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+      expect(turnBodies).toHaveLength(1);
+
+      expect(turnBodies[0]).toMatchObject({
+        text: "<project_context name=\"P\">\nC.\n</project_context>\n\nQuoted context:\n> quoted line\n\nFollow up",
+      });
+      const userMessage = service.thread(thread.id).messages.find((message) =>
+        message.parts.some((part) => part.type === "text" && part.text === "Follow up"));
+      expect(userMessage).toBeDefined();
+      expect(JSON.stringify(userMessage)).not.toContain("project_context");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("sends no prefix for non-members and empty contexts", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const blank = service.createProject({ sourceId: "agent-one", name: "Blank", context: "   " });
+      const blankMember = service.createThread("agent-one", { projectId: blank.id });
+      const outsider = service.createThread("agent-one");
+      await service.startTurn(blankMember.id, { text: "blank context" });
+      await waitFor(() => service.store.getThread(blankMember.id)?.runState.status === "complete");
+      await service.startTurn(outsider.id, { text: "no project" });
+      await waitFor(() => service.store.getThread(outsider.id)?.runState.status === "complete");
+
+      expect(turnBodies.map((body) => body.text)).toEqual(["blank context", "no project"]);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("prefixes live-input dispatch while the queued text stays raw", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const liveInputs: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onLiveInput(conversationId, body) {
+          liveInputs.push({ conversationId, body });
+          return { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Initial task" });
+      await waitFor(() => stream !== undefined);
+      const receipt = service.submitLiveInput(thread.id, "Steer this");
+      await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "applied");
+
+      expect(liveInputs).toHaveLength(1);
+      expect(liveInputs[0]?.body).toMatchObject({
+        text: "<project_context name=\"P\">\nC.\n</project_context>\n\nSteer this",
+      });
+      expect(service.store.getMessage(receipt.message.id)?.parts).toContainEqual(
+        { type: "text", text: "Steer this" },
+      );
+      expect(JSON.stringify(service.store.getMessage(receipt.message.id))).not.toContain("project_context");
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("prefixes a steered process-job wake without touching the stored wake", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const liveInputs: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onLiveInput(conversationId, body) {
+          liveInputs.push({ conversationId, body });
+          return { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Initial task" });
+      await waitFor(() => stream !== undefined);
+      const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      await expect(service.deliverNotification({
+        sourceId: "agent-one",
+        triggerKind: "job",
+        deliveryKey: terminal.wake.deliveryKey,
+        threadId: thread.id,
+        processJob: terminal,
+        wakePrompt: "Inspect the completed worker result",
+      })).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "steered" },
+      });
+
+      expect(liveInputs).toHaveLength(1);
+      expect(liveInputs[0]?.body).toMatchObject({
+        text: "<project_context name=\"P\">\nC.\n</project_context>\n\nInspect the completed worker result",
+      });
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("emits project summaries on CRUD, membership moves and delete", async () => {
+    const service = await createService({});
+    try {
+      const events: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event); });
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      expect(events.filter((event) => event.type === "project.changed")).toHaveLength(1);
+      expect(events.filter((event) => event.type === "projects.changed")).toHaveLength(1);
+      expect(events[0]?.payload).toMatchObject({ project: { id: project.id, conversationCount: 0 } });
+
+      events.length = 0;
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      expect(events.filter((event) => event.type === "project.changed")).toHaveLength(1);
+      expect(events.find((event) => event.type === "project.changed")?.payload)
+        .toMatchObject({ project: { id: project.id, conversationCount: 1 } });
+
+      events.length = 0;
+      const other = service.createProject({ sourceId: "agent-one", name: "Q" });
+      events.length = 0;
+      service.patchThread(thread.id, { projectId: other.id });
+      const moved = events.filter((event) => event.type === "project.changed");
+      expect(moved.map((event) => (event.payload as { project: { id: string } }).project.id).sort())
+        .toEqual([other.id, project.id].sort());
+
+      events.length = 0;
+      service.patchProject(project.id, { context: "Updated." });
+      expect(events.filter((event) => event.type === "project.changed")).toHaveLength(1);
+
+      events.length = 0;
+      service.deleteProject(other.id);
+      const removed = events.filter((event) => event.type === "project.changed");
+      expect(removed.map((event) => event.payload)).toContainEqual({ projectId: other.id, removed: true });
+      const detached = events.filter((event) =>
+        (event.type === "thread.changed" || event.type === "threads.changed")
+        && "thread" in ((event.payload ?? {}) as object));
+      expect(detached.length).toBeGreaterThanOrEqual(2);
+      expect(service.store.getThread(thread.id)?.projectId).toBeNull();
+      unsubscribe();
+    } finally {
+      await service.stop();
+    }
+  });
+});
