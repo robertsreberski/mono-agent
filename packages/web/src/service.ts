@@ -10,7 +10,6 @@ import {
   type AgentReplyPart,
   createChannelUserCancelReason,
   isChannelUserCancelReason,
-  toolNameLeaf,
   type AgentAttachment,
   type AgentMcpAppHostRequest,
   type AgentMcpAppResource,
@@ -75,6 +74,7 @@ import {
   type WebThread,
   type WebThreadChangedPayload,
   type WebThreadDetail,
+  type WebActiveThreads,
   type WebThreadPage,
   type WebThreadListScope,
   type WebThreadSearchPage,
@@ -100,6 +100,7 @@ import {
 } from "./effort-ladder.js";
 import { errorCode, errorMessage, WebConsoleError } from "./errors.js";
 import { OperatorClient, type OperatorInfo } from "./operator-client.js";
+import { isAskUserToolName } from "./run-activity.js";
 import {
   generateWebPushIdentity,
   normalizeWebPushEndpoint,
@@ -199,20 +200,6 @@ export interface WebTranscriptShape {
 type WebTelemetryPart = Extract<WebMessagePart, { type: "telemetry" }>;
 type WebToolCallPart = Extract<WebMessagePart, { type: "tool-call" }>;
 type WebSubagentPart = Extract<WebMessagePart, { type: "subagent" }>;
-
-/**
- * Whether a tool name IS AskUser, however the agent qualified it.
- *
- * An MCP server serves it as `mcp__<server>__ask_user`, a forwarding runtime as
- * `some.namespace:AskUser`, and separators vary. Two places have to agree on
- * this -- the frame observer that arms the interaction poller, and the shaper
- * that must leave the card's question and answer alone -- so they read the same
- * rule rather than two spellings of it. An exact `=== "AskUser"` here silently
- * shaped the card's payload for every run that routes the tool through a server.
- */
-function isAskUserToolName(toolName: string): boolean {
-  return toolNameLeaf(toolName).toLowerCase().replace(/[^a-z0-9]+/gu, "") === "askuser";
-}
 
 /** A `runtime_telemetry` event's variant, which the store stores inside `data`. */
 function telemetryKind(data: unknown): string | undefined {
@@ -749,7 +736,14 @@ export class WebService {
       && this.store.getAgent(currentThread.sourceId) !== undefined
       ? currentThreadId
       : undefined;
-    const agents = this.store.listAgents().map((agent) => this.decorateProjectedCapabilities(agent));
+    // ONE store read behind both the agent badges and the running cards, so a
+    // console cannot be handed a count of three and two cards from the same
+    // response. Read before the bucket page for the same reason.
+    const activeThreads = this.store.listActiveThreads();
+    const agents = this.store.listAgents().map((agent) => ({
+      ...this.decorateProjectedCapabilities(agent),
+      runningCount: activeThreads.runningCounts[agent.sourceId] ?? 0,
+    }));
     const threadsSourceId = this.bootstrapSourceId(scope.sourceId, currentThread, agents);
     const archived = scope.archived ?? false;
     const page = threadsSourceId === null
@@ -771,6 +765,7 @@ export class WebService {
       threads: page.threads,
       threadsSourceId,
       threadsNextCursor: page.nextCursor ?? null,
+      activeThreads,
       ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {
         maxFileBytes: DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
@@ -879,6 +874,18 @@ export class WebService {
     readonly scope?: WebThreadListScope;
   }): WebThreadPage {
     return this.store.listThreadsPage(input);
+  }
+
+  /**
+   * What is running across the whole fleet.
+   *
+   * The SAME projection a bootstrap carries, from the same store method: a
+   * console re-reads this after any event that could have changed membership,
+   * and a second reading of the question would let the refresh disagree with
+   * the snapshot it is refreshing.
+   */
+  activeThreads(): WebActiveThreads {
+    return this.store.listActiveThreads();
   }
 
   /**
@@ -3159,7 +3166,11 @@ export class WebService {
    *   sends it to the message read.
    */
   private emitMessageWrite(threadId: string, write: StoredMessageWrite | undefined): void {
-    if (write?.attributionChanged === true) {
+    // ONE announcement for both, because both are the same run state: the
+    // provider route this turn actually took, and the bounded activity a card
+    // draws. `activityChanged` is set by the write only when the projection
+    // MOVED -- never per text delta -- so this stays a semantic event.
+    if (write?.attributionChanged === true || write?.activityChanged === true) {
       const thread = this.store.getThread(threadId);
       if (thread !== undefined) this.emit("turn.changed", threadId, { turn: thread.runState });
     }

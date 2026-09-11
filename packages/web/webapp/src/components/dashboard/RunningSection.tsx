@@ -1,10 +1,11 @@
 import { Fragment } from "react";
 import { Icon } from "../Icon";
-import { threadPresentation } from "../../thread-presentation";
 import type { AgentSummary, ThreadSummary } from "../../types";
 import { relativeTime } from "../time";
 import {
   agentInitials,
+  runningCardPending,
+  runningCardStatus,
   RUNNING_CARDS_PER_AGENT,
   runningThreadCount,
   type RunningAgentGroup,
@@ -19,7 +20,7 @@ function RunningCard({
   readonly thread: ThreadSummary;
   readonly onOpen: (thread: ThreadSummary) => void;
 }) {
-  const presentation = threadPresentation(thread);
+  const pending = runningCardPending(thread);
   return (
     <button
       type="button"
@@ -30,7 +31,9 @@ function RunningCard({
       <span className="running-card-agent" aria-hidden="true">{agentInitials(agent.label)}</span>
       <span className="running-card-copy">
         <span className="running-card-title">{thread.title}</span>
-        <span className="running-card-status">{presentation.text}</span>
+        <span className={`running-card-status${pending ? " is-pending" : ""}`}>
+          {runningCardStatus(thread)}
+        </span>
       </span>
       <time className="running-card-time" dateTime={thread.updatedAt}>
         {relativeTime(thread.updatedAt)}
@@ -40,50 +43,73 @@ function RunningCard({
 }
 
 /**
- * What this browser is HOLDING that has work in flight, whichever agent owns it.
+ * What the FLEET has in flight -- every agent the server discovered, whether or
+ * not this browser has ever opened one of their conversations.
  *
- * Deliberately silent when empty rather than claiming "0 running": the section
- * is built from the conversation cache, so it can only speak for what this tab
- * happens to hold, and an absence here is not evidence that the fleet is idle.
- * The count says how many CACHED conversations are working, for the same
- * reason.
+ * The count beside the label is the server's, taken over the whole qualifying
+ * set rather than over the cards: a section showing fifty of sixty-three says
+ * so underneath rather than quietly reporting fifty.
+ *
+ * When no server answer stands behind what is drawn -- no stream, a read that
+ * failed, a device snapshot on a cold start -- the section says LAST KNOWN and
+ * means it. It is still silent when there is nothing to draw, because an
+ * unlabelled "0 running" from a console that cannot see the fleet is the one
+ * claim this section must never make.
  */
 export function RunningSection({
   groups,
   expandedAgentIds,
   onToggleAgent,
   onOpen,
+  total,
+  truncated = false,
+  authoritative = true,
 }: {
   readonly groups: readonly RunningAgentGroup[];
   readonly expandedAgentIds: ReadonlySet<string>;
   readonly onToggleAgent: (sourceId: string) => void;
   readonly onOpen: (thread: ThreadSummary) => void;
+  /** Running conversations in the whole fleet; the cards may be fewer. */
+  readonly total?: number;
+  /** The server had more than it may carry, so the cards are part of the answer. */
+  readonly truncated?: boolean;
+  /** A live server answer stands behind this. See the note above. */
+  readonly authoritative?: boolean;
 }) {
   if (groups.length === 0) return null;
-  const total = runningThreadCount(groups);
+  const shown = runningThreadCount(groups);
+  const claimed = total ?? shown;
 
   return (
     <section className="dashboard-section" aria-labelledby="dashboard-running-label">
       <h2
         className="dashboard-section-label is-running"
         id="dashboard-running-label"
-        aria-label={`Running, ${String(total)} cached`}
+        aria-label={`Running, ${String(claimed)}${authoritative ? "" : ", last known"}`}
       >
         <Icon name="activity" size={13} />
         Running
-        <span className="dashboard-section-count" title="Conversations this browser is holding">
-          {total}
+        <span
+          className="dashboard-section-count"
+          title={authoritative
+            ? "Conversations running across the fleet"
+            : "The last thing the server said; not confirmed just now"}
+        >
+          {claimed}
         </span>
+        {!authoritative && (
+          <span className="dashboard-section-note" aria-hidden="true">last known</span>
+        )}
       </h2>
       {groups.map((group) => {
         const expanded = expandedAgentIds.has(group.agent.sourceId);
-        const shown = expanded
+        const cards = expanded
           ? group.threads
           : group.threads.slice(0, RUNNING_CARDS_PER_AGENT);
-        const hidden = group.threads.length - shown.length;
+        const hidden = group.threads.length - cards.length;
         return (
           <Fragment key={group.agent.sourceId}>
-            {shown.map((thread) => (
+            {cards.map((thread) => (
               <RunningCard key={thread.id} agent={group.agent} thread={thread} onOpen={onOpen} />
             ))}
             {(hidden > 0 || expanded) && group.threads.length > RUNNING_CARDS_PER_AGENT && (
@@ -100,6 +126,11 @@ export function RunningSection({
           </Fragment>
         );
       })}
+      {truncated && (
+        <p className="running-truncated">
+          {`Showing ${String(shown)} of ${String(claimed)}`}
+        </p>
+      )}
     </section>
   );
 }

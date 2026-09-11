@@ -861,6 +861,25 @@ describe("listing requests", () => {
       .toBe("/api/v1/threads/search?sourceId=agent%2Fone&q=daily+report&scope=chats");
   });
 
+  it("asks for what is running fleet-wide with no scope of its own", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(Response.json({
+        threads: [], total: 0, truncated: false, runningCounts: { "agent-one": 0 },
+      })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const controller = new AbortController();
+    const listing = await api.activeThreads(controller.signal);
+    // A FIXED route: no source id, no bucket, no cursor. A console that could
+    // parameterise this would walk it on every event, which is the cost the
+    // listing exists to avoid.
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/active");
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(listing).toEqual({
+      threads: [], total: 0, truncated: false, runningCounts: { "agent-one": 0 },
+    });
+  });
+
   it("sends a bootstrap scope only when one is asked for", async () => {
     const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
       Promise.resolve(Response.json({ version: 1 })));

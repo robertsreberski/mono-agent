@@ -1,5 +1,10 @@
-import { threadOutcomeError, threadPresentation } from "../../thread-presentation";
+import {
+  threadJobSummaries,
+  threadOutcomeError,
+  threadPresentation,
+} from "../../thread-presentation";
 import type { AgentSummary, ThreadSummary } from "../../types";
+import { formatUsd } from "../../usage";
 import type { IconName } from "../Icon";
 
 /**
@@ -81,11 +86,14 @@ export const isRecentThread = (thread: ThreadSummary): boolean =>
   thread.trigger?.kind !== "cron";
 
 /**
- * What Running has to draw from: the cache's held activity, plus whatever the
- * LISTING already says is active. The listing is the page the operator is
- * looking at, refreshed by the same events; a conversation working there and
- * absent from Running would contradict the row directly under it. The cache's
- * copy wins a tie because it is the one a detail read has touched.
+ * What Running falls back to when the server's listing is not standing behind
+ * it: the cache's held activity, the last listing heard, and whatever the page
+ * on screen already says is active.
+ *
+ * Only ever a FALLBACK. It is bounded by what this browser happens to hold, so
+ * an empty result here is not evidence that the fleet is idle -- which is why
+ * everything drawn from it is labelled last known. The cache's copy wins a tie
+ * because it is the one a detail read has touched.
  */
 export const mergeRunningThreads = (
   cached: readonly ThreadSummary[],
@@ -137,3 +145,36 @@ export const groupRunningThreads = (
 /** How many cards Running is showing in total, across every group. */
 export const runningThreadCount = (groups: readonly RunningAgentGroup[]): number =>
   groups.reduce((total, group) => total + group.threads.length, 0);
+
+/**
+ * What one running card says it is doing.
+ *
+ * Three claims, and nothing beyond them: how many tool calls this turn has
+ * made, whether it is waiting on an answer from the operator, and what it has
+ * cost so far. There is no step ordinal, no estimate of how much longer and no
+ * token percentage, because none of those means the same thing in two runtimes.
+ *
+ * A turn with nothing to report yet keeps the shared `Working…` -- a card that
+ * said "Working · 0 tool calls" would be reporting the absence of evidence as
+ * evidence. Background jobs keep the words the sidebar gives them.
+ */
+export const runningCardStatus = (thread: ThreadSummary): string => {
+  const { runState } = thread;
+  const activity = runState.status === "running" ? runState.activity : undefined;
+  if (activity === undefined) return threadPresentation(thread).text;
+  const calls = activity.toolCallCount;
+  const head = activity.phase === "asking"
+    ? "Asking you a question"
+    : calls > 0
+      ? `Working · ${String(calls)} tool call${calls === 1 ? "" : "s"}`
+      : "Working…";
+  return [
+    head,
+    ...threadJobSummaries(thread),
+    ...(activity.cumulativeUsd === undefined ? [] : [formatUsd(activity.cumulativeUsd)]),
+  ].join(" · ");
+};
+
+/** Whether a card has been told anything yet about the turn it is drawing. */
+export const runningCardPending = (thread: ThreadSummary): boolean =>
+  thread.runState.status !== "running" || thread.runState.activity === undefined;

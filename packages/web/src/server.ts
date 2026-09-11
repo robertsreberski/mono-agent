@@ -536,6 +536,20 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  // Registered above `/threads/:id`, for the same reason `search` is: Express
+  // would otherwise take "active" for a conversation id and answer 404.
+  //
+  // No query at all -- not a scope, not a cursor, not a limit. The projection
+  // is fixed and bounded by contract, and a console re-reads it after any event
+  // that could have changed what is running.
+  app.get("/api/v1/threads/active", (_req, res, next) => {
+    try {
+      res.status(200).json(service.activeThreads());
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // Registered above `/threads/:id` so the conversation reads and the read that
   // repairs one of their truncated tool calls stay together.
   app.get("/api/v1/threads/:threadId/messages/:messageId/tool-calls/:toolCallId", (req, res, next) => {

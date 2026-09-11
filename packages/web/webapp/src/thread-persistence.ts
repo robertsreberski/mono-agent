@@ -1,4 +1,5 @@
 import { sanitizeCronTranscript } from "./cron-visibility";
+import { mergeSeenRevisions, readSeenRevisions, type SeenRevision } from "./unread";
 import type { ThreadCacheEntry } from "./thread-cache";
 import type {
   AgentSummary,
@@ -67,6 +68,15 @@ const META_STORE = "meta";
 const SNAPSHOT_KEY = "agents";
 /** The console that wrote all of this. A different one owns none of it. */
 const HOST_KEY = "host";
+/**
+ * Which conversations this DEVICE has seen, and at which revision.
+ *
+ * Metadata rather than a store of its own: it is one small row, it is this
+ * browser's own opinion and never the server's, and it belongs to the same host
+ * as everything else here -- so a different console's data being discarded takes
+ * it with the rest.
+ */
+const SEEN_KEY = "seen";
 
 /** One conversation, as it is written to the device. */
 export interface PersistedThread {
@@ -112,6 +122,8 @@ export interface HydratedConsole {
   readonly snapshot: PersistedSnapshot | null;
   readonly buckets: readonly PersistedBucket[];
   readonly threads: readonly PersistedThread[];
+  /** What this device had seen, least recently touched first. */
+  readonly seen: readonly SeenRevision[];
 }
 
 /** One flush: what the tab holds right now, and nothing incremental. */
@@ -128,6 +140,15 @@ export interface PersistableState {
    */
   readonly entries: readonly ThreadCacheEntry[];
   readonly snapshot?: PersistedSnapshot;
+  /**
+   * The whole seen-revision map, when it has moved.
+   *
+   * Written wholesale because it is bounded and tiny, and omitted rather than
+   * written empty: an absent key means "nothing to say", and one flush that
+   * happened to run before the marker was restored must not be able to tell the
+   * device this browser has seen nothing.
+   */
+  readonly seen?: readonly SeenRevision[];
   readonly bucket?: {
     readonly key: string;
     readonly threads: readonly ThreadSummary[];
@@ -163,6 +184,15 @@ export interface ThreadPersistence {
    * row goes whoever wrote it.
    */
   readonly forget: (threadIds: readonly string[]) => Promise<void>;
+  /**
+   * Hear what ANOTHER tab on this device has seen, as soon as it is stored.
+   *
+   * The listener is given that tab's merged map, which is the same row this one
+   * would read on its next cold start -- so adopting it is the live equivalent
+   * of a reload, and never a claim about anything but this device. Returns the
+   * unsubscribe, and is a no-op where the browser has no cross-tab signal.
+   */
+  readonly subscribeSeen: (listener: (seen: readonly SeenRevision[]) => void) => () => void;
   /**
    * Let go of the connection, WITHOUT disabling: the next call reopens.
    *
@@ -406,6 +436,63 @@ const settled = (transaction: IDBTransaction): Promise<void> =>
       reject(transaction.error ?? new Error("The device store abandoned a write."));
   });
 
+/**
+ * How one tab tells the others on this device what it has seen.
+ *
+ * An interface rather than a `BroadcastChannel` because it is the only part of
+ * this module that has to work when there is no such thing -- an older browser,
+ * a hardened one, a test -- and because "post a map, hear a map" is the whole
+ * contract. Nothing else crosses it: the device store is still the record, and
+ * this is only what saves the other tabs from having to reload to read it.
+ */
+export interface SeenChannel {
+  readonly post: (seen: readonly SeenRevision[]) => void;
+  readonly listen: (listener: (seen: readonly SeenRevision[]) => void) => void;
+  readonly close: () => void;
+}
+
+/**
+ * The default signal, or `null` where the browser has none.
+ *
+ * Feature-detected and wrapped: a console whose cross-tab channel cannot be
+ * created still keeps and reads the marker, it just converges on reload like it
+ * did before. Every failure here is one tab's convergence, never its operation.
+ */
+export const broadcastSeenChannel = (name = "mono-agent-console-seen"): SeenChannel | null => {
+  const construct = (globalThis as { BroadcastChannel?: new (name: string) => BroadcastChannel })
+    .BroadcastChannel;
+  if (typeof construct !== "function") return null;
+  let channel: BroadcastChannel;
+  try {
+    channel = new construct(name);
+  } catch {
+    return null;
+  }
+  return {
+    post: (seen) => {
+      try {
+        channel.postMessage(seen.map((row) => ({ id: row.id, revision: row.revision })));
+      } catch {
+        // A channel the browser closed under us. The device store still holds
+        // the merged row, so the other tabs converge on their next hydrate.
+      }
+    },
+    listen: (listener) => {
+      channel.onmessage = (event: MessageEvent) => {
+        const rows = readSeenRevisions(event.data);
+        if (rows.length > 0) listener(rows);
+      };
+    },
+    close: () => {
+      try {
+        channel.close();
+      } catch {
+        // Already gone.
+      }
+    },
+  };
+};
+
 export const createThreadPersistence = (
   options: {
     /**
@@ -415,11 +502,33 @@ export const createThreadPersistence = (
      */
     readonly factory?: () => IDBFactory | undefined;
     readonly now?: () => number;
+    /** Reached the same way as the factory, and for the same reason. */
+    readonly channel?: () => SeenChannel | null;
   } = {},
 ): ThreadPersistence => {
   const reachFactory = options.factory
     ?? (() => (globalThis as { indexedDB?: IDBFactory }).indexedDB);
   const now = options.now ?? (() => Date.now());
+  const reachChannel = options.channel ?? (() => broadcastSeenChannel());
+  const seenListeners = new Set<(seen: readonly SeenRevision[]) => void>();
+  /** `undefined` until reached, `null` once this browser is known to have none. */
+  let seenChannel: SeenChannel | null | undefined;
+  const openSeenChannel = (): SeenChannel | null => {
+    if (seenChannel !== undefined) return seenChannel;
+    let opened: SeenChannel | null;
+    try {
+      opened = reachChannel();
+    } catch {
+      opened = null;
+    }
+    if (opened !== null) {
+      opened.listen((seen) => {
+        for (const listener of [...seenListeners]) listener(seen);
+      });
+    }
+    seenChannel = opened;
+    return opened;
+  };
   /**
    * This instance, named on every row it writes.
    *
@@ -612,8 +721,10 @@ export const createThreadPersistence = (
           asPromise<unknown[]>(transaction.objectStore(BUCKET_STORE).getAll()),
           asPromise<unknown>(meta.get(SNAPSHOT_KEY)),
           asPromise<unknown>(meta.get(HOST_KEY)),
+          asPromise<unknown>(meta.get(SEEN_KEY)),
         ] as const;
-        const [threadRows, bucketRows, snapshotRow, hostRow] = await Promise.all(pending);
+        const [threadRows, bucketRows, snapshotRow, hostRow, seenRow] =
+          await Promise.all(pending);
         const snapshot = readSnapshotRow(snapshotRow) ?? null;
         const threads: PersistedThread[] = [];
         const summaries = new Map<string, ThreadSummary>();
@@ -649,6 +760,7 @@ export const createThreadPersistence = (
             }),
           })),
           threads: threads.filter((entry) => !doomed.threads.has(entry.id)),
+          seen: readSeenRevisions(seenRow),
         };
       } catch (readError) {
         // The connection was let go while this was out. Nothing is known about
@@ -741,7 +853,32 @@ export const createThreadPersistence = (
           meta.put({ ...state.snapshot, savedAt }, SNAPSHOT_KEY);
           meta.put(state.snapshot.console.hostName, HOST_KEY);
         }
+        const held = state.seen;
+        let announce: readonly SeenRevision[] | undefined;
+        if (held !== undefined) {
+          // READ, merge, write -- inside this transaction, and answered by its
+          // own callback rather than an `await` so nothing commits in between.
+          // Every tab on this origin writes this one row with the whole map it
+          // holds, so a tab that hydrated an hour ago used to put back every
+          // revision the others had moved past. The stored row is the DEVICE's
+          // memory, and the highest revision each conversation was seen at is
+          // what that memory is.
+          const meta = transaction.objectStore(META_STORE);
+          const seenRequest = meta.get(SEEN_KEY);
+          seenRequest.onsuccess = () => {
+            const merged = mergeSeenRevisions(readSeenRevisions(seenRequest.result), held);
+            // Structured-cloneable plain rows: a `Map` would clone too, but this
+            // is read back by a build that may shape the marker differently, and
+            // an array of two primitives is the shape that survives that.
+            meta.put(merged.map((row) => ({ id: row.id, revision: row.revision })), SEEN_KEY);
+            announce = merged;
+          };
+        }
         await settled(transaction);
+        // Only what actually committed, and only to the OTHER tabs: a live tab
+        // that never reloads would otherwise disagree with the device it shares
+        // until it did.
+        if (announce !== undefined) openSeenChannel()?.post(announce);
         // Only after it committed. Ownership lives on the rows themselves; this
         // is the per-instance record of what has been written, which is what
         // keeps a flush during a streaming turn to the one transcript that moved.
@@ -787,6 +924,14 @@ export const createThreadPersistence = (
       for (const entry of entries) written.set(entry.thread.id, entry);
     },
 
+    subscribeSeen: (listener) => {
+      if (openSeenChannel() === null) return () => undefined;
+      seenListeners.add(listener);
+      return () => {
+        seenListeners.delete(listener);
+      };
+    },
+
     close: () => {
       const pending = connection;
       // Deliberately NOT `disable`, and `written` is deliberately kept: the
@@ -794,6 +939,10 @@ export const createThreadPersistence = (
       // connection goes -- and the bump is what stops an operation that was
       // holding it from reading its own failure as this browser's.
       release();
+      // The channel goes with it, and for the same reason: a StrictMode
+      // teardown reuses this instance, and the next subscriber reopens.
+      seenChannel?.close();
+      seenChannel = undefined;
       void pending?.then((db) => db?.close()).catch(() => undefined);
     },
 

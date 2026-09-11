@@ -62,6 +62,49 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
   };
 }
 
+/**
+ * How many statements one read asks the connection to RUN.
+ *
+ * Count what the connection is actually asked to run, not what it is asked to
+ * compile: a reader that prepares once and executes per row is the shape a
+ * listing is not allowed to have.
+ */
+function measureStatements<T>(store: WebStore, read: () => T): { statements: number; value: T } {
+  let statements = 0;
+  const holder = store as unknown as { database: DatabaseSync };
+  const real = holder.database;
+  holder.database = new Proxy(real, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      if (property !== "prepare") return value.bind(target);
+      return (sql: string) => {
+        const statement = (value as (text: string) => object).call(target, sql);
+        return new Proxy(statement, {
+          get(inner, method) {
+            const run = Reflect.get(inner, method) as unknown;
+            if (typeof run !== "function") return run;
+            return (...args: unknown[]) => {
+              if (method === "get" || method === "all" || method === "run" || method === "iterate") {
+                statements += 1;
+              }
+              return (run as (...values: unknown[]) => unknown).apply(inner, args);
+            };
+          },
+        });
+      };
+    },
+  }) as DatabaseSync;
+  try {
+    // Read FIRST: a count taken in the same object literal as the call that
+    // moves it is taken before that call, and proves nothing.
+    const value = read();
+    return { statements, value };
+  } finally {
+    holder.database = real;
+  }
+}
+
 describe("WebStore", () => {
   it("scopes chats before pagination and search while retaining webhook conversations", async () => {
     const base = await temporaryRoot();
@@ -4936,5 +4979,362 @@ describe("WebStore message sequence and part deltas", () => {
     expect(context.store.getMessage(context.messageId)?.parts.at(-2))
       .toEqual({ type: "text", text: "Exactly one file. Nothing else." });
     context.store.close();
+  });
+
+  it("lists what is running across agents and archive buckets, counted before the cap", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent("agent-one"), agent("agent-two")]);
+
+    // A running foreground turn on the FIRST agent.
+    const turning = store.createThread("agent-one");
+    store.beginTurn({ threadId: turning.id, text: "work", attachmentIds: [] });
+
+    // A job-only conversation on the SECOND agent, which this browser could
+    // never have loaded: no turn has ever run in it.
+    const jobbing = store.createThread("agent-two");
+    const job = fakeProcessJob({ conversationId: `web:${jobbing.id}` });
+    store.upsertProcessJobCard({
+      sourceId: "agent-two", threadId: jobbing.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+    });
+
+    // BOTH at once, and ARCHIVED: one row, and still a member.
+    const both = store.createThread("agent-one");
+    const bothJob = fakeProcessJob({
+      jobId: "33333333-3333-4333-8333-333333333333", conversationId: `web:${both.id}`,
+    });
+    store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: both.id, processJob: bothJob, deliveryKey: bothJob.wake.deliveryKey,
+    });
+    store.beginTurn({ threadId: both.id, text: "also work", attachmentIds: [] });
+    store.patchThread(both.id, { archived: true });
+
+    // A terminal job and a finished turn are not work in flight.
+    const quiet = store.createThread("agent-one");
+    const quietTurn = store.beginTurn({ threadId: quiet.id, text: "done", attachmentIds: [] });
+    store.completeTurn(quietTurn.turnId, "finished");
+    const doneJob = fakeProcessJob({
+      state: "succeeded", jobId: "44444444-4444-4444-8444-444444444444", conversationId: `web:${quiet.id}`,
+    });
+    store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: quiet.id, processJob: doneJob, deliveryKey: doneJob.wake.deliveryKey,
+    });
+
+    const listed = store.listActiveThreads();
+    expect([...listed.threads].map((thread) => thread.id).sort())
+      .toEqual([both.id, jobbing.id, turning.id].sort());
+    expect(listed.total).toBe(3);
+    expect(listed.truncated).toBe(false);
+    // Newest first, and deterministic between two rows sharing a stamp.
+    expect(listed.threads.map((thread) => thread.updatedAt))
+      .toEqual([...listed.threads].map((thread) => thread.updatedAt).sort().reverse());
+    // A zero for the third agent, which has nothing running: an absent key
+    // cannot be told apart from an agent the listing forgot.
+    store.replaceAgents([agent("agent-one"), agent("agent-two"), agent("agent-three")]);
+    expect(store.listActiveThreads().runningCounts)
+      .toEqual({ "agent-one": 2, "agent-two": 1, "agent-three": 0 });
+
+    // An agent discovery no longer reports has nowhere to be drawn, so its
+    // retained running conversation is neither listed nor counted.
+    store.replaceAgents([agent("agent-one")]);
+    const narrowed = store.listActiveThreads();
+    expect(narrowed.threads.map((thread) => thread.sourceId)).toEqual(["agent-one", "agent-one"]);
+    expect(narrowed.total).toBe(2);
+    expect(narrowed.runningCounts).toEqual({ "agent-one": 2 });
+    store.close();
+  });
+
+  it("reads the running listing in the same number of statements for two cards and fifty", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+
+    // Each pair is one of BOTH kinds of membership: a running foreground turn,
+    // and a settled turn whose conversation is only active because a retained
+    // job is queued. Growing the set by whole pairs keeps the work the listing
+    // has to do the same shape, so a count that still moves moved per row.
+    let jobs = 0;
+    const addPair = (): void => {
+      const running = store.createThread("agent-one");
+      const live = store.beginTurn({ threadId: running.id, text: "work", attachmentIds: [] });
+      store.applyStreamFrames(live.turnId, [
+        { kind: "append", delta: "reading the file" },
+        { kind: "event", event: { type: "tool_call_started", id: `call-${jobs}`, name: "Read" } },
+      ]);
+      const queued = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: queued.id, text: "ask", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "answered");
+      jobs += 1;
+      const job = fakeProcessJob({
+        state: "queued",
+        jobId: `${String(jobs).padStart(8, "0")}-1111-4111-8111-111111111111`,
+        conversationId: `web:${queued.id}`,
+      });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: queued.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    };
+
+    const measure = (): { statements: number; listed: ReturnType<WebStore["listActiveThreads"]> } => {
+      const { statements, value } = measureStatements(store, () => store.listActiveThreads());
+      return { statements, listed: value };
+    };
+
+    addPair();
+    const one = measure();
+    for (let index = 1; index < 5; index += 1) addPair();
+    const five = measure();
+    for (let index = 5; index < 25; index += 1) addPair();
+    const full = measure();
+
+    expect(one.listed.threads).toHaveLength(2);
+    expect(five.listed.threads).toHaveLength(10);
+    expect(full.listed.threads).toHaveLength(50);
+    expect(five.statements).toBe(one.statements);
+    expect(full.statements).toBe(one.statements);
+    // The projection is still the whole answer, not a cheaper one: both kinds
+    // of membership, the job activity that put half of them there, and the
+    // bounded activity that belongs only to a running turn.
+    expect(full.listed.total).toBe(50);
+    expect(full.listed.runningCounts).toEqual({ "agent-one": 50 });
+    expect(full.listed.threads.filter((thread) => thread.runState.status === "running")).toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.jobActivity?.queued === 1)).toHaveLength(25);
+    expect(full.listed.threads.every((thread) =>
+      (thread.runState.status === "running") === (thread.runState.activity !== undefined))).toBe(true);
+    // Each card's own newest message, not one thread's read spread over fifty.
+    expect(full.listed.threads.filter((thread) => thread.lastMessagePreview === "reading the file"))
+      .toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.lastMessagePreview === undefined)).toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.runState.activity?.toolCallCount === 1))
+      .toHaveLength(25);
+    store.close();
+  });
+
+  it("reads a silent legacy history in the same number of statements for one card and fifty", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+
+    // The one shape that used to drop this reader back to a thread at a time: a
+    // conversation active only through a retained job, whose whole
+    // prior-outcome window is historical Monitor no-ops. Old rows keep their
+    // raw sentinel bytes and normalize only on read, so nothing but a read of
+    // the parts can tell that those turns said nothing -- and the meaningful
+    // outcome the sidebar has to show sits behind all of them.
+    let cards = 0;
+    const silenced: string[] = [];
+    const addSilentCard = (depth: number): void => {
+      cards += 1;
+      const thread = store.createThread("agent-one");
+      const answered = store.beginTurn({ threadId: thread.id, text: "ask", attachmentIds: [] });
+      store.completeTurn(answered.turnId, "the answer that still stands");
+      const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+      for (let index = 0; index < depth; index += 1) {
+        const deliveryKey = `monitor:${monitor.monitorId}:${String(cards)}:${String(index)}`;
+        const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "Host follow-up" });
+        store.reserveMonitorWake({
+          sourceId: "agent-one", threadId: thread.id, monitorId: monitor.monitorId,
+          deliveryKey, payloadSha256: "a".repeat(64), monitor,
+        });
+        store.completeMonitorWake({
+          sourceId: "agent-one", monitorId: monitor.monitorId,
+          deliveryKey, disposition: "follow_up", turnId: wake.turnId,
+        });
+        store.completeTurn(wake.turnId, "NOTHING_TO_REPORT", undefined, undefined, {
+          monitorWakeDeliveryKey: deliveryKey,
+        });
+        silenced.push(wake.assistantMessageId);
+      }
+      const job = fakeProcessJob({
+        state: "queued",
+        jobId: `${String(cards).padStart(8, "0")}-1111-4111-8111-111111111111`,
+        conversationId: `web:${thread.id}`,
+      });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    };
+
+    // Put the sentinel bytes back the way a store written before normalization
+    // still holds them. A current write strips them, which would make these
+    // turns cheap to reject in SQL and never reach the deep path at all.
+    const restoreHistoricalBytes = (): void => {
+      const raw = new DatabaseSync(store.paths.database);
+      try {
+        const parts = JSON.stringify([{ type: "text", text: "NOTHING_TO_REPORT" }]);
+        const update = raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?");
+        for (const id of silenced) update.run(parts, id);
+      } finally {
+        raw.close();
+      }
+    };
+
+    addSilentCard(9);
+    restoreHistoricalBytes();
+    const one = measureStatements(store, () => store.listActiveThreads());
+    // The same one card, twice as deep in silence: an eight-turn window used to
+    // be asked again for every further block of no-ops.
+    addSilentCard(17);
+    restoreHistoricalBytes();
+    const deeper = measureStatements(store, () => store.listActiveThreads());
+    for (let index = 2; index < 50; index += 1) addSilentCard(9);
+    restoreHistoricalBytes();
+    const full = measureStatements(store, () => store.listActiveThreads());
+
+    expect(one.value.threads).toHaveLength(1);
+    expect(deeper.value.threads).toHaveLength(2);
+    expect(full.value.threads).toHaveLength(50);
+    // Fifty silent histories cost what one costs, and a history twice as deep
+    // costs the same again: the candidates are read for the whole set down to
+    // the first turn nothing can silence, never a window at a time.
+    expect(deeper.statements).toBe(one.statements);
+    expect(full.statements).toBe(one.statements);
+    // The one card is drawn exactly as it was when it was the only card.
+    const alone = one.value.threads[0];
+    expect(full.value.threads.find((thread) => thread.id === alone?.id)).toEqual(alone);
+    // The outcome is the deep one, and it is each card's own. `null` would mean
+    // the reader gave up behind the window; `undefined` would mean it settled
+    // for the sentinel turn it is standing on.
+    const outcomes = full.value.threads.map((thread) => thread.runState.lastOutcome);
+    expect(outcomes.every((outcome) => outcome?.status === "complete")).toBe(true);
+    expect(new Set(outcomes.map((outcome) => outcome?.finishedAt)).size).toBe(50);
+    // The rest of the projection is the same whole answer as any other listing.
+    expect(full.value.total).toBe(50);
+    expect(full.value.threads.every((thread) => thread.runState.status === "complete")).toBe(true);
+    expect(full.value.threads.filter((thread) => thread.jobActivity?.queued === 1)).toHaveLength(50);
+    store.close();
+  });
+
+  it("caps the running cards at fifty while the counts stay exact", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+    const created = Array.from({ length: 53 }, () => {
+      const thread = store.createThread("agent-one");
+      store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      return thread.id;
+    });
+
+    const listed = store.listActiveThreads();
+    expect(listed.threads).toHaveLength(50);
+    expect(listed.total).toBe(53);
+    expect(listed.truncated).toBe(true);
+    expect(listed.runningCounts).toEqual({ "agent-one": 53 });
+    // The cards are the NEWEST fifty, not the first fifty the store happened to
+    // scan: the three oldest are the ones cut.
+    expect(listed.threads.map((thread) => thread.id)).toEqual([...created].reverse().slice(0, 50));
+    store.close();
+  });
+
+  it("projects bounded activity onto a running turn and nothing onto a settled one", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "run", attachmentIds: [] });
+
+    expect(store.getThread(thread.id)?.runState.activity)
+      .toEqual({ toolCallCount: 0, phase: "working" });
+
+    const frames: AgentStreamWireFrame[] = [
+      { kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Read" } },
+      { kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Read", content: "ok" } },
+      // The SAME call progressing is still one call.
+      { kind: "event", event: { type: "tool_call_started", id: "call-2", name: "Exec" } },
+      { kind: "event", event: { type: "tool_call_progress", id: "call-2", name: "Exec", partialResult: "half" } },
+      // A delegation and its child: the group owns both, so neither counts.
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started", id: "agent-1", name: "Agent",
+          metadata: { subagent: { id: "agent-1", name: "researcher" }, subagentLifecycle: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started", id: "child-1", name: "Grep",
+          metadata: { subagent: { id: "agent-1", name: "researcher" } },
+        },
+      },
+      { kind: "append", delta: "thinking out loud" },
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: 2.44 } },
+    ];
+    store.applyStreamFrames(turn.turnId, frames);
+    expect(store.getThread(thread.id)?.runState.activity)
+      .toEqual({ toolCallCount: 2, phase: "working", cumulativeUsd: 2.44 });
+
+    // However the runtime qualified the name, a RUNNING AskUser is the phase.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "ask-1", name: "mcp__host__ask_user" } },
+    ]);
+    expect(store.getThread(thread.id)?.runState.activity)
+      .toMatchObject({ toolCallCount: 3, phase: "asking" });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "ask-1", name: "mcp__host__ask_user", content: "yes" } },
+    ]);
+    expect(store.getThread(thread.id)?.runState.activity).toMatchObject({ phase: "working" });
+
+    // A price that is not a finite non-negative number is not "this run cost
+    // nothing", so the last good reading stands and no zero is invented.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: Number.NaN } },
+    ]);
+    expect(store.getThread(thread.id)?.runState.activity?.cumulativeUsd).toBe(2.44);
+
+    store.completeTurn(turn.turnId, "done");
+    expect(store.getThread(thread.id)?.runState.status).toBe("complete");
+    expect(store.getThread(thread.id)?.runState.activity).toBeUndefined();
+    store.close();
+  });
+
+  it("reports an activity change only when the projection moved, never per text delta", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "run", attachmentIds: [] });
+
+    expect(store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: "Reading" }]).activityChanged)
+      .toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: " the file." }]).activityChanged)
+      .toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Read" } },
+    ]).activityChanged).toBe(true);
+    // Completing a call this projection already counted moves nothing it draws.
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Read", content: "ok" } },
+    ]).activityChanged).toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: 0.5 } },
+    ]).activityChanged).toBe(true);
+    // Same total reported again: cumulative, so nothing moved.
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: 0.5 } },
+    ]).activityChanged).toBeUndefined();
+    store.close();
   });
 });

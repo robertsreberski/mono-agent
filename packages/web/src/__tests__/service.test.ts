@@ -56,9 +56,14 @@ function isAssistantWrite(service: WebService, _threadId: string, event: WebEven
   return service.store.getMessage(messageId)?.role === "assistant";
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(
+  // Awaited, so a predicate that has to build a bootstrap is not read as "true"
+  // because a promise is truthy.
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for service state.");
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
@@ -178,6 +183,50 @@ describe("projected web capabilities", () => {
       // The provider-auth capability still reaches the browser because it is
       // projected from the live connection rather than persisted.
       expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("does not let a running conversation turn a discovery heartbeat into a fleet change", async () => {
+    // `runningCount` is a MOMENT, not a capability. Persisting it, or letting
+    // the discovery comparison see it, would make every started and finished
+    // turn on any agent look like an agent that advertises something different
+    // -- and each of those costs every connected console its skills, its cron
+    // overview and a fresh snapshot.
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: operatorFetch(),
+    });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      expect(events).toEqual([undefined]);
+      const thread = service.createThread("agent-one");
+      // A turn nobody will answer, so it stays running for the poll below.
+      void service.startTurn(thread.id, { text: "work" }).catch(() => undefined);
+      await waitFor(async () => (await service.bootstrap()).agents[0]?.runningCount === 1);
+      const running = await service.bootstrap();
+      expect(running.agents[0]?.runningCount).toBe(1);
+      expect(running.activeThreads).toMatchObject({
+        total: 1,
+        truncated: false,
+        runningCounts: { "agent-one": 1 },
+      });
+      expect(running.activeThreads?.threads.map((item) => item.id)).toEqual([thread.id]);
+
+      await poll("2026-07-17T09:00:05.000Z");
+      expect(events).toEqual([undefined]);
     } finally {
       unsubscribe();
       await service.stop();

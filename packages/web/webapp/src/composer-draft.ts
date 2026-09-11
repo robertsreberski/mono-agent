@@ -53,6 +53,16 @@ let visibleAttachments = false;
  */
 const touchedKeys = new Set<string>();
 
+/**
+ * Keys whose stored stamp hydration clamped, with the entry exactly as stored.
+ *
+ * A clamp is this tab's correction of the record, not a write: the flush
+ * carries it only while the device still holds the very entry it corrected.
+ * Another tab's edit or deletion of the same key since is newer than the
+ * correction and wins.
+ */
+const clampedKeys = new Map<string, DraftEntry>();
+
 let hydrated = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 /**
@@ -107,7 +117,15 @@ const isStoredDraft = (value: unknown): value is { key: string; text: string; up
 };
 
 /** Parse the stored document, discarding anything this version cannot trust. */
-const readStored = (): Map<string, DraftEntry> => {
+/**
+ * The stored document, with any stamp from the future read as "now".
+ *
+ * `onClamped` hears which keys that touched, with the stamp as stored: a clamp
+ * is a correction, and the caller that hydrates from it has to own it, or the
+ * next merge would read the same future stamp as a fresher "now" and let the
+ * draft outrank every edit typed since.
+ */
+const readStored = (onClamped?: (key: string, stored: DraftEntry) => void): Map<string, DraftEntry> => {
   const entries = new Map<string, DraftEntry>();
   const store = storage();
   if (store === null) {
@@ -140,6 +158,7 @@ const readStored = (): Map<string, DraftEntry> => {
       // Left alone it would outrank everything typed afterwards and survive
       // every eviction; read as "now" it keeps its place at the front and
       // expires on schedule.
+      if (value.updatedAt > now) onClamped?.(value.key, { text: value.text, updatedAt: value.updatedAt });
       entries.set(value.key, { text: value.text, updatedAt: Math.min(value.updatedAt, now) });
     }
   } catch {
@@ -183,13 +202,33 @@ export const flushComposerDrafts = (): void => {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  if (touchedKeys.size === 0) return;
+  if (touchedKeys.size === 0 && clampedKeys.size === 0) return;
   const store = storage();
   if (store === null) {
     persisting = false;
     return;
   }
-  const merged = readStored();
+  // The device's future stamps as stored, so a correction can tell the very
+  // entry it corrected from another tab's write of the same text since.
+  const future = new Map<string, DraftEntry>();
+  const merged = readStored((key, stored) => future.set(key, stored));
+  let corrections = 0;
+  for (const [key, corrected] of clampedKeys) {
+    if (touchedKeys.has(key)) continue;
+    const stored = future.get(key);
+    const own = textDrafts.get(key);
+    if (own !== undefined && stored !== undefined
+      && stored.text === corrected.text && stored.updatedAt === corrected.updatedAt) {
+      merged.set(key, own);
+      corrections += 1;
+    }
+  }
+  // Nothing authored and nothing left to correct: the device already holds
+  // what this tab would write.
+  if (touchedKeys.size === 0 && corrections === 0) {
+    clampedKeys.clear();
+    return;
+  }
   for (const key of touchedKeys) {
     const entry = textDrafts.get(key);
     if (entry === undefined) merged.delete(key);
@@ -197,9 +236,14 @@ export const flushComposerDrafts = (): void => {
   }
   if (write(store, merged)) {
     touchedKeys.clear();
+    clampedKeys.clear();
     persisting = true;
     return;
   }
+  // A refused correction with nothing authored: the stored draft, future stamp
+  // and all, is safer than a document without it. Keep the correction to try
+  // again, and keep trusting a device that still holds the text.
+  if (touchedKeys.size === 0) return;
   // A refused write is usually a full quota. Drop everything this tab is not
   // holding and try once more; a device that still says no keeps the text in
   // memory, and the staged-update guard stops trusting storage.
@@ -210,6 +254,7 @@ export const flushComposerDrafts = (): void => {
   }
   if (write(store, own)) {
     touchedKeys.clear();
+    clampedKeys.clear();
     persisting = true;
     return;
   }
@@ -248,7 +293,10 @@ const listenForTeardown = (): void => {
 const hydrate = (): void => {
   if (hydrated) return;
   hydrated = true;
-  for (const [key, entry] of readStored()) {
+  // A clamped stamp is this tab's correction of the record: written back at
+  // the next flush, so the merge takes this hydration's "now" and not a later
+  // one, unless another tab has moved that key since.
+  for (const [key, entry] of readStored((key, stored) => clampedKeys.set(key, stored))) {
     textDrafts.set(key, entry);
     // Anything typed from here has to outrank what is already stored, even
     // where the device clock has since moved backwards; otherwise eviction
@@ -358,6 +406,7 @@ export const resetComposerDraft = (): void => {
   }
   textDrafts.clear();
   touchedKeys.clear();
+  clampedKeys.clear();
   visibleAttachments = false;
   hydrated = false;
   persisting = true;
