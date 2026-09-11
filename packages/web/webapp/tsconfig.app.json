@@ -20,5 +20,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "../src/mcp-app-document.ts", "../src/effort-ladder.ts"]
+  "include": ["src", "../src/mcp-app-document.ts", "../src/effort-ladder.ts", "../src/message-cost.ts"]
 }

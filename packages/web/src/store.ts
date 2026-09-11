@@ -70,6 +70,7 @@ import {
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
 import { WebConsoleError } from "./errors.js";
+import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
 import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
@@ -3280,6 +3281,7 @@ export class WebStore {
           SELECT COUNT(DISTINCT thread_id) AS count FROM turns
           WHERE thread_id IN (SELECT value FROM json_each(?)) AND status = 'running'
         `).get(JSON.stringify(memberIds)) as unknown as { count: number }).count;
+    const monthUsd = this.projectMonthUsd(memberIds, this.now());
     return {
       id: row.id,
       sourceId: row.source_id,
@@ -3291,7 +3293,32 @@ export class WebStore {
       revision: row.revision,
       conversationCount: memberIds.length,
       runningCount,
+      ...(monthUsd === undefined ? {} : { monthUsd }),
     };
+  }
+
+  /**
+   * This UTC calendar month's recognised priced usage over a project's current
+   * non-archived members.
+   *
+   * One bounded indexed query (member threads by month range); the per-message
+   * latest-observation rule is the shared {@link latestMessageCostUsd}, so a
+   * project month always agrees with the conversation costs inside it.
+   * Recomputed when summaries are read, never per token.
+   */
+  private projectMonthUsd(memberIds: readonly string[], now: string): number | undefined {
+    if (memberIds.length === 0) return undefined;
+    const started = new Date(now);
+    if (Number.isNaN(started.getTime())) return undefined;
+    const monthStart = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth(), 1)).toISOString();
+    const monthEnd = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth() + 1, 1)).toISOString();
+    const rows = this.database.prepare(`
+      SELECT m.parts_json AS parts_json
+        FROM messages m
+       WHERE m.thread_id IN (SELECT value FROM json_each(?))
+         AND m.created_at >= ? AND m.created_at < ?
+    `).all(JSON.stringify(memberIds), monthStart, monthEnd) as Array<{ parts_json: string }>;
+    return sumMessageCosts(rows.map((member) => latestMessageCostUsd(parseParts(member.parts_json))));
   }
 
   /** Whether the current interactive thread still accepts agent-proposed titles. */
