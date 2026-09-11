@@ -2335,6 +2335,39 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("resumes an unsettled-card page after the card a previous pass stopped on", async () => {
+    const stateDir = join(await temporaryRoot(), "state");
+    // One frozen instant, so all three cards tie on the timestamp and the
+    // resume has nothing but the job id to break the tie with.
+    const store = await WebStore.open({ stateDir, clock: () => new Date("2026-09-10T10:00:00.000Z") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const jobIds = ["a", "b", "c"].map((suffix) => `11111111-1111-4111-8111-00000000000${suffix}`);
+    for (const jobId of jobIds) {
+      const job = fakeProcessJob({ state: "running", jobId, conversationId: "web:" + thread.id });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    }
+
+    const first = store.listUnsettledProcessJobCards("agent-one", 2);
+    expect(first.map((item) => item.jobId)).toEqual([jobIds[0], jobIds[1]]);
+    // The card carries its own ordering key, so the caller can say where it
+    // stopped without holding the whole page.
+    const after = { updatedAt: first[1]!.updatedAt, jobId: first[1]!.jobId };
+
+    // None of them settled, so an unresumed page would be the same two again.
+    const second = store.listUnsettledProcessJobCards("agent-one", 2, after);
+    expect(second.map((item) => item.jobId)).toEqual([jobIds[2]]);
+    expect(first[1]!.updatedAt).toBe(second[0]!.updatedAt);
+    // Past the end of the set is empty rather than wrapping: wrapping is the
+    // caller's decision, and it has to know it reached the end to make it.
+    expect(store.listUnsettledProcessJobCards("agent-one", 2, {
+      updatedAt: second[0]!.updatedAt, jobId: second[0]!.jobId,
+    })).toEqual([]);
+    store.close();
+  });
+
   it("summarizes jobs across the full thread without loading their output into the listing", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

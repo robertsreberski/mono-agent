@@ -461,7 +461,9 @@ reads first: schedule, effective state and next run. Expanding its disclosure
 shows schedule, timezone, effective state, last and next run, and health from
 the agent-authored overview, together with the controls below. It is a native
 `details`, so its expanded state is exposed to assistive technology and driven
-from the keyboard by the browser, and nothing about it is persisted. **Run now** and **Enable/Disable**
+from the keyboard by the browser, and nothing about it is persisted. The
+disclosure belongs to one agent's one job, so every cron channel opens
+collapsed, including a direct switch from one cron channel to another. **Run now** and **Enable/Disable**
 use the existing confirmed operator APIs when the live agent advertises action
 capability; otherwise they stay visible but disabled with the authoritative
 reason. **View config** exposes the existing redacted, read-only config view.
@@ -671,11 +673,17 @@ state only when a terminal projection arrives. When that notification never
 lands — the agent restarted while the web service was disconnected, a wake was
 lost — nothing else moves the card, so the service re-asks the agent. A sweep
 runs when an agent connection is re-established or its process generation
-changes, and otherwise no more than once every fifteen minutes per agent. For
-each unsettled card of an agent that advertises process jobs it reads the
-agent's projection, at most four at a time and at most fifty cards per pass: a
-terminal projection is applied exactly as its notification would have been and
-emits the same events; an agent that no longer knows the job retires the card
+changes, and otherwise no more than once every fifteen minutes per agent. One
+sweep is bounded for the whole service rather than per agent: at most four job
+reads in flight and at most fifty cards across the entire fleet, shared evenly
+between the agents that are due, so a fleet-wide reconnect cannot multiply
+either bound by the number of agents. The agents and the cards a pass does not
+reach are taken by the next one: an agent the budget ran out before keeps no
+sweep timestamp and stays due, and each agent resumes after the card its last
+pass stopped on, so a card behind a page of still-running ones is reached
+rather than waiting for that page to settle. For each card it reads the
+agent's projection: a terminal projection is applied exactly as its
+notification would have been and emits the same events; an agent that no longer knows the job retires the card
 as `interrupted` with `process_job_agent_restarted`; any other failure leaves
 the card untouched, because an agent this console could not reach has not said
 that the job ended. Agents without process-job support, and cards for a source

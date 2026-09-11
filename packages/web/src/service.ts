@@ -129,6 +129,7 @@ import {
   type CronReplyReservationResult,
   type StoredWebPushEvent,
   isTerminalProcessJobState,
+  type WebProcessJobCardCursor,
   type WebProcessJobCardRef,
   type WebPushIdentity,
 } from "./store.js";
@@ -143,9 +144,13 @@ const INFO_TIMEOUT_MS = 2_500;
  * lose a notification.
  */
 const PROCESS_JOB_RECONCILE_INTERVAL_MS = 15 * 60 * 1_000;
-/** Cards one sweep of one agent re-asks about; the rest wait for the next. */
+/**
+ * Cards ONE sweep re-asks about across the whole fleet; the rest wait for the
+ * next one. Per-agent it would be this many times the fleet size -- a 67-agent
+ * reconnect would admit thousands of job reads inside one discovery refresh.
+ */
 const PROCESS_JOB_RECONCILE_LIMIT = 50;
-/** Concurrent job reads against one agent during a sweep. */
+/** Concurrent job reads during a sweep, across the whole fleet. */
 const PROCESS_JOB_RECONCILE_CONCURRENCY = 4;
 const ASK_DISCOVERY_TIMEOUT_MS = 120_000;
 /** Bounded per-agent catalog-admitted model refs; beyond it, oldest go first. */
@@ -672,8 +677,17 @@ export class WebService {
    * started has by definition missed everything said while it was down.
    */
   private readonly jobCardSweepAt = new Map<string, number>();
-  /** Agents with a card sweep in flight, so a sweep never overlaps itself. */
-  private readonly sweepingJobCards = new Set<string>();
+  /**
+   * Source id -> the card its last sweep stopped on, so the next one continues
+   * past it. Cards that answer "still running" or "could not ask" stay in the
+   * unsettled set, so without this the oldest page would be the only page ever
+   * asked about and a stale card behind it would never be repaired.
+   */
+  private readonly jobCardProbeCursor = new Map<string, WebProcessJobCardCursor>();
+  /** The agent the last sweep's budget reached last; the next one starts after it. */
+  private jobCardAgentCursor: string | undefined;
+  /** Set while a fleet sweep is in flight, so a sweep never overlaps itself. */
+  private sweepingJobCards = false;
   private discoveryTimer: ReturnType<typeof setInterval> | undefined;
   private purgeTimer: ReturnType<typeof setInterval> | undefined;
   private purgePromise: Promise<void> | undefined;
@@ -2930,13 +2944,21 @@ export class WebService {
    * never dropped. Agents that do not support jobs are left alone, and so are
    * cards for a source id discovery no longer reports -- there is nothing to
    * ask, and a card nobody can confirm is not evidence that the job ended.
+   *
+   * One sweep is bounded for the SERVICE, not per agent: one card budget and
+   * one worker pool cover the whole fleet, because a fleet reconnect is the
+   * very case this runs in. Agents the budget did not reach keep no sweep
+   * timestamp, so they stay due and the next refresh starts with them.
    */
   private async reconcileDueProcessJobCards(
     previous: ReadonlyMap<string, AgentConnection>,
     next: ReadonlyMap<string, AgentConnection>,
     signal: AbortSignal,
   ): Promise<void> {
+    if (this.sweepingJobCards) return;
     const now = this.currentDate().getTime();
+    // Sorted, so the rotation below is over a stable order rather than over
+    // whatever order discovery happened to report the fleet in.
     const due = [...next].filter(([sourceId, connection]) => {
       if (connection.info.supportsJobs !== true) return false;
       const before = previous.get(sourceId);
@@ -2945,37 +2967,88 @@ export class WebService {
       if (before === undefined || before.generation !== connection.generation) return true;
       const swept = this.jobCardSweepAt.get(sourceId);
       return swept === undefined || now - swept >= PROCESS_JOB_RECONCILE_INTERVAL_MS;
-    });
-    await Promise.all(due.map(async ([sourceId, connection]) => {
-      await this.sweepProcessJobCards(sourceId, connection, signal);
-    }));
+    }).sort(([left], [right]) => left.localeCompare(right));
+    // Nothing is remembered about an agent discovery no longer reports: it
+    // comes back on a new generation, which is due on sight either way.
+    for (const sourceId of [...this.jobCardSweepAt.keys()]) {
+      if (!next.has(sourceId)) {
+        this.jobCardSweepAt.delete(sourceId);
+        this.jobCardProbeCursor.delete(sourceId);
+      }
+    }
+    if (due.length === 0) return;
+    this.sweepingJobCards = true;
+    try {
+      await this.sweepProcessJobCards(due, now, signal);
+    } finally {
+      this.sweepingJobCards = false;
+    }
   }
 
-  /** One bounded pass over one agent's unsettled cards; each is asked about once. */
+  /** One bounded fleet-wide pass; every card taken is asked about exactly once. */
   private async sweepProcessJobCards(
-    sourceId: string,
-    connection: AgentConnection,
+    due: ReadonlyArray<readonly [string, AgentConnection]>,
+    now: number,
     signal: AbortSignal,
   ): Promise<void> {
-    if (this.sweepingJobCards.has(sourceId)) return;
-    this.sweepingJobCards.add(sourceId);
-    this.jobCardSweepAt.set(sourceId, this.currentDate().getTime());
-    try {
-      const cards = this.store.listUnsettledProcessJobCards(sourceId, PROCESS_JOB_RECONCILE_LIMIT);
-      let cursor = 0;
-      const probe = async (): Promise<void> => {
-        for (let index = cursor++; index < cards.length; index = cursor++) {
-          if (this.stopped || signal.aborted) return;
-          await this.reconcileProcessJobCard(sourceId, connection, cards[index]!, signal);
-        }
-      };
-      await Promise.all(Array.from(
-        { length: Math.min(PROCESS_JOB_RECONCILE_CONCURRENCY, cards.length) },
-        async () => { await probe(); },
-      ));
-    } finally {
-      this.sweepingJobCards.delete(sourceId);
+    // An even share of the one budget, so no agent at the head of the order can
+    // spend it all, and every agent that is reached gets at least one card.
+    const share = Math.max(1, Math.floor(PROCESS_JOB_RECONCILE_LIMIT / due.length));
+    const start = Math.max(0, due.findIndex(([sourceId]) => sourceId === this.jobCardAgentCursor) + 1);
+    const ordered = [...due.slice(start), ...due.slice(0, start)];
+    const work: Array<{
+      readonly sourceId: string;
+      readonly connection: AgentConnection;
+      readonly card: WebProcessJobCardRef;
+    }> = [];
+    let reached: string | undefined;
+    for (const [sourceId, connection] of ordered) {
+      if (work.length >= PROCESS_JOB_RECONCILE_LIMIT) break;
+      reached = sourceId;
+      this.jobCardSweepAt.set(sourceId, now);
+      const take = Math.min(share, PROCESS_JOB_RECONCILE_LIMIT - work.length);
+      for (const card of this.nextProcessJobCardPage(sourceId, take)) {
+        work.push({ sourceId, connection, card });
+      }
     }
+    this.jobCardAgentCursor = reached;
+    let cursor = 0;
+    const probe = async (): Promise<void> => {
+      for (let index = cursor++; index < work.length; index = cursor++) {
+        if (this.stopped || signal.aborted) return;
+        const { sourceId, connection, card } = work[index]!;
+        await this.reconcileProcessJobCard(sourceId, connection, card, signal);
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(PROCESS_JOB_RECONCILE_CONCURRENCY, work.length) },
+      async () => { await probe(); },
+    ));
+  }
+
+  /**
+   * One agent's next page of unsettled cards, continuing past the last sweep.
+   *
+   * A page shorter than asked for means the cursor has reached the end of this
+   * agent's set, so the rest is taken from the front -- the order stays the
+   * store's own, and a card that keeps answering "still running" cannot hold
+   * the page against the ones behind it.
+   */
+  private nextProcessJobCardPage(sourceId: string, limit: number): readonly WebProcessJobCardRef[] {
+    if (limit <= 0) return [];
+    const after = this.jobCardProbeCursor.get(sourceId);
+    const tail = this.store.listUnsettledProcessJobCards(sourceId, limit, after);
+    const cards = after === undefined || tail.length >= limit
+      ? tail
+      : [
+          ...tail,
+          ...this.store.listUnsettledProcessJobCards(sourceId, limit - tail.length)
+            .filter((card) => !tail.some((seen) => seen.jobId === card.jobId)),
+        ];
+    const last = cards.at(-1);
+    if (last === undefined) this.jobCardProbeCursor.delete(sourceId);
+    else this.jobCardProbeCursor.set(sourceId, { updatedAt: last.updatedAt, jobId: last.jobId });
+    return cards;
   }
 
   private async reconcileProcessJobCard(

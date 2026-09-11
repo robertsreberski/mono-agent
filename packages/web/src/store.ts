@@ -804,7 +804,15 @@ export interface WebProcessJobCardRef {
   readonly jobId: string;
   readonly threadId: string;
   readonly deliveryKey: string;
+  /** The card's own ordering key, so a caller can resume after this one. */
+  readonly updatedAt: string;
   readonly job: ProcessJobProjection;
+}
+
+/** Where a previous page of unsettled cards stopped, in the same order. */
+export interface WebProcessJobCardCursor {
+  readonly updatedAt: string;
+  readonly jobId: string;
 }
 
 export interface UpsertWebProcessJobCardInput {
@@ -2583,12 +2591,20 @@ export class WebStore {
    * would ever move it, and the card claims work that stopped days ago. This is
    * what {@link WebService} re-asks the agent about.
    *
-   * Bounded: a sweep that has more than this to settle settles the oldest and
-   * takes the rest on its next pass, because the retired ones leave this set.
+   * Bounded, and resumable: a sweep asks for one page and passes back where it
+   * stopped as `after`, so the next one continues past it in the same order.
+   * Without that, cards whose answer leaves them in this set -- a job still
+   * running, an agent that could not be reached -- would be re-selected for
+   * ever and nothing beyond the first page would ever be asked about.
    */
-  listUnsettledProcessJobCards(sourceId: string, limit: number): readonly WebProcessJobCardRef[] {
+  listUnsettledProcessJobCards(
+    sourceId: string,
+    limit: number,
+    after?: WebProcessJobCardCursor,
+  ): readonly WebProcessJobCardRef[] {
     const rows = this.database.prepare(`
       SELECT c.job_id AS job_id, c.thread_id AS thread_id, c.delivery_key AS delivery_key,
+             c.updated_at AS updated_at,
              json_extract(part.value, '$.job') AS job_json
         FROM process_job_cards c
         JOIN messages m ON m.id = c.message_id AND m.thread_id = c.thread_id
@@ -2596,15 +2612,26 @@ export class WebStore {
        WHERE c.source_id = ?
          AND json_extract(part.value, '$.type') = 'process-job'
          AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+         AND (? IS NULL
+              OR c.updated_at > ?
+              OR (c.updated_at = ? AND c.job_id > ?))
        ORDER BY c.updated_at ASC, c.job_id ASC
        LIMIT ?
-    `).all(sourceId, limit) as unknown as Array<{
-      job_id: string; thread_id: string; delivery_key: string; job_json: string;
+    `).all(
+      sourceId,
+      after?.updatedAt ?? null,
+      after?.updatedAt ?? null,
+      after?.updatedAt ?? null,
+      after?.jobId ?? null,
+      limit,
+    ) as unknown as Array<{
+      job_id: string; thread_id: string; delivery_key: string; updated_at: string; job_json: string;
     }>;
     return rows.map((row) => ({
       jobId: row.job_id,
       threadId: row.thread_id,
       deliveryKey: row.delivery_key,
+      updatedAt: row.updated_at,
       job: parseProcessJobProjection(JSON.parse(row.job_json)),
     }));
   }
