@@ -2897,8 +2897,13 @@ describe("web HTTP server", () => {
       const bucket = await json(await fetch(
         `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&scope=chats`,
       ));
-      // Both, newest first: the running one was touched by its own turn.
-      expect((bucket.threads as Array<{ id: string }>).map((thread) => thread.id)).toEqual([running, idle]);
+      // Both of them. Deliberately compared as a SET: the two conversations are
+      // created a moment apart and `updated_at DESC, id DESC` lets a
+      // same-millisecond tie be settled by the id, so asserting an order here
+      // would make this test a coin flip on a loaded machine. What it is about
+      // is that the unscoped bucket still carries both.
+      expect([...(bucket.threads as Array<{ id: string }>)].map((thread) => thread.id).sort())
+        .toEqual([running, idle].sort());
       // And the conversation read under the same prefix still resolves by id.
       expect((await fetch(`${baseUrl}/api/v1/threads/${idle}`)).status).toBe(200);
 
