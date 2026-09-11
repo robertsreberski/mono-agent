@@ -2,7 +2,7 @@
   "name": "mono-agent Console",
   "short_name": "mono-agent",
   "description": "Always-on local console for your mono-agent fleet.",
-  "theme_color": "#191c1a",
+  "theme_color": "#141715",
   "background_color": "#0f1110",
   "display": "standalone",
   "orientation": "any",
