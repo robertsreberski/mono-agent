@@ -23,6 +23,7 @@ import {
 } from "../../agent/tools/index.js";
 import {
   configureToolRuntime,
+  readToolRuntime,
   resetToolRuntime,
 } from "../../agent/tools/shared/runtime-context.js";
 
@@ -344,6 +345,44 @@ describe("ai tool helpers", () => {
     expect(result).toContain("HEAD");
     expect(result).toContain("TAIL");
     expect(result).toContain("Full output saved to:");
+  });
+
+  it("spills truncated bash output through the run-scoped artifact sink when one is attached", async () => {
+    // A configured app never sets toolArtifactDir; its only sink is the
+    // run-bound persistArtifact callback the turn runner attaches to ctx.
+    const root = tempWorkspace();
+    const saved = [];
+    const persistArtifact = ({ filename, buffer, toolName, toolUseId }) => {
+      saved.push({ filename, text: buffer.toString("utf8"), toolName, toolUseId });
+      return `/artifacts/tool-output/run-7/${filename}`;
+    };
+    const ctx = { ...readToolRuntime(), persistArtifact };
+
+    const result = await bashToolImpl(
+      { command: "printf 'HEAD'; printf '%04000d' 0; printf 'TAIL'", max_output_chars: 500, workdir: root },
+      { ctx },
+    );
+
+    expect(saved).toHaveLength(1);
+    expect(saved[0].filename).toMatch(/^\d+-Bash-[0-9a-f-]{36}\.txt$/u);
+    expect(saved[0].toolName).toBe("Bash");
+    expect(saved[0].text.startsWith("HEAD")).toBe(true);
+    expect(saved[0].text.endsWith("TAIL")).toBe(true);
+    expect(saved[0].text.length).toBeGreaterThan(4000);
+    expect(result).toContain(`Full output saved to: /artifacts/tool-output/run-7/${saved[0].filename}`);
+  });
+
+  it("omits the saved-to line when the run-scoped sink declines the write", async () => {
+    const root = tempWorkspace();
+    const ctx = { ...readToolRuntime(), persistArtifact: () => null };
+
+    const result = await bashToolImpl(
+      { command: "printf '%04000d' 0", max_output_chars: 500, workdir: root },
+      { ctx },
+    );
+
+    expect(result).toContain("[truncated Bash output");
+    expect(result).not.toContain("Full output saved to:");
   });
 
   it("routes bash execution through the configured sandbox engine", async () => {
