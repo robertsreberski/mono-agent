@@ -310,9 +310,11 @@ interface PriorOutcomeRow {
   finished_at: string | null;
   assistant_message_id: string;
   started_at: string;
-  /** `turns.rowid`, so the window read can break a shared start stamp. */
+  /** `turns.rowid`, so the candidate read can break a shared start stamp. */
   ordinal: number;
   has_user: number;
+  /** Whether a completed host-owned Monitor delivery claims this turn. */
+  claimed: number;
 }
 
 interface TurnRow {
@@ -611,16 +613,6 @@ const MAX_REVISIONS_PER_THREAD = 1_000;
  */
 const OUTCOME_TEXT_TRIM = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
   + "\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
-/**
- * How many prior-outcome candidates per conversation one batched read pulls.
- *
- * Only a Monitor no-op is ever skipped, so a thread exhausting this window has
- * eight settled runs in a row that said nothing. A thread that does is answered
- * by the next window of the same batched read, never by a read of its own: the
- * window bounds how much a listing reads at once, not which listings stay
- * set-based. Exported so the cost regression measures the real window.
- */
-export const PRIOR_OUTCOME_WINDOW = 8;
 export const WEB_THREAD_PAGE_MAX = 200;
 /**
  * What one page is when the caller does not say.
@@ -5351,10 +5343,10 @@ export class WebStore {
    * outcome, last message, job cards, run activity -- so a fifty-card Running
    * section cost hundreds of statements, and stream invalidation asks for that
    * section about once a second. Each reader below is keyed by the whole id set
-   * instead, including the one deep-history path that used to drop back to a
-   * single thread: one card and fifty cards issue the same statements for the
-   * same shape of history. The order is the caller's, because only the caller
-   * knows what the listing is ordered by.
+   * instead, including the deep-history path that used to drop back to a
+   * single thread: one card and fifty cards issue the same statements, however
+   * deep any card's silent history runs. The order is the caller's, because
+   * only the caller knows what the listing is ordered by.
    */
   private mapThreads(rows: readonly ThreadRow[]): WebThread[] {
     if (rows.length === 0) return [];
@@ -5607,59 +5599,57 @@ export class WebStore {
    * from retained provenance/normalized parts so old stores need no migration.
    * Match hasMonitorReplyContent without loading transcript bodies into lists.
    *
-   * The candidate window is what keeps this set-based: ONE statement fetches the
-   * newest {@link PRIOR_OUTCOME_WINDOW} candidates of every thread, and their
-   * Monitor provenance and parts are read in one statement each. A thread whose
-   * whole window turned out to be Monitor no-ops -- legacy rows, and never a run
-   * of them this long -- does not go back to reading its own history: the next
-   * window is asked for every such thread at once, so what a listing costs
-   * follows how deep the deepest silent history is and never how many cards the
-   * listing has.
+   * Two statements, whatever the listing holds and however deep its silence
+   * runs. Only a turn a completed Monitor delivery claims can be a no-op, and
+   * the candidate read knows which those are: it returns, for every thread at
+   * once, each candidate down to and including the first one nothing can
+   * silence. A second statement reads the parts of the claimed ones. Legacy
+   * rows keep their raw sentinel bytes and normalize only on read, so that
+   * read is the one place a silent turn is told apart from an answer.
    */
   private priorOutcomes(latest: readonly TurnRow[]): Map<string, PriorOutcomeRow> {
+    const threadIds = [...new Set(latest.map((row) => row.thread_id))];
+    if (threadIds.length === 0) return new Map();
+    const candidates = this.priorOutcomeCandidates(threadIds);
+    const noOps = this.monitorNoOpTurnIds(candidates);
     const outcomes = new Map<string, PriorOutcomeRow>();
-    let pending = [...new Set(latest.map((row) => row.thread_id))];
-    for (let skip = 0; pending.length > 0; skip += PRIOR_OUTCOME_WINDOW) {
-      const candidates = this.priorOutcomeCandidates(pending, skip);
-      const byThread = new Map<string, PriorOutcomeRow[]>();
-      for (const candidate of candidates) {
-        const held = byThread.get(candidate.thread_id);
-        if (held === undefined) byThread.set(candidate.thread_id, [candidate]);
-        else held.push(candidate);
+    for (const candidate of candidates) {
+      if (!outcomes.has(candidate.thread_id) && !noOps.has(candidate.id)) {
+        outcomes.set(candidate.thread_id, candidate);
       }
-      const noOps = this.monitorNoOpTurnIds(candidates);
-      const deeper: string[] = [];
-      for (const threadId of pending) {
-        const rows = byThread.get(threadId) ?? [];
-        const accepted = rows.find((row) => !noOps.has(row.id));
-        if (accepted !== undefined) outcomes.set(threadId, accepted);
-        // A short window is the whole history: there is nothing deeper to ask.
-        else if (rows.length === PRIOR_OUTCOME_WINDOW) deeper.push(threadId);
-      }
-      pending = deeper;
     }
     return outcomes;
   }
 
-  /** One window of candidates for every thread whose outcome is still open. */
-  private priorOutcomeCandidates(threadIds: readonly string[], skip: number): PriorOutcomeRow[] {
+  /**
+   * Every candidate of these threads that could still be the outcome, newest
+   * first within each thread.
+   *
+   * A candidate with a user message, an unsuccessful one, or one no Monitor
+   * delivery claims settles its thread on the spot; the read stops at it and
+   * carries only the claimed assistant-only completions above it, which are the
+   * only rows whose parts have to be asked.
+   */
+  private priorOutcomeCandidates(threadIds: readonly string[]): PriorOutcomeRow[] {
     return this.database.prepare(`
-      SELECT * FROM (
-        SELECT c.*, ROW_NUMBER() OVER (
-          PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
-        ) AS rn
-        FROM (${priorOutcomeCandidateSql()}) c
-      ) WHERE rn > ? AND rn <= ? ORDER BY thread_id, rn
-    `).all(
-      JSON.stringify(threadIds),
-      OUTCOME_TEXT_TRIM,
-      skip,
-      skip + PRIOR_OUTCOME_WINDOW,
-    ) as unknown as PriorOutcomeRow[];
+      SELECT thread_id, id, status, finished_at, assistant_message_id, started_at, ordinal, has_user, claimed
+      FROM (
+        SELECT r.*, MIN(CASE WHEN r.settles THEN r.rn END) OVER (PARTITION BY r.thread_id) AS settled_rn
+        FROM (
+          SELECT c.*,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
+                 ) AS rn,
+                 (c.status <> 'complete' OR c.has_user = 1 OR c.claimed = 0) AS settles
+          FROM (${priorOutcomeCandidateSql()}) c
+        ) r
+      ) WHERE settled_rn IS NULL OR rn <= settled_rn
+      ORDER BY thread_id, rn
+    `).all(JSON.stringify(threadIds), OUTCOME_TEXT_TRIM) as unknown as PriorOutcomeRow[];
   }
 
   /**
-   * Which of these candidates are Monitor no-ops, in two statements.
+   * Which of these candidates are Monitor no-ops, in one statement.
    *
    * Legacy Monitor rows retain raw sentinel bytes and normalize only on read, so
    * the answer needs their parts -- but only for the candidates a host-owned
@@ -5667,9 +5657,7 @@ export class WebStore {
    * here materializes a transcript or rewrites history to derive sidebar status.
    */
   private monitorNoOpTurnIds(candidates: readonly PriorOutcomeRow[]): Set<string> {
-    const inspectable = candidates.filter((row) => row.status === "complete" && row.has_user === 0);
-    const associated = this.monitorAssociatedTurnIds(inspectable.map((row) => row.id));
-    const claimed = inspectable.filter((row) => associated.has(row.id));
+    const claimed = candidates.filter((row) => row.status === "complete" && row.has_user === 0 && row.claimed === 1);
     const parts = this.messageParts(claimed.map((row) => row.assistant_message_id));
     return new Set(claimed.flatMap((row) => hasMonitorReplyContent(
       normalizeMonitorTerminalReply(parts.get(row.assistant_message_id) ?? []).parts,
@@ -6234,7 +6222,13 @@ function priorOutcomeCandidateSql(): string {
   return `
     SELECT t.thread_id, t.id, t.status, t.finished_at, t.assistant_message_id,
            t.started_at, t.rowid AS ordinal,
-           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
+           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user,
+           EXISTS (
+             SELECT 1 FROM monitor_wake_deliveries d
+             JOIN threads th ON th.id = t.thread_id AND th.source_id = d.source_id
+             WHERE d.thread_id = t.thread_id AND d.turn_id = t.id AND d.state = 'completed'
+               AND d.disposition IN ('steered', 'follow_up')
+           ) AS claimed
     FROM turns t
     WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND t.status <> 'running' AND (
       t.status <> 'complete'

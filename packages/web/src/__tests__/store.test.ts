@@ -19,7 +19,6 @@ import type {
   WebMessagePart,
 } from "../contracts.js";
 import {
-  PRIOR_OUTCOME_WINDOW,
   WEB_SEARCH_HIGHLIGHT_CLOSE,
   WEB_SEARCH_HIGHLIGHT_OPEN,
   WEB_THREAD_SEARCH_MAX,
@@ -5139,13 +5138,13 @@ describe("WebStore message sequence and part deltas", () => {
     // outcome the sidebar has to show sits behind all of them.
     let cards = 0;
     const silenced: string[] = [];
-    const addSilentCard = (): void => {
+    const addSilentCard = (depth: number): void => {
       cards += 1;
       const thread = store.createThread("agent-one");
       const answered = store.beginTurn({ threadId: thread.id, text: "ask", attachmentIds: [] });
       store.completeTurn(answered.turnId, "the answer that still stands");
       const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
-      for (let index = 0; index <= PRIOR_OUTCOME_WINDOW; index += 1) {
+      for (let index = 0; index < depth; index += 1) {
         const deliveryKey = `monitor:${monitor.monitorId}:${String(cards)}:${String(index)}`;
         const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "Host follow-up" });
         store.reserveMonitorWake({
@@ -5185,17 +5184,25 @@ describe("WebStore message sequence and part deltas", () => {
       }
     };
 
-    addSilentCard();
+    addSilentCard(9);
     restoreHistoricalBytes();
     const one = measureStatements(store, () => store.listActiveThreads());
-    for (let index = 1; index < 50; index += 1) addSilentCard();
+    // The same one card, twice as deep in silence: an eight-turn window used to
+    // be asked again for every further block of no-ops.
+    addSilentCard(17);
+    restoreHistoricalBytes();
+    const deeper = measureStatements(store, () => store.listActiveThreads());
+    for (let index = 2; index < 50; index += 1) addSilentCard(9);
     restoreHistoricalBytes();
     const full = measureStatements(store, () => store.listActiveThreads());
 
     expect(one.value.threads).toHaveLength(1);
+    expect(deeper.value.threads).toHaveLength(2);
     expect(full.value.threads).toHaveLength(50);
-    // Fifty silent histories cost what one costs: the window behind the window
-    // is asked for the whole unresolved set, never per card.
+    // Fifty silent histories cost what one costs, and a history twice as deep
+    // costs the same again: the candidates are read for the whole set down to
+    // the first turn nothing can silence, never a window at a time.
+    expect(deeper.statements).toBe(one.statements);
     expect(full.statements).toBe(one.statements);
     // The one card is drawn exactly as it was when it was the only card.
     const alone = one.value.threads[0];
