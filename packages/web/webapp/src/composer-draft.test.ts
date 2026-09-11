@@ -186,6 +186,44 @@ describe("composer drafts across app restarts", () => {
     reopenedAgain.resetComposerDraft();
   });
 
+  it("does not let a clock correction overwrite what another tab typed or sent since", async () => {
+    const key = JSON.stringify(["alpha", "wrong-clock"]);
+    const ahead = Date.now() + 60 * 60 * 1_000;
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: ahead }],
+    }));
+
+    // Between this tab's hydration and its flush, another tab edits the draft.
+    const edited = await reopenApp();
+    expect(edited.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "retyped in the other tab", updatedAt: Date.now() }],
+    }));
+    edited.writeComposerDraft("alpha", "elsewhere", "an unrelated draft");
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    edited.flushComposerDrafts();
+    vi.useRealTimers();
+    expect(storedDocument().drafts.find((draft) => draft.key === key)?.text).toBe("retyped in the other tab");
+    edited.resetComposerDraft();
+
+    // ...or sends it.
+    localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      drafts: [{ key, text: "written while the clock was ahead", updatedAt: ahead }],
+    }));
+    const sent = await reopenApp();
+    expect(sent.readComposerDraft("alpha", "wrong-clock")).toBe("written while the clock was ahead");
+    localStorage.removeItem(COMPOSER_DRAFTS_STORAGE_KEY);
+    sent.writeComposerDraft("alpha", "elsewhere", "an unrelated draft");
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
+    sent.flushComposerDrafts();
+    vi.useRealTimers();
+    expect(storedDocument().drafts.map((draft) => draft.key)).toEqual([JSON.stringify(["alpha", "elsewhere"])]);
+    sent.resetComposerDraft();
+  });
+
   it("discards a malformed stored document instead of failing to start", async () => {
     localStorage.setItem(COMPOSER_DRAFTS_STORAGE_KEY, '{"version":1,"drafts":[{"key":5}]}');
 

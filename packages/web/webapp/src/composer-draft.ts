@@ -53,6 +53,16 @@ let visibleAttachments = false;
  */
 const touchedKeys = new Set<string>();
 
+/**
+ * Keys whose stored stamp hydration clamped, with the entry exactly as stored.
+ *
+ * A clamp is this tab's correction of the record, not a write: the flush
+ * carries it only while the device still holds the very entry it corrected.
+ * Another tab's edit or deletion of the same key since is newer than the
+ * correction and wins.
+ */
+const clampedKeys = new Map<string, DraftEntry>();
+
 let hydrated = false;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 /**
@@ -110,12 +120,12 @@ const isStoredDraft = (value: unknown): value is { key: string; text: string; up
 /**
  * The stored document, with any stamp from the future read as "now".
  *
- * `onClamped` hears which keys that touched: a clamp is a correction, and the
- * caller that hydrates from it has to own it, or the next merge would read the
- * same future stamp as a fresher "now" and let the draft outrank every edit
- * typed since.
+ * `onClamped` hears which keys that touched, with the stamp as stored: a clamp
+ * is a correction, and the caller that hydrates from it has to own it, or the
+ * next merge would read the same future stamp as a fresher "now" and let the
+ * draft outrank every edit typed since.
  */
-const readStored = (onClamped?: (key: string) => void): Map<string, DraftEntry> => {
+const readStored = (onClamped?: (key: string, stored: DraftEntry) => void): Map<string, DraftEntry> => {
   const entries = new Map<string, DraftEntry>();
   const store = storage();
   if (store === null) {
@@ -148,7 +158,7 @@ const readStored = (onClamped?: (key: string) => void): Map<string, DraftEntry> 
       // Left alone it would outrank everything typed afterwards and survive
       // every eviction; read as "now" it keeps its place at the front and
       // expires on schedule.
-      if (value.updatedAt > now) onClamped?.(value.key);
+      if (value.updatedAt > now) onClamped?.(value.key, { text: value.text, updatedAt: value.updatedAt });
       entries.set(value.key, { text: value.text, updatedAt: Math.min(value.updatedAt, now) });
     }
   } catch {
@@ -192,13 +202,25 @@ export const flushComposerDrafts = (): void => {
     clearTimeout(flushTimer);
     flushTimer = null;
   }
-  if (touchedKeys.size === 0) return;
+  if (touchedKeys.size === 0 && clampedKeys.size === 0) return;
   const store = storage();
   if (store === null) {
     persisting = false;
     return;
   }
   const merged = readStored();
+  for (const [key, corrected] of clampedKeys) {
+    if (touchedKeys.has(key)) continue;
+    const stored = merged.get(key);
+    const own = textDrafts.get(key);
+    // Still the future-stamped entry hydration read (the merge re-clamped it to
+    // a later "now"): write the correction. Anything else is another tab's.
+    if (own !== undefined && stored !== undefined && stored.text === corrected.text
+      && stored.updatedAt >= own.updatedAt) {
+      merged.set(key, own);
+    }
+  }
+  clampedKeys.clear();
   for (const key of touchedKeys) {
     const entry = textDrafts.get(key);
     if (entry === undefined) merged.delete(key);
@@ -257,9 +279,10 @@ const listenForTeardown = (): void => {
 const hydrate = (): void => {
   if (hydrated) return;
   hydrated = true;
-  // A clamped stamp is this tab's edit of the record: written back at the next
-  // flush, so the merge takes this hydration's "now" and not a later one.
-  for (const [key, entry] of readStored((key) => touchedKeys.add(key))) {
+  // A clamped stamp is this tab's correction of the record: written back at
+  // the next flush, so the merge takes this hydration's "now" and not a later
+  // one, unless another tab has moved that key since.
+  for (const [key, entry] of readStored((key, stored) => clampedKeys.set(key, stored))) {
     textDrafts.set(key, entry);
     // Anything typed from here has to outrank what is already stored, even
     // where the device clock has since moved backwards; otherwise eviction
@@ -369,6 +392,7 @@ export const resetComposerDraft = (): void => {
   }
   textDrafts.clear();
   touchedKeys.clear();
+  clampedKeys.clear();
   visibleAttachments = false;
   hydrated = false;
   persisting = true;
