@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { createRef } from "react";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent } from "../test/fixtures";
 import "../styles.css";
@@ -70,6 +70,21 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/**
+ * The start control, once it is actually a control.
+ *
+ * "Run check" renders WITH the section and stays disabled until the provider
+ * status read lands, so a query that waits only for its presence can hand back
+ * a button whose click does nothing at all -- and what then fails is the
+ * assertion about whatever that click was supposed to cause, several lines
+ * later and for a reason that reads like the component's.
+ */
+const findStartButton = async (name: string) => {
+  const button = await screen.findByRole("button", { name });
+  await waitFor(() => { expect(button).toBeEnabled(); });
+  return button;
+};
+
 const advanceProviderPolls = async (count = 1) => {
   await act(async () => await Promise.resolve());
   await act(async () => {
@@ -87,7 +102,7 @@ describe("AgentSettingsDialog", () => {
     start.mockReturnValueOnce(admission.promise);
     const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
     const view = render(<AgentSettingsDialog open {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" }));
+    fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers"));
     // The admission is genuinely on the wire before the dialog closes. Without
     // this the test could close over a click that started nothing -- the check
     // button is disabled until the status read lands -- and then read the
@@ -118,7 +133,7 @@ describe("AgentSettingsDialog", () => {
     const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
     const view = render(<AgentSettingsDialog open {...props} />);
     const action = kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers";
-    fireEvent.click(await screen.findByRole("button", { name: action }));
+    fireEvent.click(await findStartButton(action));
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", generation: "generation-2", supportsProviderAuth: true, supportsProviderAuthChecks: true });
     view.rerender(<AgentSettingsDialog open {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: action }));
@@ -143,7 +158,7 @@ describe("AgentSettingsDialog", () => {
     const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
     start.mockReturnValueOnce(late.promise);
     const view = render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    fireEvent.click(await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" }));
+    fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers"));
     view.unmount();
     await act(async () => late.resolve(kind === "auth" ? successfulProviderAuthSession() : completedProviderAuthCheck()));
     expect(cancel).not.toHaveBeenCalled();
@@ -162,7 +177,7 @@ describe("AgentSettingsDialog", () => {
     get.mockReturnValueOnce(poll.promise);
     cancel.mockReturnValueOnce(deletion.promise);
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    const startButton = await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" });
+    const startButton = await findStartButton(kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers");
     vi.useFakeTimers();
     fireEvent.click(startButton);
     await advanceProviderPolls();
@@ -718,7 +733,7 @@ describe("AgentSettingsDialog", () => {
     });
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    fireEvent.click(await findStartButton("Run live checks for all displayed providers"));
     const cancel = await screen.findByRole("button", { name: "Cancel live provider checks" });
     expect(cancel).toHaveTextContent("Cancel checks");
     expect(cancel).toHaveClass("provider-auth-neutral-button");
@@ -769,7 +784,7 @@ describe("AgentSettingsDialog", () => {
       .mockResolvedValueOnce(completed);
 
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    const run = await screen.findByRole("button", { name: "Run live checks for all displayed providers" });
+    const run = await findStartButton("Run live checks for all displayed providers");
     vi.useFakeTimers();
     fireEvent.click(run);
     await act(async () => await Promise.resolve());
@@ -806,7 +821,7 @@ describe("AgentSettingsDialog", () => {
     }));
 
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    const run = await screen.findByRole("button", { name: "Run live checks for all displayed providers" });
+    const run = await findStartButton("Run live checks for all displayed providers");
     vi.useFakeTimers();
     fireEvent.click(run);
     await act(async () => await Promise.resolve());
@@ -842,7 +857,7 @@ describe("AgentSettingsDialog", () => {
     }));
 
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Run live checks for all displayed providers" }));
+    fireEvent.click(await findStartButton("Run live checks for all displayed providers"));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel live provider checks" }));
     expect(await screen.findByRole("button", { name: "Run live checks for all displayed providers" })).toBeVisible();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -874,7 +889,7 @@ describe("AgentSettingsDialog", () => {
       });
 
     render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
-    const run = await screen.findByRole("button", { name: "Run live checks for all displayed providers" });
+    const run = await findStartButton("Run live checks for all displayed providers");
     vi.useFakeTimers();
     fireEvent.click(run);
     await act(async () => await Promise.resolve());
