@@ -196,7 +196,9 @@ behind it — the stream dropped, the read failed, or a cold start off the devic
 — the section says **last known** and falls back to what this browser holds. An
 authoritative empty listing takes it off screen as an answer: the fleet is
 idle. An empty fallback is omitted rather than drawn as a zero, which proves
-nothing either way.
+nothing either way. A card for a background job is only as current as the
+notification behind it, so the service re-asks each agent about the job cards
+it still draws as running; see Process-job card reconciliation below.
 
 **Unread.** A Recent row shows a dot, and an agent square a muted count, for a
 conversation that has moved since this device last looked at it. It is
@@ -206,6 +208,13 @@ while the conversation is on screen — on a phone, the conversation screen rath
 than the Dashboard. A running badge takes the agent square; the unread count
 comes back when the work ends. It is stored with the rest of this origin's
 console data and is cleared with it.
+
+A Recent row is marked as the open conversation only where that conversation
+is on screen: beside the list on desktop, and on a phone only once it has been
+pushed over the Dashboard. The service-side selection is unaffected; a phone
+showing only the list simply has nothing to point at with it. The agent
+settings dialog opens over whichever screen is showing and closing it leaves
+the operator there; only the new-conversation control navigates.
 
 On narrow touch screens the console opens on the Dashboard; a
 conversation is pushed over it when a row, a Running card or the new-conversation
@@ -226,7 +235,8 @@ if the same source id is discovered again. The same filter applies to the
 agent strip and the command palette. Pin or unpin the selected agent with the
 star in the agent settings dialog or the palette's pin command; pins live in
 the web service so favorites stay consistent over localhost, LAN, and Tailscale,
-and pinned agents sort first on the strip.
+and pinned agents sort first on the strip, which marks each pinned square with
+the same star.
 
 The single-row mobile conversation header keeps the back control, title, and
 the conversation actions menu together; notifications belong to the Dashboard. Run settings sit beside **Send** in the
@@ -446,8 +456,12 @@ late or replayed delivery cannot recreate the channel. Bootstrap and paging are
 bounded per source and archive state, with redirect-resolving thread fetches for selections
 or mutations outside the current window.
 
-The cron header shows schedule, timezone, effective state, last and next run,
-and health from the agent-authored overview. **Run now** and **Enable/Disable**
+The cron header opens collapsed, on one line of the three facts an operator
+reads first: schedule, effective state and next run. Expanding its disclosure
+shows schedule, timezone, effective state, last and next run, and health from
+the agent-authored overview, together with the controls below. It is a native
+`details`, so its expanded state is exposed to assistive technology and driven
+from the keyboard by the browser, and nothing about it is persisted. **Run now** and **Enable/Disable**
 use the existing confirmed operator APIs when the live agent advertises action
 capability; otherwise they stay visible but disabled with the authoritative
 reason. **View config** exposes the existing redacted, read-only config view.
@@ -650,6 +664,22 @@ Monitor activity shows suppressed lines/batches and follow-up, steered, or
 unknown wake dispositions. These are host delivery counts, not model-turn or
 cost estimates. Historical v1 Monitor projections in SQLite and browser caches
 remain readable alongside v2 projections.
+
+**Process-job card reconciliation.** A retained job card is written
+`queued`, `starting` or `running` from the agent's notification and leaves that
+state only when a terminal projection arrives. When that notification never
+lands — the agent restarted while the web service was disconnected, a wake was
+lost — nothing else moves the card, so the service re-asks the agent. A sweep
+runs when an agent connection is re-established or its process generation
+changes, and otherwise no more than once every fifteen minutes per agent. For
+each unsettled card of an agent that advertises process jobs it reads the
+agent's projection, at most four at a time and at most fifty cards per pass: a
+terminal projection is applied exactly as its notification would have been and
+emits the same events; an agent that no longer knows the job retires the card
+as `interrupted` with `process_job_agent_restarted`; any other failure leaves
+the card untouched, because an agent this console could not reach has not said
+that the job ended. Agents without process-job support, and cards for a source
+id discovery no longer reports, are left alone.
 
 ### Package structure
 
