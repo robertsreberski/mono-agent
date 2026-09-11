@@ -46,6 +46,7 @@ import {
   type WebCronReplyReceipt,
   type WebCronReplySnapshotKind,
   type WebMessagePage,
+  type WebProject,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
   type WebActiveThreads,
@@ -80,6 +81,8 @@ interface ThreadPatch {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  /** Present (even as `null`) moves or detaches the conversation's project membership. */
+  readonly projectId?: string | null;
 }
 
 interface AgentRow {
@@ -108,11 +111,36 @@ interface AgentRow {
 export interface CreateStoredThreadInput {
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly projectId?: string;
+}
+
+interface ProjectRow {
+  id: string;
+  source_id: string;
+  name: string;
+  context: string;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+  revision: number;
+}
+
+export interface CreateStoredProjectInput {
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context?: string;
+}
+
+export interface PatchStoredProjectInput {
+  readonly name?: string;
+  readonly context?: string;
+  readonly archived?: boolean;
 }
 
 interface ThreadRow {
   id: string;
   source_id: string;
+  project_id: string | null;
   title: string;
   title_manual: number;
   archived_at: string | null;
@@ -2652,6 +2680,9 @@ export class WebStore {
     const id = randomUUID();
     const now = this.now();
     this.transaction(() => {
+      const projectId = explicit.projectId === undefined
+        ? null
+        : this.requireProjectForThread(explicit.projectId, sourceId).id;
       const override = this.database.prepare(`
         SELECT model, effort FROM agent_run_overrides WHERE source_id = ?
       `).get(sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
@@ -2659,10 +2690,10 @@ export class WebStore {
       const effort = explicit.effort === undefined ? override?.effort ?? null : explicit.effort;
       this.database.prepare(`
         INSERT INTO threads (
-          id, source_id, conversation_id, title, title_manual, archived_at,
+          id, source_id, project_id, conversation_id, title, title_manual, archived_at,
           created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
-      `).run(id, sourceId, `web:${id}`, now, now, model, effort);
+        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
+      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
       this.setSetting("current_thread_id", id);
@@ -2676,23 +2707,29 @@ export class WebStore {
     readonly limit?: number;
     readonly before?: string;
     readonly scope?: WebThreadListScope;
+    readonly projectId?: string;
   }): WebThreadPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const limit = boundedPageLimit(input.limit, WEB_THREAD_PAGE_MAX);
     const scope = input.scope ?? "all";
-    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope);
+    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope, input.projectId);
     const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
     const scopeSql = threadListScopeSql(scope);
+    const projectSql = input.projectId === undefined ? "" : "AND t.project_id = ?";
+    if (input.projectId !== undefined && this.getProjectRow(input.projectId) === undefined) {
+      throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    }
     const beforeSql = cursor === undefined
       ? ""
       : "AND (t.updated_at < ? OR (t.updated_at = ? AND t.id < ?))";
     const values: Array<string | number> = [input.sourceId];
+    if (input.projectId !== undefined) values.push(input.projectId);
     if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     values.push(limit + 1);
     const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${beforeSql}
+      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${beforeSql}
       ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
     `)).all(...values) as unknown as ThreadRow[];
     const hasMore = rows.length > limit;
@@ -2705,6 +2742,7 @@ export class WebStore {
             updatedAt: last.updated_at,
             id: last.id,
             ...(scope === "chats" ? { scope } : {}),
+            ...(input.projectId === undefined ? {} : { project: input.projectId }),
           }) }
         : {}),
     };
@@ -3053,6 +3091,11 @@ export class WebStore {
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
+    const projectId = patch.projectId === undefined
+      ? undefined
+      : patch.projectId === null
+        ? null
+        : this.requireProjectForThread(patch.projectId, current.sourceId).id;
     {
       const sets: string[] = [];
       const values: Array<string | null> = [];
@@ -3072,8 +3115,12 @@ export class WebStore {
         sets.push("run_effort = ?");
         values.push(runEffort);
       }
-      // A model/effort-only patch must not reorder the sidebar, so `updated_at`
-      // only advances when title or archived state actually changes.
+      if (projectId !== undefined) {
+        sets.push("project_id = ?");
+        values.push(projectId);
+      }
+      // A model/effort/project-only patch must not reorder the sidebar, so
+      // `updated_at` only advances when title or archived state actually changes.
       if (title !== undefined || archivedAt !== undefined) {
         sets.push("updated_at = ?");
         values.push(now);
@@ -3089,7 +3136,9 @@ export class WebStore {
             ? patch.archived
               ? "archived"
               : "unarchived"
-            : "run_config_changed",
+            : projectId !== undefined
+              ? "project_changed"
+              : "run_config_changed",
         now,
       );
       if (patch.archived === true && this.currentThreadId() === id) {
@@ -3097,6 +3146,152 @@ export class WebStore {
       }
     }
     return { ...this.requireThread(id), sourceId: current.sourceId };
+  }
+
+  /**
+   * One agent's projects, archived included, newest activity first.
+   *
+   * The Dashboard and the conversation picker filter archived out locally;
+   * bootstrap carries the same full set so an agent switch never refetches it.
+   */
+  listProjects(sourceId: string): WebProject[] {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const rows = this.database.prepare(`
+      SELECT * FROM projects WHERE source_id = ? ORDER BY updated_at DESC, id DESC
+    `).all(sourceId) as unknown as ProjectRow[];
+    return rows.map((row) => this.mapProject(row));
+  }
+
+  getProject(id: string): WebProject | undefined {
+    const row = this.getProjectRow(id);
+    return row === undefined ? undefined : this.mapProject(row);
+  }
+
+  createProject(input: CreateStoredProjectInput): WebProject {
+    if (this.getAgent(input.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    const id = randomUUID();
+    const now = this.now();
+    this.database.prepare(`
+      INSERT INTO projects (id, source_id, name, context, created_at, updated_at, archived_at, revision)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, 1)
+    `).run(id, input.sourceId, input.name, input.context ?? "", now, now);
+    return this.mapProject(this.requireProject(id));
+  }
+
+  patchProject(id: string, patch: PatchStoredProjectInput): WebProject {
+    this.requireProject(id);
+    const now = this.now();
+    const sets: string[] = [];
+    const values: Array<string | null> = [];
+    if (patch.name !== undefined) {
+      sets.push("name = ?");
+      values.push(patch.name);
+    }
+    if (patch.context !== undefined) {
+      sets.push("context = ?");
+      values.push(patch.context);
+    }
+    if (patch.archived !== undefined) {
+      sets.push("archived_at = ?");
+      values.push(patch.archived ? now : null);
+    }
+    sets.push("updated_at = ?", "revision = revision + 1");
+    values.push(now, id);
+    this.database.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    return this.mapProject(this.requireProject(id));
+  }
+
+  /**
+   * Delete one project and detach its chats back to the agent.
+   *
+   * Returns the detached member ids, oldest activity first, so the caller can
+   * re-emit their summaries. The explicit update (rather than relying on the
+   * `ON DELETE SET NULL` cascade) bumps each member's revision, which is what
+   * lets a console's equal-revision guard accept the detached summaries.
+   */
+  deleteProject(id: string): string[] {
+    this.requireProject(id);
+    const now = this.now();
+    return this.transaction(() => {
+      const members = (this.database.prepare(`
+        SELECT id FROM threads WHERE project_id = ? ORDER BY updated_at ASC, id ASC
+      `).all(id) as Array<{ id: string }>).map((member) => member.id);
+      this.database.prepare(`
+        UPDATE threads SET project_id = NULL, revision = revision + 1 WHERE project_id = ?
+      `).run(id);
+      for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
+      this.database.prepare("DELETE FROM projects WHERE id = ?").run(id);
+      return members;
+    });
+  }
+
+  /**
+   * The injectable context for one conversation, resolved at dispatch time.
+   *
+   * Undefined when the conversation belongs to no project or its project's
+   * context is empty, so dispatch never prefixes then.
+   */
+  projectContextForThread(threadId: string): { readonly name: string; readonly context: string } | undefined {
+    const row = this.database.prepare(`
+      SELECT p.name AS name, p.context AS context
+        FROM threads t JOIN projects p ON p.id = t.project_id
+       WHERE t.id = ?
+    `).get(this.resolveThreadId(threadId)) as unknown as { name: string; context: string } | undefined;
+    if (row === undefined || row.context.trim().length === 0) return undefined;
+    return { name: row.name, context: row.context };
+  }
+
+  private getProjectRow(id: string): ProjectRow | undefined {
+    return this.database.prepare("SELECT * FROM projects WHERE id = ?").get(id) as unknown as ProjectRow | undefined;
+  }
+
+  private requireProject(id: string): ProjectRow {
+    const row = this.getProjectRow(id);
+    if (row === undefined) throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    return row;
+  }
+
+  /**
+   * Resolve a membership destination: the project exists, belongs to the
+   * conversation's agent, and is not archived.
+   */
+  private requireProjectForThread(projectId: string, sourceId: string): ProjectRow {
+    const project = this.requireProject(projectId);
+    if (project.source_id !== sourceId) {
+      throw new WebConsoleError("project_agent_mismatch", "The project belongs to a different agent.", 409);
+    }
+    if (project.archived_at !== null) {
+      throw new WebConsoleError("project_archived", "Unarchive the project before adding conversations to it.", 409);
+    }
+    return project;
+  }
+
+  private mapProject(row: ProjectRow): WebProject {
+    const memberIds = (this.database.prepare(`
+      SELECT id FROM threads WHERE project_id = ? AND archived_at IS NULL
+    `).all(row.id) as Array<{ id: string }>).map((member) => member.id);
+    const runningCount = memberIds.length === 0
+      ? 0
+      : (this.database.prepare(`
+          SELECT COUNT(DISTINCT thread_id) AS count FROM turns
+          WHERE thread_id IN (SELECT value FROM json_each(?)) AND status = 'running'
+        `).get(JSON.stringify(memberIds)) as unknown as { count: number }).count;
+    return {
+      id: row.id,
+      sourceId: row.source_id,
+      name: row.name,
+      context: row.context,
+      archivedAt: row.archived_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      revision: row.revision,
+      conversationCount: memberIds.length,
+      runningCount,
+    };
   }
 
   /** Whether the current interactive thread still accepts agent-proposed titles. */
@@ -4512,9 +4707,23 @@ export class WebStore {
         updated_at TEXT NOT NULL,
         CHECK (model IS NOT NULL OR effort IS NOT NULL)
       );
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        context TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        archived_at TEXT,
+        revision INTEGER NOT NULL DEFAULT 1
+      );
+      -- v26 conversation-projects creates projects_by_source and
+      -- threads_by_project: the membership column does not exist on legacy
+      -- layouts until that step adds it, so bootstrap must not index it first.
       CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id),
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
         conversation_id TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         title_manual INTEGER NOT NULL DEFAULT 0,
@@ -5431,6 +5640,7 @@ export class WebStore {
       return {
         id: row.id,
         sourceId: row.source_id,
+        projectId: row.project_id,
         title: row.title,
         archivedAt: row.archived_at,
         createdAt: row.created_at,
@@ -6318,7 +6528,7 @@ function priorOutcomeCandidateSql(): string {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.project_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
@@ -6702,10 +6912,14 @@ function threadListScopeSql(scope: WebThreadListScope): string {
 function decodeThreadCursor(
   value: string,
   scope: WebThreadListScope,
+  projectId?: string,
 ): { readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
   if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string"
-    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)) {
+    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)
+    // A filtered page binds its project: a cursor minted for another project
+    // -- or for the unfiltered bucket -- must not walk this one.
+    || (projectId === undefined ? cursor.project !== undefined : cursor.project !== projectId)) {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return { updatedAt: cursor.updatedAt, id: cursor.id };

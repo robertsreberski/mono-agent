@@ -44,7 +44,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["agents", "threads", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -313,6 +313,44 @@ describe("web storage migration history", () => {
     } finally { database.close(); }
   });
 
+  it("migrates a legacy database to conversation projects and reopens idempotently", async () => {
+    const stateDir = await seeded(20);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      try {
+        expect(store.getProject("missing")).toBeUndefined();
+        expect(store.listProjects("fixture-agent")).toEqual([]);
+      } finally { store.close(); }
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 26 });
+        expect(inspected.prepare("PRAGMA table_info(projects)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "id", type: "TEXT", pk: 1 }),
+          expect.objectContaining({ name: "source_id", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "name", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "context", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "revision", type: "INTEGER", notnull: 1 }),
+        ]));
+        expect(inspected.prepare("PRAGMA table_info(threads)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "project_id", type: "TEXT", notnull: 0 }),
+        ]));
+        expect(indexColumns(inspected, "projects_by_source"))
+          .toEqual(["source_id", "archived_at", "updated_at", "id"]);
+        expect(indexColumns(inspected, "threads_by_project"))
+          .toEqual(["project_id", "archived_at", "updated_at", "id"]);
+        const keys = inspected.prepare("PRAGMA foreign_key_list(threads)").all() as Array<{
+          from: string; table: string; to: string; on_delete: string;
+        }>;
+        expect(keys).toEqual(expect.arrayContaining([
+          expect.objectContaining({ from: "project_id", table: "projects", to: "id", on_delete: "SET NULL" }),
+        ]));
+        // The retained fixture conversation belongs to no project.
+        expect(inspected.prepare("SELECT project_id FROM threads WHERE id = 'fixture-thread'").get())
+          .toMatchObject({ project_id: null });
+      } finally { inspected.close(); }
+    }
+  });
+
   it("migrates schema 24 by provisioning cron Reply operations and reopens idempotently", async () => {
     const stateDir = await seeded(0);
     const initial = await WebStore.open({ stateDir });
@@ -326,7 +364,7 @@ describe("web storage migration history", () => {
       store.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 25 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 26 });
         expect(inspected.prepare("PRAGMA table_info(cron_reply_operations)").all()).toEqual(expect.arrayContaining([
           expect.objectContaining({ name: "operation_id", type: "TEXT", notnull: 0 }),
           expect.objectContaining({ name: "snapshot_text", type: "TEXT", notnull: 0 }),
@@ -367,8 +405,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 25 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(25);
+  it("is immutable and derives schema 26 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(26);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);

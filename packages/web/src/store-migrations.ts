@@ -120,6 +120,18 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       "failure_reason", "created_at", "completed_at", "failed_at", "tombstoned_at",
     ]);
   } },
+  { version: 26, name: "conversation-projects", up: ({ database }) => {
+    // The unchanged bootstrap DDL creates this table, including upgrades; the
+    // step only asserts it before wiring the membership column and indexes.
+    assertColumns(database, "projects", [
+      "id", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision",
+    ]);
+    addColumn(database, "threads", "project_id", "TEXT REFERENCES projects(id) ON DELETE SET NULL");
+    database.exec(`CREATE INDEX IF NOT EXISTS projects_by_source
+      ON projects(source_id, archived_at, updated_at, id)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS threads_by_project
+      ON threads(project_id, archived_at, updated_at, id)`);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -166,7 +178,8 @@ export function validateWebStorageShape(database: DatabaseSync): void {
   try {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
-      threads: ["trigger_kind", "run_model", "run_effort"],
+      threads: ["trigger_kind", "run_model", "run_effort", "project_id"],
+      projects: ["source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
       cron_overviews: ["jobs_truncated"],
       attachments: ["origin"],
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
@@ -217,9 +230,13 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["notification_deliveries_by_thread", ["thread_id"]],
       ...THREAD_READ_INDEXES,
       ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
+      ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
+      ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
     ] as const) assertIndex(database, index, expected);
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],
+      ["projects", "source_id", "agents", "CASCADE"],
+      ["threads", "project_id", "projects", "SET NULL"],
       ["messages", "turn_id", "turns", "CASCADE"],
       ["attachments", "message_id", "messages", "CASCADE"],
       ["monitor_wake_deliveries", "thread_id", "threads", "SET NULL"],

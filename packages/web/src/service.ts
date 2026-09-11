@@ -790,6 +790,10 @@ export class WebService {
         limit: scope.limit ?? WEB_THREAD_PAGE_DEFAULT,
         ...(scope.scope === undefined ? {} : { scope: scope.scope }),
       });
+    // The resolved agent's projects, archived included: the Dashboard and the
+    // conversation picker filter archived out locally.
+    const projectsSourceId = threadsSourceId;
+    const projects = projectsSourceId === null ? [] : this.store.listProjects(projectsSourceId);
     return {
       version: WEB_API_VERSION,
       push: {
@@ -801,6 +805,8 @@ export class WebService {
       threads: page.threads,
       threadsSourceId,
       threadsNextCursor: page.nextCursor ?? null,
+      projects,
+      projectsSourceId,
       activeThreads,
       ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {

@@ -93,6 +93,10 @@ export const WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES = 64 * 1024 * 1024;
 export const WEB_MAX_QUEUED_ATTACHMENT_TURNS = 32;
 export const WEB_MAX_TURN_TEXT_CHARACTERS = 200_000;
 export const WEB_MAX_LIVE_INPUTS_PER_THREAD = AGENT_LIVE_INPUT_MAX_MESSAGES;
+/** Canonical upper bound on a project name, counted in characters. */
+export const WEB_MAX_PROJECT_NAME_CHARACTERS = 120;
+/** Canonical upper bound on a project's free-text context, counted in characters. */
+export const WEB_MAX_PROJECT_CONTEXT_CHARACTERS = 4_000;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebThreadNotificationTriggerKind = "cron" | "webhook";
@@ -365,6 +369,8 @@ export interface WebThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
+  /** The project this conversation belongs to, or null when it belongs to the agent directly. */
+  readonly projectId: string | null;
   readonly trigger?: WebThreadTrigger;
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
@@ -379,6 +385,46 @@ export interface WebThread {
 }
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
+
+/**
+ * A per-agent named container of conversations.
+ *
+ * Membership is independent of archive state: archiving a project hides its
+ * navigation entry while keeping chats, membership and context injection.
+ * Deleting a project detaches its chats instead -- they reappear under the
+ * agent, never deleted or stopped.
+ *
+ * `monthUsd` is the current UTC calendar month's recognised priced usage over
+ * the project's current non-archived members. Absent when no priced
+ * observation exists; a measured zero is kept as zero.
+ */
+export interface WebProject {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context: string;
+  readonly archivedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly revision: number;
+  /** Current non-archived member conversations. */
+  readonly conversationCount: number;
+  /** Members with a foreground turn running. */
+  readonly runningCount: number;
+  readonly monthUsd?: number;
+}
+
+export interface CreateWebProjectInput {
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context?: string;
+}
+
+export interface PatchWebProjectInput {
+  readonly name?: string;
+  readonly context?: string;
+  readonly archived?: boolean;
+}
 
 export type WebToolCallStatus = "running" | "complete" | "failed";
 
@@ -880,6 +926,13 @@ export interface WebBootstrap {
   /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
   readonly threadsNextCursor: string | null;
   /**
+   * The resolved agent's projects, archived included: the Dashboard and the
+   * conversation picker filter archived out locally.
+   */
+  readonly projects: readonly WebProject[];
+  /** The agent `projects` belong to, or `null` when there is no agent to open on. */
+  readonly projectsSourceId: string | null;
+  /**
    * What is running across the WHOLE fleet, from the same store snapshot the
    * `agents` above were counted from.
    *
@@ -904,6 +957,8 @@ export type WebEventType =
   | "cron.changed"
   | "threads.changed"
   | "thread.changed"
+  | "projects.changed"
+  | "project.changed"
   | "message.changed"
   | "message.delta"
   | "turn.changed"
@@ -922,6 +977,18 @@ export type WebEventType =
 export type WebThreadChangedPayload =
   | { readonly thread: WebThread }
   | { readonly threadId: string; readonly removed: true };
+
+/**
+ * The payload of every `project.changed`/`projects.changed` that names a
+ * project, mirroring {@link WebThreadChangedPayload}.
+ *
+ * The fresh summary travels WITH the event so a console never re-reads a
+ * listing to learn what changed about a row it already holds. A removal has
+ * no summary left to carry, so it says so.
+ */
+export type WebProjectChangedPayload =
+  | { readonly project: WebProject }
+  | { readonly projectId: string; readonly removed: true };
 
 /**
  * What an `agents.changed` says about itself.
@@ -1015,6 +1082,8 @@ export interface CreateWebThreadInput {
   readonly model?: string | null;
   /** Explicit draft choice; absent inherits the web default and null selects config. */
   readonly effort?: string | null;
+  /** Optional project the new conversation joins; same agent, not archived. */
+  readonly projectId?: string;
 }
 
 export interface PutWebAgentRunSettingsInput {
@@ -1031,6 +1100,11 @@ export interface PatchWebThreadInput {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  /**
+   * Move the conversation into a project, or detach it back to the agent with
+   * `null`. Never combined with `ifRunConfigUnset`.
+   */
+  readonly projectId?: string | null;
   /**
    * Compare-and-set: apply nothing unless this conversation still has NO run
    * override. The console's one-time adoption of a browser-local preference
