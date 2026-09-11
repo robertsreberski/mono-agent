@@ -111,6 +111,11 @@ vi.mock("./api", async (importOriginal) => ({
     submit: vi.fn(),
     submission: vi.fn(),
     threadJob: vi.fn(),
+    projects: vi.fn(),
+    createProject: vi.fn(),
+    patchProject: vi.fn(),
+    deleteProject: vi.fn(),
+    projectThreads: vi.fn(),
   },
 }));
 
@@ -317,6 +322,8 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.threads).mockResolvedValue({ threads: [] });
     vi.mocked(api.messages).mockResolvedValue({ messages: [] });
     vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
+    vi.mocked(api.projects).mockReset().mockResolvedValue([]);
+    vi.mocked(api.projectThreads).mockReset().mockResolvedValue({ threads: [] });
   });
 
   afterEach(() => {
@@ -788,6 +795,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/model", effort: "high" },
       expect.any(AbortSignal),
+      undefined,
     );
     expect(store.current.selectedThread).toMatchObject({
       id: "created",
@@ -843,7 +851,7 @@ describe("ConsoleStoreProvider integration", () => {
       .toEqual(["provider/web", "high"]);
     await act(async () => { await store.current.createThread(); });
 
-    expect(api.createThread).toHaveBeenCalledWith("alpha", {}, expect.any(AbortSignal));
+    expect(api.createThread).toHaveBeenCalledWith("alpha", {}, expect.any(AbortSignal), undefined);
     expect([store.current.selectedThread?.runModel, store.current.selectedThread?.runEffort])
       .toEqual(["provider/web", "high"]);
   });
@@ -885,6 +893,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/other" },
       expect.any(AbortSignal),
+      undefined,
     );
 
     cleanupDom();
@@ -904,6 +913,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { effort: "low" },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -940,6 +950,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/low-only", effort: null },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -979,6 +990,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: null },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 

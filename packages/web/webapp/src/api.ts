@@ -21,6 +21,7 @@ import type {
   MessagePart,
   ModelCatalogPage,
   ProcessJobProjection,
+  ProjectSummary,
   ProviderAuthMethod,
   ProviderAuthCheckSessionSnapshot,
   ProviderAuthSessionSnapshot,
@@ -446,6 +447,30 @@ export const api = {
   },
 
   /**
+   * One project's member conversations, newest first.
+   *
+   * Unlike `threads` this names no archive bucket: the page shows active
+   * members, and a member archived elsewhere drops out on the next read. No
+   * scope either: the page lists members only, whatever started them.
+   */
+  projectThreads: (
+    sourceId: string,
+    projectId: string,
+    before?: string,
+    signal?: AbortSignal,
+    limit: number = THREAD_PAGE_LIMIT,
+  ) => {
+    const query = new URLSearchParams({
+      sourceId,
+      archived: "false",
+      limit: String(limit),
+      projectId,
+    });
+    if (before !== undefined) query.set("before", before);
+    return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
+  },
+
+  /**
    * What the WHOLE fleet has in flight -- the one read on this client that is
    * not scoped to an agent or an archive bucket.
    *
@@ -542,13 +567,65 @@ export const api = {
     sourceId: string,
     runConfig: { readonly model?: string | null; readonly effort?: string | null } = {},
     signal?: AbortSignal,
+    projectId?: string,
   ) => {
     const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
       method: "POST",
-      body: JSON.stringify({ sourceId, ...runConfig }),
+      body: JSON.stringify({
+        sourceId,
+        ...runConfig,
+        ...(projectId === undefined ? {} : { projectId }),
+      }),
       ...(signal === undefined ? {} : { signal }),
     });
     return result.thread;
+  },
+
+  /**
+   * One agent's projects, archived included: the Dashboard and the
+   * conversation picker filter archived out locally.
+   */
+  projects: async (sourceId: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ sourceId });
+    const result = await request<{ projects: ProjectSummary[] }>(
+      `/api/v1/projects?${query.toString()}`,
+      { ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.projects;
+  },
+
+  createProject: async (
+    sourceId: string,
+    input: { readonly name: string; readonly context?: string },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ project: ProjectSummary }>("/api/v1/projects", {
+      method: "POST",
+      body: JSON.stringify({ sourceId, ...input }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return result.project;
+  },
+
+  patchProject: async (
+    projectId: string,
+    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ project: ProjectSummary }>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}`,
+      { method: "PATCH", body: JSON.stringify(patch), ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.project;
+  },
+
+  deleteProject: async (projectId: string, signal?: AbortSignal) => {
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (!response.ok) throw await readError(response);
   },
 
   cronReply: (
@@ -748,6 +825,7 @@ export const api = {
       archived?: boolean;
       model?: string | null;
       effort?: string | null;
+      projectId?: string | null;
       ifRunConfigUnset?: boolean;
     },
     signal?: AbortSignal,

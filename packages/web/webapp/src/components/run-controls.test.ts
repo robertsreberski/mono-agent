@@ -23,6 +23,7 @@ const detail = (messages: readonly WebMessage[]): ThreadDetail => ({
     sourceId: "agent",
     title: "Thread",
     archivedAt: null,
+    projectId: null,
     createdAt: "2026-09-09T10:00:00.000Z",
     updatedAt: "2026-09-09T10:00:00.000Z",
     revision: 1,
