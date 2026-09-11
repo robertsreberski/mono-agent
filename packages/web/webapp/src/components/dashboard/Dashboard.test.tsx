@@ -8,6 +8,8 @@ import type { ThreadSearchHit, ThreadSummary } from "../../types";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 const apiMock = vi.hoisted(() => ({ searchThreads: vi.fn() }));
+/** assistant-ui's answer to "is this row the open conversation". */
+const auiSelected = vi.hoisted(() => ({ current: false }));
 
 vi.mock("../../console-store", () => ({
   useConsoleStore: () => storeMock.current,
@@ -28,13 +30,14 @@ vi.mock("@assistant-ui/react", () => ({
     New: ({ children, ...rest }: Record<string, unknown>) => <button type="button" {...rest}>{children as never}</button>,
   },
   ThreadListItemPrimitive: {
-    Root: ({ children }: Record<string, unknown>) => <div>{children as never}</div>,
+    // The row's own class carries the selection mark, so it is passed through.
+    Root: ({ children, ...rest }: Record<string, unknown>) => <div {...rest}>{children as never}</div>,
     Trigger: ({ children, ...rest }: Record<string, unknown>) => <button type="button" {...rest}>{children as never}</button>,
     Title: () => null,
     Archive: () => null,
     Unarchive: () => null,
   },
-  useAuiState: () => false,
+  useAuiState: () => auiSelected.current,
 }));
 
 import { Dashboard } from "./Dashboard";
@@ -103,6 +106,7 @@ const store = () => storeMock.current as ReturnType<typeof createStore>;
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  auiSelected.current = false;
   apiMock.searchThreads.mockReset();
   apiMock.searchThreads.mockResolvedValue({ hits: [hit("older")], truncated: false });
   storeMock.current = createStore();
@@ -133,7 +137,7 @@ describe("Dashboard header", () => {
     expect(pending.querySelector(".new-thread-spinner")).not.toBeNull();
   });
 
-  it("closes the drawer for settings and for a new conversation", () => {
+  it("leaves for a new conversation, and stays put for the settings dialog", () => {
     const onNavigate = vi.fn();
     const settings = vi.fn();
     window.addEventListener("mono-agent:agent-settings", settings);
@@ -141,12 +145,15 @@ describe("Dashboard header", () => {
 
     expect(screen.queryByRole("button", { name: "Open command palette" })).toBeNull();
 
+    // The dialog opens over this screen. Pushing the conversation under it
+    // meant closing the dialog landed the operator in a conversation they had
+    // not asked for.
     fireEvent.click(screen.getByRole("button", { name: "Agent settings" }));
     expect(settings).toHaveBeenCalledTimes(1);
-    expect(onNavigate).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
-    expect(onNavigate).toHaveBeenCalledTimes(2);
+    expect(onNavigate).toHaveBeenCalledTimes(1);
     window.removeEventListener("mono-agent:agent-settings", settings);
   });
 
@@ -157,6 +164,25 @@ describe("Dashboard header", () => {
     expect(screen.getByRole("heading", { name: "No agent" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Agent settings" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "New conversation" })).toBeDisabled();
+  });
+});
+
+describe("Dashboard selection highlight", () => {
+  beforeEach(() => { auiSelected.current = true; });
+
+  it("marks the open conversation where that conversation is on screen", () => {
+    render(<Dashboard />);
+
+    expect(document.querySelector(".thread-item.is-active")).not.toBeNull();
+  });
+
+  it("marks nothing while the list is the whole screen", () => {
+    // The store still HOLDS the selection -- the chat screen behind needs one.
+    // Drawing it here pre-answers a question the operator came to ask.
+    render(<Dashboard highlightSelected={false} />);
+
+    expect(document.querySelector(".thread-item")).not.toBeNull();
+    expect(document.querySelector(".thread-item.is-active")).toBeNull();
   });
 });
 

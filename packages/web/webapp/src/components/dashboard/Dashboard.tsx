@@ -15,13 +15,23 @@ import { RunningSection } from "./RunningSection";
  * drawer, mounted once and shared. Modality, gestures and where it sits belong
  * to the shell; what is in it belongs here.
  *
+ * `highlightSelected` is the shell's answer to whether the selected
+ * conversation is actually on screen. The store always holds a selection; a
+ * phone showing only this list has nothing to point at with it.
+ *
  * `onNavigate` is called by the actions that have taken the operator somewhere
  * -- a conversation, a search hit, a running card, a new conversation, the
  * settings dialog. Pinning, chips, paging, retry, the archive shelf and the
  * running overflow deliberately do not call it: on a phone the operator has
  * more to do here, and closing the drawer under them would undo it.
  */
-export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) {
+export function Dashboard({
+  onNavigate,
+  highlightSelected = true,
+}: {
+  readonly onNavigate?: () => void;
+  readonly highlightSelected?: boolean;
+}) {
   const {
     activeThreads,
     agents,
@@ -137,6 +147,7 @@ export function Dashboard({ onNavigate }: { readonly onNavigate?: () => void }) 
           query={query}
           search={search}
           onNavigate={onNavigate}
+          highlightSelected={highlightSelected}
         />
       </div>
       <DashboardFooter archiveShelf={chats} />

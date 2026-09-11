@@ -178,6 +178,92 @@ describe("the dashboard as the desktop column", () => {
     expect(failed).toHaveTextContent("Failed");
   });
 
+  it("marks the open conversation, which is in the column beside this one", async () => {
+    openConsole();
+    await settled();
+
+    const active = document.querySelector(".thread-item.is-active");
+    expect(active).not.toBeNull();
+    expect(active).toContainElement(screen.getByRole("button", { name: "Open Alpha thread" }));
+  });
+
+  it("marks the open conversation among the search hits, as it does among the rows", async () => {
+    vi.mocked(api.searchThreads).mockResolvedValue({
+      hits: [{ thread: alphaThread, messageMatches: 0, titleMatch: true }],
+      truncated: false,
+    });
+    openConsole();
+    await settled();
+
+    await userEvent.fill(screen.getByPlaceholderText("Search conversations"), "alpha");
+
+    const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(hit).toHaveClass("thread-search-hit");
+    // The conversation is in the column beside this one, so the hit that opens
+    // it is marked exactly as its ordinary row would be.
+    await waitFor(() => expect(document.querySelector(".thread-search-hit.is-active")).toBe(hit));
+  });
+
+  it("puts the running cards and the conversation rows on one left edge", async () => {
+    const runningThread = thread("alpha-running", "alpha", {
+      title: "Rebuild the checkout",
+      runState: { status: "running", id: "turn-a" },
+    });
+    vi.mocked(api.bootstrap).mockResolvedValue({
+      ...bootstrap(
+        agents,
+        [alphaThread, runningThread, cronThread, failedThread],
+        alphaThread.id,
+        { threadsSourceId: "alpha" },
+      ),
+      activeThreads: { threads: [runningThread], total: 1, truncated: false, runningCounts: { alpha: 1 } },
+    });
+    openConsole();
+    await settled();
+
+    await waitFor(() => expect(document.querySelector(".running-card")).not.toBeNull());
+    const card = document.querySelector<HTMLElement>(".running-card")!;
+    expect(card).toHaveAttribute("aria-label", "Open Rebuild the checkout on Alpha");
+    const row = screen.getByRole("button", { name: "Open Alpha thread" });
+    const rowSurface = row.closest(".thread-item")!;
+    expect(card.getBoundingClientRect().left).toBe(rowSurface.getBoundingClientRect().left);
+    expect(card.querySelector(".running-card-title")!.getBoundingClientRect().left)
+      .toBe(row.querySelector(".thread-title")!.getBoundingClientRect().left);
+  });
+
+  it("gives the list air under the search field and above the footer", async () => {
+    openConsole();
+    await settled();
+    const panel = screen.getByRole("navigation", { name: "Dashboard" });
+
+    // Neither edge cuts the list: a real gap below the fixed field, and a
+    // scroll region that stops short of the bar rather than under it.
+    const search = panel.querySelector(".dashboard-search")!;
+    const scroll = panel.querySelector<HTMLElement>(".dashboard-scroll")!;
+    const firstRow = screen.getByRole("button", { name: "Open Alpha thread" }).closest(".thread-item")!;
+    expect(firstRow.getBoundingClientRect().top - search.getBoundingClientRect().bottom)
+      .toBeGreaterThanOrEqual(12);
+    expect(getComputedStyle(scroll).paddingBottom).toBe("28px");
+    expect(getComputedStyle(search).marginBottom).toBe("12px");
+  });
+
+  it("lets the agent strip run to the screen edge while its first square keeps the gutter", async () => {
+    openConsole();
+    await settled();
+    const panel = screen.getByRole("navigation", { name: "Dashboard" });
+
+    const strip = panel.querySelector<HTMLElement>(".agent-strip")!;
+    const scroller = panel.querySelector<HTMLElement>(".agent-strip-scroll")!;
+    const first = within(panel).getByRole("button", { name: "Alpha, online" });
+    expect(getComputedStyle(strip).paddingLeft).toBe("0px");
+    expect(getComputedStyle(strip).paddingRight).toBe("0px");
+    // The scroller reaches the panel's edges; the gutters live inside it, so
+    // the first square still starts on the same line as the search field.
+    expect(scroller.getBoundingClientRect().left).toBe(panel.getBoundingClientRect().left);
+    expect(first.closest(".agent-chip")!.getBoundingClientRect().left)
+      .toBe(panel.querySelector(".dashboard-search")!.getBoundingClientRect().left);
+  });
+
   it("keeps the conversation reachable while the whole column scrolls", async () => {
     openConsole();
     await settled();
@@ -291,6 +377,56 @@ describe("the dashboard as the mobile entrance screen", () => {
 
     await openConversation();
     expect(chatRegion()).not.toHaveAttribute("inert");
+  });
+
+  it("marks no row while the list is the whole screen", async () => {
+    openConsole();
+    await loaded();
+
+    // The store holds a selection throughout -- the chat screen behind needs
+    // one -- and this screen deliberately does not draw it.
+    expect(document.querySelector(".thread-item.is-active")).toBeNull();
+    expect(document.querySelectorAll(".thread-item").length).toBeGreaterThan(0);
+
+    await openConversation();
+    await userEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
+    await waitFor(() => expect(chatRegion()).toHaveAttribute("inert"));
+    expect(document.querySelector(".thread-item.is-active")).toBeNull();
+  });
+
+  it("marks no search hit either, while the list is the whole screen", async () => {
+    vi.mocked(api.searchThreads).mockResolvedValue({
+      hits: [{ thread: alphaThread, messageMatches: 0, titleMatch: true }],
+      truncated: false,
+    });
+    openConsole();
+    await loaded();
+
+    await userEvent.fill(within(panel()).getByPlaceholderText("Search conversations"), "alpha");
+
+    const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
+    expect(hit).toHaveClass("thread-search-hit");
+    // Search is the other face of the same list: the store still holds this
+    // conversation -- its transcript is loaded behind the screen -- and this
+    // screen still declines to point at it.
+    expect(document.querySelector(".thread-search-hit.is-active")).toBeNull();
+    expect(screen.getByText("Alpha transcript")).toBeInTheDocument();
+  });
+
+  it("opens the settings dialog over this screen, and closing it stays here", async () => {
+    openConsole();
+    await loaded();
+
+    await userEvent.click(within(panel()).getByRole("button", { name: "Agent settings" }));
+    const dialog = await screen.findByRole("dialog");
+    // The conversation was never pushed, so there is nothing behind the dialog
+    // for the operator to be dropped into.
+    expect(chatRegion()).toHaveAttribute("inert");
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(chatRegion()).toHaveAttribute("inert");
+    expect(panel()).not.toHaveAttribute("inert");
   });
 
   it("never lets either screen push the page sideways", async () => {

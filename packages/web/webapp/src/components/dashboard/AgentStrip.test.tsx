@@ -59,7 +59,10 @@ describe("AgentStrip", () => {
     expect(screen.getByTitle("Current offline agent")).toHaveTextContent(/^Current$/);
     expect(screen.queryByTitle("Hidden offline agent")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Hidden offline agent, offline/ })).not.toBeInTheDocument();
-    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    // Three agents drawn, and the fourth item on the line is the control that
+    // reveals the one being kept back.
+    expect(document.querySelectorAll(".agent-chip")).toHaveLength(3);
+    expect(screen.getAllByRole("listitem")).toHaveLength(4);
   });
 
   it("selects on the square and never pins from the strip", () => {
@@ -85,11 +88,41 @@ describe("AgentStrip", () => {
       .toHaveAttribute("aria-pressed", "false");
   });
 
+  it("marks the pinned square, so the order it sorts into has a reason on it", () => {
+    render(<AgentStrip />);
+
+    const pinned = screen.getByRole("button", { name: "A complete favorite agent name, offline, pinned" });
+    expect(pinned.querySelector(".agent-chip-pin")).not.toBeNull();
+    // Decoration beside a name that already says it, and never a second count.
+    expect(pinned.querySelector(".agent-chip-pin")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("button", { name: "Other agent, online" }).querySelector(".agent-chip-pin"))
+      .toBeNull();
+  });
+
   it("offers the hidden offline agents behind their count", () => {
     render(<AgentStrip />);
 
     fireEvent.click(screen.getByRole("button", { name: "Show 1 offline agent" }));
     expect(store().setShowOfflineAgents).toHaveBeenCalledWith(true);
+  });
+
+  it("carries that count at the end of the scrolling line, not beside it", () => {
+    render(<AgentStrip />);
+
+    const strip = screen.getByRole("navigation", { name: "Agents" });
+    const scroller = strip.querySelector(".agent-strip-scroll")!;
+    const more = screen.getByRole("button", { name: "Show 1 offline agent" });
+    // Inside the scroller, so the line runs the full width of the screen and
+    // the control travels with the squares instead of holding the right edge.
+    expect(more.closest(".agent-strip-scroll")).toBe(scroller);
+    expect(scroller.lastElementChild).toBe(more.closest(".agent-strip-more"));
+    expect(strip.children).toHaveLength(1);
+    // A list's children stay list items, control or not.
+    expect(more.closest("[role=\"listitem\"]")).not.toBeNull();
+    // Drawn with the agents' own square and count, so the line keeps one
+    // rhythm: what it reveals is agents.
+    expect(more).toHaveClass("agent-chip-square");
+    expect(more.querySelector(".agent-chip-badge")).toHaveTextContent("1");
   });
 
   it("lets work in flight take the corner, and gives it back when the work ends", () => {

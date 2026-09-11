@@ -140,9 +140,12 @@ function AutomationEmptyState({
 export function AutomationsList({
   query,
   onSelect,
+  highlightSelected = true,
 }: {
   readonly query: string;
   readonly onSelect?: () => void;
+  /** The selected conversation is on screen; see `RecentSection`. */
+  readonly highlightSelected?: boolean;
 }) {
   const {
     selectedAgent,
@@ -261,7 +264,7 @@ export function AutomationsList({
               key={job.jobId}
               job={job}
               live={live}
-              active={selectedThreadId === job.threadId}
+              active={highlightSelected && selectedThreadId === job.threadId}
               onOpen={() => {
                 selectCronJob(selectedAgentId, job.jobId, job.threadId);
                 onSelect?.();

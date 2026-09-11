@@ -81,6 +81,14 @@ const PRESERVED_PROVIDER_AUTH_ERRORS = new Map<string, number>([
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
 const CONTEXT_IMPORT_TIMEOUT_MS = 5_000;
+/**
+ * "This agent has no such job" is an ANSWER, not a transport failure: card
+ * reconciliation retires a card on it, and the proxy route turns it into its
+ * own 404 rather than a 502 about an agent that replied perfectly well.
+ */
+const PRESERVED_PROCESS_JOB_ERRORS = new Map<string, number>([
+  ["process_job_not_found", 404],
+]);
 const PRESERVED_CONTEXT_IMPORT_ERRORS = new Map<string, number>([
   ["context_import_conflict", 409],
   ["context_import_failed", 500],
@@ -530,10 +538,14 @@ export class OperatorClient {
   }
 
   async getJob(jobId: string, signal?: AbortSignal): Promise<ProcessJobProjection> {
-    const response = await this.request(`${this.baseUrl}/v1/jobs/${encodeURIComponent(boundedJobId(jobId))}`, {
-      headers: this.processJobHeaders(),
-      ...(signal === undefined ? {} : { signal }),
-    });
+    const response = await this.request(
+      `${this.baseUrl}/v1/jobs/${encodeURIComponent(boundedJobId(jobId))}`,
+      {
+        headers: this.processJobHeaders(),
+        ...(signal === undefined ? {} : { signal }),
+      },
+      PRESERVED_PROCESS_JOB_ERRORS,
+    );
     return parseProcessJobProjection(
       JSON.parse(await readBoundedBody(response, MAX_PROCESS_JOBS_BODY_BYTES, "operator_job_too_large")),
     );
@@ -932,7 +944,9 @@ function preservedOperatorError(
   if (code === undefined || expected.get(code) !== status) return undefined;
   const message = typeof error?.message === "string" && error.message.length <= 1_024
     ? error.message
-    : "The MCP App audit operation failed.";
+    // The agent named the failure; only a missing or oversized message lands
+    // here, and this helper now serves more than one route.
+    : "The agent reported a failure without a usable message.";
   const reason = typeof error?.reason === "string" && error.reason.length <= 128
     ? error.reason
     : undefined;

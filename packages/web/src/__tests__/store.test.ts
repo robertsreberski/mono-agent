@@ -2283,6 +2283,91 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("lists only the job cards that have not settled, oldest first and bounded", async () => {
+    const stateDir = join(await temporaryRoot(), "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    const thread = store.createThread("agent-one");
+    const otherAgent = store.createThread("agent-two");
+    const card = (sourceId: string, threadId: string, job: ReturnType<typeof fakeProcessJob>) =>
+      store.upsertProcessJobCard({
+        sourceId, threadId, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    const running = fakeProcessJob({
+      state: "running", jobId: "11111111-1111-4111-8111-111111111110",
+      conversationId: "web:" + thread.id,
+    });
+    const queued = fakeProcessJob({
+      state: "queued", jobId: "11111111-1111-4111-8111-111111111111",
+      conversationId: "web:" + thread.id,
+    });
+    const settled = fakeProcessJob({
+      state: "succeeded", jobId: "11111111-1111-4111-8111-111111111112",
+      conversationId: "web:" + thread.id,
+    });
+    card("agent-one", thread.id, running);
+    card("agent-one", thread.id, queued);
+    card("agent-one", thread.id, settled);
+    card("agent-two", otherAgent.id, fakeProcessJob({
+      state: "running", jobId: "11111111-1111-4111-8111-111111111113",
+      conversationId: "web:" + otherAgent.id,
+    }));
+
+    const unsettled = store.listUnsettledProcessJobCards("agent-one", 10);
+    // Only this agent's, only the ones still claiming to run, and each carries
+    // the projection and the delivery key a re-ask has to preserve.
+    expect(unsettled.map((item) => item.jobId)).toEqual([running.jobId, queued.jobId]);
+    expect(unsettled[0]).toMatchObject({
+      threadId: thread.id,
+      deliveryKey: running.wake.deliveryKey,
+      job: { state: "running", jobId: running.jobId },
+    });
+    expect(store.listUnsettledProcessJobCards("agent-one", 1).map((item) => item.jobId))
+      .toEqual([running.jobId]);
+
+    // Settling one takes it out of the set, which is how a bounded sweep gets
+    // through more than its limit over successive passes.
+    card("agent-one", thread.id, fakeProcessJob({
+      state: "cancelled", jobId: running.jobId, conversationId: "web:" + thread.id,
+    }));
+    expect(store.listUnsettledProcessJobCards("agent-one", 10).map((item) => item.jobId))
+      .toEqual([queued.jobId]);
+    store.close();
+  });
+
+  it("resumes an unsettled-card page after the card a previous pass stopped on", async () => {
+    const stateDir = join(await temporaryRoot(), "state");
+    // One frozen instant, so all three cards tie on the timestamp and the
+    // resume has nothing but the job id to break the tie with.
+    const store = await WebStore.open({ stateDir, clock: () => new Date("2026-09-10T10:00:00.000Z") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const jobIds = ["a", "b", "c"].map((suffix) => `11111111-1111-4111-8111-00000000000${suffix}`);
+    for (const jobId of jobIds) {
+      const job = fakeProcessJob({ state: "running", jobId, conversationId: "web:" + thread.id });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    }
+
+    const first = store.listUnsettledProcessJobCards("agent-one", 2);
+    expect(first.map((item) => item.jobId)).toEqual([jobIds[0], jobIds[1]]);
+    // The card carries its own ordering key, so the caller can say where it
+    // stopped without holding the whole page.
+    const after = { updatedAt: first[1]!.updatedAt, jobId: first[1]!.jobId };
+
+    // None of them settled, so an unresumed page would be the same two again.
+    const second = store.listUnsettledProcessJobCards("agent-one", 2, after);
+    expect(second.map((item) => item.jobId)).toEqual([jobIds[2]]);
+    expect(first[1]!.updatedAt).toBe(second[0]!.updatedAt);
+    // Past the end of the set is empty rather than wrapping: wrapping is the
+    // caller's decision, and it has to know it reached the end to make it.
+    expect(store.listUnsettledProcessJobCards("agent-one", 2, {
+      updatedAt: second[0]!.updatedAt, jobId: second[0]!.jobId,
+    })).toEqual([]);
+    store.close();
+  });
+
   it("summarizes jobs across the full thread without loading their output into the listing", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
