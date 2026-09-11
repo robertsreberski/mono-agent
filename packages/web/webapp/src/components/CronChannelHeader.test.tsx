@@ -66,6 +66,13 @@ const store = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 }) as unknown as ReturnType<typeof useConsoleStore>;
 
+/** The overview is collapsed by default; anything below the summary needs this. */
+const expandOverview = (): void => {
+  const overviewDisclosure = document.querySelector<HTMLDetailsElement>("details.cron-channel-overview");
+  if (overviewDisclosure === null) throw new Error("Expected one cron overview disclosure");
+  overviewDisclosure.open = true;
+};
+
 describe("CronChannelHeader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -74,8 +81,33 @@ describe("CronChannelHeader", () => {
 
   afterEach(() => vi.restoreAllMocks());
 
+  it("opens collapsed, on one line of the three facts an operator reads first", () => {
+    render(<CronChannelHeader />);
+
+    const overviewDisclosure = document.querySelector("details.cron-channel-overview");
+    expect(overviewDisclosure).not.toBeNull();
+    expect(overviewDisclosure).not.toHaveAttribute("open");
+    expect(screen.getByText("*/5 * * * * · Enabled · Next Unknown")).toBeVisible();
+    // Everything the six facts and the three controls say is still here, and
+    // none of it is taking the screen.
+    expect(screen.getByRole("group", { name: "Cron controls" })).not.toBeVisible();
+    expect(screen.getByText("Schedule")).not.toBeVisible();
+  });
+
+  it("expands to the whole overview through the native disclosure", () => {
+    render(<CronChannelHeader />);
+    const overviewDisclosure = document.querySelector("details.cron-channel-overview")!;
+
+    fireEvent.click(screen.getByText("*/5 * * * * · Enabled · Next Unknown"));
+
+    expect(overviewDisclosure).toHaveAttribute("open");
+    expect(screen.getByRole("group", { name: "Cron controls" })).toBeVisible();
+    expect(screen.getByText("Schedule")).toBeVisible();
+  });
+
   it("renders an agent-unknown next run without deriving it from the expression", () => {
     render(<CronChannelHeader />);
+    expandOverview();
 
     expect(screen.getByRole("group", { name: "Cron controls" })).toBeVisible();
     expect(document.querySelector(".cron-channel-facts")?.tagName).toBe("DL");
