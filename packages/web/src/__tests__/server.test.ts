@@ -668,11 +668,11 @@ describe("web HTTP server", () => {
   });
 
   it.each([
-    ["evergreen", "#0f1110"],
-    ["ocean", "#0d1115"],
-    ["plum", "#120f14"],
-    ["terracotta", "#130f0d"],
-  ] as const)("publishes the selected %s theme and distinct install manifest colors", async (theme, backgroundColor) => {
+    ["evergreen", "#141715", "#0f1110"],
+    ["ocean", "#13191e", "#0d1115"],
+    ["plum", "#18141a", "#120f14"],
+    ["terracotta", "#191411", "#130f0d"],
+  ] as const)("publishes the selected %s theme and distinct install manifest colors", async (theme, themeColor, backgroundColor) => {
     const { baseUrl } = await start({ theme });
 
     expect(await json(await fetch(`${baseUrl}/api/v1/bootstrap`))).toMatchObject({
@@ -688,7 +688,7 @@ describe("web HTTP server", () => {
       short_name: hostname(),
       start_url: "/",
       scope: "/",
-      theme_color: "#191c1a",
+      theme_color: themeColor,
       background_color: backgroundColor,
       icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml" }],
     }));

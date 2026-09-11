@@ -73,48 +73,65 @@ function AutomationRow({
       : live ? "Disabled" : "Disabled in snapshot";
   const lastRun = job.lastRun;
   const lastRunAt = lastRun?.completedAt ?? lastRun?.startedAt ?? lastRun?.orderedAt;
+  // The row's stamp carries WHEN the job last ran, the way a conversation row
+  // carries when it last moved, so the line below only has to say how it went.
   const lastRunLabel = job.activeRunId !== undefined
     ? "Run in progress"
     : lastRun === undefined
       ? "No runs yet"
-      : `${RUN_STATUS[lastRun.status]}${lastRunAt === undefined ? "" : ` ${relativeTime(lastRunAt)}`}`;
+      : RUN_STATUS[lastRun.status];
+  const schedule = formatCronSchedule(job.expression, job.timezone);
 
   return (
-    <button
-      type="button"
-      className={`automation-item${active ? " is-active" : ""}`}
-      aria-label={`Open run history for ${job.jobId}`}
-      onClick={onOpen}
-    >
-      <span className="automation-title-line">
-        <span className={`automation-health is-${job.health}`} aria-hidden="true" />
-        <strong title={job.jobId}>{job.jobId}</strong>
-        <span className={`automation-enabled${enabled ? " is-enabled" : ""}`}>
-          {enabledLabel}
+    <div className={`thread-item${active ? " is-active" : ""}`}>
+      <button
+        type="button"
+        className="thread-trigger"
+        aria-label={`Open run history for ${job.jobId}`}
+        onClick={onOpen}
+      >
+        <span className="thread-kind is-cron" role="img" aria-label="Scheduled" title="Scheduled">
+          <Icon name="clock" size={16} />
         </span>
-      </span>
-      <span className="automation-schedule">{formatCronSchedule(job.expression, job.timezone)}</span>
-      <span className="automation-run-line">
-        <span>{lastRunLabel}</span>
-        <span aria-hidden="true">·</span>
-        <span>
-          {!job.configured
-            ? "No longer scheduled"
-            : !job.effectiveEnabled
-              ? "No next run while disabled"
-              : next === undefined
-                ? "Next run unavailable"
-                : <>
-                    Next <time
-                      dateTime={job.nextRunAt}
-                      title={`Your timezone: ${nextFormatter.resolvedOptions().timeZone}`}
-                    >
-                      {nextFormatter.format(next)}
-                    </time>
-                  </>}
+        <span className="thread-copy">
+          <span className="thread-title-line">
+            <span className="thread-title" title={job.jobId}>{job.jobId}</span>
+            <span className={`automation-enabled${enabled ? " is-enabled" : ""}`}>
+              {enabledLabel}
+            </span>
+            {lastRunAt !== undefined && (
+              <time dateTime={lastRunAt}>{relativeTime(lastRunAt)}</time>
+            )}
+          </span>
+          <span className="thread-preview">
+            <i className={`automation-health is-${job.health}`} aria-hidden="true" />
+            {/* How it went, what is next, and only then the recurrence: on a
+                phone the line ellipsizes, and the recurrence is the part a job
+                id usually already says. */}
+            <span className="thread-preview-text">
+              {lastRunLabel}
+              {" · "}
+              {!job.configured
+                ? "No longer scheduled"
+                : !job.effectiveEnabled
+                  ? "No next run while disabled"
+                  : next === undefined
+                    ? "Next run unavailable"
+                    : <>
+                        Next <time
+                          dateTime={job.nextRunAt}
+                          title={`Your timezone: ${nextFormatter.resolvedOptions().timeZone}`}
+                        >
+                          {nextFormatter.format(next)}
+                        </time>
+                      </>}
+              {" · "}
+              {schedule}
+            </span>
+          </span>
         </span>
-      </span>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -258,7 +275,7 @@ export function AutomationsList({
           detail={`No automation matches “${query.trim()}”.`}
         />
       ) : (
-        <div className="automation-list" aria-label="Automation jobs">
+        <div className="thread-list" aria-label="Automation jobs">
           {visibleJobs.map((job) => (
             <AutomationRow
               key={job.jobId}

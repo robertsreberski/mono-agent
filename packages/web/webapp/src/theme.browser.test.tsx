@@ -125,6 +125,21 @@ async function emulateColorScheme(colorScheme: "light" | "dark"): Promise<void> 
   expect(matchMedia(`(prefers-color-scheme: ${colorScheme})`).matches).toBe(true);
 }
 
+/**
+ * The declared chrome colour, as numbers: what the strip above the header is
+ * asked to paint. The header has to resolve to exactly this, or the system
+ * strip and the console meet in a seam.
+ */
+function declaredChrome(hex: string): readonly [number, number, number] {
+  const channels = hex.match(/^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/iu);
+  if (channels === null) throw new Error(`Unsupported chrome colour: ${hex}`);
+  return [
+    Number.parseInt(channels[1]!, 16),
+    Number.parseInt(channels[2]!, 16),
+    Number.parseInt(channels[3]!, 16),
+  ];
+}
+
 function expectHeaderColors(presentation: HeaderPresentation, expectedRgb: readonly [number, number, number]): void {
   expect(presentation.header.alpha).toBeCloseTo(0.94, 2);
   expect(presentation.panel.alpha).toBe(1);
@@ -148,12 +163,12 @@ describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
 
     await emulateColorScheme("light");
     const light = readHeaderPresentation(panel, header);
-    expectHeaderColors(light, [253, 253, 251]);
+    expectHeaderColors(light, declaredChrome(THEME_CHROME_COLORS.evergreen.light));
     expectApplicableMeta(THEME_CHROME_COLORS.evergreen.light);
 
     await emulateColorScheme("dark");
     const dark = readHeaderPresentation(panel, header);
-    expectHeaderColors(dark, [25, 28, 26]);
+    expectHeaderColors(dark, declaredChrome(THEME_CHROME_COLORS.evergreen.dark));
     expectApplicableMeta(THEME_CHROME_COLORS.evergreen.dark);
     expect(dark.geometry).toEqual(light.geometry);
   });
@@ -169,7 +184,7 @@ describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
     await emulateColorScheme("light");
     const restore = applyConsolePresentation({ hostName: "builder-01", displayName: "Builder", theme });
     const light = readHeaderPresentation(panel, header);
-    expectHeaderColors(light, [253, 253, 251]);
+    expectHeaderColors(light, declaredChrome(THEME_CHROME_COLORS[theme].light));
     expectApplicableMeta(THEME_CHROME_COLORS[theme].light);
     expect(light.geometry.minHeight).toBe(viewport.minHeight);
     expect(light.geometry.paddingTop).toBe(viewport.paddingBlock);
@@ -177,7 +192,7 @@ describe.each(VIEWPORTS)("header chrome at $name viewport", (viewport) => {
 
     await emulateColorScheme("dark");
     const dark = readHeaderPresentation(panel, header);
-    expectHeaderColors(dark, [25, 28, 26]);
+    expectHeaderColors(dark, declaredChrome(THEME_CHROME_COLORS[theme].dark));
     expectApplicableMeta(THEME_CHROME_COLORS[theme].dark);
     expect(dark.geometry).toEqual(light.geometry);
 
