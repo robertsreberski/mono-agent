@@ -203,7 +203,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{model?: *, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void}} [context]
+ * @param {{model?: *, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}) {
@@ -456,7 +456,7 @@ export function createAgentTool(subagents, context = {}) {
       // would otherwise land ~480KB in one batch. Later calls get whatever
       // budget remains.
       const remaining = Math.max(0, TURN_RESULT_MAX_BYTES - budget.bytes);
-      const text = formatSubagentResult({
+      const { text, savedPath, truncated } = formatSubagentResult({
         profileName: profile.name,
         label: params.description,
         outcome,
@@ -467,17 +467,24 @@ export function createAgentTool(subagents, context = {}) {
         ...(droppedTools.length === 0 ? {} : {
           notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools.join(", ")}.`,
         }),
+        persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full),
       });
       budget.bytes += Buffer.byteLength(text, "utf8");
       // `details.subagent.status` is the load-bearing signal: pi hardcodes
       // isError:false for every resolved execute(), so the pi-native
       // `tool_result` hook reads this to restore the error flag. A top-level
       // `error` field here would be silently ignored.
+      //
+      // `tool_payload_saved_paths` is the key the tool-lifecycle reader collects
+      // artifact references from (the bloat guard sets the same one), so a
+      // spilled subagent result is recorded in tool history like any other.
       return {
         content: [{ type: "text", text }],
         details: {
           tool: "Agent",
           subagent: { name: profile.name, callIndex, status: outcome.status, toolCalls: collector.entries().length },
+          ...(truncated ? { tool_payload_truncated: true } : {}),
+          ...(savedPath === null ? {} : { tool_payload_saved_paths: [savedPath] }),
         },
       };
     },
@@ -905,24 +912,53 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
  * log: that log is the most useful artifact of a failed delegation, and a
  * thrown tool error would discard it.
  *
- * @param {{profileName: string, label?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string}} input
- * @returns {string}
+ * When the retained text cannot carry everything (answer over
+ * `ANSWER_MAX_CHARS`, activity elided, or the byte cap reached), the complete
+ * result is handed to `persist` and the retained text names the saved file, the
+ * same way the bloat guard and the shell tools reference their spilled output.
+ * The reference sits directly under the header so the final byte cap can never
+ * cut it off. Without a sink (or when the write fails) the text says so instead,
+ * so the caller does not go looking for a file that was never written.
+ *
+ * @param {{profileName: string, label?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
+ * @returns {{text: string, savedPath: string|null, truncated: boolean}}
  */
-export function formatSubagentResult({ profileName, label, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice }) {
+export function formatSubagentResult({ profileName, label, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
   const header = `<subagent: ${profileName}${label ? ` · ${label}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
-  const parts = [header];
   // Surfaced before the answer: a request the runtime silently declined would
   // otherwise have the caller re-request it on every future call.
-  if (notice !== undefined) parts.push(`note: ${truncate(notice, 300)}`);
-  if (outcome.reason !== undefined) parts.push(`reason: ${truncate(outcome.reason, 500)}`);
-  if (outcome.answer.length > 0) parts.push("", truncate(outcome.answer, ANSWER_MAX_CHARS));
-  if (activity.length > 0) parts.push("", "<activity>", ...renderActivity(activity, cwd), "</activity>");
+  const preamble = [
+    ...(notice === undefined ? [] : [`note: ${truncate(notice, 300)}`]),
+    ...(outcome.reason === undefined ? [] : [`reason: ${truncate(outcome.reason, 500)}`]),
+  ];
+  const body = (/** @type {string} */ answer, /** @type {string[]} */ activityLines) => [
+    ...(answer.length > 0 ? ["", answer] : []),
+    ...(activityLines.length > 0 ? ["", "<activity>", ...activityLines, "</activity>"] : []),
+  ];
   // A fully spent turn budget still returns the header + reason, so the model
   // learns the delegation happened and why it was truncated.
   const floor = 512;
-  return capBytes(parts.join("\n"), Math.max(floor, maxBytes));
+  const cap = Math.max(floor, maxBytes);
+
+  const retained = [header, ...preamble, ...body(truncate(outcome.answer, ANSWER_MAX_CHARS), renderActivity(activity, cwd))].join("\n");
+  const lossy = outcome.answer.length > ANSWER_MAX_CHARS
+    || activity.length > LOG_MAX_LINES
+    || Buffer.byteLength(retained, "utf8") > cap;
+  if (!lossy) return { text: retained, savedPath: null, truncated: false };
+
+  const full = [header, ...preamble, ...body(outcome.answer, activity.map((entry, index) => activityLine(entry, index, cwd)))].join("\n");
+  const savedPath = typeof persist === "function" ? persist(full) : null;
+  const reference = savedPath === null
+    ? "[result truncated; full result not saved: artifact persistence unavailable]"
+    : `[result truncated; full result saved to: ${savedPath}]`;
+  const [retainedHeader, ...retainedRest] = retained.split("\n");
+  return {
+    text: capBytes([retainedHeader, reference, ...retainedRest].join("\n"), cap),
+    savedPath,
+    truncated: true,
+  };
 }
 
 /**
@@ -933,18 +969,55 @@ export function formatSubagentResult({ profileName, label, outcome, durationMs, 
  * @returns {string[]}
  */
 function renderActivity(activity, cwd) {
-  const line = (entry, index) => {
-    const args = summarizeArgs(entry.name, entry.args, cwd);
-    const status = entry.isError ? "error" : "ok";
-    const ms = entry.ms === undefined ? "" : ` ${formatMs(entry.ms)}`;
-    return truncate(`${index + 1}. ${entry.name}${args ? ` ${args}` : ""} → ${status}${ms}`, LOG_LINE_MAX_CHARS);
-  };
+  const line = (/** @type {{name: string, args: unknown, ms?: number, isError: boolean}} */ entry, /** @type {number} */ index) =>
+    activityLine(entry, index, cwd);
   if (activity.length <= LOG_MAX_LINES) return activity.map(line);
   const head = activity.slice(0, LOG_HEAD_LINES).map(line);
   const tail = activity.slice(activity.length - LOG_TAIL_LINES).map((entry, offset) =>
     line(entry, activity.length - LOG_TAIL_LINES + offset));
   const elided = activity.length - LOG_HEAD_LINES - LOG_TAIL_LINES;
   return [...head, `… ${elided} call${elided === 1 ? "" : "s"} elided …`, ...tail];
+}
+
+/**
+ * One activity line. Shared by the retained (elided) log and the persisted
+ * full log so both render a call identically.
+ * @param {{name: string, args: unknown, ms?: number, isError: boolean}} entry
+ * @param {number} index
+ * @param {string} [cwd]
+ */
+function activityLine(entry, index, cwd) {
+  const args = summarizeArgs(entry.name, entry.args, cwd);
+  const status = entry.isError ? "error" : "ok";
+  const ms = entry.ms === undefined ? "" : ` ${formatMs(entry.ms)}`;
+  return truncate(`${index + 1}. ${entry.name}${args ? ` ${args}` : ""} → ${status}${ms}`, LOG_LINE_MAX_CHARS);
+}
+
+/**
+ * Hand the complete result to the host's artifact sink — the same
+ * `persistArtifact({filename, buffer, toolName, toolUseId}) -> path | null`
+ * contract the bloat guard uses, so the file lands beside every other spilled
+ * tool output under the run's tool-output directory. Best-effort: a missing
+ * sink, a rejected filename or a failed write all yield null.
+ * @param {unknown} persistArtifact
+ * @param {string} toolCallId
+ * @param {string} fullText
+ * @returns {string|null}
+ */
+function persistSubagentResult(persistArtifact, toolCallId, fullText) {
+  if (typeof persistArtifact !== "function") return null;
+  const id = String(toolCallId || "").replace(/[^A-Za-z0-9_.-]+/gu, "_").slice(0, 80) || "call";
+  try {
+    const path = persistArtifact({
+      filename: `Agent__${id}__full.txt`,
+      buffer: Buffer.from(fullText, "utf8"),
+      toolName: "Agent",
+      toolUseId: toolCallId,
+    });
+    return typeof path === "string" && path.length > 0 ? path : null;
+  } catch {
+    return null;
+  }
 }
 
 /** @param {number} ms */
