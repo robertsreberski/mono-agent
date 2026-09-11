@@ -612,14 +612,15 @@ const MAX_REVISIONS_PER_THREAD = 1_000;
 const OUTCOME_TEXT_TRIM = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
   + "\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
 /**
- * How many prior-outcome candidates per conversation the batched read pulls
- * before that conversation has to scan its own history.
+ * How many prior-outcome candidates per conversation one batched read pulls.
  *
  * Only a Monitor no-op is ever skipped, so a thread exhausting this window has
- * eight settled runs in a row that said nothing. The window is what stops one
- * such thread from making a whole listing per-row again.
+ * eight settled runs in a row that said nothing. A thread that does is answered
+ * by the next window of the same batched read, never by a read of its own: the
+ * window bounds how much a listing reads at once, not which listings stay
+ * set-based. Exported so the cost regression measures the real window.
  */
-const PRIOR_OUTCOME_WINDOW = 8;
+export const PRIOR_OUTCOME_WINDOW = 8;
 export const WEB_THREAD_PAGE_MAX = 200;
 /**
  * What one page is when the caller does not say.
@@ -5350,8 +5351,10 @@ export class WebStore {
    * outcome, last message, job cards, run activity -- so a fifty-card Running
    * section cost hundreds of statements, and stream invalidation asks for that
    * section about once a second. Each reader below is keyed by the whole id set
-   * instead: one card and fifty cards issue the same statements. The order is
-   * the caller's, because only the caller knows what the listing is ordered by.
+   * instead, including the one deep-history path that used to drop back to a
+   * single thread: one card and fifty cards issue the same statements for the
+   * same shape of history. The order is the caller's, because only the caller
+   * knows what the listing is ordered by.
    */
   private mapThreads(rows: readonly ThreadRow[]): WebThread[] {
     if (rows.length === 0) return [];
@@ -5606,40 +5609,53 @@ export class WebStore {
    *
    * The candidate window is what keeps this set-based: ONE statement fetches the
    * newest {@link PRIOR_OUTCOME_WINDOW} candidates of every thread, and their
-   * Monitor provenance and parts are read in one statement each. Only a thread
-   * whose whole window turned out to be Monitor no-ops -- legacy rows, and never
-   * a run of them this long -- pays to scan its own history.
+   * Monitor provenance and parts are read in one statement each. A thread whose
+   * whole window turned out to be Monitor no-ops -- legacy rows, and never a run
+   * of them this long -- does not go back to reading its own history: the next
+   * window is asked for every such thread at once, so what a listing costs
+   * follows how deep the deepest silent history is and never how many cards the
+   * listing has.
    */
   private priorOutcomes(latest: readonly TurnRow[]): Map<string, PriorOutcomeRow> {
-    if (latest.length === 0) return new Map();
-    const candidates = this.database.prepare(`
+    const outcomes = new Map<string, PriorOutcomeRow>();
+    let pending = [...new Set(latest.map((row) => row.thread_id))];
+    for (let skip = 0; pending.length > 0; skip += PRIOR_OUTCOME_WINDOW) {
+      const candidates = this.priorOutcomeCandidates(pending, skip);
+      const byThread = new Map<string, PriorOutcomeRow[]>();
+      for (const candidate of candidates) {
+        const held = byThread.get(candidate.thread_id);
+        if (held === undefined) byThread.set(candidate.thread_id, [candidate]);
+        else held.push(candidate);
+      }
+      const noOps = this.monitorNoOpTurnIds(candidates);
+      const deeper: string[] = [];
+      for (const threadId of pending) {
+        const rows = byThread.get(threadId) ?? [];
+        const accepted = rows.find((row) => !noOps.has(row.id));
+        if (accepted !== undefined) outcomes.set(threadId, accepted);
+        // A short window is the whole history: there is nothing deeper to ask.
+        else if (rows.length === PRIOR_OUTCOME_WINDOW) deeper.push(threadId);
+      }
+      pending = deeper;
+    }
+    return outcomes;
+  }
+
+  /** One window of candidates for every thread whose outcome is still open. */
+  private priorOutcomeCandidates(threadIds: readonly string[], skip: number): PriorOutcomeRow[] {
+    return this.database.prepare(`
       SELECT * FROM (
         SELECT c.*, ROW_NUMBER() OVER (
           PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
         ) AS rn
-        FROM (${priorOutcomeCandidateSql("t.thread_id IN (SELECT value FROM json_each(?))")}) c
-      ) WHERE rn <= ${PRIOR_OUTCOME_WINDOW} ORDER BY thread_id, rn
+        FROM (${priorOutcomeCandidateSql()}) c
+      ) WHERE rn > ? AND rn <= ? ORDER BY thread_id, rn
     `).all(
-      JSON.stringify(latest.map((row) => row.thread_id)),
+      JSON.stringify(threadIds),
       OUTCOME_TEXT_TRIM,
+      skip,
+      skip + PRIOR_OUTCOME_WINDOW,
     ) as unknown as PriorOutcomeRow[];
-    const byThread = new Map<string, PriorOutcomeRow[]>();
-    for (const candidate of candidates) {
-      const held = byThread.get(candidate.thread_id);
-      if (held === undefined) byThread.set(candidate.thread_id, [candidate]);
-      else held.push(candidate);
-    }
-    const noOps = this.monitorNoOpTurnIds(candidates);
-    const outcomes = new Map<string, PriorOutcomeRow>();
-    for (const [threadId, rows] of byThread) {
-      const accepted = rows.find((row) => !noOps.has(row.id));
-      if (accepted !== undefined) outcomes.set(threadId, accepted);
-      else if (rows.length === PRIOR_OUTCOME_WINDOW) {
-        const deeper = this.scanPriorOutcome(threadId);
-        if (deeper !== undefined) outcomes.set(threadId, deeper);
-      }
-    }
-    return outcomes;
   }
 
   /**
@@ -5658,18 +5674,6 @@ export class WebStore {
     return new Set(claimed.flatMap((row) => hasMonitorReplyContent(
       normalizeMonitorTerminalReply(parts.get(row.assistant_message_id) ?? []).parts,
     ) ? [] : [row.id]));
-  }
-
-  /** One thread's own scan, for history deeper than the batched window. */
-  private scanPriorOutcome(threadId: string): PriorOutcomeRow | undefined {
-    const candidates = this.database.prepare(`
-      ${priorOutcomeCandidateSql("t.thread_id = ?")} ORDER BY t.started_at DESC, t.rowid DESC
-    `).iterate(threadId, OUTCOME_TEXT_TRIM);
-    for (const rawCandidate of candidates) {
-      const candidate = rawCandidate as unknown as PriorOutcomeRow;
-      if (this.monitorNoOpTurnIds([candidate]).size === 0) return candidate;
-    }
-    return undefined;
   }
 
   /**
@@ -6219,20 +6223,20 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
 
 /**
  * Settled turns that could be a conversation's prior meaningful outcome, for
- * whichever conversations `scope` names.
+ * whichever conversations the bound id set names.
  *
  * The predicate is the cheap half of the question: it excludes a successful
  * assistant-only turn with no visible reply content without reading any
  * transcript. Whether the visible content it did find is a Monitor sentinel is
  * the expensive half, and only the rows this returns are ever asked.
  */
-function priorOutcomeCandidateSql(scope: string): string {
+function priorOutcomeCandidateSql(): string {
   return `
     SELECT t.thread_id, t.id, t.status, t.finished_at, t.assistant_message_id,
            t.started_at, t.rowid AS ordinal,
            EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
     FROM turns t
-    WHERE ${scope} AND t.status <> 'running' AND (
+    WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND t.status <> 'running' AND (
       t.status <> 'complete'
       OR EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user')
       OR EXISTS (

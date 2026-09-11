@@ -19,6 +19,7 @@ import type {
   WebMessagePart,
 } from "../contracts.js";
 import {
+  PRIOR_OUTCOME_WINDOW,
   WEB_SEARCH_HIGHLIGHT_CLOSE,
   WEB_SEARCH_HIGHLIGHT_OPEN,
   WEB_THREAD_SEARCH_MAX,
@@ -60,6 +61,49 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
     },
     updatedAt: "2026-07-17T09:00:00.000Z",
   };
+}
+
+/**
+ * How many statements one read asks the connection to RUN.
+ *
+ * Count what the connection is actually asked to run, not what it is asked to
+ * compile: a reader that prepares once and executes per row is the shape a
+ * listing is not allowed to have.
+ */
+function measureStatements<T>(store: WebStore, read: () => T): { statements: number; value: T } {
+  let statements = 0;
+  const holder = store as unknown as { database: DatabaseSync };
+  const real = holder.database;
+  holder.database = new Proxy(real, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      if (property !== "prepare") return value.bind(target);
+      return (sql: string) => {
+        const statement = (value as (text: string) => object).call(target, sql);
+        return new Proxy(statement, {
+          get(inner, method) {
+            const run = Reflect.get(inner, method) as unknown;
+            if (typeof run !== "function") return run;
+            return (...args: unknown[]) => {
+              if (method === "get" || method === "all" || method === "run" || method === "iterate") {
+                statements += 1;
+              }
+              return (run as (...values: unknown[]) => unknown).apply(inner, args);
+            };
+          },
+        });
+      };
+    },
+  }) as DatabaseSync;
+  try {
+    // Read FIRST: a count taken in the same object literal as the call that
+    // moves it is taken before that call, and proves nothing.
+    const value = read();
+    return { statements, value };
+  } finally {
+    holder.database = real;
+  }
 }
 
 describe("WebStore", () => {
@@ -5006,7 +5050,7 @@ describe("WebStore message sequence and part deltas", () => {
     store.close();
   });
 
-  it("reads the running listing in the same number of statements for one card and fifty", async () => {
+  it("reads the running listing in the same number of statements for two cards and fifty", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
@@ -5043,42 +5087,8 @@ describe("WebStore message sequence and part deltas", () => {
     };
 
     const measure = (): { statements: number; listed: ReturnType<WebStore["listActiveThreads"]> } => {
-      let statements = 0;
-      const holder = store as unknown as { database: DatabaseSync };
-      const real = holder.database;
-      // Count what the connection is actually asked to RUN, not what it is
-      // asked to compile: a reader that prepares once and executes per row is
-      // the shape this listing is not allowed to have.
-      holder.database = new Proxy(real, {
-        get(target, property) {
-          const value = Reflect.get(target, property) as unknown;
-          if (typeof value !== "function") return value;
-          if (property !== "prepare") return value.bind(target);
-          return (sql: string) => {
-            const statement = (value as (text: string) => object).call(target, sql);
-            return new Proxy(statement, {
-              get(inner, method) {
-                const run = Reflect.get(inner, method) as unknown;
-                if (typeof run !== "function") return run;
-                return (...args: unknown[]) => {
-                  if (method === "get" || method === "all" || method === "run" || method === "iterate") {
-                    statements += 1;
-                  }
-                  return (run as (...values: unknown[]) => unknown).apply(inner, args);
-                };
-              },
-            });
-          };
-        },
-      }) as DatabaseSync;
-      try {
-        // Read the listing FIRST: a count taken in the same object literal is
-        // taken before the call that moves it, and proves nothing.
-        const listed = store.listActiveThreads();
-        return { statements, listed };
-      } finally {
-        holder.database = real;
-      }
+      const { statements, value } = measureStatements(store, () => store.listActiveThreads());
+      return { statements, listed: value };
     };
 
     addPair();
@@ -5108,6 +5118,98 @@ describe("WebStore message sequence and part deltas", () => {
     expect(full.listed.threads.filter((thread) => thread.lastMessagePreview === undefined)).toHaveLength(25);
     expect(full.listed.threads.filter((thread) => thread.runState.activity?.toolCallCount === 1))
       .toHaveLength(25);
+    store.close();
+  });
+
+  it("reads a silent legacy history in the same number of statements for one card and fifty", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+
+    // The one shape that used to drop this reader back to a thread at a time: a
+    // conversation active only through a retained job, whose whole
+    // prior-outcome window is historical Monitor no-ops. Old rows keep their
+    // raw sentinel bytes and normalize only on read, so nothing but a read of
+    // the parts can tell that those turns said nothing -- and the meaningful
+    // outcome the sidebar has to show sits behind all of them.
+    let cards = 0;
+    const silenced: string[] = [];
+    const addSilentCard = (): void => {
+      cards += 1;
+      const thread = store.createThread("agent-one");
+      const answered = store.beginTurn({ threadId: thread.id, text: "ask", attachmentIds: [] });
+      store.completeTurn(answered.turnId, "the answer that still stands");
+      const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+      for (let index = 0; index <= PRIOR_OUTCOME_WINDOW; index += 1) {
+        const deliveryKey = `monitor:${monitor.monitorId}:${String(cards)}:${String(index)}`;
+        const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "Host follow-up" });
+        store.reserveMonitorWake({
+          sourceId: "agent-one", threadId: thread.id, monitorId: monitor.monitorId,
+          deliveryKey, payloadSha256: "a".repeat(64), monitor,
+        });
+        store.completeMonitorWake({
+          sourceId: "agent-one", monitorId: monitor.monitorId,
+          deliveryKey, disposition: "follow_up", turnId: wake.turnId,
+        });
+        store.completeTurn(wake.turnId, "NOTHING_TO_REPORT", undefined, undefined, {
+          monitorWakeDeliveryKey: deliveryKey,
+        });
+        silenced.push(wake.assistantMessageId);
+      }
+      const job = fakeProcessJob({
+        state: "queued",
+        jobId: `${String(cards).padStart(8, "0")}-1111-4111-8111-111111111111`,
+        conversationId: `web:${thread.id}`,
+      });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    };
+
+    // Put the sentinel bytes back the way a store written before normalization
+    // still holds them. A current write strips them, which would make these
+    // turns cheap to reject in SQL and never reach the deep path at all.
+    const restoreHistoricalBytes = (): void => {
+      const raw = new DatabaseSync(store.paths.database);
+      try {
+        const parts = JSON.stringify([{ type: "text", text: "NOTHING_TO_REPORT" }]);
+        const update = raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?");
+        for (const id of silenced) update.run(parts, id);
+      } finally {
+        raw.close();
+      }
+    };
+
+    addSilentCard();
+    restoreHistoricalBytes();
+    const one = measureStatements(store, () => store.listActiveThreads());
+    for (let index = 1; index < 50; index += 1) addSilentCard();
+    restoreHistoricalBytes();
+    const full = measureStatements(store, () => store.listActiveThreads());
+
+    expect(one.value.threads).toHaveLength(1);
+    expect(full.value.threads).toHaveLength(50);
+    // Fifty silent histories cost what one costs: the window behind the window
+    // is asked for the whole unresolved set, never per card.
+    expect(full.statements).toBe(one.statements);
+    // The one card is drawn exactly as it was when it was the only card.
+    const alone = one.value.threads[0];
+    expect(full.value.threads.find((thread) => thread.id === alone?.id)).toEqual(alone);
+    // The outcome is the deep one, and it is each card's own. `null` would mean
+    // the reader gave up behind the window; `undefined` would mean it settled
+    // for the sentinel turn it is standing on.
+    const outcomes = full.value.threads.map((thread) => thread.runState.lastOutcome);
+    expect(outcomes.every((outcome) => outcome?.status === "complete")).toBe(true);
+    expect(new Set(outcomes.map((outcome) => outcome?.finishedAt)).size).toBe(50);
+    // The rest of the projection is the same whole answer as any other listing.
+    expect(full.value.total).toBe(50);
+    expect(full.value.threads.every((thread) => thread.runState.status === "complete")).toBe(true);
+    expect(full.value.threads.filter((thread) => thread.jobActivity?.queued === 1)).toHaveLength(50);
     store.close();
   });
 
