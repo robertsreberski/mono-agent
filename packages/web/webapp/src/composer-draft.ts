@@ -107,7 +107,15 @@ const isStoredDraft = (value: unknown): value is { key: string; text: string; up
 };
 
 /** Parse the stored document, discarding anything this version cannot trust. */
-const readStored = (): Map<string, DraftEntry> => {
+/**
+ * The stored document, with any stamp from the future read as "now".
+ *
+ * `onClamped` hears which keys that touched: a clamp is a correction, and the
+ * caller that hydrates from it has to own it, or the next merge would read the
+ * same future stamp as a fresher "now" and let the draft outrank every edit
+ * typed since.
+ */
+const readStored = (onClamped?: (key: string) => void): Map<string, DraftEntry> => {
   const entries = new Map<string, DraftEntry>();
   const store = storage();
   if (store === null) {
@@ -140,6 +148,7 @@ const readStored = (): Map<string, DraftEntry> => {
       // Left alone it would outrank everything typed afterwards and survive
       // every eviction; read as "now" it keeps its place at the front and
       // expires on schedule.
+      if (value.updatedAt > now) onClamped?.(value.key);
       entries.set(value.key, { text: value.text, updatedAt: Math.min(value.updatedAt, now) });
     }
   } catch {
@@ -248,7 +257,9 @@ const listenForTeardown = (): void => {
 const hydrate = (): void => {
   if (hydrated) return;
   hydrated = true;
-  for (const [key, entry] of readStored()) {
+  // A clamped stamp is this tab's edit of the record: written back at the next
+  // flush, so the merge takes this hydration's "now" and not a later one.
+  for (const [key, entry] of readStored((key) => touchedKeys.add(key))) {
     textDrafts.set(key, entry);
     // Anything typed from here has to outrank what is already stored, even
     // where the device clock has since moved backwards; otherwise eviction

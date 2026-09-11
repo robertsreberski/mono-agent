@@ -172,7 +172,12 @@ describe("composer drafts across app restarts", () => {
     for (let index = 0; index < 40; index += 1) {
       reopened.writeComposerDraft("alpha", `thread-${index}`, `draft ${index}`);
     }
+    // The flush merges with what is stored, a while after the app hydrated
+    // from it. The future stamp is still on the device; read as a fresher
+    // "now" than the edits, it would outrank all forty of them.
+    vi.useFakeTimers({ now: Date.now() + 60_000 });
     reopened.flushComposerDrafts();
+    vi.useRealTimers();
 
     // The future-stamped draft is the one evicted, not the newest real edit.
     const reopenedAgain = await reopenApp();
