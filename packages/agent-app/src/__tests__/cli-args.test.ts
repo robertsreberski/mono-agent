@@ -1,6 +1,6 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -24,7 +24,9 @@ function helpTopicText(topic: string): string {
   }
   return result.text;
 }
+import { SYSTEMD_BACKGROUND_WORKER_ENV } from "../background-environment.js";
 import { MANAGED_BACKGROUND_WORKER_ENV } from "../background-runtime.js";
+import { encodeBackgroundSnapshot } from "../background-snapshot.js";
 import {
   INTERNAL_LAUNCHD_LOG_MAINTENANCE_COMMAND,
   INTERNAL_WEB_LOG_MAINTENANCE_COMMAND,
@@ -334,7 +336,7 @@ describe("parseCliArgs", () => {
       "encoded-snapshot",
     ]));
     expect(ordinary.code).toBe(2);
-    expect(ordinary.stderr).toContain("reserved for the managed LaunchAgent worker");
+    expect(ordinary.stderr).toContain("reserved for an installed background worker");
 
     const ordinaryRuntimeProof = await captureCli(() => runCli([
       "start",
@@ -365,6 +367,60 @@ describe("parseCliArgs", () => {
     } finally {
       if (previous === undefined) delete process.env[MANAGED_BACKGROUND_WORKER_ENV];
       else process.env[MANAGED_BACKGROUND_WORKER_ENV] = previous;
+    }
+  });
+
+  it("accepts snapshot transport only for the exact systemd foreground shape and keeps runtime proof launchd-only", async () => {
+    const cwd = await tempDir();
+    const previousSystemd = process.env[SYSTEMD_BACKGROUND_WORKER_ENV];
+    const previousManaged = process.env[MANAGED_BACKGROUND_WORKER_ENV];
+    process.env[SYSTEMD_BACKGROUND_WORKER_ENV] = "1";
+    delete process.env[MANAGED_BACKGROUND_WORKER_ENV];
+    const mismatchedSnapshot = encodeBackgroundSnapshot({
+      schema: "mono-agent.background-snapshot.v1",
+      configPath: resolve(cwd, "different.config.json"),
+      configFingerprint: "config-fingerprint",
+      dotenvPath: resolve(cwd, ".env"),
+      dotenvFingerprint: "dotenv-fingerprint",
+      identityPath: resolve(cwd, "IDENTITY.md"),
+      identityFingerprint: "identity-fingerprint",
+      operationalEnvironmentFingerprint: "environment-fingerprint",
+    });
+    try {
+      const accepted = await captureCli(() => withCwd(cwd, () => runCli([
+        "start",
+        "--foreground",
+        "--expected-background-snapshot",
+        mismatchedSnapshot,
+      ])));
+      expect(accepted.code).toBe(1);
+      expect(accepted.stderr).toContain("approved snapshot paths do not match the worker arguments");
+      expect(accepted.stderr).not.toContain("reserved for an installed background worker");
+      expect(mocks.waitForManagedRuntimePublication).not.toHaveBeenCalled();
+
+      const wrongShape = await captureCli(() => runCli([
+        "start",
+        "--expected-background-snapshot",
+        "encoded-snapshot",
+      ]));
+      expect(wrongShape.code).toBe(2);
+      expect(wrongShape.stderr).toContain("reserved for an installed background worker");
+
+      const managedProof = await captureCli(() => runCli([
+        "start",
+        "--foreground",
+        "--expected-background-snapshot",
+        "encoded-snapshot",
+        "--expected-managed-runtime-launch",
+        "encoded-runtime-proof",
+      ]));
+      expect(managedProof.code).toBe(2);
+      expect(managedProof.stderr).toContain("--expected-managed-runtime-launch is reserved");
+    } finally {
+      if (previousSystemd === undefined) delete process.env[SYSTEMD_BACKGROUND_WORKER_ENV];
+      else process.env[SYSTEMD_BACKGROUND_WORKER_ENV] = previousSystemd;
+      if (previousManaged === undefined) delete process.env[MANAGED_BACKGROUND_WORKER_ENV];
+      else process.env[MANAGED_BACKGROUND_WORKER_ENV] = previousManaged;
     }
   });
 
