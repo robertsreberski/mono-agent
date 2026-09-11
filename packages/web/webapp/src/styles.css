@@ -288,8 +288,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .agent-chip-pin { position: absolute; top: -6px; left: -6px; width: 16px; height: 16px; display: grid; place-items: center; color: var(--warning); background: var(--panel); border-radius: 999px; }
 .agent-chip-label { max-width: 48px; overflow: hidden; color: var(--text-muted); font-size: 10px; font-weight: 600; line-height: 1.2; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .agent-chip.is-selected .agent-chip-label { color: var(--text); }
+.agent-strip-more { width: 32px; display: flex; flex: none; }
 .agent-strip-empty { min-width: 0; margin: 0; padding: 12px 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
-.agent-strip-offline { position: relative; margin-right: var(--gutter-right); width: 32px; height: 44px; display: grid; place-items: center; flex: none; padding: 0; color: var(--text-muted); background: transparent; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); cursor: pointer; }
+.agent-strip-offline { position: relative; width: 32px; height: 44px; display: grid; place-items: center; flex: none; padding: 0; color: var(--text-muted); background: transparent; border: 1px dashed var(--line-strong); border-radius: var(--radius-md); cursor: pointer; }
 .agent-strip-offline:hover, .agent-strip-offline.is-active { color: var(--text); background: var(--surface-hover); }
 .agent-strip-offline-count { position: absolute; top: 2px; right: 3px; color: var(--text-muted); font-size: 8px; font-weight: 700; }
 

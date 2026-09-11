@@ -81,22 +81,28 @@ export function AgentStrip({
             No agents discovered. Running agents will appear automatically.
           </p>
         )}
+        {/* The rest of the fleet rides at the END of the same line rather than
+            on a fixed square at the right edge: the line scrolls the whole
+            width of the screen, and the control is where the agents it reveals
+            will appear. */}
+        {hiddenOfflineAgentCount > 0 && (
+          <div className="agent-strip-more" role="listitem">
+            <button
+              type="button"
+              className={`agent-strip-offline${showOfflineAgents ? " is-active" : ""}`}
+              aria-pressed={showOfflineAgents}
+              aria-label={showOfflineAgents
+                ? "Hide offline agents"
+                : `Show ${hiddenOfflineAgentCount} offline agent${hiddenOfflineAgentCount === 1 ? "" : "s"}`}
+              title={showOfflineAgents ? "Hide offline agents" : `Show ${hiddenOfflineAgentCount} offline`}
+              onClick={() => setShowOfflineAgents(!showOfflineAgents)}
+            >
+              <Icon name={showOfflineAgents ? "eye-off" : "eye"} size={15} />
+              <span className="agent-strip-offline-count">{hiddenOfflineAgentCount}</span>
+            </button>
+          </div>
+        )}
       </div>
-      {hiddenOfflineAgentCount > 0 && (
-        <button
-          type="button"
-          className={`agent-strip-offline${showOfflineAgents ? " is-active" : ""}`}
-          aria-pressed={showOfflineAgents}
-          aria-label={showOfflineAgents
-            ? "Hide offline agents"
-            : `Show ${hiddenOfflineAgentCount} offline agent${hiddenOfflineAgentCount === 1 ? "" : "s"}`}
-          title={showOfflineAgents ? "Hide offline agents" : `Show ${hiddenOfflineAgentCount} offline`}
-          onClick={() => setShowOfflineAgents(!showOfflineAgents)}
-        >
-          <Icon name={showOfflineAgents ? "eye-off" : "eye"} size={15} />
-          <span className="agent-strip-offline-count">{hiddenOfflineAgentCount}</span>
-        </button>
-      )}
     </nav>
   );
 }
