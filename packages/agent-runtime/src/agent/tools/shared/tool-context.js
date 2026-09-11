@@ -22,7 +22,8 @@
 //   additionalWriteRoots — extra read/write roots for managed filesystem tools.
 //   runId            — used as the subdirectory under toolArtifactDir for tool output.
 //   toolArtifactDir  — root for {dir}/tool-output/{runId}/{file} artifact writes
-//                      from capChars/formatSearchLines. Null = no persistence.
+//                      from capChars/formatSearchLines when no run-scoped
+//                      persistArtifact sink is attached. Null = no persistence.
 //   ripgrepPath      — absolute path to the ripgrep binary. When unset, falls
 //                      back to vendored binary, then PATH lookup.
 //   qaOutputDir      — fallback for normalizeMcpToolParams when the per-call
@@ -65,6 +66,10 @@ import { DEFAULT_RUNTIME_BRAND, resolveRuntimeBrand } from "../../../runtime-bra
  * @property {RuntimeSandbox} sandbox
  * @property {RuntimeBrand} runtimeBrand
  * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment]
+ * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null} [persistArtifact]
+ *   Run-scoped host artifact sink. Not a configurable key: the turn runner
+ *   attaches it to a per-run copy of the context so per-tool output caps can
+ *   spill their full text into the run's tool-output directory.
  */
 
 // The data keys (everything except the always-resolved runtimeBrand). A fixed

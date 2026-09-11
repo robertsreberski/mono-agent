@@ -9,16 +9,51 @@ function sanitizeName(value) {
   return String(value || "tool").replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "tool";
 }
 
+/**
+ * Persist a truncated tool's full output so the retained text can reference it.
+ *
+ * Two sinks, in order of preference:
+ * 1. The run-bound host sink (`ctx.persistArtifact`, attached per run by the
+ *    turn runner). It is the same `persistArtifact({filename, buffer, toolName,
+ *    toolUseId}) -> path | null` callback the tool-payload guard and the Agent
+ *    tool use, so the file lands in the run's validated tool-output directory.
+ *    This is the sink a configured app actually provides.
+ * 2. A configured `toolArtifactDir` (deep-path hosts via configureToolRuntime),
+ *    written directly under `<dir>/tool-output/<runId>/`.
+ *
+ * Null when neither is available or the write fails; callers then omit the
+ * "saved to" line rather than naming a file that does not exist.
+ *
+ * @param {string} label
+ * @param {string} text
+ * @param {any} [ctx]
+ * @returns {{path: string, bytes: number}|null}
+ */
 export function writeToolArtifact(label, text, ctx) {
-  const { toolArtifactDir, runId } = ctx ?? readToolRuntime();
+  const { toolArtifactDir, runId, persistArtifact } = ctx ?? readToolRuntime();
+  const body = String(text || "");
+  const filename = `${Date.now()}-${sanitizeName(label)}-${randomUUID()}.txt`;
+  if (typeof persistArtifact === "function") {
+    try {
+      const path = persistArtifact({
+        filename,
+        buffer: Buffer.from(body, "utf8"),
+        toolName: sanitizeName(label),
+        toolUseId: null,
+      });
+      if (typeof path === "string" && path.length > 0) return { path, bytes: Buffer.byteLength(body, "utf8") };
+    } catch {
+      /* fall through to the directory sink, then null */
+    }
+  }
   if (!toolArtifactDir) return null;
   try {
     const safeRunId = sanitizeName(runId || "manual");
     const dir = resolve(toolArtifactDir, "tool-output", safeRunId);
     mkdirSync(dir, { recursive: true });
-    const path = join(dir, `${Date.now()}-${sanitizeName(label)}-${randomUUID()}.txt`);
-    writeFileSync(path, String(text || ""), "utf8");
-    return { path, bytes: Buffer.byteLength(String(text || ""), "utf8") };
+    const path = join(dir, filename);
+    writeFileSync(path, body, "utf8");
+    return { path, bytes: Buffer.byteLength(body, "utf8") };
   } catch {
     return null;
   }

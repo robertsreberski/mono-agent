@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Per-tool output truncation now persists the full output in the configured
+  app. Bash, Exec, NodeRepl, Read, WebFetch, Grep and Glob trim oversized
+  results at their own character/line caps long before the 256 KiB tool-payload
+  guard, and the code path that saves the trimmed remainder to disk only knew
+  how to write under a `toolArtifactDir` that the configured app never sets —
+  so the console saw `[truncated Bash output …]` with no file behind it. The
+  per-run host artifact sink the payload guard already receives is now attached
+  to the run's tool context and preferred by that spill path, so the full output
+  lands under `artifacts.dir/tool-output/<runId>/` and the retained text ends
+  with `Full output saved to: <path>`. Hosts that configure `toolArtifactDir`
+  directly keep the previous behavior.
+
 - An over-cap `Agent` (subagent) result is now spilled to the run's tool-output
   artifact directory instead of being silently cut. The retained tool result
   kept its 12,000-character answer cap and 24 KB byte cap, but the text beyond

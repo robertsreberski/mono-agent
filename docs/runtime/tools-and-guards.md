@@ -222,6 +222,8 @@ Before rewriting the result, the guard offers every original block to the config
 
 Images get a separate, larger budget than text so vision payloads are not clipped at the text limit.
 
+The per-tool caps that fire well before that budget — `max_output_chars` on Bash, Exec, NodeRepl, Read and WebFetch, and the line/char limits on Grep and Glob listings — spill through the same per-run sink. When a result is trimmed, the full output is written to `artifacts.dir/tool-output/<runId>/` and the retained text ends with `Full output saved to: <path>` so the agent can `Read` it or narrow its request. Without a sink the notice omits that line rather than naming a file that was never written.
+
 This guard is always on (coverage: `auto`). You do not enable it; you only choose where artifacts are written:
 
 ```json

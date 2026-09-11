@@ -14,7 +14,7 @@
 // The native bridge must return the SAME unified result shape and emit the
 // SAME normalized runtime events as the legacy pi-sdk bridge.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1674,6 +1674,58 @@ describe("pi-native typed policy objects + deprecated settings shim", () => {
       // NOT consulted (run impl > host impl).
       expect(runCalls.some((command) => (command.args || []).some((arg) => /echo hi/.test(arg)))).toBe(true);
       expect(hostCalls).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("spills a truncated Bash result through the run's persistArtifact sink and references the file", async () => {
+    // A configured app never sets toolArtifactDir on the ToolContext; the
+    // run-bound persistArtifact callback is its only artifact sink. The turn
+    // runner must attach it to the per-run ctx so the per-tool char cap can
+    // persist the full output instead of silently dropping it.
+    const root = mkdtempSync(join(tmpdir(), "pi-native-spill-"));
+    try {
+      const artifactDir = join(root, "tool-output", "run-spill");
+      mkdirSync(artifactDir, { recursive: true });
+      const saved = [];
+      const persistArtifact = ({ filename, buffer, toolName }) => {
+        const path = join(artifactDir, filename);
+        writeFileSync(path, buffer);
+        saved.push({ path, toolName, bytes: buffer.length });
+        return path;
+      };
+      const toolContext = createToolContext({ workspace: root });
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Bash", {
+          command: "printf 'HEAD'; printf '%04000d' 0; printf 'TAIL'",
+          workdir: root,
+          max_output_chars: 500,
+        }, { id: "b-spill" })]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Bash"],
+        messages: [{ role: "user", content: "run it" }],
+        toolContext,
+        persistArtifact,
+      }));
+      expect(result.error).toBeNull();
+      expect(saved).toHaveLength(1);
+      expect(saved[0].toolName).toBe("Bash");
+      expect(saved[0].bytes).toBeGreaterThan(4000);
+      const written = readFileSync(saved[0].path, "utf8");
+      expect(written.startsWith("HEAD")).toBe(true);
+      expect(written.endsWith("TAIL")).toBe(true);
+      const toolResult = result.events.find((event) =>
+        event.type === "user" && event.message?.content?.some?.((block) => block.type === "tool_result" && block.tool_use_id === "b-spill"));
+      const text = JSON.stringify(toolResult);
+      expect(text).toContain("[truncated Bash output");
+      expect(text).toContain(`Full output saved to: ${saved[0].path}`);
+      // The host ToolContext itself is untouched: the sink rode on a per-run copy.
+      expect(toolContext.persistArtifact).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
