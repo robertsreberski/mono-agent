@@ -1,4 +1,5 @@
 import { sanitizeCronTranscript } from "./cron-visibility";
+import { readSeenRevisions, type SeenRevision } from "./unread";
 import type { ThreadCacheEntry } from "./thread-cache";
 import type {
   AgentSummary,
@@ -67,6 +68,15 @@ const META_STORE = "meta";
 const SNAPSHOT_KEY = "agents";
 /** The console that wrote all of this. A different one owns none of it. */
 const HOST_KEY = "host";
+/**
+ * Which conversations this DEVICE has seen, and at which revision.
+ *
+ * Metadata rather than a store of its own: it is one small row, it is this
+ * browser's own opinion and never the server's, and it belongs to the same host
+ * as everything else here -- so a different console's data being discarded takes
+ * it with the rest.
+ */
+const SEEN_KEY = "seen";
 
 /** One conversation, as it is written to the device. */
 export interface PersistedThread {
@@ -112,6 +122,8 @@ export interface HydratedConsole {
   readonly snapshot: PersistedSnapshot | null;
   readonly buckets: readonly PersistedBucket[];
   readonly threads: readonly PersistedThread[];
+  /** What this device had seen, least recently touched first. */
+  readonly seen: readonly SeenRevision[];
 }
 
 /** One flush: what the tab holds right now, and nothing incremental. */
@@ -128,6 +140,15 @@ export interface PersistableState {
    */
   readonly entries: readonly ThreadCacheEntry[];
   readonly snapshot?: PersistedSnapshot;
+  /**
+   * The whole seen-revision map, when it has moved.
+   *
+   * Written wholesale because it is bounded and tiny, and omitted rather than
+   * written empty: an absent key means "nothing to say", and one flush that
+   * happened to run before the marker was restored must not be able to tell the
+   * device this browser has seen nothing.
+   */
+  readonly seen?: readonly SeenRevision[];
   readonly bucket?: {
     readonly key: string;
     readonly threads: readonly ThreadSummary[];
@@ -612,8 +633,10 @@ export const createThreadPersistence = (
           asPromise<unknown[]>(transaction.objectStore(BUCKET_STORE).getAll()),
           asPromise<unknown>(meta.get(SNAPSHOT_KEY)),
           asPromise<unknown>(meta.get(HOST_KEY)),
+          asPromise<unknown>(meta.get(SEEN_KEY)),
         ] as const;
-        const [threadRows, bucketRows, snapshotRow, hostRow] = await Promise.all(pending);
+        const [threadRows, bucketRows, snapshotRow, hostRow, seenRow] =
+          await Promise.all(pending);
         const snapshot = readSnapshotRow(snapshotRow) ?? null;
         const threads: PersistedThread[] = [];
         const summaries = new Map<string, ThreadSummary>();
@@ -649,6 +672,7 @@ export const createThreadPersistence = (
             }),
           })),
           threads: threads.filter((entry) => !doomed.threads.has(entry.id)),
+          seen: readSeenRevisions(seenRow),
         };
       } catch (readError) {
         // The connection was let go while this was out. Nothing is known about
@@ -740,6 +764,15 @@ export const createThreadPersistence = (
           const meta = transaction.objectStore(META_STORE);
           meta.put({ ...state.snapshot, savedAt }, SNAPSHOT_KEY);
           meta.put(state.snapshot.console.hostName, HOST_KEY);
+        }
+        if (state.seen !== undefined) {
+          // Structured-cloneable plain rows: a `Map` would clone too, but this
+          // is read back by a build that may shape the marker differently, and
+          // an array of two primitives is the shape that survives that.
+          transaction.objectStore(META_STORE).put(
+            state.seen.map((row) => ({ id: row.id, revision: row.revision })),
+            SEEN_KEY,
+          );
         }
         await settled(transaction);
         // Only after it committed. Ownership lives on the rows themselves; this

@@ -8387,7 +8387,7 @@ describe("ConsoleStoreProvider integration", () => {
       await act(async () => { await store.current.clearCachedData(); });
 
       expect(await deviceStore.hydrate())
-        .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+        .toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
       // The conversation in front of the operator is not what they asked to
       // lose: it is still on screen, as the very transcript it was.
       expect(store.current.detail?.messages).toBe(held);
@@ -8653,7 +8653,7 @@ describe("ConsoleStoreProvider integration", () => {
       await written();
 
       expect(await deviceStore.hydrate())
-        .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+        .toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
     });
 
     it("keeps the listing it stored while an agent switch is still in flight", async () => {
@@ -9346,6 +9346,98 @@ describe("ConsoleStoreProvider integration", () => {
 
       expect(vi.mocked(api.activeThreads)).toHaveBeenCalled();
       expect(store.current.activeThreads).toBe(published);
+    });
+  });
+
+  describe("an unread marker this device owns", () => {
+    const agents = [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })];
+    const one = thread("alpha-one", "alpha", { revision: 1 });
+    const two = thread("alpha-two", "alpha", { revision: 1 });
+
+    let eventSequence = 0;
+    const emit = (
+      type: WebEvent["type"],
+      extra: { readonly threadId?: string; readonly payload?: unknown } = {},
+    ) => {
+      eventSequence += 1;
+      act(() => FakeEventSource.latest?.emit(type, {
+        id: `unread-event-${String(eventSequence)}`,
+        version: 1,
+        type,
+        at: "2026-09-10T09:00:00.000Z",
+        ...extra,
+      }));
+    };
+    const moved = (summary: ThreadSummary) =>
+      ({ ...summary, revision: summary.revision + 1, updatedAt: "2026-09-10T09:00:00.000Z" });
+
+    beforeEach(() => {
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [one, two], one.id, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.thread).mockResolvedValue({ thread: one, messages: [] });
+    });
+
+    it("opens with nothing unread, and marks only what moves afterwards", async () => {
+      const store = await renderStore();
+      // First sight seeds. A console where the whole fleet is unread on the
+      // first visit has told the operator nothing.
+      expect([...store.current.unreadThreadIds]).toEqual([]);
+
+      emit("thread.changed", { threadId: two.id, payload: { thread: moved(two) } });
+
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+      expect([...store.current.unreadCountByAgent]).toEqual([["alpha", 1]]);
+    });
+
+    it("clears the marker only while the conversation is actually on screen", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(one.id));
+      emit("thread.changed", { threadId: one.id, payload: { thread: moved(one) } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([one.id]));
+
+      // SELECTED is not looked at: on a phone this conversation is mounted
+      // behind the dashboard, inert, showing nobody anything.
+      await act(async () => { await Promise.resolve(); });
+      expect([...store.current.unreadThreadIds]).toEqual([one.id]);
+
+      act(() => { store.current.setConversationVisible(true); });
+
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      expect([...store.current.unreadCountByAgent]).toEqual([]);
+
+      // And the next turn on it makes it unread again, because the marker is a
+      // revision rather than a flag.
+      emit("thread.changed", {
+        threadId: one.id,
+        payload: { thread: { ...moved(one), revision: 5 } },
+      });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      act(() => { store.current.setConversationVisible(false); });
+      emit("thread.changed", {
+        threadId: one.id,
+        payload: { thread: { ...moved(one), revision: 6 } },
+      });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([one.id]));
+    });
+
+    it("keeps what it has seen on the device, across a restart", async () => {
+      const first = await renderStore();
+      await waitFor(() => expect(first.current.selectedThreadId).toBe(one.id));
+      emit("thread.changed", { threadId: two.id, payload: { thread: moved(two) } });
+      await waitFor(() => expect([...first.current.unreadThreadIds]).toEqual([two.id]));
+      // Long enough for the debounced write-through to have landed.
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, PERSIST_DEBOUNCE_MS + 400); }); });
+      cleanupDom();
+
+      // A second visit, told the same thing: what this device had seen is what
+      // decides, not what this visit happens to be shown first.
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [one, moved(two)], one.id, { threadsSourceId: "alpha" }),
+      );
+      const second = await renderStore();
+
+      await waitFor(() => expect([...second.current.unreadThreadIds]).toEqual([two.id]));
     });
   });
 

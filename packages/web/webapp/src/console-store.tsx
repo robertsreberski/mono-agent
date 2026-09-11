@@ -54,6 +54,7 @@ import {
   type ThreadPersistence,
 } from "./thread-persistence";
 import { threadPresentation } from "./thread-presentation";
+import { createUnreadMarker, unreadCountsBySource } from "./unread";
 import { API_VERSION, DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
   ActiveThreads,
@@ -255,6 +256,25 @@ interface ConsoleStoreValue {
    * a card for another agent loads no transcript and evicts nothing.
    */
   readonly activeThreads: ActiveThreadsState | null;
+  /**
+   * Conversations that have moved since THIS DEVICE saw them.
+   *
+   * Device-local and per browser origin -- the server has no idea what a person
+   * has read, and one account is a phone, a laptop and a tab left open. Covers
+   * the conversations this console has been told about: the loaded page, the
+   * fleet listing, and the one on screen.
+   */
+  readonly unreadThreadIds: ReadonlySet<string>;
+  /** The same set, per agent, for the squares on the strip. */
+  readonly unreadCountByAgent: ReadonlyMap<string, number>;
+  /**
+   * The shell's statement that the CONVERSATION is on screen.
+   *
+   * What turns "selected" into "being looked at": on a phone the chat screen is
+   * inert behind the dashboard for most of a session, and only the shell knows
+   * which of the two the operator is on.
+   */
+  readonly setConversationVisible: (visible: boolean) => void;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
@@ -404,6 +424,14 @@ const sameActiveThreads = (a: ActiveThreads | null, b: ActiveThreads): boolean =
   && sameRunningProjection(a.threads, b.threads)
   && sameRunningCounts(a.runningCounts, b.runningCounts);
 const NO_RUNNING_THREADS: readonly ThreadSummary[] = [];
+const NO_UNREAD_THREADS: ReadonlySet<string> = new Set();
+const NO_UNREAD_COUNTS: ReadonlyMap<string, number> = new Map();
+const sameThreadIds = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean =>
+  a.size === b.size && [...a].every((id) => b.has(id));
+const sameUnreadCounts = (
+  a: ReadonlyMap<string, number>,
+  b: ReadonlyMap<string, number>,
+): boolean => a.size === b.size && [...a].every(([id, count]) => b.get(id) === count);
 /** How the console names one (agent, archived) listing, on the wire and on the device. */
 export const threadBucketKey = (sourceId: string, archived: boolean): string =>
   `${sourceId}\0chats-v1\0${archived ? "archived" : "active"}`;
@@ -2141,6 +2169,29 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
 
   /**
+   * What this DEVICE has seen, and whether the device is owed a write of it.
+   *
+   * Held in a ref rather than in state because it is not what anything renders:
+   * the two selectors below are, and they are recomputed from it.
+   */
+  const unreadRef = useRef(createUnreadMarker());
+  const seenDirtyRef = useRef(false);
+  const [unreadThreadIds, setUnreadThreadIds] =
+    useState<ReadonlySet<string>>(NO_UNREAD_THREADS);
+  const [unreadCountByAgent, setUnreadCountByAgent] =
+    useState<ReadonlyMap<string, number>>(NO_UNREAD_COUNTS);
+  /**
+   * Whether the CONVERSATION is what the operator is looking at.
+   *
+   * The shell's answer, not the store's: on a phone the chat screen is one of
+   * two screens and the dashboard is usually the one on top, and only the shell
+   * knows which. False until it says otherwise -- a console that assumed
+   * "visible" would clear the unread marker for a conversation nobody has
+   * looked at.
+   */
+  const [conversationVisible, setConversationVisible] = useState(false);
+
+  /**
    * Write what this tab holds to the device, at most once every
    * {@link PERSIST_DEBOUNCE_MS}.
    *
@@ -2175,7 +2226,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         ...(bucket === undefined || !seededBucketsRef.current.has(bucket.key)
           ? {}
           : { bucket }),
+        // Only when it moved, and cleared as it is handed over: the map is one
+        // row and rewriting it on every transcript flush would be pure spend.
+        ...(seenDirtyRef.current ? { seen: unreadRef.current.entries() } : {}),
       });
+      seenDirtyRef.current = false;
     }, PERSIST_DEBOUNCE_MS);
   }, []);
   const [hasRunningThread, setHasRunningThread] = useState(false);
@@ -2458,6 +2513,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // unread on the device.
       if (hasServerSnapshotRef.current) return;
       hydratedHostRef.current = restored.host;
+      // Before anything is drawn from what follows: the marker decides whether
+      // each restored row is unread, and a row seeded by this visit would read
+      // as already seen.
+      unreadRef.current.restore(restored.seen);
       const cache = threadCacheRef.current;
       for (const stored of restored.threads) {
         cache.restore({
@@ -3059,6 +3118,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // is a fact and not an inference from what this tab still holds -- so the
     // device is told outright rather than left to a flush that only sweeps rows
     // this instance wrote.
+    unreadRef.current.forget([threadId]);
     void persistenceRef.current?.forget([threadId]).catch(() => undefined);
     setDetail(null);
     const sourceId = selectedAgentRef.current;
@@ -4107,7 +4167,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // selection also makes a detail read still in flight for it inert:
             // `loadThread` only applies what the selection still points at.
             threadCacheRef.current.evict(threadId);
-            void persistenceRef.current?.forget([threadId]).catch(() => undefined);
+            unreadRef.current.forget([threadId]);
+    void persistenceRef.current?.forget([threadId]).catch(() => undefined);
             if (threadId === selectedThreadRef.current) {
               // The authoritative removal settles any direct selection read
               // still on the wire. Invalidating its generation keeps its late
@@ -4406,6 +4467,50 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     () => agentVisibility(agents, selectedAgentId, showOfflineAgents),
     [agents, selectedAgentId, showOfflineAgents],
   );
+  /**
+   * Every conversation this console has been TOLD about, once each.
+   *
+   * What the unread marker can speak for: the loaded page, the fleet listing,
+   * and the conversation on screen. Deliberately not the transcript cache --
+   * an entry the device restored carries the revision of the last visit, and
+   * seeding from it would make a conversation that moved since then read.
+   */
+  const observedThreads = useMemo(() => {
+    const byId = new Map<string, ThreadSummary>();
+    for (const thread of threads) byId.set(thread.id, thread);
+    for (const thread of activeThreads?.threads ?? []) byId.set(thread.id, thread);
+    if (detail !== null) byId.set(detail.thread.id, detail.thread);
+    return [...byId.values()];
+  }, [activeThreads, detail, threads]);
+  /**
+   * Which conversations have moved since this device saw them, recomputed
+   * whenever the console is told about any of them.
+   *
+   * The MARK-SEEN rule lives here too, and it is stricter than "selected": the
+   * conversation has to be on screen. On a phone the chat screen is behind the
+   * dashboard for most of a session -- present in the tree, `inert`, and
+   * showing nobody anything -- and a console that cleared the marker for it
+   * would clear every conversation the operator ever opened without their ever
+   * having looked at one of them again.
+   */
+  useEffect(() => {
+    const marker = unreadRef.current;
+    // First sight seeds, and only seeds: a fresh console where the whole fleet
+    // is unread is a console whose unread marker means nothing.
+    let moved = marker.note(observedThreads);
+    if (conversationVisible && selectedThreadId !== null) {
+      const selected = observedThreads.find((thread) => thread.id === selectedThreadId);
+      if (selected !== undefined) moved = marker.see(selected) || moved;
+    }
+    const unread = marker.unreadIds(observedThreads);
+    setUnreadThreadIds((current) => sameThreadIds(current, unread) ? current : unread);
+    const counts = unreadCountsBySource(observedThreads, unread);
+    setUnreadCountByAgent((current) => sameUnreadCounts(current, counts) ? current : counts);
+    if (moved) {
+      seenDirtyRef.current = true;
+      schedulePersistRef.current();
+    }
+  }, [conversationVisible, observedThreads, selectedThreadId]);
   const selectedThread =
     threads.find((thread) => thread.id === selectedThreadId) ?? detail?.thread ?? null;
   const selectedCronOverview = cronOverviewSourceId === selectedAgentId
@@ -4733,6 +4838,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     cancelPersist();
     threadCacheRef.current.clear(selectedThreadRef.current ?? undefined);
     noteHeldRunStateRef.current();
+    // What this device had seen is cached data too, and `clearAll` empties the
+    // row it lives in -- so the in-memory mirror goes with it, or the next
+    // flush would write the whole map straight back.
+    unreadRef.current.restore([]);
+    seenDirtyRef.current = false;
+    setUnreadThreadIds(NO_UNREAD_THREADS);
+    setUnreadCountByAgent(NO_UNREAD_COUNTS);
     await persistenceRef.current?.clearAll();
     cancelPersist();
   }, [cancelPersist]);
@@ -5540,6 +5652,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // The device is told OUTRIGHT, not left to infer it from a flush: a sweep
     // only removes rows this tab wrote, and a conversation the operator deleted
     // has to go whoever wrote its row.
+    unreadRef.current.forget([thread.id, requestedId]);
     void persistenceRef.current?.forget([thread.id, requestedId]).catch(() => undefined);
     if (selectedThreadRef.current === thread.id || selectedThreadRef.current === requestedId) {
       const replacement = visibleThreads.find((item) => item.id !== thread.id);
@@ -6358,6 +6471,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasRunningThread,
       cachedRunningThreads,
       activeThreads: activeThreadsState,
+      unreadThreadIds,
+      unreadCountByAgent,
+      setConversationVisible,
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
@@ -6434,6 +6550,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasRunningThread,
       cachedRunningThreads,
       activeThreadsState,
+      unreadThreadIds,
+      unreadCountByAgent,
       hasOlderMessages,
       hasServerSnapshot,
       loadBootstrap,

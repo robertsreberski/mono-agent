@@ -339,7 +339,7 @@ describe("createThreadPersistence", () => {
     await tabA.clearAll();
 
     expect(await createThreadPersistence().hydrate())
-      .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+      .toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
   });
 
   it("drops the row for a conversation the cache stopped holding", async () => {
@@ -362,7 +362,7 @@ describe("createThreadPersistence", () => {
     await store.clearAll();
 
     const restored = await createThreadPersistence().hydrate();
-    expect(restored).toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+    expect(restored).toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
   });
 
   it("names the console that wrote what is stored", async () => {

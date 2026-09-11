@@ -65,6 +65,8 @@ const createStore = (threads: readonly ThreadSummary[] = [thread("loaded", "agen
   hiddenOfflineAgentCount: 0,
   showOfflineAgents: false,
   cachedRunningThreads: [] as readonly ThreadSummary[],
+  unreadThreadIds: new Set<string>(),
+  unreadCountByAgent: new Map<string, number>(),
   // No server answer by default: most cases are about the list, and the ones
   // about Running say for themselves what the fleet reported.
   activeThreads: null as {
@@ -296,6 +298,14 @@ describe("Dashboard conversation rows", () => {
     ).not.toBeNull();
     // A cron channel is an automation's history: it lives in that collection.
     expect(screen.queryByRole("button", { name: "Open Nightly report" })).toBeNull();
+  });
+
+  it("marks a row this device has not seen, and says so by name", () => {
+    storeMock.current = { ...createStore(), unreadThreadIds: new Set(["loaded"]) };
+    render(<Dashboard />);
+
+    const row = screen.getByRole("button", { name: "Open loaded" });
+    expect(within(row).getByRole("img", { name: "Unread" })).toBeVisible();
   });
 
   it("closes the drawer when a row opens a conversation, and not when the list pages", () => {
