@@ -9174,6 +9174,42 @@ describe("ConsoleStoreProvider integration", () => {
       );
     });
 
+    it("shows friendly copy on a pending collision and retries with the server-owned operation", async () => {
+      const freshOperationId = "55555555-5555-4555-8555-555555555555";
+      const pendingOperationId = "66666666-6666-4666-8666-666666666666";
+      vi.spyOn(crypto, "randomUUID").mockReturnValue(freshOperationId);
+      vi.mocked(api.cronReply)
+        .mockRejectedValueOnce(new ApiError(
+          "A Reply for this cron result is already pending. Retry it explicitly.",
+          409,
+          "cron_reply_pending",
+          { operationId: pendingOperationId, pendingSince: "2026-09-10T18:03:36.024Z" },
+        ))
+        .mockResolvedValueOnce({ ...receipt, operationId: pendingOperationId });
+      const store = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+
+      await act(async () => {
+        await expect(store.current.replyToCronRun(source)).rejects.toMatchObject({
+          code: "cron_reply_pending",
+        });
+      });
+      const collided = store.current.cronReplyState(source.sourceId, source.jobId, source.runId);
+      expect(collided.status).toBe("retry");
+      const message = collided.status === "retry" ? collided.message : "";
+      expect(message).toContain("still being delivered");
+      expect(message).toContain("Retry Reply");
+      expect(message).toContain("no duplicate");
+      expect(message).toContain("since");
+      expect(message).not.toContain("already pending. Retry it explicitly");
+
+      await act(async () => { await store.current.replyToCronRun(source); });
+      expect(vi.mocked(api.cronReply).mock.calls.map((call) => call[3].operationId))
+        .toEqual([freshOperationId, pendingOperationId]);
+      expect(store.current.selectedThreadId).toBe(imported.id);
+    });
+
     it("keeps one completed-server identity through refused storage and an offline retry", async () => {
       let loseFirstResponse: ((error: unknown) => void) | undefined;
       vi.spyOn(crypto, "randomUUID").mockReturnValue(operationId);
