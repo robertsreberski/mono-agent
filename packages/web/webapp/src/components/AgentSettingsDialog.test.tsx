@@ -88,10 +88,19 @@ describe("AgentSettingsDialog", () => {
     const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
     const view = render(<AgentSettingsDialog open {...props} />);
     fireEvent.click(await screen.findByRole("button", { name: kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers" }));
+    // The admission is genuinely on the wire before the dialog closes. Without
+    // this the test could close over a click that started nothing -- the check
+    // button is disabled until the status read lands -- and then read the
+    // missing cancellation as a teardown that failed to cancel.
+    await vi.waitFor(() => { expect(start).toHaveBeenCalledTimes(1); });
     view.rerender(<AgentSettingsDialog open={false} {...props} />);
     expect(cancel).not.toHaveBeenCalled();
     const snapshot = kind === "auth" ? sessionSnapshot("late-admission", "LATE FLOW") : { ...completedProviderAuthCheck(), id: "late-admission", state: "running" };
     await act(async () => admission.resolve(snapshot));
+    // Awaited on the cancellation ITSELF rather than on however many turns the
+    // admission's continuation happens to take: the assertion below is about
+    // what is cancelled, not about when a microtask queue drained.
+    await vi.waitFor(() => { expect(cancel).toHaveBeenCalled(); });
     expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "late-admission", expect.any(AbortSignal));
     expect(screen.queryByText("LATE FLOW")).not.toBeInTheDocument();
   });
