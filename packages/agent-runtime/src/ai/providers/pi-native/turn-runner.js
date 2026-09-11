@@ -61,8 +61,18 @@ export async function buildTurnTools(runState, {
   // through it; otherwise the host/default ToolContext is used unchanged. The
   // per-run policy DATA (sandboxPolicy) still merges monotonically inside
   // resolveSandboxPolicy (I13) regardless of which impl is chosen.
-  const runCtx = options.sandbox
-    ? { ...(options.toolContext ?? readToolRuntime()), sandbox: options.sandbox }
+  //
+  // The run-bound artifact sink rides on the same copy: the per-tool output
+  // caps (capChars / formatSearchLines) spill their full text through
+  // `ctx.persistArtifact`, which is the only sink a configured app provides
+  // (`toolArtifactDir` is never set there). A snapshot is safe because the
+  // router projects configureTools before each attempt, never mid-run.
+  const runCtx = options.sandbox || persistArtifact
+    ? {
+      ...(options.toolContext ?? readToolRuntime()),
+      ...(options.sandbox ? { sandbox: options.sandbox } : {}),
+      ...(persistArtifact ? { persistArtifact } : {}),
+    }
     : options.toolContext;
   const sandboxEngine = options.sandboxEngine ?? runCtx?.sandboxEngine;
   const nodeReplController = capabilities.tool_use === false
