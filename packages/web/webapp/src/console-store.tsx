@@ -56,6 +56,7 @@ import {
 import { threadPresentation } from "./thread-presentation";
 import { API_VERSION, DEFAULT_UPLOAD_LIMITS } from "./types";
 import type {
+  ActiveThreads,
   AgentSummary,
   Bootstrap,
   CatalogModel,
@@ -142,6 +143,28 @@ export interface CronReplySource {
   readonly snapshotKind: CronReplySnapshotKind;
 }
 
+/**
+ * The fleet-wide running listing as the console holds it, with the one fact the
+ * wire contract cannot carry: whether it still stands.
+ */
+export interface ActiveThreadsState {
+  readonly threads: readonly ThreadSummary[];
+  /** Distinct running conversations, counted before the server's cap. */
+  readonly total: number;
+  readonly truncated: boolean;
+  /** Per discovered agent, zeroes included. */
+  readonly runningCounts: Readonly<Record<string, number>>;
+  /**
+   * Whether this is a statement about NOW rather than the last thing heard.
+   *
+   * False without a live stream behind it -- the events that would invalidate
+   * it are exactly what a dropped stream misses -- and false after a read of
+   * the listing failed. Both are last known, and a console that drew either as
+   * current could claim an idle fleet it simply cannot see.
+   */
+  readonly authoritative: boolean;
+}
+
 interface ConsoleStoreValue {
   readonly bootstrap: Bootstrap | null;
   readonly agents: readonly AgentSummary[];
@@ -219,6 +242,19 @@ interface ConsoleStoreValue {
    * job, where the current agent list lives.
    */
   readonly cachedRunningThreads: readonly ThreadSummary[];
+  /**
+   * What the SERVER says is running, fleet-wide, or `null` when this session
+   * has never been told.
+   *
+   * The cross-agent answer {@link ConsoleStoreValue.cachedRunningThreads}
+   * cannot give: it covers agents this tab has never opened and conversations
+   * past every loaded page, it is counted before it is capped, and it is the
+   * only thing an empty Running section may be drawn from.
+   *
+   * Held apart from the bucket pages and from the transcript cache: receiving
+   * a card for another agent loads no transcript and evicts nothing.
+   */
+  readonly activeThreads: ActiveThreadsState | null;
   readonly selectAgent: (sourceId: string) => void;
   readonly setAgentPinned: (sourceId: string, pinned: boolean) => Promise<void>;
   readonly setAgentRunDefaults: (model: string | null, effort: string | null) => Promise<void>;
@@ -323,19 +359,50 @@ const byMostRecentThenId = (a: ThreadSummary, b: ThreadSummary) =>
  * The comparison key for publication: the cache commits several times a second
  * during a turn, and a message body moving is not something this section shows.
  */
-const runningProjectionKey = (thread: ThreadSummary): string => [
-  thread.id,
-  thread.sourceId,
-  thread.title,
-  thread.updatedAt,
-  thread.archivedAt ?? "",
-  threadPresentation(thread).text,
-].join("\u0000");
+const runningProjectionKey = (thread: ThreadSummary): string => {
+  const activity = thread.runState.activity;
+  return [
+    thread.id,
+    thread.sourceId,
+    thread.title,
+    thread.updatedAt,
+    thread.archivedAt ?? "",
+    threadPresentation(thread).text,
+    // The card's status line, which `threadPresentation` cannot see: a turn
+    // that has made another tool call, started asking a question or been priced
+    // draws differently, and a projection that ignored it would publish the
+    // line once and then never move it again.
+    thread.runState.status,
+    activity === undefined
+      ? ""
+      : `${String(activity.toolCallCount)}/${activity.phase}/${String(activity.cumulativeUsd ?? "")}`,
+  ].join("\u0000");
+};
 const sameRunningProjection = (
   a: readonly ThreadSummary[],
   b: readonly ThreadSummary[],
 ): boolean => a.length === b.length
   && a.every((thread, index) => runningProjectionKey(thread) === runningProjectionKey(b[index]!));
+const sameRunningCounts = (
+  a: Readonly<Record<string, number>>,
+  b: Readonly<Record<string, number>>,
+): boolean => {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+};
+/**
+ * Whether a freshly read listing would draw the same Running section.
+ *
+ * The listing is re-read after every event a running turn produces and each
+ * response is a new object, so without this the whole console re-rendered
+ * several times a second for a set of cards that had not changed.
+ */
+const sameActiveThreads = (a: ActiveThreads | null, b: ActiveThreads): boolean =>
+  a !== null
+  && a.total === b.total
+  && a.truncated === b.truncated
+  && sameRunningProjection(a.threads, b.threads)
+  && sameRunningCounts(a.runningCounts, b.runningCounts);
 const NO_RUNNING_THREADS: readonly ThreadSummary[] = [];
 /** How the console names one (agent, archived) listing, on the wire and on the device. */
 export const threadBucketKey = (sourceId: string, archived: boolean): string =>
@@ -812,6 +879,16 @@ export const THREAD_READ_TIMEOUT_MS = 60_000;
  * a burst cost one request rather than one per event.
  */
 export const REFRESH_DEBOUNCE_MS = 300;
+
+/**
+ * The shortest gap between two reads of the fleet-wide running listing.
+ *
+ * Every event that could have changed what is running invalidates it, and a
+ * fleet with several turns in flight produces a steady stream of them. One
+ * small response per second is the ceiling that buys; the events themselves
+ * still move the card a turn is on, through the run state they carry.
+ */
+export const ACTIVE_THREADS_REFRESH_INTERVAL_MS = 1_000;
 
 /**
  * The same window, widened on a lean link.
@@ -2148,6 +2225,132 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // is created once, and an effect would leave it a commit behind.
   noteHeldRunStateRef.current = noteHeldRunState;
 
+  /**
+   * The fleet-wide running listing, as last accepted from the server.
+   *
+   * Deliberately its own state: it is neither a bucket page nor a cache entry,
+   * so a card for an agent this tab has never opened costs no transcript read
+   * and evicts nothing the operator is holding.
+   */
+  const [activeThreads, setActiveThreads] = useState<ActiveThreads | null>(null);
+  const activeThreadsRef = useRef<ActiveThreads | null>(null);
+  /** Reads issued, and the highest one ACCEPTED. See `acceptActiveThreads`. */
+  const activeThreadsSeqRef = useRef(0);
+  const acceptedActiveThreadsSeqRef = useRef(0);
+  /** A read of the listing failed; what is held is the last thing heard. */
+  const [activeThreadsStale, setActiveThreadsStale] = useState(false);
+  const activeRefreshInFlightRef = useRef(false);
+  const activeRefreshDirtyRef = useRef(false);
+  const activeRefreshTimerRef = useRef<number | null>(null);
+  const activeRefreshedAtRef = useRef(0);
+  const invalidateActiveThreadsRef = useRef<() => void>(() => undefined);
+
+  /**
+   * Take a listing only when it is NEWER than the one already accepted.
+   *
+   * Three reads answer with one: the mount bootstrap, the refresh bootstrap and
+   * the endpoint itself, and they are in flight at the same time. A bootstrap
+   * issued before an event and answered after it describes the fleet as it was
+   * BEFORE that event, so without the fence it walks an older set of cards --
+   * and older per-agent counts -- back over the newer ones.
+   */
+  const acceptActiveThreads = useCallback((next: ActiveThreads | undefined, seq: number) => {
+    // A server that predates this listing has no opinion about what is running.
+    // Keeping the last known answer is honest; replacing it with nothing is
+    // an authoritative zero this console was never given.
+    if (next === undefined) return;
+    if (seq <= acceptedActiveThreadsSeqRef.current) return;
+    acceptedActiveThreadsSeqRef.current = seq;
+    setActiveThreadsStale(false);
+    if (sameActiveThreads(activeThreadsRef.current, next)) return;
+    activeThreadsRef.current = next;
+    setActiveThreads(next);
+  }, []);
+
+  const refreshActiveThreads = useCallback(async () => {
+    if (activeRefreshInFlightRef.current) {
+      activeRefreshDirtyRef.current = true;
+      return;
+    }
+    activeRefreshInFlightRef.current = true;
+    activeRefreshDirtyRef.current = false;
+    activeRefreshedAtRef.current = Date.now();
+    const seq = ++activeThreadsSeqRef.current;
+    try {
+      const next = await boundedRequest(
+        (signal) => api.activeThreads(signal),
+        THREAD_READ_TIMEOUT_MS,
+      );
+      acceptActiveThreads(next, seq);
+    } catch {
+      // The one read whose FAILURE is itself information. The section keeps
+      // its cards and says they are last known, because going quiet here would
+      // read as "nothing is running".
+      setActiveThreadsStale(true);
+    } finally {
+      activeRefreshInFlightRef.current = false;
+      if (activeRefreshDirtyRef.current) {
+        activeRefreshDirtyRef.current = false;
+        invalidateActiveThreadsRef.current();
+      }
+    }
+  }, [acceptActiveThreads]);
+
+  /**
+   * Something happened that could have changed what is running.
+   *
+   * At most one read in flight and at most one per
+   * {@link ACTIVE_THREADS_REFRESH_INTERVAL_MS}; everything that arrives while
+   * one is out is answered by a SINGLE trailing read. Events name no agent and
+   * a turn on an agent this tab has never opened still changes this listing, so
+   * every one of them reaches here regardless of what is selected.
+   */
+  const invalidateActiveThreads = useCallback(() => {
+    if (activeRefreshInFlightRef.current) {
+      activeRefreshDirtyRef.current = true;
+      return;
+    }
+    if (activeRefreshTimerRef.current !== null) return;
+    const waited = Date.now() - activeRefreshedAtRef.current;
+    if (waited >= ACTIVE_THREADS_REFRESH_INTERVAL_MS) {
+      void refreshActiveThreads();
+      return;
+    }
+    activeRefreshTimerRef.current = window.setTimeout(() => {
+      activeRefreshTimerRef.current = null;
+      void refreshActiveThreads();
+    }, ACTIVE_THREADS_REFRESH_INTERVAL_MS - waited);
+  }, [refreshActiveThreads]);
+  // Assigned during render, like `noteHeldRunStateRef` above: the stream
+  // handler is built once, and an effect would leave it a commit behind.
+  invalidateActiveThreadsRef.current = invalidateActiveThreads;
+  useEffect(() => () => {
+    if (activeRefreshTimerRef.current === null) return;
+    window.clearTimeout(activeRefreshTimerRef.current);
+    activeRefreshTimerRef.current = null;
+  }, []);
+
+  /**
+   * Apply what a `turn.changed` says about a conversation this listing carries.
+   *
+   * The refresh the same event schedules settles membership and the counts;
+   * this is what makes the card's status line move while that read is still on
+   * the wire. It never INSERTS: a conversation that has only just started
+   * running is the listing's to add, not this event's -- adding it here would
+   * put a card on screen with no agent, no count and no place in the order.
+   */
+  const patchActiveThreadRun = useCallback((threadId: string, runState: RunState) => {
+    const current = activeThreadsRef.current;
+    if (current === null || !current.threads.some((item) => item.id === threadId)) return;
+    const next: ActiveThreads = {
+      ...current,
+      threads: current.threads.map((item) =>
+        item.id === threadId ? { ...item, runState } : item),
+    };
+    activeThreadsRef.current = next;
+    setActiveThreads(next);
+  }, []);
+
   /** Disarm the pending flush. What it would have written is no longer wanted. */
   const cancelPersist = useCallback(() => {
     if (persistTimerRef.current === null) return;
@@ -2634,8 +2837,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // the responses themselves have one.
       const issuedAt = removedThreadsRef.current.epoch();
       const scope = bootstrapScope();
+      // Claimed BEFORE the request, like every other fenced read: what this
+      // answer says is running describes the fleet as of now, not as of
+      // whenever it happens to land.
+      const projectionSeq = ++activeThreadsSeqRef.current;
       const next = await boundedRequest((signal) => api.bootstrap(signal, scope), THREAD_READ_TIMEOUT_MS);
       applyBootstrap(next, issuedAt, scope.archived === true);
+      acceptActiveThreads(next.activeThreads, projectionSeq);
       applyConnection("live");
     } catch (loadError) {
       setError(errorMessage(loadError));
@@ -2644,7 +2852,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       initialBootstrapRef.current = "answered";
     }
-  }, [applyBootstrap, applyConnection, bootstrapScope, hydrateFromDevice]);
+  }, [acceptActiveThreads, applyBootstrap, applyConnection, bootstrapScope, hydrateFromDevice]);
 
   useEffect(() => {
     void loadBootstrap();
@@ -3119,6 +3327,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       selectedForRefresh = scope.detail ? selectedThreadRef.current : null;
       const refreshThreadId = selectedForRefresh;
       const bucket = bootstrapScope();
+      const projectionSeq = ++activeThreadsSeqRef.current;
       // CONDITIONAL, exactly as `loadThread` and the gap resync are: this is
       // the path a beaten 304 schedules its follow-up on, and an ordinary
       // switch to a conversation kept across a gap reaches it, so an
@@ -3138,7 +3347,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             )
           : Promise.resolve(null),
       ]);
-      if (nextBootstrap !== null) applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
+      if (nextBootstrap !== null) {
+        applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
+        acceptActiveThreads(nextBootstrap.activeThreads, projectionSeq);
+      }
       if (nextDetail === NOT_MODIFIED) {
         if (selectedForRefresh !== null) {
           confirmConversation(selectedForRefresh, observedAt, !scope.bootstrap);
@@ -3181,7 +3393,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         scheduleRefreshRef.current({});
       }
     }
-  }, [applyBootstrap, applySelectedThreadDetail, bootstrapScope, closeMissingThread, confirmConversation]);
+  }, [
+    acceptActiveThreads,
+    applyBootstrap,
+    applySelectedThreadDetail,
+    bootstrapScope,
+    closeMissingThread,
+    confirmConversation,
+  ]);
 
   const scheduleRefresh = useCallback((scope: Partial<RefreshScope>) => {
     // A refresh that settles after the tree is gone re-queues through the
@@ -3365,7 +3584,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // operator switched away from keeps the run state its event carried, so
     // coming back to it shows what is running there without a read.
     if (threadCacheRef.current.patchRunState(threadId, runState)) publishDetail(threadId);
-  }, [publishDetail]);
+    // And on the fleet listing, which is neither: it can be holding a card for
+    // a conversation no page lists and no transcript is kept for.
+    patchActiveThreadRun(threadId, runState);
+  }, [patchActiveThreadRun, publishDetail]);
 
   /**
    * Re-read ONE message, because the console cannot say what it now holds.
@@ -3698,6 +3920,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           return;
 
         case "ready": {
+          // The stream does not replay, so a connection that has just been
+          // established has to re-establish what is running as well.
+          invalidateActiveThreadsRef.current();
           // Sent once per connection, and never as a keepalive.
           //
           // A `ready` with a GAP behind it -- the link dropped, the app was
@@ -3764,9 +3989,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           }
           // Payload-less: emitted only when discovery actually saw a change --
           // an agent appeared or went away, or one of them advertises something
-          // different. The provider catalog is keyed on the generation the
-          // bootstrap carries, so replacing the snapshot is what invalidates the
-          // model pages.
+          // different. Discovery decides membership of the running listing and
+          // every per-agent count in it, so both are re-read.
+          // The provider catalog is keyed on the generation the bootstrap
+          // carries, so replacing the snapshot is what invalidates the model
+          // pages.
+          invalidateActiveThreadsRef.current();
           loadAgents();
           setSkillRefreshToken((value) => value + 1);
           setCronRefreshToken((value) => value + 1);
@@ -3782,6 +4010,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           return;
 
         case "threads.changed":
+          // Before every early return below. These events name no agent, and a
+          // turn on one this tab has never opened is exactly what the fleet
+          // listing exists to show -- so what the SELECTED bucket does with
+          // this event is a separate question from what the listing does.
+          invalidateActiveThreadsRef.current();
           if (payload.thread !== undefined) {
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
             // The summary is applied above at no cost; the MESSAGES are not in
@@ -3826,6 +4059,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           return;
 
         case "thread.changed":
+          // Starts, finishes, job transitions, edits and removals all arrive
+          // here for every agent; each of them can change what is running.
+          invalidateActiveThreadsRef.current();
           if (payload.thread !== undefined) {
             // The summary IS the sidebar row, and applying it is the whole of
             // what this event means now. It used to re-read the whole
@@ -3933,6 +4169,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         }
 
         case "turn.changed":
+          // Membership and the counts are the listing's to settle; the run
+          // state below moves the card that is already on screen.
+          invalidateActiveThreadsRef.current();
           // The run state IS the payload, so there is nothing to go and ask
           // for.
           if (threadId === undefined || payload.turn === undefined) return;
@@ -4121,6 +4360,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const agents = useMemo(
     () => sortAgentsPinnedFirst(bootstrap?.agents ?? []),
     [bootstrap?.agents],
+  );
+  /**
+   * The fleet listing plus the one fact the wire cannot carry: whether it is a
+   * statement about NOW.
+   *
+   * A projection is only current while a live stream is behind it -- the events
+   * that would invalidate it are precisely what a dropped stream misses -- and
+   * only while the last read of it answered. Everything else is last known, and
+   * has to be drawn as last known.
+   */
+  const activeThreadsState = useMemo<ActiveThreadsState | null>(
+    () => activeThreads === null
+      ? null
+      : { ...activeThreads, authoritative: connection === "live" && !activeThreadsStale },
+    [activeThreads, activeThreadsStale, connection],
   );
   const threads = bootstrap?.threads ?? [];
   // Assigned during render, like `catalogScopeRef` below: the SSE handler reads
@@ -6103,6 +6357,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasMoreThreads,
       hasRunningThread,
       cachedRunningThreads,
+      activeThreads: activeThreadsState,
       hasOlderMessages,
       selectAgent,
       setAgentPinned,
@@ -6178,6 +6433,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       hasMoreThreads,
       hasRunningThread,
       cachedRunningThreads,
+      activeThreadsState,
       hasOlderMessages,
       hasServerSnapshot,
       loadBootstrap,

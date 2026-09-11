@@ -25,6 +25,7 @@ import {
 import { resetCronReplyRecoveryMemory } from "./cron-reply-recovery";
 import { resetServerClock, serverNow } from "./server-clock";
 import {
+  ACTIVE_THREADS_REFRESH_INTERVAL_MS,
   CATALOG_TTL_MS,
   ConsoleStoreProvider,
   LEAN_DELTA_BATCH_MS,
@@ -85,6 +86,7 @@ vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   api: {
     bootstrap: vi.fn(),
+    activeThreads: vi.fn(),
     thread: vi.fn(),
     threads: vi.fn(),
     messages: vi.fn(),
@@ -306,6 +308,11 @@ describe("ConsoleStoreProvider integration", () => {
         agent("beta", { label: "Beta" }),
       ], []),
     );
+    // Every render reads the fleet listing, so every case needs an answer for
+    // it. A case that is ABOUT the listing installs its own.
+    vi.mocked(api.activeThreads).mockReset().mockResolvedValue({
+      threads: [], total: 0, truncated: false, runningCounts: {},
+    });
     vi.mocked(api.agentSkills).mockResolvedValue({ status: "unsupported", items: [] });
     vi.mocked(api.threads).mockResolvedValue({ threads: [] });
     vi.mocked(api.messages).mockResolvedValue({ messages: [] });
@@ -9080,6 +9087,211 @@ describe("ConsoleStoreProvider integration", () => {
 
       // Same array, by reference: nothing the section draws moved.
       expect(store.current.cachedRunningThreads).toBe(published);
+    });
+  });
+
+  describe("a console told what the WHOLE fleet is running", () => {
+    const agents = [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })];
+    const alpha = thread("alpha-thread", "alpha");
+    /** Beta's, archived, and in no page this console will ever load. */
+    const betaRun = thread("beta-run", "beta", {
+      title: "Beta work",
+      archivedAt: "2026-08-14T08:30:00.000Z",
+      updatedAt: "2026-08-14T09:00:00.000Z",
+      runState: {
+        status: "running",
+        id: "turn-b",
+        activity: { toolCallCount: 3, phase: "working", cumulativeUsd: 2.44 },
+      },
+    });
+    const listing = (
+      threads: readonly ThreadSummary[],
+      overrides: { readonly total?: number; readonly truncated?: boolean;
+        readonly runningCounts?: Readonly<Record<string, number>> } = {},
+    ) => ({
+      threads,
+      total: overrides.total ?? threads.length,
+      truncated: overrides.truncated ?? false,
+      runningCounts: overrides.runningCounts
+        ?? { alpha: 0, beta: threads.filter((item) => item.sourceId === "beta").length },
+    });
+
+    let eventSequence = 0;
+    const emit = (
+      type: WebEvent["type"],
+      extra: { readonly threadId?: string; readonly payload?: unknown } = {},
+    ) => {
+      eventSequence += 1;
+      act(() => FakeEventSource.latest?.emit(type, {
+        id: `fleet-event-${String(eventSequence)}`,
+        version: 1,
+        type,
+        at: "2026-08-14T09:00:00.000Z",
+        ...extra,
+      }));
+    };
+    const quiet = async (ms = 400) => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, ms); }); });
+    };
+    /** Past the coalescing window, so an invalidation that armed a timer has fired. */
+    const coalesced = async () => { await quiet(ACTIVE_THREADS_REFRESH_INTERVAL_MS + 400); };
+
+    beforeEach(() => {
+      vi.mocked(api.bootstrap).mockResolvedValue({
+        ...bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+        activeThreads: listing([betaRun]),
+      });
+    });
+
+    it("draws another agent's running conversation without reading it, or evicting anything", async () => {
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.activeThreads?.threads.map((item) => item.id))
+        .toEqual([betaRun.id]));
+      // A server answer stands behind it, so the section may speak for the
+      // fleet rather than for this tab.
+      expect(store.current.activeThreads?.authoritative).toBe(true);
+      expect(store.current.activeThreads?.runningCounts).toEqual({ alpha: 0, beta: 1 });
+      // The listing is NOT a page and NOT a transcript: beta's conversation is
+      // in neither, and nothing was read to put its card up.
+      expect(store.current.visibleThreads.map((item) => item.id)).toEqual([alpha.id]);
+      expect(store.current.cachedRunningThreads).toEqual([]);
+      expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).not.toContain(betaRun.id);
+    });
+
+    it("re-reads the listing for an agent whose pages are not loaded, once per burst", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      vi.mocked(api.activeThreads).mockResolvedValue(listing([]));
+
+      // Every one of these names a conversation on an agent this tab has never
+      // opened, and each of them could have changed what is running.
+      emit("turn.changed", {
+        threadId: betaRun.id,
+        payload: { turn: { id: "turn-b", status: "complete" } },
+      });
+      emit("threads.changed", { threadId: "beta-other" });
+      emit("thread.changed", { threadId: "beta-other" });
+      await coalesced();
+
+      // One leading read for the burst and at most one trailing one -- never a
+      // request per event.
+      expect(vi.mocked(api.activeThreads).mock.calls.length).toBeLessThanOrEqual(2);
+      expect(store.current.activeThreads?.threads).toEqual([]);
+      expect(store.current.activeThreads?.total).toBe(0);
+      // An AUTHORITATIVE empty listing is an answer: the section says the fleet
+      // is idle because the server said so.
+      expect(store.current.activeThreads?.authoritative).toBe(true);
+    });
+
+    it("moves the card's activity from the event, while the listing is still on the wire", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      // Never answers: what the card shows may not wait for it.
+      vi.mocked(api.activeThreads).mockReturnValue(new Promise(() => undefined));
+
+      emit("turn.changed", {
+        threadId: betaRun.id,
+        payload: {
+          turn: {
+            id: "turn-b",
+            status: "running",
+            activity: { toolCallCount: 9, phase: "asking", cumulativeUsd: 3.5 },
+          },
+        },
+      });
+
+      await waitFor(() => expect(store.current.activeThreads?.threads[0]?.runState.activity)
+        .toEqual({ toolCallCount: 9, phase: "asking", cumulativeUsd: 3.5 }));
+      // And it is still the listing's membership: the event patched a card, it
+      // did not add or remove one.
+      expect(store.current.activeThreads?.total).toBe(1);
+    });
+
+    it("never inserts a conversation the listing does not carry", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      vi.mocked(api.activeThreads).mockReturnValue(new Promise(() => undefined));
+
+      emit("turn.changed", {
+        threadId: "gamma-unknown",
+        payload: { turn: { id: "turn-x", status: "running", activity: { toolCallCount: 1, phase: "working" } } },
+      });
+      await quiet();
+
+      // A card with no agent, no count and no place in the order is not a card.
+      expect(store.current.activeThreads?.threads.map((item) => item.id)).toEqual([betaRun.id]);
+    });
+
+    it("keeps a newer listing when an older bootstrap lands after it", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      // A bootstrap that goes out FIRST and answers LAST. What it carries
+      // describes the fleet as of the moment it was issued, which is before the
+      // listing read below -- so landing later must not make it the newer word.
+      let releaseBootstrap: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        releaseBootstrap = () => resolve({
+          ...bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+          activeThreads: listing([betaRun]),
+        });
+      }));
+      vi.mocked(api.activeThreads).mockResolvedValue(listing([]));
+      // `agents.changed` buys the bootstrap; it is on the wire once this
+      // answers, and it stays there.
+      emit("agents.changed");
+      await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBe(2));
+
+      // Issued after it, and answered before it.
+      emit("thread.changed", { threadId: "beta-other" });
+      await coalesced();
+      expect(store.current.activeThreads?.total).toBe(0);
+
+      act(() => { releaseBootstrap(); });
+      await quiet();
+
+      // The older snapshot did not walk the card -- or the counts -- back.
+      expect(store.current.activeThreads?.threads).toEqual([]);
+      expect(store.current.activeThreads?.runningCounts).toEqual({ alpha: 0, beta: 0 });
+    });
+
+    it("keeps the last listing and stops calling it current when the read fails", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      vi.mocked(api.activeThreads).mockRejectedValue(new Error("offline"));
+
+      emit("thread.changed", { threadId: "beta-other" });
+      await waitFor(() => expect(store.current.activeThreads?.authoritative).toBe(false));
+
+      // Never a silent zero: the cards stay, labelled last known.
+      expect(store.current.activeThreads?.threads.map((item) => item.id)).toEqual([betaRun.id]);
+      expect(store.current.activeThreads?.total).toBe(1);
+    });
+
+    it("stops calling the listing current the moment the stream drops", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.authoritative).toBe(true));
+
+      act(() => { FakeEventSource.latest?.onerror?.(new Event("error")); });
+
+      // Without a stream this console misses the very events that would
+      // invalidate the listing, so what it holds is last known by definition.
+      await waitFor(() => expect(store.current.activeThreads?.authoritative).toBe(false));
+      expect(store.current.activeThreads?.threads.map((item) => item.id)).toEqual([betaRun.id]);
+    });
+
+    it("publishes nothing when a re-read draws the same section", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      const published = store.current.activeThreads;
+      // The same answer, as a NEW object -- which is what every response is.
+      vi.mocked(api.activeThreads).mockImplementation(async () => listing([{ ...betaRun }]));
+
+      emit("thread.changed", { threadId: "beta-other" });
+      await coalesced();
+
+      expect(vi.mocked(api.activeThreads)).toHaveBeenCalled();
+      expect(store.current.activeThreads).toBe(published);
     });
   });
 

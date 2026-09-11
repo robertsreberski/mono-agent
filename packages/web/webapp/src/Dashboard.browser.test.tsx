@@ -16,6 +16,7 @@ vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   api: {
     bootstrap: vi.fn(),
+    activeThreads: vi.fn(),
     thread: vi.fn(),
     threads: vi.fn(),
     messages: vi.fn(),
@@ -119,6 +120,9 @@ beforeEach(async () => {
     { threadsSourceId: "alpha" },
   ));
   vi.mocked(api.thread).mockImplementation(async () => detail(alphaThread, "Alpha transcript"));
+  vi.mocked(api.activeThreads).mockResolvedValue({
+    threads: [], total: 0, truncated: false, runningCounts: {},
+  });
   vi.mocked(api.agentSkills).mockResolvedValue({ status: "unsupported", items: [] });
   vi.mocked(api.threads).mockResolvedValue({ threads: [] });
   vi.mocked(api.messages).mockResolvedValue({ messages: [] });
