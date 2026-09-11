@@ -285,7 +285,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .agent-chip-badge.is-unread { color: var(--text); background: var(--line-strong); }
 /* Pinned: the count badge's corner mark, in the other corner and stated
    quietly -- the square's own state, not a number to read. */
-.agent-chip-pin { position: absolute; top: -6px; left: -6px; width: 16px; height: 16px; display: grid; place-items: center; color: var(--text-muted); background: var(--panel); border-radius: 999px; }
+.agent-chip-pin { position: absolute; top: -6px; left: -6px; width: 16px; height: 16px; display: grid; place-items: center; color: var(--warning); background: var(--panel); border-radius: 999px; }
 .agent-chip-label { max-width: 48px; overflow: hidden; color: var(--text-muted); font-size: 10px; font-weight: 600; line-height: 1.2; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .agent-chip.is-selected .agent-chip-label { color: var(--text); }
 .agent-strip-empty { min-width: 0; margin: 0; padding: 12px 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
