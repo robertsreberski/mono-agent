@@ -119,6 +119,10 @@ describe("AgentStrip", () => {
     expect(strip.children).toHaveLength(1);
     // A list's children stay list items, control or not.
     expect(more.closest("[role=\"listitem\"]")).not.toBeNull();
+    // Drawn with the agents' own square and count, so the line keeps one
+    // rhythm: what it reveals is agents.
+    expect(more).toHaveClass("agent-chip-square");
+    expect(more.querySelector(".agent-chip-badge")).toHaveTextContent("1");
   });
 
   it("lets work in flight take the corner, and gives it back when the work ends", () => {

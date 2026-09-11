@@ -87,9 +87,12 @@ export function AgentStrip({
             will appear. */}
         {hiddenOfflineAgentCount > 0 && (
           <div className="agent-strip-more" role="listitem">
+            {/* The agents' own square and the agents' own count badge: what it
+                reveals is agents, so it is the same object drawn as an
+                outline. */}
             <button
               type="button"
-              className={`agent-strip-offline${showOfflineAgents ? " is-active" : ""}`}
+              className={`agent-chip-square agent-strip-offline${showOfflineAgents ? " is-active" : ""}`}
               aria-pressed={showOfflineAgents}
               aria-label={showOfflineAgents
                 ? "Hide offline agents"
@@ -97,8 +100,8 @@ export function AgentStrip({
               title={showOfflineAgents ? "Hide offline agents" : `Show ${hiddenOfflineAgentCount} offline`}
               onClick={() => setShowOfflineAgents(!showOfflineAgents)}
             >
-              <Icon name={showOfflineAgents ? "eye-off" : "eye"} size={15} />
-              <span className="agent-strip-offline-count">{hiddenOfflineAgentCount}</span>
+              <Icon name={showOfflineAgents ? "eye-off" : "eye"} size={17} />
+              <span className="agent-chip-badge is-unread" aria-hidden="true">{hiddenOfflineAgentCount}</span>
             </button>
           </div>
         )}
