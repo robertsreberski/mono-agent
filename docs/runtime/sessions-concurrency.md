@@ -321,9 +321,15 @@ live in the sibling `sessions/` directory. The default root is
 Registry mutations and active turns are file-locked across processes. A busy
 instance rejects another turn or a close; Pi's own `session_busy` result is also
 reported as busy. A process crash releases its locks, so a stale running record
-recovers as idle with an interrupted status on the next access. Session context
+recovers with an interrupted outcome on the next access: `awaiting_reply` if a
+pending question exists, otherwise idle. Session context
 is retained on disk, while an in-flight task is not automatically restarted.
-Idle expiry never interrupts a running child. `restart --clear-sessions` purges
+`AskParent` persists a pending question under the turn lock before its terminating
+tool result returns. `Agent`/`AgentSend` expose it as successful `awaiting_reply`;
+the parent answers through ordinary `AgentSend` in the same durable transcript.
+Failed replies preserve the pending question, successful replies clear it, and
+another question replaces it. Idle expiry includes awaiting children but never
+interrupts a running child. `restart --clear-sessions` purges
 this configured root with other conversation state and reports removed registry
 and child-session file counts, even when no other store existed. See
 [persistent subagent configuration](./tools-and-guards.md#persistent-subagents)

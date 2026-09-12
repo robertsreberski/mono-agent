@@ -4900,6 +4900,13 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(details.includes("effective tool policy must expose both Agent and AgentSend")).toBe(!enabled);
   });
 
+  it("reports an explicit AskParent deny as an operator choice", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentSend"], disallowedTools: ["AskParent"] }, { subagents: { enabled: true } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(report, "tools").details.join("\n")).toContain("AskParent dialogue disabled by global tool policy (operator choice)");
+    expect(sectionById(report, "tools").status).not.toBe("error");
+  });
+
   it("validates allowed subagent model routes", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
       subagents: { enabled: true, models: [{ name: "helper-model", model: "openai-codex:gpt-5.5" }] },

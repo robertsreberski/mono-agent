@@ -233,6 +233,22 @@ export async function createPiHarnessAdapter(session, options) {
     rawHarness.hooks.on("before_compaction", (event) => (
       event.reason === "manual" ? undefined : { decline: true }
     ), { id: "mono-agent-compaction-owner" });
+    // Pi terminates only when every result in a batch carries the hint. Keep
+    // mixed batches closed too, and never execute calls after a durable question.
+    if (activeToolNames.includes("AskParent")) {
+      let questionBatch = false;
+      let awaiting = false;
+      rawHarness.hooks.on("after_response", (event) => {
+        questionBatch = event.message.content.some((part) => part.type === "toolCall" && part.name === "AskParent");
+      }, { id: "mono-agent-ask-parent-batch" });
+      rawHarness.hooks.on("before_tool", () => awaiting
+        ? { block: { reason: "Child turn ended awaiting a parent reply.", terminate: true } } : undefined,
+      { id: "mono-agent-ask-parent-stop" });
+      rawHarness.hooks.on("after_tool", (event) => {
+        if (event.toolName === "AskParent" && !event.isError && event.details?.tool === "AskParent") awaiting = true;
+        return awaiting || (questionBatch && event.toolName !== "AskParent") ? { terminate: true } : undefined;
+      }, { id: "mono-agent-ask-parent-terminate" });
+    }
     removePromptCacheDiagnostics = installPromptCacheDiagnostics(rawHarness, options);
   } catch (error) {
     try { await session.close(); } catch { /* preserve the construction error */ }

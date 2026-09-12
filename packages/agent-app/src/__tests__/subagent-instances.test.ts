@@ -128,6 +128,9 @@ describe("persistent subagent registry", () => {
   }, 30_000);
 
   it.each([
+    { pendingQuestion: { question: "" } }, { pendingQuestion: { question: "x".repeat(2001) } },
+    { pendingQuestion: { question: "q", extra: true } }, { pendingQuestion: { question: "q", options: ["a", "a"] } },
+    { pendingQuestion: { question: "q", options: [" a", "b"] } }, { status: "awaiting_reply" },
     { usage: [] }, { usage: { input: "oops", output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 } },
     { usage: { input: -1, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 } },
     { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: "free" } },
@@ -156,5 +159,61 @@ describe("persistent subagent registry", () => {
     const { root, handle } = await setup();
     await writeFile(resolve(subagentConversationRoot(root, "conversation"), "instances.json"), '{}');
     await expect(handle.list()).rejects.toThrow(/Invalid/u);
+  });
+});
+
+describe("awaiting child questions", () => {
+  const question = { question: "Which?", options: ["A", "B"] };
+  it("persists before finish, retains failures, replaces questions, and clears a successful reply", async () => {
+    const { handle, root, retireSession } = await setup();
+    const { id } = await handle.create(spec);
+    await handle.begin(id);
+    await handle.markAwaiting(id, question);
+    const disk = JSON.parse(await readFile(resolve(subagentConversationRoot(root, "conversation"), "instances.json"), "utf8"));
+    expect(disk[0]).toMatchObject({ status: "running", pendingQuestion: question });
+    await handle.finish(id, { status: "awaiting_reply", question });
+    const reopened = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
+    expect(await reopened.get(id)).toMatchObject({ status: "awaiting_reply", pendingQuestion: question });
+    for (const status of ["failed", "busy", "timeout", "cancelled", "empty"]) {
+      await reopened.begin(id);
+      await reopened.finish(id, { status });
+      expect(await reopened.get(id)).toMatchObject({ status: "awaiting_reply", pendingQuestion: question, lastStatus: status });
+    }
+    await reopened.begin(id);
+    const replacement = { question: "Another?" };
+    await reopened.markAwaiting(id, replacement);
+    await reopened.finish(id, { status: "awaiting_reply", question: replacement });
+    expect((await reopened.get(id))?.pendingQuestion).toEqual(replacement);
+    await reopened.begin(id);
+    await reopened.finish(id, { status: "ok" });
+    expect(await reopened.get(id)).toMatchObject({ status: "idle" });
+    expect((await reopened.get(id))?.pendingQuestion).toBeUndefined();
+  });
+  it("recovers a real process exit after durable question publication", async () => {
+    const { handle, root } = await setup();
+    const { id } = await handle.create(spec);
+    const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+    execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
+      const handle = await createSubagentInstanceRegistry({ root: ${JSON.stringify(root)}, retireSession: async () => {} }).open("conversation");
+      await handle.begin(${JSON.stringify(id)});
+      await handle.markAwaiting(${JSON.stringify(id)}, ${JSON.stringify(question)});
+      process.exit(0);
+    `], { cwd: root, timeout: 10000 });
+    expect(await handle.get(id)).toMatchObject({ status: "awaiting_reply", pendingQuestion: question, lastStatus: "interrupted" });
+    await handle.close(id);
+    expect((await handle.get(id))?.pendingQuestion).toBeUndefined();
+  });
+  it("counts awaiting instances toward capacity and expires them without interrupting a reply", async () => {
+    let now = 100000;
+    const { handle } = await setup({ maxPerConversation: 1, idleTtlMs: 60000, now: () => now });
+    const { id } = await handle.create(spec);
+    await handle.begin(id); await handle.markAwaiting(id, question); await handle.finish(id, { status: "awaiting_reply", question });
+    await expect(handle.create(spec)).rejects.toThrow(/maxPerConversation/);
+    await handle.begin(id); now += 60001;
+    expect((await handle.get(id))?.status).toBe("running");
+    await handle.finish(id, { status: "failed" }); now += 60001;
+    expect(await handle.get(id)).toMatchObject({ status: "expired" });
+    expect((await handle.get(id))?.pendingQuestion).toBeUndefined();
   });
 });

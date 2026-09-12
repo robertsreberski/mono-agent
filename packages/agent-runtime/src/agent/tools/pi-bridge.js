@@ -35,6 +35,7 @@ import { normalizeImageForModel } from "./shared/image.js";
 import { isInsidePath } from "./shared/path-resolver.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { createAskParentTool } from "./ask-parent-tool.js";
 import { createAgentSendTool } from "./agent-send-tool.js";
 import { createAgentTool } from "./agent-tool.js";
 
@@ -476,7 +477,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, processJobsAvailability?: any, monitorsController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, subagentContext?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, processJobsAvailability?: any, monitorsController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, askParentController?: any, subagentContext?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -502,6 +503,7 @@ export function getPiBuiltinTools(allowedTools, {
   processJobsAvailability,
   monitorsController = null,
   subagents = null,
+  askParentController = null,
   subagentContext = null,
   toolExecutionMode = "safe-parallel",
   ctx = null,
@@ -638,6 +640,7 @@ export function getPiBuiltinTools(allowedTools, {
     // The host artifact sink lets an over-cap subagent result spill its full
     // text to the run's tool-output directory instead of being cut.
     Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled }),
+    AskParent: createAskParentTool(askParentController),
     AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled }),
     Monitor: monitorsController
       ? createBuiltinTool(

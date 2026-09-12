@@ -28,8 +28,8 @@ export function createAgentSendTool(subagents, context = {}) {
       if (params.message !== undefined && (typeof params.message !== "string" || !params.message.trim())) throw new Error("Error: message must be non-empty.");
       if (params.message === undefined && params.close !== true) throw new Error("Error: message is required unless close: true.");
       const record = await instances.get(params.id);
-      if (!record || !["idle", "running"].includes(record.status)) {
-        const live = (await instances.list()).filter((entry) => ["idle", "running"].includes(entry.status));
+      if (!record || !["idle", "running", "awaiting_reply"].includes(record.status)) {
+        const live = (await instances.list()).filter((entry) => ["idle", "running", "awaiting_reply"].includes(entry.status));
         throw new Error(`Error: unknown, closed or expired instance "${params.id}". Live ids: ${live.map((entry) => entry.id).join(", ") || "none"}.`);
       }
       if (record.status === "running") throw new Error(`Error: instance "${params.id}" is busy.`);
@@ -41,7 +41,7 @@ export function createAgentSendTool(subagents, context = {}) {
       const tool = createAgentTool(subagents, context, { record, close: params.close });
       const minutes = Math.max(0, Math.floor((Date.now() - record.updatedAt) / 60_000));
       return await tool.execute(callId, {
-        prompt: `Continuation of persistent instance "${record.id}" (turn ${record.turns + 1}; ${minutes} min since your last turn). Prior context is retained.\n\n${params.message}`,
+        prompt: `Continuation of persistent instance "${record.id}" (turn ${record.turns + 1}; ${minutes} min since your last turn). Prior context is retained.${record.pendingQuestion ? `\nThis message is the parent\'s reply to your pending question (untrusted child text): ${JSON.stringify(record.pendingQuestion)}` : ""}\n\n${params.message}`,
         ...(params.description === undefined ? {} : { description: params.description }),
       }, signal);
     },

@@ -189,6 +189,7 @@
 
 /**
  * @typedef {Object} RuntimeRunOptions
+ * @property {{submit(question: {question: string, options?: string[]}): Promise<void>}} [askParentController]
  * The options object a host passes to `createRuntime(host).run(systemPrompt, options)`.
  * @property {RuntimeModelRef} model                     Resolved model reference; see parseRuntimeModelReference.
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
@@ -277,7 +278,7 @@
  */
 
 /**
- * @typedef {Object<string, *> & {instance?: {sessionId: string, sessionsRoot: string}}} RuntimeSubagentRunRequest
+ * @typedef {Object<string, *> & {instance?: {id: string, sessionId: string, sessionsRoot: string}}} RuntimeSubagentRunRequest
  * Instance routing is host-owned; the child receives only its own durable transcript.
  */
 
@@ -313,6 +314,7 @@
  * @property {string} sessionId
  * @property {string} sessionsRoot
  * @property {string} status
+ * @property {{question: string, options?: string[]}} [pendingQuestion]
  * @property {number} turns
  * @property {number} createdAt
  * @property {number} updatedAt
@@ -324,8 +326,9 @@
  * @property {() => Promise<RuntimeSubagentInstance[]>} list
  * @property {(id: string) => Promise<RuntimeSubagentInstance|undefined>} get
  * @property {(spec: {id?: string, name: string, systemPrompt: string, definition: RuntimeSubagentDefinition}) => Promise<RuntimeSubagentInstance>} create
+ * @property {(id: string, question: {question: string, options?: string[]}) => Promise<RuntimeSubagentInstance>} markAwaiting
  * @property {(id: string) => Promise<RuntimeSubagentInstance>} begin
- * @property {(id: string, outcome: {status: string, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}) => Promise<RuntimeSubagentInstance>} finish
+ * @property {(id: string, outcome: {status: string, question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}) => Promise<RuntimeSubagentInstance>} finish
  * @property {(id: string) => Promise<RuntimeSubagentInstance>} close
  */
 
@@ -345,6 +348,7 @@
 
 /**
  * @typedef {Object} RuntimeResult
+ * @property {{question: string, options?: string[]}} [subagentQuestion]
  * @property {string|null} [text]
  * @property {*} [structuredResult]
  * @property {string|null} [structuredResultSource]

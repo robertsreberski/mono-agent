@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CONFIG_ENV_KEYS } from "@mono-agent/config";
+import { CONFIG_ENV_KEYS, loadMonoAgentConfig } from "@mono-agent/config";
 import type { ConfigViewFieldId } from "@mono-agent/config";
 import { loadSlackAdapterConfig } from "@mono-agent/slack-adapter";
 import { describe, expect, it } from "vitest";
@@ -143,6 +143,7 @@ interface SchemaNode {
   readonly maximum?: number;
   readonly examples?: readonly unknown[];
   readonly minLength?: number;
+  readonly pattern?: string;
   readonly maxLength?: number;
   readonly minProperties?: number;
   readonly properties?: Record<string, SchemaNode>;
@@ -613,3 +614,25 @@ function rejectedMemoryProperties(rule: SchemaNode): readonly string[] {
     throw new Error("unknown rejected memory schema shape");
   });
 }
+
+it.each(["", " ", "\t\n", "\u00a0", "children", "  children  "])("matches instance root schema and loader validation for %j", (root) => {
+  const node = schemaNode(buildMonoAgentConfigSchema() as SchemaNode, "subagents", "instances", "root");
+  const accepts = root.length >= Number(node.minLength) && new RegExp(String(node.pattern), "u").test(root);
+  const load = () => loadMonoAgentConfig({ cwd: process.cwd(), env: {
+    MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
+    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root } }),
+  } });
+  if (accepts) expect(load).not.toThrow();
+  else expect(load).toThrow(/root/);
+  expect(accepts).toBe(root.trim().length > 0);
+});
+
+it("continues to accept AskParent in global and profile deny policy", () => {
+  const config = loadMonoAgentConfig({ cwd: process.cwd(), env: {
+    MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_IDENTITY_PATH: "IDENTITY.md",
+    MONO_AGENT_DISALLOWED_TOOLS: "AskParent",
+    MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, definitions: [{ name: "helper", description: "Help", prompt: "Help", disallowedTools: ["AskParent"] }] }),
+  } });
+  expect(config.tools.disallowedTools).toContain("AskParent");
+  expect(config.subagents?.definitions?.[0]?.disallowedTools).toContain("AskParent");
+});

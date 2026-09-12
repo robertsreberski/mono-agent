@@ -150,5 +150,16 @@ Persistent in-process helpers use `Agent({persist: true, id?})` followed by
 `maxPerConversation` defaults 8, `idleTtlMs` defaults one day, and `maxTurns`
 defaults 60 child turns. Registries and Pi transcripts survive restarts and are
 removed by `restart --clear-sessions`. Instances are conversation-scoped and
-serialized; no detached runs or child-to-parent questions are supported.
+serialized; no detached runs or cross-conversation reuse are supported.
 Disabling instances preserves stateless `Agent`.
+
+### Persistent child questions
+
+Persistent children receive `AskParent({question, options?})` automatically unless
+global/profile policy denies it. The tool durably stores the question and ends
+the child turn; `Agent`/`AgentSend` return successful `awaiting_reply` with question
+details. Reply via ordinary `AgentSend({id, message})` in the same Pi session.
+Failed answers retain the question; success clears it; another question replaces
+it. The Session envelope exposes bounded pending questions after restart.
+Parent/stateless runs have no AskParent, and children cannot use AskUser or
+channel sends. There is no separate config key or background/wake behavior.
