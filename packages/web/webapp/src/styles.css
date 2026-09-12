@@ -791,9 +791,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .message-user-content { max-width: min(78%, 650px); padding: 11px 15px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 16px 16px 4px 16px; }
 /* A consumed steer inside an assistant turn: the operator's bubble in place.
    Plain pre-wrapped prose (never the activity preview) and no decoration —
-   position alone carries the consumed meaning. */
+   position alone carries the consumed meaning. It is the operator's message,
+   so it keeps the user bubble's own width: `.assistant-content` spans the
+   whole message column, so the inherited `max-width` measures the same box a
+   standalone user bubble measures. */
 .inline-steer { margin: 10px 0; }
-.inline-steer .message-user-content { max-width: 100%; }
 .inline-steer-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; font-size: 14px; line-height: 1.68; }
 .live-input-status { margin: 5px 3px 0; color: var(--text-muted); font-size: 9.5px; letter-spacing: .01em; }
 .live-input-status.is-applied { color: var(--accent); }

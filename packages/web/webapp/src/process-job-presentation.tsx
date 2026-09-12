@@ -217,6 +217,59 @@ export const suppressInlineSteers = (
 };
 
 /**
+ * A follow-up sent into a running turn is stored INSIDE that turn, and the
+ * store orders every turn-bound user row before that turn's assistant row. So
+ * the composer shows the new bubble at the bottom of the transcript, where it
+ * was written, and the reconciled list then jumps it up to sit under the
+ * message that opened the turn — above all the work it is steering, which
+ * reads as if the operator had said it first.
+ *
+ * Keep it where it was sent: after the last loaded message of the turn it is
+ * aimed at, which is the bottom of the transcript exactly while that turn is
+ * the running one. Applied steers are rendered in place by their inline marker
+ * instead (see {@link suppressInlineSteers}); the bubble that survives here is
+ * the one still waiting, or one whose marker is not loaded, and it holds this
+ * same position through every status change rather than jumping again.
+ *
+ * A live input whose turn has no other loaded message — paged out, or an
+ * unparented row — keeps its server position, so the transcript degrades to
+ * today's rendering rather than to a bubble floated somewhere arbitrary.
+ */
+export const orderLiveInputsAfterTheirTurn = (
+  messages: readonly WebMessage[],
+): readonly WebMessage[] => {
+  /** The turn a still-standalone follow-up bubble belongs below, if any. */
+  const steeredTurnId = (message: WebMessage): string | undefined =>
+    message.role === "user" && message.liveInputStatus !== undefined ? message.turnId : undefined;
+  if (!messages.some((message) => steeredTurnId(message) !== undefined)) return messages;
+
+  const anchorByTurn = new Map<string, number>();
+  messages.forEach((message, index) => {
+    if (message.turnId === undefined || steeredTurnId(message) !== undefined) return;
+    anchorByTurn.set(message.turnId, index);
+  });
+
+  const anchored = new Map<number, WebMessage[]>();
+  const moved = new Set<string>();
+  for (const message of messages) {
+    const turnId = steeredTurnId(message);
+    if (turnId === undefined) continue;
+    const anchor = anchorByTurn.get(turnId);
+    if (anchor === undefined) continue;
+    anchored.set(anchor, [...(anchored.get(anchor) ?? []), message]);
+    moved.add(message.id);
+  }
+  if (anchored.size === 0) return messages;
+
+  const ordered: WebMessage[] = [];
+  messages.forEach((message, index) => {
+    if (!moved.has(message.id)) ordered.push(message);
+    for (const live of anchored.get(index) ?? []) ordered.push(live);
+  });
+  return ordered;
+};
+
+/**
  * Split the currently loaded conversation into assistant-ui messages and one
  * stable chronological set of background jobs. Monitor shaping deliberately
  * runs before this function so a job remains a boundary between Monitor wakes.
@@ -226,8 +279,9 @@ export const projectProcessJobPresentation = (
   options: { readonly selectedModel?: string | null; readonly threadId?: string | null } = {},
 ): ProcessJobPresentation => {
   // The inline steer duplicates its user message; shape the transcript without
-  // the duplicate before cards, events and visibility are derived from it.
-  const shaped = suppressInlineSteers(messages);
+  // the duplicate before cards, events and visibility are derived from it, and
+  // leave every surviving follow-up bubble below the turn it was sent into.
+  const shaped = orderLiveInputsAfterTheirTurn(suppressInlineSteers(messages));
   const projectedMessages: WebMessage[] = [];
   const jobs: ProcessJobPresentationEntry[] = [];
   const jobIndexes = new Map<string, number>();

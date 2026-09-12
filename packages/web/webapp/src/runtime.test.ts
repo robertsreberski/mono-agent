@@ -709,6 +709,97 @@ describe("inline steer", () => {
   });
 });
 
+describe("live input placement", () => {
+  // The store orders every turn-bound user row before that turn's assistant
+  // row, so this is the order a follow-up sent mid-run arrives in.
+  const turnOne = (): readonly WebMessage[] => [
+    message({ id: "user-1", threadId: "thread", turnId: "turn-1", role: "user", parts: [{ type: "text", text: "Start" }] }),
+    message({
+      id: "assistant-1",
+      threadId: "thread",
+      turnId: "turn-1",
+      role: "assistant",
+      status: "running",
+      parts: [{ type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" }],
+    }),
+  ];
+  const followUp = (overrides: Partial<WebMessage> = {}): WebMessage => message({
+    id: "user-steer",
+    threadId: "thread",
+    turnId: "turn-1",
+    role: "user",
+    liveInputStatus: "pending",
+    parts: [{ type: "text", text: "Also check the retry budget" }],
+    ...overrides,
+  });
+  const placement = (messages: readonly WebMessage[]): readonly string[] =>
+    projectProcessJobPresentation(messages, { threadId: "thread" }).messages.map(({ id }) => id);
+
+  it("holds a follow-up below the turn it is steering rather than above its work", () => {
+    const [opening, running] = turnOne();
+    expect(placement([opening!, followUp(), running!])).toEqual(["user-1", "assistant-1", "user-steer"]);
+  });
+
+  it("keeps that position for every status the bubble survives in", () => {
+    for (const status of ["pending", "queued", "cancelled", "uncertain"] as const) {
+      const [opening, running] = turnOne();
+      expect(placement([opening!, followUp({ liveInputStatus: status }), running!]))
+        .toEqual(["user-1", "assistant-1", "user-steer"]);
+    }
+  });
+
+  it("keeps several follow-ups in the order they were sent", () => {
+    const [opening, running] = turnOne();
+    const first = followUp({ id: "steer-1" });
+    const second = followUp({ id: "steer-2", liveInputStatus: "queued" });
+    expect(placement([opening!, first, second, running!]))
+      .toEqual(["user-1", "assistant-1", "steer-1", "steer-2"]);
+  });
+
+  it("stays inside its own turn when a later turn is loaded below it", () => {
+    const [opening, running] = turnOne();
+    const settled = message({ ...running!, status: "complete", parts: [{ type: "text", text: "Done." }] });
+    const later = message({ id: "user-2", threadId: "thread", turnId: "turn-2", role: "user", parts: [{ type: "text", text: "Next" }] });
+    expect(placement([opening!, followUp({ liveInputStatus: "cancelled" }), settled, later]))
+      .toEqual(["user-1", "assistant-1", "user-steer", "user-2"]);
+  });
+
+  it("leaves the message that opened the turn where it is", () => {
+    const [opening, running] = turnOne();
+    expect(placement([opening!, running!])).toEqual(["user-1", "assistant-1"]);
+  });
+
+  it("keeps the server position when the steered turn has no other loaded message", () => {
+    const later = message({ id: "user-2", threadId: "thread", turnId: "turn-2", role: "user", parts: [{ type: "text", text: "Next" }] });
+    expect(placement([followUp(), later])).toEqual(["user-steer", "user-2"]);
+    expect(placement([followUp({ turnId: undefined }), later])).toEqual(["user-steer", "user-2"]);
+  });
+
+  it("still renders an applied follow-up in place through its inline marker", () => {
+    const [opening] = turnOne();
+    const applied = followUp({ liveInputStatus: "applied", id: "user-steer" });
+    const assistant = message({
+      id: "assistant-1",
+      threadId: "thread",
+      turnId: "turn-1",
+      role: "assistant",
+      status: "complete",
+      parts: [
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        {
+          type: "steer",
+          inputId: "input-1",
+          messageId: "user-steer",
+          text: "Also check the retry budget",
+          receivedAt: "2026-09-12T10:00:01.000Z",
+        },
+        { type: "text", text: "Done." },
+      ],
+    });
+    expect(placement([opening!, applied, assistant])).toEqual(["user-1", "assistant-1"]);
+  });
+});
+
 describe("convertWebMessage", () => {
   it("derives transient run-attribution visibility from the selected model", () => {
     const requested = {
