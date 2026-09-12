@@ -5,6 +5,8 @@ import {
 import { threadPresentation } from "../../thread-presentation";
 import type { AgentSummary, CatalogModel, ProjectColor, ThreadSummary } from "../../types";
 import { Icon } from "../Icon";
+import { TagChip } from "../tag/TagChip";
+import type { TagSummary } from "../../types";
 import { ProjectTag } from "../project/ProjectTag";
 import { resolveThreadRoute } from "../route-label";
 import { RouteBadge } from "../RouteBadge";
@@ -23,6 +25,7 @@ import {
  * where the conversation is on screen (see `highlightSelected`).
  */
 export function ThreadListItem({
+  tags = [],
   thread,
   agent,
   catalogModels,
@@ -31,6 +34,7 @@ export function ThreadListItem({
   onNavigate,
   highlightSelected,
 }: {
+  readonly tags?: readonly TagSummary[];
   readonly thread: ThreadSummary;
   /** The thread's OWN agent match; null when discovery no longer lists it. */
   readonly agent: AgentSummary | null;
@@ -102,6 +106,10 @@ export function ThreadListItem({
               title={route.title}
             />
           </span>
+          {tags.length > 0 && <span className="thread-tags" aria-label="Conversation tags">
+            {tags.slice(0, 3).map((tag) => <TagChip key={tag.id} tag={tag} />)}
+            {tags.length > 3 && <span className="tag-overflow" aria-label={`${String(tags.length - 3)} more tags`}>+{tags.length - 3}</span>}
+          </span>}
         </span>
       </ThreadListItemPrimitive.Trigger>
     </ThreadListItemPrimitive.Root>

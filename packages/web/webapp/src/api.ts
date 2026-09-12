@@ -1,4 +1,4 @@
-import type { ProjectColor } from "./types";
+import type { TagSummary, TagColor, ProjectColor } from "./types";
 import type {
   ActiveThreads,
   AgentSkillRegistry,
@@ -586,6 +586,49 @@ export const api = {
    * One agent's projects, archived included: the Dashboard and the
    * conversation picker filter archived out locally.
    */
+  listTags: async (sourceId: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ sourceId });
+    const result = await request<{ tags: TagSummary[] }>(
+      `/api/v1/tags?${query.toString()}`,
+      { ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.tags;
+  },
+
+  createTag: async (
+    sourceId: string,
+    input: { readonly name: string; readonly color?: TagColor },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ tag: TagSummary }>("/api/v1/tags", {
+      method: "POST",
+      body: JSON.stringify({ sourceId, ...input }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return result.tag;
+  },
+
+  patchTag: async (
+    tagId: string,
+    patch: { readonly name?: string; readonly color?: TagColor },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ tag: TagSummary }>(
+      `/api/v1/tags/${encodeURIComponent(tagId)}`,
+      { method: "PATCH", body: JSON.stringify(patch), ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.tag;
+  },
+
+  deleteTag: async (tagId: string, signal?: AbortSignal) => {
+    const response = await fetch(`/api/v1/tags/${encodeURIComponent(tagId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (!response.ok) throw await readError(response);
+  },
+
   projects: async (sourceId: string, signal?: AbortSignal) => {
     const query = new URLSearchParams({ sourceId });
     const result = await request<{ projects: ProjectSummary[] }>(
@@ -826,6 +869,7 @@ export const api = {
       archived?: boolean;
       model?: string | null;
       effort?: string | null;
+      tagIds?: readonly string[];
       projectId?: string | null;
       ifRunConfigUnset?: boolean;
     },

@@ -10,14 +10,23 @@ const SERVER = "mono-agent-console-projects";
 const id = z.string().min(1).max(128);
 const name = z.string().trim().min(1).max(120).refine((value) => !/[\r\n]/u.test(value), "name must not contain line breaks");
 const context = z.string().max(4000);
+const tagName = z.string().refine((value) => !/[\u0000-\u001f\u007f\u0085\u2028\u2029]/u.test(value), "name must not contain control characters").pipe(name);
+const tagColor = z.enum(["default", "blue", "purple", "amber", "rose", "green", "teal", "red"]);
 const color = z.enum(["default", "blue", "purple", "amber", "rose"]);
 export const CONSOLE_PROJECT_SCHEMAS = {
+  ListTags: z.object({}).strict(),
+  CreateTag: z.object({ name: tagName, color: tagColor.optional() }).strict(),
+  UpdateTag: z.object({ tagId: id, name: tagName.optional(), color: tagColor.optional() }).strict()
+    .refine((value) => value.name !== undefined || value.color !== undefined, "Provide name or color"),
+  DeleteTag: z.object({ tagId: id }).strict(),
+  UpdateConversationTags: z.object({ conversationId: id.optional(), add: z.array(id).max(20).optional(), remove: z.array(id).max(20).optional() }).strict()
+    .refine((value) => value.add !== undefined || value.remove !== undefined, "Provide add or remove"),
   ListProjects: z.object({}).strict(),
   GetProject: z.object({ projectId: id }).strict(),
   CreateProject: z.object({ name, context: context.optional(), color: color.optional(), attachCurrentConversation: z.boolean().optional() }).strict(),
   UpdateProject: z.object({ projectId: id, name: name.optional(), context: context.optional(), color: color.optional(), archived: z.boolean().optional() }).strict(),
   DeleteProject: z.object({ projectId: id }).strict(),
-  ListConversations: z.object({ projectId: id.optional(), archived: z.boolean().optional(), limit: z.number().int().min(1).max(50).optional(), cursor: z.string().max(2048).optional() }).strict(),
+  ListConversations: z.object({ tagId: id.optional(), projectId: id.optional(), archived: z.boolean().optional(), limit: z.number().int().min(1).max(50).optional(), cursor: z.string().max(2048).optional() }).strict(),
   SearchConversations: z.object({ query: z.string().trim().min(2).max(512), limit: z.number().int().min(1).max(50).optional() }).strict(),
   CreateConversation: z.object({ title: z.string().trim().min(1).max(80).optional(), projectId: id.optional() }).strict(),
   SetConversationProject: z.object({ conversationId: id.optional(), projectId: id.nullable() }).strict(),
@@ -31,12 +40,17 @@ export function isConsoleProjectToolAllowed(tool: ToolName, policy: Policy): boo
 }
 
 const descriptions: Record<ToolName, string> = {
+  ListTags: "List this agent's tags with their names, colors, and IDs.",
+  CreateTag: "Create a named tag for this agent with an optional palette color.",
+  UpdateTag: "Change a tag's name or color for this agent.",
+  DeleteTag: "Delete a tag and remove it from conversations without deleting those conversations.",
+  UpdateConversationTags: "Idempotently add or remove up to 20 tag IDs per list on a conversation (this conversation by default); changes apply immediately and reach the next turn's context, with removal winning if an ID appears in both lists.",
   ListProjects: "List this agent's projects, including archived projects. Returns up to 20 identities and a truncation flag.",
   GetProject: "Read one project and its shared context for this agent.",
   CreateProject: "Create a project. attachCurrentConversation atomically adds this conversation, effective after its current turn finishes.",
   UpdateProject: "Update a project's name, shared context, color, or archive status. Name/context changes affect subsequent turns. Archiving a pending destination is refused until its turns finish.",
   DeleteProject: "Delete a project and retain its conversations. Refused while active members or pending destinations reference it.",
-  ListConversations: "List this agent's conversations, newest first: active by default, archived with archived=true, optionally within a project. Returns id, title, projectId, archived and updatedAt; use the returned cursor for the next page.",
+  ListConversations: "List this agent's conversations, newest first: active by default, archived with archived=true, optionally within a project or carrying a tagId. Returns id, title, projectId, tags, archived and updatedAt; use the returned cursor for the next page.",
   SearchConversations: "Find this agent's conversations by words in their titles or messages (the console's full-text search). Returns ranked conversation ids with a matching snippet; use ListConversations to browse instead.",
   CreateConversation: "Create a conversation for this agent, optionally within a project. Does not start a model turn.",
   SetConversationProject: "Join, move, or leave a project (projectId null). Defaults to this conversation. Active turns retain their existing context; the result reports pending membership. Never wait for your own turn to finish.",

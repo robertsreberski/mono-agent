@@ -1507,11 +1507,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 }
 
 /* The palette is shared by project identity surfaces, never arbitrary CSS. */
-[data-project-color] { --project-ink: var(--accent-strong); --project-tint: var(--accent-soft); }
-[data-project-color="blue"] { --project-ink: light-dark(#235d91, #9ecbfa); --project-tint: light-dark(#e3effb, #23394c); }
-[data-project-color="purple"] { --project-ink: light-dark(#70438e, #d5b2ed); --project-tint: light-dark(#f0e6f7, #3c294b); }
-[data-project-color="amber"] { --project-ink: light-dark(#79530a, #e7c37d); --project-tint: light-dark(#f7edcf, #423719); }
-[data-project-color="rose"] { --project-ink: light-dark(#943c59, #efadc2); --project-tint: light-dark(#f9e6ec, #492c38); }
+[data-project-color], [data-tag-color] { --project-ink: var(--accent-strong); --project-tint: var(--accent-soft); }
+[data-project-color="blue"], [data-tag-color="blue"] { --project-ink: light-dark(#235d91, #9ecbfa); --project-tint: light-dark(#e3effb, #23394c); }
+[data-project-color="purple"], [data-tag-color="purple"] { --project-ink: light-dark(#70438e, #d5b2ed); --project-tint: light-dark(#f0e6f7, #3c294b); }
+[data-project-color="amber"], [data-tag-color="amber"] { --project-ink: light-dark(#79530a, #e7c37d); --project-tint: light-dark(#f7edcf, #423719); }
+[data-project-color="rose"], [data-tag-color="rose"] { --project-ink: light-dark(#943c59, #efadc2); --project-tint: light-dark(#f9e6ec, #492c38); }
 .project-tile[data-project-color], .project-palette button { color: var(--project-ink); background: var(--project-tint); }
 /* The conversation's project is its eyebrow: the Dashboard's section-label
    measure in the project's ink, above the title where the console name sits
@@ -1577,3 +1577,30 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .project-page[data-project-color] .new-thread-button { color: var(--project-ink); background: var(--project-tint); }
 .project-page[data-project-color] .project-context-edit { color: var(--project-ink); }
 .project-page[data-project-color] .project-context-edit:hover { color: var(--project-ink); background: var(--project-tint); }
+
+[data-tag-color="green"] { --project-ink: light-dark(#28613c, #a0d7ae); --project-tint: light-dark(#e3f2e7, #233d2b); }
+[data-tag-color="teal"] { --project-ink: light-dark(#196467, #91d6d8); --project-tint: light-dark(#dff1f1, #203d3e); }
+[data-tag-color="red"] { --project-ink: light-dark(#a23832, #f4aaa3); --project-tint: light-dark(#fbe6e3, #492a28); }
+.conversation-tags { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; overflow-x: auto; flex-wrap: nowrap; padding: 4px 5px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; max-width: 140px; min-width: 0; padding: 3px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--text-soft); background: transparent; font-size: 10px; font-weight: 500; line-height: 1.4; vertical-align: middle; }
+.tag-chip::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%; background: var(--project-ink); }
+.tag-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-tags .tag-chip { flex-shrink: 0; }
+.thread-tags { display: flex; align-items: center; gap: 10px; min-width: 0; margin-top: 5px; overflow: hidden; }
+.thread-tags .tag-chip { padding: 0; border: 0; border-radius: 0; }
+.tag-overflow { flex: none; font-size: 10px; color: var(--text-muted); }
+.conversation-tags-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: none; min-width: 28px; min-height: 28px; padding: 4px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 10px; cursor: pointer; white-space: nowrap; }
+.conversation-tags-trigger:hover { color: var(--text); background: var(--surface-hover); }
+.conversation-tags-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tag-menu-popup { width: 224px; padding: 6px; }
+.tag-menu-popup .conversation-menu-item { min-height: 34px; padding: 0 9px; font-size: 11px; }
+.tag-menu-popup .tag-chip { max-width: none; padding: 0; border: 0; gap: 9px; font-size: 11px; font-weight: 400; color: inherit; }
+.tag-menu-popup .conversation-menu-item > svg { flex: none; color: var(--text-muted); }
+.tag-menu-separator { height: 1px; margin: 5px 3px; background: var(--line); }
+.tag-settings-sheet { max-width: 440px; }
+@media (max-width: 560px) {
+  .conversation-tags { padding-left: 2px; gap: 4px; }
+  .conversation-tags .tag-chip { max-width: 110px; }
+  .conversation-tags-trigger { min-height: 24px; }
+  .tag-settings-sheet { max-width: 100%; }
+}

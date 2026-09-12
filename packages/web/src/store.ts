@@ -74,6 +74,9 @@ import {
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
+import type { WebTag, CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
+import type { ProjectContextSource } from "./project-context.js";
+import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
 import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
@@ -89,6 +92,7 @@ interface ThreadPatch {
   readonly model?: string | null;
   readonly effort?: string | null;
   /** Present (even as `null`) moves or detaches the conversation's project membership. */
+  readonly tagIds?: readonly string[];
   readonly projectId?: string | null;
 }
 
@@ -2762,15 +2766,18 @@ export class WebStore {
     readonly before?: string;
     readonly scope?: WebThreadListScope;
     readonly projectId?: string;
+    readonly tagId?: string;
   }): WebThreadPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const limit = boundedPageLimit(input.limit, WEB_THREAD_PAGE_MAX);
     const scope = input.scope ?? "all";
-    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope, input.projectId);
+    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope, input.projectId, input.tagId);
     const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
     const scopeSql = threadListScopeSql(scope);
+    const tagSql = input.tagId === undefined ? "" : "AND EXISTS (SELECT 1 FROM thread_tags tt WHERE tt.thread_id = t.id AND tt.tag_id = ?)";
+    if (input.tagId !== undefined) this.requireTagForAgent(input.tagId, input.sourceId);
     const projectSql = input.projectId === undefined ? "" : "AND t.project_id = ?";
     if (input.projectId !== undefined && this.getProjectRow(input.projectId) === undefined) {
       throw new WebConsoleError("project_not_found", "Project not found.", 404);
@@ -2780,10 +2787,11 @@ export class WebStore {
       : "AND (t.updated_at < ? OR (t.updated_at = ? AND t.id < ?))";
     const values: Array<string | number> = [input.sourceId];
     if (input.projectId !== undefined) values.push(input.projectId);
+    if (input.tagId !== undefined) values.push(input.tagId);
     if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     values.push(limit + 1);
     const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${beforeSql}
+      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${tagSql} ${beforeSql}
       ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
     `)).all(...values) as unknown as ThreadRow[];
     const hasMore = rows.length > limit;
@@ -2797,6 +2805,7 @@ export class WebStore {
             id: last.id,
             ...(scope === "chats" ? { scope } : {}),
             ...(input.projectId === undefined ? {} : { project: input.projectId }),
+            ...(input.tagId === undefined ? {} : { tag: input.tagId }),
           }) }
         : {}),
     };
@@ -3144,13 +3153,18 @@ export class WebStore {
   private writeThreadPatch(id: string, patch: ThreadPatch): WebThread {
     id = this.resolveThreadId(id);
     const current = this.requireThread(id);
+    const tagIds = patch.tagIds === undefined ? undefined : [...new Set(patch.tagIds)];
+    const tagsChanged = tagIds !== undefined
+      && (tagIds.length !== current.tagIds.length || tagIds.some((tagId) => !current.tagIds.includes(tagId)));
+    if (tagIds !== undefined && !tagsChanged && patch.projectId === undefined && patch.title === undefined
+      && patch.archived === undefined && patch.model === undefined && patch.effort === undefined) return current;
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
     if (patch.projectId !== undefined && patch.title === undefined && patch.archived === undefined
-      && patch.model === undefined && patch.effort === undefined) {
+      && patch.model === undefined && patch.effort === undefined && patch.tagIds === undefined) {
       const pending = this.pendingProjectDto(id).pendingProject;
       if ((pending === undefined && patch.projectId === current.projectId) || (pending !== undefined && patch.projectId === pending.projectId)) return current;
     }
@@ -3178,10 +3192,18 @@ export class WebStore {
         sets.push("run_effort = ?");
         values.push(runEffort);
       }
+      if (tagsChanged && tagIds !== undefined) {
+        const ids = tagIds;
+        for (const tagId of ids) this.requireTagForAgent(tagId, current.sourceId);
+        if (ids.length > 10) throw new WebConsoleError("tag_limit", "A conversation can have at most 10 tags.", 409);
+        this.database.prepare("DELETE FROM thread_tags WHERE thread_id = ?").run(id);
+        const insert = this.database.prepare("INSERT INTO thread_tags(thread_id, tag_id, created_at) VALUES (?, ?, ?)");
+        for (const tagId of ids) insert.run(id, tagId, now);
+      }
       if (projectId !== undefined) {
         this.requestProjectMembership(id, current.projectId, projectId, now);
       }
-      // A model/effort/project-only patch must not reorder the sidebar, so
+      // Metadata-only patches must not reorder the sidebar, so
       // `updated_at` only advances when title or archived state actually changes.
       if (title !== undefined || archivedAt !== undefined) {
         sets.push("updated_at = ?");
@@ -3200,7 +3222,7 @@ export class WebStore {
               : "unarchived"
             : projectId !== undefined
               ? "project_changed"
-              : "run_config_changed",
+              : tagsChanged ? "tags_changed" : "run_config_changed",
         now,
       );
       if (patch.archived === true && this.currentThreadId() === id) {
@@ -3208,6 +3230,71 @@ export class WebStore {
       }
     }
     return { ...this.requireThread(id), sourceId: current.sourceId };
+  }
+
+  listTags(sourceId: string): WebTag[] {
+    if (this.getAgent(sourceId) === undefined) throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    const rows = this.database.prepare(`SELECT id, source_id AS sourceId, name, color, created_at AS createdAt,
+      updated_at AS updatedAt, revision FROM tags WHERE source_id = ? ORDER BY name, id`).all(sourceId) as unknown as WebTag[];
+    return rows.map((row) => ({ ...row }));
+  }
+
+  getTag(id: string): WebTag | undefined {
+    const row = this.database.prepare(`SELECT id, source_id AS sourceId, name, color, created_at AS createdAt,
+      updated_at AS updatedAt, revision FROM tags WHERE id = ?`).get(id) as unknown as WebTag | undefined;
+    return row === undefined ? undefined : { ...row };
+  }
+
+  private requireTagForAgent(id: string, sourceId?: string): WebTag {
+    const tag = this.getTag(id);
+    if (tag === undefined || (sourceId !== undefined && tag.sourceId !== sourceId)) {
+      throw new WebConsoleError("tag_not_found", "Tag not found.", 404);
+    }
+    return tag;
+  }
+
+  private assertTagNameAvailable(sourceId: string, name: string, exceptId = ""): void {
+    if (this.database.prepare("SELECT 1 FROM tags WHERE source_id = ? AND name = ? AND id <> ?").get(sourceId, name, exceptId)) {
+      throw new WebConsoleError("tag_exists", "A tag with that name already exists for this agent.", 409);
+    }
+  }
+
+  createTag(input: CreateWebTagInput): WebTag {
+    return this.transaction(() => {
+      const name = parseTagName(input.name), color = parseTagColor(input.color ?? "default");
+      const tags = this.listTags(input.sourceId);
+      this.assertTagNameAvailable(input.sourceId, name);
+      if (tags.length >= 50) throw new WebConsoleError("tag_limit", "An agent can have at most 50 tags.", 409);
+      const id = randomUUID(), now = this.now();
+      this.database.prepare("INSERT INTO tags(id, source_id, name, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(id, input.sourceId, name, color, now, now);
+      return this.requireTagForAgent(id);
+    });
+  }
+
+  patchTag(id: string, patch: PatchWebTagInput): WebTag {
+    return this.transaction(() => {
+      const current = this.requireTagForAgent(id);
+      if (patch.name === undefined && patch.color === undefined) throw new WebConsoleError("invalid_tag", "Provide name or color.", 400);
+      const name = patch.name === undefined ? current.name : parseTagName(patch.name);
+      const color = patch.color === undefined ? current.color : parseTagColor(patch.color);
+      this.assertTagNameAvailable(current.sourceId, name, id);
+      this.database.prepare("UPDATE tags SET name = ?, color = ?, updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(name, color, this.now(), id);
+      return this.requireTagForAgent(id);
+    });
+  }
+
+  deleteTag(id: string): string[] {
+    return this.transaction(() => {
+      this.requireTagForAgent(id);
+      const members = this.database.prepare("SELECT thread_id FROM thread_tags WHERE tag_id = ?").all(id) as Array<{ thread_id: string }>;
+      for (const { thread_id: threadId } of members) {
+        this.patchThread(threadId, { tagIds: this.requireThread(threadId).tagIds.filter((tagId) => tagId !== id) });
+      }
+      this.database.prepare("DELETE FROM tags WHERE id = ?").run(id);
+      return members.map((row) => row.thread_id);
+    });
   }
 
   /**
@@ -3309,10 +3396,10 @@ export class WebStore {
   /**
    * The injectable context for one conversation, resolved at dispatch time.
    *
-   * Undefined when the conversation belongs to no project or its project's
-   * context is empty, so dispatch never prefixes then.
+   * Active turns keep their admission snapshot. Idle conversations resolve
+   * current names so the next turn sees tag and project edits together.
    */
-  projectContextForThread(threadId: string): { readonly name: string; readonly context: string } | undefined {
+  projectContextForThread(threadId: string): ProjectContextSource | undefined {
     const active = this.database.prepare("SELECT project_context_json FROM turns WHERE thread_id = ? AND status = 'running'")
       .get(this.resolveThreadId(threadId)) as { project_context_json: string | null } | undefined;
     if (active?.project_context_json != null) {
@@ -3322,7 +3409,10 @@ export class WebStore {
         if (typeof snapshot !== "object" || Array.isArray(snapshot)
           || !("name" in snapshot) || !("context" in snapshot)
           || typeof snapshot.name !== "string" || typeof snapshot.context !== "string") throw new Error();
-        return snapshot.context.trim().length === 0 ? undefined : { name: snapshot.name, context: snapshot.context };
+        const tags = "tags" in snapshot ? snapshot.tags : [];
+        if (!Array.isArray(tags) || tags.some((tag: unknown) => typeof tag !== "string")) throw new Error();
+        return snapshot.context.trim().length === 0 && tags.length === 0 ? undefined
+          : { name: snapshot.name, context: snapshot.context, ...(tags.length === 0 ? {} : { tags: tags as string[] }) };
       } catch { throw new WebConsoleError("storage_corrupt", "The active project context snapshot is invalid.", 500); }
     }
     const row = this.database.prepare(`
@@ -3330,8 +3420,9 @@ export class WebStore {
         FROM threads t JOIN projects p ON p.id = t.project_id
        WHERE t.id = ?
     `).get(this.resolveThreadId(threadId)) as unknown as { name: string; context: string } | undefined;
-    if (row === undefined || row.context.trim().length === 0) return undefined;
-    return { name: row.name, context: row.context };
+    const tags = this.tagNamesForThread(this.resolveThreadId(threadId));
+    if ((row === undefined || row.context.trim().length === 0) && tags.length === 0) return undefined;
+    return { name: row?.name ?? "", context: row?.context ?? "", ...(tags.length === 0 ? {} : { tags }) };
   }
 
   /**
@@ -3353,7 +3444,7 @@ export class WebStore {
         .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
       if (prior !== undefined) {
         if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
-        return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [] };
+        return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [], tags: [], deletedTags: [] };
       }
       const commit = executeConsoleTool(this, scope, operation);
       this.database.prepare("INSERT INTO console_tool_operations(operation_id, thread_id, turn_id, payload_sha256, result_json) VALUES (?, ?, ?, ?, ?)")
@@ -3426,11 +3517,16 @@ export class WebStore {
       ? new Date(Date.parse(previous.latest) + 1).toISOString() : now;
   }
 
-  /** Internal context snapshot; JSON null explicitly freezes absence of membership. */
+  private tagNamesForThread(threadId: string): string[] {
+    return (this.database.prepare(`SELECT t.name FROM tags t JOIN thread_tags tt ON tt.tag_id = t.id
+      WHERE tt.thread_id = ? ORDER BY t.name, t.id`).all(threadId) as Array<{ name: string }>).map((tag) => tag.name);
+  }
+
+  /** Freeze both project and tags at admission so steering cannot adopt later edits. */
   private captureProjectContext(turnId: string, threadId: string): void {
     const row = this.database.prepare(`SELECT p.name, p.context FROM projects p JOIN threads t ON t.project_id = p.id WHERE t.id = ?`)
       .get(threadId) as { name: string; context: string } | undefined;
-    this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify(row ?? null), turnId);
+    this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify({ name: row?.name ?? "", context: row?.context ?? "", tags: this.tagNamesForThread(threadId) }), turnId);
   }
 
   projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
@@ -5036,6 +5132,22 @@ export class WebStore {
         run_effort TEXT,
         revision INTEGER NOT NULL DEFAULT 1
       );
+      CREATE TABLE IF NOT EXISTS tags (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        color TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose','green','teal','red')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(source_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS thread_tags (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(thread_id, tag_id)
+      );
       CREATE TABLE IF NOT EXISTS turns (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -5940,12 +6052,21 @@ export class WebStore {
       WHERE thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
         thread_id: string; project_id: string | null; turn_id: string;
       }>).map((row) => [row.thread_id, { projectId: row.project_id, turnId: row.turn_id }]));
+    const tagsByThread = new Map<string, string[]>();
+    const tagRows = this.database.prepare(`SELECT tt.thread_id, tt.tag_id FROM thread_tags tt JOIN tags t ON t.id = tt.tag_id
+      WHERE tt.thread_id IN (SELECT value FROM json_each(?)) ORDER BY t.name, t.id`).all(JSON.stringify(ids)) as Array<{ thread_id: string; tag_id: string }>;
+    for (const row of tagRows) {
+      const tags = tagsByThread.get(row.thread_id) ?? [];
+      tags.push(row.tag_id);
+      tagsByThread.set(row.thread_id, tags);
+    }
     return rows.map((row) => {
       const preview = previews.get(row.id);
       const jobActivity = jobActivities.get(row.id);
       return {
         id: row.id,
         sourceId: row.source_id,
+        tagIds: tagsByThread.get(row.id) ?? [],
         projectId: row.project_id,
         ...(row.project_id === null || row.project_name === null
           ? {}
@@ -7240,13 +7361,15 @@ function decodeThreadCursor(
   value: string,
   scope: WebThreadListScope,
   projectId?: string,
+  tagId?: string,
 ): { readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
   if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string"
     || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)
     // A filtered page binds its project: a cursor minted for another project
     // -- or for the unfiltered bucket -- must not walk this one.
-    || (projectId === undefined ? cursor.project !== undefined : cursor.project !== projectId)) {
+    || (projectId === undefined ? cursor.project !== undefined : cursor.project !== projectId)
+    || (tagId === undefined ? cursor.tag !== undefined : cursor.tag !== tagId)) {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return { updatedAt: cursor.updatedAt, id: cursor.id };

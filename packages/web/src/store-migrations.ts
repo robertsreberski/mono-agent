@@ -178,6 +178,27 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       CREATE INDEX IF NOT EXISTS model_transitions_by_thread ON model_transitions(thread_id, id);
     `);
   } },
+  { version: 29, name: "conversation-tags", up: ({ database }) => {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS tags (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        color TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose','green','teal','red')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(source_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS thread_tags (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(thread_id, tag_id)
+      );
+      CREATE INDEX IF NOT EXISTS thread_tags_by_tag ON thread_tags(tag_id, thread_id);
+    `);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -229,6 +250,8 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
       project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
       model_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
+      tags: ["id", "source_id", "name", "color", "created_at", "updated_at", "revision"],
+      thread_tags: ["thread_id", "tag_id", "created_at"],
       projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
       cron_overviews: ["jobs_truncated"],
       attachments: ["origin"],
@@ -247,6 +270,11 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    const tagDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'tags'").get() as { sql: string };
+    if (!/UNIQUE\s*\(\s*source_id\s*,\s*name\s*\)/iu.test(tagDdl.sql)
+      || !/\bname\s+TEXT\s+NOT\s+NULL\s+COLLATE\s+NOCASE\b/iu.test(tagDdl.sql)) {
+      throw new Error("Invalid tag name uniqueness.");
+    }
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;
     }>).find((column) => column.name === "seq");
@@ -280,11 +308,15 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["notification_deliveries_by_thread", ["thread_id"]],
       ...THREAD_READ_INDEXES,
       ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
+      ["thread_tags_by_tag", ["tag_id", "thread_id"]],
       ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
       ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
     ] as const) assertIndex(database, index, expected);
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],
+      ["tags", "source_id", "agents", "CASCADE"],
+      ["thread_tags", "thread_id", "threads", "CASCADE"],
+      ["thread_tags", "tag_id", "tags", "CASCADE"],
       ["projects", "source_id", "agents", "CASCADE"],
       ["threads", "project_id", "projects", "SET NULL"],
       ["messages", "turn_id", "turns", "CASCADE"],

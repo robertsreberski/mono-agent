@@ -7061,6 +7061,19 @@ describe("authenticated console project callback", () => {
       const options = { stateDir: service.store.paths.root };
       const call = await createWebConsoleToolClient(scope, options);
       await expect(createWebConsoleToolClient({ ...scope, sourceId: "wrong-source" }, options)).rejects.toMatchObject({ code: "console_tool_revoked" });
+      const tagEvents: WebEvent[] = [];
+      const unlistenTags = service.subscribe((event) => { tagEvents.push(event); });
+      const tagOperation = { operationId: randomUUID(), tool: "CreateTag" as const, args: { name: "planning", color: "green" } };
+      const tagResult = await call(tagOperation);
+      expect(tagEvents.at(-1)).toMatchObject({ type: "tags.changed", payload: { tag: { id: tagResult.tagId } } });
+      const count = tagEvents.length;
+      expect(await call(tagOperation)).toEqual(tagResult);
+      expect(tagEvents).toHaveLength(count);
+      await call({ operationId: randomUUID(), tool: "UpdateConversationTags", args: { add: [tagResult.tagId] } });
+      expect(tagEvents.at(-1)).toMatchObject({ type: "threads.changed", payload: { thread: { tagIds: [tagResult.tagId] } } });
+      await call({ operationId: randomUUID(), tool: "DeleteTag", args: { tagId: tagResult.tagId } });
+      expect(tagEvents.at(-1)).toMatchObject({ type: "tags.changed", payload: { tagId: tagResult.tagId, removed: true } });
+      unlistenTags();
       const operation = { operationId: randomUUID(), tool: "CreateProject" as const, args: { name: "Created by tool", color: "rose", attachCurrentConversation: true } };
       const result = await call(operation);
       expect(result).toMatchObject({ projectId: expect.any(String), attachment: { conversationId: thread.id, projectId: null, disposition: "pending" } });
@@ -7092,5 +7105,35 @@ describe("authenticated console project callback", () => {
       expect(service.store.getThread(thread.id)?.projectId).toBe(independent.projectId);
       await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
     } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }
+  });
+});
+
+describe("conversation tags service", () => {
+  it("emits tag and membership payloads and injects only operator-facing text", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({ onTurn(body) { bodies.push(body); } }) });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    try {
+      const tag = service.createTag({ sourceId: "agent-one", name: "planning", color: "green" });
+      expect(events.at(-1)).toMatchObject({ type: "tags.changed", payload: { tag } });
+      expect(service.tags("agent-one")).toEqual([tag]);
+      const thread = service.createThread("agent-one");
+      const updated = service.patchThread(thread.id, { tagIds: [tag.id] });
+      expect(events).toContainEqual(expect.objectContaining({ type: "thread.changed", payload: { thread: updated } }));
+      expect(events).toContainEqual(expect.objectContaining({ type: "threads.changed", payload: { thread: updated } }));
+      const eventCount = events.length;
+      expect(service.patchThread(thread.id, { tagIds: [tag.id, tag.id] }).revision).toBe(updated.revision);
+      expect(events).toHaveLength(eventCount);
+      await service.startTurn(thread.id, { text: "Canonical text" });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(bodies[0]?.text).toBe('<conversation_tags>"planning"</conversation_tags>\n\nCanonical text');
+      expect(service.thread(thread.id).messages.find((message) => message.role === "user")?.parts).toEqual([{ type: "text", text: "Canonical text" }]);
+      const edited = service.patchTag(tag.id, { name: "reviewing" });
+      expect(events.at(-1)).toMatchObject({ type: "tags.changed", payload: { tag: edited } });
+      service.deleteTag(tag.id);
+      expect(events.at(-1)).toMatchObject({ type: "tags.changed", payload: { tagId: tag.id, removed: true } });
+      expect(events.at(-2)).toMatchObject({ type: "threads.changed", payload: { thread: { id: thread.id, tagIds: [] } } });
+    } finally { unsubscribe(); await service.stop(); }
   });
 });

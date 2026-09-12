@@ -141,3 +141,13 @@ describe("ProjectPage", () => {
     expect(screen.getByText("No conversations yet")).toBeVisible();
   });
 });
+
+it("resolves row tags at the list owner and limits chips to three plus the remainder", () => {
+  const tags = Array.from({ length: 5 }, (_, index) => ({ id: `tag-${String(index)}`, sourceId: "alpha", name: `status ${String(index)}`, color: "green", revision: 1 }));
+  storeMock.current = createStore({ tagsByAgent: { alpha: tags }, projectMembers: [{ ...first, tagIds: [...tags.map((tag) => tag.id), "unknown"] }] });
+  render(<ProjectPage project={web} />);
+  expect(screen.getByText("status 0")).toBeVisible();
+  expect(screen.getByText("status 2")).toBeVisible();
+  expect(screen.queryByText("status 3")).toBeNull();
+  expect(screen.getByLabelText("2 more tags")).toHaveTextContent("+2");
+});

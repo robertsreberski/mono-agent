@@ -35,11 +35,13 @@ export type IconName =
   | "spark"
   | "star"
   | "stop"
+  | "tag"
   | "terminal"
   | "trash"
   | "threads";
 
 const paths: Record<IconName, React.ReactNode> = {
+  tag: <><path d="M3 3h7l11 11-7 7L3 10z" /><circle cx="7" cy="7" r="1" /></>,
   activity: <path d="M3 12h4l3-8 4 16 3-8h4" />,
   agent: (
     <>

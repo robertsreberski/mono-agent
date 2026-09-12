@@ -473,7 +473,37 @@ Running card, on a search hit and on the archive shelf. Unscoped HTTP callers
 keep the backward-compatible mixed list.
 Automations is a system view of the list; this package defines project
 persistence and membership below, but no folders and no runtime context beyond
-the per-turn project envelope.
+the per-turn project and conversation-tag envelope.
+
+**Conversation tags.** Each agent owns up to 50 named, colored tags; each
+conversation can carry up to 10. Recent, project-member, and archived rows show
+three chips and `+N` for any remainder. A separate horizontally scrolling line
+under the conversation title holds tags and a quiet tag-menu trigger. Its menu
+toggles membership, creates a tag and assigns it to this chat, or opens the
+name/color/delete sheet through Edit tags. Tags have no archive or dedicated
+page, and dashboard filtering by tag is not available.
+
+`GET/POST /api/v1/tags` and `PATCH/DELETE /api/v1/tags/:id` manage agent-scoped
+tags. `PATCH /api/v1/threads/:id` accepts `tagIds` as a deduplicated full
+replacement; thread summaries always carry name-ordered `tagIds`.
+`GET /api/v1/threads` accepts an optional `tagId` filter. Bootstrap includes
+the selected agent's tags beside projects, and `tags.changed` carries a fresh
+tag or `{tagId, removed: true}`. Names are trimmed, unique per agent ignoring
+ASCII case, one line and at most 120 characters without controls. The tag
+palette is default, blue, purple, amber, rose, green, teal, or red. Limits return
+`tag_limit` (409), duplicate names `tag_exists` (409), and missing or foreign
+tags `tag_not_found` (404).
+
+Schema 29 adds `tags` and `thread_tags`; conversation/tag deletion cascades
+membership, and the existing web-state reset clears both tables. Tag changes
+apply immediately without project-style deferral. Admission snapshots the
+name-ordered tag set in the existing per-turn context JSON; steering and replay
+use the same snapshot, while old snapshots without tags remain readable.
+Operator text receives one compact `<conversation_tags>…</conversation_tags>`
+line alongside project context, with reserved delimiters neutralised in prompt
+copies. Canonical stored messages remain unprefixed. Agent tools use the
+existing console MCP server and add/remove membership rather than replace it;
+see [Console tools](../../docs/tools/mcp.md#console-project-tools).
 
 **Projects.** One agent's named containers of conversations, listed in a
 **Projects** section between Running and Recent. A project carries a free-text
@@ -807,6 +837,7 @@ ConsoleToolOperation
 ConsoleToolScope
 CreateWebCronReplyInput
 CreateWebProjectInput
+CreateWebTagInput
 CreateWebThreadInput
 CreateWebUploadInput
 DEFAULT_WEB_HOST
@@ -829,6 +860,7 @@ OperatorTurnInput
 OperatorTurnResult
 PatchWebAgentInput
 PatchWebProjectInput
+PatchWebTagInput
 PatchWebThreadInput
 PutWebAgentRunSettingsInput
 SearchWebThreadsInput
@@ -901,6 +933,9 @@ WebSkillUnavailableReason
 WebStatePathOptions
 WebStatePaths
 WebSubmissionReceipt
+WebTag
+WebTagChangedPayload
+WebTagColor
 WebTheme
 WebThread
 WebThreadChangedPayload

@@ -370,6 +370,7 @@ export interface WebThread {
   readonly updatedAt: string;
   readonly revision: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
+  readonly tagIds: readonly string[];
   readonly projectId: string | null;
   /**
    * That project's name, carried on the summary so a reader can label the row
@@ -395,6 +396,33 @@ export interface WebThread {
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
 
+export type WebTagColor = "default" | "blue" | "purple" | "amber" | "rose" | "green" | "teal" | "red";
+
+export interface WebTag {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly color: WebTagColor;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly revision: number;
+}
+
+export interface CreateWebTagInput {
+  readonly sourceId: string;
+  readonly name: string;
+  readonly color?: WebTagColor;
+}
+
+export interface PatchWebTagInput {
+  readonly name?: string;
+  readonly color?: WebTagColor;
+}
+
+export type WebTagChangedPayload =
+  | { readonly tag: WebTag }
+  | { readonly tagId: string; readonly removed: true };
+
 /**
  * A per-agent named container of conversations.
  *
@@ -407,6 +435,7 @@ export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" |
  * the project's current non-archived members. Absent when no priced
  * observation exists; a measured zero is kept as zero.
  */
+
 export type WebProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
 
 export interface WebProjectTransition {
@@ -1012,6 +1041,7 @@ export interface WebBootstrap {
    * The resolved agent's projects, archived included: the Dashboard and the
    * conversation picker filter archived out locally.
    */
+  readonly tags: readonly WebTag[];
   readonly projects: readonly WebProject[];
   /** The agent `projects` belong to, or `null` when there is no agent to open on. */
   readonly projectsSourceId: string | null;
@@ -1040,6 +1070,7 @@ export type WebEventType =
   | "cron.changed"
   | "threads.changed"
   | "thread.changed"
+  | "tags.changed"
   | "projects.changed"
   | "message.changed"
   | "message.delta"
@@ -1178,6 +1209,7 @@ export interface PatchWebAgentInput {
 }
 
 export interface PatchWebThreadInput {
+  readonly tagIds?: readonly string[];
   readonly title?: string;
   readonly archived?: boolean;
   readonly model?: string | null;
