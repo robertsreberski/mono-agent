@@ -244,16 +244,17 @@ export interface MonoAgentInlineSubagentsConfig {
   readonly allowedTools?: readonly string[];
 }
 
-/**
- * Subagent deployment policy. Absent or `enabled: false` means the `Agent` tool
- * is never registered.
- */
+/** One model the parent may pick per `Agent` call (`subagents.models`). */
 export interface MonoAgentSubagentModelChoice {
   /** Optional short name; otherwise the canonical model reference is used. */
   readonly name?: string;
   readonly model: RuntimeModelReference;
 }
 
+/**
+ * Subagent deployment policy. Absent or `enabled: false` means the `Agent` tool
+ * is never registered.
+ */
 export interface MonoAgentSubagentsConfig {
   /** Operator allow-list for call-time Agent model overrides. */
   readonly models?: readonly MonoAgentSubagentModelChoice[];
