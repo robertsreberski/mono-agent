@@ -59,7 +59,7 @@ export function ProjectBadge() {
         : `moves to ${destination?.name ?? "another project"} after this turn`;
   return <div className="chat-project-identity" data-project-color={(project ?? destination)?.color ?? "default"}>
     {project !== undefined && <button type="button" className="project-badge" onClick={() => openProjectById(project.id)} aria-label={`Open project ${project.name}`}>
-      <Icon name="folder" size={11} /><span>{project.name}</span>
+      <Icon name="folder" size={12} /><span>{project.name}</span>
     </button>}
     {note !== null && <span className="project-pending" title="Project context changes after the current turn finishes">
       {project !== undefined && <span aria-hidden="true">·</span>}{note}
