@@ -72,6 +72,14 @@ describe("coalesceMonitorWakeMessages", () => {
     expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
     expect(convertWebMessage(anchor).metadata?.custom?.projectTransitions).toEqual(anchor.projectTransitions);
   });
+  it("does not coalesce across a route change anchor", () => {
+    const first = monitorWake("1");
+    const anchor = monitorWake("2", monitor(), { modelTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-3", before: { model: "provider/sol", effort: "low" }, after: { model: "provider/astra", effort: "high" }, createdAt: "2026-09-12T00:00:00Z" }] });
+    const last = monitorWake("3");
+    const result = coalesceMonitorWakeMessages([first, anchor, last]);
+    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
+    expect(convertWebMessage(anchor).metadata?.custom?.modelTransitions).toEqual(anchor.modelTransitions);
+  });
   it("uses the newest same-Monitor wake as one chronological presentation carrier", () => {
     const firstProjection = monitor({
       description: "First batch",
