@@ -18,16 +18,17 @@ export function TagMenu({ thread }: { readonly thread: ThreadSummary }) {
       </Menu.Trigger>
       <Menu.Portal>
         <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="start" sideOffset={5}>
-          <Menu.Popup className="conversation-menu-popup" aria-label="Conversation tags">
+          <Menu.Popup className="conversation-menu-popup tag-menu-popup" aria-label="Conversation tags">
             {tags.length === 0 && <div className="conversation-menu-empty">No tags yet</div>}
             {tags.map((tag) => (
               <Menu.Item key={tag.id} className="conversation-menu-item" aria-label={`${ids.includes(tag.id) ? "Remove" : "Add"} ${tag.name}`}
                 onClick={() => { void setThreadTags(thread.id, ids.includes(tag.id) ? ids.filter((id) => id !== tag.id) : [...ids, tag.id]).catch(() => undefined); }}>
-                <Icon name={ids.includes(tag.id) ? "check" : "tag"} size={16} />
                 <TagChip tag={tag} />
+                {ids.includes(tag.id) && <Icon name="check" size={14} />}
               </Menu.Item>
             ))}
-            <Menu.Item className="conversation-menu-item is-accent"
+            <Menu.Separator className="tag-menu-separator" />
+            <Menu.Item className="conversation-menu-item"
               onClick={() => openSettings({ mode: "create", sourceId: thread.sourceId, threadId: thread.id })}>
               <Icon name="new" size={16} /><span>New tag…</span>
             </Menu.Item>
@@ -38,7 +39,7 @@ export function TagMenu({ thread }: { readonly thread: ThreadSummary }) {
                 </Menu.SubmenuTrigger>
                 <Menu.Portal>
                   <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="start" sideOffset={4}>
-                    <Menu.Popup className="conversation-menu-popup" aria-label="Edit tags">
+                    <Menu.Popup className="conversation-menu-popup tag-menu-popup" aria-label="Edit tags">
                       {tags.map((tag) => <Menu.Item key={tag.id} className="conversation-menu-item" onClick={() => openSettings({ mode: "edit", tagId: tag.id })}><TagChip tag={tag} /></Menu.Item>)}
                     </Menu.Popup>
                   </Menu.Positioner>

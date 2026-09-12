@@ -1,5 +1,5 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { page, userEvent } from "@vitest/browser/context";
+import { commands, page, userEvent } from "@vitest/browser/context";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -159,13 +159,15 @@ const chatStore = () => ({
   loadFullToolCall: vi.fn().mockResolvedValue(false),
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  await commands.emulateColorScheme("dark");
   vi.clearAllMocks();
   localStorage.clear();
   document.body.style.margin = "0";
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await commands.emulateColorScheme(null);
   cleanup();
   localStorage.clear();
 });
@@ -190,7 +192,7 @@ describe.each([
     expect(await screen.findByRole("menuitem", { name: "New tag…" })).toBeVisible();
     for (const item of tags) expect(screen.getByRole("menuitem", { name: `Remove ${item.name}` })).toBeVisible();
     expect(title.getBoundingClientRect()).toEqual(titleBounds);
-    if (label === "desktop") await capture("tags-header-menu-desktop");
+    await capture(`tags-header-menu-${label}`);
   });
 
   it("shows dashboard tag chips with a bounded overflow count", async () => {
@@ -200,8 +202,15 @@ describe.each([
     storeMock.current = dashboardStore({ threads: rows, visibleThreads: rows, tagsByAgent: { alpha: tags } });
     render(<WebRuntimeProvider><Dashboard highlightSelected={false} /></WebRuntimeProvider>);
     expect(await screen.findByText("+2")).toBeVisible();
-    expect(document.querySelectorAll(".thread-preview .tag-chip")).toHaveLength(4);
-    if (label === "desktop") await capture("tags-dashboard-chips-desktop");
+    expect(document.querySelectorAll(".thread-tags .tag-chip")).toHaveLength(4);
+    for (const line of document.querySelectorAll(".thread-tags")) {
+      const preview = line.previousElementSibling!;
+      expect(preview).toHaveClass("thread-preview");
+      expect(line.getBoundingClientRect().top).toBeGreaterThanOrEqual(preview.getBoundingClientRect().bottom);
+    }
+    expect(document.querySelectorAll(".thread-preview .tag-chip")).toHaveLength(0);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    await capture(`tags-dashboard-chips-${label}`);
   });
 
   it("keeps ten long tags on a scrollable header line below the title", async () => {

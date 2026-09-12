@@ -95,8 +95,6 @@ export function ThreadListItem({
           <span className="thread-preview">
             {presentation.active && <i className="thread-running" role="img" aria-label={presentation.text} />}
             {project !== undefined && <ProjectTag name={project.name} color={project.color} />}
-            {tags.slice(0, 3).map((tag) => <TagChip key={tag.id} tag={tag} />)}
-            {tags.length > 3 && <span className="tag-overflow" aria-label={`${String(tags.length - 3)} more tags`}>+{tags.length - 3}</span>}
             <span className="thread-preview-text" title={presentation.text}>
               {presentation.text}
             </span>
@@ -108,6 +106,10 @@ export function ThreadListItem({
               title={route.title}
             />
           </span>
+          {tags.length > 0 && <span className="thread-tags" aria-label="Conversation tags">
+            {tags.slice(0, 3).map((tag) => <TagChip key={tag.id} tag={tag} />)}
+            {tags.length > 3 && <span className="tag-overflow" aria-label={`${String(tags.length - 3)} more tags`}>+{tags.length - 3}</span>}
+          </span>}
         </span>
       </ThreadListItemPrimitive.Trigger>
     </ThreadListItemPrimitive.Root>
