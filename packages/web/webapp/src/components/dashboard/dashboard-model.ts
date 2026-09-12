@@ -3,7 +3,7 @@ import {
   threadOutcomeError,
   threadPresentation,
 } from "../../thread-presentation";
-import type { AgentSummary, ThreadSummary } from "../../types";
+import type { AgentSummary, ProjectColor, ProjectSummary, ThreadSummary } from "../../types";
 import { formatUsd } from "../../usage";
 import type { IconName } from "../Icon";
 
@@ -81,9 +81,35 @@ export const dashboardKindLabel = (kind: DashboardThreadKind): string => LABEL_B
  * Recent is conversations; a cron channel is an automation's history and lives
  * in that collection. The listing is server-scoped the same way -- this is the
  * row-level guard for whatever an older page or event still carries.
+ *
+ * A project's conversations ARE in this list, like any other: the project page
+ * is a second way into them, not the only one. What marks them is the label
+ * the row carries, not their absence.
  */
 export const isRecentThread = (thread: ThreadSummary): boolean =>
   thread.trigger?.kind !== "cron";
+
+/**
+ * What a row says about the project it belongs to, or undefined for a
+ * conversation that belongs to its agent directly. Every list that can show a
+ * member -- Recent, Running, search, the archive shelf -- says so with this.
+ *
+ * The loaded project wins -- it carries the colour, and a rename reaches it
+ * first -- but Running crosses agents and this console holds only the selected
+ * agent's projects, so the name the row itself carries is what labels the rest.
+ */
+export const threadProjectLabel = (
+  thread: ThreadSummary,
+  projectsByAgent: Readonly<Record<string, readonly ProjectSummary[]>>,
+): { readonly name: string; readonly color: ProjectColor } | undefined => {
+  if (thread.projectId === null) return undefined;
+  const project = (projectsByAgent[thread.sourceId] ?? [])
+    .find((item) => item.id === thread.projectId);
+  if (project !== undefined) return { name: project.name, color: project.color ?? "default" };
+  return thread.projectName === undefined
+    ? undefined
+    : { name: thread.projectName, color: "default" };
+};
 
 /**
  * What Running falls back to when the server's listing is not standing behind

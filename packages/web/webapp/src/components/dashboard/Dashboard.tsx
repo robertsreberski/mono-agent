@@ -42,6 +42,7 @@ export function Dashboard({
     catalogByProvider,
     navigationDestination,
     openProject,
+    projectsByAgent,
     selectedAgentId,
     selectAgent,
     selectThread,
@@ -157,6 +158,7 @@ export function Dashboard({
           authoritative={authoritative}
           {...(catalogModels === undefined ? {} : { catalogModels })}
           catalogSourceId={selectedAgentId ?? undefined}
+          projectsByAgent={projectsByAgent}
         />
         <ProjectsSection />
         <RecentSection

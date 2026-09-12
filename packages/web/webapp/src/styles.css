@@ -385,9 +385,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* The Recent row's unread dot, before the stamp: this device has not seen the
    conversation as it now stands. */
 .thread-unread { width: 6px; height: 6px; flex: none; background: var(--accent); border-radius: 999px; }
-.thread-preview { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.thread-preview { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .thread-preview-text { min-width: 0; flex: 1; overflow: hidden; font: inherit; line-height: inherit; text-overflow: ellipsis; white-space: nowrap; }
-.thread-running { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.4s ease infinite; }
+.thread-running { width: 6px; height: 6px; flex: none; align-self: center; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); animation: pulse 1.4s ease infinite; }
 .thread-load-more { min-height: 31px; margin: 8px 0 0; padding: 0 9px; color: var(--text-soft); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 10px; font-weight: 650; }
 .thread-load-more:hover { color: var(--text); background: var(--surface-hover); }
 .thread-search-results { display: flex; flex-direction: column; gap: 4px; }
@@ -428,7 +428,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .route-badge.is-compact .route-badge-model { max-width: 100px; }
 .route-badge-flag { flex: none; color: var(--warning); font-weight: 700; }
 .route-badge.is-requested .route-badge-model { text-decoration: underline dotted; text-underline-offset: 3px; }
-.running-card-status-line { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.running-card-status-line { min-width: 0; display: flex; align-items: baseline; gap: 6px; font-size: 9.5px; line-height: 1.35; }
 .running-card-status-line .running-card-status { min-width: 0; flex: 1; }
 .activity-row-badge { flex: none; display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; max-width: 50%; }
 .activity-row-badge .route-badge { min-width: 0; max-width: 100%; }
@@ -581,7 +581,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .chat-header-actions .icon-button { width: 36px; height: 36px; color: var(--text-soft); background: var(--surface-subtle); }
 .chat-header-actions .icon-button:hover { color: var(--text); background: var(--surface-hover); }
 .mobile-navigation { display: none; }
-.chat-title-block { min-width: 0; flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+/* No gap of its own between the eyebrow and the title row: the title is a
+   button with 3px of vertical padding, and that 3px is the same rhythm the
+   project page keeps between its PROJECT label and the project name. */
+.chat-title-block { min-width: 0; flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
 .chat-title-row { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 10px; }
 .conversation-title-group { min-width: 0; max-width: min(62vw, 650px); display: flex; align-items: center; gap: 7px; }
 .conversation-title { min-width: 0; max-width: min(52vw, 560px); overflow: hidden; padding: 3px 5px; color: var(--text); background: transparent; border-radius: 6px; font-size: 14px; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
@@ -1409,7 +1412,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 
 @media (max-width: 560px) {
   .chat-header { flex-wrap: nowrap; padding-left: max(9px, env(safe-area-inset-left)); padding-right: max(9px, env(safe-area-inset-right)); }
-  .chat-title-block { min-width: 0; flex: 1; gap: 1px; }
+  .chat-title-block { min-width: 0; flex: 1; gap: 0; }
   .chat-title-row { gap: 0; }
   .chat-project-identity { padding-left: 2px; }
   .conversation-title-group { max-width: 100%; }
@@ -1510,11 +1513,30 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .project-tile[data-project-color], .project-palette button { color: var(--project-ink); background: var(--project-tint); }
 /* The conversation's project is its eyebrow: the Dashboard's section-label
    measure in the project's ink, above the title where the console name sits
-   above the agent's. The pending note shares the line in the muted colour. */
+   above the agent's. The pending note shares the line in the muted colour.
+   The title is a rename button with 5px of horizontal padding, so the eyebrow
+   takes the same 5px: the folder glyph lands on the title's text edge, not
+   on the button's box edge 5px to its left. The badge's own hover padding is
+   pulled back out again by its negative margin, so it changes nothing here. */
 .chat-project-identity { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding-left: 5px; line-height: 1; }
-.project-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; margin: -3px -4px; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--project-ink); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; line-height: 1; text-transform: uppercase; cursor: pointer; }
+/* The title's padding narrows on a phone; the eyebrow follows it so the two
+   stay in one column. Declared here rather than in the layout block above,
+   which this rule would otherwise override. */
+@media (max-width: 560px) { .chat-project-identity { padding-left: 2px; } }
+.project-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; margin: -3px -4px; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--project-ink); font-size: 10.5px; font-weight: 600; letter-spacing: 0.01em; line-height: 1; cursor: pointer; }
 .project-badge:hover { background: var(--project-tint); }
+.project-badge:focus-visible { outline-offset: 0; }
+.project-badge svg { flex: none; }
 .project-badge span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The same badge standing still inside a row that is already one target:
+   no hover, no cursor, and it gives up its width before the status text does.
+   It takes the line's own type size and leading so its baseline is the line's
+   baseline, and the glyph's bottom edge sits on that baseline too. */
+.project-badge.is-static { flex: 0 1 auto; align-items: baseline; margin: 0; padding: 0; font-size: inherit; line-height: inherit; cursor: default; }
+.project-badge.is-static:hover { background: transparent; }
+/* The folder is drawn 1.5px short of its box's bottom edge; on a baseline
+   that reads as the glyph floating, so it is let down by exactly that. */
+.project-badge.is-static svg { translate: 0 1.5px; }
 .project-pending { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* A membership change is a rule across the transcript: a faint tinted line
    with the event in the middle, at the messages' own rhythm. */

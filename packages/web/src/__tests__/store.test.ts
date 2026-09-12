@@ -5890,6 +5890,42 @@ describe("WebStore conversation projects", () => {
     }
   });
 
+  it("carries the project's name on every conversation summary that belongs to one", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Console work" });
+      const member = store.createThread("agent-one", { projectId: project.id });
+      const direct = store.createThread("agent-one");
+      const archivedMember = store.createThread("agent-one", { projectId: project.id });
+      store.patchThread(archivedMember.id, { archived: true });
+
+      // A project's conversations are listed with the agent's own, and the
+      // name is what tells the two apart on the row.
+      const live = store.listThreadsPage({ sourceId: "agent-one", archived: false, scope: "chats" });
+      expect(live.threads.map((thread) => thread.id).sort()).toEqual([direct.id, member.id].sort());
+      expect(live.threads.find((thread) => thread.id === member.id)?.projectName).toBe("Console work");
+      expect(live.threads.find((thread) => thread.id === direct.id)?.projectName).toBeUndefined();
+
+      const shelf = store.listThreadsPage({ sourceId: "agent-one", archived: true, scope: "chats" });
+      expect(shelf.threads[0]?.projectName).toBe("Console work");
+
+      // Every other summary path carries it too, from the same row query.
+      store.patchThread(member.id, { title: "labelled member" });
+      const hit = store.searchThreads({ sourceId: "agent-one", query: "labelled", scope: "chats" })
+        .hits.find((item) => item.thread.id === member.id);
+      expect(hit?.thread.projectName).toBe("Console work");
+      store.beginTurn({ threadId: member.id, text: "work", attachmentIds: [] });
+      expect(store.listActiveThreads().threads.find((thread) => thread.id === member.id)?.projectName)
+        .toBe("Console work");
+      // A rename reaches the rows on their next read.
+      store.patchProject(project.id, { name: "Renamed" });
+      expect(store.listActiveThreads().threads.find((thread) => thread.id === member.id)?.projectName)
+        .toBe("Renamed");
+    } finally {
+      store.close();
+    }
+  });
+
   it("counts members and running turns per project", async () => {
     const { store } = await openStore();
     try {

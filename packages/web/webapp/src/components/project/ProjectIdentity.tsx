@@ -39,9 +39,10 @@ export function StartProjectMarkers() {
 
 /**
  * The conversation's project, as the eyebrow above its title -- the same
- * place the Dashboard keeps the console name above the agent's. It opens the
- * project, and while a membership change waits for the running turn it says
- * so in the same line rather than growing a second badge.
+ * place the Dashboard keeps the console name above the agent's, with the
+ * folder glyph set on the title's own text edge so the two read as one
+ * column. It opens the project, and while a membership change waits for the
+ * running turn it says so in the same line rather than growing a second badge.
  */
 export function ProjectBadge() {
   const { selectedThread, projectsByAgent, openProjectById } = useConsoleStore();
@@ -58,7 +59,7 @@ export function ProjectBadge() {
         : `moves to ${destination?.name ?? "another project"} after this turn`;
   return <div className="chat-project-identity" data-project-color={(project ?? destination)?.color ?? "default"}>
     {project !== undefined && <button type="button" className="project-badge" onClick={() => openProjectById(project.id)} aria-label={`Open project ${project.name}`}>
-      <Icon name="folder" size={11} /><span>{project.name}</span>
+      <Icon name="folder" size={12} /><span>{project.name}</span>
     </button>}
     {note !== null && <span className="project-pending" title="Project context changes after the current turn finishes">
       {project !== undefined && <span aria-hidden="true">·</span>}{note}
