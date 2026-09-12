@@ -19,6 +19,7 @@ import {
   type ModuleValidateExpectation,
   resolveModuleInputs,
 } from "../modules/index.js";
+import { CHILD_ONLY_TOOL_NAMES } from "../modules/known-tools.js";
 import { managedProjectSkillFiles } from "../project-skills.js";
 
 /**
@@ -128,7 +129,7 @@ function modelRefNeedsCredentials(modelRef: string): boolean {
 
 /** Tools ordered canonically: runtime built-ins, app-owned tools, then adapter send tools. */
 const ORDERED_TOOL_NAMES: readonly string[] = [
-  ...BUILTIN_TOOL_NAMES,
+  ...BUILTIN_TOOL_NAMES.filter((name) => !CHILD_ONLY_TOOL_NAMES.includes(name)),
   ...APP_TOOL_NAMES,
   ...ADAPTER_SEND_TOOL_NAMES,
 ];
@@ -380,7 +381,7 @@ export function composeWizardPlan(answers: WizardAnswers, ctx: ComposeContext): 
 
   config.tools = {
     ...((config.tools as Record<string, unknown> | undefined) ?? {}),
-    allowedTools: [...answers.allowedTools],
+    allowedTools: answers.allowedTools.filter((name) => !CHILD_ONLY_TOOL_NAMES.includes(name)),
     disallowedTools: [],
   };
 

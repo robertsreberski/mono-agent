@@ -328,3 +328,8 @@ describe("wizard composer — default parity with today's scaffold", () => {
     expect((plugin?.config as { agent?: { name?: string } } | undefined)?.agent?.name).toBe("Research Companion");
   });
 });
+
+it("excludes child-only tools from generated explicit parent allowlists", () => {
+  const plan = composeWizardPlan(defaultAnswers({ allowedTools: ["Read", "AskParent", "Agent"] }), CTX);
+  expect(plan.configJson.tools?.allowedTools).toEqual(["Read", "Agent"]);
+});

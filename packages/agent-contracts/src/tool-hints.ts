@@ -18,6 +18,7 @@ type ProviderStatusStreamEvent = Extract<AgentStreamEvent, { type: "provider_sta
 
 const BUILTIN_HINTS: Readonly<Record<string, string>> = {
   agent: "Delegating to a subagent…",
+  askparent: "Asking parent…",
   agentsend: "Continuing a subagent…",
   websearch: "Searching the web…",
   webfetch: "Reading a page…",
@@ -370,6 +371,7 @@ export function formatProviderStatusLine(event: ProviderStatusStreamEvent): stri
 }
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
+  if (normalized === "askparent") return { action: "❓ Asking parent:", previewFields: ["question"] };
   if (normalized === "agentsend") return {
     action: "🤖 Continuing agent", actionWithoutPreview: "🤖 Continuing a subagent", previewFields: ["id"], quotePreview: true,
   };
