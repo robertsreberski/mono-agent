@@ -39,6 +39,11 @@ vi.mock("./api", async (importOriginal) => ({
     liveInput: vi.fn(),
     threadJob: vi.fn(),
     searchThreads: vi.fn(),
+    projects: vi.fn(),
+    createProject: vi.fn(),
+    patchProject: vi.fn(),
+    deleteProject: vi.fn(),
+    projectThreads: vi.fn(),
   },
 }));
 
@@ -125,6 +130,8 @@ beforeEach(async () => {
   });
   vi.mocked(api.agentSkills).mockResolvedValue({ status: "unsupported", items: [] });
   vi.mocked(api.threads).mockResolvedValue({ threads: [] });
+  vi.mocked(api.projects).mockResolvedValue([]);
+  vi.mocked(api.projectThreads).mockResolvedValue({ threads: [] });
   vi.mocked(api.messages).mockResolvedValue({ messages: [] });
   vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
   vi.mocked(api.cronOverview).mockResolvedValue({ generatedAt: "2026-09-08T08:00:00.000Z", actionsEnabled: false, jobs: [] });

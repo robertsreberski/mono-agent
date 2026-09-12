@@ -120,6 +120,46 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       "failure_reason", "created_at", "completed_at", "failed_at", "tombstoned_at",
     ]);
   } },
+  { version: 26, name: "conversation-projects", up: ({ database }) => {
+    // The unchanged bootstrap DDL creates this table, including upgrades; the
+    // step only asserts it before wiring the membership column and indexes.
+    assertColumns(database, "projects", [
+      "id", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision",
+    ]);
+    addColumn(database, "threads", "project_id", "TEXT REFERENCES projects(id) ON DELETE SET NULL");
+    database.exec(`CREATE INDEX IF NOT EXISTS projects_by_source
+      ON projects(source_id, archived_at, updated_at, id)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS threads_by_project
+      ON threads(project_id, archived_at, updated_at, id)`);
+  } },
+  { version: 27, name: "project-turn-boundaries", up: ({ database }) => {
+    addColumn(database, "projects", "color", "TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose'))");
+    addColumn(database, "turns", "project_context_json", "TEXT");
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS console_tool_operations (
+        operation_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+        payload_sha256 TEXT NOT NULL,
+        result_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS pending_project_memberships (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        project_id TEXT REFERENCES projects(id),
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS project_transitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        after_message_id TEXT,
+        turn_id TEXT,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS project_transitions_by_thread ON project_transitions(thread_id, id);
+    `);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -166,14 +206,18 @@ export function validateWebStorageShape(database: DatabaseSync): void {
   try {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
-      threads: ["trigger_kind", "run_model", "run_effort"],
+      threads: ["trigger_kind", "run_model", "run_effort", "project_id"],
+      console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
+      pending_project_memberships: ["thread_id", "project_id", "turn_id"],
+      project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
+      projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
       cron_overviews: ["jobs_truncated"],
       attachments: ["origin"],
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
-      turns: ["requested_model", "requested_effort", "effective_effort", "routing_json"],
+      turns: ["project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",
@@ -217,9 +261,13 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ["notification_deliveries_by_thread", ["thread_id"]],
       ...THREAD_READ_INDEXES,
       ["cron_reply_operations_one_pending_run", ["source_id", "job_id", "run_id"]],
+      ["projects_by_source", ["source_id", "archived_at", "updated_at", "id"]],
+      ["threads_by_project", ["project_id", "archived_at", "updated_at", "id"]],
     ] as const) assertIndex(database, index, expected);
     for (const [table, from, target, onDelete] of [
       ["agent_run_overrides", "source_id", "agents", "CASCADE"],
+      ["projects", "source_id", "agents", "CASCADE"],
+      ["threads", "project_id", "projects", "SET NULL"],
       ["messages", "turn_id", "turns", "CASCADE"],
       ["attachments", "message_id", "messages", "CASCADE"],
       ["monitor_wake_deliveries", "thread_id", "threads", "SET NULL"],

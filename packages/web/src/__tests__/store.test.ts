@@ -5423,3 +5423,459 @@ describe("WebStore message sequence and part deltas", () => {
     store.close();
   });
 });
+
+describe("WebStore conversation projects", () => {
+  async function openStore(clockMs = Date.parse("2026-09-15T10:00:00.000Z")): Promise<{
+    store: WebStore;
+    clock: { now: number };
+  }> {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const clock = { now: clockMs };
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clock.now += 1),
+    });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    return { store, clock };
+  }
+
+  function pricedTurn(store: WebStore, threadId: string, cost: number): void {
+    const turn = store.beginTurn({ threadId, text: "priced work", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: cost } },
+    ]);
+    store.completeTurn(turn.turnId, "done", { runtime: { model: "provider/default" } });
+  }
+
+  it.each(["complete", "failed", "cancelled", "interrupted"] as const)("applies one last-intent transition after %s, preserving the active context", async (outcome) => {
+    const { store } = await openStore();
+    try {
+      const first = store.createProject({ sourceId: "agent-one", name: "First", context: "Original", color: "blue" });
+      const second = store.createProject({ sourceId: "agent-one", name: "Second", context: "Next", color: "rose" });
+      const thread = store.createThread("agent-one", { projectId: first.id });
+      const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      store.patchProject(first.id, { name: "Edited", context: "Edited context", color: "amber" });
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "First", context: "Original" });
+      store.patchThread(thread.id, { projectId: second.id });
+      expect(store.getThread(thread.id)).toMatchObject({ projectId: first.id, pendingProject: { projectId: second.id, turnId: turn.turnId } });
+      expect(() => store.deleteProject(first.id)).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      expect(() => store.deleteProject(second.id)).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      expect(() => store.patchProject(second.id, { archived: true })).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      store.patchThread(thread.id, { projectId: null });
+      store.patchThread(thread.id, { projectId: first.id });
+      expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
+      store.patchThread(thread.id, { projectId: second.id });
+      store.patchThread(thread.id, { projectId: second.id });
+      expect(store.projectTransitions(thread.id)).toHaveLength(1);
+      if (outcome === "complete") store.completeTurn(turn.turnId, "done");
+      else if (outcome === "interrupted") store.interruptTurn(turn.turnId);
+      else store.failTurn(turn.turnId, { message: "stopped", cancelled: outcome === "cancelled" });
+      expect(store.getThread(thread.id)).toMatchObject({ projectId: second.id });
+      expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "Second", context: "Next" });
+      expect(store.projectTransitions(thread.id)).toHaveLength(2);
+      expect(store.projectTransitions(thread.id)[1]).toMatchObject({
+        afterMessageId: turn.assistantMessageId, turnId: turn.turnId,
+        before: { id: first.id, name: "Edited", color: "amber" },
+        after: { id: second.id, name: "Second", color: "rose" },
+      });
+      store.deleteProject(second.id);
+      expect(store.projectTransitions(thread.id)[2]).toMatchObject({ before: { name: "Second", color: "rose" }, after: null });
+      expect(JSON.stringify(store.getThreadDetail(thread.id))).not.toContain("Edited context");
+    } finally { store.close(); }
+  });
+
+  it("freezes no-project context in assistant-only turns and persists color validation", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P", context: "Next" });
+      expect(project.color).toBe("default");
+      expect(() => store.patchProject(project.id, { color: "url(secret)" as "blue" })).toThrowError(expect.objectContaining({ code: "invalid_project" }));
+      const thread = store.createThread("agent-one");
+      const turn = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake" });
+      store.patchThread(thread.id, { projectId: project.id });
+      expect(store.projectContextForThread(thread.id)).toBeUndefined();
+      store.completeTurn(turn.turnId, "");
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "P", context: "Next" });
+      expect(store.projectTransitions(thread.id)[0]).toMatchObject({ afterMessageId: turn.assistantMessageId });
+    } finally { store.close(); }
+  });
+
+  it("pages every transition with its actual anchor, including start and repeated idle changes", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const thread = store.createThread("agent-one", { projectId: project.id });
+      expect(store.listMessagesPage(thread.id, { limit: 1 }).projectTransitions).toHaveLength(1);
+      const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      store.patchThread(thread.id, { projectId: null });
+      store.completeTurn(turn.turnId, "done");
+      store.patchThread(thread.id, { projectId: project.id });
+      store.patchThread(thread.id, { projectId: null });
+      const latest = store.listMessagesPage(thread.id, { limit: 1 });
+      expect(latest.messages.map((message) => message.id)).toEqual([turn.assistantMessageId]);
+      expect(latest.projectTransitions).toHaveLength(3);
+      const oldest = store.listMessagesPage(thread.id, { limit: 1, before: latest.nextCursor! });
+      expect(oldest.messages.map((message) => message.id)).toEqual([turn.userMessageId]);
+      expect(oldest.projectTransitions).toHaveLength(1);
+      expect(oldest.projectTransitions?.[0]?.afterMessageId).toBeNull();
+      expect(store.getThread(thread.id)?.messageCount).toBe(2);
+    } finally { store.close(); }
+  });
+
+  it("settles persisted pending membership during restart before the next turn", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    let store = await WebStore.open({ stateDir });
+    let threadId: string;
+    let projectId: string;
+    try {
+      store.replaceAgents([agent()]);
+      const project = store.createProject({ sourceId: "agent-one", name: "After restart", context: "Fresh", color: "purple" });
+      projectId = project.id;
+      const thread = store.createThread("agent-one");
+      threadId = thread.id;
+      store.beginTurn({ threadId, text: "work", attachmentIds: [] });
+      store.patchThread(threadId, { projectId });
+    } finally { store.close(); }
+    store = await WebStore.open({ stateDir });
+    try {
+      expect(store.getThread(threadId)).toMatchObject({ projectId });
+      expect(store.getThread(threadId)).not.toHaveProperty("pendingProject");
+      expect(store.projectTransitions(threadId)).toHaveLength(1);
+      expect(store.projectContextForThread(threadId)).toEqual({ name: "After restart", context: "Fresh" });
+    } finally { store.close(); }
+  });
+
+  it.each(["new", "queued"] as const)("keeps the %s turn after the membership boundary even with a frozen clock", async (mode) => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date("2026-09-12T00:00:00Z") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const first = store.beginTurn({ threadId: thread.id, text: "first", attachmentIds: [] });
+      store.patchThread(thread.id, { projectId: project.id });
+      const queued = mode === "queued" ? store.reserveLiveInput(thread.id, "second") : undefined;
+      if (queued !== undefined) store.queueLiveInput(queued.input.id);
+      store.completeTurn(first.turnId, "first answer");
+      const second = queued === undefined ? store.beginTurn({ threadId: thread.id, text: "second", attachmentIds: [] }) : store.promoteNextQueuedLiveInput(thread.id)!;
+      store.completeTurn(second.turnId, "second answer");
+      expect(store.listMessagesPage(thread.id).messages.map((item) => item.id)).toEqual([
+        first.userMessageId, first.assistantMessageId, second.userMessageId, second.assistantMessageId,
+      ]);
+    } finally { store.close(); }
+  });
+
+  it("creates, lists, reads and patches projects with revision bumps", async () => {
+    const { store } = await openStore();
+    try {
+      expect(store.listProjects("agent-one")).toEqual([]);
+      const project = store.createProject({ sourceId: "agent-one", name: "Web console", context: "Brief" });
+      expect(project).toMatchObject({
+        sourceId: "agent-one",
+        name: "Web console",
+        context: "Brief",
+        archivedAt: null,
+        revision: 1,
+        conversationCount: 0,
+        runningCount: 0,
+      });
+      expect(project).not.toHaveProperty("monthUsd");
+      expect(store.getProject(project.id)).toEqual(project);
+      expect(store.getProject("missing")).toBeUndefined();
+      expect(store.listProjects("agent-one")).toEqual([project]);
+      expect(store.listProjects("agent-two")).toEqual([]);
+      expect(() => store.listProjects("agent-missing")).toThrowError(
+        expect.objectContaining({ code: "agent_not_found" }),
+      );
+
+      const renamed = store.patchProject(project.id, { name: "Console" });
+      expect(renamed).toMatchObject({ name: "Console", context: "Brief", revision: 2 });
+      const archived = store.patchProject(project.id, { archived: true });
+      expect(archived.archivedAt).toEqual(expect.any(String));
+      expect(archived.revision).toBe(3);
+      const restored = store.patchProject(project.id, { archived: false, context: "" });
+      expect(restored).toMatchObject({ archivedAt: null, context: "", revision: 4 });
+      expect(() => store.patchProject("missing", { name: "x" })).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+      expect(() => store.createProject({ sourceId: "agent-missing", name: "x" })).toThrowError(
+        expect.objectContaining({ code: "agent_not_found" }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("joins conversations at creation and enforces membership rules", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const other = store.createProject({ sourceId: "agent-two", name: "Q" });
+      const archived = store.createProject({ sourceId: "agent-one", name: "A" });
+      store.patchProject(archived.id, { archived: true });
+
+      const member = store.createThread("agent-one", { projectId: project.id });
+      expect(member.projectId).toBe(project.id);
+      expect(store.createThread("agent-one").projectId).toBeNull();
+      expect(() => store.createThread("agent-one", { projectId: "missing" })).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+      expect(() => store.createThread("agent-one", { projectId: other.id })).toThrowError(
+        expect.objectContaining({ code: "project_agent_mismatch" }),
+      );
+      expect(() => store.createThread("agent-one", { projectId: archived.id })).toThrowError(
+        expect.objectContaining({ code: "project_archived" }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("moves and detaches membership without reordering the sidebar", async () => {
+    const { store } = await openStore();
+    try {
+      const first = store.createProject({ sourceId: "agent-one", name: "First" });
+      const second = store.createProject({ sourceId: "agent-one", name: "Second" });
+      const thread = store.createThread("agent-one");
+      const before = thread.updatedAt;
+
+      const moved = store.patchThread(thread.id, { projectId: first.id });
+      expect(moved.projectId).toBe(first.id);
+      expect(moved.revision).toBe(thread.revision + 1);
+      // A membership-only patch must not reorder the sidebar.
+      expect(moved.updatedAt).toBe(before);
+
+      const again = store.patchThread(thread.id, { projectId: second.id });
+      expect(again.projectId).toBe(second.id);
+      const detached = store.patchThread(thread.id, { projectId: null });
+      expect(detached.projectId).toBeNull();
+      expect(detached.updatedAt).toBe(before);
+
+      expect(() => store.patchThread(thread.id, { projectId: "missing" })).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+      const foreign = store.createProject({ sourceId: "agent-two", name: "Foreign" });
+      expect(() => store.patchThread(thread.id, { projectId: foreign.id })).toThrowError(
+        expect.objectContaining({ code: "project_agent_mismatch" }),
+      );
+      store.patchProject(first.id, { archived: true });
+      expect(() => store.patchThread(thread.id, { projectId: first.id })).toThrowError(
+        expect.objectContaining({ code: "project_archived" }),
+      );
+      // A failed move leaves the conversation where it was.
+      expect(store.getThread(thread.id)?.projectId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("deletes a project by detaching its chats with a revision bump", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Doomed" });
+      const member = store.createThread("agent-one", { projectId: project.id });
+      const archivedMember = store.createThread("agent-one", { projectId: project.id });
+      store.patchThread(archivedMember.id, { archived: true });
+      const outsider = store.createThread("agent-one");
+      const memberRevision = store.getThread(member.id)?.revision;
+
+      const detached = store.deleteProject(project.id);
+      expect(new Set(detached)).toEqual(new Set([member.id, archivedMember.id]));
+      expect(store.getProject(project.id)).toBeUndefined();
+      expect(store.getThread(member.id)).toMatchObject({
+        projectId: null,
+        revision: (memberRevision ?? 0) + 1,
+      });
+      expect(store.getThread(archivedMember.id)?.projectId).toBeNull();
+      expect(store.getThread(outsider.id)?.projectId).toBeNull();
+      expect(store.listProjects("agent-one")).toEqual([]);
+      expect(() => store.deleteProject(project.id)).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("filters the thread page by project with bound cursors", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const first = store.createThread("agent-one", { projectId: project.id });
+      const second = store.createThread("agent-one", { projectId: project.id });
+      store.createThread("agent-one");
+
+      const page = store.listThreadsPage({ sourceId: "agent-one", archived: false, projectId: project.id });
+      expect(page.threads.map((thread) => thread.id)).toEqual([second.id, first.id]);
+      expect(page.threads.every((thread) => thread.projectId === project.id)).toBe(true);
+
+      const one = store.listThreadsPage({ sourceId: "agent-one", archived: false, projectId: project.id, limit: 1 });
+      expect(one.threads).toHaveLength(1);
+      expect(one.nextCursor).toEqual(expect.any(String));
+      const two = store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: project.id,
+        limit: 1,
+        before: one.nextCursor!,
+      });
+      expect(two.threads.map((thread) => thread.id)).toEqual([first.id]);
+
+      // Cursors are bound to their filter: the unfiltered bucket cursor and a
+      // foreign project's cursor must not walk this page.
+      const unfiltered = store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 1 });
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: project.id,
+        limit: 1,
+        before: unfiltered.nextCursor!,
+      })).toThrowError(expect.objectContaining({ code: "invalid_page" }));
+      const foreign = store.createProject({ sourceId: "agent-two", name: "F" });
+      const foreignPage = store.listThreadsPage({ sourceId: "agent-two", archived: false, projectId: foreign.id });
+      expect(foreignPage.threads).toEqual([]);
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: project.id,
+      })).not.toThrow();
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: "missing",
+      })).toThrowError(expect.objectContaining({ code: "project_not_found" }));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("counts members and running turns per project", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P", context: "c" });
+      const idle = store.createThread("agent-one", { projectId: project.id });
+      const running = store.createThread("agent-one", { projectId: project.id });
+      store.beginTurn({ threadId: running.id, text: "work", attachmentIds: [] });
+      const archived = store.createThread("agent-one", { projectId: project.id });
+      store.patchThread(archived.id, { archived: true });
+      void idle;
+
+      expect(store.getProject(project.id)).toMatchObject({
+        conversationCount: 2,
+        runningCount: 1,
+      });
+      expect(store.listProjects("agent-one")).toMatchObject([{
+        conversationCount: 2,
+        runningCount: 1,
+      }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("sums only the current UTC month's priced usage", async () => {
+    const { store, clock } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P", context: "c" });
+      const first = store.createThread("agent-one", { projectId: project.id });
+      const second = store.createThread("agent-one", { projectId: project.id });
+      pricedTurn(store, first.id, 1.5);
+      pricedTurn(store, second.id, 0.25);
+      expect(store.getProject(project.id)?.monthUsd).toBeCloseTo(1.75, 10);
+
+      // Last month's priced turn is out of the window.
+      clock.now = Date.parse("2026-08-20T10:00:00.000Z");
+      const elder = store.createThread("agent-one", { projectId: project.id });
+      pricedTurn(store, elder.id, 9);
+      clock.now = Date.parse("2026-09-16T10:00:00.000Z");
+      expect(store.getProject(project.id)?.monthUsd).toBeCloseTo(1.75, 10);
+
+      // Archiving a member removes its usage from the month.
+      store.patchThread(first.id, { archived: true });
+      expect(store.getProject(project.id)?.monthUsd).toBeCloseTo(0.25, 10);
+
+      // An unpriced project omits the month rather than reporting zero.
+      const bare = store.createProject({ sourceId: "agent-one", name: "Bare", context: "c" });
+      store.createThread("agent-one", { projectId: bare.id });
+      expect(store.getProject(bare.id)).not.toHaveProperty("monthUsd");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resolves the dispatch context only for members with real context", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Web <console>", context: "  Stay sharp.  " });
+      const member = store.createThread("agent-one", { projectId: project.id });
+      expect(store.projectContextForThread(member.id)).toEqual({
+        name: "Web <console>",
+        context: "  Stay sharp.  ",
+      });
+      expect(store.projectContextForThread(store.createThread("agent-one").id)).toBeUndefined();
+      const blank = store.createProject({ sourceId: "agent-one", name: "Blank", context: "   " });
+      const blankMember = store.createThread("agent-one", { projectId: blank.id });
+      expect(store.projectContextForThread(blankMember.id)).toBeUndefined();
+      expect(store.projectContextForThread("missing")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("WebStore console discovery tools", () => {
+  it("lists and searches only the invoking agent's chats, and reads leave no receipt", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    const say = (threadId: string, prompt: string, answer: string): void => {
+      store.completeTurn(store.beginTurn({ threadId, text: prompt, attachmentIds: [] }).turnId, answer);
+    };
+    const other = store.createThread("agent-one");
+    store.patchThread(other.id, { title: "Exporter setup" });
+    say(other.id, "how do I reach the exporter", "Point it at the Tailscale address.");
+    const archived = store.createThread("agent-one");
+    store.patchThread(archived.id, { title: "Old tailscale notes" });
+    say(archived.id, "keep these", "Kept.");
+    store.patchThread(archived.id, { archived: true });
+    const foreign = store.createThread("agent-two");
+    say(foreign.id, "tailscale on the other agent", "Not yours.");
+    const origin = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: origin.id, text: "Find the exporter thread", attachmentIds: [] });
+    const scope = { sourceId: "agent-one", threadId: origin.id, turnId: turn.turnId };
+    const run = (tool: "ListConversations" | "SearchConversations", args: Record<string, unknown>) =>
+      store.consoleToolOperation(scope, { operationId: `op-${tool}-${String(Object.keys(args).length)}-0000000000`, tool, args }).result;
+
+    const search = run("SearchConversations", { query: "tailscale" }) as { conversations: Array<Record<string, unknown>>; truncated: boolean };
+    expect(search.truncated).toBe(false);
+    expect(search.conversations.map((hit) => hit.id).sort()).toEqual([other.id, archived.id].sort());
+    const messageHit = search.conversations.find((hit) => hit.id === other.id)!;
+    expect(messageHit).toMatchObject({ title: "Exporter setup", titleMatch: false, messageMatches: 1, archived: false, projectId: null });
+    expect(messageHit.snippet).toContain("Tailscale");
+    expect(messageHit.snippet).not.toMatch(/[\u0002\u0003]/u);
+    expect(search.conversations.find((hit) => hit.id === archived.id)).toMatchObject({ titleMatch: true, archived: true });
+
+    const active = run("ListConversations", {}) as { conversations: Array<Record<string, unknown>>; cursor?: string };
+    expect(active.conversations.map((row) => row.id)).toEqual([origin.id, other.id]);
+    expect(active.conversations[1]).toMatchObject({ title: "Exporter setup", archived: false, updatedAt: expect.any(String) });
+    expect(active.cursor).toBeUndefined();
+    expect((run("ListConversations", { archived: true }) as { conversations: Array<{ id: string }> }).conversations.map((row) => row.id)).toEqual([archived.id]);
+    const first = run("ListConversations", { limit: 1 }) as { conversations: Array<{ id: string }>; cursor?: string };
+    expect(first.conversations.map((row) => row.id)).toEqual([origin.id]);
+    expect(first.cursor).toEqual(expect.any(String));
+    expect((run("ListConversations", { limit: 1, cursor: first.cursor }) as { conversations: Array<{ id: string }> }).conversations.map((row) => row.id)).toEqual([other.id]);
+
+    expect(() => run("SearchConversations", { query: "t" })).toThrow(WebConsoleError);
+    expect(() => run("ListConversations", { limit: 0 })).toThrow(WebConsoleError);
+    expect(() => run("ListConversations", { limit: 51 })).toThrow(WebConsoleError);
+    const receipts = (store as unknown as { database: DatabaseSync }).database
+      .prepare("SELECT COUNT(*) AS count FROM console_tool_operations").get() as { count: number };
+    expect(receipts.count).toBe(0);
+    store.close();
+  });
+});

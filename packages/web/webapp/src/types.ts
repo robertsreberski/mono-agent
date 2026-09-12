@@ -461,6 +461,9 @@ export interface ThreadSummary {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
+  /** The project this conversation belongs to, or null when it belongs to the agent directly. */
+  readonly projectId: string | null;
+  readonly pendingProject?: { readonly projectId: string | null; readonly turnId: string };
   readonly trigger?:
     | { readonly kind: "webhook" }
     | { readonly kind: "cron"; readonly jobId?: string; readonly configured?: boolean };
@@ -474,6 +477,38 @@ export interface ThreadSummary {
   readonly runModel?: string | null;
   /** Per-conversation effort override, or null when the agent default applies. */
   readonly runEffort?: string | null;
+}
+
+/**
+ * A per-agent named container of conversations, mirrored from `WebProject`.
+ *
+ * `monthUsd` is this UTC calendar month's recognised priced usage over the
+ * current non-archived members. Absent when no priced observation exists; a
+ * measured zero is kept as zero.
+ */
+export type ProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
+export interface ProjectTransition {
+  readonly id: number;
+  readonly afterMessageId: string | null;
+  readonly turnId: string | null;
+  readonly before: { readonly id: string; readonly name: string; readonly color: ProjectColor } | null;
+  readonly after: { readonly id: string; readonly name: string; readonly color: ProjectColor } | null;
+  readonly createdAt: string;
+}
+
+export interface ProjectSummary {
+  readonly color?: ProjectColor;
+  readonly id: string;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context: string;
+  readonly archivedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly revision: number;
+  readonly conversationCount: number;
+  readonly runningCount: number;
+  readonly monthUsd?: number;
 }
 
 export type ToolCallStatus = "running" | "complete" | "failed";
@@ -718,6 +753,8 @@ export interface WebAttachment {
 }
 
 export interface WebMessage {
+  /** Browser presentation only, attached after loading the independent sidecars. */
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly id: string;
   readonly threadId: string;
   readonly turnId?: string;
@@ -799,6 +836,7 @@ export interface MessageDelta {
 }
 
 export interface ThreadDetail {
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
   readonly messagesNextCursor?: string;
@@ -848,6 +886,7 @@ export interface ThreadSearchPage {
 }
 
 export interface MessagePage {
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
 }
@@ -965,6 +1004,13 @@ export interface Bootstrap {
   /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
   readonly threadsNextCursor: string | null;
   /**
+   * The resolved agent's projects, archived included: the Dashboard and the
+   * conversation picker filter archived out locally.
+   */
+  readonly projects: readonly ProjectSummary[];
+  /** The agent `projects` belong to, or `null` when there is no agent to open on. */
+  readonly projectsSourceId: string | null;
+  /**
    * What is running fleet-wide, from the same store snapshot `agents` was
    * counted from. Absent only on a bootstrap an older server built, which is
    * exactly when this console has to fall back to what it can see and say so.
@@ -983,6 +1029,7 @@ export interface WebEvent {
     | "cron.changed"
     | "threads.changed"
     | "thread.changed"
+    | "projects.changed"
     | "message.changed"
     | "message.delta"
     | "turn.changed"
@@ -992,6 +1039,15 @@ export interface WebEvent {
   readonly threadId?: string;
   readonly payload?: unknown;
 }
+
+/**
+ * The payload of a `projects.changed`, mirrored from the
+ * server's `WebProjectChangedPayload`: the fresh summary travels with the
+ * event, and a removal has no summary left to carry.
+ */
+export type ProjectChangedPayload =
+  | { readonly project: ProjectSummary }
+  | { readonly projectId: string; readonly removed: true };
 
 export interface ModelCatalogPage {
   readonly models: readonly CatalogModel[];

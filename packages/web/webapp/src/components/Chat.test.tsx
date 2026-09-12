@@ -207,6 +207,9 @@ const chatStore = (
     archiveThread: vi.fn().mockResolvedValue(undefined),
     unarchiveThread: vi.fn().mockResolvedValue(undefined),
     deleteThread: vi.fn().mockResolvedValue(undefined),
+    projectsByAgent: {},
+    loadProjects: vi.fn().mockResolvedValue([]),
+    setThreadProject: vi.fn().mockResolvedValue(undefined),
     hasOlderMessages: false,
     loadOlderMessages: vi.fn().mockResolvedValue(undefined),
     sendTurn: vi.fn().mockResolvedValue(undefined),
@@ -535,6 +538,78 @@ describe("Chat conversation actions", () => {
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("Empty conversations will be permanently removed"));
     expect(store.archiveThread).not.toHaveBeenCalled();
     confirm.mockRestore();
+  });
+
+  it("offers adding a loose conversation to a project", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent");
+    const store = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: {
+        agent: [
+          project("p-one", "agent", { name: "First" }),
+          project("p-two", "agent", { name: "Second", archivedAt: "2026-09-01T00:00:00.000Z" }),
+        ],
+      },
+    };
+    storeMock.current = store;
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add to project" }));
+    expect(store.loadProjects).toHaveBeenCalledWith("agent");
+
+    fireEvent.click(await screen.findByRole("menuitem", { name: "First" }));
+    expect(store.setThreadProject).toHaveBeenCalledWith("thread-a", "p-one");
+    // Archived projects stay out of the picker.
+    expect(screen.queryByRole("menuitem", { name: "Second" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Remove from project" })).toBeNull();
+  });
+
+  it("keeps an archived member's project in the menu", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent", { projectId: "p-one", archivedAt: "2026-09-01T00:00:00.000Z" });
+    storeMock.current = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: { agent: [project("p-one", "agent", { name: "First" })] },
+    };
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Move to project First" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Remove from project" })).toBeVisible();
+  });
+
+  it("makes a new project from this chat", async () => {
+    const selected = thread("thread-a", "agent");
+    storeMock.current = { ...chatStore(selected, chatDetail(selected, 0)), projectsByAgent: {} };
+    const listener = vi.fn();
+    window.addEventListener("mono-agent:project-settings", listener);
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New project from this chat" }));
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail)
+      .toEqual({ mode: "create", sourceId: "agent", threadId: "thread-a" });
+    window.removeEventListener("mono-agent:project-settings", listener);
+  });
+
+  it("offers moving and removing a project member", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent", { projectId: "p-one" });
+    const store = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: { agent: [project("p-one", "agent", { name: "First" })] },
+    };
+    storeMock.current = store;
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    // The row carries where the chat is now.
+    expect(await screen.findByRole("menuitem", { name: "Move to project First" })).toBeVisible();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from project" }));
+    expect(store.setThreadProject).toHaveBeenCalledWith("thread-a", null);
   });
 });
 

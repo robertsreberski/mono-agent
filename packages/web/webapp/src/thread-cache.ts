@@ -1,4 +1,6 @@
+import { mergeProjectTransitions } from "./project-transitions";
 import type {
+  ProjectTransition,
   MessageDelta,
   MessageDeltaOp,
   MessagePart,
@@ -48,6 +50,7 @@ const MESSAGE_STATUSES: ReadonlySet<string> = new Set<WebMessage["status"]>([
 ]);
 
 export interface ThreadCacheEntry {
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
   /** The keyset cursor for the next OLDER page, absent at the transcript's start. */
@@ -775,7 +778,7 @@ export interface ThreadCache {
   ) => boolean;
   readonly prependOlder: (
     threadId: string,
-    page: { readonly messages: readonly WebMessage[]; readonly nextCursor?: string },
+    page: { readonly projectTransitions?: readonly ProjectTransition[]; readonly messages: readonly WebMessage[]; readonly nextCursor?: string },
   ) => boolean;
   /** The summary only. Never inserts: a conversation not held stays not held. */
   readonly patchThread: (threadId: string, thread: ThreadSummary) => boolean;
@@ -878,6 +881,7 @@ export interface ThreadCache {
    * not call `onCommit`.
    */
   readonly restore: (entry: {
+    readonly projectTransitions?: readonly ProjectTransition[];
     readonly thread: ThreadSummary;
     readonly messages: readonly WebMessage[];
     readonly messagesNextCursor?: string;
@@ -1069,6 +1073,7 @@ export const createThreadCache = (
           {
             thread: detail.thread,
             messages: detail.messages,
+            projectTransitions: detail.projectTransitions ?? [],
             stale,
             syncedAt: now(),
             repairedToolCallIds: new Set<string>(),
@@ -1115,6 +1120,7 @@ export const createThreadCache = (
             ? held.thread
             : newerProjection(held.thread, detail.thread),
           messages,
+          projectTransitions: mergeProjectTransitions(reset ? [] : held.projectTransitions, detail.projectTransitions),
           stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
@@ -1161,13 +1167,14 @@ export const createThreadCache = (
       const next = withCursor({
         ...withoutCursor,
         messages,
+        projectTransitions: mergeProjectTransitions(entry.projectTransitions, page.projectTransitions),
         // Remembered by ID: this is the only thing a later windowed answer can
         // be measured against to tell paged-back history from a deletion.
         pagedInIds: older.length === 0
           ? entry.pagedInIds
           : new Set([...entry.pagedInIds, ...older.map((message) => message.id)]),
       }, page.nextCursor);
-      return messages === entry.messages && next.messagesNextCursor === entry.messagesNextCursor
+      return messages === entry.messages && next.projectTransitions === entry.projectTransitions && next.messagesNextCursor === entry.messagesNextCursor
         ? entry
         : next;
     })),
@@ -1294,6 +1301,7 @@ export const createThreadCache = (
         {
           thread: stored.thread,
           messages: stored.messages,
+          projectTransitions: stored.projectTransitions ?? [],
           // NOT NEGOTIABLE. Everything that happened while this tab was closed
           // is exactly what is missing here.
           stale: true,

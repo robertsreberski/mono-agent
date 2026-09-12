@@ -7,8 +7,10 @@ import { DashboardFooter } from "./DashboardFooter";
 import { DashboardHeader } from "./DashboardHeader";
 import { DashboardSearch } from "./DashboardSearch";
 import { groupRunningThreads, mergeRunningThreads } from "./dashboard-model";
+import { ProjectsSection } from "./ProjectsSection";
 import { RecentSection } from "./RecentSection";
 import { RunningSection } from "./RunningSection";
+import { ProjectPage } from "../project/ProjectPage";
 import { flattenCatalogModels } from "../route-label";
 
 /**
@@ -39,6 +41,7 @@ export function Dashboard({
     cachedRunningThreads,
     catalogByProvider,
     navigationDestination,
+    openProject,
     selectedAgentId,
     selectAgent,
     selectThread,
@@ -127,6 +130,12 @@ export function Dashboard({
     onNavigate?.();
   }, [onNavigate, selectAgent, selectThread, selectedAgentId, setShowArchived]);
 
+  // An open project takes this whole slot: the desktop left column and the
+  // mobile entrance screen draw the project page instead of the Dashboard.
+  if (openProject !== null) {
+    return <ProjectPage project={openProject} onNavigate={onNavigate} highlightSelected={highlightSelected} />;
+  }
+
   return (
     <div className="dashboard">
       <DashboardHeader onNavigate={onNavigate} />
@@ -149,7 +158,7 @@ export function Dashboard({
           {...(catalogModels === undefined ? {} : { catalogModels })}
           catalogSourceId={selectedAgentId ?? undefined}
         />
-        {/* Projects will take the labelled section between Running and Recent. */}
+        <ProjectsSection />
         <RecentSection
           searching={searching}
           query={query}

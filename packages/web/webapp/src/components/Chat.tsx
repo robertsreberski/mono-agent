@@ -1,3 +1,4 @@
+import { ProjectBadge, StartProjectMarkers } from "./project/ProjectIdentity";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -304,15 +305,65 @@ export function ModelControls() {
   );
 }
 
+function ProjectPickerItems({ threadId, sourceId, currentProjectId }: {
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly currentProjectId: string | null;
+}) {
+  const { projectsByAgent, setThreadProject } = useConsoleStore();
+  const projects = (projectsByAgent[sourceId] ?? []).filter((project) => project.archivedAt === null);
+  return (
+    <>
+      {projects.length === 0 && (
+        <div className="conversation-menu-empty">No projects yet</div>
+      )}
+      {projects.map((project) => (
+        <Menu.Item
+          key={project.id}
+          className="conversation-menu-item"
+          onClick={() => {
+            if (project.id !== currentProjectId) {
+              void setThreadProject(threadId, project.id).catch(() => undefined);
+            }
+          }}
+        >
+          <Icon name={project.id === currentProjectId ? "check" : "folder"} size={16} />
+          <span>{project.name}</span>
+        </Menu.Item>
+      ))}
+    </>
+  );
+}
+
 function ConversationActions() {
-  const { selectedThread, archiveThread, unarchiveThread, deleteThread } = useConsoleStore();
+  const {
+    selectedThread,
+    archiveThread,
+    unarchiveThread,
+    deleteThread,
+    loadProjects,
+    projectsByAgent,
+    setThreadProject,
+  } = useConsoleStore();
   if (selectedThread === null) return null;
   const archived = selectedThread.archivedAt !== null;
   const canDelete = archived
     && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false);
+  // Membership survives archiving (storage keeps it; the context still
+  // reaches a restored member), so the menu says where the chat is either way.
+  const memberProjectId = selectedThread.projectId;
+  const memberProjectName = memberProjectId === null
+    ? null
+    : (projectsByAgent[selectedThread.sourceId] ?? []).find((project) => project.id === memberProjectId)?.name ?? null;
 
   return (
-    <Menu.Root>
+    <Menu.Root
+      onOpenChange={(open) => {
+        // The picker lists this conversation's agent projects; make sure the
+        // tab holds them before it opens.
+        if (open) void loadProjects(selectedThread.sourceId).catch(() => undefined);
+      }}
+    >
       <Menu.Trigger
         type="button"
         className="icon-button header-more"
@@ -324,6 +375,52 @@ function ConversationActions() {
       <Menu.Portal>
         <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={5}>
           <Menu.Popup className="conversation-menu-popup" aria-label="Conversation actions">
+            {/* The drawer's menu: one "project" row with where the chat is now
+                as its hint, the list beneath it, and a new project made from
+                this chat. */}
+            <Menu.SubmenuRoot>
+              <Menu.SubmenuTrigger className="conversation-menu-item">
+                <Icon name="folder" size={16} />
+                <span>{memberProjectId === null ? "Add to project" : "Move to project"}</span>
+                {memberProjectName !== null && (
+                  <span className="conversation-menu-hint">{memberProjectName}</span>
+                )}
+                <Icon name="chevron" size={14} className="conversation-menu-chevron" />
+              </Menu.SubmenuTrigger>
+              <Menu.Portal>
+                <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={4}>
+                  <Menu.Popup className="conversation-menu-popup" aria-label={memberProjectId === null ? "Add to project" : "Move to project"}>
+                    <ProjectPickerItems
+                      threadId={selectedThread.id}
+                      sourceId={selectedThread.sourceId}
+                      currentProjectId={memberProjectId}
+                    />
+                  </Menu.Popup>
+                </Menu.Positioner>
+              </Menu.Portal>
+            </Menu.SubmenuRoot>
+            <Menu.Item
+              className="conversation-menu-item is-accent"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent("mono-agent:project-settings", {
+                  detail: { mode: "create", sourceId: selectedThread.sourceId, threadId: selectedThread.id },
+                }));
+              }}
+            >
+              <Icon name="new" size={16} />
+              <span>New project from this chat</span>
+            </Menu.Item>
+            {memberProjectId !== null && (
+              <Menu.Item
+                className="conversation-menu-item"
+                onClick={() => {
+                  void setThreadProject(selectedThread.id, null).catch(() => undefined);
+                }}
+              >
+                <Icon name="close" size={16} />
+                <span>Remove from project</span>
+              </Menu.Item>
+            )}
             <Menu.Item
               className="conversation-menu-item"
               onClick={() => {
@@ -479,11 +576,14 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
           </button>
         </div>
         <div className="chat-title-block">
-          <ConversationTitle />
-          <span className={`chat-status is-${statusTone}`}>
-            <i />
-            {status}
-          </span>
+          <ProjectBadge />
+          <div className="chat-title-row">
+            <ConversationTitle />
+            <span className={`chat-status is-${statusTone}`}>
+              <i />
+              {status}
+            </span>
+          </div>
         </div>
         <div className="chat-header-actions">
           <ConversationActions />
@@ -527,6 +627,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                     Load earlier messages
                   </button>
                 )}
+                <StartProjectMarkers />
                 <ThreadPrimitive.Messages
                   components={{
                     UserMessage,
