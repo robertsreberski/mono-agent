@@ -3,6 +3,7 @@
 
 import react from "@vitejs/plugin-react";
 import type { BrowserCommand } from "vitest/node";
+import { searchForWorkspaceRoot } from "vite";
 import { defineConfig } from "vitest/config";
 
 type EmulatedColorScheme = "light" | "dark" | null;
@@ -17,8 +18,19 @@ const emulateColorScheme: BrowserCommand<[EmulatedColorScheme]> = async (context
   await context.page.emulateMedia({ colorScheme });
 };
 
+/**
+ * Screenshot evidence is opt-in per suite through `VITE_<SUITE>_SHOTS=<absolute
+ * dir>`. Vite only lets the browser runner write inside the project, so each
+ * opted-in directory is allowed explicitly; without the variables nothing is
+ * allowed beyond the default and nothing is written.
+ */
+const screenshotDirectories = Object.entries(process.env)
+  .filter(([name, value]) => /^VITE_[A-Z0-9_]+_SHOTS$/u.test(name) && value !== undefined && value.length > 0)
+  .map(([, value]) => value as string);
+
 export default defineConfig({
   plugins: [react()],
+  ...(screenshotDirectories.length === 0 ? {} : { server: { fs: { allow: [searchForWorkspaceRoot(process.cwd()), ...screenshotDirectories] } } }),
   test: {
     include: ["src/**/*.browser.test.tsx"],
     setupFiles: ["./src/test/setup.ts"],
