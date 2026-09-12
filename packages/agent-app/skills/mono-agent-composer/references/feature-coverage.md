@@ -150,7 +150,7 @@ Persistent in-process helpers use `Agent({persist: true, id?})` followed by
 `maxPerConversation` defaults 8, `idleTtlMs` defaults one day, and `maxTurns`
 defaults 60 child turns. Registries and Pi transcripts survive restarts and are
 removed by `restart --clear-sessions`. Instances are conversation-scoped and
-serialized; no detached runs or child-to-parent questions are supported.
+serialized; no detached runs or cross-conversation reuse are supported.
 Disabling instances preserves stateless `Agent`.
 
 ### Persistent child questions

@@ -1178,7 +1178,7 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
           enabled: { type: "boolean" },
           instances: { type: "object", additionalProperties: false, properties: {
             enabled: { type: "boolean", default: true },
-            root: { type: "string", minLength: 1, description: "Registry and child sessions root; defaults to <artifacts.dir>/../subagents." },
+            root: { type: "string", minLength: 1, pattern: "\\S", description: "Registry and child sessions root; defaults to <artifacts.dir>/../subagents." },
             maxPerConversation: { type: "integer", minimum: 1, maximum: 32, default: 8 },
             idleTtlMs: { type: "integer", minimum: 60_000, maximum: 604_800_000, default: 86_400_000 },
             maxTurns: { type: "integer", minimum: 1, maximum: 500, default: 60 },

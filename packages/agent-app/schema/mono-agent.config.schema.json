@@ -337,6 +337,7 @@
             "root": {
               "type": "string",
               "minLength": 1,
+              "pattern": "\\S",
               "description": "Registry and child sessions root; defaults to <artifacts.dir>/../subagents."
             },
             "maxPerConversation": {

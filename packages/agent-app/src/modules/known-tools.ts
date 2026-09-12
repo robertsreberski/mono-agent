@@ -33,6 +33,9 @@ export const BUILTIN_TOOL_NAMES = [
   "AskParent",
 ] as const;
 
+/** Known for policy validation, but never selectable for a parent run. */
+export const CHILD_ONLY_TOOL_NAMES: readonly string[] = ["AskParent"];
+
 /** App-owned tools injected by the configured host and governed by tool policy. */
 export const APP_TOOL_NAMES = [
   "RunHistory",

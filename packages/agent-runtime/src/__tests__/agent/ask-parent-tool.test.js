@@ -35,3 +35,12 @@ describe("AskParent", () => {
     await expect(createAskParentTool({ submit: async () => { throw new Error("disk full"); } }).execute("q", { question: "q" })).rejects.toThrow("disk full");
   });
 });
+
+it("retries a rejected publication but refuses duplicates after commit", async () => {
+  const submit = vi.fn().mockRejectedValueOnce(new Error("transient write failure")).mockResolvedValue(undefined);
+  const tool = createAskParentTool({ submit });
+  await expect(tool.execute("first", { question: "Scope?" })).rejects.toThrow("transient write failure");
+  expect(await tool.execute("retry", { question: "Scope?" })).toMatchObject({ terminate: true });
+  await expect(tool.execute("duplicate", { question: "Again?" })).rejects.toThrow(/already submitted/);
+  expect(submit).toHaveBeenCalledTimes(2);
+});

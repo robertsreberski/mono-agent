@@ -26,7 +26,10 @@ export function createAskParentTool(controller = null) {
       const question = { question: params.question.trim(), ...(options === undefined ? {} : { options }) };
       if (submitted) throw new Error("AskParent already submitted a question this turn.");
       submitted = true;
-      await controller.submit(question);
+      try { await controller.submit(question); } catch (error) {
+        submitted = false; // Publication failed: allow another attempt in this turn.
+        throw error;
+      }
       return { content: [{ type: "text", text: `Awaiting parent reply: ${JSON.stringify(question)}` }], details: { tool: "AskParent", question }, terminate: true };
     },
   };

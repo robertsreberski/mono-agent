@@ -842,7 +842,10 @@ export function buildSubagentsOptions(
       ? { submit: async (question: NonNullable<RuntimeResult["subagentQuestion"]>): Promise<void> => {
         if (submitted) throw new Error("AskParent already submitted a question this turn.");
         submitted = true;
-        await scope.instances.markAwaiting(request.instance!.id, question);
+        try { await scope.instances.markAwaiting(request.instance!.id, question); } catch (error) {
+          submitted = false; // Preserve exclusion while publishing, but permit a retry after rejection.
+          throw error;
+        }
         subagentQuestion = structuredClone(question);
       } } : undefined;
     const result = await runtime.run(childSystemPrompt, {

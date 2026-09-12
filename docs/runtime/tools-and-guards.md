@@ -202,7 +202,7 @@ answers outside the retained durable session, the tool reports
 `session_continuity_lost` rather than claiming the turn was retained. Close that
 instance and create another with the context it needs.
 
-There is no cross-conversation reuse, child-to-parent question tool, or detached
+There is no cross-conversation reuse or detached
 subagent execution. Persistence grants no additional authority. Bare runtime
 hosts without a conversation registry retain stateless `Agent` and reject
 `persist`/`id` if passed directly.
