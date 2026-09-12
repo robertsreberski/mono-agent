@@ -1607,8 +1607,13 @@ describe("startTuiAdapter", () => {
         targetTurnId: "web-turn-timeout",
       }),
     });
-    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
-    expect(expireWaiter).toBeDefined();
+    // The waiter is armed while the POST above is still in flight on loopback,
+    // so a fixed sleep is a bet on how fast the socket is: on a loaded runner it
+    // expires first and the assertion reads `undefined`, or the pending `fetch`
+    // is reset when the adapter is stopped in teardown. Wait for the arming
+    // itself -- the delay spy only intercepts the waiter's own 10 min timer and
+    // delegates everything else, including this poll, to the native timers.
+    await vi.waitFor(() => { expect(expireWaiter).toBeDefined(); });
     expireWaiter?.();
 
     await expect((await liveResponse).json()).resolves.toEqual({ status: "unavailable", reason: "inactive" });
