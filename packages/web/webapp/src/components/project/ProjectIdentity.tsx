@@ -39,9 +39,10 @@ export function StartProjectMarkers() {
 
 /**
  * The conversation's project, as the eyebrow above its title -- the same
- * place the Dashboard keeps the console name above the agent's. It opens the
- * project, and while a membership change waits for the running turn it says
- * so in the same line rather than growing a second badge.
+ * place the Dashboard keeps the console name above the agent's, with the
+ * folder glyph set on the title's own text edge so the two read as one
+ * column. It opens the project, and while a membership change waits for the
+ * running turn it says so in the same line rather than growing a second badge.
  */
 export function ProjectBadge() {
   const { selectedThread, projectsByAgent, openProjectById } = useConsoleStore();
