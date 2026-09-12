@@ -316,13 +316,6 @@ export interface CronRunReconciliationResult {
 export interface CronOverviewSyncResult {
   readonly overview: WebCronOverview;
   readonly changed: boolean;
-  /**
-   * Logical push keys this sync enqueued for newly observed cron completions.
-   * Empty on the no-write fast path and when nothing newly completed. The
-   * service announces these so the dispatcher wakes and an open console can
-   * acknowledge a run it already shows.
-   */
-  readonly pushLogicalKeys: readonly string[];
 }
 
 type IncomingCronJob = Omit<WebCronJob, "threadId">;
@@ -1445,41 +1438,19 @@ export class WebStore {
           ...(overview.jobsTruncated === true ? { jobsTruncated: true as const } : {}),
         },
         changed: false,
-        pushLogicalKeys: [],
       };
     }
-    const synced = this.syncCronOverviewInternal(overview);
-    return { overview: synced.overview, changed: true, pushLogicalKeys: synced.pushLogicalKeys };
+    return { overview: this.syncCronOverview(overview), changed: true };
   }
 
   syncCronOverview(overview: IncomingCronOverview): WebCronOverview {
-    return this.syncCronOverviewInternal(overview).overview;
-  }
-
-  private syncCronOverviewInternal(overview: IncomingCronOverview): {
-    readonly overview: WebCronOverview;
-    readonly pushLogicalKeys: readonly string[];
-  } {
     if (this.getAgent(overview.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const effectiveJobs = this.effectiveIncomingCronJobs(overview.sourceId, overview.jobs);
     const now = this.now();
     const jobs: WebCronJob[] = [];
-    const pushLogicalKeys: string[] = [];
     this.transaction(() => {
-      // Durable baseline for completion pushes: the previously stored per-job
-      // snapshot, read before this sync overwrites it. A job the console learns
-      // for the first time establishes its baseline silently; a known job whose
-      // latest run is new (or newly terminal) earns one push. The snapshot
-      // survives restarts, so the same persisted state never re-notifies.
-      const previousLastRuns = new Map<string, { readonly runId: string; readonly status: string } | undefined>();
-      for (const snapshot of this.database.prepare(`
-        SELECT job_id, payload_json FROM cron_job_snapshots WHERE source_id = ?
-      `).all(overview.sourceId) as unknown as Array<{ job_id: string; payload_json: string }>) {
-        previousLastRuns.set(snapshot.job_id, storedCronSnapshotLastRun(snapshot.payload_json));
-      }
-      const previousChannels = new Set(previousLastRuns.keys());
       this.database.prepare("UPDATE cron_channels SET configured = 0, updated_at = ? WHERE source_id = ?")
         .run(now, overview.sourceId);
       // Jobs omitted by the new authoritative overview remain historical
@@ -1558,10 +1529,6 @@ export class WebStore {
             payload_json = excluded.payload_json,
             updated_at = excluded.updated_at
         `).run(overview.sourceId, job.jobId, JSON.stringify(job), now);
-        const pushKey = previousChannels.has(job.jobId)
-          ? this.cronCompletionPushLogicalKey(overview.sourceId, job.jobId, threadId, job.lastRun, previousLastRuns.get(job.jobId), now)
-          : undefined;
-        if (pushKey !== undefined) pushLogicalKeys.push(pushKey);
         jobs.push({ ...job, threadId });
       }
       this.database.prepare(`
@@ -1584,62 +1551,12 @@ export class WebStore {
       );
     });
     return {
-      overview: {
-        generatedAt: overview.generatedAt,
-        actionsEnabled: overview.actionsEnabled,
-        jobs,
-        ...(overview.degradedReason === undefined ? {} : { degradedReason: overview.degradedReason }),
-        ...(overview.jobsTruncated === true ? { jobsTruncated: true as const } : {}),
-      },
-      pushLogicalKeys,
+      generatedAt: overview.generatedAt,
+      actionsEnabled: overview.actionsEnabled,
+      jobs,
+      ...(overview.degradedReason === undefined ? {} : { degradedReason: overview.degradedReason }),
+      ...(overview.jobsTruncated === true ? { jobsTruncated: true as const } : {}),
     };
-  }
-
-  /**
-   * Enqueue one browser push for a newly observed cron completion, or answer
-   * which existing logical key already covers it.
-   *
-   * The key is shared verbatim with the native `web:new` delivery push
-   * (`notificationPushLogicalKey` over the same `${runId}:success` /
-   * `${runId}:failure:<kind>` delivery key), so whichever path observes the
-   * run first wins and the other becomes a no-op: one run, one push, whether
-   * the answer went to Telegram, Slack, `web:new`, or nowhere. Must run inside
-   * the overview-sync transaction, beside the snapshot write it observes.
-   */
-  private cronCompletionPushLogicalKey(
-    sourceId: string,
-    jobId: string,
-    threadId: string,
-    run: WebCronRunSummary | undefined,
-    previous: { readonly runId: string; readonly status: string } | undefined,
-    now: string,
-  ): string | undefined {
-    if (run === undefined) return undefined;
-    const kind = cronCompletionPushKind(run);
-    if (kind === undefined) return undefined;
-    if (previous !== undefined && previous.runId === run.runId && isTerminalCronRunStatus(previous.status)) {
-      return undefined;
-    }
-    const logicalKey = notificationPushLogicalKey(sourceId, cronCompletionDeliveryKey(run));
-    if (this.database.prepare("SELECT 1 FROM push_events WHERE logical_key = ?").get(logicalKey) !== undefined) {
-      return logicalKey;
-    }
-    const agent = this.getStoredAgent(sourceId);
-    const event = this.enqueueWebPushEventInTransaction({
-      logicalKey,
-      kind,
-      threadId,
-      sourceId,
-      title: `${agent?.label ?? "mono-agent"} · CRON`,
-      body: kind === "run.failed"
-        ? run.error ?? run.text ?? "The run failed."
-        : run.text ?? "Update available.",
-      expiresAt: new Date(new Date(now).getTime() + 24 * 60 * 60 * 1_000).toISOString(),
-      notBefore: new Date(new Date(now).getTime() + 3_000).toISOString(),
-    });
-    // No active subscriptions: the snapshot write above is still the durable
-    // watermark, so a later refresh with the same run will not push stale news.
-    return event === undefined ? undefined : logicalKey;
   }
 
   private effectiveIncomingCronJobs(
@@ -7174,63 +7091,6 @@ function isTerminalCronRun(status: WebCronRun["status"]): boolean {
     || status === "cancelled"
     || status === "skipped_overlap"
     || status === "dropped";
-}
-
-/** Tolerant terminal check for a previously stored snapshot's raw status value. */
-function isTerminalCronRunStatus(status: string): boolean {
-  return status === "succeeded"
-    || status === "failed"
-    || status === "cancelled"
-    || status === "skipped_overlap"
-    || status === "dropped";
-}
-
-/**
- * Which browser push a newly observed cron completion earns, if any.
- *
- * Meaningful successes and every failure notify; admitted/running/queued
- * state, intentionally silent success, and the routine scheduler states
- * (cancelled, skipped overlap, dropped) stay quiet. Success meaningfulness is
- * judged exactly like history visibility: the agent already normalizes silent
- * success to the `NOTHING_TO_REPORT` sentinel, so anything else on the summary
- * text is a report worth surfacing.
- */
-function cronCompletionPushKind(run: WebCronRunSummary): WebPushEventKind | undefined {
-  if (run.status === "failed") return "run.failed";
-  if (run.status === "succeeded" && classifyNotifySuppression(run.text) === "none") return "response.ready";
-  return undefined;
-}
-
-/**
- * The native-delivery key this completion would carry as a `web:new`
- * delivery, so the overview-observed push and the delivery push share one
- * logical event. Success keys match `deliverNativeCronNotification`
- * (`${runId}:success`); failure keys match the cron failure notice
- * (`${runId}:failure:${failureKind}`).
- */
-function cronCompletionDeliveryKey(run: WebCronRunSummary): string {
-  if (run.status === "succeeded") return `${run.runId}:success`;
-  return run.failureKind === undefined ? `${run.runId}:failure` : `${run.runId}:failure:${run.failureKind}`;
-}
-
-/**
- * The previously stored snapshot's latest-run identity, tolerantly read.
- * Unparseable payloads baseline silently: the snapshot write that follows
- * heals the row, and a notification feature must never throw on history it
- * cannot read.
- */
-function storedCronSnapshotLastRun(serialized: string): { readonly runId: string; readonly status: string } | undefined {
-  let value: unknown;
-  try {
-    value = JSON.parse(serialized) as unknown;
-  } catch {
-    return undefined;
-  }
-  const lastRun = record(value)?.lastRun;
-  const candidate = record(lastRun);
-  const runId = candidate?.runId;
-  const status = candidate?.status;
-  return typeof runId === "string" && typeof status === "string" ? { runId, status } : undefined;
 }
 
 /** Presentation queries only; storage validation/recovery and retention stay raw. */

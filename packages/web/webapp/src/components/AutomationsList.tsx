@@ -34,6 +34,8 @@ function compareAutomations(left: CronJob, right: CronJob): number {
   }
   return left.jobId.localeCompare(right.jobId);
 }
+
+/** Require an unambiguous future instant, rejecting dates JavaScript normalizes. */
 const futureInstant = (value: string | undefined): Date | undefined => {
   const fields = value?.match(
     /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u,
