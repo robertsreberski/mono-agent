@@ -83,11 +83,11 @@ describe("Pi provider setup safety", () => {
     await vi.waitFor(async () => expect(await readdir(dir)).toContain("auth.json.mono-agent.lock"));
 
     controller.abort(new Error("cancelled"));
-    const settled = await Promise.race([
-      pending.then(() => "resolved", () => "rejected"),
-      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 50)),
-    ]);
-    expect(settled).toBe("rejected");
+    // The contract is "abandons without waiting for the resolver", not "wins a
+    // 50 ms sprint": the resolver's promise cannot settle until this test
+    // resolves it below, so any rejection reached here already proves the
+    // abandonment -- and asserting the abort REASON proves which one it was.
+    await expect(pending).rejects.toThrow(/cancelled/u);
     await expect(readFile(`${authPath}.mono-agent.lock`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
     resolveCredential({ type: "api_key", key: "late-fake-key" });
     await Promise.resolve();
