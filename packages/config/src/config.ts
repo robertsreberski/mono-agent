@@ -739,6 +739,29 @@ function readSubagentsConfig(
     ...(definitions === undefined ? {} : { definitions }),
     ...(models === undefined ? {} : { models }),
     ...(record.inline === undefined ? {} : { inline: readInlineSubagentsConfig(record.inline) }),
+    ...(record.instances === undefined ? {} : { instances: readSubagentInstancesConfig(record.instances, cwd) }),
+  };
+}
+
+function readSubagentInstancesConfig(value: unknown, cwd: string): NonNullable<MonoAgentSubagentsConfig["instances"]> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidSubagents("instances must be an object.");
+  }
+  const record = value as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (!["enabled", "root", "maxPerConversation", "idleTtlMs", "maxTurns"].includes(key)) {
+      throw invalidSubagents(`instances contains unknown field "${key}".`);
+    }
+  }
+  if (record.root !== undefined && (typeof record.root !== "string" || !record.root.trim())) {
+    throw invalidSubagents("instances.root must be a non-empty path.");
+  }
+  return {
+    ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "instances.enabled") }),
+    ...(record.root === undefined ? {} : { root: readPath(String(record.root), cwd) }),
+    ...(record.maxPerConversation === undefined ? {} : { maxPerConversation: readSubagentInteger(record.maxPerConversation, "instances.maxPerConversation", 1, 32) }),
+    ...(record.idleTtlMs === undefined ? {} : { idleTtlMs: readSubagentInteger(record.idleTtlMs, "instances.idleTtlMs", 60_000, 604_800_000) }),
+    ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "instances.maxTurns", 1, 500) }),
   };
 }
 

@@ -513,6 +513,23 @@ describe("loadMonoAgentConfig", () => {
 
   });
 
+  it("loads persistent instance limits and resolves its root", () => {
+    const instances = { enabled: false, root: "./children", maxPerConversation: 32, idleTtlMs: 60_000, maxTurns: 500 };
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances }),
+    } });
+    expect(config.subagents?.instances).toEqual({ ...instances, root: "/repo/children" });
+  });
+
+  it.each([null, [], { root: " " }, { enabled: "true" }, { maxPerConversation: 0 },
+    { maxPerConversation: 33 }, { idleTtlMs: 59_999 }, { idleTtlMs: 604_800_001 },
+    { maxTurns: 0 }, { maxTurns: 501 }, { maxTurns: 1.5 }, { unknown: true },
+  ])("rejects invalid instance settings %j", (instances) => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ instances }),
+    } })).toThrow(/instances/u);
+  });
+
   it("loads subagent profiles and caps", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
