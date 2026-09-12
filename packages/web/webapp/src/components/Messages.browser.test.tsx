@@ -414,6 +414,42 @@ const steeredResponse: WebMessage = {
   ],
 };
 
+/** An ordinary user message carrying the same prose, for width comparison. */
+const { liveInputStatus: _appliedStatus, ...steeredUserWithoutStatus } = steeredUser;
+const plainUser: WebMessage = {
+  ...steeredUserWithoutStatus,
+  id: "plain-user",
+  createdAt: "2026-09-12T09:59:00.000Z",
+  updatedAt: "2026-09-12T09:59:00.000Z",
+};
+
+/** A turn still running, with the follow-up the operator has just sent into it. */
+const openingUser: WebMessage = {
+  ...plainUser,
+  id: "opening-user",
+  turnId: "turn-1",
+  parts: [{ type: "text", text: "Start with the sync approach" }],
+};
+
+const waitingSteer: WebMessage = {
+  ...steeredUser,
+  id: "waiting-steer",
+  turnId: "turn-1",
+  liveInputStatus: "pending",
+};
+
+const { finishedAt: _finishedAt, ...steeredResponseWithoutFinish } = steeredResponse;
+const runningResponse: WebMessage = {
+  ...steeredResponseWithoutFinish,
+  id: "running-response",
+  turnId: "turn-1",
+  status: "running",
+  parts: [
+    { type: "reasoning", text: "Reading the workspace first." },
+    { type: "tool-call", toolCallId: "read-1", toolName: "Read", status: "complete" },
+  ],
+};
+
 const secondSteerText = "And keep the retry budget where it is; only the transport changes";
 
 const steeredTwiceUser: WebMessage = {
@@ -518,5 +554,42 @@ describe("inline steer in Chromium", () => {
     const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
     expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
     await capture(`steer-inline-two-${label}-${width}x${height}`);
+  });
+
+  it.each([
+    [1280, 800, "desktop"],
+    [390, 844, "mobile"],
+  ] as const)("gives the consumed steer the same bubble width as a user message at %ipx (%s)", async (width, height, label) => {
+    await page.viewport(width, height);
+    const { container } = render(
+      <SteerHarness width={Math.min(width, 760)} messages={[plainUser, steeredUser, steeredResponse]} />,
+    );
+
+    const standalone = container.querySelector<HTMLElement>(".message-user:not(.inline-steer) .message-user-content")!;
+    const inline = container.querySelector<HTMLElement>(".inline-steer .message-user-content")!;
+    // Both bubbles hold text long enough to reach the cap, so equal rendered
+    // width is equal `max-width` rather than two coincidentally short lines.
+    expect(standalone.getBoundingClientRect().width).toBeCloseTo(inline.getBoundingClientRect().width, 1);
+    expect(inline.getBoundingClientRect().width).toBeLessThan(container.getBoundingClientRect().width);
+    await capture(`steer-inline-width-${label}-${width}x${height}`);
+  });
+
+  it.each([
+    [1280, 800, "desktop"],
+    [390, 844, "mobile"],
+  ] as const)("leaves a waiting follow-up at the bottom of the transcript at %ipx (%s)", async (width, height, label) => {
+    await page.viewport(width, height);
+    const { container } = render(
+      <SteerHarness width={Math.min(width, 760)} messages={[openingUser, waitingSteer, runningResponse]} />,
+    );
+
+    const rows = [...container.querySelectorAll<HTMLElement>(".message")];
+    expect(rows.map((row) => row.textContent?.slice(0, 12))).toEqual([
+      "Start with t",
+      "Activity in ",
+      steerText.slice(0, 12),
+    ]);
+    expect(screen.getByText("Steering current run…")).toBeVisible();
+    await capture(`steer-waiting-${label}-${width}x${height}`);
   });
 });
