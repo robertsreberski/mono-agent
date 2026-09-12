@@ -1,3 +1,5 @@
+import { effortFullName, type EffortSignal } from "./route-label";
+
 /**
  * Quiet inline route label: recognisable model and plain-language effort.
  *
@@ -8,6 +10,7 @@
 export function RouteBadge({
   modelShort,
   effortShort,
+  effortSignal,
   label,
   title,
   compact = false,
@@ -16,6 +19,7 @@ export function RouteBadge({
 }: {
   readonly modelShort: string;
   readonly effortShort: string;
+  readonly effortSignal?: EffortSignal;
   /** Accessible name; always the full route, never the short words. */
   readonly label: string;
   /** Hover detail; mirrors the accessible name. */
@@ -37,12 +41,22 @@ export function RouteBadge({
       ].filter(Boolean).join(" ")}
       role="img"
       aria-label={label}
-      title={title}
+      title={effortSignal === undefined ? title : `${title}. Currently available effort: ${effortSignal.levels.map(effortFullName).join(" → ")}; empty bars mean off.`}
     >
       {fallback && <span className="route-badge-flag" aria-hidden="true">!</span>}
       <span className="route-badge-model">{modelShort}</span>
-      <span className="route-badge-sep" aria-hidden="true">·</span>
-      <span className="route-badge-effort">{effortShort}</span>
+      {effortSignal === undefined ? <>
+        <span className="route-badge-sep" aria-hidden="true">·</span>
+        <span className="route-badge-effort">{effortShort}</span>
+      </> : (
+        <span className="effort-signal" aria-hidden="true" data-levels={effortSignal.levels.length} data-filled={effortSignal.filled}>
+          {effortSignal.levels.map((level, index) => <i
+            key={level}
+            className={index < effortSignal.filled ? "is-filled" : undefined}
+            style={{ height: `${effortSignal.levels.length === 1 ? 10 : 3 + 7 * index / (effortSignal.levels.length - 1)}px` }}
+          />)}
+        </span>
+      )}
     </span>
   );
 }

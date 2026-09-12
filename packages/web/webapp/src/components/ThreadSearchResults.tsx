@@ -81,6 +81,7 @@ function SearchHit({
         <RouteBadge
           modelShort={route.modelShort}
           effortShort={route.effortShort}
+          effortSignal={route.effortSignal}
           label={route.label}
           title={route.title}
         />

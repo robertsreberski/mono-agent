@@ -15,6 +15,7 @@ import {
 import { finiteDuration, formatToolDuration } from "./duration";
 import { safeJson } from "./json";
 import { resolveSubagentRoute } from "./route-label";
+import { useRouteCapabilities } from "./route-capabilities";
 import { RouteBadge } from "./RouteBadge";
 import { toolHistoryFailure } from "./tool-history";
 import { useToolCallRepair } from "./tool-call-repair";
@@ -393,6 +394,7 @@ function SubagentNote({
  */
 export function SubagentPart({ data }: DataMessagePartProps) {
   const repairToolCall = useToolCallRepair();
+  const capabilities = useRouteCapabilities();
   const view = subagentView(data);
   if (view === undefined) return null;
   const historyFailure = toolHistoryFailure(view.history);
@@ -418,13 +420,14 @@ export function SubagentPart({ data }: DataMessagePartProps) {
   // attempted, then requested. Old attribution-free records get no badge --
   // inventing one would rewrite history -- and the expanded RunAttribution
   // below keeps the full warnings and retry detail.
-  const route = resolveSubagentRoute(view.attribution, view.status);
+  const route = resolveSubagentRoute(view.attribution, view.status, capabilities.agent, capabilities.catalogModels);
   const badge = (
     <>
       {task !== undefined && <span className="subagent-profile" title={view.name}>{view.name}</span>}
       {route !== undefined && <RouteBadge
         modelShort={route.modelShort}
         effortShort={route.effortShort}
+          effortSignal={route.effortSignal}
         label={route.label}
         title={route.title}
         compact

@@ -5,8 +5,9 @@
 - Conversation rows now show compact current model and effort labels across the
   dashboard, running cards, and search results. Subagent activity shows a smaller
   per-call route label, retaining fallback warnings and effective-effort details.
-  Model versions remain visible, and phone layouts keep delegation summaries
-  separate from routing and timing metadata.
+  Model versions remain visible, with signal bars reflecting each model's
+  advertised effort levels (text when unknown). Phone layouts give delegation
+  tasks priority over their compact routing and timing metadata.
 
 - Per-tool output truncation now persists the full output in the configured
   app. Bash, Exec, NodeRepl, Read, WebFetch, Grep and Glob trim oversized

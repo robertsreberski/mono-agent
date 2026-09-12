@@ -5,6 +5,7 @@ import { agent, thread } from "../test/fixtures";
 import type { AgentSummary, ThreadSummary } from "../types";
 import { ActivityRow } from "./ActivityRow";
 import { resolveThreadRoute } from "./route-label";
+import { RouteCapabilitiesProvider } from "./route-capabilities";
 import { RouteBadge } from "./RouteBadge";
 import { SubagentPart } from "./Subagent";
 
@@ -61,6 +62,15 @@ describe("RouteBadge", () => {
       "title",
       "Model GPT-5.6 Sol (openai-codex:gpt-5.6-sol), effort High, conversation override",
     );
+  });
+
+  it("replaces the effort word with the model's actual signal while retaining its accessible meaning", () => {
+    render(<RouteBadge modelShort="Sol 5.6" effortShort="high" effortSignal={{ levels: ["low", "medium", "high", "xhigh"], filled: 3 }} label="Model Sol 5.6, effort High" title="Model Sol 5.6, effort High" />);
+    const badge = screen.getByRole("img", { name: "Model Sol 5.6, effort High" });
+    expect(badge.querySelectorAll(".effort-signal > i")).toHaveLength(4);
+    expect(badge.querySelectorAll(".effort-signal > .is-filled")).toHaveLength(3);
+    expect(badge.querySelector(".route-badge-effort")).toBeNull();
+    expect(badge).toHaveAttribute("title", expect.stringContaining("Low → Medium → High → Extra high"));
   });
 
   it("is a span, so it never nests a button inside a navigating row", () => {
@@ -154,6 +164,22 @@ describe("subagent collapsed badges", () => {
     expect(screen.queryByText("Subagent")).toBeNull();
     // The expanded routing detail stays where it was.
     expect(screen.getByText(/Ran with/u)).toBeInTheDocument();
+  });
+
+  it("uses the executed model's available grades, never the requested model's grade", () => {
+    const data = { ...delegation, attribution: {
+      requested: { model: "other:model", effort: "low" },
+      executed: { model: "anthropic:claude-sonnet-4.5", effort: "high" },
+      disposition: "fallback", transitions: [], retries: [],
+    } };
+    const view = render(<RouteCapabilitiesProvider agent={owner()}>{part(data)}</RouteCapabilitiesProvider>);
+    expect(view.container.querySelectorAll(".effort-signal > i")).toHaveLength(2);
+    expect(view.container.querySelectorAll(".effort-signal > .is-filled")).toHaveLength(2);
+    // No historical capability snapshot: if the current ladder cannot place
+    // the reported effective effort, show that word rather than clamping it.
+    view.rerender(<RouteCapabilitiesProvider agent={owner()}>{part({ ...data, attribution: { ...data.attribution, executed: { ...data.attribution.executed, effectiveEffort: "max" } } })}</RouteCapabilitiesProvider>);
+    expect(view.container.querySelector(".effort-signal")).toBeNull();
+    expect(view.container.querySelector(".route-badge-effort")).toHaveTextContent("max");
   });
 
   it("marks requested-only as requested, never as ran-with", () => {

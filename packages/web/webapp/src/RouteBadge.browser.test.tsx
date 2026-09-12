@@ -92,8 +92,8 @@ const alpha = agent("alpha", {
   defaultModel: SONNET,
   defaultEffort: "high",
   modelOptions: {
-    [SONNET]: { label: "Claude Sonnet 4.5", reasoning: true, effortLevels: ["medium", "high"] },
-    [SOL]: { label: "GPT-5.6 Sol", reasoning: true, effortLevels: ["low", "high"] },
+    [SONNET]: { label: "Claude Sonnet 4.5", reasoning: true, effortLevels: ["medium", "high", "max"] },
+    [SOL]: { label: "GPT-5.6 Sol", reasoning: true, effortLevels: ["none", "minimal", "low", "medium", "high", "xhigh"] },
   },
 });
 const beta = agent("beta", {
@@ -120,6 +120,13 @@ const maxThread = thread("badge-max", "alpha", {
   messageCount: 1,
   runEffort: "max",
   lastMessagePreview: "One big push.",
+});
+const offThread = thread("badge-off", "alpha", {
+  title: "Quick copy edit",
+  messageCount: 1,
+  runModel: SOL,
+  runEffort: "none",
+  lastMessagePreview: "Thinking disabled for a quick revision.",
 });
 const ghostThread = thread("badge-ghost", "ghost", {
   title: "Ghost agent thread",
@@ -246,7 +253,7 @@ beforeEach(async () => {
   vi.mocked(api.bootstrap).mockResolvedValue({
     ...bootstrap(
       [alpha, beta],
-      [inheritThread, solThread, maxThread],
+      [inheritThread, solThread, maxThread, offThread],
       inheritThread.id,
       { threadsSourceId: "alpha" },
     ),
@@ -258,7 +265,7 @@ beforeEach(async () => {
     },
   });
   vi.mocked(api.thread).mockImplementation(async (id: string) => detail(
-    [inheritThread, solThread, maxThread].find((entry) => entry.id === id)
+    [inheritThread, solThread, maxThread, offThread].find((entry) => entry.id === id)
       ?? inheritThread,
   ));
   vi.mocked(api.activeThreads).mockResolvedValue({
@@ -304,6 +311,12 @@ describe("route badges on the dashboard", () => {
     })).toBeVisible();
     const maxRow = screen.getByRole("button", { name: "Open Browser regression coverage" });
     expect(within(maxRow).getByRole("img", { name: /effort Max, conversation override/u })).toBeVisible();
+    expect(inheritRow.querySelector(".effort-signal")).toHaveAttribute("data-levels", "3");
+    expect(inheritRow.querySelector(".effort-signal")).toHaveAttribute("data-filled", "2");
+    expect(solRow.querySelector(".effort-signal")).toHaveAttribute("data-levels", "5");
+    expect(solRow.querySelector(".effort-signal")).toHaveAttribute("data-filled", "2");
+    const offRow = screen.getByRole("button", { name: "Open Quick copy edit" });
+    expect(offRow.querySelector(".effort-signal")).toHaveAttribute("data-filled", "0");
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(1_280);
   });
 
@@ -370,6 +383,8 @@ describe("route badges on the dashboard", () => {
     await userEvent.click(screen.getByRole("button", { name: /Activity/u }));
     const executed = screen.getByRole("img", { name: /Subagent route: Ran with/u });
     expect(executed).toBeVisible();
+    expect(executed.querySelector(".effort-signal")).toHaveAttribute("data-levels", "5");
+    expect(executed.querySelector(".effort-signal")).toHaveAttribute("data-filled", "4");
     const fallback = screen.getByRole("img", { name: /Subagent route: Fallback/u });
     expect(fallback).toBeVisible();
     expect(fallback).toHaveClass("is-fallback");
@@ -437,7 +452,7 @@ describe("route badge screenshots", () => {
       const summary = row.querySelector("summary")!.getBoundingClientRect();
       const badge = row.querySelector(".route-badge")!.getBoundingClientRect();
       const purpose = row.querySelector(".activity-row-summary")!.getBoundingClientRect();
-      const effort = row.querySelector(".route-badge-effort")!;
+      const effort = row.querySelector(".effort-signal, .route-badge-effort")!;
       expect(badge.left).toBeGreaterThanOrEqual(summary.left);
       expect(badge.right).toBeLessThanOrEqual(summary.right);
       expect(purpose.width).toBeGreaterThan(180);

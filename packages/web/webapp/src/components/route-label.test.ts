@@ -3,6 +3,8 @@ import { agent } from "../test/fixtures";
 import type { AgentSummary } from "../types";
 import {
   effortFullName,
+  effortSignalFor,
+  knownEffortLevels,
   effortToken,
   flattenCatalogModels,
   resolveSubagentRoute,
@@ -29,7 +31,7 @@ describe("effortToken", () => {
     expect(effortToken("low")).toBe("low");
     expect(effortToken("medium")).toBe("medium");
     expect(effortToken("high")).toBe("high");
-    expect(effortToken("xhigh")).toBe("extra high");
+    expect(effortToken("xhigh")).toBe("xhigh");
     expect(effortToken("max")).toBe("max");
     expect(effortToken("none")).toBe("off");
     expect(effortToken("minimal")).toBe("minimal");
@@ -40,6 +42,35 @@ describe("effortToken", () => {
     expect(effortToken("turbo")).toBe("turbo");
     expect(effortToken("super-turbo-plus")).toBe("super-turbo-plus");
     expect(effortFullName("turbo")).toBe("turbo");
+  });
+});
+
+describe("model-specific effort signals", () => {
+  it("uses only available grades, ordered by effort rather than advertisement order", () => {
+    expect(effortSignalFor("high", ["max", "medium", "high"])).toEqual({ levels: ["medium", "high", "max"], filled: 2 });
+    expect(effortSignalFor("high", ["low", "medium", "high", "xhigh"])).toEqual({ levels: ["low", "medium", "high", "xhigh"], filled: 3 });
+    expect(effortSignalFor("max", ["medium", "high", "max", "max"])?.filled).toBe(3);
+  });
+
+  it("uses empty bars for off and one bar for a toggle, not an imaginary graded scale", () => {
+    expect(effortSignalFor("none", ["high", "none"])).toEqual({ levels: ["high"], filled: 0 });
+    expect(effortSignalFor("high", ["high", "none"])).toEqual({ levels: ["high"], filled: 1 });
+    expect(effortSignalFor("none", ["none", "low", "medium", "high"])?.filled).toBe(0);
+  });
+
+  it("falls back to exact text when levels or their ordering are unknown", () => {
+    expect(effortSignalFor("high", undefined)).toBeUndefined();
+    expect(effortSignalFor("high", [])).toBeUndefined();
+    expect(effortSignalFor("max", ["low", "high"])).toBeUndefined();
+    expect(effortSignalFor("turbo", ["high", "turbo"])).toBeUndefined();
+    expect(effortSignalFor("", ["low", "high"])).toBeUndefined();
+  });
+
+  it("never fills missing capabilities with the global admission ladder", () => {
+    expect(knownEffortLevels("local:unknown", null)).toBeUndefined();
+    expect(knownEffortLevels("local:unknown", richAgent())).toBeUndefined();
+    expect(knownEffortLevels(SONNET, richAgent())).toEqual(["medium", "high"]);
+    expect(knownEffortLevels("local:plain", agent("a", { modelOptions: { "local:plain": { reasoning: false } } }))).toEqual([]);
   });
 });
 

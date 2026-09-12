@@ -1,4 +1,6 @@
 import {
+  advertisedEffortLevels,
+  GLOBAL_EFFORT_LEVELS,
   effectiveModelForAgent,
   findCatalogModel,
   inheritedEffortForModel,
@@ -33,7 +35,7 @@ import type {
 export const effortToken = (effort: string): string => {
   switch (effort) {
     case "none": return "off";
-    case "xhigh": return "extra high";
+    case "xhigh": return "xhigh";
     default: return effort;
   }
 };
@@ -75,6 +77,34 @@ export function shortModelName(model: string, displayName?: string): string {
   return displayName?.trim() || leaf.trim() || model.trim();
 }
 
+export interface EffortSignal {
+  /** Ordered, currently advertised positive grades; off is the empty signal. */
+  readonly levels: readonly string[];
+  readonly filled: number;
+}
+
+/** Never invent a scale from an unknown effort or the global admission floor. */
+export function effortSignalFor(effort: string, levels: readonly string[] | undefined): EffortSignal | undefined {
+  if (levels === undefined || levels.length === 0 || !levels.includes(effort)) return undefined;
+  if (levels.some((level) => !(GLOBAL_EFFORT_LEVELS as readonly string[]).includes(level))) return undefined;
+  const ordered = GLOBAL_EFFORT_LEVELS.filter((level) => level !== "none" && levels.includes(level));
+  if (ordered.length === 0) return undefined;
+  return { levels: ordered, filled: effort === "none" ? 0 : ordered.indexOf(effort as typeof ordered[number]) + 1 };
+}
+
+/** Capability precedence matches the picker, but an unadvertised floor is unknown. */
+export function knownEffortLevels(
+  model: string,
+  agent: AgentSummary | null,
+  catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>,
+): readonly string[] | undefined {
+  const shortlist = advertisedEffortLevels(agent?.modelOptions?.[model]);
+  if (shortlist !== undefined) return shortlist;
+  const catalog = advertisedEffortLevels(findCatalogModel(catalogModels, model));
+  if (catalog !== undefined) return catalog;
+  return agent?.modelOptions === undefined ? agent?.efforts : undefined;
+}
+
 export type RouteProvenance = "override" | "inherited" | "unknown";
 
 export interface ResolvedThreadRoute {
@@ -84,6 +114,7 @@ export interface ResolvedThreadRoute {
   readonly effort: string;
   readonly modelShort: string;
   readonly effortShort: string;
+  readonly effortSignal?: EffortSignal;
   /** Accessible name: full provider/model, full effort, provenance. */
   readonly label: string;
   /** Mouse/long-press detail; mirrors the accessible name. */
@@ -150,6 +181,7 @@ export function resolveThreadRoute(
     effort,
     modelShort: model === "" ? "—" : shortModelName(model, displayName),
     effortShort: effort === "" ? "—" : effortToken(effort),
+    effortSignal: effortSignalFor(effort, knownEffortLevels(model, agent, catalogModels)),
     label,
     title: label,
     modelProvenance,
@@ -174,6 +206,7 @@ export interface ResolvedSubagentRoute {
   readonly kind: SubagentRouteKind;
   readonly modelShort: string;
   readonly effortShort: string;
+  readonly effortSignal?: EffortSignal;
   /** Accessible name; requested-only and fallback never read as ran-with. */
   readonly label: string;
   readonly title: string;
@@ -192,6 +225,8 @@ export interface ResolvedSubagentRoute {
 export function resolveSubagentRoute(
   attribution: RunAttributionValue | undefined,
   status: ToolCallStatus,
+  agent: AgentSummary | null = null,
+  catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>,
 ): ResolvedSubagentRoute | undefined {
   if (attribution === undefined) return undefined;
   const target = attribution.executed ?? attribution.attempted ?? attribution.requested;
@@ -225,6 +260,7 @@ export function resolveSubagentRoute(
     kind,
     modelShort: model === "" ? "—" : shortModelName(model),
     effortShort: effort === "" ? "—" : effortToken(effort),
+    effortSignal: effortSignalFor(effort, knownEffortLevels(model, agent, catalogModels)),
     label,
     title: label,
     isFallback,

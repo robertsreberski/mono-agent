@@ -27,7 +27,9 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 - Persist optional per-agent model/effort defaults for new interactive web
   threads, copied at creation and clearable back to resolved config.
 - Show compact current model/effort labels on conversation, search, and running
-  rows, resolving each against its own agent's configured defaults. Subagent
+  rows, resolving each against its own agent's configured defaults. Effort uses
+  model-specific signal bars when the advertised scale is known, otherwise text;
+  off is an empty signal and positive levels each get one bar. Subagent
   activity labels the delegation's reported route separately, with full routing
   details in the disclosure and visible fallback warnings.
 - Preserve each turn's requested, attempted, and answering route plus the Pi
