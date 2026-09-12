@@ -925,8 +925,7 @@ export class WebService {
       name: input.name.trim(),
       context: input.context ?? "",
     });
-    this.emitProject("projects.changed", { project });
-    this.emitProject("project.changed", { project });
+    this.emitProject({ project });
     return project;
   }
 
@@ -939,8 +938,7 @@ export class WebService {
       ...(patch.context === undefined ? {} : { context: patch.context }),
       ...(patch.archived === undefined ? {} : { archived: patch.archived }),
     });
-    this.emitProject("projects.changed", { project });
-    this.emitProject("project.changed", { project });
+    this.emitProject({ project });
     return project;
   }
 
@@ -959,8 +957,7 @@ export class WebService {
       this.emitThread("thread.changed", { thread });
       this.emitThread("threads.changed", { thread });
     }
-    this.emitProject("projects.changed", { projectId: id, removed: true });
-    this.emitProject("project.changed", { projectId: id, removed: true });
+    this.emitProject({ projectId: id, removed: true });
   }
 
   thread(id: string, options: WebTranscriptShape = {}): WebThreadDetail {
@@ -3521,9 +3518,11 @@ export class WebService {
   /**
    * A project listing event that names a project AND describes it, mirroring
    * {@link emitThread}: a removal carries no summary and says so.
+   * Projects are global hints, so one event updates both the page and listing;
+   * a second singular event would duplicate the full context on the wire.
    */
-  private emitProject(type: "project.changed" | "projects.changed", payload: WebProjectChangedPayload): void {
-    this.emit(type, undefined, payload);
+  private emitProject(payload: WebProjectChangedPayload): void {
+    this.emit("projects.changed", undefined, payload);
   }
 
   /**
@@ -3535,8 +3534,7 @@ export class WebService {
   private refreshProject(projectId: string): void {
     const project = this.store.getProject(projectId);
     if (project === undefined) return;
-    this.emitProject("project.changed", { project });
-    this.emitProject("projects.changed", { project });
+    this.emitProject({ project });
   }
 
   /** Refresh the member project's summary, when the conversation has one. */

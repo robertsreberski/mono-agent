@@ -958,7 +958,6 @@ export type WebEventType =
   | "threads.changed"
   | "thread.changed"
   | "projects.changed"
-  | "project.changed"
   | "message.changed"
   | "message.delta"
   | "turn.changed"
@@ -979,7 +978,7 @@ export type WebThreadChangedPayload =
   | { readonly threadId: string; readonly removed: true };
 
 /**
- * The payload of every `project.changed`/`projects.changed` that names a
+ * The payload of every `projects.changed` that names a
  * project, mirroring {@link WebThreadChangedPayload}.
  *
  * The fresh summary travels WITH the event so a console never re-reads a

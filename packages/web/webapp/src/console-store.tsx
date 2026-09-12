@@ -3998,7 +3998,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, [publishDetail, reconcileCronRevision]);
 
   /**
-   * Apply one project summary carried by `project.changed`/`projects.changed`.
+   * Apply one project summary carried by `projects.changed`.
    *
    * Revision-guarded like the thread listing: at an equal revision the
    * incoming summary wins, so an optimistic edit made at the revision it
@@ -4618,8 +4618,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           else threadCacheRef.current.markStale(threadId);
           return;
 
-        case "projects.changed":
-        case "project.changed": {
+        case "projects.changed": {
           // The fresh summary travels with the event, so applying it IS the
           // whole of what this event means -- no listing is re-read. A removal
           // carries no summary and closes the page when it names the open one.
@@ -4709,7 +4708,6 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       "threads.changed",
       "thread.changed",
       "projects.changed",
-      "project.changed",
       "message.changed",
       "message.delta",
       "turn.changed",
@@ -4919,6 +4917,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * canonical summaries, newest first like every other listing.
    */
   const projectMembers = useMemo(() => {
+    if (projectMemberState.ids.length === 0) return [];
     const byId = new Map(threads.map((thread) => [thread.id, thread]));
     const ordered: ThreadSummary[] = [];
     for (const id of projectMemberState.ids) {

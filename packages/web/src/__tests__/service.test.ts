@@ -6920,37 +6920,37 @@ describe("conversation project context injection", () => {
     }
   });
 
-  it("emits project summaries on CRUD, membership moves and delete", async () => {
+  it("emits one project summary per affected project on CRUD, membership moves and delete", async () => {
     const service = await createService({});
     try {
       const events: WebEvent[] = [];
       const unsubscribe = service.subscribe((event) => { events.push(event); });
       const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
-      expect(events.filter((event) => event.type === "project.changed")).toHaveLength(1);
-      expect(events.filter((event) => event.type === "projects.changed")).toHaveLength(1);
+      expect(events).toHaveLength(1);
+      expect(events[0]?.type).toBe("projects.changed");
       expect(events[0]?.payload).toMatchObject({ project: { id: project.id, conversationCount: 0 } });
 
       events.length = 0;
       const thread = service.createThread("agent-one", { projectId: project.id });
-      expect(events.filter((event) => event.type === "project.changed")).toHaveLength(1);
-      expect(events.find((event) => event.type === "project.changed")?.payload)
+      expect(events.filter((event) => event.type === "projects.changed")).toHaveLength(1);
+      expect(events.find((event) => event.type === "projects.changed")?.payload)
         .toMatchObject({ project: { id: project.id, conversationCount: 1 } });
 
       events.length = 0;
       const other = service.createProject({ sourceId: "agent-one", name: "Q" });
       events.length = 0;
       service.patchThread(thread.id, { projectId: other.id });
-      const moved = events.filter((event) => event.type === "project.changed");
+      const moved = events.filter((event) => event.type === "projects.changed");
       expect(moved.map((event) => (event.payload as { project: { id: string } }).project.id).sort())
         .toEqual([other.id, project.id].sort());
 
       events.length = 0;
       service.patchProject(project.id, { context: "Updated." });
-      expect(events.filter((event) => event.type === "project.changed")).toHaveLength(1);
+      expect(events.filter((event) => event.type === "projects.changed")).toHaveLength(1);
 
       events.length = 0;
       service.deleteProject(other.id);
-      const removed = events.filter((event) => event.type === "project.changed");
+      const removed = events.filter((event) => event.type === "projects.changed");
       expect(removed.map((event) => event.payload)).toContainEqual({ projectId: other.id, removed: true });
       const detached = events.filter((event) =>
         (event.type === "thread.changed" || event.type === "threads.changed")

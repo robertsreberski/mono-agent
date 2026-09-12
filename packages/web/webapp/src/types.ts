@@ -1014,7 +1014,6 @@ export interface WebEvent {
     | "threads.changed"
     | "thread.changed"
     | "projects.changed"
-    | "project.changed"
     | "message.changed"
     | "message.delta"
     | "turn.changed"
@@ -1026,7 +1025,7 @@ export interface WebEvent {
 }
 
 /**
- * The payload of a `project.changed`/`projects.changed`, mirrored from the
+ * The payload of a `projects.changed`, mirrored from the
  * server's `WebProjectChangedPayload`: the fresh summary travels with the
  * event, and a removal has no summary left to carry.
  */

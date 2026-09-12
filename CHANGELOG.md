@@ -13,7 +13,7 @@
   Project summaries carry conversation, running, and monthly-priced-usage
   counts over `GET/POST /api/v1/projects`, `PATCH/DELETE
   /api/v1/projects/:id`, thread `projectId` membership, and
-  `project.changed`/`projects.changed` events. Storage migrates to schema 26
+  `projects.changed` events. Storage migrates to schema 26
   with `projects` and `threads.project_id`.
 
 - Per-tool output truncation now persists the full output in the configured

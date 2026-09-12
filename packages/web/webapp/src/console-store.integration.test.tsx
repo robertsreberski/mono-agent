@@ -9779,9 +9779,9 @@ describe("ConsoleStoreProvider integration", () => {
   it("applies project summaries and removals from events", async () => {
     const store = await renderProjectStore();
     const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
-    act(() => FakeEventSource.latest?.emit("project.changed", {
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
       version: 1,
-      type: "project.changed",
+      type: "projects.changed",
       at: "2026-09-08T10:00:00.000Z",
       payload: { project: updated },
     }));
@@ -9863,9 +9863,9 @@ describe("ConsoleStoreProvider integration", () => {
   it("keeps newer event summaries and tombstoned removals across late listings", async () => {
     const store = await renderProjectStore();
     const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
-    act(() => FakeEventSource.latest?.emit("project.changed", {
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
       version: 1,
-      type: "project.changed",
+      type: "projects.changed",
       at: "2026-09-08T10:00:00.000Z",
       payload: { project: updated },
     }));
@@ -9893,9 +9893,9 @@ describe("ConsoleStoreProvider integration", () => {
   it("keeps newer event summaries and tombstoned removals across a late bootstrap", async () => {
     const store = await renderProjectStore();
     const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
-    act(() => FakeEventSource.latest?.emit("project.changed", {
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
       version: 1,
-      type: "project.changed",
+      type: "projects.changed",
       at: "2026-09-08T10:00:00.000Z",
       payload: { project: updated },
     }));
@@ -9955,8 +9955,8 @@ describe("ConsoleStoreProvider integration", () => {
         }));
         await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBeGreaterThan(before));
       }
-      act(() => FakeEventSource.latest?.emit("project.changed", {
-        version: 1, type: "project.changed", at: "2026-09-08T10:00:01.000Z",
+      act(() => FakeEventSource.latest?.emit("projects.changed", {
+        version: 1, type: "projects.changed", at: "2026-09-08T10:00:01.000Z",
         payload: { project: created },
       }));
       await waitFor(() => expect(store.current.projectsByAgent.alpha).toContainEqual(created));
@@ -9981,9 +9981,9 @@ describe("ConsoleStoreProvider integration", () => {
       archivedAt: "2026-09-08T10:00:00.000Z",
       revision: webProject.revision + 1,
     };
-    act(() => FakeEventSource.latest?.emit("project.changed", {
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
       version: 1,
-      type: "project.changed",
+      type: "projects.changed",
       at: "2026-09-08T10:00:00.000Z",
       payload: { project: archived },
     }));

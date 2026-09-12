@@ -468,7 +468,7 @@ exists). The browser API is `GET/POST /api/v1/projects`,
 `PATCH/DELETE /api/v1/projects/:id`, `projectId` on thread create/patch (null
 detaches; never combined with `ifRunConfigUnset`) and as a `GET /threads`
 filter, membership in `WebThread.projectId`, the resolved agent's projects on
-the bootstrap, and `project.changed`/`projects.changed` events carrying the
+the bootstrap, and `projects.changed` events carrying the
 fresh summary or a removal.
 
 Cron channels are non-sendable and non-uploadable. Configured channels may be
