@@ -47,6 +47,11 @@ export interface WebhookAdapterConfig {
   readonly maxStoredRequests: number;
   /** Wall-clock bound (ms) per webhook run. Omit to use the adapter default (20 min). */
   readonly maxRunMs?: number;
+  /**
+   * Decoded-byte ceiling for one inbound audio attachment (multipart/form-data
+   * or raw `audio/*` bodies). Omit to use `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES`.
+   */
+  readonly maxAttachmentBytes?: number;
   readonly endpoints: readonly WebhookEndpointConfig[];
   /** Back-compat mirror of `endpoints[0].path`. */
   readonly path: string;
@@ -77,6 +82,8 @@ const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
 const DEFAULT_WEBHOOK_DIR = "webhook";
 const MAX_RUN_MS = 86_400_000;
+/** Upper bound for the operator-configured attachment ceiling (mirrors Telegram). */
+const MAX_ATTACHMENT_CONFIG_BYTES = 2_147_483_648;
 
 const WEBHOOK_MODES: readonly WebhookInvocationMode[] = ["sync", "async"];
 
@@ -107,6 +114,14 @@ export async function loadWebhookAdapterConfig(
     maxRunMsRaw === undefined
       ? undefined
       : readInteger(maxRunMsRaw, "MONO_AGENT_WEBHOOK_MAX_RUN_MS", 0, invalidConfig, { min: 0, max: MAX_RUN_MS });
+  const maxAttachmentBytesRaw = normalizeOptionalString(env.MONO_AGENT_WEBHOOK_MAX_ATTACHMENT_BYTES);
+  const maxAttachmentBytes =
+    maxAttachmentBytesRaw === undefined
+      ? undefined
+      : readInteger(maxAttachmentBytesRaw, "MONO_AGENT_WEBHOOK_MAX_ATTACHMENT_BYTES", 0, invalidConfig, {
+        min: 1,
+        max: MAX_ATTACHMENT_CONFIG_BYTES,
+      });
 
   const configEndpoints = loadConfigEndpoints(json, env, defaultMode);
   const directoryEndpoints = await loadDirectoryEndpoints(json, input, defaultMode);
@@ -123,6 +138,7 @@ export async function loadWebhookAdapterConfig(
     retentionMs,
     maxStoredRequests,
     ...(maxRunMs === undefined ? {} : { maxRunMs }),
+    ...(maxAttachmentBytes === undefined ? {} : { maxAttachmentBytes }),
     endpoints,
     path: primary.path,
     defaultMode: primary.mode,
@@ -344,6 +360,7 @@ export const WEBHOOK_CONFIG_FIELDS: readonly JsonEnvFieldSpec[] = [
   { id: "webhook.defaultMode", env: "MONO_AGENT_WEBHOOK_DEFAULT_MODE", fromJson: (s) => s.defaultMode },
   { id: "webhook.retentionMs", env: "MONO_AGENT_WEBHOOK_RETENTION_MS", kind: "integer", fromJson: (s) => s.retentionMs },
   { id: "webhook.maxStoredRequests", env: "MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS", kind: "integer", fromJson: (s) => s.maxStoredRequests },
+  { id: "webhook.maxAttachmentBytes", env: "MONO_AGENT_WEBHOOK_MAX_ATTACHMENT_BYTES", kind: "integer", fromJson: (s) => s.maxAttachmentBytes },
   { id: "webhook.maxRunMs", env: "MONO_AGENT_WEBHOOK_MAX_RUN_MS", kind: "integer", fromJson: (s) => s.maxRunMs },
 ];
 
