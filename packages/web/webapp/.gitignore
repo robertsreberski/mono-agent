@@ -1,5 +1,3 @@
 node_modules/
 .vite/
 coverage/
-# Browser-suite captures (RouteBadge.browser.test writes src/.screenshots/ on every run)
-.screenshots/
