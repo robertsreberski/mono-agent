@@ -386,7 +386,7 @@ CREATE TRIGGER message_search_insert
 CREATE TRIGGER message_search_update
         AFTER UPDATE OF parts_json ON messages
         WHEN json_valid(new.parts_json) AND new.status <> 'running' BEGIN
-        
+
         DELETE FROM message_search WHERE rowid = old.rowid;
         INSERT INTO message_search(rowid, body)
         SELECT new.rowid, (
@@ -398,7 +398,7 @@ CREATE TRIGGER message_search_update
 CREATE TRIGGER message_search_settle
         AFTER UPDATE OF status ON messages
         WHEN json_valid(new.parts_json) AND old.status = 'running' AND new.status <> 'running' BEGIN
-        
+
         DELETE FROM message_search WHERE rowid = old.rowid;
         INSERT INTO message_search(rowid, body)
         SELECT new.rowid, (
