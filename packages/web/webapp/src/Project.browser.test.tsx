@@ -186,13 +186,13 @@ describe.each([
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
-  it("keeps a project's conversation out of Recent and names its project in Active now", async () => {
+  it("names the project on a conversation's row and on its running card", async () => {
     await page.viewport(width, height);
     const running = { ...first, runState: { status: "running" as const } };
     const own = thread("own-one", "alpha", { title: "Agent conversation" });
     storeMock.current = dashboardStore({
       threads: [running, second, own],
-      visibleThreads: [own],
+      visibleThreads: [running, second, own],
       activeThreads: {
         threads: [running],
         total: 1,
@@ -207,17 +207,18 @@ describe.each([
       </WebRuntimeProvider>,
     );
 
-    // The agent's own list holds its own conversations; the project's are on
-    // the project page.
-    expect(await screen.findByRole("button", { name: "Open Agent conversation" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Open Console conversation and cron-list polish" })).toBeNull();
-    // Running work stays visible wherever it lives, wearing its project's name.
+    // The list carries every conversation; the ones in a project say so.
+    const row = await screen.findByRole("button", {
+      name: "Open Dashboard drawer redesign plan, in project Web console",
+    });
+    expect(row).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Agent conversation" })).toBeVisible();
+    // And a running one wears the same label on its card.
     const card = screen.getByRole("button", {
       name: "Open Console conversation and cron-list polish on Alpha, in project Web console",
     });
-    expect(card).toBeVisible();
     expect(card.querySelector(".project-badge")).toHaveTextContent("Web console");
-    await capture(`running-project-chat-${label}`);
+    await capture(`labelled-project-chats-${label}`);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 

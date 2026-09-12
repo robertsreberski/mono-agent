@@ -2001,8 +2001,7 @@ function optionalArchivedQuery(value: unknown): boolean | undefined {
 function optionalThreadListScope(value: unknown): WebThreadListScope {
   if (value === undefined || value === "all") return "all";
   if (value === "chats") return "chats";
-  if (value === "direct") return "direct";
-  throw new WebConsoleError("invalid_page", "scope must be all, chats or direct.", 400);
+  throw new WebConsoleError("invalid_page", "scope must be all or chats.", 400);
 }
 
 function optionalEmptyOnlyQuery(value: unknown): boolean {

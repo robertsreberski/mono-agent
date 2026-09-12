@@ -3710,9 +3710,7 @@ describe("ConsoleStoreProvider integration", () => {
         sourceId: "alpha",
         archived: false,
         limit: THREAD_PAGE_LIMIT,
-        // The live bucket is the agent's own conversations; a project's
-        // members are carried by the project page's own read.
-        scope: "direct",
+        scope: "chats",
       });
       // The bucket the bootstrap carried is not re-read...
       expect(api.threads).not.toHaveBeenCalled();
@@ -9794,42 +9792,6 @@ describe("ConsoleStoreProvider integration", () => {
     act(() => store.current.closeProject());
     expect(store.current.openProjectId).toBeNull();
     expect(store.current.projectMembers).toEqual([]);
-  });
-
-  it("keeps the open project's members when a listing that no longer carries them replaces the bucket", async () => {
-    const own = thread("own-one", "alpha", { title: "Agent chat" });
-    const store = await renderProjectStore();
-    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
-
-    act(() => store.current.openProjectById(webProject.id));
-    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]));
-
-    // The agent's list is read in the `direct` scope now, so this snapshot is
-    // silent about the member -- it is NOT evidence the member is gone. The
-    // project page draws its rows from this same held set, so a wholesale
-    // replacement that dropped it would empty the page on screen.
-    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
-      [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
-      [own],
-      undefined,
-      { threadsSourceId: "alpha", projects: [webProject], projectsSourceId: "alpha" },
-    ));
-    act(() => FakeEventSource.latest?.emit("agents.changed", {
-      id: "project-retention-1", version: 1, type: "agents.changed", at: "2026-09-12T00:00:02Z",
-    }));
-
-    await waitFor(() => expect(store.current.threads.some((row) => row.id === own.id)).toBe(true));
-    expect(store.current.threads.some((row) => row.id === member.id)).toBe(true);
-    expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]);
-    // And it is still not in the agent's own list.
-    expect(store.current.visibleThreads.map((row) => row.id)).toEqual([own.id]);
-
-    // Closing the project lets it go on the next replacement.
-    act(() => store.current.closeProject());
-    act(() => FakeEventSource.latest?.emit("agents.changed", {
-      id: "project-retention-2", version: 1, type: "agents.changed", at: "2026-09-12T00:00:03Z",
-    }));
-    await waitFor(() => expect(store.current.threads.some((row) => row.id === member.id)).toBe(false));
   });
 
   it("applies project summaries and removals from events", async () => {

@@ -450,12 +450,10 @@ overview under the Automations chip; the chips stay visible during a search, and
 switching chips clears the query. The Recent list uses a server-side scope for paging
 and search, so cron channels are excluded
 before limits and cursors are applied while ordinary and webhook conversations
-remain visible. The live bucket asks for the `direct` scope, which also excludes
-a project's member conversations: they are listed by their project page instead.
-The archived bucket keeps asking for `chats`, because an archived member is not
-on that page any more, and every row that belongs to a project is labelled with
-its name -- in Running, in search results, and on the archive shelf. Unscoped
-HTTP callers keep the backward-compatible mixed list.
+remain visible. A project's conversations stay in the list with the agent's own;
+what marks them is a label carrying the project's name, drawn on the row, on the
+Running card, on a search hit and on the archive shelf. Unscoped HTTP callers
+keep the backward-compatible mixed list.
 Automations is a system view of the list; this package defines project
 persistence and membership below, but no folders and no runtime context beyond
 the per-turn project envelope.

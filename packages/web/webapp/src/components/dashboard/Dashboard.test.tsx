@@ -330,23 +330,27 @@ describe("Dashboard conversation rows", () => {
     expect(screen.queryByRole("button", { name: "Open Nightly report" })).toBeNull();
   });
 
-  it("leaves a project's conversations to its page, and labels the archived one it keeps", () => {
+  it("keeps a project's conversation in the list and says which project it is in", () => {
     const member = thread("member", "agent-one", {
       title: "Project chat",
       projectId: "p1",
       projectName: "Console work",
     });
     const own = thread("own", "agent-one", { title: "Agent chat" });
-    storeMock.current = createStore([member, own]);
+    storeMock.current = {
+      ...createStore([member, own]),
+      projectsByAgent: { "agent-one": [project("p1", "agent-one", { name: "Console work", color: "blue" })] },
+    };
     render(<Dashboard />);
 
-    // Held by this tab -- an SSE update or a project read put it there -- and
-    // still absent from the agent's own list.
-    expect(screen.queryByRole("button", { name: /^Open Project chat/u })).toBeNull();
-    expect(screen.getByRole("button", { name: "Open Agent chat" })).toBeVisible();
+    // In the list like any other conversation, and marked as a project chat.
+    const row = screen.getByRole("button", { name: "Open Project chat, in project Console work" });
+    expect(within(row).getByTitle("In project Console work")).toHaveTextContent("Console work");
+    // A conversation that belongs to the agent says nothing.
+    const plain = screen.getByRole("button", { name: "Open Agent chat" });
+    expect(within(plain).queryByTitle(/^In project/u)).toBeNull();
 
-    // Archived it has no project page left to be on, so the shelf keeps it and
-    // says which project it came from.
+    // The archive shelf carries the same label.
     const archivedMember = { ...member, archivedAt: "2026-07-18T10:00:00.000Z" };
     storeMock.current = {
       ...createStore([archivedMember]),
@@ -355,9 +359,8 @@ describe("Dashboard conversation rows", () => {
       projectsByAgent: { "agent-one": [project("p1", "agent-one", { name: "Console work", color: "blue" })] },
     };
     render(<Dashboard />);
-
-    const row = screen.getByRole("button", { name: "Open Project chat, in project Console work" });
-    expect(within(row).getByTitle("In project Console work")).toHaveTextContent("Console work");
+    expect(screen.getAllByRole("button", { name: "Open Project chat, in project Console work" }).length)
+      .toBeGreaterThan(0);
   });
 
   it("marks a row this device has not seen, and says so by name", () => {

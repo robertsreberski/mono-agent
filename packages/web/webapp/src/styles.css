@@ -1505,8 +1505,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 /* The conversation's project is its eyebrow: the Dashboard's section-label
    measure in the project's ink, above the title where the console name sits
    above the agent's. The pending note shares the line in the muted colour. */
-.chat-project-identity { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; padding-left: 5px; line-height: 1; }
-.project-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; margin: -3px -4px; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--project-ink); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; line-height: 1; text-transform: uppercase; cursor: pointer; }
+/* Flush with the conversation title below it: the badge's own hover padding
+   is pulled back by its negative margin, so the NAME starts on the title's
+   left edge rather than the box it is hoverable in. */
+.chat-project-identity { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; line-height: 1; }
+.project-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; margin: -3px -4px; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--project-ink); font-size: 10.5px; font-weight: 600; letter-spacing: 0.01em; line-height: 1; cursor: pointer; }
 .project-badge:hover { background: var(--project-tint); }
 .project-badge span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The same badge standing still inside a row that is already one target:

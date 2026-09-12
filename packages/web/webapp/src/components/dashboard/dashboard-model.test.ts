@@ -97,11 +97,9 @@ describe("recent filter", () => {
     expect(isRecentThread(plain)).toBe(true);
   });
 
-  it("leaves a live project member to its project page and keeps the archived one on the shelf", () => {
+  it("keeps a project's conversations in the list, labelled rather than hidden", () => {
     const member = thread("member", "alpha", { projectId: "p1", projectName: "Console" });
-    expect(isRecentThread(member)).toBe(false);
-    // Archived, the project page no longer shows it: the shelf is the only
-    // place it could be found, so it stays.
+    expect(isRecentThread(member)).toBe(true);
     expect(isRecentThread({ ...member, archivedAt: "2026-07-18T10:00:00.000Z" })).toBe(true);
     // A cron channel is still out of both buckets.
     expect(isRecentThread({ ...cron, archivedAt: "2026-07-18T10:00:00.000Z" })).toBe(false);

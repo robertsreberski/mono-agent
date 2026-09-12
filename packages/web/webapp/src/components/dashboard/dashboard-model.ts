@@ -78,23 +78,21 @@ export const dashboardKindIcon = (kind: DashboardThreadKind): IconName => ICON_B
 export const dashboardKindLabel = (kind: DashboardThreadKind): string => LABEL_BY_KIND[kind];
 
 /**
- * Recent is the agent's OWN conversations; a cron channel is an automation's
- * history and lives in that collection, and a live project member is drawn by
- * its project's page. The listing is server-scoped the same way -- this is the
- * row-level guard for whatever an older page, an event or a project read still
- * carries.
+ * Recent is conversations; a cron channel is an automation's history and lives
+ * in that collection. The listing is server-scoped the same way -- this is the
+ * row-level guard for whatever an older page or event still carries.
  *
- * Archived is the exception, and deliberately: the project page shows live
- * members only, so an archived one would be nowhere at all. It stays on the
- * archive shelf, wearing its project's name.
+ * A project's conversations ARE in this list, like any other: the project page
+ * is a second way into them, not the only one. What marks them is the label
+ * the row carries, not their absence.
  */
 export const isRecentThread = (thread: ThreadSummary): boolean =>
-  thread.trigger?.kind !== "cron"
-  && (thread.archivedAt !== null || thread.projectId === null);
+  thread.trigger?.kind !== "cron";
 
 /**
  * What a row says about the project it belongs to, or undefined for a
- * conversation that belongs to its agent directly.
+ * conversation that belongs to its agent directly. Every list that can show a
+ * member -- Recent, Running, search, the archive shelf -- says so with this.
  *
  * The loaded project wins -- it carries the colour, and a rename reaches it
  * first -- but Running crosses agents and this console holds only the selected

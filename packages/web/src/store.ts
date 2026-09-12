@@ -2728,16 +2728,6 @@ export class WebStore {
     const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
     const scopeSql = threadListScopeSql(scope);
     const projectSql = input.projectId === undefined ? "" : "AND t.project_id = ?";
-    // One asks for a project's members and the other for everything outside a
-    // project. Answering with the empty intersection would read as "this
-    // project is empty", so the contradiction is refused.
-    if (input.projectId !== undefined && scope === "direct") {
-      throw new WebConsoleError(
-        "invalid_page",
-        "scope=direct lists conversations outside every project and cannot name one.",
-        400,
-      );
-    }
     if (input.projectId !== undefined && this.getProjectRow(input.projectId) === undefined) {
       throw new WebConsoleError("project_not_found", "Project not found.", 404);
     }
@@ -2761,7 +2751,7 @@ export class WebStore {
         ? { nextCursor: encodeCursor({
             updatedAt: last.updated_at,
             id: last.id,
-            ...(scope === "all" ? {} : { scope }),
+            ...(scope === "chats" ? { scope } : {}),
             ...(input.projectId === undefined ? {} : { project: input.projectId }),
           }) }
         : {}),
@@ -7114,11 +7104,7 @@ function decodeCursor(value: string): Record<string, unknown> {
 }
 
 function threadListScopeSql(scope: WebThreadListScope): string {
-  if (scope === "all") return "";
-  const chats = "AND (t.trigger_kind IS NULL OR t.trigger_kind <> 'cron')";
-  // A project member is listed by its project's page. `direct` is the agent's
-  // own conversations, which is what the console's Recent list asks for.
-  return scope === "direct" ? `${chats} AND t.project_id IS NULL` : chats;
+  return scope === "chats" ? "AND (t.trigger_kind IS NULL OR t.trigger_kind <> 'cron')" : "";
 }
 
 function decodeThreadCursor(
@@ -7128,9 +7114,7 @@ function decodeThreadCursor(
 ): { readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
   if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string"
-    // A scoped page binds its scope the same way: a cursor minted for the
-    // agent's direct conversations must not walk the mixed listing.
-    || (scope === "all" ? cursor.scope !== undefined : cursor.scope !== scope)
+    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)
     // A filtered page binds its project: a cursor minted for another project
     // -- or for the unfiltered bucket -- must not walk this one.
     || (projectId === undefined ? cursor.project !== undefined : cursor.project !== projectId)) {

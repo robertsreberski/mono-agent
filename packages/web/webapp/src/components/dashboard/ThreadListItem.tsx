@@ -37,8 +37,8 @@ export function ThreadListItem({
   readonly catalogModels: Readonly<Record<string, readonly CatalogModel[]>> | undefined;
   /**
    * The project this row belongs to, where saying so means something: the
-   * archive shelf, which is the one list a member still appears in. The
-   * project page passes none -- every row on it is the same project.
+   * agent's list and its archive shelf. The project page passes none -- every
+   * row on it is the same project.
    */
   readonly project?: { readonly name: string; readonly color: ProjectColor };
   /** This device has not seen the conversation as it now stands. */

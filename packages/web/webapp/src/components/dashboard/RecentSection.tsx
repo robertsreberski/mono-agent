@@ -13,11 +13,9 @@ import { ThreadListItem } from "./ThreadListItem";
 
 /**
  * The selected agent's current archive bucket, and nothing else. Cron channels
- * are not in it, and neither is a live project member -- that one is drawn by
- * its project's page. The listing is server-scoped the same way, and the rows
- * defend it here for anything an older page, an event or a project read still
- * carries. Archived, a member has no project page to be on, so it stays here
- * wearing its project's name.
+ * are not in it: the listing is server-scoped to chats, and the rows defend
+ * that here for anything an older page or event still carries. A project's
+ * conversations are in it, wearing their project's name.
  *
  * A search REPLACES these rows -- it goes to the server and reads every
  * conversation of the agent rather than the page this list has loaded.
@@ -134,9 +132,9 @@ export function RecentSection({
               {({ threadListItem }) => {
                 const thread = threadById.get(threadListItem.id);
                 if (!thread || !isRecentThread(thread)) return null;
-                // Only the archive shelf can hold a project's conversation;
-                // see `isRecentThread`. It says which project, so the row is
-                // not an unexplained stranger in the agent's own list.
+                // A project's conversation sits in this list like any other
+                // and says which project it belongs to; the project page is a
+                // second way into it, not the only one.
                 const project = threadProjectLabel(thread, projectsByAgent);
                 return (
                   <ThreadListItem
