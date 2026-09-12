@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Keep a subagent's own context across conversation turns with
+  `Agent({persist: true})` and `AgentSend`. Persistent instances survive restarts,
+  appear in the Session envelope, and enforce idle expiry, capacity, turn limits,
+  and exclusive execution. `AgentSend` can close an instance when work is done;
+  `restart --clear-sessions` clears their registries and transcripts.
+
 - Let `Agent` calls select a model from `subagents.models` and set effort for
   configured, authored, or general-purpose helpers. Call-time values override
   profile pins; unpinned children inherit the parent's effective model and effort.

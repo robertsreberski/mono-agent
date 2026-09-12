@@ -513,6 +513,23 @@ describe("loadMonoAgentConfig", () => {
 
   });
 
+  it("loads persistent instance limits and resolves its root", () => {
+    const instances = { enabled: false, root: "./children", maxPerConversation: 32, idleTtlMs: 60_000, maxTurns: 500 };
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances }),
+    } });
+    expect(config.subagents?.instances).toEqual({ ...instances, root: "/repo/children" });
+  });
+
+  it.each([null, [], { root: " " }, { enabled: "true" }, { maxPerConversation: 0 },
+    { maxPerConversation: 33 }, { idleTtlMs: 59_999 }, { idleTtlMs: 604_800_001 },
+    { maxTurns: 0 }, { maxTurns: 501 }, { maxTurns: 1.5 }, { unknown: true },
+  ])("rejects invalid instance settings %j", (instances) => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ instances }),
+    } })).toThrow(/instances/u);
+  });
+
   it("loads subagent profiles and caps", () => {
     const config = loadMonoAgentConfig({
       cwd: "/repo",
@@ -602,6 +619,8 @@ describe("loadMonoAgentConfig", () => {
     ["an out-of-range maxConcurrent", JSON.stringify({ maxConcurrent: 99 }), /maxConcurrent must be an integer between 1 and 10/u],
     ["a non-object inline policy", JSON.stringify({ inline: [] }), /inline must be an object/u],
     ["an inline allow-all wildcard", JSON.stringify({ inline: { allowedTools: ["*"] } }), /cannot use the \* wildcard/u],
+    ["a profile AgentSend grant", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["AgentSend"] }] }), /cannot allow Agent or AgentSend/u],
+    ["an inline AgentSend grant", JSON.stringify({ inline: { allowedTools: ["AgentSend"] } }), /cannot allow Agent or AgentSend/u],
     ["an inline Agent grant", JSON.stringify({ inline: { allowedTools: ["Agent"] } }), /subagents never spawn subagents/u],
   ])("rejects %s", (_label, payload, expected) => {
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: payload } }))

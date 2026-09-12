@@ -1,3 +1,4 @@
+import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createAgentHarness,
@@ -14,6 +15,7 @@ import {
 import type {
   AgentHarness,
   AgentHarnessOptions,
+  AgentHarnessRequest,
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
   AgentHarnessToolHistoryOptions,
@@ -659,6 +661,7 @@ function selectMcpServers(
 /** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
 const SUBAGENT_HARD_DENY = [
   "Agent",
+  "AgentSend",
   "AskUser",
   "SlackSendMessage",
   "TelegramSendMessage",
@@ -692,6 +695,7 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly instance?: { readonly sessionId: string; readonly sessionsRoot: string };
   readonly model?: RuntimeModelReference;
   readonly effort?: string;
   readonly systemPrompt: string;
@@ -703,6 +707,7 @@ interface SubagentRunRequest {
     readonly allowedTools?: readonly string[];
     readonly disallowedTools?: readonly string[];
     readonly mcpServers?: Record<string, unknown>;
+    readonly mcpServerNames?: readonly string[];
   };
   readonly maxTurns: number;
   readonly depth: number;
@@ -759,13 +764,14 @@ function resolveSubagentPrompt(definition: { readonly prompt?: string; readonly 
  * through the shared router is what gives subagents the configured fallback
  * chain and same-model retries for free.
  */
-function subagentsRuntimeOptions(
+export function buildSubagentsOptions(
   config: MonoAgentConfig,
   deps: {
     readonly runtime: MonoRuntimeLike;
     readonly baseModel: RuntimeModelReference;
     readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
   },
+  scope?: { conversationId: string; runId: string; instances: InstanceRegistryHandle },
 ): StaticRuntimeOptions | undefined {
   const subagents = config.subagents;
   if (subagents?.enabled !== true) {
@@ -800,6 +806,9 @@ function subagentsRuntimeOptions(
     // primary instead of the model its profile asked for.
     const childModel = request.definition.model ?? request.model ?? deps.baseModel;
     const overrides = modelReferenceKey(childModel) !== modelReferenceKey(deps.baseModel);
+    if (request.instance && overrides && deps.runtimeForModel === undefined) {
+      throw new Error(`Persistent subagent route ${childModel.reference} is unavailable; the retained model was not changed.`);
+    }
     const runtime = overrides && deps.runtimeForModel !== undefined
       ? deps.runtimeForModel(childModel)
       : deps.runtime;
@@ -826,7 +835,14 @@ function subagentsRuntimeOptions(
       ? request.systemPrompt
       : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
 
-    return await runtime.run(childSystemPrompt, {
+    const result = await runtime.run(childSystemPrompt, {
+      ...(request.instance === undefined ? {} : {
+        sessionId: request.instance.sessionId,
+        piSessionsRoot: request.instance.sessionsRoot,
+        sessionKeepAlive: true,
+        sessionIdleTimeoutMs: subagents.instances?.idleTtlMs ?? 86_400_000,
+        ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
+      }),
       model: childModel,
       messages: [{ role: "user", content: request.prompt }],
       maxTurns: request.maxTurns,
@@ -855,20 +871,31 @@ function subagentsRuntimeOptions(
       ...((request.definition.effort ?? request.effort) === undefined
         ? {} : { effort: request.definition.effort ?? request.effort }),
       allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
-      disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
+      disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...config.tools.disallowedTools, ...SUBAGENT_HARD_DENY])],
       // Only the servers this profile named. A profile that names none gets an
       // empty map, keeping the app-owned AskUser and channel-send tools
       // structurally out of reach rather than merely denied by name.
-      mcpServers: request.definition.mcpServers ?? {},
+      mcpServers: request.instance
+        ? selectMcpServers((toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>, request.definition.mcpServerNames ?? [], request.definition.name)
+        : request.definition.mcpServers ?? {},
       abortSignal: request.abortSignal,
       onEvent: request.onEvent,
       // Depth propagation is the recursion lock the kernel also enforces.
       subagents: { depth: request.depth },
     } as unknown as RuntimeRunOptions);
+    // Router retries/backups deliberately withhold session ids. Do not promise
+    // retained child context for an answer that was produced outside this epoch.
+    if (request.instance && !result.error && !result.failureKind && !result.cancelled
+      && result.providerSessionId !== request.instance.sessionId) {
+      return { ...result, failureKind: "session_continuity_lost",
+        error: "The child answered outside its persistent session (for example after retry or fallback). This turn was not retained; close the instance and create another with the context it needs." };
+    }
+    return result;
   };
 
   return {
     subagents: {
+      ...(scope === undefined || !persistentSubagentsEnabled(config) ? {} : { instances: scope.instances }),
       definitions,
       ...(subagents.models === undefined ? {} : { models: subagents.models.map((choice) => ({
         name: choice.name ?? modelReferenceKey(choice.model),
@@ -888,6 +915,23 @@ function subagentsRuntimeOptions(
       run,
     },
   } as unknown as StaticRuntimeOptions;
+}
+
+
+/** Complete options object, constructed once per logical request and reused by router attempts. */
+export function createSubagentsRuntimeExtension(
+  config: MonoAgentConfig,
+  deps: Parameters<typeof buildSubagentsOptions>[1],
+  registry: ReturnType<typeof createSubagentInstanceRegistry>,
+): NonNullable<ConfiguredAgentHarnessOptions["runtimeOptionsForRequest"]> {
+  return async ({ request, runId }) => !persistentSubagentsEnabled(config)
+    ? { runtimeOptions: buildSubagentsOptions(config, deps)! }
+    : ({
+    runtimeOptions: buildSubagentsOptions(config, deps, {
+      conversationId: request.conversationId, runId,
+      instances: await registry.open(request.conversationId),
+    })!,
+  });
 }
 
 
@@ -1140,11 +1184,25 @@ async function createConfiguredAgentHarnessInternal(
           ? {}
           : { onUnavailable: options.onMemoryRememberUnavailable }),
       });
+  const subagentDeps = { runtime, baseModel: model, ...(runtimeForModel === undefined ? {} : { runtimeForModel }) };
+  const instanceRegistry = persistentSubagentsEnabled(config)
+    ? createSubagentInstanceRegistry({
+        root: subagentInstancesRoot(config),
+        ...config.subagents?.instances,
+        retireSession: async (id, root) => {
+          if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
+          await runtime.retireDurableSession(id, root);
+        },
+      })
+    : undefined;
+  const persistentSubagents = instanceRegistry === undefined ? undefined
+    : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
     memoryJournal,
     memoryRemember,
     options.runtimeOptionsForRequest,
+    persistentSubagents,
   ], {
     // The app-owned, read-only MemoryRecall endpoint is part of every configured
     // memory tier. Preserve only this exact extension under an authenticated
@@ -1185,7 +1243,7 @@ async function createConfiguredAgentHarnessInternal(
     monitoredRuntimeOptionsForRequest,
     toolOutputArtifactRoot,
   );
-  const subagents = subagentsRuntimeOptions(config, {
+  const subagents = buildSubagentsOptions(config, {
     runtime,
     baseModel: model,
     ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
@@ -1291,6 +1349,12 @@ async function createConfiguredAgentHarnessInternal(
           },
         }),
     runtimeOptions,
+    ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
+      (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
+        id: record.id, name: record.name, status: record.status, turns: record.turns,
+        ageMs: Math.max(0, Date.now() - record.updatedAt),
+        route: [record.definition.model?.reference, record.definition.effort].filter(Boolean).join("/"),
+      })) }),
     ...(runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest }),

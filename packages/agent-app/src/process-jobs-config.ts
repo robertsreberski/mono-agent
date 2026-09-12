@@ -369,7 +369,7 @@ async function configuredPurgeRoots(input: {
   readonly configPath: string;
   readonly env: Record<string, string | undefined>;
 }): Promise<readonly {
-  readonly kind: "Pi provider sessions" | "durable session/tool history" | "ACP sessions";
+  readonly kind: "Pi provider sessions" | "durable session/tool history" | "ACP sessions" | "persistent subagent instances";
   readonly path: string;
   readonly canonicalPath: string;
 }[]> {
@@ -381,6 +381,7 @@ async function configuredPurgeRoots(input: {
     }]),
     { kind: "durable session/tool history", path: roots.history },
     { kind: "ACP sessions", path: roots.acpSessions },
+    ...(roots.subagents === undefined ? [] : [{ kind: "persistent subagent instances" as const, path: roots.subagents }]),
   ] as const;
   return await Promise.all(values.map(async (root) => ({
     kind: root.kind,

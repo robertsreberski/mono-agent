@@ -65,7 +65,7 @@ import type {
 } from "./doctor.js";
 import { readCliConfigSnapshot } from "./first-run-readiness.js";
 import { buildRunsHealthDisplay, RUNS_HEALTH_MAX_RUNS } from "./runs-health.js";
-import { purgeConversationState } from "./sessions.js";
+import { purgeConversationState, type PurgeConversationStateResult } from "./sessions.js";
 import { deriveLaunchdLabel, launchdPathsFor } from "./launchd.js";
 import { waitForManagedRuntimePublication } from "./managed-runtime-publication.js";
 import * as ui from "./ui.js";
@@ -647,37 +647,43 @@ async function runForceRestart(
 ): Promise<number> {
   return await forceRestartBackground(target, deps, async () => {
     const result = await purgeConversationState({ env: environment, cwd: target.cwd, configPath: target.configPath });
-    const cleared: string[] = [];
-    if (result.sessions.removed) {
-      const count = result.sessions.files === 0
-        ? ""
-        : ` (${result.sessions.files} session file${result.sessions.files === 1 ? "" : "s"})`;
-      cleared.push(`persisted provider sessions${count}`);
-    }
-    if (result.history.removed) {
-      const count = result.history.messageHistory.files === 0
-        ? ""
-        : ` (${result.history.messageHistory.files} conversation file${result.history.messageHistory.files === 1 ? "" : "s"}, ${result.history.messageHistory.bytes} bytes)`;
-      cleared.push(`active conversation history${count}`);
-      const toolCounts = result.history.toolHistory.countsKnown
-        ? `; ${result.history.toolHistory.calls ?? 0} calls, ${result.history.toolHistory.records ?? 0} records, ${result.history.toolHistory.tombstones ?? 0} tombstones`
-        : "; record counts unavailable";
-      cleared.push(`tool history (${result.history.toolHistory.files} files, ${result.history.toolHistory.bytes} bytes${toolCounts})`);
-    }
-    if (result.acpSessions.removed) {
-      const count = result.acpSessions.files === 0
-        ? ""
-        : ` (${result.acpSessions.files} authorization file${result.acpSessions.files === 1 ? "" : "s"})`;
-      cleared.push(`ACP session authorizations${count}`);
-    }
-    if (cleared.length > 0) {
-      process.stdout.write(`${ui.badge("ok")}${ui.style.bold(`Cleared ${cleared.join(" and ")}`)}.\n`);
-    } else {
-      process.stdout.write(
-        ui.style.dim("No persisted provider sessions, conversation history, or ACP authorizations to clear.") + "\n",
-      );
-    }
+    process.stdout.write(formatConversationStatePurgeResult(result));
   });
+}
+
+/** Describe every store the stopped clear-sessions operation actually removed. */
+export function formatConversationStatePurgeResult(result: PurgeConversationStateResult): string {
+  const cleared: string[] = [];
+  if (result.sessions.removed) {
+    const count = result.sessions.files === 0
+      ? ""
+      : ` (${result.sessions.files} session file${result.sessions.files === 1 ? "" : "s"})`;
+    cleared.push(`persisted provider sessions${count}`);
+  }
+  if (result.history.removed) {
+    const count = result.history.messageHistory.files === 0
+      ? ""
+      : ` (${result.history.messageHistory.files} conversation file${result.history.messageHistory.files === 1 ? "" : "s"}, ${result.history.messageHistory.bytes} bytes)`;
+    cleared.push(`active conversation history${count}`);
+    const toolCounts = result.history.toolHistory.countsKnown
+      ? `; ${result.history.toolHistory.calls ?? 0} calls, ${result.history.toolHistory.records ?? 0} records, ${result.history.toolHistory.tombstones ?? 0} tombstones`
+      : "; record counts unavailable";
+    cleared.push(`tool history (${result.history.toolHistory.files} files, ${result.history.toolHistory.bytes} bytes${toolCounts})`);
+  }
+  if (result.acpSessions.removed) {
+    const count = result.acpSessions.files === 0
+      ? ""
+      : ` (${result.acpSessions.files} authorization file${result.acpSessions.files === 1 ? "" : "s"})`;
+    cleared.push(`ACP session authorizations${count}`);
+  }
+  if (result.subagents.removed) {
+    cleared.push(`persistent subagents (${result.subagents.registries} ${result.subagents.registries === 1 ? "registry" : "registries"}, ${result.subagents.sessions} session file${result.subagents.sessions === 1 ? "" : "s"})`);
+  }
+  if (cleared.length > 0) {
+    return `${ui.badge("ok")}${ui.style.bold(`Cleared ${cleared.join(" and ")}`)}.\n`;
+  } else {
+    return ui.style.dim("No persisted provider sessions, conversation history, ACP authorizations, or subagents to clear.") + "\n";
+  }
 }
 
 /**

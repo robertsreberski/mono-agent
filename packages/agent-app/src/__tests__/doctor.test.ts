@@ -4875,6 +4875,31 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it("checks a persistent subagent root without creating it and rejects a file as its parent", async () => {
+    const root = join(dir, "children", "nested");
+    const configPath = await writeToolsConfig({ allowedTools: ["Agent", "AgentSend"] }, {
+      subagents: { enabled: true, instances: { root } },
+    });
+    const good = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(good, "tools").details.join("\n")).toContain(`Persistent subagents: ${root}`);
+    await expect(stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+    await writeFile(join(dir, "children"), "file");
+    const bad = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(bad, "tools").status).toBe("error");
+    expect(sectionById(bad, "tools").details.join("\n")).toContain("not creatable/writable");
+  });
+
+  it.each([
+    [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentSend"], false],
+    [["*"], ["Agent"], false],
+  ])("reports persistence only when both tools are effective: %j/%j", async (allowedTools, disallowedTools, enabled) => {
+    const configPath = await writeToolsConfig({ allowedTools, disallowedTools }, { subagents: { enabled: true } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const details = sectionById(report, "tools").details.join("\n");
+    expect(details.includes("Persistent subagents:")).toBe(enabled);
+    expect(details.includes("effective tool policy must expose both Agent and AgentSend")).toBe(!enabled);
+  });
+
   it("validates allowed subagent model routes", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
       subagents: { enabled: true, models: [{ name: "helper-model", model: "openai-codex:gpt-5.5" }] },

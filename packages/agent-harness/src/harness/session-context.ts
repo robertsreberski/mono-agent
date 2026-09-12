@@ -6,6 +6,7 @@ import { sanitizeLabelPart } from "./speaker-context.js";
 
 /** Turn-scoped capabilities the block explains, each gated by the host. */
 export interface SessionContextCapabilities {
+  readonly subagentInstances?: readonly { id: string; name: string; route?: string; status: string; turns: number; ageMs: number }[];
   /** The host persists memory itself; the model must not edit its state. */
   readonly hostManagedMemory?: boolean;
   /**
@@ -55,6 +56,11 @@ export function sessionContextBlock(
     ? BACKGROUND_PROCESS_JOB_GUIDANCE
     : undefined;
   const monitorGuidance = capabilities.monitors === true ? MONITOR_GUIDANCE : undefined;
+  const instances = capabilities.subagentInstances;
+  const instanceGuidance = instances?.length
+    ? `Persistent subagents in this conversation (continue with AgentSend, close when done): ${instances.slice(0, 12).map((entry) =>
+        `${sanitizeLabelPart(entry.id)} — ${sanitizeLabelPart(entry.name)}, ${entry.route ? `${sanitizeLabelPart(entry.route)}, ` : ""}${sanitizeLabelPart(entry.status)}, ${entry.turns} turns, last active ${Math.max(0, Math.floor(entry.ageMs / 60_000))} min ago`).join("; ")}`
+    : undefined;
   if (deliverable) {
     const surface = surfaceGuidance(request.surface);
     return [
@@ -63,6 +69,7 @@ export function sessionContextBlock(
       `${surface === undefined ? NO_ROUTE_PROHIBITION : SURFACE_ROUTE_PROHIBITION} ${continuationPromise(capabilities.backgroundProcessJobs === true || capabilities.monitors === true)}`,
       backgroundGuidance,
       monitorGuidance,
+      instanceGuidance,
       memoryGuidance,
     ].filter((part) => part !== undefined).join("\n\n");
   }
@@ -77,12 +84,13 @@ export function sessionContextBlock(
       `${route} ${continuationPromise(capabilities.backgroundProcessJobs === true || capabilities.monitors === true)}`,
       backgroundGuidance,
       monitorGuidance,
+      instanceGuidance,
       memoryGuidance,
     ].filter((part) => part !== undefined).join("\n\n");
   }
   const base = "This is a request-driven run (scheduled, webhook, or API) with no interactive user attached to a deliverable push conversation. Do not invent or infer a callback destination.";
   const notifyGuidance = notifyDeliveryGuidance(request.metadata);
-  return [base, notifyGuidance, backgroundGuidance, monitorGuidance, memoryGuidance]
+  return [base, notifyGuidance, backgroundGuidance, monitorGuidance, instanceGuidance, memoryGuidance]
     .filter((part) => part !== undefined)
     .join("\n\n");
 }
