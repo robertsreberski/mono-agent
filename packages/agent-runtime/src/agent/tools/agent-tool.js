@@ -116,10 +116,11 @@ function toolDescription(subagents, definitions, ceiling) {
   return `${base}${parallel}${named}${shapes}${inline}`;
 }
 
-/** @param {*} subagents @param {number} maximum */
-function slotsForOptions(subagents, maximum) {
-  if (!subagents.__slots) Object.defineProperty(subagents, "__slots", { value: createCountingSemaphore(maximum) });
-  return subagents.__slots;
+/** @param {*} subagents @param {number} maximum @param {string|undefined} parentRunId */
+function slotsForOptions(subagents, maximum, parentRunId) {
+  const budget = /** @type {*} */ (budgetForRun(subagents, parentRunId));
+  if (!budget.slots) budget.slots = createCountingSemaphore(maximum);
+  return budget.slots;
 }
 
 /** @param {*} value @returns {number} */
@@ -231,7 +232,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   const names = definitions.map((definition) => definition.name);
   const models = subagents.models ?? [];
 
-  const slots = slotsForOptions(subagents, maxConcurrent);
+  const slots = slotsForOptions(subagents, maxConcurrent, context.parentRunId);
   // Budget state hangs off the shared `subagents` options object, NOT this
   // closure: getPiBuiltinTools runs once per ROUTER ATTEMPT, so a closure-local
   // counter would reset on every same-model retry and failover, multiplying the
@@ -343,7 +344,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
       if (params.effort !== undefined && !EFFORT_LEVELS.includes(params.effort)) {
         throw new Error(`Error: unknown effort "${params.effort}". Choices: ${EFFORT_LEVELS.join(", ")}.`);
       }
-      const { profile: selectedProfile, droppedTools } = authored
+      const { profile: selectedProfile, droppedTools } = continuation
+        ? { profile: continuation.record.definition, droppedTools: [] }
+        : authored
         ? buildInlineProfile(params, ceiling, names)
         : { profile: resolveProfile(definitions, params?.name, ceiling), droppedTools: [] };
       if (selectedProfile === null) {

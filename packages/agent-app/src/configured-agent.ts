@@ -830,7 +830,7 @@ export function buildSubagentsOptions(
       ? request.systemPrompt
       : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
 
-    return await runtime.run(childSystemPrompt, {
+    const result = await runtime.run(childSystemPrompt, {
       ...(request.instance === undefined ? {} : {
         sessionId: request.instance.sessionId,
         piSessionsRoot: request.instance.sessionsRoot,
@@ -876,6 +876,14 @@ export function buildSubagentsOptions(
       // Depth propagation is the recursion lock the kernel also enforces.
       subagents: { depth: request.depth },
     } as unknown as RuntimeRunOptions);
+    // Router retries/backups deliberately withhold session ids. Do not promise
+    // retained child context for an answer that was produced outside this epoch.
+    if (request.instance && !result.error && !result.failureKind && !result.cancelled
+      && result.providerSessionId !== request.instance.sessionId) {
+      return { ...result, failureKind: "session_continuity_lost",
+        error: "The child answered outside its persistent session (for example after retry or fallback). This turn was not retained; close the instance and create another with the context it needs." };
+    }
+    return result;
   };
 
   return {

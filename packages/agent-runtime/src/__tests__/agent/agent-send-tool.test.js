@@ -47,6 +47,24 @@ describe("persistent Agent and AgentSend", () => {
     expect(instances.finish).toHaveBeenCalledTimes(2);
     expect(second.details.tool).toBe("AgentSend");
   });
+  it("continues the stored profile without resolving general-purpose against the current ceiling", async () => {
+    const profile = { name: "writer", description: "Writes", systemPrompt: "Write", allowedTools: ["Bash"] };
+    const { agent, send, options } = setup({ definitions: [profile], inline: { allowedTools: ["Bash"] } });
+    await agent.execute("a", { prompt: "first", name: "writer", persist: true, id: "writer-1" });
+    const result = await send.execute("b", { id: "writer-1", message: "continue" });
+    expect(result.details.subagent.status).toBe("ok");
+    expect(options.run.mock.calls[1][0].definition.allowedTools).toEqual(["Bash"]);
+  });
+  it("keeps stateless concurrency limits independent across parent turns", async () => {
+    let release;
+    const gate = new Promise((done) => { release = done; });
+    const options = { maxConcurrent: 1, run: vi.fn(async () => { await gate; return { text: "done" }; }) };
+    const first = createAgentTool(options, { parentRunId: "one" }).execute("a", { prompt: "a" });
+    const second = createAgentTool(options, { parentRunId: "two" }).execute("b", { prompt: "b" });
+    try { await vi.waitFor(() => expect(options.run).toHaveBeenCalledTimes(2)); }
+    finally { release(); await Promise.all([first, second]); }
+  });
+
   it("shares the per-turn call budget and permits close-only after exhaustion", async () => {
     const { agent, send, options } = setup({ maxPerTurn: 1 });
     await agent.execute("a", { prompt: "first", persist: true });

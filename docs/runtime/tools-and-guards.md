@@ -170,7 +170,10 @@ records remain for 24 hours, and their provider sessions are retired best-effort
 One instance can run only one turn at a time; concurrent continuation or close
 requests fail with a busy error. Continuations share `Agent`'s parent-turn call,
 concurrency, output, and timeout limits. If a runner ignores cancellation, its
-instance stays busy until that runner actually settles.
+instance stays busy until that runner actually settles. If a retry or fallback
+answers outside the retained durable session, the tool reports
+`session_continuity_lost` rather than claiming the turn was retained. Close that
+instance and create another with the context it needs.
 
 There is no cross-conversation reuse, child-to-parent question tool, or detached
 subagent execution. Persistence grants no additional authority. Bare runtime

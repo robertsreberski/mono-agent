@@ -199,6 +199,18 @@ describe("configured subagents", () => {
     expect(options.disallowedTools).toContain("Agent");
   });
 
+  it("requires persistent answers to retain the selected durable session id", async () => {
+    const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true }));
+    const run = subagents!.run as (request: unknown) => Promise<unknown>;
+    const request = { systemPrompt: "Review", prompt: "first", definition: { name: "critic", allowedTools: ["Read"] },
+      instance: { sessionId: "sub-example", sessionsRoot: "/sessions" }, maxTurns: 5, depth: 1,
+      abortSignal: new AbortController().signal, onEvent: () => {} };
+    expect(await run(request)).toMatchObject({ failureKind: "session_continuity_lost", error: expect.stringContaining("not retained") });
+    runtime.run.mockResolvedValueOnce({ text: "retained", events: [], providerSessionId: "sub-example" } as never);
+    expect(await run(request)).toMatchObject({ text: "retained", providerSessionId: "sub-example" });
+    expect(runtime.run.mock.calls[1]![1]).toMatchObject({ sessionKeepAlive: true, sessionId: "sub-example", piSessionsRoot: "/sessions", sessionIdleTimeoutMs: 86_400_000 });
+  });
+
   it("projects named and shorthand model choices", async () => {
     const { subagents } = await buildSubagents(monoConfig({ enabled: true,
       models: [{ name: "haiku", model: HAIKU }, { model: PRIMARY }],
