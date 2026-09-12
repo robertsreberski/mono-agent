@@ -415,15 +415,15 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .automation-enabled { flex: none; padding: 2px 5px; color: var(--text-muted); background: var(--surface-subtle); border-radius: 5px; font-size: 8px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .automation-enabled.is-enabled { color: var(--accent); background: var(--accent-soft); }
 .thread-preview-text time { color: var(--text-soft); }
-/* Route metadata stays quieter than titles and activity purposes. Full effort
-   words avoid a legend; no border/fill competes with actual status badges. */
+/* Route metadata stays quieter than titles and activity purposes. Model-specific
+   effort signals stay light; no badge border/fill competes with actual status. */
 .route-badge { flex: none; display: inline-flex; align-items: baseline; gap: 4px; max-width: 100%; padding: 0; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.5; white-space: nowrap; }
 .route-badge-model { min-width: 0; max-width: 110px; overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
 .route-badge-sep { flex: none; color: var(--text-muted); }
 .route-badge-effort { flex: none; max-width: 70px; overflow: hidden; font-size: inherit; font-weight: 400; text-overflow: ellipsis; }
-.effort-signal { flex: none; display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; margin-left: 2px; }
-.effort-signal > i { display: block; width: 3px; border: 1px solid currentColor; border-radius: 1px; opacity: .35; }
-.effort-signal > i.is-filled { background: currentColor; opacity: 1; }
+.effort-signal { flex: none; display: inline-flex; align-items: flex-end; gap: 2px; height: 8px; }
+.effort-signal > i { display: block; width: 2px; background: currentColor; border-radius: 1px; opacity: .28; }
+.effort-signal > i.is-filled { opacity: 1; }
 .route-badge.is-compact { gap: 3px; font-size: 9.5px; }
 .route-badge.is-compact .route-badge-model { max-width: 100px; }
 .route-badge-flag { flex: none; color: var(--warning); font-weight: 700; }

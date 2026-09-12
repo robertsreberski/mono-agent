@@ -1,7 +1,7 @@
 import { effortFullName, type EffortSignal } from "./route-label";
 
 /**
- * Quiet inline route label: recognisable model and plain-language effort.
+ * Quiet inline route label: recognisable model and model-specific effort.
  *
  * A `span`, never a button: rows already navigate, so the badge must not
  * swallow clicks, keys or disclosure. Full identity lives in `aria-label`
@@ -53,7 +53,7 @@ export function RouteBadge({
           {effortSignal.levels.map((level, index) => <i
             key={level}
             className={index < effortSignal.filled ? "is-filled" : undefined}
-            style={{ height: `${effortSignal.levels.length === 1 ? 10 : 3 + 7 * index / (effortSignal.levels.length - 1)}px` }}
+            style={{ height: `${effortSignal.levels.length === 1 ? 8 : 3 + 5 * index / (effortSignal.levels.length - 1)}px` }}
           />)}
         </span>
       )}

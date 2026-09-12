@@ -427,7 +427,7 @@ export function SubagentPart({ data }: DataMessagePartProps) {
       {route !== undefined && <RouteBadge
         modelShort={route.modelShort}
         effortShort={route.effortShort}
-          effortSignal={route.effortSignal}
+        effortSignal={route.effortSignal}
         label={route.label}
         title={route.title}
         compact
