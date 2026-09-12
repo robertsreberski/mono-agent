@@ -11,6 +11,7 @@ import { ProjectsSection } from "./ProjectsSection";
 import { RecentSection } from "./RecentSection";
 import { RunningSection } from "./RunningSection";
 import { ProjectPage } from "../project/ProjectPage";
+import { flattenCatalogModels } from "../route-label";
 
 /**
  * The console's one navigation surface: the desktop left column AND the mobile
@@ -38,6 +39,7 @@ export function Dashboard({
     activeThreads,
     agents,
     cachedRunningThreads,
+    catalogByProvider,
     navigationDestination,
     openProject,
     selectedAgentId,
@@ -46,6 +48,10 @@ export function Dashboard({
     setShowArchived,
     threads,
   } = useConsoleStore();
+  const catalogModels = useMemo(
+    () => flattenCatalogModels(catalogByProvider),
+    [catalogByProvider],
+  );
   const [query, setQuery] = useState("");
   const chats = navigationDestination === "chats";
   const [expandedAgentIds, setExpandedAgentIds] = useState<ReadonlySet<string>>(new Set());
@@ -149,6 +155,8 @@ export function Dashboard({
             ? { total: activeThreads.total, truncated: activeThreads.truncated }
             : {})}
           authoritative={authoritative}
+          {...(catalogModels === undefined ? {} : { catalogModels })}
+          catalogSourceId={selectedAgentId ?? undefined}
         />
         <ProjectsSection />
         <RecentSection

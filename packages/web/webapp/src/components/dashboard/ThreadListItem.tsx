@@ -3,8 +3,10 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { threadPresentation } from "../../thread-presentation";
-import type { ThreadSummary } from "../../types";
+import type { AgentSummary, CatalogModel, ThreadSummary } from "../../types";
 import { Icon } from "../Icon";
+import { resolveThreadRoute } from "../route-label";
+import { RouteBadge } from "../RouteBadge";
 import { relativeTime } from "../time";
 import {
   dashboardKindIcon,
@@ -21,11 +23,16 @@ import {
  */
 export function ThreadListItem({
   thread,
+  agent,
+  catalogModels,
   unread,
   onNavigate,
   highlightSelected,
 }: {
   readonly thread: ThreadSummary;
+  /** The thread's OWN agent match; null when discovery no longer lists it. */
+  readonly agent: AgentSummary | null;
+  readonly catalogModels: Readonly<Record<string, readonly CatalogModel[]>> | undefined;
   /** This device has not seen the conversation as it now stands. */
   readonly unread: boolean;
   /** Closing the drawer belongs to the row that navigated, not to a click that
@@ -41,6 +48,11 @@ export function ThreadListItem({
   const isActive = selected && highlightSelected;
   const presentation = threadPresentation(thread);
   const kind = dashboardThreadKind(thread);
+  // Current settings for THIS conversation: its overrides, else its own
+  // agent's config defaults. A span, so the row keeps its one navigation
+  // target; the store re-render moves the badge with thread or agent updates,
+  // without opening the conversation.
+  const route = resolveThreadRoute(thread, agent, catalogModels);
   // The glyph says what the row IS; when a failure has taken the glyph, the
   // accessible name still says where the conversation came from.
   const kindName = thread.trigger && kind === "alert"
@@ -71,6 +83,13 @@ export function ThreadListItem({
             <span className="thread-preview-text" title={presentation.text}>
               {presentation.text}
             </span>
+            <RouteBadge
+              modelShort={route.modelShort}
+              effortShort={route.effortShort}
+              effortSignal={route.effortSignal}
+              label={route.label}
+              title={route.title}
+            />
           </span>
         </span>
       </ThreadListItemPrimitive.Trigger>

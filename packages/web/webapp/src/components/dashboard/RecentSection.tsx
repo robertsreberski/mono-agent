@@ -3,6 +3,7 @@ import {
 } from "@assistant-ui/react";
 import { useMemo } from "react";
 import { useConsoleStore } from "../../console-store";
+import { flattenCatalogModels } from "../route-label";
 import { AutomationsList } from "../AutomationsList";
 import { Icon } from "../Icon";
 import { ThreadSearchResults } from "../ThreadSearchResults";
@@ -39,6 +40,9 @@ export function RecentSection({
   readonly highlightSelected?: boolean;
 }) {
   const {
+    agents,
+    catalogByProvider,
+    selectedAgentId,
     threads,
     visibleThreads,
     showArchived,
@@ -53,6 +57,14 @@ export function RecentSection({
     cronOverview,
     unreadThreadIds,
   } = useConsoleStore();
+  const agentBySourceId = useMemo(
+    () => new Map(agents.map((agent) => [agent.sourceId, agent])),
+    [agents],
+  );
+  const catalogModels = useMemo(
+    () => flattenCatalogModels(catalogByProvider),
+    [catalogByProvider],
+  );
   const automations = navigationDestination === "automations";
   const jobs = cronOverview?.jobs.length;
   const threadById = useMemo(
@@ -120,6 +132,8 @@ export function RecentSection({
                 return thread && isRecentThread(thread) ? (
                   <ThreadListItem
                     thread={thread}
+                    agent={agentBySourceId.get(thread.sourceId) ?? null}
+                    catalogModels={thread.sourceId === selectedAgentId ? catalogModels : undefined}
                     unread={unreadThreadIds.has(thread.id)}
                     onNavigate={onNavigate}
                     highlightSelected={highlightSelected}

@@ -1825,6 +1825,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ),
   );
   const [catalogByProvider, setCatalogByProvider] = useState<Record<string, ProviderCatalogState>>({});
+  const catalogOwnerScopeRef = useRef("");
   const catalogInFlightRef = useRef<Set<string>>(new Set());
   const migratedKeysRef = useRef<Set<string>>(new Set());
   // Bumped by every operator-initiated override write, PER THREAD. The
@@ -4953,6 +4954,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // comparing against the previous one for a whole commit.
   catalogScopeRef.current = catalogScope;
   useEffect(() => {
+    catalogOwnerScopeRef.current = catalogScope;
     setCatalogByProvider({});
     catalogInFlightRef.current.clear();
   }, [catalogScope]);
@@ -7044,7 +7046,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       resetRunOverride,
       modelOptions,
       effortOptions,
-      catalogByProvider,
+      // A new agent/generation renders before the catalog-reset effect runs.
+      // Never publish the previous owner's catalog during that render.
+      catalogByProvider: catalogOwnerScopeRef.current === catalogScope ? catalogByProvider : {},
       ensureProviderCatalog,
       skillRegistry,
       cronOverview: selectedCronOverview,
@@ -7131,6 +7135,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       cronError,
       selectedCronOverview,
       catalogByProvider,
+      catalogScope,
       ensureProviderCatalog,
       detail,
       detailLoading,

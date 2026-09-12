@@ -6,6 +6,7 @@ import { formatUsd } from "../../usage";
 import { Icon } from "../Icon";
 import { DashboardFooter } from "../dashboard/DashboardFooter";
 import { ThreadListItem } from "../dashboard/ThreadListItem";
+import { flattenCatalogModels } from "../route-label";
 
 const conversationCountLabel = (count: number): string =>
   `${String(count)} conversation${count === 1 ? "" : "s"}`;
@@ -30,6 +31,7 @@ export function ProjectPage({
 }) {
   const {
     agents,
+    catalogByProvider,
     closeProject,
     createThread,
     creatingThread,
@@ -39,12 +41,20 @@ export function ProjectPage({
     projectMembers,
     projectMembersError,
     projectMembersLoading,
+    selectedAgentId,
     selectionError,
     selectionLoading,
     unreadThreadIds,
   } = useConsoleStore();
-  const agentLabel = agents.find((agent) => agent.sourceId === project.sourceId)?.label
-    ?? "Conversations";
+  // Every member belongs to the project's agent, so its rows resolve their
+  // route badge against that one agent -- and against the loaded catalog only
+  // when that agent is the selected one, which is whose catalog it is.
+  const projectAgent = agents.find((agent) => agent.sourceId === project.sourceId) ?? null;
+  const agentLabel = projectAgent?.label ?? "Conversations";
+  const catalogModels = useMemo(
+    () => project.sourceId === selectedAgentId ? flattenCatalogModels(catalogByProvider) : undefined,
+    [catalogByProvider, project.sourceId, selectedAgentId],
+  );
   const memberById = useMemo(
     () => new Map(projectMembers.map((thread) => [thread.id, thread])),
     [projectMembers],
@@ -140,6 +150,8 @@ export function ProjectPage({
               return thread === undefined ? null : (
                 <ThreadListItem
                   thread={thread}
+                  agent={projectAgent}
+                  catalogModels={catalogModels}
                   unread={unreadThreadIds.has(thread.id)}
                   onNavigate={onNavigate}
                   highlightSelected={highlightSelected}

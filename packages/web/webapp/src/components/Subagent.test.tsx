@@ -53,7 +53,7 @@ describe("SubagentPart", () => {
     // every other row in the activity log.
     expect(section).not.toHaveAttribute("open");
     // The summary names which delegation this is; the meta slot says what it cost.
-    expect(screen.getByText("researcher — read the router")).toBeVisible();
+    expect(screen.getByText("read the router")).toBeVisible();
     expect(screen.getByText("2 tools · 12.4s")).toBeVisible();
 
     // The calls live inside the collapsed section — present in the DOM but
