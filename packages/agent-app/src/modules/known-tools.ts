@@ -29,6 +29,7 @@ export const BUILTIN_TOOL_NAMES = [
   // Registered only when `subagents.enabled` is true; deliberately absent from
   // DEFAULT_SAFE_TOOLS because deploying agents is not a read-only capability.
   "Agent",
+  "AgentSend",
 ] as const;
 
 /** App-owned tools injected by the configured host and governed by tool policy. */

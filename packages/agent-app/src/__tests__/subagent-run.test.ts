@@ -1,3 +1,9 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
+// @ts-expect-error Private runtime seam.
+import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
+import { createSubagentInstanceRegistry } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -151,6 +157,7 @@ describe("configured subagents", () => {
     expect(definitions[0]?.disallowedTools).toEqual([
       "Bash",
       "Agent",
+      "AgentSend",
       "AskUser",
       "SlackSendMessage",
       "TelegramSendMessage",
@@ -194,6 +201,18 @@ describe("configured subagents", () => {
       subagents: { depth: 1 },
     });
     expect(options.disallowedTools).toContain("Agent");
+  });
+
+  it("requires persistent answers to retain the selected durable session id", async () => {
+    const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true }));
+    const run = subagents!.run as (request: unknown) => Promise<unknown>;
+    const request = { systemPrompt: "Review", prompt: "first", definition: { name: "critic", allowedTools: ["Read"] },
+      instance: { sessionId: "sub-example", sessionsRoot: "/sessions" }, maxTurns: 5, depth: 1,
+      abortSignal: new AbortController().signal, onEvent: () => {} };
+    expect(await run(request)).toMatchObject({ failureKind: "session_continuity_lost", error: expect.stringContaining("not retained") });
+    runtime.run.mockResolvedValueOnce({ text: "retained", events: [], providerSessionId: "sub-example" } as never);
+    expect(await run(request)).toMatchObject({ text: "retained", providerSessionId: "sub-example" });
+    expect(runtime.run.mock.calls[1]![1]).toMatchObject({ sessionKeepAlive: true, sessionId: "sub-example", piSessionsRoot: "/sessions", sessionIdleTimeoutMs: 86_400_000 });
   });
 
   it("projects named and shorthand model choices", async () => {
@@ -471,4 +490,85 @@ describe("in-flight subagent ceiling", () => {
     }));
     expect(subagents?.inline).toBeUndefined();
   });
+});
+
+
+it("wires the Session envelope to the current conversation's live registry", async () => {
+  const root = await mkdtemp(resolve(process.cwd(), ".subagent-envelope-"));
+  try {
+    await buildSubagents(monoConfig({ enabled: true, instances: { root } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] }));
+    const options = harnessMock.mock.calls[0]![0] as { subagentInstancesFor: (input: unknown) => Promise<unknown[]> };
+    expect(await options.subagentInstancesFor({ request: { conversationId: "one" }, runId: "a" })).toEqual([]);
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {} });
+    const handle = await registry.open("one");
+    const record = await handle.create({ name: "critic", systemPrompt: "review", definition: { name: "critic", description: "review", systemPrompt: "review" } });
+    expect(await options.subagentInstancesFor({ request: { conversationId: "one" }, runId: "b" })).toMatchObject([{ id: record.id, name: "critic", status: "idle", turns: 0 }]);
+    expect(await options.subagentInstancesFor({ request: { conversationId: "two" }, runId: "c" })).toEqual([]);
+    await handle.close(record.id);
+    expect(await options.subagentInstancesFor({ request: { conversationId: "one" }, runId: "d" })).toEqual([]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+it.each([
+  [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentSend"], false],
+  [["*"], ["Agent"], false], [["Agent", "AgentSend"], [], true],
+])("gates persistent configured-harness surfaces on both effective tools: %j/%j", async (allowedTools, disallowedTools, enabled) => {
+  const root = await mkdtemp(resolve(process.cwd(), ".subagent-policy-"));
+  try {
+    const config = monoConfig({ enabled: true, instances: { root } }, { allowedTools: allowedTools as string[], disallowedTools: disallowedTools as string[] });
+    const { runtime, subagents } = await buildSubagents(config);
+    const opts = harnessMock.mock.calls[0]![0];
+    expect(typeof opts.subagentInstancesFor === "function").toBe(enabled);
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {} });
+    const extension = createSubagentsRuntimeExtension(config, { runtime: runtime as never, baseModel: PRIMARY }, registry);
+    const result = await extension({ request: { conversationId: "c" }, runId: "r" } as never);
+    const scoped = result.runtimeOptions!.subagents;
+    expect(createAgentTool(scoped).parameters.properties.persist !== undefined).toBe(enabled);
+    expect(createAgentSendTool(scoped) !== null).toBe(enabled);
+    expect(createAgentTool(subagents).parameters.properties.persist).toBeUndefined();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("reapplies current denies and MCP catalog after registry/config restart while retaining identity and route", async () => {
+  const root = await mkdtemp(resolve(process.cwd(), ".subagent-revocation-"));
+  try {
+    const mcpConfigPath = resolve(root, "mcp.json");
+    await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: { selected: { command: "old-server" } } }));
+    const config = monoConfig({ enabled: true, definitions: [{ ...RESEARCHER, mcpServers: ["selected"] }], instances: { root: resolve(root, "instances") } },
+      { allowedTools: ["Agent", "AgentSend"], disallowedTools: [], mcpConfigPath });
+    const registry = () => createSubagentInstanceRegistry({ root: config.subagents!.instances!.root!, retireSession: async () => {} });
+    const runtime = { run: vi.fn(async (_prompt: string, options: Record<string, unknown>) => ({ text: "answer", providerSessionId: options.sessionId })) };
+    const initial = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: PRIMARY }, { conversationId: "c", runId: "r", instances: await registry().open("c") })!;
+    await createAgentTool(initial.subagents, { model: PRIMARY, effort: "high" }).execute("a", { name: "researcher", prompt: "first", persist: true, id: "research" });
+    expect(runtime.run.mock.calls[0]![1].mcpServers).toEqual({ selected: { command: "old-server" } });
+    const retained = (await (await registry().open("c")).get("research"))!;
+    expect(retained.definition.mcpServerNames).toEqual(["selected"]);
+    expect(JSON.stringify(retained)).not.toContain("old-server");
+    await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: { selected: { command: "new-server" } } }));
+    const changed = { ...config, tools: { ...config.tools, disallowedTools: ["Read", "mcp__selected__danger"] }, subagents: { ...config.subagents, definitions: [] } } as MonoAgentConfig;
+    const extension = createSubagentsRuntimeExtension(changed, { runtime: runtime as never, baseModel: PRIMARY }, registry());
+    const resumed = await extension({ request: { conversationId: "c" }, runId: "r2" } as never);
+    await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("b", { id: "research", message: "next" });
+    const [prompt, options] = runtime.run.mock.calls[1]!;
+    expect(prompt).toBe("You research.");
+    expect(options).toMatchObject({ model: PRIMARY, effort: "high", mcpServers: { selected: { command: "new-server" } } });
+    expect(options.disallowedTools).toEqual(expect.arrayContaining(["Read", "mcp__selected__danger", "Agent", "AgentSend"]));
+    await writeFile(mcpConfigPath, JSON.stringify({ mcpServers: {} }));
+    const failed = await createAgentSendTool(resumed.runtimeOptions!.subagents).execute("c", { id: "research", message: "next", close: true });
+    expect(failed.details.subagent.status).toBe("failed");
+    expect(runtime.run).toHaveBeenCalledTimes(2);
+    expect((await (await registry().open("c")).get("research"))!.status).toBe("idle");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+it("reports an unavailable retained model rather than executing the current primary", async () => {
+  const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true }));
+  await expect((subagents!.run as (request: unknown) => Promise<unknown>)({
+    systemPrompt: "retained", prompt: "next", definition: { name: "critic", model: HAIKU },
+    instance: { sessionId: "sub-retained", sessionsRoot: "/sessions" }, maxTurns: 1, depth: 1,
+    abortSignal: new AbortController().signal, onEvent: () => {},
+  })).rejects.toThrow(/retained model was not changed/u);
+  expect(runtime.run).not.toHaveBeenCalled();
 });

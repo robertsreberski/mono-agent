@@ -1176,6 +1176,13 @@ export function schemaForField(field: ConfigReferenceField): JsonSchema {
         schema.additionalProperties = false;
         schema.properties = {
           enabled: { type: "boolean" },
+          instances: { type: "object", additionalProperties: false, properties: {
+            enabled: { type: "boolean", default: true },
+            root: { type: "string", minLength: 1, description: "Registry and child sessions root; defaults to <artifacts.dir>/../subagents." },
+            maxPerConversation: { type: "integer", minimum: 1, maximum: 32, default: 8 },
+            idleTtlMs: { type: "integer", minimum: 60_000, maximum: 604_800_000, default: 86_400_000 },
+            maxTurns: { type: "integer", minimum: 1, maximum: 500, default: 60 },
+          } },
           maxConcurrent: { type: "integer", minimum: 1, maximum: 10 },
           maxPerTurn: { type: "integer", minimum: 1, maximum: 200 },
           timeoutMs: { type: "integer", minimum: 1_000, maximum: 3_600_000 },
@@ -1555,6 +1562,7 @@ function exampleFor(id: string): SettingsJsonValue {
     subagents: {
       enabled: true,
       maxConcurrent: 5,
+      instances: { enabled: true, maxPerConversation: 8, idleTtlMs: 86_400_000, maxTurns: 60 },
       models: [{ name: "fable", model: "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],
       definitions: [{
         name: "researcher",
@@ -1727,7 +1735,7 @@ function descriptionFor(id: string): string {
     return "Canonical ordered fallback routes. Omitted per-route effort means that provider's default.";
   }
   if (id === "subagents") {
-    return "Subagent profiles the Agent tool can deploy, plus its caps. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered.";
+    return "Subagent profiles the Agent tool can deploy, plus its caps. instances enables conversation-scoped persistent children when subagents are enabled and effective tool policy allows both Agent and AgentSend: root defaults to <artifacts.dir>/../subagents, maxPerConversation is 1–32 (default 8), idleTtlMs is 60000–604800000 (default 86400000), and maxTurns is 1–500 (default 60). Agent persist:true creates a child; AgentSend resumes or closes it. Disabling instances preserves stateless Agent. models is an operator allow-list of model reference strings or {name?, model} objects; an omitted name uses the canonical reference. Explicit names must be lowercase kebab-case (1-40 characters), unique, and distinct from profile names and general-purpose; duplicate models are rejected. Agent accepts model from that list and effort on every call shape. Each value resolves as call-time override, profile pin, parent effective value, then base/runtime default. Disabled unless enabled is true, in which case Agent must also appear in tools.allowedTools. Each definition needs exactly one of prompt or promptPath; omitted allowedTools means a read-only default set, and the \"*\" wildcard is rejected. The agent may also author a specialized subagent at call time unless inline.enabled is false; inline.allowedTools caps what an authored subagent may request, defaulting to the parent agent's own built-ins. maxConcurrent is a ceiling, not a scheduling guarantee: Pi 0.85 serializes all tool calls when any stateful/mutating or MCP tool is offered.";
   }
   if (id === "runtime.retry.primaryAttempts") {
     return "Total attempts on runtime.model including the first, before the chain advances. Retries fire only for transient provider failures (overloaded, rate-limited, timeout, network, 5xx); context overflow and bad credentials advance immediately. Set 1 to disable.";

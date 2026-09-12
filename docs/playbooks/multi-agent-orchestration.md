@@ -10,7 +10,9 @@ This playbook shows how one orchestrator agent delegates subtasks to named speci
 For in-process helpers, the built-in [Agent tool](/runtime/tools-and-guards/#subagents-agent)
 provides a config-first option. Configure `subagents.models` to offer model choices,
 then select `model` and `effort` on each call; omitted values inherit profile pins
-or the parent's effective route. The collaborator setup below remains useful for
+or the parent's effective route. For continued work in one conversation, create a
+helper with `persist: true` and resume or close it using `AgentSend`; configure
+`subagents.instances` for its idle TTL and caps. The collaborator setup below remains useful for
 separately composed responders.
 
 ## Who this is for

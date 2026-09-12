@@ -52,10 +52,17 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // service ids, sessions, or provider identity.
   "agent": { "name": "Research Companion" },
 
-  // Subagents the Agent tool can deploy. Requires "Agent" in tools.allowedTools too.
+  // Subagents the Agent tool can deploy. Allow AgentSend too for persistent continuations.
   "subagents": {
     "enabled": true,
     "models": [{ "name": "fable", "model": "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],
+    "instances": {
+      "enabled": true,                     // false keeps stateless Agent
+      "root": "./.mono-agent/subagents",    // default is beside artifacts.dir
+      "maxPerConversation": 8,              // 1–32 live instances
+      "idleTtlMs": 86400000,                 // 60000–604800000; running instances never expire
+      "maxTurns": 60                        // 1–500 child turns per instance
+    },
     "maxConcurrent": 5,                    // simultaneous subagents per turn
     "maxPerTurn": 20,                      // total Agent calls per turn (runaway guard)
     "definitions": [

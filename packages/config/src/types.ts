@@ -256,6 +256,19 @@ export interface MonoAgentSubagentModelChoice {
  * is never registered.
  */
 export interface MonoAgentSubagentsConfig {
+  readonly instances?: {
+    /** Default true when subagents are enabled. */
+    readonly enabled?: boolean;
+    /** Default <artifacts.dir>/../subagents. Relative paths use the config directory. */
+    readonly root?: string;
+    /** Live instances per conversation: 1–32, default 8. */
+    readonly maxPerConversation?: number;
+    /** Idle expiry in milliseconds: 60000–604800000, default 86400000. */
+    readonly idleTtlMs?: number;
+    /** Total child turns per instance: 1–500, default 60. */
+    readonly maxTurns?: number;
+  };
+
   /** Operator allow-list for call-time Agent model overrides. */
   readonly models?: readonly MonoAgentSubagentModelChoice[];
   readonly enabled?: boolean;

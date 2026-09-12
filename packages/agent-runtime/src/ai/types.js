@@ -271,8 +271,14 @@
  * @property {ReadonlyArray<string>} [allowedTools] Absent uses the safe read-only default set.
  * @property {ReadonlyArray<string>} [disallowedTools]
  * @property {Object<string, Object>} [mcpServers]
+ * @property {ReadonlyArray<string>} [mcpServerNames] Retained selections, resolved against current host policy.
  * @property {number} [maxTurns]
  * @property {number} [timeoutMs]
+ */
+
+/**
+ * @typedef {Object<string, *> & {instance?: {sessionId: string, sessionsRoot: string}}} RuntimeSubagentRunRequest
+ * Instance routing is host-owned; the child receives only its own durable transcript.
  */
 
 /**
@@ -281,7 +287,7 @@
  * supplies a self-run fallback so `createRuntime` works without host wiring;
  * agent-app replaces it so subagent runs get the configured fallback chain,
  * same-model retries, and run recording.
- * @param {Object} request
+ * @param {RuntimeSubagentRunRequest} request
  * @returns {Promise<RuntimeResult>}
  */
 
@@ -298,9 +304,36 @@
  */
 
 /**
+ * @typedef {Object} RuntimeSubagentInstance
+ * @property {string} id
+ * @property {string} conversationId
+ * @property {string} name
+ * @property {string} systemPrompt
+ * @property {RuntimeSubagentDefinition} definition
+ * @property {string} sessionId
+ * @property {string} sessionsRoot
+ * @property {string} status
+ * @property {number} turns
+ * @property {number} createdAt
+ * @property {number} updatedAt
+ * @property {{input: number, output: number, cacheRead: number, cacheWrite: number, costUsd: number}} usage
+ */
+/**
+ * Host-owned, conversation-scoped persistent instance facade. No filesystem implementation belongs in the kernel.
+ * @typedef {Object} RuntimeSubagentInstances
+ * @property {() => Promise<RuntimeSubagentInstance[]>} list
+ * @property {(id: string) => Promise<RuntimeSubagentInstance|undefined>} get
+ * @property {(spec: {id?: string, name: string, systemPrompt: string, definition: RuntimeSubagentDefinition}) => Promise<RuntimeSubagentInstance>} create
+ * @property {(id: string) => Promise<RuntimeSubagentInstance>} begin
+ * @property {(id: string, outcome: {status: string, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}) => Promise<RuntimeSubagentInstance>} finish
+ * @property {(id: string) => Promise<RuntimeSubagentInstance>} close
+ */
+
+/**
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
  * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
+ * @property {RuntimeSubagentInstances} [instances] Conversation-scoped persistence; absent preserves stateless Agent.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
  * @property {number} [maxPerTurn] Total Agent calls per parent turn. Default 20.

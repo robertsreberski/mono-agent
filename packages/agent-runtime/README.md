@@ -776,10 +776,16 @@ values override profile pins, then inherit the parent's effective turn values.
 Pinned or overridden routes appear in the result header and `details.subagent.requested`;
 `details.subagent.executed` records the successful child route when available.
 
+Hosts may inject a conversation-scoped `subagents.instances` facade to enable
+`Agent({persist: true, id?})` and `AgentSend({id, message?, close?})`. Continuations
+retain the child’s selected profile and use `sessionId`, `piSessionsRoot`, and
+`sessionKeepAlive` for true durable resume. Both tools share caps and deny child
+recursion. Without the facade, `Agent` stays stateless and `AgentSend` is absent.
+
 ### Built-in tools
 
 The agent kernel's managed tools are `Read`, `Write`, `Edit`, `Glob`, `Grep`,
-`Exec`, `Bash`, `NodeRepl`, `WebFetch`, and `WebSearch`.
+`Exec`, `Bash`, `NodeRepl`, `WebFetch`, `WebSearch`, `Agent`, and `AgentSend`.
 `Exec({ executable, args })` invokes one executable directly; `Bash` is the
 clean non-interactive shell surface for pipelines, redirection, and other shell
 syntax. Both preserve bounded partial stdout/stderr and structured exit,

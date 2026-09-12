@@ -16,7 +16,7 @@ independently and reports back. It exists only on the pi runtime, and only when
 
 ```json
 {
-  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent"] },
+  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent", "AgentSend"] },
   "subagents": {
     "enabled": true,
     "maxConcurrent": 5,
@@ -117,7 +117,7 @@ begins, not while queued.
 
 **Guardrails.** A subagent is read-only unless its profile enumerates more (or,
 for one built at call time, unless its `tools` request survives the ceiling), and
-it never receives `Agent`, `AskUser`, or any channel-send tool — it cannot
+it never receives `Agent`, `AgentSend`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs
 with no provider session of its own. Without a call-time override or profile pin,
@@ -136,6 +136,59 @@ profile out with `"disallowedTools": ["ReadSkill"]`, which withholds both the to
 and the index. A profile pinned to a model whose runtime lacks skill support
 is skipped automatically rather than failing the run, since a
 non-empty skill list makes skill support a routing requirement.
+
+### Persistent subagents
+
+With subagents enabled, persistence is available when effective tool policy
+allows both `Agent` and `AgentSend` (explicitly or through `"*"`, with denies
+applied). When only `Agent` is allowed, it keeps its stateless schema and the
+Session envelope omits instance guidance. `Agent({name: "researcher", prompt: "Review the design", persist: true,
+id: "reviewer"})` creates an instance and runs its first turn.
+`AgentSend({id: "reviewer", message: "Now check this revision"})` resumes its own
+Pi-native durable session. The parent transcript is never seeded into the child.
+The selected model, effort, prompt, and profile are retained for that instance.
+Current global tool denies still apply on every turn. Only MCP server names are
+retained; their configuration is resolved from the current catalog. A removed
+server or unavailable retained route causes an error rather than using stale
+configuration or silently changing the selected model.
+
+IDs are conversation-scoped lowercase kebab-case, 1–40 characters. If omitted,
+an id such as `researcher-1` is generated. Results include the id, turn count,
+and status; the parent's Session envelope lists live instances on every turn.
+Use `AgentSend({id: "reviewer", close: true})` when done, or combine a final
+`message` with `close: true`. A combined call closes only after a successful
+message; busy, cancelled, timed-out, or failed turns keep the instance live.
+Close-only calls do not spend the parent call budget.
+
+Configure `subagents.instances`:
+
+| Field | Default | Limits / behavior |
+| --- | --- | --- |
+| `enabled` | `true` when subagents are enabled | `false` keeps stateless `Agent`, without persistence parameters, and removes `AgentSend`. |
+| `root` | `<artifacts.dir>/../subagents` | Relative paths resolve like other config paths. |
+| `maxPerConversation` | `8` | 1–32 live instances. |
+| `idleTtlMs` | `86400000` (one day) | 60000–604800000; expiry is applied on registry access. Running instances do not expire. |
+| `maxTurns` | `60` | 1–500 total child turns per instance; close and create another when exhausted. This differs from the per-run `subagents.maxTurns` model-turn cap. |
+
+The registry and Pi JSONL transcripts survive restarts. An interrupted instance
+returns to idle on recovery; it does not rerun automatically. Closed and expired
+records remain for up to 24 hours, bounded to 64 terminal records per
+conversation and a 16 MiB registry. Terminal records are pruned before a write
+would exceed that byte ceiling; an oversized live registry is rejected. Their
+provider sessions are retired best-effort. `restart --clear-sessions` removes
+the configured instance root and reports its registry and session-file counts.
+One instance can run only one turn at a time; concurrent continuation or close
+requests fail with a busy error. Continuations share `Agent`'s parent-turn call,
+concurrency, output, and timeout limits. If a runner ignores cancellation, its
+instance stays busy until that runner actually settles. If a retry or fallback
+answers outside the retained durable session, the tool reports
+`session_continuity_lost` rather than claiming the turn was retained. Close that
+instance and create another with the context it needs.
+
+There is no cross-conversation reuse, child-to-parent question tool, or detached
+subagent execution. Persistence grants no additional authority. Bare runtime
+hosts without a conversation registry retain stateless `Agent` and reject
+`persist`/`id` if passed directly.
 
 ## Built-in tools
 

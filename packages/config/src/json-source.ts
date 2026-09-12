@@ -163,6 +163,19 @@ export interface MonoAgentConfigJson extends SettingsJson {
     };
   };
   readonly subagents?: {
+  readonly instances?: {
+    /** Default true when subagents are enabled. */
+    readonly enabled?: boolean;
+    /** Default <artifacts.dir>/../subagents. Relative paths use the config directory. */
+    readonly root?: string;
+    /** Live instances per conversation: 1–32, default 8. */
+    readonly maxPerConversation?: number;
+    /** Idle expiry in milliseconds: 60000–604800000, default 86400000. */
+    readonly idleTtlMs?: number;
+    /** Total child turns per instance: 1–500, default 60. */
+    readonly maxTurns?: number;
+  };
+
     readonly models?: readonly (string | { readonly name?: string; readonly model: string })[];
     readonly enabled?: boolean;
     readonly maxConcurrent?: number;

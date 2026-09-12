@@ -69,6 +69,7 @@ describe("subagent tool names", () => {
 
   it("recognizes the launch tool regardless of case or namespace", () => {
     expect(isSubagentLaunchToolName("Agent")).toBe(true);
+    expect(isSubagentLaunchToolName("AgentSend")).toBe(true);
     expect(isSubagentLaunchToolName("agent")).toBe(true);
     expect(isSubagentLaunchToolName("mcp__helper__task")).toBe(true);
     expect(isSubagentLaunchToolName("Read")).toBe(false);
@@ -76,6 +77,7 @@ describe("subagent tool names", () => {
   });
 
   it("formats a launch as a header naming the profile", () => {
+    expect(formatToolActivityLine("AgentSend", { id: "critic-1", message: "Review again" })).toBe('🤖 Continuing agent "critic-1"');
     expect(formatToolActivityLine("Agent", { name: "researcher", prompt: "find X" }))
       .toBe('🤖 Starting agent "researcher"');
     expect(formatToolActivityLine("Agent", { prompt: "find X" })).toBe("🤖 Starting a subagent");

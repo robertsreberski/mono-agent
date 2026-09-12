@@ -1,3 +1,4 @@
+import { readMonoAgentConfigJson } from "@mono-agent/config";
 import type { BigIntStats } from "node:fs";
 import { lstat, realpath } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
@@ -12,12 +13,14 @@ export interface ConversationStatePurgeRoots {
   readonly sessions?: string;
   readonly history: string;
   readonly acpSessions: string;
+  readonly subagents?: string;
 }
 
 export type ConversationStatePurgeRootKind =
   | "Pi provider sessions"
   | "durable session/tool history"
-  | "ACP sessions";
+  | "ACP sessions"
+  | "persistent subagent instances";
 
 export interface FileSystemIdentity {
   readonly dev: bigint;
@@ -50,6 +53,7 @@ export interface ConversationStatePurgePlan {
   readonly sessions?: ResolvedConversationStatePurgeRoot;
   readonly history: ResolvedConversationStatePurgeRoot;
   readonly acpSessions: ResolvedConversationStatePurgeRoot;
+  readonly subagents?: ResolvedConversationStatePurgeRoot;
 }
 
 export interface ConversationStateConfigSnapshot {
@@ -77,7 +81,13 @@ export async function resolveConversationStatePurgeRoots(
       resolveAppArtifactDir(input),
     ])
     : resolveSnapshotRoots(input, snapshot.json);
+  const json = snapshot?.json ?? (await readMonoAgentConfigJson(input.configPath)).json;
+  const configured = input.env.MONO_AGENT_SUBAGENTS_JSON?.trim();
+  const subagents = optionalObject(configured ? JSON.parse(configured) : json.subagents, "subagents");
+  const instances = optionalObject(subagents?.instances, "subagents.instances");
+  const instanceRoot = optionalPath(instances?.root, "subagents.instances.root");
   return {
+    subagents: instanceRoot === undefined ? resolve(artifactDir, "..", "subagents") : resolve(input.cwd, instanceRoot),
     ...(sessions === undefined ? {} : { sessions }),
     history: agentArtifactDerivedRoots(artifactDir).history,
     acpSessions: acpSessionAuthorizationsRoot(artifactDir),
@@ -90,15 +100,17 @@ export async function resolveConversationStatePurgePlan(
   snapshot?: ConversationStateConfigSnapshot,
 ): Promise<ConversationStatePurgePlan> {
   const roots = await resolveConversationStatePurgeRoots(input, snapshot);
-  const [sessions, history, acpSessions] = await Promise.all([
+  const [sessions, history, acpSessions, subagents] = await Promise.all([
     roots.sessions === undefined
       ? undefined
       : resolveAndAttestConversationStatePurgeRoot("Pi provider sessions", roots.sessions),
     resolveAndAttestConversationStatePurgeRoot("durable session/tool history", roots.history),
     resolveAndAttestConversationStatePurgeRoot("ACP sessions", roots.acpSessions),
+    roots.subagents === undefined ? undefined : resolveAndAttestConversationStatePurgeRoot("persistent subagent instances", roots.subagents),
   ]);
   return {
     roots,
+    ...(subagents === undefined ? {} : { subagents }),
     ...(sessions === undefined ? {} : { sessions }),
     history,
     acpSessions,
@@ -152,6 +164,7 @@ export function conversationStatePurgePlanEntries(
     ...(plan.sessions === undefined ? [] : [plan.sessions]),
     plan.history,
     plan.acpSessions,
+    ...(plan.subagents === undefined ? [] : [plan.subagents]),
   ];
 }
 

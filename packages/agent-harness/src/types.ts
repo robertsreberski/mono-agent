@@ -492,6 +492,7 @@ export interface AgentHarnessOptions {
    * runs after context assembly. Hosts must answer with the same predicate that
    * injects the schema — guidance for an absent capability is worse than none.
    */
+  readonly subagentInstancesFor?: (input: { readonly request: AgentHarnessRequest; readonly runId: string }) => Promise<NonNullable<import("./harness/session-context.js").SessionContextCapabilities["subagentInstances"]>>;
   readonly backgroundProcessJobsAvailable?: (
     input: { readonly request: AgentHarnessRequest; readonly runId: string },
   ) => boolean;
