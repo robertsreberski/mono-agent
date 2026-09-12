@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { startWebNotificationIngress } from "../notification-ingress.js";
+import { createWebConsoleToolClient } from "../notification-client.js";
 import { createHash } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -7034,5 +7037,47 @@ describe("conversation project dispatch bounds", () => {
     } finally {
       await service.stop();
     }
+  });
+});
+
+
+describe("authenticated console project callback", () => {
+  it("commits create-and-attach once, binds source and turn, then rejects late calls", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({ fetchImpl: operatorFetch({
+      turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+    }) });
+    const ingress = await startWebNotificationIngress(service);
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Organize this conversation" });
+      await waitFor(() => stream !== undefined);
+      const turnId = service.store.activeTurn(thread.id)!.id;
+      const scope = { sourceId: "agent-one", threadId: thread.id, turnId };
+      const options = { stateDir: service.store.paths.root };
+      const call = await createWebConsoleToolClient(scope, options);
+      await expect(createWebConsoleToolClient({ ...scope, sourceId: "wrong-source" }, options)).rejects.toMatchObject({ code: "console_tool_revoked" });
+      const operation = { operationId: randomUUID(), tool: "CreateProject" as const, args: { name: "Created by tool", color: "rose", attachCurrentConversation: true } };
+      const result = await call(operation);
+      expect(result).toMatchObject({ projectId: expect.any(String), attachment: { conversationId: thread.id, projectId: null, disposition: "pending" } });
+      expect(await call(operation)).toEqual(result);
+      expect(service.projects("agent-one")).toHaveLength(1);
+      await expect(call({ ...operation, args: { name: "Conflicting" } })).rejects.toMatchObject({ code: "operation_conflict" });
+      const independent = await call({ ...operation, operationId: randomUUID() });
+      expect(independent.projectId).not.toBe(result.projectId);
+      expect(service.projects("agent-one")).toHaveLength(2);
+      await expect(call({ operationId: randomUUID(), tool: "CreateConversation", args: { title: "x".repeat(81) } })).rejects.toMatchObject({ code: "invalid_console_tool" });
+      expect(service.store.listThreadsPage({ sourceId: "agent-one", archived: false }).threads).toHaveLength(1);
+      const created = await call({ operationId: randomUUID(), tool: "CreateConversation", args: { title: "A new topic", projectId: result.projectId } });
+      expect(service.store.getThread(String(created.conversationId))?.runState.status).toBe("idle");
+      const endpoint = new URL("/internal/v1/console-tools", ingress.url);
+      expect((await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+      expect((await fetch(endpoint, { method: "POST", headers: { origin: "https://foreign.invalid" }, body: "{}" })).status).toBe(403);
+      stream?.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(service.store.getThread(thread.id)?.projectId).toBe(independent.projectId);
+      await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
+    } finally { await ingress.stop(); await service.stop(); }
   });
 });

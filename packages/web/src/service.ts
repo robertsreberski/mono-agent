@@ -1,3 +1,4 @@
+import type { ConsoleToolScope, ConsoleToolOperation } from "./console-tools.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
@@ -915,6 +916,33 @@ export class WebService {
    *
    * Unknown agents 404 from the store, like the conversation listing.
    */
+  private readonly consoleToolTurns = new Set<string>();
+
+  assertConsoleToolTurn(scope: ConsoleToolScope): void {
+    const thread = this.store.getThread(scope.threadId);
+    const active = this.activeTurns.get(scope.threadId);
+    if (this.stopped || !this.consoleToolTurns.has(scope.turnId) || active?.turnId !== scope.turnId
+      || active.controller.signal.aborted || thread?.sourceId !== scope.sourceId || thread.archivedAt !== null
+      || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId) {
+      throw new WebConsoleError("console_tool_revoked", "The originating interactive turn is no longer writable.", 403);
+    }
+  }
+
+  consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
+    this.assertConsoleToolTurn(scope);
+    const commit = this.store.consoleToolOperation(scope, operation);
+    for (const id of commit.threads) {
+      const thread = this.store.getThread(id);
+      if (thread !== undefined) {
+        this.emitThread("thread.changed", { thread });
+        this.emitThread("threads.changed", { thread });
+      }
+    }
+    for (const id of commit.projects) this.refreshProject(id);
+    for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true });
+    return commit.result;
+  }
+
   projects(sourceId: string): WebProject[] {
     return this.store.listProjects(sourceId);
   }
@@ -2079,6 +2107,7 @@ export class WebService {
     const active = this.activeTurns.get(threadId);
     const stored = this.store.activeTurn(threadId);
     if (stored === undefined) throw new WebConsoleError("no_active_turn", "This conversation has no active turn.", 409);
+    this.consoleToolTurns.delete(stored.id);
     const reason = createChannelUserCancelReason("Web");
     const liveInputs = [...this.activeLiveInputs.entries()]
       .filter(([, input]) => input.threadId === threadId);
@@ -2272,6 +2301,8 @@ export class WebService {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
       };
+      const consoleTools = hostWakeDeliveryKey === undefined && started.thread.trigger === undefined;
+      if (consoleTools) this.consoleToolTurns.add(started.turnId);
       const response = await client.turn({
         conversationId: started.conversationId,
         text: operatorText,
@@ -2282,6 +2313,7 @@ export class WebService {
             threadId: started.thread.id,
             turnId: started.turnId,
             ...modelMetadata,
+            ...(consoleTools ? { consoleProjects: { schema: 1 } } : {}),
             ...(hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
               ? { conversationTitle: { schema: 1, writable: true } }
               : {}),
@@ -2345,6 +2377,7 @@ export class WebService {
       if (started.thread.projectId !== null && started.thread.projectId !== detail.thread.projectId) this.refreshProject(started.thread.projectId);
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
     } finally {
+      this.consoleToolTurns.delete(started.turnId);
       releaseAttachmentBudget?.();
       coalescer.close();
     }

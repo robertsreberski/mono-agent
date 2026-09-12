@@ -18,7 +18,7 @@ export {
 } from "./state-paths.js";
 export type { WebStatePathOptions, WebStatePaths } from "./state-paths.js";
 
-export { deliverWebNotification } from "./notification-client.js";
+export { deliverWebNotification, createWebConsoleToolClient } from "./notification-client.js";
 export type {
   DeliverWebNotificationInput,
   DeliverWebNotificationOptions,
@@ -109,6 +109,8 @@ export type {
   WebMessageStatus,
   WebModelOption,
   WebProject,
+  WebProjectColor,
+  WebProjectTransition,
   WebProjectChangedPayload,
   WebNotificationTriggerKind,
   WebThreadNotificationTriggerKind,
@@ -147,3 +149,5 @@ export {
 } from "./store.js";
 
 export { WebConsoleError } from "./errors.js";
+
+export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName } from "./console-tools.js";

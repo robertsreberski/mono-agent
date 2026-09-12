@@ -1,3 +1,4 @@
+import { CONSOLE_TOOL_NAMES, type ConsoleToolScope, type ConsoleToolName } from "./console-tools.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, lstat, open, readFile, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -88,6 +89,55 @@ export async function startWebNotificationIngress(
     }).catch(next);
   });
 
+  // Owner discovery authorizes issuance; subsequent calls use only a turn-bound capability.
+  const capabilities = new Map<string, ConsoleToolScope>();
+  app.post("/internal/v1/console-tools", (req, res, next) => {
+    const bound = server.address();
+    if (stopPromise !== undefined || req.header("origin") !== undefined
+      || req.socket.remoteAddress !== "127.0.0.1" || bound === null || typeof bound === "string"
+      || req.header("host") !== `127.0.0.1:${bound.port}`) {
+      res.status(403).json({ error: { code: "forbidden", message: "Forbidden." } }); return;
+    }
+    const presented = readAuthorizationBearer(req.header("authorization"));
+    const capability = presented === undefined ? undefined : capabilities.get(presented);
+    if (presented === undefined || (!bearerTokensEqual(presented, token) && capability === undefined)) {
+      res.status(401).json({ error: { code: "unauthorized", message: "Unauthorized." } }); return;
+    }
+    res.locals.consoleScope = capability;
+    next();
+  }, express.json({ limit: 16 * 1024, strict: true }), (req, res, next) => {
+    try {
+      const body = asRecord(req.body);
+      if (body === undefined) throw new WebConsoleError("invalid_console_tool", "Invalid request.", 400);
+      for (const [key, scope] of capabilities) {
+        try { service.assertConsoleToolTurn(scope); } catch { capabilities.delete(key); }
+      }
+      if (res.locals.consoleScope === undefined) {
+        if (Object.keys(body).some((key) => !["sourceId", "threadId", "turnId"].includes(key))
+          || [body.sourceId, body.threadId, body.turnId].some((item) => typeof item !== "string" || item.length === 0 || item.length > 128)) {
+          throw new WebConsoleError("invalid_console_tool", "Invalid turn scope.", 400);
+        }
+        const scope = body as unknown as ConsoleToolScope;
+        service.assertConsoleToolTurn(scope);
+        const existing = [...capabilities].find(([, item]) => item.sourceId === scope.sourceId && item.threadId === scope.threadId && item.turnId === scope.turnId);
+        if (existing !== undefined) { res.json({ capability: existing[0] }); return; }
+        if (capabilities.size >= 256) throw new WebConsoleError("console_tool_busy", "Too many active console capabilities.", 409);
+        const capability = randomBytes(32).toString("base64url");
+        capabilities.set(capability, scope);
+        res.json({ capability }); return;
+      }
+      if (Object.keys(body).some((key) => !["operationId", "tool", "args"].includes(key))
+        || typeof body.operationId !== "string" || typeof body.tool !== "string"
+        || !CONSOLE_TOOL_NAMES.includes(body.tool as ConsoleToolName) || asRecord(body.args) === undefined) {
+        throw new WebConsoleError("invalid_console_tool", "Invalid operation.", 400);
+      }
+      const result = service.consoleToolOperation(res.locals.consoleScope as ConsoleToolScope, {
+        operationId: body.operationId, tool: body.tool as ConsoleToolName, args: body.args as Record<string, unknown>,
+      });
+      res.json({ result });
+    } catch (error) { next(error); }
+  });
+
   app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
@@ -141,6 +191,7 @@ export async function startWebNotificationIngress(
     stop() {
       stopPromise ??= (async () => {
         try {
+          capabilities.clear();
           await close(server);
           await Promise.allSettled([...active]);
         } finally {
@@ -332,4 +383,8 @@ async function removeOwnIngressRecord(path: string, instanceId: string): Promise
   }
   const record = typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : undefined;
   if (record?.instanceId === instanceId) await unlink(path).catch(() => undefined);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }

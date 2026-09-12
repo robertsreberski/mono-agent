@@ -1,3 +1,4 @@
+import { executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -3267,7 +3268,16 @@ export class WebStore {
   projectContextForThread(threadId: string): { readonly name: string; readonly context: string } | undefined {
     const active = this.database.prepare("SELECT project_context_json FROM turns WHERE thread_id = ? AND status = 'running'")
       .get(this.resolveThreadId(threadId)) as { project_context_json: string | null } | undefined;
-    if (active?.project_context_json != null) return JSON.parse(active.project_context_json) ?? undefined;
+    if (active?.project_context_json != null) {
+      try {
+        const snapshot: unknown = JSON.parse(active.project_context_json);
+        if (snapshot === null) return undefined;
+        if (typeof snapshot !== "object" || Array.isArray(snapshot)
+          || !("name" in snapshot) || !("context" in snapshot)
+          || typeof snapshot.name !== "string" || typeof snapshot.context !== "string") throw new Error();
+        return { name: snapshot.name, context: snapshot.context };
+      } catch { throw new WebConsoleError("storage_corrupt", "The active project context snapshot is invalid.", 500); }
+    }
     const row = this.database.prepare(`
       SELECT p.name AS name, p.context AS context
         FROM threads t JOIN projects p ON p.id = t.project_id
@@ -3275,6 +3285,28 @@ export class WebStore {
     `).get(this.resolveThreadId(threadId)) as unknown as { name: string; context: string } | undefined;
     if (row === undefined || row.context.trim().length === 0) return undefined;
     return { name: row.name, context: row.context };
+  }
+
+  /** Commit the operation receipt with its mutations, including create-and-attach. */
+  consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
+    if (!/^[a-zA-Z0-9-]{16,128}$/u.test(operation.operationId)) throw new WebConsoleError("invalid_operation", "Invalid operation identity.", 400);
+    const canonicalArgs = Object.fromEntries(Object.entries(operation.args).sort(([a], [b]) => a.localeCompare(b)));
+    const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs })).digest("hex");
+    return this.transaction(() => {
+      const origin = this.requireThread(scope.threadId);
+      if (origin.sourceId !== scope.sourceId || origin.trigger !== undefined || origin.archivedAt !== null
+        || this.activeTurn(scope.threadId)?.id !== scope.turnId) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+      const prior = this.database.prepare("SELECT payload_sha256, result_json FROM console_tool_operations WHERE operation_id = ?")
+        .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
+      if (prior !== undefined) {
+        if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
+        return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [] };
+      }
+      const commit = executeConsoleTool(this, scope, operation);
+      this.database.prepare("INSERT INTO console_tool_operations(operation_id, thread_id, turn_id, payload_sha256, result_json) VALUES (?, ?, ?, ?, ?)")
+        .run(operation.operationId, scope.threadId, scope.turnId, hash, JSON.stringify(commit.result));
+      return commit;
+    });
   }
 
   private pendingProjectDto(threadId: string): Pick<WebThread, "pendingProject"> {

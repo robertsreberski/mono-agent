@@ -136,6 +136,13 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     addColumn(database, "projects", "color", "TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose'))");
     addColumn(database, "turns", "project_context_json", "TEXT");
     database.exec(`
+      CREATE TABLE IF NOT EXISTS console_tool_operations (
+        operation_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+        payload_sha256 TEXT NOT NULL,
+        result_json TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS pending_project_memberships (
         thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
         project_id TEXT REFERENCES projects(id),
@@ -200,6 +207,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
       threads: ["trigger_kind", "run_model", "run_effort", "project_id"],
+      console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
       project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
       projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
