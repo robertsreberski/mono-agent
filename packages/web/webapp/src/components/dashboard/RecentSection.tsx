@@ -8,13 +8,16 @@ import { AutomationsList } from "../AutomationsList";
 import { Icon } from "../Icon";
 import { ThreadSearchResults } from "../ThreadSearchResults";
 import type { ThreadSearchState } from "../../thread-search";
-import { isRecentThread } from "./dashboard-model";
+import { isRecentThread, threadProjectLabel } from "./dashboard-model";
 import { ThreadListItem } from "./ThreadListItem";
 
 /**
  * The selected agent's current archive bucket, and nothing else. Cron channels
- * are not in it: the listing is server-scoped to chats, and the rows defend
- * that here for anything an older page or event still carries.
+ * are not in it, and neither is a live project member -- that one is drawn by
+ * its project's page. The listing is server-scoped the same way, and the rows
+ * defend it here for anything an older page, an event or a project read still
+ * carries. Archived, a member has no project page to be on, so it stays here
+ * wearing its project's name.
  *
  * A search REPLACES these rows -- it goes to the server and reads every
  * conversation of the agent rather than the page this list has loaded.
@@ -42,6 +45,7 @@ export function RecentSection({
   const {
     agents,
     catalogByProvider,
+    projectsByAgent,
     selectedAgentId,
     threads,
     visibleThreads,
@@ -129,16 +133,22 @@ export function RecentSection({
             <ThreadListPrimitive.Items archived={showArchived}>
               {({ threadListItem }) => {
                 const thread = threadById.get(threadListItem.id);
-                return thread && isRecentThread(thread) ? (
+                if (!thread || !isRecentThread(thread)) return null;
+                // Only the archive shelf can hold a project's conversation;
+                // see `isRecentThread`. It says which project, so the row is
+                // not an unexplained stranger in the agent's own list.
+                const project = threadProjectLabel(thread, projectsByAgent);
+                return (
                   <ThreadListItem
                     thread={thread}
                     agent={agentBySourceId.get(thread.sourceId) ?? null}
                     catalogModels={thread.sourceId === selectedAgentId ? catalogModels : undefined}
+                    {...(project === undefined ? {} : { project })}
                     unread={unreadThreadIds.has(thread.id)}
                     onNavigate={onNavigate}
                     highlightSelected={highlightSelected}
                   />
-                ) : null;
+                );
               }}
             </ThreadListPrimitive.Items>
             {visibleCount === 0 && (

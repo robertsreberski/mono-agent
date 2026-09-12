@@ -376,7 +376,8 @@ export interface BootstrapScope {
   readonly sourceId?: string;
   readonly archived?: boolean;
   readonly limit?: number;
-  readonly scope?: "chats";
+  /** See {@link api.threads}: the live bucket is `direct`, the archived one `chats`. */
+  readonly scope?: "chats" | "direct";
 }
 
 export const api = {
@@ -430,6 +431,15 @@ export const api = {
       { signal },
     ),
 
+  /**
+   * One page of one archive bucket of one agent's conversation list.
+   *
+   * The live bucket is `direct`: a project's members are listed by the project
+   * page, so the agent's own list leaves them out rather than showing each of
+   * them in both places. The archived bucket asks for `chats`, because an
+   * archived member is not on its project page and the operator still has to
+   * be able to find it -- labelled, in the archive shelf where it was left.
+   */
   threads: (
     sourceId: string,
     archived: boolean,
@@ -441,7 +451,7 @@ export const api = {
       sourceId,
       archived: String(archived),
       limit: String(limit),
-      scope: "chats",
+      scope: archived ? "chats" : "direct",
     });
     if (before !== undefined) query.set("before", before);
     return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });

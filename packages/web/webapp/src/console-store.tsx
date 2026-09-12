@@ -2828,6 +2828,24 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     });
   }, []);
 
+  /**
+   * Whether a listing replacement must keep a row it did not carry.
+   *
+   * The agent's conversation list is read in the `direct` scope, which leaves
+   * a project's members to the project's own page -- and that page draws its
+   * rows from this same held set (`projectMembers`, and the thread list
+   * `runtime.tsx` builds for it). A wholesale replacement that dropped them
+   * would empty the page the operator is looking at, so the open project's
+   * members survive a listing that is no longer authoritative over them. The
+   * set is bounded by one project, a deletion still prunes explicitly, and
+   * closing the project lets them go.
+   */
+  const retainsOpenProjectMember = useCallback(
+    (thread: ThreadSummary): boolean =>
+      openProjectIdRef.current !== null && thread.projectId === openProjectIdRef.current,
+    [],
+  );
+
   const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean, observedProjects: typeof projectsByAgent) => {
     // BEFORE anything is read off the current selection: what a different
     // console left behind is not a selection to keep.
@@ -2859,7 +2877,16 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
     // The resolved agent's projects land with the snapshot, archived included.
     if (next.projectsSourceId !== null) mergeProjectListing(next.projectsSourceId, next.projects, observedProjects);
-    setBootstrap(next);
+    // Wholesale, except for the rows this snapshot's scope does not cover:
+    // see {@link retainsOpenProjectMember}.
+    setBootstrap((current) => {
+      if (current === null) return next;
+      const listed = new Set(next.threads.map((thread) => thread.id));
+      const held = current.threads.filter(
+        (thread) => !listed.has(thread.id) && retainsOpenProjectMember(thread),
+      );
+      return held.length === 0 ? next : { ...next, threads: mergeThreads(held, next.threads) };
+    });
     // The listing is a SERVER SUMMARY for every conversation in it, so it
     // CONFIRMS the ones this tab is already holding -- and that is all it is
     // asked to do. `confirmListed` inserts nothing for an id the cache does not
@@ -3014,6 +3041,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     mergeProjectListing,
     publishDetail,
     reconcileCronRevision,
+    retainsOpenProjectMember,
     setSelectionRequest,
   ]);
 
@@ -3029,7 +3057,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     ...(selectedAgentRef.current === null ? {} : { sourceId: selectedAgentRef.current }),
     archived: showArchivedRef.current,
     limit: threadPageLimit(),
-    scope: "chats",
+    // The same scope the page read of this bucket asks for, or the bootstrap
+    // would seed the bucket with rows the next listing takes straight back out.
+    scope: showArchivedRef.current ? "chats" : "direct",
   }), []);
 
   const loadBootstrap = useCallback(async () => {
@@ -3140,7 +3170,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         if (current === null) return current;
         const retained = before === undefined && mode === "replace"
           ? current.threads.filter((thread) =>
-              thread.sourceId !== sourceId || Boolean(thread.archivedAt) !== archived)
+              thread.sourceId !== sourceId || Boolean(thread.archivedAt) !== archived
+              // The listing no longer COVERS the open project's members, so it
+              // cannot be their authority either: dropping them here empties
+              // the project page, which draws its rows from this same set.
+              || retainsOpenProjectMember(thread))
           : current.threads;
         return { ...current, threads: mergeThreads(retained, admitted) };
       });
@@ -3162,7 +3196,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     });
     bucketReadsRef.current.set(key, request);
     return request;
-  }, [reconcileCronRevision]);
+  }, [reconcileCronRevision, retainsOpenProjectMember]);
 
   const hasBootstrap = bootstrap !== null;
   useEffect(() => {
@@ -5043,6 +5077,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           (thread) =>
             thread.sourceId === selectedAgentId
             && thread.trigger?.kind !== "cron"
+            // A live project member belongs to its project's page. Archived it
+            // is nowhere else, so the archive shelf keeps it. Same rule as the
+            // listing this bucket is filled with, and as the rows Recent draws.
+            && (showArchived || thread.projectId === null)
             && Boolean(thread.archivedAt) === showArchived,
         )
         .sort(byMostRecent),

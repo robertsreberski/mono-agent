@@ -1671,6 +1671,26 @@ describe("web HTTP server", () => {
     expect(page.truncated).toBe(false);
   });
 
+  it("accepts the direct listing scope and refuses an unknown one", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+
+    const direct = await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&scope=direct`,
+    );
+    expect(direct.status).toBe(200);
+    // The console's live bucket: no conversation that belongs to a project.
+    expect((await json(direct) as { threads: Array<{ projectId: string | null }> }).threads
+      .every((thread) => thread.projectId === null)).toBe(true);
+
+    const bogus = await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&scope=projects`,
+    );
+    expect(bogus.status).toBe(400);
+    expect(await json(bogus)).toMatchObject({
+      error: { code: "invalid_page", message: "scope must be all, chats or direct." },
+    });
+  });
+
   it("rejects a model-catalog request that mixes the two mutually exclusive modes", async () => {
     const { baseUrl } = await start({ host: "127.0.0.1" });
 

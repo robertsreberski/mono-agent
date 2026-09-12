@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Keep a project's conversations in the project page: the console's live
+  conversation list asks for the new `direct` listing scope, which excludes
+  project members before limits and cursors are applied. A member still appears
+  in Active now while it is running, in search results, and on the archive shelf
+  once archived -- each labelled with its project's name, which conversation
+  summaries now carry as `projectName`.
+
 - Add project colors, a tinted chat badge, and persisted join/leave/move markers.
   Membership changes wait for the active turn boundary; steering retains frozen
   project context. Busy deletion and pending-destination archival return conflicts.

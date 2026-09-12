@@ -3,7 +3,7 @@ import {
   threadOutcomeError,
   threadPresentation,
 } from "../../thread-presentation";
-import type { AgentSummary, ThreadSummary } from "../../types";
+import type { AgentSummary, ProjectColor, ProjectSummary, ThreadSummary } from "../../types";
 import { formatUsd } from "../../usage";
 import type { IconName } from "../Icon";
 
@@ -78,12 +78,40 @@ export const dashboardKindIcon = (kind: DashboardThreadKind): IconName => ICON_B
 export const dashboardKindLabel = (kind: DashboardThreadKind): string => LABEL_BY_KIND[kind];
 
 /**
- * Recent is conversations; a cron channel is an automation's history and lives
- * in that collection. The listing is server-scoped the same way -- this is the
- * row-level guard for whatever an older page or event still carries.
+ * Recent is the agent's OWN conversations; a cron channel is an automation's
+ * history and lives in that collection, and a live project member is drawn by
+ * its project's page. The listing is server-scoped the same way -- this is the
+ * row-level guard for whatever an older page, an event or a project read still
+ * carries.
+ *
+ * Archived is the exception, and deliberately: the project page shows live
+ * members only, so an archived one would be nowhere at all. It stays on the
+ * archive shelf, wearing its project's name.
  */
 export const isRecentThread = (thread: ThreadSummary): boolean =>
-  thread.trigger?.kind !== "cron";
+  thread.trigger?.kind !== "cron"
+  && (thread.archivedAt !== null || thread.projectId === null);
+
+/**
+ * What a row says about the project it belongs to, or undefined for a
+ * conversation that belongs to its agent directly.
+ *
+ * The loaded project wins -- it carries the colour, and a rename reaches it
+ * first -- but Running crosses agents and this console holds only the selected
+ * agent's projects, so the name the row itself carries is what labels the rest.
+ */
+export const threadProjectLabel = (
+  thread: ThreadSummary,
+  projectsByAgent: Readonly<Record<string, readonly ProjectSummary[]>>,
+): { readonly name: string; readonly color: ProjectColor } | undefined => {
+  if (thread.projectId === null) return undefined;
+  const project = (projectsByAgent[thread.sourceId] ?? [])
+    .find((item) => item.id === thread.projectId);
+  if (project !== undefined) return { name: project.name, color: project.color ?? "default" };
+  return thread.projectName === undefined
+    ? undefined
+    : { name: thread.projectName, color: "default" };
+};
 
 /**
  * What Running falls back to when the server's listing is not standing behind

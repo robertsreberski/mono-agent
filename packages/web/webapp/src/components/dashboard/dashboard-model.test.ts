@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agent, thread } from "../../test/fixtures";
+import { agent, project, thread } from "../../test/fixtures";
 import type { ThreadSummary } from "../../types";
 import {
   agentInitials,
@@ -12,6 +12,7 @@ import {
   runningCardPending,
   runningCardStatus,
   runningThreadCount,
+  threadProjectLabel,
 } from "./dashboard-model";
 
 describe("agent initials", () => {
@@ -94,6 +95,34 @@ describe("recent filter", () => {
     expect(isRecentThread(cron)).toBe(false);
     expect(isRecentThread(webhook)).toBe(true);
     expect(isRecentThread(plain)).toBe(true);
+  });
+
+  it("leaves a live project member to its project page and keeps the archived one on the shelf", () => {
+    const member = thread("member", "alpha", { projectId: "p1", projectName: "Console" });
+    expect(isRecentThread(member)).toBe(false);
+    // Archived, the project page no longer shows it: the shelf is the only
+    // place it could be found, so it stays.
+    expect(isRecentThread({ ...member, archivedAt: "2026-07-18T10:00:00.000Z" })).toBe(true);
+    // A cron channel is still out of both buckets.
+    expect(isRecentThread({ ...cron, archivedAt: "2026-07-18T10:00:00.000Z" })).toBe(false);
+  });
+});
+
+describe("project label", () => {
+  const loaded = { alpha: [project("p1", "alpha", { name: "Console work", color: "blue" })] };
+
+  it("prefers the loaded project, falls back to the name the row carries", () => {
+    const member = thread("member", "alpha", { projectId: "p1", projectName: "Stale name" });
+    expect(threadProjectLabel(member, loaded)).toEqual({ name: "Console work", color: "blue" });
+    // Another agent's card: this console holds no project list for it, so the
+    // row's own name labels it, without a colour to claim.
+    const foreign = thread("foreign", "beta", { projectId: "p9", projectName: "Their project" });
+    expect(threadProjectLabel(foreign, loaded)).toEqual({ name: "Their project", color: "default" });
+    // Nothing to say about a conversation that belongs to its agent.
+    expect(threadProjectLabel(thread("plain", "alpha"), loaded)).toBeUndefined();
+    // A member with neither a loaded project nor a carried name says nothing
+    // rather than inventing a label.
+    expect(threadProjectLabel(thread("bare", "beta", { projectId: "p9" }), loaded)).toBeUndefined();
   });
 });
 

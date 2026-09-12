@@ -371,6 +371,13 @@ export interface WebThread {
   readonly revision: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
   readonly projectId: string | null;
+  /**
+   * That project's name, carried on the summary so a reader can label the row
+   * without holding the project list it came from. Present exactly when
+   * `projectId` is; a listing that crosses agents (Running) has no other way to
+   * say which project a card belongs to.
+   */
+  readonly projectName?: string;
   /** Desired membership; effective only after the named active turn settles. */
   readonly pendingProject?: { readonly projectId: string | null; readonly turnId: string };
   readonly trigger?: WebThreadTrigger;
@@ -719,8 +726,17 @@ export interface WebThreadPage {
   readonly nextCursor?: string;
 }
 
-/** Which durable conversation classes a list or search includes. */
-export type WebThreadListScope = "all" | "chats";
+/**
+ * Which durable conversation classes a list or search includes.
+ *
+ * `chats` drops cron channels, which are an automation's history rather than a
+ * conversation. `direct` drops project members as well: they are listed by
+ * their project's own page, so the agent's conversation list would otherwise
+ * show every one of them twice over. Neither says anything about the archive
+ * bucket -- the console asks for `direct` in the live bucket and `chats` in the
+ * archived one, where a member has left its project page behind.
+ */
+export type WebThreadListScope = "all" | "chats" | "direct";
 
 /**
  * Every conversation in the fleet with work in flight -- bounded, and counted

@@ -50,6 +50,7 @@ import {
   type WebMessageDelta,
   type WebMessagePart,
   type WebTheme,
+  type WebThreadListScope,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import {
@@ -1997,10 +1998,11 @@ function optionalArchivedQuery(value: unknown): boolean | undefined {
 }
 
 /** Absent preserves the mixed listing older clients requested. */
-function optionalThreadListScope(value: unknown): "all" | "chats" {
+function optionalThreadListScope(value: unknown): WebThreadListScope {
   if (value === undefined || value === "all") return "all";
   if (value === "chats") return "chats";
-  throw new WebConsoleError("invalid_page", "scope must be all or chats.", 400);
+  if (value === "direct") return "direct";
+  throw new WebConsoleError("invalid_page", "scope must be all, chats or direct.", 400);
 }
 
 function optionalEmptyOnlyQuery(value: unknown): boolean {

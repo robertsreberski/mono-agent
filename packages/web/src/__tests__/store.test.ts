@@ -5753,6 +5753,67 @@ describe("WebStore conversation projects", () => {
     }
   });
 
+  it("lists the agent's direct conversations without its projects' members, and labels the members it does list", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Console work" });
+      const member = store.createThread("agent-one", { projectId: project.id });
+      const direct = store.createThread("agent-one");
+      const archivedMember = store.createThread("agent-one", { projectId: project.id });
+      store.patchThread(archivedMember.id, { archived: true });
+
+      // The console's live bucket: the agent's own conversations only.
+      const live = store.listThreadsPage({ sourceId: "agent-one", archived: false, scope: "direct" });
+      expect(live.threads.map((thread) => thread.id)).toEqual([direct.id]);
+      // The same bucket in the old scope still carries the member, so the
+      // change is the console's request rather than a lost conversation.
+      expect(store.listThreadsPage({ sourceId: "agent-one", archived: false, scope: "chats" })
+        .threads.map((thread) => thread.id).sort())
+        .toEqual([direct.id, member.id].sort());
+
+      // Archived, a member has no project page to be on: it stays on the shelf
+      // and carries its project's name so the row can say where it belongs.
+      const shelf = store.listThreadsPage({ sourceId: "agent-one", archived: true, scope: "chats" });
+      expect(shelf.threads.map((thread) => thread.id)).toEqual([archivedMember.id]);
+      expect(shelf.threads[0]?.projectName).toBe("Console work");
+      expect(live.threads[0]?.projectName).toBeUndefined();
+
+      // Every other summary path carries the label too.
+      store.patchThread(member.id, { title: "labelled member" });
+      const hit = store.searchThreads({ sourceId: "agent-one", query: "labelled", scope: "chats" })
+        .hits.find((item) => item.thread.id === member.id);
+      expect(hit?.thread.projectName).toBe("Console work");
+      store.beginTurn({ threadId: member.id, text: "work", attachmentIds: [] });
+      expect(store.listActiveThreads().threads.find((thread) => thread.id === member.id)?.projectName)
+        .toBe("Console work");
+      // A rename reaches the rows on their next read.
+      store.patchProject(project.id, { name: "Renamed" });
+      expect(store.listActiveThreads().threads.find((thread) => thread.id === member.id)?.projectName)
+        .toBe("Renamed");
+
+      // The scope binds its cursor exactly as `chats` and a project filter do.
+      const paged = store.listThreadsPage({ sourceId: "agent-one", archived: false, scope: "direct", limit: 1 });
+      expect(paged.nextCursor === undefined).toBe(true);
+      const chatsPage = store.listThreadsPage({ sourceId: "agent-one", archived: false, scope: "chats", limit: 1 });
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        scope: "direct",
+        before: chatsPage.nextCursor!,
+      })).toThrowError(expect.objectContaining({ code: "invalid_page" }));
+
+      // "Outside every project" and "inside this one" cannot both be asked.
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        scope: "direct",
+        projectId: project.id,
+      })).toThrowError(expect.objectContaining({ code: "invalid_page" }));
+    } finally {
+      store.close();
+    }
+  });
+
   it("counts members and running turns per project", async () => {
     const { store } = await openStore();
     try {

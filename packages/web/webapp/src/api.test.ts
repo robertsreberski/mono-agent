@@ -848,10 +848,14 @@ describe("listing requests", () => {
       Promise.resolve(Response.json({ threads: [] })));
     vi.stubGlobal("fetch", fetchMock);
 
+    // The live bucket is the agent's OWN conversations: a project's members
+    // are drawn by the project page, not by this list.
     await api.threads("agent/one", false);
     expect(fetchMock.mock.calls[0]?.[0])
-      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=false&limit=50&scope=chats");
+      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=false&limit=50&scope=direct");
 
+    // Archived, a member has no project page left to be on, so the shelf keeps
+    // asking for every chat.
     await api.threads("agent/one", true, "cursor-1", undefined, 200);
     expect(fetchMock.mock.calls[1]?.[0])
       .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=true&limit=200&scope=chats&before=cursor-1");

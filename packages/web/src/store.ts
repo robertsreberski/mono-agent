@@ -149,6 +149,7 @@ interface ThreadRow {
   id: string;
   source_id: string;
   project_id: string | null;
+  project_name: string | null;
   title: string;
   title_manual: number;
   archived_at: string | null;
@@ -2727,6 +2728,16 @@ export class WebStore {
     const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
     const scopeSql = threadListScopeSql(scope);
     const projectSql = input.projectId === undefined ? "" : "AND t.project_id = ?";
+    // One asks for a project's members and the other for everything outside a
+    // project. Answering with the empty intersection would read as "this
+    // project is empty", so the contradiction is refused.
+    if (input.projectId !== undefined && scope === "direct") {
+      throw new WebConsoleError(
+        "invalid_page",
+        "scope=direct lists conversations outside every project and cannot name one.",
+        400,
+      );
+    }
     if (input.projectId !== undefined && this.getProjectRow(input.projectId) === undefined) {
       throw new WebConsoleError("project_not_found", "Project not found.", 404);
     }
@@ -2750,7 +2761,7 @@ export class WebStore {
         ? { nextCursor: encodeCursor({
             updatedAt: last.updated_at,
             id: last.id,
-            ...(scope === "chats" ? { scope } : {}),
+            ...(scope === "all" ? {} : { scope }),
             ...(input.projectId === undefined ? {} : { project: input.projectId }),
           }) }
         : {}),
@@ -5830,6 +5841,9 @@ export class WebStore {
         id: row.id,
         sourceId: row.source_id,
         projectId: row.project_id,
+        ...(row.project_id === null || row.project_name === null
+          ? {}
+          : { projectName: row.project_name }),
         ...(pending.has(row.id) ? { pendingProject: pending.get(row.id)! } : {}),
         title: row.title,
         archivedAt: row.archived_at,
@@ -6718,7 +6732,8 @@ function priorOutcomeCandidateSql(): string {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.project_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
+           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
@@ -6728,6 +6743,9 @@ function threadSelectSql(suffix: string): string {
            (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND ${visibleMessageSql("m")}) AS message_count
     FROM threads t JOIN agents a ON a.source_id = t.source_id
     LEFT JOIN cron_channels cc ON cc.thread_id = t.id
+    -- The member's own row carries its project's name, so a listing that
+    -- crosses agents can label the row without a second read per project.
+    LEFT JOIN projects p ON p.id = t.project_id
     ${suffix}
   `;
 }
@@ -7096,7 +7114,11 @@ function decodeCursor(value: string): Record<string, unknown> {
 }
 
 function threadListScopeSql(scope: WebThreadListScope): string {
-  return scope === "chats" ? "AND (t.trigger_kind IS NULL OR t.trigger_kind <> 'cron')" : "";
+  if (scope === "all") return "";
+  const chats = "AND (t.trigger_kind IS NULL OR t.trigger_kind <> 'cron')";
+  // A project member is listed by its project's page. `direct` is the agent's
+  // own conversations, which is what the console's Recent list asks for.
+  return scope === "direct" ? `${chats} AND t.project_id IS NULL` : chats;
 }
 
 function decodeThreadCursor(
@@ -7106,7 +7128,9 @@ function decodeThreadCursor(
 ): { readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
   if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string"
-    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)
+    // A scoped page binds its scope the same way: a cursor minted for the
+    // agent's direct conversations must not walk the mixed listing.
+    || (scope === "all" ? cursor.scope !== undefined : cursor.scope !== scope)
     // A filtered page binds its project: a cursor minted for another project
     // -- or for the unfiltered bucket -- must not walk this one.
     || (projectId === undefined ? cursor.project !== undefined : cursor.project !== projectId)) {

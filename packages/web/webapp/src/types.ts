@@ -463,6 +463,12 @@ export interface ThreadSummary {
   readonly revision: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
   readonly projectId: string | null;
+  /**
+   * That project's name, carried on the row. Running cards cross agents and
+   * this console holds only the selected agent's project list, so this is what
+   * a card of another agent's project labels itself with.
+   */
+  readonly projectName?: string;
   readonly pendingProject?: { readonly projectId: string | null; readonly turnId: string };
   readonly trigger?:
     | { readonly kind: "webhook" }

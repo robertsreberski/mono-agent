@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Fragment, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agent, thread } from "../../test/fixtures";
+import { agent, project, thread } from "../../test/fixtures";
 import { SEARCH_HIGHLIGHT_CLOSE, SEARCH_HIGHLIGHT_OPEN } from "../../thread-search";
 import type { ThreadSearchHit, ThreadSummary } from "../../types";
 
@@ -330,6 +330,36 @@ describe("Dashboard conversation rows", () => {
     expect(screen.queryByRole("button", { name: "Open Nightly report" })).toBeNull();
   });
 
+  it("leaves a project's conversations to its page, and labels the archived one it keeps", () => {
+    const member = thread("member", "agent-one", {
+      title: "Project chat",
+      projectId: "p1",
+      projectName: "Console work",
+    });
+    const own = thread("own", "agent-one", { title: "Agent chat" });
+    storeMock.current = createStore([member, own]);
+    render(<Dashboard />);
+
+    // Held by this tab -- an SSE update or a project read put it there -- and
+    // still absent from the agent's own list.
+    expect(screen.queryByRole("button", { name: /^Open Project chat/u })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open Agent chat" })).toBeVisible();
+
+    // Archived it has no project page left to be on, so the shelf keeps it and
+    // says which project it came from.
+    const archivedMember = { ...member, archivedAt: "2026-07-18T10:00:00.000Z" };
+    storeMock.current = {
+      ...createStore([archivedMember]),
+      showArchived: true,
+      visibleThreads: [archivedMember],
+      projectsByAgent: { "agent-one": [project("p1", "agent-one", { name: "Console work", color: "blue" })] },
+    };
+    render(<Dashboard />);
+
+    const row = screen.getByRole("button", { name: "Open Project chat, in project Console work" });
+    expect(within(row).getByTitle("In project Console work")).toHaveTextContent("Console work");
+  });
+
   it("marks a row this device has not seen, and says so by name", () => {
     storeMock.current = { ...createStore(), unreadThreadIds: new Set(["loaded"]) };
     render(<Dashboard />);
@@ -565,6 +595,28 @@ describe("Dashboard search", () => {
     expect(screen.getByRole("button", { name: "Chats" })).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByRole("button", { name: /^Automations/u }));
     expect(store().setNavigationDestination).toHaveBeenCalledWith("automations");
+  });
+
+  it("still finds a project's conversations, and says which project they are in", async () => {
+    // Search reads every conversation of the agent, the ones the list leaves to
+    // their project page included -- so the hit has to say where it lives.
+    apiMock.searchThreads.mockResolvedValue({
+      hits: [hit("member", {
+        thread: thread("member", "agent-one", {
+          title: "Project chat",
+          projectId: "p1",
+          projectName: "Console work",
+        }),
+      })],
+      truncated: false,
+    });
+    render(<Dashboard />);
+
+    type("tailscale");
+    await vi.advanceTimersByTimeAsync(500);
+
+    const row = await screen.findByRole("button", { name: "Open Project chat, in project Console work" });
+    expect(within(row).getByTitle("In project Console work")).toHaveTextContent("Console work");
   });
 
   it("clears a conversation query when the list switches to automations", () => {

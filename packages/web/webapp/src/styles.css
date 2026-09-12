@@ -1509,6 +1509,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .project-badge { display: inline-flex; align-items: center; gap: 5px; min-width: 0; margin: -3px -4px; padding: 3px 4px; border: 0; border-radius: 5px; background: transparent; color: var(--project-ink); font-size: 10px; font-weight: 700; letter-spacing: 0.14em; line-height: 1; text-transform: uppercase; cursor: pointer; }
 .project-badge:hover { background: var(--project-tint); }
 .project-badge span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The same badge standing still inside a row that is already one target:
+   no hover, no cursor, and it gives up its width before the status text does. */
+.project-badge.is-static { flex: 0 1 auto; margin: 0; padding: 0; cursor: default; }
+.project-badge.is-static:hover { background: transparent; }
+.project-badge.is-static svg { flex: none; }
 .project-pending { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-muted); font-size: 10px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* A membership change is a rule across the transcript: a faint tinted line
    with the event in the middle, at the messages' own rhythm. */
