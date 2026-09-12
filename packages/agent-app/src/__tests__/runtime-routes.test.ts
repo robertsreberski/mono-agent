@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   configuredRuntimeFallbackModels,
+  configuredProcessJobsRoutesOnlyPiNative,
   configuredRuntimeModels,
   hasConfiguredRuntimeFallbacks,
   runtimeUsesFallbackRouter,
@@ -74,4 +75,14 @@ describe("runtimeUsesFallbackRouter", () => {
     })).toBe(false);
     expect(runtimeUsesFallbackRouter({ ...base, fallbacks: [] })).toBe(false);
   });
+});
+
+
+it("checks call-time subagent models before granting process-job authority", () => {
+  expect(configuredProcessJobsRoutesOnlyPiNative({ runtime: { model: primary },
+    subagents: { enabled: true, models: [{ model: local }] },
+  } as never)).toBe(true);
+  expect(configuredProcessJobsRoutesOnlyPiNative({ runtime: { model: primary },
+    subagents: { enabled: true, models: [{ model: { provider: "openai", model: "bad", reference: "mismatched:reference" } }] },
+  } as never)).toBe(false);
 });

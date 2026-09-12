@@ -41,6 +41,9 @@ export function configuredProcessJobsRoutesOnlyPiNative(config: MonoAgentConfig)
     }
 
     if (config.subagents?.enabled === true) {
+      for (const choice of config.subagents.models ?? []) {
+        assertParsedRuntimeModelReference(choice.model);
+      }
       for (const definition of config.subagents.definitions ?? []) {
         if (definition.model !== undefined) {
           assertParsedRuntimeModelReference(definition.model);

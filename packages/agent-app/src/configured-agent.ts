@@ -692,6 +692,8 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly model?: RuntimeModelReference;
+  readonly effort?: string;
   readonly systemPrompt: string;
   readonly prompt: string;
   readonly definition: {
@@ -796,11 +798,8 @@ function subagentsRuntimeOptions(
     // `options.model` per chain entry, so handing a different model to the
     // shared router is silently ignored and the child would run on the chain
     // primary instead of the model its profile asked for.
-    const overrides = request.definition.model !== undefined
-      && modelReferenceKey(request.definition.model) !== modelReferenceKey(deps.baseModel);
-    const childModel = overrides
-      ? (request.definition.model as RuntimeModelReference)
-      : deps.baseModel;
+    const childModel = request.definition.model ?? request.model ?? deps.baseModel;
+    const overrides = modelReferenceKey(childModel) !== modelReferenceKey(deps.baseModel);
     const runtime = overrides && deps.runtimeForModel !== undefined
       ? deps.runtimeForModel(childModel)
       : deps.runtime;
@@ -853,7 +852,8 @@ function subagentsRuntimeOptions(
       ...(childSkills === undefined
         ? {}
         : { skills: childSkills, skillsRoot: request.skillsRoot }),
-      ...(request.definition.effort === undefined ? {} : { effort: request.definition.effort }),
+      ...((request.definition.effort ?? request.effort) === undefined
+        ? {} : { effort: request.definition.effort ?? request.effort }),
       allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
       disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
       // Only the servers this profile named. A profile that names none gets an
@@ -870,6 +870,11 @@ function subagentsRuntimeOptions(
   return {
     subagents: {
       definitions,
+      ...(subagents.models === undefined ? {} : { models: subagents.models.map((choice) => ({
+        name: choice.name ?? modelReferenceKey(choice.model),
+        model: choice.model,
+        key: modelReferenceKey(choice.model),
+      })) }),
       // Authoring is on unless an operator turns it off; the ceiling is what
       // keeps that safe, so it is always resolved here rather than left to the
       // kernel's conservative read-only fallback.
