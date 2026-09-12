@@ -35,6 +35,7 @@ import { normalizeImageForModel } from "./shared/image.js";
 import { isInsidePath } from "./shared/path-resolver.js";
 import { readToolRuntime } from "./shared/runtime-context.js";
 import { resolveSandboxPolicy } from "./shared/tool-context.js";
+import { createAgentSendTool } from "./agent-send-tool.js";
 import { createAgentTool } from "./agent-tool.js";
 
 function textResult(text, details = {}) {
@@ -634,6 +635,7 @@ export function getPiBuiltinTools(allowedTools, {
     // The host artifact sink lets an over-cap subagent result spill its full
     // text to the run's tool-output directory instead of being cut.
     Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}) }),
+    AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}) }),
     Monitor: monitorsController
       ? createBuiltinTool(
         "Monitor",

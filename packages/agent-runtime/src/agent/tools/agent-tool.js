@@ -35,6 +35,7 @@ export const DEFAULT_SUBAGENT_TOOLS = Object.freeze(["Read", "Glob", "Grep", "We
  */
 export const SUBAGENT_HARD_DENY = Object.freeze([
   "Agent",
+  "AgentSend",
   "AskUser",
   "SlackSendMessage",
   "TelegramSendMessage",
@@ -109,6 +110,12 @@ function toolDescription(subagents, definitions, ceiling) {
     ? ""
     : `\n\nTools you may grant a subagent you build: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
   return `${DESCRIPTION_BASE}${parallel}${named}${shapes}${inline}`;
+}
+
+/** @param {*} subagents @param {number} maximum */
+function slotsForOptions(subagents, maximum) {
+  if (!subagents.__slots) Object.defineProperty(subagents, "__slots", { value: createCountingSemaphore(maximum) });
+  return subagents.__slots;
 }
 
 /** @param {*} value @returns {number} */
@@ -205,9 +212,10 @@ function positiveInt(value, fallback) {
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
  * @param {{model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
+ * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean}} [continuation] Internal AgentSend dispatch; never model supplied.
  * @returns {*|null}
  */
-export function createAgentTool(subagents, context = {}) {
+export function createAgentTool(subagents, context = {}, continuation) {
   if (!subagents || typeof subagents.run !== "function") return null;
   // Structural recursion lock #1: a subagent's own tool set never contains
   // `Agent`, regardless of what any host-supplied `run` forwards.
@@ -219,7 +227,7 @@ export function createAgentTool(subagents, context = {}) {
   const names = definitions.map((definition) => definition.name);
   const models = subagents.models ?? [];
 
-  const slots = createCountingSemaphore(maxConcurrent);
+  const slots = slotsForOptions(subagents, maxConcurrent);
   // Budget state hangs off the shared `subagents` options object, NOT this
   // closure: getPiBuiltinTools runs once per ROUTER ATTEMPT, so a closure-local
   // counter would reset on every same-model retry and failover, multiplying the
@@ -283,6 +291,10 @@ export function createAgentTool(subagents, context = {}) {
         enum: models.map((choice) => choice.name),
         description: `Run the subagent on this model instead of inheriting yours. Choices: ${models.map((choice) => `${choice.name} → ${choice.key}`).join(", ")}.`,
       } }),
+      ...(subagents.instances ? {
+        persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend." },
+        id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
+      } : {}),
       description: {
         type: "string",
         maxLength: 80,
@@ -296,7 +308,7 @@ export function createAgentTool(subagents, context = {}) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions, ceiling),
+    description: toolDescription(subagents, definitions, ceiling) + (subagents.instances ? "\n\nSet persist: true to retain this child’s own context across calls and parent turns. Continue it with AgentSend; close it when done." : ""),
     parameters,
     // MUST stay undefined. Agent-only batches can overlap when the offered tool
     // set contains no sequential tool. Pi 0.85 exposes only a global harness
@@ -305,12 +317,17 @@ export function createAgentTool(subagents, context = {}) {
     executionMode: undefined,
     /**
      * @param {string} toolCallId
-     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string}} params
+     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string}} params
      * @param {AbortSignal} [signal]
      */
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
 
+      if (!subagents.instances && (params.persist !== undefined || params.id !== undefined)) {
+        throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
+      }
+      if (params.id !== undefined && params.persist !== true) throw new Error("Error: id requires persist: true.");
+      if (params.persist !== undefined && typeof params.persist !== "boolean") throw new Error("Error: persist must be a boolean.");
       const authored = ceiling !== null && typeof params?.systemPrompt === "string" && params.systemPrompt.trim().length > 0;
       if (!authored && params?.tools !== undefined) {
         throw new Error("Error: `tools` only applies when you supply `systemPrompt` to build a subagent. A configured profile brings its own.");
@@ -330,11 +347,13 @@ export function createAgentTool(subagents, context = {}) {
         throw new Error(`Error: unknown subagent "${params?.name}". Available: ${available}.`);
       }
 
-      const profile = {
+      const profile = continuation ? continuation.record.definition : {
         ...selectedProfile,
         ...(override === undefined ? {} : { model: override.model }),
         ...(params.effort === undefined ? {} : { effort: params.effort }),
       };
+      /** @type {import("../../ai/types.js").RuntimeSubagentInstance|undefined} */
+      let instance;
       const requested = {
         ...(profile.model === undefined ? {} : { model: `${profile.model.provider}:${profile.model.model}` }),
         ...(profile.effort === undefined ? {} : { effort: profile.effort }),
@@ -368,6 +387,15 @@ export function createAgentTool(subagents, context = {}) {
         releaseSlot();
         throw new Error("tool execution aborted");
       }
+      try {
+        if (continuation) instance = await subagents.instances.begin(continuation.record.id);
+        else if (params.persist) {
+          const created = await subagents.instances.create({ ...(params.id === undefined ? {} : { id: params.id }),
+            name: profile.name, systemPrompt: profile.systemPrompt,
+            definition: { ...profile, model: profile.model ?? context.model, effort: profile.effort ?? context.effort } });
+          instance = await subagents.instances.begin(created.id);
+        }
+      } catch (error) { releaseSlot(); throw error; }
       // The timeout starts only AFTER a slot is held. Started earlier, a call
       // queued behind five long-running siblings would time out having never run.
       const timeoutMs = positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS));
@@ -421,7 +449,8 @@ export function createAgentTool(subagents, context = {}) {
       let abandoned = false;
       try {
         const running = subagents.run({
-          systemPrompt: profile.systemPrompt,
+          ...(instance ? { instance: { sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
+          systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
           prompt: params.prompt,
           definition: profile,
           ...(context.model === undefined ? {} : { model: context.model }),
@@ -450,6 +479,14 @@ export function createAgentTool(subagents, context = {}) {
         // Never let an abandoned runner surface as an unhandled rejection.
         void Promise.resolve(running).catch(() => undefined);
         const settled = await Promise.race([running, deadline]);
+        if (settled === DEADLINE && instance) {
+          const pendingId = instance.id;
+          // Keep the instance busy until the actual runner settles, even after the tool deadline.
+          void Promise.resolve(running).then(
+            (late) => subagents.instances.finish(pendingId, { status: "timeout", answerHead: late?.text ?? "" }),
+            () => subagents.instances.finish(pendingId, { status: "timeout" }),
+          ).catch(() => undefined);
+        }
         if (settled === DEADLINE) {
           timedOut = true;
           abandoned = true;
@@ -464,6 +501,15 @@ export function createAgentTool(subagents, context = {}) {
         releaseSlot();
       }
 
+      if (instance && !abandoned) {
+        const state = classifyOutcome({ result, thrown, timedOut });
+        const usage = result?.usage ?? {};
+        instance = await subagents.instances.finish(instance.id, { status: signal?.aborted ? "cancelled" : state.status,
+          answerHead: state.answer, usage: { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
+            cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
+            costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
+        if (continuation?.close) instance = await subagents.instances.close(instance.id);
+      }
       // The parent turn being cancelled is not a subagent outcome — surface it
       // as an aborted tool call the way every other built-in does. Close any
       // still-open child activity first so the operator surfaces do not keep a
@@ -485,6 +531,7 @@ export function createAgentTool(subagents, context = {}) {
       const remaining = Math.max(0, TURN_RESULT_MAX_BYTES - budget.bytes);
       const { text, savedPath, truncated } = formatSubagentResult({
         profileName: profile.name,
+        ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}),
         label: params.description,
         ...(routeLabel ? { routeLabel } : {}),
         outcome,
@@ -509,8 +556,8 @@ export function createAgentTool(subagents, context = {}) {
       return {
         content: [{ type: "text", text }],
         details: {
-          tool: "Agent",
-          subagent: { name: profile.name, callIndex, status: outcome.status, toolCalls: collector.entries().length,
+          tool: continuation ? "AgentSend" : "Agent",
+          subagent: { ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, toolCalls: collector.entries().length,
             ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
           },
           ...(truncated ? { tool_payload_truncated: true } : {}),
@@ -930,6 +977,7 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
   if (result?.cancelled === true) {
     return { status: "cancelled", answer: typeof result.text === "string" ? result.text : "", reason: "the subagent run was cancelled" };
   }
+  if (result?.failureKind === "session_busy") return { status: "busy", answer: "", reason: "the persistent subagent session is busy" };
   if (result?.error || result?.failureKind) {
     const kind = result.failureKind ? `${result.failureKind}: ` : "";
     return { status: "failed", answer: typeof result.text === "string" ? result.text : "", reason: `${kind}${String(result.error ?? "")}`.trim() };
@@ -954,13 +1002,13 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
  * cut it off. Without a sink (or when the write fails) the text says so instead,
  * so the caller does not go looking for a file that was never written.
  *
- * @param {{profileName: string, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
+ * @param {{profileName: string, instance?: {id: string, turns: number, status: string}, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
  * @returns {{text: string, savedPath: string|null, truncated: boolean}}
  */
-export function formatSubagentResult({ profileName, label, routeLabel, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
+export function formatSubagentResult({ profileName, instance, label, routeLabel, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
-  const header = `<subagent: ${profileName}${label ? ` · ${label}` : ""}${routeLabel ? ` · ${routeLabel}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
+  const header = `<subagent: ${profileName}${instance ? ` · instance ${instance.id} · turn ${instance.turns}${instance.status === "closed" ? " · closed" : ""}` : ""}${label ? ` · ${label}` : ""}${routeLabel ? ` · ${routeLabel}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
   // Surfaced before the answer: a request the runtime silently declined would
   // otherwise have the caller re-request it on every future call.
   const preamble = [
