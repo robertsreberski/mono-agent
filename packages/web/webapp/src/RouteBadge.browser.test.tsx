@@ -53,10 +53,17 @@ vi.mock("./notifications", () => ({ NotificationBell: () => null }));
 import { api } from "./api";
 import { App } from "./App";
 
-// Inside the webapp root: the browser runner's file access stays within the
-// Vite project, so captures land here and are moved to ROOT/output/issue-861
-// after the run (never committed).
-const SHOT_DIR = "./.screenshots/route-badges";
+/**
+ * Screenshot evidence is opt-in, like the composer draft suite:
+ * `VITE_ROUTE_BADGE_SHOTS=<absolute dir>` captures the console with badges,
+ * and CI runs the same layout assertions without writing anything.
+ */
+const shotDirectory = import.meta.env.VITE_ROUTE_BADGE_SHOTS as string | undefined;
+
+const capture = async (name: string): Promise<void> => {
+  if (shotDirectory === undefined || shotDirectory.length === 0) return;
+  await page.screenshot({ path: `${shotDirectory}/${name}.png` });
+};
 
 class SyntheticEventSource extends EventTarget {
   static instances: SyntheticEventSource[] = [];
@@ -396,8 +403,8 @@ describe("route badges on the dashboard", () => {
   });
 });
 
-describe("route badge screenshots", () => {
-  it("captures the console with badges, desktop and phone, dark and light", async () => {
+describe("route badge layout", () => {
+  it("keeps badges inside their rows, desktop and phone, dark and light, capturing when asked", async () => {
     await page.viewport(1_280, 800);
     await emulate("dark");
     openConsole();
@@ -405,10 +412,10 @@ describe("route badge screenshots", () => {
     await waitFor(() => expect(document.querySelectorAll(".running-card").length).toBe(2));
     await userEvent.click(screen.getByRole("button", { name: /Activity/u }));
     await waitFor(() => expect(screen.getByRole("img", { name: /Subagent route: Fallback/u })).toBeVisible());
-    await page.screenshot({ path: `${SHOT_DIR}/dashboard-desktop-dark-1280x800.png` });
+    await capture("dashboard-desktop-dark-1280x800");
 
     await emulate("light");
-    await page.screenshot({ path: `${SHOT_DIR}/dashboard-desktop-light-1280x800.png` });
+    await capture("dashboard-desktop-light-1280x800");
     await emulate("dark");
 
     await page.viewport(390, 844);
@@ -421,7 +428,7 @@ describe("route badge screenshots", () => {
       document.querySelector<HTMLElement>(".chat-region")?.getBoundingClientRect().left,
     ).toBeGreaterThanOrEqual(390));
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390));
-    await page.screenshot({ path: `${SHOT_DIR}/dashboard-phone-dark-390x844.png` });
+    await capture("dashboard-phone-dark-390x844");
 
     // The conversation, pushed from its row: collapsed badges plus one open
     // delegation with its routing detail.
@@ -443,7 +450,7 @@ describe("route badge screenshots", () => {
     await userEvent.click(rows[1]!.querySelector("summary")!);
     await waitFor(() => expect(screen.getByText("Fallback: openai-codex:gpt-6-astra → anthropic:claude-sonnet-4.5 · overloaded")).toBeVisible());
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
-    await page.screenshot({ path: `${SHOT_DIR}/activity-phone-dark-390x844.png` });
+    await capture("activity-phone-dark-390x844");
 
     await page.viewport(320, 568);
     await userEvent.click(rows[1]!.querySelector("summary")!);
@@ -461,6 +468,6 @@ describe("route badge screenshots", () => {
       expect(effort.scrollWidth).toBeLessThanOrEqual(effort.clientWidth + 1);
     }
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(320));
-    await page.screenshot({ path: `${SHOT_DIR}/activity-narrow-dark-320x568.png` });
+    await capture("activity-narrow-dark-320x568");
   }, 120_000);
 });
