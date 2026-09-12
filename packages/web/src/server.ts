@@ -1,3 +1,4 @@
+import { parseProjectColor } from "./project-color.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { chmod, open, readFile, rename, unlink } from "node:fs/promises";
@@ -29,11 +30,15 @@ import {
   DEFAULT_WEB_THEME,
   WEB_API_VERSION,
   WEB_CONSOLE_NAME_MAX_CHARACTERS,
+  WEB_MAX_PROJECT_CONTEXT_CHARACTERS,
+  WEB_MAX_PROJECT_NAME_CHARACTERS,
   WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_THEMES,
+  type CreateWebProjectInput,
   type CreateWebThreadInput,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
+  type PatchWebProjectInput,
   type PatchWebThreadInput,
   type PutWebAgentRunSettingsInput,
   type StartWebLiveInputInput,
@@ -492,7 +497,44 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       res.status(201).json({ thread: service.createThread(input.sourceId, {
         ...(input.model === undefined ? {} : { model: input.model }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/projects", (req, res, next) => {
+    try {
+      const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
+      res.status(200).json({ projects: service.projects(sourceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/projects", (req, res, next) => {
+    try {
+      const input = parseCreateProject(req.body);
+      res.status(201).json({ project: service.createProject(input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/v1/projects/:id", (req, res, next) => {
+    try {
+      const input = parsePatchProject(req.body);
+      res.status(200).json({ project: service.patchProject(pathParam(req.params.id), input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/projects/:id", (req, res, next) => {
+    try {
+      service.deleteProject(pathParam(req.params.id));
+      res.status(204).end();
     } catch (error) {
       next(error);
     }
@@ -506,6 +548,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
       }
       const before = optionalQueryString(req.query.before, 4_096);
+      const projectId = optionalQueryString(req.query.projectId, 512);
       res.status(200).json(service.threadsPage({
         sourceId,
         archived,
@@ -514,6 +557,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         // answer with the whole per-bucket cap by default.
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
+        ...(projectId === undefined ? {} : { projectId }),
       }));
     } catch (error) {
       next(error);
@@ -1455,10 +1499,72 @@ function parseCreateThread(value: unknown): CreateWebThreadInput {
   const body = requireRecord(value);
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
+  const projectId = optionalProjectId(body.projectId);
   return {
     sourceId: requireString(body.sourceId, "sourceId", 256),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(projectId === undefined ? {} : { projectId }),
+  };
+}
+
+/** A project name: trimmed, one line, 1-120 characters. */
+function parseProjectName(value: unknown): string {
+  const name = requireString(value, "name", WEB_MAX_PROJECT_NAME_CHARACTERS).trim();
+  if (name.length === 0) throw invalidBody("name must be a non-empty string.");
+  if (/[\r\n]/u.test(name)) throw invalidBody("name must not contain line breaks.");
+  return name;
+}
+
+/** Optional project context: absent defaults to empty, present is bounded. */
+function parseProjectContext(value: unknown): string {
+  if (value === undefined) return "";
+  return requireString(value, "context", WEB_MAX_PROJECT_CONTEXT_CHARACTERS, true);
+}
+
+function optionalProjectId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  return requireString(value, "projectId", 512);
+}
+
+function optionalNullableProjectId(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return requireString(value, "projectId", 512);
+}
+
+function parseCreateProject(value: unknown): CreateWebProjectInput {
+  const body = requireRecord(value);
+  const unknown = Object.keys(body).filter((key) => key !== "sourceId" && key !== "name" && key !== "context" && key !== "color");
+  if (unknown.length > 0) throw invalidBody(`Unknown project field: ${unknown[0]}.`);
+  if (!("sourceId" in body) || !("name" in body)) {
+    throw invalidBody("sourceId and name are required.");
+  }
+  return {
+    sourceId: requireString(body.sourceId, "sourceId", 512),
+    name: parseProjectName(body.name),
+    ...(body.color === undefined ? {} : { color: parseProjectColor(body.color) }),
+    ...(body.context === undefined ? {} : { context: parseProjectContext(body.context) }),
+  };
+}
+
+function parsePatchProject(value: unknown): PatchWebProjectInput {
+  const body = requireRecord(value);
+  const unknown = Object.keys(body).filter((key) => key !== "name" && key !== "context" && key !== "color" && key !== "archived");
+  if (unknown.length > 0) throw invalidBody(`Unknown project field: ${unknown[0]}.`);
+  const archived = body.archived;
+  if (archived !== undefined && typeof archived !== "boolean") throw invalidBody("archived must be boolean.");
+  const name = body.name === undefined ? undefined : parseProjectName(body.name);
+  const context = body.context === undefined ? undefined : parseProjectContext(body.context);
+  const color = body.color === undefined ? undefined : parseProjectColor(body.color);
+  if (name === undefined && context === undefined && archived === undefined && color === undefined) {
+    throw invalidBody("Provide name, context, or archived.");
+  }
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(context === undefined ? {} : { context }),
+    ...(color === undefined ? {} : { color }),
+    ...(archived === undefined ? {} : { archived }),
   };
 }
 
@@ -1497,7 +1603,12 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
   if (ifRunConfigUnset !== undefined && typeof ifRunConfigUnset !== "boolean") {
     throw invalidBody("ifRunConfigUnset must be boolean.");
   }
-  if (title === undefined && archived === undefined && model === undefined && effort === undefined) {
+  const projectId = optionalNullableProjectId(body.projectId);
+  if (projectId !== undefined && ifRunConfigUnset === true) {
+    throw invalidBody("projectId cannot be combined with ifRunConfigUnset.");
+  }
+  if (title === undefined && archived === undefined && model === undefined && effort === undefined
+    && projectId === undefined) {
     throw invalidBody("Provide title, archived, model, or effort.");
   }
   return {
@@ -1505,6 +1616,7 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
     ...(archived === undefined ? {} : { archived }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(projectId === undefined ? {} : { projectId }),
     ...(ifRunConfigUnset === undefined ? {} : { ifRunConfigUnset }),
   };
 }

@@ -23,6 +23,7 @@ const storeMock = vi.hoisted(() => ({
   selectionError: null,
   selectedThread: null,
   hasRunningThread: false,
+  openProjectId: null as string | null,
   showArchived: false,
   showOfflineAgents: false,
   hiddenOfflineAgentCount: 0,
@@ -77,6 +78,7 @@ beforeEach(() => {
   storeMock.selectionLoading = false;
   storeMock.selectionError = null;
   storeMock.selectedAgent = null;
+  storeMock.openProjectId = null;
   storeMock.createThread.mockReset().mockResolvedValue(undefined);
 });
 
@@ -255,6 +257,23 @@ describe("App mobile screens", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to dashboard" }));
     expect(chat(container)).not.toHaveClass("is-open");
     expect(panel(container)).not.toHaveAttribute("inert");
+  });
+
+  it("brings the dashboard slot back when a project opens from the conversation", () => {
+    storeMock.openProjectId = null;
+    const { container, rerender } = render(<App />);
+    openConversation();
+    expect(chat(container)).toHaveClass("is-open");
+
+    // Saving "New project…" from the conversation's picker opens the project
+    // page, which lives in the dashboard slot: the shell must pop back to it,
+    // or the page lands aria-hidden and inert behind the conversation.
+    storeMock.openProjectId = "project-web";
+    rerender(<App />);
+    expect(chat(container)).not.toHaveClass("is-open");
+    expect(chat(container)).toHaveAttribute("inert");
+    expect(panel(container)).not.toHaveAttribute("inert");
+    storeMock.openProjectId = null;
   });
 
   it("pops the conversation on Escape", () => {

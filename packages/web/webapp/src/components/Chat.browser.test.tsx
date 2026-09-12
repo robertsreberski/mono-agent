@@ -86,6 +86,8 @@ const chatStore = (
     threads: [selectedThread],
     visibleThreads: [selectedThread],
     selectedAgent,
+    projectsByAgent: {},
+    openProjectById: vi.fn(),
     selectedThread,
     detail,
     selectedAgentId: selectedAgent.sourceId,

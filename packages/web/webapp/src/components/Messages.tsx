@@ -1,3 +1,4 @@
+import { MessageProjectMarkers } from "./project/ProjectIdentity";
 import { isSilentCronData } from "../cron-visibility";
 import {
   ActionBarPrimitive,
@@ -1470,6 +1471,7 @@ function AssistantParts() {
 
 export function UserMessage() {
   return (
+    <>
     <MessagePrimitive.Root className="message message-user">
       <MessageGallery>
         <div className="message-user-content">
@@ -1480,11 +1482,19 @@ export function UserMessage() {
       <LiveInputStatus />
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
+    <MessageProjectMarkers />
+    </>
   );
 }
 
 export function AssistantMessage() {
+  const markerOnly = useAuiState((state) => state.message.content.length === 0
+    && state.message.metadata.custom?.runStatus === "complete"
+    && Array.isArray(state.message.metadata.custom?.projectTransitions)
+    && state.message.metadata.custom.projectTransitions.length > 0);
+  if (markerOnly) return <MessageProjectMarkers />;
   return (
+    <>
     <MessagePrimitive.Root className="message message-assistant">
       <MessageGallery>
         <div className="assistant-content">
@@ -1496,13 +1506,18 @@ export function AssistantMessage() {
         </div>
       </MessageGallery>
     </MessagePrimitive.Root>
+    <MessageProjectMarkers />
+    </>
   );
 }
 
 export function SystemMessage() {
   return (
+    <>
     <MessagePrimitive.Root className="message message-system">
       <MessagePrimitive.Parts components={parts} />
     </MessagePrimitive.Root>
+    <MessageProjectMarkers />
+    </>
   );
 }

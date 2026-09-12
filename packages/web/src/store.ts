@@ -1,3 +1,4 @@
+import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -46,6 +47,9 @@ import {
   type WebCronReplyReceipt,
   type WebCronReplySnapshotKind,
   type WebMessagePage,
+  type WebProject,
+  type WebProjectColor,
+  type WebProjectTransition,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
   type WebActiveThreads,
@@ -68,7 +72,9 @@ import {
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
+import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
+import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
 import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
@@ -80,6 +86,8 @@ interface ThreadPatch {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  /** Present (even as `null`) moves or detaches the conversation's project membership. */
+  readonly projectId?: string | null;
 }
 
 interface AgentRow {
@@ -108,11 +116,39 @@ interface AgentRow {
 export interface CreateStoredThreadInput {
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly projectId?: string;
+}
+
+interface ProjectRow {
+  color: WebProjectColor;
+  id: string;
+  source_id: string;
+  name: string;
+  context: string;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+  revision: number;
+}
+
+export interface CreateStoredProjectInput {
+  readonly color?: WebProjectColor;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context?: string;
+}
+
+export interface PatchStoredProjectInput {
+  readonly color?: WebProjectColor;
+  readonly name?: string;
+  readonly context?: string;
+  readonly archived?: boolean;
 }
 
 interface ThreadRow {
   id: string;
   source_id: string;
+  project_id: string | null;
   title: string;
   title_manual: number;
   archived_at: string | null;
@@ -2652,6 +2688,9 @@ export class WebStore {
     const id = randomUUID();
     const now = this.now();
     this.transaction(() => {
+      const projectId = explicit.projectId === undefined
+        ? null
+        : this.requireProjectForThread(explicit.projectId, sourceId).id;
       const override = this.database.prepare(`
         SELECT model, effort FROM agent_run_overrides WHERE source_id = ?
       `).get(sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
@@ -2659,12 +2698,13 @@ export class WebStore {
       const effort = explicit.effort === undefined ? override?.effort ?? null : explicit.effort;
       this.database.prepare(`
         INSERT INTO threads (
-          id, source_id, conversation_id, title, title_manual, archived_at,
+          id, source_id, project_id, conversation_id, title, title_manual, archived_at,
           created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
-      `).run(id, sourceId, `web:${id}`, now, now, model, effort);
+        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
+      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
+      if (projectId !== null) this.applyProjectMembership(id, null, projectId, now);
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
@@ -2676,23 +2716,29 @@ export class WebStore {
     readonly limit?: number;
     readonly before?: string;
     readonly scope?: WebThreadListScope;
+    readonly projectId?: string;
   }): WebThreadPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const limit = boundedPageLimit(input.limit, WEB_THREAD_PAGE_MAX);
     const scope = input.scope ?? "all";
-    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope);
+    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope, input.projectId);
     const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
     const scopeSql = threadListScopeSql(scope);
+    const projectSql = input.projectId === undefined ? "" : "AND t.project_id = ?";
+    if (input.projectId !== undefined && this.getProjectRow(input.projectId) === undefined) {
+      throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    }
     const beforeSql = cursor === undefined
       ? ""
       : "AND (t.updated_at < ? OR (t.updated_at = ? AND t.id < ?))";
     const values: Array<string | number> = [input.sourceId];
+    if (input.projectId !== undefined) values.push(input.projectId);
     if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     values.push(limit + 1);
     const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${beforeSql}
+      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${beforeSql}
       ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
     `)).all(...values) as unknown as ThreadRow[];
     const hasMore = rows.length > limit;
@@ -2705,6 +2751,7 @@ export class WebStore {
             updatedAt: last.updated_at,
             id: last.id,
             ...(scope === "chats" ? { scope } : {}),
+            ...(input.projectId === undefined ? {} : { project: input.projectId }),
           }) }
         : {}),
     };
@@ -2926,6 +2973,7 @@ export class WebStore {
     return {
       thread,
       messages: page.messages,
+      projectTransitions: page.projectTransitions ?? [],
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
   }
@@ -2984,6 +3032,7 @@ export class WebStore {
     const oldest = pageRows[0];
     return {
       messages: pageRows.map((row) => this.mapMessage(row)),
+      projectTransitions: this.projectTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -3053,6 +3102,16 @@ export class WebStore {
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
+    if (patch.projectId !== undefined && patch.title === undefined && patch.archived === undefined
+      && patch.model === undefined && patch.effort === undefined) {
+      const pending = this.pendingProjectDto(id).pendingProject;
+      if ((pending === undefined && patch.projectId === current.projectId) || (pending !== undefined && patch.projectId === pending.projectId)) return current;
+    }
+    const projectId = patch.projectId === undefined
+      ? undefined
+      : patch.projectId === null
+        ? null
+        : patch.projectId === current.projectId ? current.projectId : this.requireProjectForThread(patch.projectId, current.sourceId).id;
     {
       const sets: string[] = [];
       const values: Array<string | null> = [];
@@ -3072,8 +3131,11 @@ export class WebStore {
         sets.push("run_effort = ?");
         values.push(runEffort);
       }
-      // A model/effort-only patch must not reorder the sidebar, so `updated_at`
-      // only advances when title or archived state actually changes.
+      if (projectId !== undefined) {
+        this.requestProjectMembership(id, current.projectId, projectId, now);
+      }
+      // A model/effort/project-only patch must not reorder the sidebar, so
+      // `updated_at` only advances when title or archived state actually changes.
       if (title !== undefined || archivedAt !== undefined) {
         sets.push("updated_at = ?");
         values.push(now);
@@ -3089,7 +3151,9 @@ export class WebStore {
             ? patch.archived
               ? "archived"
               : "unarchived"
-            : "run_config_changed",
+            : projectId !== undefined
+              ? "project_changed"
+              : "run_config_changed",
         now,
       );
       if (patch.archived === true && this.currentThreadId() === id) {
@@ -3097,6 +3161,314 @@ export class WebStore {
       }
     }
     return { ...this.requireThread(id), sourceId: current.sourceId };
+  }
+
+  /**
+   * One agent's projects, archived included, newest activity first.
+   *
+   * The Dashboard and the conversation picker filter archived out locally;
+   * bootstrap carries the same full set so an agent switch never refetches it.
+   */
+  listProjects(sourceId: string): WebProject[] {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const rows = this.database.prepare(`
+      SELECT * FROM projects WHERE source_id = ? ORDER BY updated_at DESC, id DESC
+    `).all(sourceId) as unknown as ProjectRow[];
+    return rows.map((row) => this.mapProject(row));
+  }
+
+  getProject(id: string): WebProject | undefined {
+    const row = this.getProjectRow(id);
+    return row === undefined ? undefined : this.mapProject(row);
+  }
+
+  createProject(input: CreateStoredProjectInput): WebProject {
+    if (this.getAgent(input.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    const id = randomUUID();
+    const now = this.now();
+    this.database.prepare(`
+      INSERT INTO projects (id, source_id, name, context, created_at, updated_at, archived_at, revision, color)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, 1, ?)
+    `).run(id, input.sourceId, input.name, input.context ?? "", now, now, parseProjectColor(input.color ?? "default"));
+    return this.mapProject(this.requireProject(id));
+  }
+
+  patchProject(id: string, patch: PatchStoredProjectInput): WebProject {
+    this.requireProject(id);
+    const now = this.now();
+    const sets: string[] = [];
+    const values: Array<string | null> = [];
+    if (patch.color !== undefined) {
+      sets.push("color = ?");
+      values.push(parseProjectColor(patch.color));
+    }
+    if (patch.archived === true && this.database.prepare("SELECT 1 FROM pending_project_memberships WHERE project_id = ? LIMIT 1").get(id)) {
+      throw new WebConsoleError("project_busy", "Wait for pending conversation turns before archiving this project.", 409);
+    }
+    if (patch.name !== undefined) {
+      sets.push("name = ?");
+      values.push(patch.name);
+    }
+    if (patch.context !== undefined) {
+      sets.push("context = ?");
+      values.push(patch.context);
+    }
+    if (patch.archived !== undefined) {
+      sets.push("archived_at = ?");
+      values.push(patch.archived ? now : null);
+    }
+    sets.push("updated_at = ?", "revision = revision + 1");
+    values.push(now, id);
+    this.database.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    return this.mapProject(this.requireProject(id));
+  }
+
+  /**
+   * Delete one project and detach its chats back to the agent.
+   *
+   * Returns the detached member ids, oldest activity first, so the caller can
+   * re-emit their summaries. The explicit update (rather than relying on the
+   * `ON DELETE SET NULL` cascade) bumps each member's revision, which is what
+   * lets a console's equal-revision guard accept the detached summaries.
+   */
+  deleteProject(id: string): string[] {
+    this.requireProject(id);
+    const now = this.now();
+    return this.transaction(() => {
+      const members = (this.database.prepare(`
+        SELECT id FROM threads WHERE project_id = ? ORDER BY updated_at ASC, id ASC
+      `).all(id) as Array<{ id: string }>).map((member) => member.id);
+      if (this.database.prepare(`
+        SELECT 1 FROM pending_project_memberships WHERE project_id = ?
+        UNION ALL SELECT 1 FROM turns JOIN threads ON threads.id = turns.thread_id
+        WHERE threads.project_id = ? AND turns.status = 'running' LIMIT 1
+      `).get(id, id)) {
+        throw new WebConsoleError("project_busy", "Wait for active and pending conversation turns before deleting this project.", 409);
+      }
+      for (const memberId of members) {
+        this.applyProjectMembership(memberId, id, null, now);
+        this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(memberId);
+      }
+      for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
+      this.database.prepare("DELETE FROM projects WHERE id = ?").run(id);
+      return members;
+    });
+  }
+
+  /**
+   * The injectable context for one conversation, resolved at dispatch time.
+   *
+   * Undefined when the conversation belongs to no project or its project's
+   * context is empty, so dispatch never prefixes then.
+   */
+  projectContextForThread(threadId: string): { readonly name: string; readonly context: string } | undefined {
+    const active = this.database.prepare("SELECT project_context_json FROM turns WHERE thread_id = ? AND status = 'running'")
+      .get(this.resolveThreadId(threadId)) as { project_context_json: string | null } | undefined;
+    if (active?.project_context_json != null) {
+      try {
+        const snapshot: unknown = JSON.parse(active.project_context_json);
+        if (snapshot === null) return undefined;
+        if (typeof snapshot !== "object" || Array.isArray(snapshot)
+          || !("name" in snapshot) || !("context" in snapshot)
+          || typeof snapshot.name !== "string" || typeof snapshot.context !== "string") throw new Error();
+        return snapshot.context.trim().length === 0 ? undefined : { name: snapshot.name, context: snapshot.context };
+      } catch { throw new WebConsoleError("storage_corrupt", "The active project context snapshot is invalid.", 500); }
+    }
+    const row = this.database.prepare(`
+      SELECT p.name AS name, p.context AS context
+        FROM threads t JOIN projects p ON p.id = t.project_id
+       WHERE t.id = ?
+    `).get(this.resolveThreadId(threadId)) as unknown as { name: string; context: string } | undefined;
+    if (row === undefined || row.context.trim().length === 0) return undefined;
+    return { name: row.name, context: row.context };
+  }
+
+  /**
+   * Commit the operation receipt with its mutations, including create-and-attach.
+   * Read-only tools authenticate and scope the same way but leave no receipt:
+   * a repeated read answers from current state, and a read never writes.
+   */
+  consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
+    if (!/^[a-zA-Z0-9-]{16,128}$/u.test(operation.operationId)) throw new WebConsoleError("invalid_operation", "Invalid operation identity.", 400);
+    const readOnly = CONSOLE_READ_TOOL_NAMES.has(operation.tool);
+    const canonicalArgs = Object.fromEntries(Object.entries(operation.args).sort(([a], [b]) => a.localeCompare(b)));
+    const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs })).digest("hex");
+    return this.transaction(() => {
+      const origin = this.requireThread(scope.threadId);
+      if (origin.sourceId !== scope.sourceId || origin.trigger !== undefined || origin.archivedAt !== null
+        || this.activeTurn(scope.threadId)?.id !== scope.turnId) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+      if (readOnly) return executeConsoleTool(this, scope, operation);
+      const prior = this.database.prepare("SELECT payload_sha256, result_json FROM console_tool_operations WHERE operation_id = ?")
+        .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
+      if (prior !== undefined) {
+        if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
+        return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [] };
+      }
+      const commit = executeConsoleTool(this, scope, operation);
+      this.database.prepare("INSERT INTO console_tool_operations(operation_id, thread_id, turn_id, payload_sha256, result_json) VALUES (?, ?, ?, ?, ?)")
+        .run(operation.operationId, scope.threadId, scope.turnId, hash, JSON.stringify(commit.result));
+      return commit;
+    });
+  }
+
+  private pendingProjectDto(threadId: string): Pick<WebThread, "pendingProject"> {
+    const row = this.database.prepare("SELECT project_id, turn_id FROM pending_project_memberships WHERE thread_id = ?")
+      .get(threadId) as { project_id: string | null; turn_id: string } | undefined;
+    return row === undefined ? {} : { pendingProject: { projectId: row.project_id, turnId: row.turn_id } };
+  }
+
+  private requestProjectMembership(threadId: string, before: string | null, after: string | null, now: string): void {
+    const active = this.database.prepare("SELECT id FROM turns WHERE thread_id = ? AND status = 'running'")
+      .get(threadId) as { id: string } | undefined;
+    if (before === after || active === undefined) {
+      this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
+      if (before !== after) this.applyProjectMembership(threadId, before, after, now);
+      return;
+    }
+    this.database.prepare(`INSERT INTO pending_project_memberships(thread_id, project_id, turn_id) VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET project_id = excluded.project_id, turn_id = excluded.turn_id`)
+      .run(threadId, after, active.id);
+  }
+
+  private applyPendingProjectMembership(threadId: string, now: string, turnId?: string): void {
+    const pending = this.pendingProjectDto(threadId).pendingProject;
+    if (pending === undefined || (turnId !== undefined && pending.turnId !== turnId)) return;
+    if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId)) return;
+    const before = this.requireThread(threadId).projectId;
+    this.applyProjectMembership(threadId, before, pending.projectId, now, pending.turnId);
+    this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
+  }
+
+  private applyProjectMembership(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+    if (before === after) return;
+    this.recordProjectTransition(threadId, before, after, now, turnId);
+    this.database.prepare("UPDATE threads SET project_id = ? WHERE id = ?").run(after, threadId);
+    for (const id of [before, after]) if (id !== null) {
+      this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(id);
+    }
+  }
+
+  private recordProjectTransition(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+    const identity = (id: string | null): WebProjectTransition["before"] => {
+      if (id === null) return null;
+      const project = this.requireProject(id);
+      return { id, name: project.name, color: project.color };
+    };
+    const anchor = turnId === undefined
+      ? this.database.prepare(`SELECT messages.id, messages.turn_id FROM messages
+          LEFT JOIN turns ON turns.id = messages.turn_id
+          WHERE messages.thread_id = ? AND (turns.status IS NULL OR turns.status <> 'running')
+            AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
+          ORDER BY messages.rowid DESC LIMIT 1`).get(threadId) as { id: string; turn_id: string | null } | undefined
+      : { id: this.requireTurn(turnId).assistant_message_id, turn_id: turnId };
+    this.database.prepare(`INSERT INTO project_transitions
+      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(threadId, anchor?.id ?? null, anchor?.turn_id ?? null, JSON.stringify(identity(before)), JSON.stringify(identity(after)), now);
+  }
+
+  /** Keep causal turn groups ordered when the wall clock ties or moves backwards. */
+  private projectTurnAdmissionTime(threadId: string): string {
+    const now = this.now();
+    const previous = this.database.prepare("SELECT MAX(started_at) AS latest FROM turns WHERE thread_id = ?")
+      .get(threadId) as { latest: string | null };
+    return previous.latest !== null && previous.latest >= now
+      ? new Date(Date.parse(previous.latest) + 1).toISOString() : now;
+  }
+
+  /** Internal context snapshot; JSON null explicitly freezes absence of membership. */
+  private captureProjectContext(turnId: string, threadId: string): void {
+    const row = this.database.prepare(`SELECT p.name, p.context FROM projects p JOIN threads t ON t.project_id = p.id WHERE t.id = ?`)
+      .get(threadId) as { name: string; context: string } | undefined;
+    this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify(row ?? null), turnId);
+  }
+
+  projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
+    return (this.database.prepare(`SELECT * FROM project_transitions WHERE thread_id = ?
+        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
+      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
+        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
+        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
+      }));
+  }
+
+  private getProjectRow(id: string): ProjectRow | undefined {
+    return this.database.prepare("SELECT * FROM projects WHERE id = ?").get(id) as unknown as ProjectRow | undefined;
+  }
+
+  private requireProject(id: string): ProjectRow {
+    const row = this.getProjectRow(id);
+    if (row === undefined) throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    return row;
+  }
+
+  /**
+   * Resolve a membership destination: the project exists, belongs to the
+   * conversation's agent, and is not archived.
+   */
+  private requireProjectForThread(projectId: string, sourceId: string): ProjectRow {
+    const project = this.requireProject(projectId);
+    if (project.source_id !== sourceId) {
+      throw new WebConsoleError("project_agent_mismatch", "The project belongs to a different agent.", 409);
+    }
+    if (project.archived_at !== null) {
+      throw new WebConsoleError("project_archived", "Unarchive the project before adding conversations to it.", 409);
+    }
+    return project;
+  }
+
+  private mapProject(row: ProjectRow): WebProject {
+    const memberIds = (this.database.prepare(`
+      SELECT id FROM threads WHERE project_id = ? AND archived_at IS NULL
+    `).all(row.id) as Array<{ id: string }>).map((member) => member.id);
+    const runningCount = memberIds.length === 0
+      ? 0
+      : (this.database.prepare(`
+          SELECT COUNT(DISTINCT thread_id) AS count FROM turns
+          WHERE thread_id IN (SELECT value FROM json_each(?)) AND status = 'running'
+        `).get(JSON.stringify(memberIds)) as unknown as { count: number }).count;
+    const monthUsd = this.projectMonthUsd(memberIds, this.now());
+    return {
+      id: row.id,
+      sourceId: row.source_id,
+      name: row.name,
+      context: row.context,
+      color: row.color,
+      archivedAt: row.archived_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      revision: row.revision,
+      conversationCount: memberIds.length,
+      runningCount,
+      ...(monthUsd === undefined ? {} : { monthUsd }),
+    };
+  }
+
+  /**
+   * This UTC calendar month's recognised priced usage over a project's current
+   * non-archived members.
+   *
+   * One bounded indexed query (member threads by month range); the per-message
+   * latest-observation rule is the shared {@link latestMessageCostUsd}, so a
+   * project month always agrees with the conversation costs inside it.
+   * Recomputed when summaries are read, never per token.
+   */
+  private projectMonthUsd(memberIds: readonly string[], now: string): number | undefined {
+    if (memberIds.length === 0) return undefined;
+    const started = new Date(now);
+    if (Number.isNaN(started.getTime())) return undefined;
+    const monthStart = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth(), 1)).toISOString();
+    const monthEnd = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth() + 1, 1)).toISOString();
+    const rows = this.database.prepare(`
+      SELECT m.parts_json AS parts_json
+        FROM messages m
+       WHERE m.thread_id IN (SELECT value FROM json_each(?))
+         AND m.created_at >= ? AND m.created_at < ?
+    `).all(JSON.stringify(memberIds), monthStart, monthEnd) as Array<{ parts_json: string }>;
+    return sumMessageCosts(rows.map((member) => latestMessageCostUsd(parseParts(member.parts_json))));
   }
 
   /** Whether the current interactive thread still accepts agent-proposed titles. */
@@ -3422,8 +3794,9 @@ export class WebStore {
     const turnId = randomUUID();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -3472,6 +3845,7 @@ export class WebStore {
             updated_at = ?, revision = revision + 1
         WHERE id = ?
       `).run(title, now, threadId);
+      this.captureProjectContext(turnId, threadId);
       this.recordThreadRevision(threadId, "turn_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -3522,7 +3896,7 @@ export class WebStore {
     }
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
     if (input.processJobWake !== undefined) {
       const card = this.database.prepare(`
         SELECT 1 FROM process_job_cards AS cards
@@ -3542,6 +3916,7 @@ export class WebStore {
       ? []
       : [{ type: "process-job-wake", ...input.processJobWake }];
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -3568,6 +3943,7 @@ export class WebStore {
       this.database.prepare(
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
+      this.captureProjectContext(turnId, threadId);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -3831,9 +4207,10 @@ export class WebStore {
     if (!thread.canSend || thread.archivedAt !== null) return undefined;
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
     const userMessage = this.requireMessage(row.message_id);
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -3853,6 +4230,7 @@ export class WebStore {
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(row.id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
+      this.captureProjectContext(turnId, threadId);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {
@@ -4512,9 +4890,24 @@ export class WebStore {
         updated_at TEXT NOT NULL,
         CHECK (model IS NOT NULL OR effort IS NOT NULL)
       );
+      CREATE TABLE IF NOT EXISTS projects (
+        color TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose')),
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        context TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        archived_at TEXT,
+        revision INTEGER NOT NULL DEFAULT 1
+      );
+      -- v26 conversation-projects creates projects_by_source and
+      -- threads_by_project: the membership column does not exist on legacy
+      -- layouts until that step adds it, so bootstrap must not index it first.
       CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id),
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
         conversation_id TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         title_manual INTEGER NOT NULL DEFAULT 0,
@@ -5354,6 +5747,7 @@ export class WebStore {
     const delta = this.writeMessageDelta(existing, parts, now, { status });
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
+    this.applyPendingProjectMembership(turn.thread_id, now, turnId);
     this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
     const recentEnoughForRecoveredInterruption = status !== "interrupted"
       || new Date(now).getTime() - new Date(existing.updatedAt).getTime() <= 60 * 60 * 1_000;
@@ -5425,12 +5819,18 @@ export class WebStore {
     const runStates = this.latestRunStates(ids);
     const previews = this.lastMessagePreviews(ids);
     const jobActivities = this.jobActivities(ids);
+    const pending = new Map((this.database.prepare(`SELECT thread_id, project_id, turn_id FROM pending_project_memberships
+      WHERE thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
+        thread_id: string; project_id: string | null; turn_id: string;
+      }>).map((row) => [row.thread_id, { projectId: row.project_id, turnId: row.turn_id }]));
     return rows.map((row) => {
       const preview = previews.get(row.id);
       const jobActivity = jobActivities.get(row.id);
       return {
         id: row.id,
         sourceId: row.source_id,
+        projectId: row.project_id,
+        ...(pending.has(row.id) ? { pendingProject: pending.get(row.id)! } : {}),
         title: row.title,
         archivedAt: row.archived_at,
         createdAt: row.created_at,
@@ -6318,7 +6718,7 @@ function priorOutcomeCandidateSql(): string {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.project_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
@@ -6702,10 +7102,14 @@ function threadListScopeSql(scope: WebThreadListScope): string {
 function decodeThreadCursor(
   value: string,
   scope: WebThreadListScope,
+  projectId?: string,
 ): { readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
   if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string"
-    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)) {
+    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)
+    // A filtered page binds its project: a cursor minted for another project
+    // -- or for the unfiltered bucket -- must not walk this one.
+    || (projectId === undefined ? cursor.project !== undefined : cursor.project !== projectId)) {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return { updatedAt: cursor.updatedAt, id: cursor.id };

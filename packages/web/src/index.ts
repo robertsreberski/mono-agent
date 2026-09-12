@@ -18,7 +18,7 @@ export {
 } from "./state-paths.js";
 export type { WebStatePathOptions, WebStatePaths } from "./state-paths.js";
 
-export { deliverWebNotification } from "./notification-client.js";
+export { deliverWebNotification, createWebConsoleToolClient } from "./notification-client.js";
 export type {
   DeliverWebNotificationInput,
   DeliverWebNotificationOptions,
@@ -62,6 +62,8 @@ export {
   WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES,
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
+  WEB_MAX_PROJECT_CONTEXT_CHARACTERS,
+  WEB_MAX_PROJECT_NAME_CHARACTERS,
   WEB_MAX_STAGED_UPLOAD_BYTES,
   WEB_MAX_STAGED_UPLOADS,
   WEB_MAX_QUEUED_ATTACHMENT_TURNS,
@@ -74,9 +76,11 @@ export type {
   AcpBridgeSourceDescriptor,
   AcpBridgeSourceHealth,
   CreateWebCronReplyInput,
+  CreateWebProjectInput,
   CreateWebThreadInput,
   CreateWebUploadInput,
   PatchWebAgentInput,
+  PatchWebProjectInput,
   PatchWebThreadInput,
   PutWebAgentRunSettingsInput,
   StartWebLiveInputInput,
@@ -104,6 +108,10 @@ export type {
   WebMessagePart,
   WebMessageStatus,
   WebModelOption,
+  WebProject,
+  WebProjectColor,
+  WebProjectTransition,
+  WebProjectChangedPayload,
   WebNotificationTriggerKind,
   WebThreadNotificationTriggerKind,
   WebPushBootstrap,
@@ -141,3 +149,5 @@ export {
 } from "./store.js";
 
 export { WebConsoleError } from "./errors.js";
+
+export type { ConsoleToolScope, ConsoleToolOperation, ConsoleToolName } from "./console-tools.js";

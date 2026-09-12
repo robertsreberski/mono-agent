@@ -266,3 +266,46 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     ? value as Record<string, unknown>
     : undefined;
 }
+
+/** App-owned callback client. Discovery and credentials stay inside this closure. */
+export async function createWebConsoleToolClient(
+  scope: import("./console-tools.js").ConsoleToolScope,
+  options: DeliverWebNotificationOptions = {},
+): Promise<(operation: import("./console-tools.js").ConsoleToolOperation) => Promise<Record<string, unknown>>> {
+  const ingress = await readIngressRecord(resolveWebStatePaths(options).notificationIngress);
+  const endpoint = new URL("/internal/v1/console-tools", ingress.url).href;
+  const request = async (token: string, body: unknown): Promise<Record<string, unknown>> => {
+    let response: Response;
+    try {
+      response = await (options.fetchImpl ?? fetch)(endpoint, {
+        method: "POST", redirect: "error", signal: AbortSignal.timeout(options.timeoutMs ?? 5000),
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+    } catch {
+      throw new WebConsoleError("console_tool_delivery_unknown", "Console delivery is unknown. Do not automatically retry this operation.", 502);
+    }
+    let parsed: Record<string, unknown> | undefined;
+    try { parsed = asRecord(JSON.parse(await readBoundedResponse(response))); } catch {
+      throw new WebConsoleError("console_tool_delivery_unknown", "Console response is unavailable. Do not automatically retry this operation.", 502);
+    }
+    if (!response.ok) {
+      const error = asRecord(parsed?.error);
+      const code = typeof error?.code === "string" && /^[a-z_]{1,64}$/u.test(error.code) ? error.code : "console_tool_failed";
+      // The callback emits controlled validation messages only; never reflect an arbitrary server body.
+      throw new WebConsoleError(code, code === "project_busy" ? "Wait for current conversation turns before deleting or archiving this project." : "The console refused this operation.", response.status);
+    }
+    if (parsed === undefined) throw new WebConsoleError("console_tool_delivery_unknown", "Invalid console response; do not retry automatically.", 502);
+    return parsed;
+  };
+  const issued = await request(ingress.token, scope);
+  if (typeof issued.capability !== "string" || !/^[a-zA-Z0-9_-]{40,128}$/u.test(issued.capability)) {
+    throw new WebConsoleError("console_tool_unavailable", "Console capability unavailable.", 503);
+  }
+  const capability = issued.capability;
+  return async (operation) => {
+    const response = await request(capability, operation);
+    const result = asRecord(response.result);
+    if (result === undefined) throw new WebConsoleError("console_tool_delivery_unknown", "Invalid console result; do not retry automatically.", 502);
+    return result;
+  };
+}

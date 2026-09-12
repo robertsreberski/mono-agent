@@ -1,3 +1,4 @@
+import type { ConsoleToolScope, ConsoleToolOperation } from "./console-tools.js";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 
@@ -40,11 +41,15 @@ import {
   WEB_MAX_QUEUED_ATTACHMENT_TURNS,
   WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
+  WEB_MAX_PROJECT_CONTEXT_CHARACTERS,
+  WEB_MAX_PROJECT_NAME_CHARACTERS,
   WEB_STAGED_UPLOAD_TTL_MS,
   type CreateWebUploadInput,
   type CreateWebCronReplyInput,
+  type CreateWebProjectInput,
   type CreateWebThreadInput,
   type PatchWebAgentInput,
+  type PatchWebProjectInput,
   type PatchWebThreadInput,
   type PutWebAgentRunSettingsInput,
   type StartWebTurnInput,
@@ -72,6 +77,8 @@ import {
   type WebModelOption,
   type WebThreadNotificationTriggerKind,
   type WebSkillRegistry,
+  type WebProject,
+  type WebProjectChangedPayload,
   type WebThread,
   type WebThreadChangedPayload,
   type WebThreadDetail,
@@ -92,6 +99,7 @@ import {
 } from "./discovery.js";
 import { conversationTitleFromFrame } from "./conversation-title.js";
 import { parseCronReplyContext } from "./cron-reply-context.js";
+import { withProjectContext, type ProjectContextSource } from "./project-context.js";
 import {
   advertisedEffortLevels,
   effectiveModelForAgent,
@@ -790,6 +798,10 @@ export class WebService {
         limit: scope.limit ?? WEB_THREAD_PAGE_DEFAULT,
         ...(scope.scope === undefined ? {} : { scope: scope.scope }),
       });
+    // The resolved agent's projects, archived included: the Dashboard and the
+    // conversation picker filter archived out locally.
+    const projectsSourceId = threadsSourceId;
+    const projects = projectsSourceId === null ? [] : this.store.listProjects(projectsSourceId);
     return {
       version: WEB_API_VERSION,
       push: {
@@ -801,6 +813,8 @@ export class WebService {
       threads: page.threads,
       threadsSourceId,
       threadsNextCursor: page.nextCursor ?? null,
+      projects,
+      projectsSourceId,
       activeThreads,
       ...(discoveredCurrentThreadId === undefined ? {} : { currentThreadId: discoveredCurrentThreadId }),
       limits: {
@@ -893,7 +907,87 @@ export class WebService {
     );
     const thread = this.store.createThread(sourceId, input);
     this.emitThread("threads.changed", { thread });
+    this.refreshMemberProject(thread);
     return thread;
+  }
+
+  /**
+   * One agent's projects, archived included.
+   *
+   * Unknown agents 404 from the store, like the conversation listing.
+   */
+  private readonly consoleToolTurns = new Set<string>();
+
+  assertConsoleToolTurn(scope: ConsoleToolScope): void {
+    const thread = this.store.getThread(scope.threadId);
+    const active = this.activeTurns.get(scope.threadId);
+    if (this.stopped || !this.consoleToolTurns.has(scope.turnId) || active?.turnId !== scope.turnId
+      || active.controller.signal.aborted || thread?.sourceId !== scope.sourceId || thread.archivedAt !== null
+      || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId) {
+      throw new WebConsoleError("console_tool_revoked", "The originating interactive turn is no longer writable.", 403);
+    }
+  }
+
+  consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): Record<string, unknown> {
+    this.assertConsoleToolTurn(scope);
+    const commit = this.store.consoleToolOperation(scope, operation);
+    for (const id of commit.threads) {
+      const thread = this.store.getThread(id);
+      if (thread !== undefined) {
+        this.emitThread("thread.changed", { thread });
+        this.emitThread("threads.changed", { thread });
+      }
+    }
+    for (const id of commit.projects) this.refreshProject(id);
+    for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true });
+    return commit.result;
+  }
+
+  projects(sourceId: string): WebProject[] {
+    return this.store.listProjects(sourceId);
+  }
+
+  createProject(input: CreateWebProjectInput): WebProject {
+    const project = this.store.createProject({
+      sourceId: input.sourceId,
+      name: input.name.trim(),
+      context: input.context ?? "",
+      ...(input.color === undefined ? {} : { color: input.color }),
+    });
+    this.emitProject({ project });
+    return project;
+  }
+
+  patchProject(id: string, patch: PatchWebProjectInput): WebProject {
+    if (patch.name === undefined && patch.context === undefined && patch.archived === undefined && patch.color === undefined) {
+      throw new WebConsoleError("invalid_project", "Provide name, context, color, or archived.", 400);
+    }
+    const project = this.store.patchProject(id, {
+      ...(patch.name === undefined ? {} : { name: patch.name.trim() }),
+      ...(patch.context === undefined ? {} : { context: patch.context }),
+      ...(patch.color === undefined ? {} : { color: patch.color }),
+      ...(patch.archived === undefined ? {} : { archived: patch.archived }),
+    });
+    this.emitProject({ project });
+    return project;
+  }
+
+  /**
+   * Delete one project and detach its chats back to the agent.
+   *
+   * Detached summaries go out first -- with their bumped revisions -- so a
+   * console applies them before the removal tells it the project is gone and
+   * its member page must close.
+   */
+  deleteProject(id: string): void {
+    const members = this.store.deleteProject(id);
+    for (const memberId of members) {
+      const thread = this.store.getThread(memberId);
+      if (thread === undefined) continue;
+      this.emitThread("thread.changed", { thread });
+      this.emitThread("threads.changed", { thread });
+    }
+    this.emitProject({ projectId: id, removed: true });
   }
 
   thread(id: string, options: WebTranscriptShape = {}): WebThreadDetail {
@@ -908,6 +1002,7 @@ export class WebService {
     readonly limit?: number;
     readonly before?: string;
     readonly scope?: WebThreadListScope;
+    readonly projectId?: string;
   }): WebThreadPage {
     return this.store.listThreadsPage(input);
   }
@@ -1234,6 +1329,9 @@ export class WebService {
   }
 
   patchThread(id: string, patch: PatchWebThreadInput): WebThread {
+    if (patch.projectId !== undefined && patch.ifRunConfigUnset === true) {
+      throw new WebConsoleError("invalid_request", "projectId cannot be combined with ifRunConfigUnset.", 400);
+    }
     if (patch.ifRunConfigUnset === true) {
       // Compare-and-set for the console's one-time adoption of a browser-local
       // override. Whoever set an override first keeps it; the loser adopts what
@@ -1250,15 +1348,23 @@ export class WebService {
       this.emitThread("threads.changed", { thread: result.thread });
       return result.thread;
     }
+    const before = this.store.getThread(id);
     const thread = this.store.patchThread(id, patch);
     this.emitThread("thread.changed", { thread });
     this.emitThread("threads.changed", { thread });
+    if (before?.projectId !== thread.projectId || before?.archivedAt !== thread.archivedAt) {
+      if (before?.projectId !== undefined && before.projectId !== null && before.projectId !== thread.projectId) {
+        this.refreshProject(before.projectId);
+      }
+      this.refreshMemberProject(thread);
+    }
     return thread;
   }
 
   async deleteThread(id: string, options: { readonly emptyOnly?: boolean } = {}): Promise<void> {
     const resolved = this.store.getThread(id)?.id;
     if (resolved === undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    const projectId = this.store.getThread(resolved)?.projectId ?? null;
     if (this.activeTurns.has(resolved)) {
       throw new WebConsoleError("turn_active", "Cancel the active turn before deleting this conversation.", 409);
     }
@@ -1271,6 +1377,7 @@ export class WebService {
     }
     this.emitThread("thread.changed", { threadId: resolved, removed: true });
     this.emitThread("threads.changed", { threadId: resolved, removed: true });
+    if (projectId !== null) this.refreshProject(projectId);
   }
 
   patchAgent(sourceId: string, patch: PatchWebAgentInput): WebAgentSummary {
@@ -1783,7 +1890,10 @@ export class WebService {
 
   async startTurn(threadId: string, input: StartWebTurnInput): Promise<{ readonly thread: WebThread; readonly turn: WebThread["runState"] }> {
     const text = input.text ?? "";
-    const operatorText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
+    const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
+    // The 200 000-char bound covers prefix, quote and text together, checked
+    // before anything is written. The stored user row keeps the raw text.
+    const operatorText = this.withProjectPrefix(threadId, quotedText);
     assertTurnTextWithinLimit(operatorText);
     const attachmentIds = input.attachmentIds ?? [];
     const selection = this.resolveTurnSelection(threadId, input.model, input.effort);
@@ -1815,6 +1925,7 @@ export class WebService {
     });
     this.emit("turn.changed", threadId, { turn: started.thread.runState });
     this.emitThread("threads.changed", { thread: started.thread });
+    this.refreshMemberProject(started.thread);
     return { thread: started.thread, turn: started.thread.runState };
   }
 
@@ -1825,7 +1936,10 @@ export class WebService {
     threadId = thread.id;
     const text = input.text ?? "";
     const attachmentIds = input.attachmentIds ?? [];
-    const operatorText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
+    const quotedText = input.quote === undefined ? text : formatQuotedTurn(input.quote.text, text);
+    // Composed (prefix included) for the limit preflight and the operator wire;
+    // the stored queue text and submission hash stay unprefixed.
+    const operatorText = this.withProjectPrefix(threadId, quotedText);
     const payloadSha256 = createHash("sha256").update(JSON.stringify({
       text,
       quote: input.quote ?? null,
@@ -1860,7 +1974,7 @@ export class WebService {
           return { outcome: "rejected", reason: "active_attachments_unsupported" };
         }
         if (activeTurnId !== undefined) {
-          reserved = this.store.reserveLiveInput(threadId, text, input.quote, operatorText);
+          reserved = this.store.reserveLiveInput(threadId, text, input.quote, quotedText);
           if (!connection.info.supportsLiveInputTargeting || !ownsActiveTarget) {
             const reason = connection.info.supportsLiveInputTargeting
               ? "closed_before_dispatch"
@@ -1909,6 +2023,7 @@ export class WebService {
       this.emit("message.changed", threadId, { messageId: started.userMessageId, updatedAt: started.thread.updatedAt });
       this.emit("turn.changed", threadId, { turn: started.thread.runState });
       this.emitThread("threads.changed", { thread: started.thread });
+      this.refreshMemberProject(started.thread);
     } else if (claimed.created && reserved !== undefined) {
       this.emit("message.changed", threadId, { messageId: reserved.message.id, updatedAt: reserved.message.updatedAt });
       this.emitThread("threads.changed", { thread: reserved.thread });
@@ -1942,6 +2057,16 @@ export class WebService {
 
     if (!reserved.offered || active === undefined || connection === undefined || !connection.info.supportsLiveInput) {
       const queued = reserved.offered ? this.store.queueLiveInput(reserved.input.id) ?? reserved.message : reserved.message;
+      this.emit("message.changed", threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
+      void this.drainQueuedLiveInputs(threadId);
+      return { message: queued, disposition: "queued" };
+    }
+
+    // The project prefix is composed at dispatch, so the queued text above
+    // stays unprefixed. Never truncate it silently: an oversized composition
+    // becomes a normal queued follow-up instead.
+    if (this.withProjectPrefix(threadId, reserved.input.text).length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+      const queued = this.store.queueLiveInput(reserved.input.id) ?? reserved.message;
       this.emit("message.changed", threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
       void this.drainQueuedLiveInputs(threadId);
       return { message: queued, disposition: "queued" };
@@ -1982,6 +2107,7 @@ export class WebService {
     const active = this.activeTurns.get(threadId);
     const stored = this.store.activeTurn(threadId);
     if (stored === undefined) throw new WebConsoleError("no_active_turn", "This conversation has no active turn.", 409);
+    this.consoleToolTurns.delete(stored.id);
     const reason = createChannelUserCancelReason("Web");
     const liveInputs = [...this.activeLiveInputs.entries()]
       .filter(([, input]) => input.threadId === threadId);
@@ -2175,6 +2301,8 @@ export class WebService {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
       };
+      const consoleTools = hostWakeDeliveryKey === undefined && started.thread.trigger === undefined;
+      if (consoleTools) this.consoleToolTurns.add(started.turnId);
       const response = await client.turn({
         conversationId: started.conversationId,
         text: operatorText,
@@ -2185,6 +2313,7 @@ export class WebService {
             threadId: started.thread.id,
             turnId: started.turnId,
             ...modelMetadata,
+            ...(consoleTools ? { consoleProjects: { schema: 1 } } : {}),
             ...(hostWakeDeliveryKey === undefined && this.store.canApplyAgentTitle(started.thread.id)
               ? { conversationTitle: { schema: 1, writable: true } }
               : {}),
@@ -2217,6 +2346,8 @@ export class WebService {
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emitThread("thread.changed", { thread: detail.thread });
       this.emitThread("threads.changed", { thread: detail.thread });
+      this.refreshMemberProject(detail.thread);
+      if (started.thread.projectId !== null && started.thread.projectId !== detail.thread.projectId) this.refreshProject(started.thread.projectId);
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
       // Detached: the turn is already finished and reported, and keeping a copy
       // must neither delay nor fail it. The agent is still connected here, which
@@ -2242,8 +2373,11 @@ export class WebService {
       this.emit("turn.changed", started.thread.id, { turn: detail.thread.runState });
       this.emitThread("thread.changed", { thread: detail.thread });
       this.emitThread("threads.changed", { thread: detail.thread });
+      this.refreshMemberProject(detail.thread);
+      if (started.thread.projectId !== null && started.thread.projectId !== detail.thread.projectId) this.refreshProject(started.thread.projectId);
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
     } finally {
+      this.consoleToolTurns.delete(started.turnId);
       releaseAttachmentBudget?.();
       coalescer.close();
     }
@@ -2324,7 +2458,18 @@ export class WebService {
       return;
     }
     const input = this.store.storedLiveInput(submission.inputId);
-    if (input === undefined || !this.store.markLiveInputDispatchStarted(submission.inputId, submission.turnId)) return;
+    if (input === undefined) return;
+    // Composed size is tested before the dispatch marker moves: an oversized
+    // project prefix must queue a normal follow-up, never truncate.
+    if (this.withProjectPrefix(submission.threadId, input.text).length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+      const queued = this.store.queueLiveInput(submission.inputId, "operator_too_large");
+      if (queued !== undefined) {
+        this.emit("message.changed", submission.threadId, { messageId: queued.id, updatedAt: queued.updatedAt });
+        void this.drainQueuedLiveInputs(submission.threadId);
+      }
+      return;
+    }
+    if (!this.store.markLiveInputDispatchStarted(submission.inputId, submission.turnId)) return;
     const controller = new AbortController();
     const completion = this.deliverLiveInput(
       submission.inputId,
@@ -2352,7 +2497,13 @@ export class WebService {
     let queued = false;
     let changedMessage: ReturnType<WebStore["markLiveInputApplied"]>;
     try {
-      const result = await client.liveInput({ ...input, signal: controller.signal });
+      // The stored text stays unprefixed; the prefix is resolved anew here, at
+      // dispatch, so a context edited while the input waited still applies.
+      const result = await client.liveInput({
+        ...input,
+        text: this.withProjectPrefix(threadId, input.text),
+        signal: controller.signal,
+      });
       if (result.status === "applied") {
         changedMessage = this.store.markLiveInputApplied(id);
       } else if (result.status === "discarded") {
@@ -2392,30 +2543,63 @@ export class WebService {
       || this.drainingLiveInputThreads.has(threadId)) return;
     this.drainingLiveInputThreads.add(threadId);
     try {
-      const thread = this.store.getThread(threadId);
-      if (thread === undefined || thread.archivedAt !== null || !thread.canSend) return;
-      const connection = this.connections.get(thread.sourceId);
-      if (connection === undefined) return;
-      const started = this.store.promoteNextQueuedLiveInput(threadId);
-      if (started === undefined) return;
-      this.launchTurn(started, connection.client, started.text);
-      // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
-      // message (its live-input status becomes "applied") as well as opening
-      // the assistant row, and a console that heard only about the second was
-      // left showing a steer that still reads "queued".
-      this.emit("message.changed", threadId, {
-        messageId: started.userMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("message.changed", threadId, {
-        messageId: started.assistantMessageId,
-        updatedAt: started.thread.updatedAt,
-      });
-      this.emit("turn.changed", threadId, { turn: started.thread.runState });
-      this.emitThread("threads.changed", { thread: started.thread });
+      for (;;) {
+        const thread = this.store.getThread(threadId);
+        if (thread === undefined || thread.archivedAt !== null || !thread.canSend) return;
+        const connection = this.connections.get(thread.sourceId);
+        if (connection === undefined) return;
+        const started = this.store.promoteNextQueuedLiveInput(threadId);
+        if (started === undefined) return;
+        // Resolved anew: the queued text was stored unprefixed, and the
+        // membership or context may have changed while it waited.
+        const operatorText = this.withProjectPrefix(threadId, started.text);
+        if (operatorText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+          // Never dispatch an over-limit turn, and never throw into the void
+          // drain: the promoted turn settles on the launch-failure path, which
+          // consumes this head so the next queued input still drains.
+          this.failTurnBeforeDispatch(threadId, started.turnId, operatorText.length);
+          continue;
+        }
+        this.launchTurn(started, connection.client, operatorText);
+        // BOTH rows. `promoteNextQueuedLiveInput` rewrites the queued operator
+        // message (its live-input status becomes "applied") as well as opening
+        // the assistant row, and a console that heard only about the second was
+        // left showing a steer that still reads "queued".
+        this.emit("message.changed", threadId, {
+          messageId: started.userMessageId,
+          updatedAt: started.thread.updatedAt,
+        });
+        this.emit("message.changed", threadId, {
+          messageId: started.assistantMessageId,
+          updatedAt: started.thread.updatedAt,
+        });
+        this.emit("turn.changed", threadId, { turn: started.thread.runState });
+        this.emitThread("threads.changed", { thread: started.thread });
+        this.refreshMemberProject(started.thread);
+        return;
+      }
     } finally {
       this.drainingLiveInputThreads.delete(threadId);
     }
+  }
+
+  /**
+   * Settle a promoted turn that can never be dispatched, on the same path a
+   * launch failure takes: no operator call, no active turn, a visible failed
+   * turn naming the bound that stopped it.
+   */
+  private failTurnBeforeDispatch(threadId: string, turnId: string, composedLength: number): void {
+    const detail = this.store.failTurn(turnId, {
+      message: `The message is too large to send with this project's context `
+        + `(${String(composedLength)} of at most ${String(WEB_MAX_TURN_TEXT_CHARACTERS)} characters).`,
+      code: "operator_too_large",
+    });
+    this.emitMessageWrite(threadId, detail.write);
+    this.emit("turn.changed", threadId, { turn: detail.thread.runState });
+    this.emitThread("thread.changed", { thread: detail.thread });
+    this.emitThread("threads.changed", { thread: detail.thread });
+    this.refreshMemberProject(detail.thread);
+    this.announcePushEvent(`turn:${turnId}:terminal`);
   }
 
   private async deliverProcessJobWake(
@@ -2456,13 +2640,18 @@ export class WebService {
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
       const active = this.activeTurns.get(input.threadId);
-      if (active !== undefined && connection.info.supportsLiveInput) {
+      // The wake text is steered operator-facing with the member prefix; an
+      // oversized composition skips steering and falls through to the normal
+      // follow-up below instead of truncating.
+      const steeredText = this.withProjectPrefix(input.threadId, input.wakePrompt);
+      if (active !== undefined && connection.info.supportsLiveInput
+        && steeredText.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         try {
           this.store.associateProcessJobWakeTurn(input.deliveryKey, active.turnId);
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`,
             id: input.deliveryKey,
-            text: input.wakePrompt,
+            text: steeredText,
             receivedAt: new Date().toISOString(),
             deliveryKey: input.deliveryKey,
             signal: AbortSignal.timeout(10 * 60 * 1_000),
@@ -2557,6 +2746,19 @@ export class WebService {
         });
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
+      // Bounded before any turn exists: an over-limit composition fails the
+      // delivery the way an unstartable follow-up does, without an operator
+      // call. Abandoned rather than held, so a later redelivery with a smaller
+      // composition can still proceed.
+      const followUpText = this.withProjectPrefix(input.threadId, input.wakePrompt);
+      if (followUpText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+        this.store.abandonProcessJobWake({
+          sourceId: input.sourceId,
+          jobId: input.processJob.jobId,
+          deliveryKey: input.deliveryKey,
+        });
+        return { delivered: false, code: "process_job_wake_failed", retryable: false };
+      }
       let started;
       try {
         const selection = this.resolveTurnSelection(input.threadId);
@@ -2588,7 +2790,7 @@ export class WebService {
       const { completion, admitted } = this.launchTurn(
         started,
         refreshedConnection.client,
-        input.wakePrompt,
+        followUpText,
         input.deliveryKey,
       );
       // Receipt ownership moves to the durable turn below. The turn remains
@@ -2616,6 +2818,7 @@ export class WebService {
       });
       this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
       this.emitThread("threads.changed", { thread: started.thread });
+      this.refreshMemberProject(started.thread);
       // The wake's host-owned capability — chain depth and remaining background
       // starts — is bound to this exact request by the agent when it accepts the
       // turn. Receipting earlier ends the wake route on the agent side and
@@ -2728,15 +2931,19 @@ export class WebService {
         return { delivered: false, code: "monitor_origin_mismatch", retryable: false };
       }
       const active = this.activeTurns.get(input.threadId);
+      // Steered operator-facing with the member prefix, like every other
+      // dispatch. An oversized composition skips steering for the normal
+      // follow-up below; the stored `[Monitor wake]` text is untouched.
+      const steeredText = this.withProjectPrefix(input.threadId, input.wakePrompt);
       if (active !== undefined
         && connection.info.supportsLiveInput
-        && input.wakePrompt.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+        && steeredText.length <= AGENT_LIVE_INPUT_MAX_CHARACTERS) {
         try {
           this.store.setMonitorWakeSteeringTurn(input.sourceId, input.deliveryKey, active.turnId, true);
           const settlement = await active.client.liveInput({
             conversationId: `web:${input.threadId}`,
             id: input.deliveryKey,
-            text: input.wakePrompt,
+            text: steeredText,
             receivedAt: new Date().toISOString(),
             deliveryKey: input.deliveryKey,
             signal: AbortSignal.timeout(10 * 60 * 1_000),
@@ -2788,6 +2995,13 @@ export class WebService {
         abandon();
         return { delivered: false, code: "destination_channel_unavailable", retryable: true };
       }
+      // Bounded before any turn exists, like the process-job follow-up: no
+      // operator call, and abandoned so a later redelivery can still proceed.
+      const followUpText = this.withProjectPrefix(input.threadId, input.wakePrompt);
+      if (followUpText.length > WEB_MAX_TURN_TEXT_CHARACTERS) {
+        abandon();
+        return { delivered: false, code: "monitor_wake_failed", retryable: false };
+      }
       let started;
       try {
         const selection = this.resolveTurnSelection(input.threadId);
@@ -2811,7 +3025,7 @@ export class WebService {
       const { completion } = this.launchTurn(
         started,
         refreshedConnection.client,
-        input.wakePrompt,
+        followUpText,
         input.deliveryKey,
       );
       this.emit("message.changed", input.threadId, {
@@ -2820,6 +3034,7 @@ export class WebService {
       });
       this.emit("turn.changed", input.threadId, { turn: started.thread.runState });
       this.emitThread("threads.changed", { thread: started.thread });
+      this.refreshMemberProject(started.thread);
       await completion;
       if (this.store.turnStatus(started.turnId) !== "complete") {
         return {
@@ -3335,6 +3550,50 @@ export class WebService {
    */
   private emitThread(type: "thread.changed" | "threads.changed", payload: WebThreadChangedPayload): void {
     this.emit(type, "thread" in payload ? payload.thread.id : payload.threadId, payload);
+  }
+
+  /**
+   * A project listing event that names a project AND describes it, mirroring
+   * {@link emitThread}: a removal carries no summary and says so.
+   * Projects are global hints, so one event updates both the page and listing;
+   * a second singular event would duplicate the full context on the wire.
+   */
+  private emitProject(payload: WebProjectChangedPayload): void {
+    this.emit("projects.changed", undefined, payload);
+  }
+
+  /**
+   * Refresh one project's summary after a member moved it.
+   *
+   * Turn starts and settles call this through {@link refreshMemberProject};
+   * token deltas never do -- they carry no summary and change no count.
+   */
+  private refreshProject(projectId: string): void {
+    const project = this.store.getProject(projectId);
+    if (project === undefined) return;
+    this.emitProject({ project });
+  }
+
+  /** Refresh the member project's summary, when the conversation has one. */
+  private refreshMemberProject(thread: WebThread): void {
+    if (thread.projectId !== null) this.refreshProject(thread.projectId);
+  }
+
+  /**
+   * Resolve the injectable project envelope for one conversation at dispatch
+   * time, and prepend it to operator-facing text.
+   *
+   * One composition point for every `client.turn`/`client.liveInput` call
+   * below: stored and displayed user text never passes through here, so it can
+   * never double-prefix.
+   */
+  private withProjectPrefix(threadId: string, operatorText: string): string {
+    return withProjectContext(operatorText, this.projectContextForThread(threadId));
+  }
+
+  /** The injectable context for one conversation, resolved at dispatch time. */
+  projectContextForThread(threadId: string): ProjectContextSource | undefined {
+    return this.store.projectContextForThread(threadId);
   }
 
   /**

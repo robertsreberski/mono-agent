@@ -3227,3 +3227,177 @@ describe("web event dispatch", () => {
     expect(throwing.closes()).toBe(1);
   });
 });
+
+describe("conversation projects", () => {
+  async function createProject(baseUrl: string, body: Record<string, unknown>): Promise<Response> {
+    return fetch(`${baseUrl}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("lists, creates, patches and deletes projects with validation", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+
+    const missingSource = await fetch(`${baseUrl}/api/v1/projects`);
+    expect(missingSource.status).toBe(400);
+    const unknownAgent = await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-missing`);
+    expect(unknownAgent.status).toBe(404);
+    expect(await json(await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-one`))).toEqual({ projects: [] });
+
+    const created = await createProject(baseUrl, { sourceId: "agent-one", name: "  Web console  ", context: "Brief" });
+    expect(created.status).toBe(201);
+    const project = (await json(created)).project as {
+      id: string; name: string; context: string; archivedAt: null; revision: number;
+      conversationCount: number; runningCount: number;
+    };
+    expect(project).toMatchObject({
+      name: "Web console",
+      context: "Brief",
+      archivedAt: null,
+      revision: 1,
+      conversationCount: 0,
+      runningCount: 0,
+    });
+
+    const defaulted = await createProject(baseUrl, { sourceId: "agent-one", name: "Plain" });
+    expect((await json(defaulted)).project).toMatchObject({ name: "Plain", context: "" });
+
+    for (const body of [
+      { sourceId: "agent-one", name: "   " },
+      { sourceId: "agent-one", name: "x".repeat(121) },
+      { sourceId: "agent-one", name: "line\nbreak" },
+      { sourceId: "agent-one", name: "ok", context: "x".repeat(4001) },
+      { sourceId: "agent-one", name: "ok", context: 7 },
+      { sourceId: "agent-one", name: "ok", extra: true },
+      { sourceId: "agent-one" },
+      { name: "ok" },
+      { sourceId: "agent-missing", name: "ok" },
+    ]) {
+      const response = await createProject(baseUrl, body);
+      expect(response.status).toBe(body.sourceId === "agent-missing" ? 404 : 400);
+    }
+
+    const patched = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ context: "Updated." }),
+    });
+    expect(patched.status).toBe(200);
+    expect((await json(patched)).project).toMatchObject({ context: "Updated.", revision: 2 });
+
+    for (const body of [{}, { archived: "yes" }, { name: "ok", unknown: 1 }]) {
+      const response = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+    const missingPatch = await fetch(`${baseUrl}/api/v1/projects/missing`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "x" }),
+    });
+    expect(missingPatch.status).toBe(404);
+
+    // Archived projects stay listed until they are deleted.
+    const archived = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect(((await json(archived)).project as { archivedAt: unknown }).archivedAt).toEqual(expect.any(String));
+    expect(((await json(await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-one`))).projects as unknown[]))
+      .toHaveLength(2);
+
+    const deleted = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    expect(((await json(await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-one`))).projects as unknown[]))
+      .toHaveLength(1);
+    const repeat = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, { method: "DELETE" });
+    expect(repeat.status).toBe(404);
+  });
+
+  it("moves conversations through projects and detaches them on delete", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const first = (await json(await createProject(baseUrl, { sourceId: "agent-one", name: "First" }))).project as { id: string };
+    const second = (await json(await createProject(baseUrl, { sourceId: "agent-one", name: "Second" }))).project as { id: string };
+
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one", projectId: first.id }),
+    });
+    expect(created.status).toBe(201);
+    const thread = (await json(created)).thread as { id: string; projectId: string | null };
+    expect(thread.projectId).toBe(first.id);
+
+    for (const [body, status] of [
+      [{ projectId: "missing" }, 404],
+      [{ projectId: "" }, 400],
+      [{ projectId: 7 }, 400],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/v1/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceId: "agent-one", ...body }),
+      });
+      expect(response.status).toBe(status);
+    }
+
+    const moved = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: second.id }),
+    });
+    expect(moved.status).toBe(200);
+    expect((await json(moved)).thread).toMatchObject({ projectId: second.id });
+
+    const detached = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: null }),
+    });
+    expect((await json(detached)).thread).toMatchObject({ projectId: null });
+
+    const conflicted = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: second.id, ifRunConfigUnset: true }),
+    });
+    expect(conflicted.status).toBe(400);
+    const missing = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: "missing" }),
+    });
+    expect(missing.status).toBe(404);
+
+    // The project page reads its members through the filtered listing.
+    await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: first.id }),
+    });
+    await createThread(baseUrl, "agent-one");
+    const filtered = await json(await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&projectId=${first.id}&limit=1`,
+    ));
+    expect((filtered.threads as { id: string }[]).map((row) => row.id)).toEqual([thread.id]);
+    expect(filtered.nextCursor).toBeUndefined();
+    const unfiltered = await json(await fetch(`${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false`));
+    expect((unfiltered.threads as unknown[]).length).toBeGreaterThan(1);
+    const unknownFilter = await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&projectId=missing`,
+    );
+    expect(unknownFilter.status).toBe(404);
+
+    // Deleting the project detaches its chats back to the agent.
+    const deleted = await fetch(`${baseUrl}/api/v1/projects/${first.id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    expect((await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`))).thread)
+      .toMatchObject({ projectId: null });
+  });
+});

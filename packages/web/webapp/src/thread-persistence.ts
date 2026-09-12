@@ -1,3 +1,5 @@
+import { readProjectTransitions } from "./project-transitions";
+import type { ProjectTransition } from "./types";
 import { sanitizeCronTranscript } from "./cron-visibility";
 import { mergeSeenRevisions, readSeenRevisions, type SeenRevision } from "./unread";
 import type { ThreadCacheEntry } from "./thread-cache";
@@ -80,6 +82,7 @@ const SEEN_KEY = "seen";
 
 /** One conversation, as it is written to the device. */
 export interface PersistedThread {
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly id: string;
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
@@ -304,6 +307,7 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
     id: value.id,
     thread: sanitized.thread,
     messages: sanitized.messages,
+    projectTransitions: readProjectTransitions(value.projectTransitions),
     ...(typeof value.messagesNextCursor === "string"
       ? { messagesNextCursor: value.messagesNextCursor }
       : {}),
@@ -597,6 +601,7 @@ export const createThreadPersistence = (
     entry: ThreadCacheEntry,
   ): boolean => previous !== undefined
     && previous.thread === entry.thread
+    && previous.projectTransitions === entry.projectTransitions
     && previous.messages === entry.messages
     && previous.messagesNextCursor === entry.messagesNextCursor
     && previous.etag === entry.etag
@@ -610,6 +615,7 @@ export const createThreadPersistence = (
       id: entry.thread.id,
       thread: entry.thread,
       messages: transcript.messages,
+      projectTransitions: entry.projectTransitions ?? [],
       ...(entry.messagesNextCursor === undefined
         ? {}
         : { messagesNextCursor: entry.messagesNextCursor }),

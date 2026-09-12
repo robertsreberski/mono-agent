@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Add project colors, a tinted chat badge, and persisted join/leave/move markers.
+  Membership changes wait for the active turn boundary; steering retains frozen
+  project context. Busy deletion and pending-destination archival return conflicts.
+  Add authenticated, source-scoped console project/conversation MCP tools with
+  atomic create-and-attach and operation receipts, plus `SearchConversations`
+  (the search bar's full-text search) and archived/limit options on
+  `ListConversations`. Storage appends migration 27.
+
+- Add Projects to the web console: per-agent named containers of conversations
+  with a free-text context (at most 4,000 characters) that is prepended,
+  operator-facing text only and at dispatch time, to every turn of every member
+  conversation, so existing conversations pick it up on their next turn. The
+  Dashboard lists projects between Running and Recent, a project page shows the
+  context card and member conversations, and the conversation menu moves chats
+  in and out. Archiving a project hides its entry while keeping chats,
+  membership, and injection; deleting one detaches its chats back to the agent.
+  Project summaries carry conversation, running, and monthly-priced-usage
+  counts over `GET/POST /api/v1/projects`, `PATCH/DELETE
+  /api/v1/projects/:id`, thread `projectId` membership, and
+  `projects.changed` events. Storage migrates to schema 26
+  with `projects` and `threads.project_id`.
+
 - Conversation rows now show compact current model and effort labels across the
   dashboard, running cards, and search results. Subagent activity shows a smaller
   per-call route label, retaining fallback warnings and effective-effort details.

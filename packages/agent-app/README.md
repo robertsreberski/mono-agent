@@ -695,6 +695,17 @@ written and checks that against configured credential values, known token shapes
 credential assignments, and terminal/bidi controls. A match is rejected rather
 than redacted, so a mangled value is never persisted behind a success result.
 
+### Console project tools
+
+Writable interactive web turns can use `ListProjects`, `GetProject`,
+`CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
+`SearchConversations`, `CreateConversation`, and `SetConversationProject` under
+per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
+alone never authorizes a callback. Tools return real IDs and applied/pending
+results, restrict all targets to the originating agent, and reject late calls.
+Create-and-attach and its operation receipt commit atomically. There is no
+transport retry after unknown delivery. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
+
 ### Web conversation titles
 
 `SetConversationTitle` requires no config key. For an ordinary interactive web

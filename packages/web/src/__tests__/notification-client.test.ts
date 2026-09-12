@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
-import { deliverWebNotification } from "../notification-client.js";
+import { deliverWebNotification, createWebConsoleToolClient } from "../notification-client.js";
 import { prepareWebStatePaths } from "../state-paths.js";
 import { fakeMonitor, fakeProcessJob, temporaryRoot } from "./helpers.js";
 
@@ -267,5 +267,22 @@ describe("deliverWebNotification", () => {
     await expect(deliverWebNotification(input, { stateDir, fetchImpl }))
       .rejects.toMatchObject({ code: "notification_ingress_unavailable" });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("console tool callback client", () => {
+  it("keeps discovery credentials out of operation bodies and never retries unknown delivery", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state");
+    await writeIngressRecord(stateDir);
+    const fetchImpl = vi.fn().mockResolvedValueOnce(Response.json({ capability: "b".repeat(43) })).mockRejectedValueOnce(new Error("http://secret/token"));
+    const call = await createWebConsoleToolClient({ sourceId: "agent", threadId: "thread", turnId: "turn" }, { stateDir, fetchImpl });
+    await expect(call({ operationId: "1234567890123456", tool: "ListProjects", args: {} })).rejects.toMatchObject({
+      code: "console_tool_delivery_unknown", message: "Console delivery is unknown. Do not automatically retry this operation.",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1]![1]).toMatchObject({ redirect: "error", headers: { authorization: `Bearer ${"b".repeat(43)}` } });
+    expect(JSON.parse(fetchImpl.mock.calls[1]![1].body)).toEqual({ operationId: "1234567890123456", tool: "ListProjects", args: {} });
   });
 });

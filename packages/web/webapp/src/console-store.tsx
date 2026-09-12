@@ -1,3 +1,4 @@
+import type { ProjectColor } from "./types";
 import {
   createContext,
   type ReactNode,
@@ -65,6 +66,7 @@ import type {
   CronReplySnapshotKind,
   MessageDelta,
   MessagePart,
+  ProjectSummary,
   RunState,
   SkillRegistryState,
   StartTurnInput,
@@ -214,6 +216,35 @@ interface ConsoleStoreValue {
   readonly hasMoreThreads: boolean;
   readonly hasOlderMessages: boolean;
   /**
+   * One agent's projects by agent, archived included.
+   *
+   * The Dashboard and the conversation picker filter archived out; the open
+   * project may be an archived one only until its removal closes the page.
+   * Seeded from the bootstrap, refetched on agent switch and on reconnect.
+   */
+  readonly projectsByAgent: Readonly<Record<string, readonly ProjectSummary[]>>;
+  /** The project whose page replaces the Dashboard, or null for the Dashboard. */
+  readonly openProjectId: string | null;
+  /** The open project, or null when its summary has not loaded (yet). */
+  readonly openProject: ProjectSummary | null;
+  /** The open project's member conversations, newest first. */
+  readonly projectMembers: readonly ThreadSummary[];
+  readonly projectMembersLoading: boolean;
+  readonly projectMembersError: string | null;
+  readonly hasMoreProjectMembers: boolean;
+  readonly loadProjects: (sourceId: string) => Promise<readonly ProjectSummary[]>;
+  readonly createProject: (name: string, context?: string, sourceId?: string, color?: ProjectColor) => Promise<ProjectSummary>;
+  readonly patchProject: (
+    projectId: string,
+    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean; readonly color?: ProjectColor },
+  ) => Promise<ProjectSummary>;
+  readonly archiveProject: (projectId: string) => Promise<void>;
+  readonly deleteProject: (projectId: string) => Promise<void>;
+  readonly setThreadProject: (threadId: string, projectId: string | null) => Promise<void>;
+  readonly openProjectById: (projectId: string) => void;
+  readonly closeProject: () => void;
+  readonly loadMoreProjectMembers: () => Promise<void>;
+  /**
    * Whether any conversation this tab is HOLDING has a turn running.
    *
    * The cache's whole set, not the visible listing: the listing is one agent's
@@ -284,7 +315,7 @@ interface ConsoleStoreValue {
   readonly setNavigationDestination: (destination: ConsoleNavigationDestination) => void;
   readonly retrySelection: () => void;
   readonly retryThreadList: () => void;
-  readonly createThread: () => Promise<ThreadSummary>;
+  readonly createThread: (projectId?: string) => Promise<ThreadSummary>;
   readonly renameThread: (threadId: string, title: string) => Promise<void>;
   readonly archiveThread: (threadId: string) => Promise<void>;
   readonly unarchiveThread: (threadId: string) => Promise<void>;
@@ -373,6 +404,26 @@ const byMostRecent = (a: ThreadSummary, b: ThreadSummary) =>
  */
 const byMostRecentThenId = (a: ThreadSummary, b: ThreadSummary) =>
   byMostRecent(a, b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/** Deterministic order for one agent's project listing: activity, then id. */
+const byProjectRecent = (a: ProjectSummary, b: ProjectSummary) =>
+  Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+/**
+ * The open project's member page: ids in server order plus the summaries that
+ * resolve them.
+ *
+ * ONE state so membership and summaries always move together. Two sibling
+ * updaters can run in either order, and a decision smuggled between them in a
+ * closure reads stale on one side -- which is how a stale event once detached
+ * what the reconciled summary still attached. Summaries are ALSO merged into
+ * the canonical listing, which is what the row component and the runtime read;
+ * this map is what keeps the page alive when a bootstrap replaces the bucket
+ * window a member had fallen outside of.
+ */
+interface ProjectMemberState {
+  readonly ids: readonly string[];
+  readonly byId: Readonly<Record<string, ThreadSummary>>;
+}
+const EMPTY_PROJECT_MEMBERS: ProjectMemberState = { ids: [], byId: {} };
 /**
  * Everything the dashboard's Running section DRAWS for one conversation.
  *
@@ -494,6 +545,7 @@ const mergeThreads = (
 const projectDetail = (entry: ThreadCacheEntry): ThreadDetail => ({
   thread: entry.thread,
   messages: entry.messages,
+  projectTransitions: entry.projectTransitions ?? [],
   ...(entry.messagesNextCursor === undefined
     ? {}
     : { messagesNextCursor: entry.messagesNextCursor }),
@@ -1720,6 +1772,20 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   }, []);
   const [connection, setConnectionState] = useState<ConnectionState>("connecting");
   /**
+   * One agent's projects by agent, archived included.
+   *
+   * Seeded from the bootstrap's own set and refetched on demand: an agent
+   * switch, a reconnect, or an open for a project this tab has not listed yet.
+   * The Dashboard and the picker filter archived out of what they draw.
+   */
+  const [projectsByAgent, setProjectsByAgent] = useState<Readonly<Record<string, readonly ProjectSummary[]>>>({});
+  /** The project whose page replaces the Dashboard, or null for the Dashboard. */
+  const [openProjectId, setOpenProjectId] = useState<string | null>(null);
+  const [projectMemberState, setProjectMemberState] = useState<ProjectMemberState>(EMPTY_PROJECT_MEMBERS);
+  const [projectMembersCursor, setProjectMembersCursor] = useState<string | null>(null);
+  const [projectMembersLoading, setProjectMembersLoading] = useState(false);
+  const [projectMembersError, setProjectMembersError] = useState<string | null>(null);
+  /**
    * Whether a snapshot from the SERVER has landed.
    *
    * False on a console that opened on what the device kept and has not been
@@ -1855,8 +1921,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const seededBucketsRef = useRef<Set<string>>(new Set());
   /** Compatible authoritative first-page reads shared by rapid revisits. */
   const bucketReadsRef = useRef<Map<string, Promise<readonly ThreadSummary[]>>>(new Map());
+  /** One in-flight project listing per agent, shared by rapid revisits. */
+  const projectReadsRef = useRef<Map<string, Promise<readonly ProjectSummary[]>>>(new Map());
+  /**
+   * Deleted project ids a late listing must not resurrect, with the same TTL
+   * spirit as the thread tombstones: a delete this tab confirmed stays deleted
+   * even when an older page is still on the wire.
+   */
+  const removedProjectsRef = useRef(new Map<string, number>());
+  /** Member page request fence: a late page never lands in another project's ids. */
+  const projectMembersGenerationRef = useRef(0);
   /** The current listing and selection, for the SSE handler to read at event time. */
   const threadsRef = useRef<readonly ThreadSummary[]>([]);
+  /** Project state mirrors, for the SSE handler and member paging to read at event time. */
+  const projectsByAgentRef = useRef<Readonly<Record<string, readonly ProjectSummary[]>>>({});
+  const openProjectIdRef = useRef<string | null>(null);
+  const projectMembersCursorRef = useRef<string | null>(null);
   /** The open conversation's own summary, which outlives its row in the listing. */
   const detailThreadRef = useRef<ThreadSummary | null>(null);
   /**
@@ -2557,6 +2637,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         cache.restore({
           thread: stored.thread,
           messages: stored.messages,
+          projectTransitions: stored.projectTransitions ?? [],
           ...(stored.messagesNextCursor === undefined
             ? {}
             : { messagesNextCursor: stored.messagesNextCursor }),
@@ -2599,6 +2680,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           threads: bucket?.threads ?? [],
           threadsSourceId: agentId,
           threadsNextCursor: bucket?.nextCursor ?? null,
+          // Projects are server state this device never kept: the snapshot
+          // carries none, and the agent effect below lists them fresh.
+          projects: [],
+          projectsSourceId: agentId,
           limits: snapshot.limits,
         });
         // Honest about what this is: content on screen that no live connection
@@ -2712,7 +2797,38 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [evictCronTranscript]);
 
-  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
+  /**
+   * Admit one agent's full project listing (bootstrap or `GET /projects`).
+   *
+   * Returned summaries obey revision guards and removal tombstones. Omitted
+   * rows drop only if unchanged since this request began: a creation or update
+   * received while the snapshot was in flight is newer than its absence.
+   */
+  const mergeProjectListing = useCallback((sourceId: string, projects: readonly ProjectSummary[], observed: typeof projectsByAgent) => {
+    const now = Date.now();
+    for (const [id, until] of removedProjectsRef.current) {
+      if (until <= now) removedProjectsRef.current.delete(id);
+    }
+    setProjectsByAgent((current) => {
+      const heldById = new Map((current[sourceId] ?? []).map((item) => [item.id, item]));
+      const next: ProjectSummary[] = [];
+      for (const incoming of projects) {
+        if (incoming.sourceId !== sourceId || removedProjectsRef.current.has(incoming.id)) continue;
+        const held = heldById.get(incoming.id);
+        next.push(held !== undefined && held.revision > incoming.revision ? held : incoming);
+      }
+      const returnedIds = new Set(projects.map((project) => project.id));
+      const observedById = new Map((observed[sourceId] ?? []).map((project) => [project.id, project]));
+      for (const held of heldById.values()) {
+        if (!returnedIds.has(held.id) && !removedProjectsRef.current.has(held.id)
+          && observedById.get(held.id) !== held) next.push(held);
+      }
+      next.sort(byProjectRecent);
+      return { ...current, [sourceId]: next };
+    });
+  }, []);
+
+  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean, observedProjects: typeof projectsByAgent) => {
     // BEFORE anything is read off the current selection: what a different
     // console left behind is not a selection to keep.
     discardOtherHostData(rawNext.console.hostName);
@@ -2741,6 +2857,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (seeded !== undefined) {
       setThreadCursorByBucket((current) => ({ ...current, [seeded]: next.threadsNextCursor }));
     }
+    // The resolved agent's projects land with the snapshot, archived included.
+    if (next.projectsSourceId !== null) mergeProjectListing(next.projectsSourceId, next.projects, observedProjects);
     setBootstrap(next);
     // The listing is a SERVER SUMMARY for every conversation in it, so it
     // CONFIRMS the ones this tab is already holding -- and that is all it is
@@ -2893,6 +3011,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     applyConnection,
     discardOtherHostData,
     failOwnedSelection,
+    mergeProjectListing,
     publishDetail,
     reconcileCronRevision,
     setSelectionRequest,
@@ -2935,8 +3054,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // answer says is running describes the fleet as of now, not as of
       // whenever it happens to land.
       const projectionSeq = ++activeThreadsSeqRef.current;
+      const observedProjects = projectsByAgentRef.current;
       const next = await boundedRequest((signal) => api.bootstrap(signal, scope), THREAD_READ_TIMEOUT_MS);
-      applyBootstrap(next, issuedAt, scope.archived === true);
+      applyBootstrap(next, issuedAt, scope.archived === true, observedProjects);
       acceptActiveThreads(next.activeThreads, projectionSeq);
       applyConnection("live");
     } catch (loadError) {
@@ -3431,6 +3551,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const heldEtag = refreshThreadId === null
         ? undefined
         : threadCacheRef.current.get(refreshThreadId)?.etag;
+      const observedProjects = projectsByAgentRef.current;
       const [nextBootstrap, nextDetail] = await Promise.all([
         scope.bootstrap
           ? boundedRequest((signal) => api.bootstrap(signal, bucket), THREAD_READ_TIMEOUT_MS)
@@ -3443,7 +3564,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           : Promise.resolve(null),
       ]);
       if (nextBootstrap !== null) {
-        applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
+        applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true, observedProjects);
         acceptActiveThreads(nextBootstrap.activeThreads, projectionSeq);
       }
       if (nextDetail === NOT_MODIFIED) {
@@ -3871,6 +3992,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // A LOCAL decision -- an optimistic edit, a rollback, the repair a refused
     // delete owes -- is being made now and quotes the current epoch.
     if (!admitThread(removedThreadsRef.current, nextThread, issuedAt)) return;
+    const held = threadCacheRef.current.get(nextThread.id);
+    const membershipChanged = held !== undefined && nextThread.revision >= held.thread.revision
+      && held.thread.projectId !== nextThread.projectId;
+    if (membershipChanged) {
+      threadCacheRef.current.markStale(nextThread.id);
+      if (nextThread.id === selectedThreadRef.current) scheduleRefreshRef.current({ detail: true, retryDetailOnFailure: true });
+    }
     reconcileCronRevision(nextThread);
     setBootstrap((current) =>
       current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
@@ -3879,6 +4007,276 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       publishDetail(nextThread.id);
     }
   }, [publishDetail, reconcileCronRevision]);
+
+  /**
+   * Apply one project summary carried by `projects.changed`.
+   *
+   * Revision-guarded like the thread listing: at an equal revision the
+   * incoming summary wins, so an optimistic edit made at the revision it
+   * patches still lands.
+   */
+  const applyProjectUpdate = useCallback((project: ProjectSummary) => {
+    // A tombstoned deletion wins over a late event carrying the same id.
+    if (removedProjectsRef.current.has(project.id)) return;
+    setProjectsByAgent((current) => {
+      const list = current[project.sourceId] ?? [];
+      const held = list.find((item) => item.id === project.id);
+      if (held !== undefined && held.revision > project.revision) return current;
+      const next = held === undefined
+        ? [...list, project]
+        : list.map((item) => item.id === project.id ? project : item);
+      next.sort(byProjectRecent);
+      return { ...current, [project.sourceId]: next };
+    });
+  }, []);
+
+  /** Drop one removed project everywhere and close its page when it is open. */
+  const removeProject = useCallback((projectId: string) => {
+    removedProjectsRef.current.set(projectId, Date.now() + REMOVED_THREAD_TTL_MS);
+    setProjectsByAgent((current) => {
+      let changed = false;
+      const next: Record<string, readonly ProjectSummary[]> = {};
+      for (const [sourceId, list] of Object.entries(current)) {
+        if (list.some((project) => project.id === projectId)) {
+          changed = true;
+          next[sourceId] = list.filter((project) => project.id !== projectId);
+        } else {
+          next[sourceId] = list;
+        }
+      }
+      return changed ? next : current;
+    });
+    if (openProjectIdRef.current === projectId) {
+      openProjectIdRef.current = null;
+      setOpenProjectId(null);
+      setProjectMemberState(EMPTY_PROJECT_MEMBERS);
+      setProjectMembersCursor(null);
+      setProjectMembersError(null);
+    }
+  }, []);
+
+  /**
+   * Keep the open member page truthful from the thread events the server
+   * already emits for membership changes: adopt fresh rows, drop rows that
+   * archived or moved to another project, and admit rows that just joined the
+   * open project.
+   *
+   * ONE updater over the member state: membership and summaries derive from
+   * the projection `newerProjection` keeps, never from the incoming one alone,
+   * so a stale event cannot detach what a newer summary still attaches.
+   */
+  const syncProjectMember = useCallback((thread: ThreadSummary) => {
+    const openId = openProjectIdRef.current;
+    setProjectMemberState((current) => {
+      const held = current.byId[thread.id];
+      if (held === undefined) {
+        if (!(openId !== null && thread.projectId === openId && thread.archivedAt === null)) return current;
+        return {
+          ids: [thread.id, ...current.ids],
+          byId: { ...current.byId, [thread.id]: thread },
+        };
+      }
+      const next = newerProjection(held, thread);
+      if (!(openId !== null && next.projectId === openId && next.archivedAt === null)) {
+        const byId = { ...current.byId };
+        delete byId[thread.id];
+        return { ids: current.ids.filter((id) => id !== thread.id), byId };
+      }
+      return {
+        ids: current.ids.includes(thread.id) ? current.ids : [thread.id, ...current.ids],
+        byId: next === held ? current.byId : { ...current.byId, [thread.id]: next },
+      };
+    });
+  }, []);
+
+  /** Forget one removed conversation on the member page as well as the listing. */
+  const dropProjectMember = useCallback((threadId: string) => {
+    setProjectMemberState((current) => {
+      if (current.byId[threadId] === undefined && !current.ids.includes(threadId)) return current;
+      const byId = { ...current.byId };
+      delete byId[threadId];
+      return { ids: current.ids.filter((id) => id !== threadId), byId };
+    });
+  }, []);
+
+  /**
+   * One agent's projects, archived included, with one flight per agent.
+   *
+   * A listing merges rather than replaces: every returned summary passes the
+   * same revision guard as events, and tombstoned ids stay removed, so a late
+   * page can neither resurrect a deleted project nor revert a newer summary.
+   * Omitted rows drop only when unchanged since this request began.
+   *
+   * Resolves with the list so `openProjectById` can proceed in the same tick;
+   * background refreshes report failures as action errors rather than throwing.
+   */
+  const loadProjects = useCallback(async (sourceId: string): Promise<readonly ProjectSummary[]> => {
+    const inFlight = projectReadsRef.current.get(sourceId);
+    if (inFlight !== undefined) return inFlight;
+    const observedProjects = projectsByAgentRef.current;
+    const request = boundedRequest(
+      (signal) => api.projects(sourceId, signal),
+      THREAD_READ_TIMEOUT_MS,
+    ).then((projects) => {
+      mergeProjectListing(sourceId, projects, observedProjects);
+      return projects;
+    });
+    projectReadsRef.current.set(sourceId, request);
+    try {
+      return await request;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    } finally {
+      if (projectReadsRef.current.get(sourceId) === request) projectReadsRef.current.delete(sourceId);
+    }
+  }, [mergeProjectListing]);
+
+  /**
+   * Read one page of the open project's members.
+   *
+   * Member rows merge into the canonical listing (tombstone-checked, exactly
+   * like every other insertion path) and into the page's own summary map, so
+   * the page survives a bootstrap replacing the bucket window a member had
+   * fallen outside of.
+   */
+  const loadProjectMembers = useCallback(async (projectId: string, reset = false): Promise<void> => {
+    const project = Object.values(projectsByAgentRef.current)
+      .flatMap((list) => list)
+      .find((item) => item.id === projectId);
+    if (project === undefined) return;
+    if (reset) {
+      setProjectMemberState(EMPTY_PROJECT_MEMBERS);
+      setProjectMembersCursor(null);
+      setProjectMembersError(null);
+    }
+    // Fenced like the selection requests: overlapping opens race, and the
+    // loser must not write another project's ids, cursor, or loading state.
+    const generation = ++projectMembersGenerationRef.current;
+    setProjectMembersLoading(true);
+    try {
+      const before = reset ? undefined : projectMembersCursorRef.current ?? undefined;
+      const page = await boundedRequest(
+        (signal) => api.projectThreads(project.sourceId, projectId, before, signal, threadPageLimit()),
+        THREAD_READ_TIMEOUT_MS,
+      );
+      if (projectMembersGenerationRef.current !== generation
+        || openProjectIdRef.current !== projectId) return;
+      const issuedAt = removedThreadsRef.current.epoch();
+      const admitted = admitThreads(removedThreadsRef.current, page.threads, issuedAt);
+      for (const row of admitted) {
+        reconcileCronRevision(row);
+        threadCacheRef.current.confirmListed(row.id, row);
+        applyThreadUpdate(row, issuedAt);
+      }
+      setProjectMemberState((current) => {
+        const base = reset ? EMPTY_PROJECT_MEMBERS : current;
+        const byId = { ...base.byId };
+        const ids = reset ? [] as string[] : [...base.ids];
+        for (const row of admitted) {
+          const held = byId[row.id];
+          byId[row.id] = held === undefined ? row : newerProjection(held, row);
+          if (row.projectId === projectId && row.archivedAt === null && !ids.includes(row.id)) ids.push(row.id);
+        }
+        return { ids, byId };
+      });
+      projectMembersCursorRef.current = page.nextCursor ?? null;
+      setProjectMembersCursor(page.nextCursor ?? null);
+      setProjectMembersError(null);
+    } catch (error) {
+      if (projectMembersGenerationRef.current !== generation
+        || openProjectIdRef.current !== projectId) return;
+      setProjectMembersError(errorMessage(error));
+    } finally {
+      // Per active request: a superseded page must not clear the newer one's
+      // loading state.
+      if (projectMembersGenerationRef.current === generation) setProjectMembersLoading(false);
+    }
+  }, [applyThreadUpdate, reconcileCronRevision]);
+
+  const closeProject = useCallback(() => {
+    openProjectIdRef.current = null;
+    setOpenProjectId(null);
+    setProjectMemberState(EMPTY_PROJECT_MEMBERS);
+    setProjectMembersCursor(null);
+    projectMembersCursorRef.current = null;
+    setProjectMembersError(null);
+  }, []);
+
+  const createProject = useCallback(async (name: string, context?: string, sourceId?: string, color?: ProjectColor): Promise<ProjectSummary> => {
+    const agentId = sourceId ?? selectedAgentId;
+    if (agentId === null) throw new Error("Select an agent before creating a project.");
+    try {
+      const project = await boundedRequest(
+        (signal) => api.createProject(agentId, { name, ...(color === undefined ? {} : { color }), ...(context === undefined ? {} : { context }) }, signal),
+        THREAD_WRITE_TIMEOUT_MS,
+      );
+      applyProjectUpdate(project);
+      setActionError(null);
+      return project;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    }
+  }, [applyProjectUpdate, selectedAgentId]);
+
+  const patchProject = useCallback(async (
+    projectId: string,
+    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean; readonly color?: ProjectColor },
+  ): Promise<ProjectSummary> => {
+    try {
+      const project = await boundedRequest(
+        (signal) => api.patchProject(projectId, patch, signal),
+        THREAD_WRITE_TIMEOUT_MS,
+      );
+      applyProjectUpdate(project);
+      // Archiving hides the navigation entry: an open page of it must close.
+      if (project.archivedAt !== null && openProjectIdRef.current === project.id) closeProject();
+      setActionError(null);
+      return project;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    }
+  }, [applyProjectUpdate, closeProject]);
+
+  const archiveProject = useCallback(async (projectId: string): Promise<void> => {
+    await patchProject(projectId, { archived: true });
+  }, [patchProject]);
+
+  const deleteProject = useCallback(async (projectId: string): Promise<void> => {
+    try {
+      await boundedRequest(
+        (signal) => api.deleteProject(projectId, signal),
+        THREAD_WRITE_TIMEOUT_MS,
+      );
+      // The server's detached thread summaries and removal land over SSE; apply
+      // the removal locally now so the page closes without waiting for it.
+      removeProject(projectId);
+      setActionError(null);
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    }
+  }, [removeProject]);
+
+  useEffect(() => {
+    // The bootstrap seeds one agent's projects; every other agent lists them
+    // on first selection, exactly once per tab per agent. Single-flighted, so
+    // the mount burst shares one request with the bucket fill.
+    if (selectedAgentId === null || loading || !hasBootstrap || error !== null) return;
+    if (projectsByAgent[selectedAgentId] !== undefined) return;
+    void loadProjects(selectedAgentId).catch(() => undefined);
+  }, [error, hasBootstrap, loadProjects, loading, projectsByAgent, selectedAgentId]);
+
+  useEffect(() => {
+    // A rebuilt stream may have missed project events behind its gap, so the
+    // selected agent's listing is re-read rather than trusted. Skipped until a
+    // snapshot has landed; the mount burst above owns the first read.
+    if (selectedAgentId === null || loading || !hasBootstrap || error !== null) return;
+    if (streamGeneration === 0) return;
+    void loadProjects(selectedAgentId).catch(() => undefined);
+  }, [error, hasBootstrap, loadProjects, loading, selectedAgentId, streamGeneration]);
 
   /**
    * Follow the selection with the stream's subscription.
@@ -4005,6 +4403,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         readonly sourceId?: string;
         readonly pinned?: boolean;
         readonly turn?: RunState;
+        readonly project?: ProjectSummary;
+        readonly projectId?: string;
       };
       const threadId = webEvent.threadId ?? payload.threadId;
       switch (webEvent.type) {
@@ -4112,6 +4512,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           invalidateActiveThreadsRef.current();
           if (payload.thread !== undefined) {
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
+            syncProjectMember(payload.thread);
             // The summary is applied above at no cost; the MESSAGES are not in
             // it. A turn that started, a cron page that reconciled and a
             // notification that landed all move a transcript and say so only
@@ -4168,6 +4569,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             // paths built for it, and a turn finish costs no conversation read
             // at all.
             applyThreadUpdate(payload.thread, removedThreadsRef.current.epoch());
+            syncProjectMember(payload.thread);
             if (payload.thread.id !== selectedThreadRef.current) {
               threadCacheRef.current.markStale(payload.thread.id);
             }
@@ -4193,6 +4595,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
               // the removal, so this tombstone is never owed a rollback; it
               // expires on its own TTL.
               removedThreadsRef.current.remember(threadId, known);
+              dropProjectMember(threadId);
               completeThreadRemovalRef.current(known, threadId);
               return;
             }
@@ -4204,6 +4607,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
             threadCacheRef.current.evict(threadId);
             unreadRef.current.forget([threadId]);
     void persistenceRef.current?.forget([threadId]).catch(() => undefined);
+            dropProjectMember(threadId);
             if (threadId === selectedThreadRef.current) {
               // The authoritative removal settles any direct selection read
               // still on the wire. Invalidating its generation keeps its late
@@ -4224,6 +4628,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           if (threadId === selectedThreadRef.current) refreshSelectedThread();
           else threadCacheRef.current.markStale(threadId);
           return;
+
+        case "projects.changed": {
+          // The fresh summary travels with the event, so applying it IS the
+          // whole of what this event means -- no listing is re-read. A removal
+          // carries no summary and closes the page when it names the open one.
+          const eventProject = (webEvent.payload ?? {}) as {
+            readonly project?: ProjectSummary;
+            readonly projectId?: string;
+            readonly removed?: boolean;
+          };
+          if (eventProject.project !== undefined) {
+            applyProjectUpdate(eventProject.project);
+            // An archived project hides its navigation entry: a remote archive
+            // closes the open page exactly like the local archive action does.
+            if (eventProject.project.archivedAt !== null
+              && openProjectIdRef.current === eventProject.project.id) {
+              closeProject();
+            }
+            return;
+          }
+          if (eventProject.removed === true && eventProject.projectId !== undefined) {
+            removeProject(eventProject.projectId);
+          }
+          return;
+        }
 
         case "message.delta": {
           if (threadId === undefined) return;
@@ -4289,6 +4718,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       "cron.changed",
       "threads.changed",
       "thread.changed",
+      "projects.changed",
       "message.changed",
       "message.delta",
       "turn.changed",
@@ -4440,17 +4870,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     };
   }, [
     applyMessageDeltaEvent,
+    applyProjectUpdate,
     applyThreadUpdate,
     beginOperatorSelection,
+    closeProject,
+    dropProjectMember,
     loadAgents,
     patchRunState,
     queueRefresh,
     refreshSelectedThread,
+    removeProject,
     repairMessage,
     resyncAfterGap,
     revalidateBucket,
     streamGeneration,
     subscribedThreadId,
+    syncProjectMember,
   ]);
 
   const agents = useMemo(
@@ -4476,6 +4911,33 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // Assigned during render, like `catalogScopeRef` below: the SSE handler reads
   // it when an event fires, and an effect would leave it a commit behind.
   threadsRef.current = threads;
+  projectsByAgentRef.current = projectsByAgent;
+  openProjectIdRef.current = openProjectId;
+  projectMembersCursorRef.current = projectMembersCursor;
+  /**
+   * The open project, or null while its summary is unknown: an id without a
+   * summary draws the Dashboard, never a half-named page.
+   */
+  const openProject = openProjectId === null
+    ? null
+    : Object.values(projectsByAgent)
+      .flatMap((list) => list)
+      .find((project) => project.id === openProjectId) ?? null;
+  /**
+   * The open project's member rows: the page's own membership over the
+   * canonical summaries, newest first like every other listing.
+   */
+  const projectMembers = useMemo(() => {
+    if (projectMemberState.ids.length === 0) return [];
+    const byId = new Map(threads.map((thread) => [thread.id, thread]));
+    const ordered: ThreadSummary[] = [];
+    for (const id of projectMemberState.ids) {
+      const held = byId.get(id) ?? projectMemberState.byId[id];
+      if (held !== undefined) ordered.push(held);
+    }
+    return ordered.sort(byMostRecentThenId);
+  }, [projectMemberState, threads]);
+  const hasMoreProjectMembers = projectMembersCursor !== null;
   const selectedAgent =
     agents.find((agent) => agent.sourceId === selectedAgentId) ?? null;
   selectedAgentCronReadRef.current = selectedAgent?.cron?.read === true;
@@ -4653,6 +5115,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // window rather than dropping the pages the operator scrolled to.
       threadCacheRef.current.prependOlder(current.thread.id, {
         messages: page.messages,
+        projectTransitions: page.projectTransitions ?? [],
         ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       });
       publishDetail(current.thread.id);
@@ -5076,8 +5539,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       updateThreadRoute(recent);
       setShowArchived(false);
       setActionError(null);
+      // An agent switch closes the open project page; the newly selected
+      // agent's projects list fresh below.
+      closeProject();
+      void loadProjects(sourceId).catch(() => undefined);
     },
-    [beginOperatorSelection, publishDetail, setSelectionRequest, threads],
+    [beginOperatorSelection, closeProject, loadProjects, publishDetail, setSelectionRequest, threads],
   );
 
   const setAgentPinned = useCallback(async (sourceId: string, pinned: boolean) => {
@@ -5275,7 +5742,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     if (selectedThreadRef.current !== job.threadId) selectThread(job.threadId);
   }, [failOwnedSelection, routeRevision, selectThread, selectedAgentId, selectedCronOverview]);
 
-  const createThread = useCallback(async () => {
+  const createThread = useCallback(async (projectId?: string) => {
     if (!selectedAgentId) throw new Error("Select an agent before starting a conversation.");
     setNavigationScope("chats");
     const unresolved = selectionRequestRef.current;
@@ -5303,7 +5770,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           : {}),
       };
       const thread = await boundedRequest(
-        (signal) => api.createThread(selectedAgentId, runConfig, signal),
+        (signal) => api.createThread(selectedAgentId, runConfig, signal, projectId),
       );
       // The server commits and emits `threads.changed` before this POST
       // answers, so by the time it does the console may have admitted this
@@ -5339,6 +5806,14 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         current ? { ...current, threads: mergeThreads(current.threads, [thread]) } : current,
       );
       threadCacheRef.current.upsertFull({ thread, messages: [] });
+      // A project birth joins its page immediately; its summary counts arrive
+      // over project events from the server.
+      if (thread.projectId !== null && thread.projectId === openProjectIdRef.current) {
+        setProjectMemberState((current) => current.ids.includes(thread.id) ? current : {
+          ids: [thread.id, ...current.ids],
+          byId: { ...current.byId, [thread.id]: thread },
+        });
+      }
       if (stillOwnsSelection) {
         selectedThreadRef.current = thread.id;
         setSelectedThreadId(thread.id);
@@ -5581,6 +6056,61 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     async (threadId: string): Promise<void> => threadWriteChainRef.current.settle(threadId),
     [],
   );
+
+  /**
+   * Open one project's page: point at its agent in the chats scope and read
+   * its first member page. Unknown ids are re-listed once before giving up, so
+   * a project created in another tab still opens.
+   */
+  const openProjectById = useCallback((projectId: string) => {
+    const find = (): ProjectSummary | undefined => Object.values(projectsByAgentRef.current)
+      .flatMap((list) => list)
+      .find((item) => item.id === projectId);
+    const open = (project: ProjectSummary): void => {
+      if (project.sourceId !== selectedAgentRef.current) selectAgent(project.sourceId);
+      setNavigationScope("chats");
+      setShowArchived(false);
+      openProjectIdRef.current = project.id;
+      setOpenProjectId(project.id);
+      setProjectMemberState(EMPTY_PROJECT_MEMBERS);
+      setProjectMembersCursor(null);
+      projectMembersCursorRef.current = null;
+      setProjectMembersError(null);
+      void loadProjectMembers(project.id, true).catch(() => undefined);
+    };
+    const found = find();
+    if (found !== undefined) {
+      open(found);
+      return;
+    }
+    const sourceId = selectedAgentRef.current;
+    if (sourceId === null) return;
+    void loadProjects(sourceId).then((projects) => {
+      const reloaded = projects.find((project) => project.id === projectId);
+      if (reloaded !== undefined && openProjectIdRef.current !== projectId) open(reloaded);
+    }).catch(() => undefined);
+  }, [loadProjectMembers, loadProjects, selectAgent, setNavigationScope, setShowArchived]);
+
+  const setThreadProject = useCallback(async (threadId: string, projectId: string | null): Promise<void> => {
+    try {
+      const target = await fetchThreadSummary(threadId);
+      const issuedAt = removedThreadsRef.current.epoch();
+      const thread = await enqueueThreadWrite(target.id, (signal) =>
+        api.patchThread(target.id, { projectId }, signal));
+      applyThreadUpdate(thread, issuedAt);
+      syncProjectMember(thread);
+      setActionError(null);
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    }
+  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, syncProjectMember]);
+
+  const loadMoreProjectMembers = useCallback(async (): Promise<void> => {
+    const projectId = openProjectIdRef.current;
+    if (projectId === null || projectMembersCursorRef.current === null) return;
+    await loadProjectMembers(projectId);
+  }, [loadProjectMembers]);
 
   const renameThread = useCallback(async (threadId: string, title: string) => {
     const trimmed = title.trim();
@@ -6532,6 +7062,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       unreadCountByAgent,
       setConversationVisible,
       hasOlderMessages,
+      projectsByAgent,
+      openProjectId,
+      openProject,
+      projectMembers,
+      projectMembersLoading,
+      projectMembersError,
+      hasMoreProjectMembers,
+      loadProjects,
+      createProject,
+      patchProject,
+      archiveProject,
+      deleteProject,
+      setThreadProject,
+      openProjectById,
+      closeProject,
+      loadMoreProjectMembers,
       selectAgent,
       setAgentPinned,
       setAgentRunDefaults,
@@ -6650,6 +7196,22 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       navigationDestination,
       showArchived,
       showOfflineAgents,
+      projectsByAgent,
+      openProjectId,
+      openProject,
+      projectMembers,
+      projectMembersLoading,
+      projectMembersError,
+      hasMoreProjectMembers,
+      loadProjects,
+      createProject,
+      patchProject,
+      archiveProject,
+      deleteProject,
+      setThreadProject,
+      openProjectById,
+      closeProject,
+      loadMoreProjectMembers,
       threads,
       unarchiveThread,
       visibleAgents,

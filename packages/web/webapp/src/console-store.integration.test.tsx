@@ -47,7 +47,7 @@ import {
 } from "./console-store";
 import type { RequestLanding } from "./console-store";
 import { canSendInConsole } from "./capabilities";
-import { agent, bootstrap, processJob, thread, uploadLimits } from "./test/fixtures";
+import { agent, bootstrap, processJob, project, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
 import {
   acquireReplyImageBlob,
@@ -65,6 +65,7 @@ import type {
   MessageDelta,
   MessagePart,
   ThreadDetail,
+  ThreadPage,
   ThreadSummary,
   WebEvent,
   WebMessage,
@@ -111,6 +112,11 @@ vi.mock("./api", async (importOriginal) => ({
     submit: vi.fn(),
     submission: vi.fn(),
     threadJob: vi.fn(),
+    projects: vi.fn(),
+    createProject: vi.fn(),
+    patchProject: vi.fn(),
+    deleteProject: vi.fn(),
+    projectThreads: vi.fn(),
   },
 }));
 
@@ -317,6 +323,8 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.threads).mockResolvedValue({ threads: [] });
     vi.mocked(api.messages).mockResolvedValue({ messages: [] });
     vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
+    vi.mocked(api.projects).mockReset().mockResolvedValue([]);
+    vi.mocked(api.projectThreads).mockReset().mockResolvedValue({ threads: [] });
   });
 
   afterEach(() => {
@@ -788,6 +796,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/model", effort: "high" },
       expect.any(AbortSignal),
+      undefined,
     );
     expect(store.current.selectedThread).toMatchObject({
       id: "created",
@@ -843,7 +852,7 @@ describe("ConsoleStoreProvider integration", () => {
       .toEqual(["provider/web", "high"]);
     await act(async () => { await store.current.createThread(); });
 
-    expect(api.createThread).toHaveBeenCalledWith("alpha", {}, expect.any(AbortSignal));
+    expect(api.createThread).toHaveBeenCalledWith("alpha", {}, expect.any(AbortSignal), undefined);
     expect([store.current.selectedThread?.runModel, store.current.selectedThread?.runEffort])
       .toEqual(["provider/web", "high"]);
   });
@@ -885,6 +894,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/other" },
       expect.any(AbortSignal),
+      undefined,
     );
 
     cleanupDom();
@@ -904,6 +914,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { effort: "low" },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -940,6 +951,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/low-only", effort: null },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -979,6 +991,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: null },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -9565,7 +9578,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).toBe(imported.id);
       expect(store.current.navigationDestination).toBe("chats");
       expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
-      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
+      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages, projectTransitions: [] });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");
       expect(store.current.composerFocusThreadId).toBe(imported.id);
@@ -9712,5 +9725,309 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).not.toBe(imported.id);
       expect(store.current.detail?.thread.id).not.toBe(imported.id);
     });
+  });
+
+  describe("projects", () => {
+  const webProject = project("project-web", "alpha", { name: "Web console", conversationCount: 1 });
+  const member = thread("member-one", "alpha", { title: "Member", projectId: webProject.id });
+
+  async function renderProjectStore() {
+    vi.mocked(api.bootstrap).mockResolvedValue(
+      bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [member],
+        member.id,
+        { threadsSourceId: "alpha", projects: [webProject], projectsSourceId: "alpha" },
+      ),
+    );
+    return renderStore();
+  }
+
+  it("repairs transition sidecars on effective membership change but not pending intent", async () => {
+    const initial = detail(member);
+    vi.mocked(api.thread).mockResolvedValue(initial);
+    const store = await renderProjectStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
+    const reads = vi.mocked(api.thread).mock.calls.length;
+    const pending = { ...member, revision: member.revision + 1, pendingProject: { projectId: null, turnId: "active" } };
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:00Z", payload: { thread: pending } }));
+    await waitFor(() => expect(store.current.detail?.thread.pendingProject).toEqual(pending.pendingProject));
+    expect(api.thread).toHaveBeenCalledTimes(reads);
+    const moved = { ...member, revision: member.revision + 2, projectId: null };
+    const transition = { id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: null,
+      before: { id: webProject.id, name: webProject.name, color: "default" as const }, after: null, createdAt: "2026-09-12T00:00:01Z" };
+    vi.mocked(api.thread).mockResolvedValue({ ...initial, thread: moved, projectTransitions: [transition] });
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:01Z", payload: { thread: moved } }));
+    await waitFor(() => expect(store.current.detail?.projectTransitions).toEqual([transition]));
+  });
+
+  it("seeds one agent's projects from bootstrap and lists the next agent on switch", async () => {
+    const store = await renderProjectStore();
+    expect(store.current.projectsByAgent.alpha).toEqual([webProject]);
+    expect(store.current.openProjectId).toBeNull();
+
+    // Seeded by the bootstrap: no listing read for the resolved agent.
+    expect(api.projects).not.toHaveBeenCalledWith("alpha", expect.any(AbortSignal));
+    act(() => store.current.selectAgent("beta"));
+    await waitFor(() => expect(api.projects).toHaveBeenCalledWith("beta", expect.any(AbortSignal)));
+  });
+
+  it("opens a project page and merges its members into the listing", async () => {
+    const store = await renderProjectStore();
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    expect(store.current.openProject).toMatchObject({ id: webProject.id });
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]));
+    expect(store.current.threads.some((row) => row.id === member.id)).toBe(true);
+    expect(api.projectThreads).toHaveBeenCalledWith(
+      "alpha",
+      webProject.id,
+      undefined,
+      expect.any(AbortSignal),
+      expect.any(Number),
+    );
+
+    act(() => store.current.closeProject());
+    expect(store.current.openProjectId).toBeNull();
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("applies project summaries and removals from events", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A stale revision loses to the held summary.
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { project: webProject },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:02:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+    expect(store.current.openProjectId).toBeNull();
+  });
+
+  it("moves a conversation through setThreadProject and closes the page on agent switch", async () => {
+    const store = await renderProjectStore();
+    const moved = { ...member, projectId: null as string | null, revision: member.revision + 1 };
+    vi.mocked(api.patchThread).mockResolvedValue(moved);
+
+    await act(async () => { await store.current.setThreadProject(member.id, null); });
+    expect(api.patchThread).toHaveBeenCalledWith(member.id, { projectId: null }, expect.any(AbortSignal));
+    await waitFor(() => expect(
+      store.current.threads.find((row) => row.id === member.id)?.projectId,
+    ).toBeNull());
+
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    act(() => store.current.selectAgent("beta"));
+    expect(store.current.openProjectId).toBeNull();
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("ignores a late member page for the previously open project", async () => {
+    const projectA = project("project-a", "alpha", { name: "A" });
+    const projectB = project("project-b", "alpha", { name: "B" });
+    const memberA = thread("member-a", "alpha", { title: "A member", projectId: projectA.id });
+    const memberB = thread("member-b", "alpha", { title: "B member", projectId: projectB.id });
+    vi.mocked(api.bootstrap).mockResolvedValue(
+      bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [],
+        undefined,
+        { threadsSourceId: "alpha", projects: [projectA, projectB], projectsSourceId: "alpha" },
+      ),
+    );
+    const store = await renderStore();
+    let resolveA!: (page: ThreadPage) => void;
+    let resolveB!: (page: ThreadPage) => void;
+    vi.mocked(api.projectThreads).mockImplementation(async (_sourceId, projectId) => {
+      if (projectId === projectA.id) return new Promise<ThreadPage>((resolve) => { resolveA = resolve; });
+      return new Promise<ThreadPage>((resolve) => { resolveB = resolve; });
+    });
+
+    act(() => store.current.openProjectById(projectA.id));
+    act(() => store.current.openProjectById(projectB.id));
+    await act(async () => { resolveB({ threads: [memberB] }); });
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([memberB.id]));
+    await act(async () => { resolveA({ threads: [memberA], nextCursor: "cursor-a" }); });
+
+    // A's slow page lands nowhere: not the ids, not the cursor, not loading.
+    expect(store.current.projectMembers.map((row) => row.id)).toEqual([memberB.id]);
+    expect(store.current.hasMoreProjectMembers).toBe(false);
+    expect(store.current.projectMembersLoading).toBe(false);
+  });
+
+  it("keeps newer event summaries and tombstoned removals across late listings", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A stale list response must not revert the newer event summary.
+    vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+    await act(async () => { await store.current.loadProjects("alpha"); });
+    expect(store.current.projectsByAgent.alpha).toEqual([updated]);
+
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+
+    // A resurrecting list response must not undo the tombstoned removal.
+    vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+    await act(async () => { await store.current.loadProjects("alpha"); });
+    expect(store.current.projectsByAgent.alpha).toEqual([]);
+  });
+
+  it("keeps newer event summaries and tombstoned removals across a late bootstrap", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A payload-less agents change re-reads the bootstrap, whose snapshot
+    // predates the event: it must not revert the summary.
+    const bootstrapsBefore = () => vi.mocked(api.bootstrap).mock.calls.length;
+    const revalidate = async (id: string) => {
+      const before = bootstrapsBefore();
+      act(() => FakeEventSource.latest?.emit("agents.changed", {
+        id, version: 1, type: "agents.changed", at: "2026-09-08T10:00:01.000Z",
+      }));
+      await waitFor(() => expect(bootstrapsBefore()).toBeGreaterThan(before));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 50); }); });
+    };
+    await revalidate("stale-bootstrap-1");
+    expect(store.current.projectsByAgent.alpha).toEqual([updated]);
+
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+
+    // Nor may it resurrect a project this tab saw deleted.
+    await revalidate("stale-bootstrap-2");
+    expect(store.current.projectsByAgent.alpha).toEqual([]);
+  });
+
+  for (const read of ["listing", "bootstrap"] as const) {
+    it(`keeps a project created during a pending ${read}, but admits later authoritative removal`, async () => {
+      const store = await renderProjectStore();
+      const created = project("new-project", "alpha", { name: "New project" });
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      let listing: ReturnType<typeof store.current.loadProjects> | undefined;
+      if (read === "listing") {
+        vi.mocked(api.projects).mockImplementationOnce(async () => {
+          await pending;
+          return [webProject];
+        });
+        act(() => { listing = store.current.loadProjects("alpha"); });
+      } else {
+        const before = vi.mocked(api.bootstrap).mock.calls.length;
+        vi.mocked(api.bootstrap).mockImplementationOnce(async () => {
+          await pending;
+          return bootstrap([agent("alpha")], [member], member.id, {
+            threadsSourceId: "alpha", projects: [webProject], projectsSourceId: "alpha",
+          });
+        });
+        act(() => FakeEventSource.latest?.emit("agents.changed", {
+          id: "pending-project-bootstrap", version: 1, type: "agents.changed",
+          at: "2026-09-08T10:00:00.000Z",
+        }));
+        await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBeGreaterThan(before));
+      }
+      act(() => FakeEventSource.latest?.emit("projects.changed", {
+        version: 1, type: "projects.changed", at: "2026-09-08T10:00:01.000Z",
+        payload: { project: created },
+      }));
+      await waitFor(() => expect(store.current.projectsByAgent.alpha).toContainEqual(created));
+      await act(async () => { release(); await pending; await listing; });
+      expect(store.current.projectsByAgent.alpha).toContainEqual(created);
+
+      // A subsequent snapshot really can remove a project deleted while offline.
+      vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+      await act(async () => { await store.current.loadProjects("alpha"); });
+      expect(store.current.projectsByAgent.alpha).toEqual([webProject]);
+    });
+  }
+
+  it("closes the open page when a remote archive lands", async () => {
+    const store = await renderProjectStore();
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+
+    const archived = {
+      ...webProject,
+      archivedAt: "2026-09-08T10:00:00.000Z",
+      revision: webProject.revision + 1,
+    };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: archived },
+    }));
+    await waitFor(() => expect(store.current.openProjectId).toBeNull());
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("derives membership from the reconciled projection, not the stale event", async () => {
+    const store = await renderProjectStore();
+    const held = { ...member, revision: 3, projectId: webProject.id };
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [held] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]));
+
+    // A stale detach event (rev 2) races a held attach (rev 3): the member stays.
+    const stale = { ...member, revision: 2, projectId: null as string | null };
+    act(() => FakeEventSource.latest?.emit("thread.changed", {
+      version: 1,
+      type: "thread.changed",
+      threadId: member.id,
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { thread: stale },
+    }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]);
+    expect(store.current.threads.find((row) => row.id === member.id)?.projectId).toBe(webProject.id);
+  });
   });
 });
