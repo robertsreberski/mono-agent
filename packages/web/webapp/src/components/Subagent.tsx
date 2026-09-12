@@ -14,6 +14,8 @@ import {
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { safeJson } from "./json";
+import { resolveSubagentRoute } from "./route-label";
+import { RouteBadge } from "./RouteBadge";
 import { toolHistoryFailure } from "./tool-history";
 import { useToolCallRepair } from "./tool-call-repair";
 import { RunAttribution } from "./RunAttribution";
@@ -412,6 +414,22 @@ export function SubagentPart({ data }: DataMessagePartProps) {
     // the wording and the error code, so the two must not disagree.
     ...(historyFailure === undefined ? [] : ["history not saved"]),
   ].join(" · ");
+  // The delegation's OWN reported route, collapsed-visible: executed, then
+  // attempted, then requested. Old attribution-free records get no badge --
+  // inventing one would rewrite history -- and the expanded RunAttribution
+  // below keeps the full warnings and retry detail.
+  const route = resolveSubagentRoute(view.attribution, view.status);
+  const badge = route === undefined ? undefined : (
+    <RouteBadge
+      modelShort={route.modelShort}
+      effortShort={route.effortShort}
+      label={route.label}
+      title={route.title}
+      compact
+      fallback={route.isFallback}
+      requestedOnly={route.isRequestedOnly}
+    />
+  );
 
   return (
     <ActivityRow
@@ -421,6 +439,7 @@ export function SubagentPart({ data }: DataMessagePartProps) {
       summary={task === undefined ? view.name : `${view.name} — ${task}`}
       failed={failedLabel(view.status === "failed" ? 1 : 0, false)}
       duration={meta}
+      {...(badge === undefined ? {} : { badge })}
     >
       <div className="activity-steps">
         <RunAttribution attribution={view.attribution} status={view.status} />

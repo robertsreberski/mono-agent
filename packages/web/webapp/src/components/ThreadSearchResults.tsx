@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useMemo } from "react";
 import { useConsoleStore } from "../console-store";
 import {
   highlightSegments,
@@ -6,8 +6,10 @@ import {
   type HighlightSegment,
   type ThreadSearchState,
 } from "../thread-search";
-import type { ThreadSearchHit } from "../types";
+import type { AgentSummary, CatalogModel, ThreadSearchHit } from "../types";
 import { Icon } from "./Icon";
+import { flattenCatalogModels, resolveThreadRoute } from "./route-label";
+import { RouteBadge } from "./RouteBadge";
 import { relativeTime } from "./time";
 
 function Highlighted({ segments }: { readonly segments: readonly HighlightSegment[] }) {
@@ -25,17 +27,25 @@ function Highlighted({ segments }: { readonly segments: readonly HighlightSegmen
 function SearchHit({
   hit,
   query,
+  agent,
+  catalogModels,
   onSelect,
   highlightSelected,
 }: {
   readonly hit: ThreadSearchHit;
   readonly query: string;
+  /** The hit's OWN agent match; null when discovery no longer lists it. */
+  readonly agent: AgentSummary | null;
+  readonly catalogModels: Readonly<Record<string, readonly CatalogModel[]>> | undefined;
   readonly onSelect?: () => void;
   readonly highlightSelected: boolean;
 }) {
   const { selectThread, selectedThreadId } = useConsoleStore();
   const { thread } = hit;
   const active = highlightSelected && thread.id === selectedThreadId;
+  // Search replaces the list, so its hits carry the same current-settings
+  // badge the rows they stand in for draw.
+  const route = resolveThreadRoute(thread, agent, catalogModels);
   return (
     <button
       type="button"
@@ -66,6 +76,12 @@ function SearchHit({
         {hit.messageMatches > 1 && (
           <span className="thread-search-count">{`${String(hit.messageMatches)} matches`}</span>
         )}
+        <RouteBadge
+          modelShort={route.modelShort}
+          effortShort={route.effortShort}
+          label={route.label}
+          title={route.title}
+        />
       </span>
     </button>
   );
@@ -94,6 +110,15 @@ export function ThreadSearchResults({
    */
   readonly highlightSelected?: boolean;
 }) {
+  const { agents, catalogByProvider } = useConsoleStore();
+  const agentBySourceId = useMemo(
+    () => new Map(agents.map((agent) => [agent.sourceId, agent])),
+    [agents],
+  );
+  const catalogModels = useMemo(
+    () => flattenCatalogModels(catalogByProvider),
+    [catalogByProvider],
+  );
   const active = search.hits.filter((hit) => hit.thread.archivedAt === null);
   const archived = search.hits.filter((hit) => hit.thread.archivedAt !== null);
 
@@ -125,6 +150,8 @@ export function ThreadSearchResults({
               key={hit.thread.id}
               hit={hit}
               query={query}
+              agent={agentBySourceId.get(hit.thread.sourceId) ?? null}
+              catalogModels={catalogModels}
               onSelect={onSelect}
               highlightSelected={highlightSelected}
             />
@@ -139,6 +166,8 @@ export function ThreadSearchResults({
               key={hit.thread.id}
               hit={hit}
               query={query}
+              agent={agentBySourceId.get(hit.thread.sourceId) ?? null}
+              catalogModels={catalogModels}
               onSelect={onSelect}
               highlightSelected={highlightSelected}
             />

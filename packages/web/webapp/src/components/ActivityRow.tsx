@@ -67,6 +67,7 @@ export function ActivityRow({
   summary,
   failed,
   duration,
+  badge,
   open,
   onToggle,
   ariaLabel,
@@ -80,6 +81,12 @@ export function ActivityRow({
   readonly failed?: string;
   /** A string for a settled figure, or a node such as `ActivityElapsed` that keeps ticking. */
   readonly duration?: ReactNode;
+  /**
+   * Optional collapsed-line metadata, e.g. a subagent's route badge. A plain
+   * node inside the summary line: it never navigates, never toggles, and rows
+   * that omit it render exactly as before.
+   */
+  readonly badge?: ReactNode;
   readonly open?: boolean;
   /** Controlled disclosure callback; omitted rows retain native details behavior. */
   readonly onToggle?: (open: boolean) => void;
@@ -107,6 +114,7 @@ export function ActivityRow({
         </span>
         {label !== undefined && <strong className="activity-row-label">{label}</strong>}
         {summary !== undefined && <span className="activity-row-summary">{summary}</span>}
+        {badge !== undefined && <span className="activity-row-badge">{badge}</span>}
         {failed !== undefined && <span className="failed-tag">{failed}</span>}
         {duration !== undefined && <span className="activity-row-time">{duration}</span>}
         <Icon className="activity-row-chevron" name="chevron-down" size={13} />
