@@ -18,6 +18,7 @@ type ProviderStatusStreamEvent = Extract<AgentStreamEvent, { type: "provider_sta
 
 const BUILTIN_HINTS: Readonly<Record<string, string>> = {
   agent: "Delegating to a subagent…",
+  agentsend: "Continuing a subagent…",
   websearch: "Searching the web…",
   webfetch: "Reading a page…",
   bash: "Running a command…",
@@ -152,7 +153,7 @@ const MEMORY_JOURNAL_NAMES = new Set(["memoryjournal"]);
  * that follows, not a leaf action, so renderers group the child tool calls
  * underneath it.
  */
-const SUBAGENT_LAUNCH_NAMES = new Set(["agent", "task", "subagent", "dispatchagent"]);
+const SUBAGENT_LAUNCH_NAMES = new Set(["agent", "agentsend", "task", "subagent", "dispatchagent"]);
 
 /**
  * Separator the runtime puts between a subagent's profile name and the tool it
@@ -366,6 +367,9 @@ export function formatProviderStatusLine(event: ProviderStatusStreamEvent): stri
 }
 
 function activitySpec(normalized: string, leaf: string): ToolActivitySpec {
+  if (normalized === "agentsend") return {
+    action: "🤖 Continuing agent", actionWithoutPreview: "🤖 Continuing a subagent", previewFields: ["id"], quotePreview: true,
+  };
   if (SUBAGENT_LAUNCH_NAMES.has(normalized)) {
     // An identifier either way — a configured subagent's name, or the
     // kebab-case one a caller gave a subagent it authored at call time — so

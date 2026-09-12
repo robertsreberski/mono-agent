@@ -109,7 +109,11 @@ function toolDescription(subagents, definitions, ceiling) {
   const inline = ceiling === null
     ? ""
     : `\n\nTools you may grant a subagent you build: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
-  return `${DESCRIPTION_BASE}${parallel}${named}${shapes}${inline}`;
+  const base = subagents.instances
+    ? DESCRIPTION_BASE.replace("Bad: anything needing back-and-forth, anything where", "Bad: anything where")
+      .replace("- It cannot ask you or the user anything. One shot.", "- It cannot ask you or the user anything. You can send follow-up work to a persistent child with AgentSend.")
+    : DESCRIPTION_BASE;
+  return `${base}${parallel}${named}${shapes}${inline}`;
 }
 
 /** @param {*} subagents @param {number} maximum */

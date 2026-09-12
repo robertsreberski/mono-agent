@@ -34,7 +34,7 @@ Boundary rules:
 | Telegram `/new` | Current chat's warm provider session plus message and tool history for its logical session across daily rollover | All unrelated conversations, durable memory, run artifacts, and the chat's model/effort override | Telegram confirmation; the next message rebuilds startup context and reloads skills |
 | Idle eviction / replaced / disposed provider session | Warm runtime continuity for that conversation id | Durable Pi transcripts, durable history, memory, and run artifacts | App log line and status metadata event (`evicted`) with reason |
 | Detached status read | Nothing | All runtime/session state | No runtime event; status reads the latest published config + store snapshot |
-| `mono-agent restart --clear-sessions` / explicit purge | Durable Pi transcripts under `piSessionsRoot`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path`, recorded run artifacts, and process-job records/output; nonterminal jobs are interrupted by any restart | Restart/status output reports message-history and tool-history counts/bytes plus ACP authorization counts separately |
+| `mono-agent restart --clear-sessions` / explicit purge | Durable Pi transcripts under `piSessionsRoot`, persistent child registries and transcripts under `subagents.instances.root`, message-history files, the tool-history sidecar, and ACP session authorizations beside `artifacts.dir` | Durable memory under `memory.path`, recorded run artifacts, and process-job records/output; nonterminal jobs are interrupted by any restart | Restart/status output reports message-history and tool-history counts/bytes plus ACP authorization counts separately |
 | Browser disconnect or reload | Only that SSE/browser connection | Web service turn, source-bound thread, messages, committed attachments, provider/harness work | Reconnect receives current state and subsequent events |
 | Web service restart | Any web-owned active upstream connection | Terminal messages, archived/active threads, committed attachments, queued live follow-ups, submission receipts, agent memory/history, recorded runs | Active web turn is projected as `interrupted`; unmarked live offers become queued normal turns, dispatch-marked offers become uncertain, and browsers recover a known submission with `GET` instead of repeating `POST` |
 | `mono-agent web reset --all --yes` | Entire stopped web-console SQLite/settings/upload state | Agent configs, provider/harness history, memory, and recorded-run artifacts | CLI confirmation/result only |
@@ -308,3 +308,22 @@ For retry behavior across *different* models (provider failover, not transport r
 ## Prompt-cache diagnostics
 
 `providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.
+
+
+## Persistent child sessions
+
+`Agent({persist: true})` creates a conversation-scoped child, and `AgentSend`
+resumes that child's own Pi-native durable session. Its registry lives at
+`<subagents root>/<sha256(conversationId)>/instances.json`; provider transcripts
+live in the sibling `sessions/` directory. The default root is
+`<artifacts.dir>/../subagents`, independent of the main `piSessionsRoot`.
+
+Registry mutations and active turns are file-locked across processes. A busy
+instance rejects another turn or a close; Pi's own `session_busy` result is also
+reported as busy. A process crash releases its locks, so a stale running record
+recovers as idle with an interrupted status on the next access. Session context
+is retained on disk, while an in-flight task is not automatically restarted.
+Idle expiry never interrupts a running child. `restart --clear-sessions` purges
+this configured root with other conversation state. See
+[persistent subagent configuration](./tools-and-guards.md#persistent-subagents)
+for limits and lifecycle controls.

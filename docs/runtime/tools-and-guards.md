@@ -16,7 +16,7 @@ independently and reports back. It exists only on the pi runtime, and only when
 
 ```json
 {
-  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent"] },
+  "tools": { "allowedTools": ["Read", "Glob", "Grep", "Agent", "AgentSend"] },
   "subagents": {
     "enabled": true,
     "maxConcurrent": 5,
@@ -117,7 +117,7 @@ begins, not while queued.
 
 **Guardrails.** A subagent is read-only unless its profile enumerates more (or,
 for one built at call time, unless its `tools` request survives the ceiling), and
-it never receives `Agent`, `AskUser`, or any channel-send tool — it cannot
+it never receives `Agent`, `AgentSend`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs
 with no provider session of its own. Without a call-time override or profile pin,
@@ -136,6 +136,46 @@ profile out with `"disallowedTools": ["ReadSkill"]`, which withholds both the to
 and the index. A profile pinned to a model whose runtime lacks skill support
 is skipped automatically rather than failing the run, since a
 non-empty skill list makes skill support a routing requirement.
+
+### Persistent subagents
+
+With subagents enabled, persistence is available by default in configured app
+conversations. Allow both `Agent` and `AgentSend` in `tools.allowedTools` (or use
+`"*"`). `Agent({name: "researcher", prompt: "Review the design", persist: true,
+id: "reviewer"})` creates an instance and runs its first turn.
+`AgentSend({id: "reviewer", message: "Now check this revision"})` resumes its own
+Pi-native durable session. The parent transcript is never seeded into the child.
+The selected model, effort, prompt, and profile are retained for that instance.
+
+IDs are conversation-scoped lowercase kebab-case, 1–40 characters. If omitted,
+an id such as `researcher-1` is generated. Results include the id, turn count,
+and status; the parent's Session envelope lists live instances on every turn.
+Use `AgentSend({id: "reviewer", close: true})` when done, or combine a final
+`message` with `close: true`. Close-only calls do not spend the parent call budget.
+
+Configure `subagents.instances`:
+
+| Field | Default | Limits / behavior |
+| --- | --- | --- |
+| `enabled` | `true` when subagents are enabled | `false` keeps stateless `Agent`, without persistence parameters, and removes `AgentSend`. |
+| `root` | `<artifacts.dir>/../subagents` | Relative paths resolve like other config paths. |
+| `maxPerConversation` | `8` | 1–32 live instances. |
+| `idleTtlMs` | `86400000` (one day) | 60000–604800000; expiry is applied on registry access. Running instances do not expire. |
+| `maxTurns` | `60` | 1–500 total child turns per instance; close and create another when exhausted. This differs from the per-run `subagents.maxTurns` model-turn cap. |
+
+The registry and Pi JSONL transcripts survive restarts. An interrupted instance
+returns to idle on recovery; it does not rerun automatically. Closed and expired
+records remain for 24 hours, and their provider sessions are retired best-effort.
+`restart --clear-sessions` removes the configured instance root too.
+One instance can run only one turn at a time; concurrent continuation or close
+requests fail with a busy error. Continuations share `Agent`'s parent-turn call,
+concurrency, output, and timeout limits. If a runner ignores cancellation, its
+instance stays busy until that runner actually settles.
+
+There is no cross-conversation reuse, child-to-parent question tool, or detached
+subagent execution. Persistence grants no additional authority. Bare runtime
+hosts without a conversation registry retain stateless `Agent` and reject
+`persist`/`id` if passed directly.
 
 ## Built-in tools
 

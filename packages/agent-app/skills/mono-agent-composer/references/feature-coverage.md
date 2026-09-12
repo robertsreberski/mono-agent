@@ -141,3 +141,13 @@ lowercase kebab-case names (1–40 characters), distinct from profile names and
 resolve independently as call-time override, profile pin, parent effective value,
 then base/runtime default. `effort` works on every call; `model` is offered only
 with a non-empty allow-list. Only `tools` requires an authored `systemPrompt`.
+
+
+Persistent in-process helpers use `Agent({persist: true, id?})` followed by
+`AgentSend({id, message?, close?})`. Allow both tool names. With subagents enabled,
+`subagents.instances.enabled` defaults true; `root` defaults beside artifacts,
+`maxPerConversation` defaults 8, `idleTtlMs` defaults one day, and `maxTurns`
+defaults 60 child turns. Registries and Pi transcripts survive restarts and are
+removed by `restart --clear-sessions`. Instances are conversation-scoped and
+serialized; no detached runs or child-to-parent questions are supported.
+Disabling instances preserves stateless `Agent`.
