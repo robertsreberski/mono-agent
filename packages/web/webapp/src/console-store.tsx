@@ -2793,7 +2793,38 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }
   }, [evictCronTranscript]);
 
-  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean) => {
+  /**
+   * Admit one agent's full project listing (bootstrap or `GET /projects`).
+   *
+   * Returned summaries obey revision guards and removal tombstones. Omitted
+   * rows drop only if unchanged since this request began: a creation or update
+   * received while the snapshot was in flight is newer than its absence.
+   */
+  const mergeProjectListing = useCallback((sourceId: string, projects: readonly ProjectSummary[], observed: typeof projectsByAgent) => {
+    const now = Date.now();
+    for (const [id, until] of removedProjectsRef.current) {
+      if (until <= now) removedProjectsRef.current.delete(id);
+    }
+    setProjectsByAgent((current) => {
+      const heldById = new Map((current[sourceId] ?? []).map((item) => [item.id, item]));
+      const next: ProjectSummary[] = [];
+      for (const incoming of projects) {
+        if (incoming.sourceId !== sourceId || removedProjectsRef.current.has(incoming.id)) continue;
+        const held = heldById.get(incoming.id);
+        next.push(held !== undefined && held.revision > incoming.revision ? held : incoming);
+      }
+      const returnedIds = new Set(projects.map((project) => project.id));
+      const observedById = new Map((observed[sourceId] ?? []).map((project) => [project.id, project]));
+      for (const held of heldById.values()) {
+        if (!returnedIds.has(held.id) && !removedProjectsRef.current.has(held.id)
+          && observedById.get(held.id) !== held) next.push(held);
+      }
+      next.sort(byProjectRecent);
+      return { ...current, [sourceId]: next };
+    });
+  }, []);
+
+  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean, observedProjects: typeof projectsByAgent) => {
     // BEFORE anything is read off the current selection: what a different
     // console left behind is not a selection to keep.
     discardOtherHostData(rawNext.console.hostName);
@@ -2823,11 +2854,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setThreadCursorByBucket((current) => ({ ...current, [seeded]: next.threadsNextCursor }));
     }
     // The resolved agent's projects land with the snapshot, archived included.
-    if (next.projectsSourceId !== null) {
-      const listedSourceId = next.projectsSourceId;
-      const listed = [...next.projects].sort(byProjectRecent);
-      setProjectsByAgent((current) => ({ ...current, [listedSourceId]: listed }));
-    }
+    if (next.projectsSourceId !== null) mergeProjectListing(next.projectsSourceId, next.projects, observedProjects);
     setBootstrap(next);
     // The listing is a SERVER SUMMARY for every conversation in it, so it
     // CONFIRMS the ones this tab is already holding -- and that is all it is
@@ -2980,6 +3007,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     applyConnection,
     discardOtherHostData,
     failOwnedSelection,
+    mergeProjectListing,
     publishDetail,
     reconcileCronRevision,
     setSelectionRequest,
@@ -3022,8 +3050,9 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // answer says is running describes the fleet as of now, not as of
       // whenever it happens to land.
       const projectionSeq = ++activeThreadsSeqRef.current;
+      const observedProjects = projectsByAgentRef.current;
       const next = await boundedRequest((signal) => api.bootstrap(signal, scope), THREAD_READ_TIMEOUT_MS);
-      applyBootstrap(next, issuedAt, scope.archived === true);
+      applyBootstrap(next, issuedAt, scope.archived === true, observedProjects);
       acceptActiveThreads(next.activeThreads, projectionSeq);
       applyConnection("live");
     } catch (loadError) {
@@ -3518,6 +3547,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const heldEtag = refreshThreadId === null
         ? undefined
         : threadCacheRef.current.get(refreshThreadId)?.etag;
+      const observedProjects = projectsByAgentRef.current;
       const [nextBootstrap, nextDetail] = await Promise.all([
         scope.bootstrap
           ? boundedRequest((signal) => api.bootstrap(signal, bucket), THREAD_READ_TIMEOUT_MS)
@@ -3530,7 +3560,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           : Promise.resolve(null),
       ]);
       if (nextBootstrap !== null) {
-        applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true);
+        applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true, observedProjects);
         acceptActiveThreads(nextBootstrap.activeThreads, projectionSeq);
       }
       if (nextDetail === NOT_MODIFIED) {
@@ -4064,8 +4094,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * A listing merges rather than replaces: every returned summary passes the
    * same revision guard as events, and tombstoned ids stay removed, so a late
    * page can neither resurrect a deleted project nor revert a newer summary.
-   * Rows the server no longer carries drop, because the listing is newer truth
-   * for everything it does not tombstone.
+   * Omitted rows drop only when unchanged since this request began.
    *
    * Resolves with the list so `openProjectById` can proceed in the same tick;
    * background refreshes report failures as action errors rather than throwing.
@@ -4073,25 +4102,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   const loadProjects = useCallback(async (sourceId: string): Promise<readonly ProjectSummary[]> => {
     const inFlight = projectReadsRef.current.get(sourceId);
     if (inFlight !== undefined) return inFlight;
+    const observedProjects = projectsByAgentRef.current;
     const request = boundedRequest(
       (signal) => api.projects(sourceId, signal),
       THREAD_READ_TIMEOUT_MS,
     ).then((projects) => {
-      const now = Date.now();
-      for (const [id, until] of removedProjectsRef.current) {
-        if (until <= now) removedProjectsRef.current.delete(id);
-      }
-      setProjectsByAgent((current) => {
-        const heldById = new Map((current[sourceId] ?? []).map((item) => [item.id, item]));
-        const next: ProjectSummary[] = [];
-        for (const incoming of projects) {
-          if (incoming.sourceId !== sourceId || removedProjectsRef.current.has(incoming.id)) continue;
-          const held = heldById.get(incoming.id);
-          next.push(held !== undefined && held.revision > incoming.revision ? held : incoming);
-        }
-        next.sort(byProjectRecent);
-        return { ...current, [sourceId]: next };
-      });
+      mergeProjectListing(sourceId, projects, observedProjects);
       return projects;
     });
     projectReadsRef.current.set(sourceId, request);
@@ -4103,7 +4119,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     } finally {
       if (projectReadsRef.current.get(sourceId) === request) projectReadsRef.current.delete(sourceId);
     }
-  }, []);
+  }, [mergeProjectListing]);
 
   /**
    * Read one page of the open project's members.

@@ -449,14 +449,14 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 /* Projects section: the agent's named conversation containers, between
    Running and Recent. Rows borrow the conversation rows' measures so a
    project name and a conversation title sit on the same lines. */
-.dashboard-new-action { display: inline-flex; align-items: center; gap: 4px; flex: none; padding: 6px 8px; margin-right: -8px; color: var(--accent); background: transparent; border-radius: 7px; cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
+.dashboard-new-action { height: 26px; display: inline-flex; align-items: center; gap: 4px; flex: none; margin-right: -8px; padding: 0 8px; color: var(--accent); background: transparent; border-radius: 8px; cursor: pointer; font-size: 10.5px; font-weight: 650; line-height: 1; white-space: nowrap; }
 .dashboard-new-action:hover { background: var(--surface-hover); }
 .project-item { position: relative; display: flex; align-items: stretch; margin: 0 -8px; border-radius: 9px; transition: background 130ms ease; }
 .project-item + .project-item::before { content: ""; position: absolute; top: 0; left: 8px; right: 8px; height: 1px; background: var(--line); }
 .project-item:hover { background: var(--surface-hover); }
 .project-trigger { min-width: 0; min-height: 58px; flex: 1; display: flex; align-items: center; gap: 10px; padding: 7px 8px; text-align: left; background: transparent; cursor: pointer; }
 /* The Running card's agent tile (30px, the app background) with a folder in it. */
-.project-tile { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--text-soft); background: var(--app-bg); border-radius: 8px; box-shadow: inset 0 0 0 1px var(--line); }
+.project-tile { width: 30px; height: 30px; display: grid; place-items: center; flex: none; color: var(--text-soft); background: var(--app-bg); border-radius: 8px; }
 .project-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .project-title { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .project-preview { min-width: 0; display: flex; align-items: center; gap: 6px; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
@@ -476,54 +476,58 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .project-back:hover { color: var(--text); }
 .project-back > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-scroll { min-height: 0; flex: 1; padding: 20px var(--gutter-right) 28px var(--gutter-left); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.project-title-block { display: flex; flex-direction: column; gap: 4px; }
+.project-title-block { display: flex; flex-direction: column; gap: 3px; }
 .project-title-block > .dashboard-section-label { margin-bottom: 0; }
 .project-name { margin: 0; color: var(--text); font-size: 22px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.15; overflow-wrap: anywhere; }
-.project-meta { margin: 0; color: var(--text-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.project-meta { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.4; font-variant-numeric: tabular-nums; }
 .project-context-card { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding: 12px 14px; background: var(--surface-raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-sm); }
 .project-context-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .project-context-head > .dashboard-section-label { margin-bottom: 0; }
-.project-context-edit { flex: none; margin: -4px -6px -4px 0; padding: 4px 6px; color: var(--accent); background: transparent; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 650; }
+.project-context-edit { flex: none; margin: -4px -6px -4px 0; padding: 4px 6px; color: var(--accent); background: transparent; border-radius: 6px; cursor: pointer; font-size: 10.5px; font-weight: 650; }
 .project-context-edit:hover { color: var(--accent-strong); background: var(--surface-hover); }
 .project-context-text { margin: 0; color: var(--text-soft); font-size: 12px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .project-context-text.is-empty { color: var(--text-muted); }
 .project-context-text code, .project-context-card code { font-family: var(--font-mono); font-size: 0.92em; }
 .project-context-footnote { margin: 0; color: var(--text-muted); font-size: 10px; }
-.project-members-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 24px 0 8px; }
+.project-members-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 28px 0 8px; }
 .project-members-head > .dashboard-section-label { margin-bottom: 0; }
 .project-members-sort { color: var(--text-muted); font-size: 10px; font-weight: 500; white-space: nowrap; }
 
 /* Project settings sheet: a bottom sheet on touch screens, a centered dialog
    beside them. One structure, and the viewport decides which it is. */
 .sheet-layer { position: fixed; inset: 0; display: flex; align-items: flex-end; justify-content: center; background: rgba(7, 10, 8, 0.42); backdrop-filter: blur(6px); z-index: 100; }
-.sheet { width: 100%; max-height: 92dvh; display: flex; flex-direction: column; gap: 22px; padding: 12px 16px calc(34px + env(safe-area-inset-bottom)); overflow-y: auto; color: var(--text); background: var(--panel); border-radius: 20px 20px 0 0; box-shadow: var(--shadow-lg); }
+.sheet { width: 100%; max-height: 92dvh; display: flex; flex-direction: column; gap: 20px; padding: 10px 17px calc(28px + env(safe-area-inset-bottom)); overflow-y: auto; color: var(--text); background: var(--panel); border-radius: 20px 20px 0 0; box-shadow: var(--shadow-lg); }
 .sheet-handle { width: 40px; height: 4px; flex: none; margin: 0 auto; background: var(--line-strong); border-radius: 2px; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.sheet-head h2 { margin: 0; font-size: 17px; font-weight: 600; }
-.sheet-cancel { padding: 8px 4px; color: var(--text-muted); background: transparent; cursor: pointer; font-size: 15px; }
+.sheet-head h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.sheet-cancel { min-width: 44px; padding: 8px 4px; color: var(--text-muted); background: transparent; border-radius: 7px; cursor: pointer; text-align: left; font-size: 12px; font-weight: 500; }
 .sheet-cancel:hover { color: var(--text); }
-.sheet-save { padding: 8px 4px; color: var(--accent); background: transparent; cursor: pointer; font-size: 15px; font-weight: 600; }
+.sheet-save { min-width: 44px; padding: 8px 4px; color: var(--accent); background: transparent; border-radius: 7px; cursor: pointer; text-align: right; font-size: 12px; font-weight: 650; }
 .sheet-save:hover:not(:disabled) { color: var(--accent-strong); }
 .sheet-save:disabled { opacity: 0.45; cursor: default; }
 .sheet-field { display: flex; flex-direction: column; gap: 8px; }
 .sheet-field > .dashboard-section-label { margin-bottom: 0; }
 .sheet-field-head { justify-content: space-between; }
-.sheet-char-count { font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; }
-.sheet-field input, .sheet-field textarea { width: 100%; padding: 12px 14px; color: var(--text); background: var(--surface-subtle); border: 1px solid transparent; border-radius: 12px; outline: 0; font: inherit; font-size: 14px; line-height: 1.5; transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease; }
-.sheet-field input { min-height: 48px; font-size: 16px; }
-.sheet-field textarea { min-height: 120px; resize: vertical; }
+.sheet-char-count { font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; }
+.sheet-field input, .sheet-field textarea { width: 100%; padding: 12px 14px; color: var(--text); background: var(--surface-subtle); border: 1px solid var(--line-strong); border-radius: 12px; outline: 0; font: inherit; font-size: 12.5px; line-height: 1.5; transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease; }
+.sheet-field input { min-height: 44px; padding-block: 0; }
+.sheet-field textarea { min-height: 118px; resize: vertical; }
+/* iOS zooms into inputs under 16px; the composer and search fields do the same. */
+@media (hover: none), (pointer: coarse) {
+  .sheet-field input, .sheet-field textarea { font-size: 16px; }
+}
 .sheet-field input:focus, .sheet-field textarea:focus { background: var(--surface-raised); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-.sheet-footnote { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
-.sheet-error { margin: 0; color: var(--danger); font-size: 12px; line-height: 1.4; }
+.sheet-footnote { color: var(--text-muted); font-size: 10.5px; line-height: 1.45; }
+.sheet-error { margin: 0; color: var(--danger); font-size: 10.5px; line-height: 1.45; }
 .sheet-group { display: flex; flex-direction: column; overflow: hidden; background: var(--surface-subtle); border-radius: 12px; }
-.sheet-row { display: flex; align-items: center; gap: 12px; padding: 14px; color: var(--text); background: transparent; cursor: pointer; text-align: left; font-size: 15px; }
+.sheet-row { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--text); background: transparent; cursor: pointer; text-align: left; font-size: 12px; font-weight: 600; }
 .sheet-row + .sheet-row { border-top: 1px solid var(--line); }
 .sheet-row:hover:not(:disabled) { background: var(--surface-hover); }
 .sheet-row:disabled { opacity: 0.5; cursor: default; }
 .sheet-row-label { flex: 1; }
-.sheet-row-hint { color: var(--text-muted); font-size: 13px; }
+.sheet-row-hint { color: var(--text-muted); font-size: 10.5px; font-weight: 500; }
 .sheet-row.is-danger { color: var(--danger); }
-.sheet-created { margin: 0; color: var(--text-muted); font-size: 12px; text-align: center; }
+.sheet-created { margin: 0; color: var(--text-muted); font-size: 10.5px; text-align: center; }
 @media (min-width: 901px) {
   .sheet-layer { align-items: center; padding: 24px 16px; }
   .sheet { width: min(100%, 520px); max-height: calc(100dvh - 48px); padding: 20px 20px 24px; border-radius: 18px; }
@@ -1416,6 +1420,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
   .composer-dropzone { padding: 8px 8px 6px; }
   .composer-input { font-size: 16px; }
   .dashboard-section + .dashboard-section { margin-top: 23px; }
+  .project-members-head { margin-top: 23px; }
   .skill-browser-popup { left: 0; right: 0; top: auto; bottom: 0; width: 100%; max-height: min(78dvh, 680px); border-right: 0; border-bottom: 0; border-left: 0; border-radius: 16px 16px 0 0; transform: none; }
   .skill-browser-list { max-height: calc(78dvh - 150px); padding-bottom: max(8px, env(safe-area-inset-bottom)); }
   .chat-empty { min-height: 330px; padding: 32px 10px; }

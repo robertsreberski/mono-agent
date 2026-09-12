@@ -566,6 +566,20 @@ describe("Chat conversation actions", () => {
     expect(screen.queryByRole("menuitem", { name: "Remove from project" })).toBeNull();
   });
 
+  it("keeps an archived member's project in the menu", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent", { projectId: "p-one", archivedAt: "2026-09-01T00:00:00.000Z" });
+    storeMock.current = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: { agent: [project("p-one", "agent", { name: "First" })] },
+    };
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Move to project First" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Remove from project" })).toBeVisible();
+  });
+
   it("makes a new project from this chat", async () => {
     const selected = thread("thread-a", "agent");
     storeMock.current = { ...chatStore(selected, chatDetail(selected, 0)), projectsByAgent: {} };

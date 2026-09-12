@@ -348,7 +348,9 @@ function ConversationActions() {
   const archived = selectedThread.archivedAt !== null;
   const canDelete = archived
     && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false);
-  const memberProjectId = archived ? null : selectedThread.projectId;
+  // Membership survives archiving (storage keeps it; the context still
+  // reaches a restored member), so the menu says where the chat is either way.
+  const memberProjectId = selectedThread.projectId;
   const memberProjectName = memberProjectId === null
     ? null
     : (projectsByAgent[selectedThread.sourceId] ?? []).find((project) => project.id === memberProjectId)?.name ?? null;

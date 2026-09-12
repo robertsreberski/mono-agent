@@ -9890,6 +9890,86 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.projectsByAgent.alpha).toEqual([]);
   });
 
+  it("keeps newer event summaries and tombstoned removals across a late bootstrap", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("project.changed", {
+      version: 1,
+      type: "project.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A payload-less agents change re-reads the bootstrap, whose snapshot
+    // predates the event: it must not revert the summary.
+    const bootstrapsBefore = () => vi.mocked(api.bootstrap).mock.calls.length;
+    const revalidate = async (id: string) => {
+      const before = bootstrapsBefore();
+      act(() => FakeEventSource.latest?.emit("agents.changed", {
+        id, version: 1, type: "agents.changed", at: "2026-09-08T10:00:01.000Z",
+      }));
+      await waitFor(() => expect(bootstrapsBefore()).toBeGreaterThan(before));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 50); }); });
+    };
+    await revalidate("stale-bootstrap-1");
+    expect(store.current.projectsByAgent.alpha).toEqual([updated]);
+
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+
+    // Nor may it resurrect a project this tab saw deleted.
+    await revalidate("stale-bootstrap-2");
+    expect(store.current.projectsByAgent.alpha).toEqual([]);
+  });
+
+  for (const read of ["listing", "bootstrap"] as const) {
+    it(`keeps a project created during a pending ${read}, but admits later authoritative removal`, async () => {
+      const store = await renderProjectStore();
+      const created = project("new-project", "alpha", { name: "New project" });
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      let listing: ReturnType<typeof store.current.loadProjects> | undefined;
+      if (read === "listing") {
+        vi.mocked(api.projects).mockImplementationOnce(async () => {
+          await pending;
+          return [webProject];
+        });
+        act(() => { listing = store.current.loadProjects("alpha"); });
+      } else {
+        const before = vi.mocked(api.bootstrap).mock.calls.length;
+        vi.mocked(api.bootstrap).mockImplementationOnce(async () => {
+          await pending;
+          return bootstrap([agent("alpha")], [member], member.id, {
+            threadsSourceId: "alpha", projects: [webProject], projectsSourceId: "alpha",
+          });
+        });
+        act(() => FakeEventSource.latest?.emit("agents.changed", {
+          id: "pending-project-bootstrap", version: 1, type: "agents.changed",
+          at: "2026-09-08T10:00:00.000Z",
+        }));
+        await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBeGreaterThan(before));
+      }
+      act(() => FakeEventSource.latest?.emit("project.changed", {
+        version: 1, type: "project.changed", at: "2026-09-08T10:00:01.000Z",
+        payload: { project: created },
+      }));
+      await waitFor(() => expect(store.current.projectsByAgent.alpha).toContainEqual(created));
+      await act(async () => { release(); await pending; await listing; });
+      expect(store.current.projectsByAgent.alpha).toContainEqual(created);
+
+      // A subsequent snapshot really can remove a project deleted while offline.
+      vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+      await act(async () => { await store.current.loadProjects("alpha"); });
+      expect(store.current.projectsByAgent.alpha).toEqual([webProject]);
+    });
+  }
+
   it("closes the open page when a remote archive lands", async () => {
     const store = await renderProjectStore();
     vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
