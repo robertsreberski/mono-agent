@@ -16,7 +16,24 @@ const RUN_STATUS: Readonly<Record<CronRunStatus, string>> = {
   dropped: "Dropped",
 };
 
-/** Require an unambiguous future instant, rejecting dates JavaScript normalizes. */
+/** Most recent invocation instant, newest first. Untrusted wire values parse or lose. */
+function lastInvocationTimeMs(job: CronJob): number | undefined {
+  const stamp = job.lastRun?.completedAt ?? job.lastRun?.startedAt ?? job.lastRun?.orderedAt;
+  if (stamp === undefined) return undefined;
+  const parsed = Date.parse(stamp);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function compareAutomations(left: CronJob, right: CronJob): number {
+  const leftAt = lastInvocationTimeMs(left);
+  const rightAt = lastInvocationTimeMs(right);
+  if (leftAt !== undefined || rightAt !== undefined) {
+    if (leftAt === undefined) return 1;
+    if (rightAt === undefined) return -1;
+    if (rightAt !== leftAt) return rightAt - leftAt;
+  }
+  return left.jobId.localeCompare(right.jobId);
+}
 const futureInstant = (value: string | undefined): Date | undefined => {
   const fields = value?.match(
     /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u,
@@ -73,6 +90,9 @@ function AutomationRow({
       : live ? "Disabled" : "Disabled in snapshot";
   const lastRun = job.lastRun;
   const lastRunAt = lastRun?.completedAt ?? lastRun?.startedAt ?? lastRun?.orderedAt;
+  // Untrusted wire values parse or lose: an unparseable stamp sorts with the
+  // never-run jobs and draws no relative time rather than crashing the list.
+  const lastRunAtMs = lastRunAt === undefined ? undefined : Date.parse(lastRunAt);
   // The row's stamp carries WHEN the job last ran, the way a conversation row
   // carries when it last moved, so the line below only has to say how it went.
   const lastRunLabel = job.activeRunId !== undefined
@@ -99,7 +119,7 @@ function AutomationRow({
             <span className={`automation-enabled${enabled ? " is-enabled" : ""}`}>
               {enabledLabel}
             </span>
-            {lastRunAt !== undefined && (
+            {lastRunAt !== undefined && lastRunAtMs !== undefined && Number.isFinite(lastRunAtMs) && (
               <time dateTime={lastRunAt}>{relativeTime(lastRunAt)}</time>
             )}
           </span>
@@ -191,7 +211,7 @@ export function AutomationsList({
       state,
       job.health,
     ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
-  }) ?? [], [cronOverview?.jobs, normalizedQuery]);
+  }).sort(compareAutomations) ?? [], [cronOverview?.jobs, normalizedQuery]);
 
   if (selectedAgent === null || selectedAgentId === null) {
     return (

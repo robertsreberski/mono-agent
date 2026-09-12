@@ -1468,6 +1468,7 @@ export class WebService {
         this.emit("cron.changed", undefined, { sourceId });
         this.emit("threads.changed");
       }
+      for (const logicalKey of synced.pushLogicalKeys) this.announcePushEvent(logicalKey);
       return synced.overview;
     }
     const stored = this.store.storedCronOverview(sourceId);
@@ -1807,6 +1808,7 @@ export class WebService {
     const overview = synced.overview;
     const job = overview.jobs.find((candidate) => candidate.jobId === jobId);
     if (job === undefined) throw new WebConsoleError("invalid_operator_cron", "Updated cron job disappeared.", 502);
+    for (const logicalKey of synced.pushLogicalKeys) this.announcePushEvent(logicalKey);
     if (synced.changed) {
       this.emit("cron.changed", job.threadId, { sourceId, jobId });
       this.emitStoredThread(job.threadId, ["thread.changed", "threads.changed"]);
@@ -3464,6 +3466,7 @@ export class WebService {
     const capabilityChanged = projected.size !== this.projectedCapabilities.size
       || [...projected].some(([sourceId, signature]) => this.projectedCapabilities.get(sourceId) !== signature);
     const cronChangedSources = new Set<string>();
+    const cronPushKeys: string[] = [];
     await Promise.all([...nextConnections.entries()].map(async ([sourceId, connection]) => {
       if (connection.info.cron?.read !== true) return;
       try {
@@ -3472,6 +3475,7 @@ export class WebService {
         );
         const synced = this.store.syncCronOverviewResult({ sourceId, ...overview });
         if (synced.changed) cronChangedSources.add(sourceId);
+        cronPushKeys.push(...synced.pushLogicalKeys);
       } catch (error) {
         this.options.logger?.debug?.("Cron operator refresh failed; retaining the last authoritative snapshot.", {
           sourceId,
@@ -3488,6 +3492,7 @@ export class WebService {
     if (agentsChanged || capabilityChanged) this.emit("agents.changed");
     for (const sourceId of cronChangedSources) this.emit("cron.changed", undefined, { sourceId });
     if (cronChangedSources.size > 0) this.emit("threads.changed");
+    for (const logicalKey of cronPushKeys) this.announcePushEvent(logicalKey);
     await this.reconcileDueProcessJobCards(previousConnections, nextConnections, signal);
     for (const threadId of this.store.queuedLiveInputThreadIds()) {
       void this.drainQueuedLiveInputs(threadId);

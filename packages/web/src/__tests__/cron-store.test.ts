@@ -8,8 +8,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE } from "@mono-agent/agent-contracts";
 
-import type { WebAgentSummary, WebCronRun, WebCronRunSummary } from "../contracts.js";
-import { WebStore } from "../store.js";
+import type { WebAgentSummary, WebCronJob, WebCronRun, WebCronRunSummary } from "../contracts.js";
+import { notificationPushLogicalKey, WebStore } from "../store.js";
+import { webPushPayload } from "../push.js";
 import { temporaryRoot } from "./helpers.js";
 
 const cleanup: string[] = [];
@@ -1391,6 +1392,7 @@ describe("cron Reply operation storage", () => {
     }
   });
 
+
   it("reads a completed receipt coherently while another process deletes its archived thread", async () => {
     const { stateDir, store } = await replyFixture();
     const captured = store.captureCronReplySnapshot("agent-one", "daily:brief", runId, "summary");
@@ -1487,5 +1489,446 @@ describe("cron Reply operation storage", () => {
     expect(store.cronReplyOperation(operationId))
       .toMatchObject({ kind: "tombstoned", operation: { operationId, failureReason: "thread_deleted" } });
     store.close();
+  });
+});
+
+describe("cron completion browser push", () => {
+  const SOURCE = "agent-one";
+  const JOB = "daily:brief";
+
+  type OverviewJob = Omit<WebCronJob, "threadId">;
+
+  function overviewJob(lastRun?: WebCronRunSummary): OverviewJob {
+    return {
+      jobId: JOB,
+      expression: "*/5 * * * *",
+      timezone: "Europe/Amsterdam",
+      conversationId: `cron:${JOB}`,
+      configured: true,
+      declaredEnabled: true,
+      effectiveEnabled: true,
+      nextRunAt: "2026-08-14T10:05:00.000Z",
+      health: "healthy",
+      ...(lastRun === undefined ? {} : { lastRun }),
+    };
+  }
+
+  function completedRun(
+    runId: string,
+    sequence: number,
+    overrides: Partial<WebCronRunSummary> = {},
+  ): WebCronRunSummary {
+    return {
+      projection: "summary",
+      jobId: JOB,
+      scheduledAt: "2026-08-14T10:00:00.000Z",
+      orderedAt: "2026-08-14T10:00:00.000Z",
+      trigger: "scheduled",
+      status: "succeeded",
+      startedAt: "2026-08-14T10:00:01.000Z",
+      completedAt: "2026-08-14T10:00:02.000Z",
+      eventCount: 0,
+      runId,
+      sequence,
+      ...overrides,
+    };
+  }
+
+  function subscribePush(store: WebStore): void {
+    store.registerWebPushSubscription({
+      endpoint: "https://push.example.test/cron-completion",
+      p256dh: "p256dh",
+      auth: "auth",
+      siteOrigin: "https://console.example.test",
+      keyFingerprint: "fingerprint",
+    });
+  }
+
+  function pushCount(store: WebStore): number {
+    const database = new DatabaseSync(store.paths.database, { readOnly: true });
+    try {
+      return (database.prepare("SELECT COUNT(*) AS count FROM push_events").get() as { count: number }).count;
+    } finally {
+      database.close();
+    }
+  }
+
+  async function fixture(clock?: () => Date): Promise<{ stateDir: string; store: WebStore }> {
+    const root = await temporaryRoot();
+    cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir, ...(clock === undefined ? {} : { clock }) });
+    store.replaceAgents([agent()]);
+    return { stateDir, store };
+  }
+
+  it("stays silent for the first-learned baseline, then pushes exactly once for the next completion", async () => {
+    let instant = Date.parse("2026-08-14T10:00:00.000Z");
+    const { stateDir, store } = await fixture(() => new Date(instant));
+    try {
+      subscribePush(store);
+      const threadId = store.syncCronOverview({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob()],
+      }).jobs[0]!.threadId;
+
+      // A running run establishes observation without notifying.
+      const runningSummary = completedRun("cron:run:one", 1, {
+        status: "running",
+        startedAt: "2026-08-14T10:00:01.000Z",
+      });
+      expect(store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:05.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(runningSummary)],
+      })).toMatchObject({ changed: true, pushLogicalKeys: [] });
+      expect(pushCount(store)).toBe(0);
+
+      // The same run completing is newly observed: one push, linked to the channel.
+      instant += 10_000;
+      const completed = completedRun("cron:run:one", 1, { text: "Digest ready" });
+      const synced = store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:10.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(completed)],
+      });
+      const expectedKey = notificationPushLogicalKey(SOURCE, "cron:run:one:success");
+      expect(synced).toMatchObject({ changed: true, pushLogicalKeys: [expectedKey] });
+      expect(store.webPushEventByLogicalKey(expectedKey)).toMatchObject({
+        kind: "response.ready",
+        threadId,
+        sourceId: SOURCE,
+        title: "agent-one · CRON",
+        body: "Digest ready",
+      });
+
+      // Repeated refreshes and a restart with the same snapshot never re-notify.
+      expect(store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:15.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(completed)],
+      })).toMatchObject({ changed: false, pushLogicalKeys: [] });
+      expect(pushCount(store)).toBe(1);
+    } finally {
+      store.close();
+    }
+
+    const reopened = await WebStore.open({ stateDir, clock: () => new Date(instant) });
+    try {
+      reopened.replaceAgents([agent()]);
+      expect(reopened.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:20.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(completedRun("cron:run:one", 1, { text: "Digest ready" }))],
+      })).toMatchObject({ changed: false, pushLogicalKeys: [] });
+      expect(pushCount(reopened)).toBe(1);
+
+      // A genuinely new run after the restart still notifies.
+      instant += 60_000;
+      const next = completedRun("cron:run:two", 2, { text: "Next digest" });
+      const resynced = reopened.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:01:20.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(next)],
+      });
+      expect(resynced.pushLogicalKeys).toHaveLength(1);
+      expect(resynced.pushLogicalKeys[0]).not.toBe(notificationPushLogicalKey(SOURCE, "cron:run:one:success"));
+      expect(pushCount(reopened)).toBe(2);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  it("treats a completed run learned with the job as its baseline, not as news", async () => {
+    const { store } = await fixture();
+    try {
+      subscribePush(store);
+      const completed = completedRun("cron:run:one", 1, { text: "Old digest" });
+      expect(store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(completed)],
+      })).toMatchObject({ changed: true, pushLogicalKeys: [] });
+      expect(pushCount(store)).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    ["silent sentinel success", { status: "succeeded", text: "NOTHING_TO_REPORT" }],
+    ["narrated sentinel success", { status: "succeeded", text: "Checked everything\nNOTHING_TO_REPORT" }],
+    ["empty success", { status: "succeeded", text: "   " }],
+    ["admitted", { status: "admitted" }],
+    ["running", { status: "running" }],
+    ["queued", { status: "queued", queueDepth: 1 }],
+    ["cancelled", { status: "cancelled" }],
+    ["skipped overlap", { status: "skipped_overlap", blockedByTrigger: "scheduled" }],
+    ["dropped", { status: "dropped" }],
+  ] as const)("keeps a %s completion quiet", async (_label, overrides) => {
+    const { store } = await fixture();
+    try {
+      subscribePush(store);
+      store.syncCronOverview({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob()],
+      });
+      const run = completedRun("cron:run:quiet", 1, { ...overrides });
+      expect(store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:05.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(run)],
+      })).toMatchObject({ changed: true, pushLogicalKeys: [] });
+      expect(pushCount(store)).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("pushes failed runs with the error, and bare failures with a fallback body", async () => {
+    const { store } = await fixture();
+    try {
+      subscribePush(store);
+      const threadId = store.syncCronOverview({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob()],
+      }).jobs[0]!.threadId;
+
+      const failed = completedRun("cron:run:failed", 1, {
+        status: "failed",
+        text: "Partial output",
+        error: "No API key for provider.",
+        failureKind: "provider_unavailable_exhausted",
+      });
+      const synced = store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:05.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(failed)],
+      });
+      const expectedKey = notificationPushLogicalKey(
+        SOURCE,
+        "cron:run:failed:failure:provider_unavailable_exhausted",
+      );
+      expect(synced).toMatchObject({ changed: true, pushLogicalKeys: [expectedKey] });
+      expect(store.webPushEventByLogicalKey(expectedKey)).toMatchObject({
+        kind: "run.failed",
+        threadId,
+        body: "No API key for provider.",
+      });
+
+      const bare = completedRun("cron:run:bare", 2, { status: "failed" });
+      const resynced = store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:10.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(bare)],
+      });
+      const bareKey = notificationPushLogicalKey(SOURCE, "cron:run:bare:failure");
+      expect(resynced).toMatchObject({ changed: true, pushLogicalKeys: [bareKey] });
+      expect(store.webPushEventByLogicalKey(bareKey)).toMatchObject({
+        kind: "run.failed",
+        threadId,
+        body: "The run failed.",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("shares one push between overview observation and web:new delivery in either order", async () => {
+    const runId = "cron:run:shared";
+    const expectedKey = notificationPushLogicalKey(SOURCE, `${runId}:success`);
+
+    // Delivery first, overview second.
+    {
+      const { store } = await fixture();
+      try {
+        subscribePush(store);
+        const threadId = store.syncCronOverview({
+          sourceId: SOURCE,
+          generatedAt: "2026-08-14T10:00:00.000Z",
+          actionsEnabled: true,
+          jobs: [overviewJob()],
+        }).jobs[0]!.threadId;
+        const reservation = store.reserveNotification({
+          sourceId: SOURCE,
+          triggerKind: "cron",
+          deliveryKey: `${runId}:success`,
+          jobId: JOB,
+          runId,
+          text: "Delivered digest",
+        });
+        expect(reservation.threadId).toBe(threadId);
+        store.completeNotification(reservation);
+        expect(store.webPushEventByLogicalKey(expectedKey)).toMatchObject({ body: "Delivered digest" });
+
+        const synced = store.syncCronOverviewResult({
+          sourceId: SOURCE,
+          generatedAt: "2026-08-14T10:00:05.000Z",
+          actionsEnabled: true,
+          jobs: [overviewJob(completedRun(runId, 1, { text: "Delivered digest" }))],
+        });
+        expect(synced.pushLogicalKeys).toEqual([expectedKey]);
+        expect(pushCount(store)).toBe(1);
+      } finally {
+        store.close();
+      }
+    }
+
+    // Overview first, delivery second.
+    {
+      const { store } = await fixture();
+      try {
+        subscribePush(store);
+        store.syncCronOverview({
+          sourceId: SOURCE,
+          generatedAt: "2026-08-14T10:00:00.000Z",
+          actionsEnabled: true,
+          jobs: [overviewJob()],
+        });
+        const synced = store.syncCronOverviewResult({
+          sourceId: SOURCE,
+          generatedAt: "2026-08-14T10:00:05.000Z",
+          actionsEnabled: true,
+          jobs: [overviewJob(completedRun(runId, 1, { text: "Observed digest" }))],
+        });
+        expect(synced.pushLogicalKeys).toEqual([expectedKey]);
+
+        const reservation = store.reserveNotification({
+          sourceId: SOURCE,
+          triggerKind: "cron",
+          deliveryKey: `${runId}:success`,
+          jobId: JOB,
+          runId,
+          text: "Observed digest",
+        });
+        expect(reservation.duplicate).toBe(false);
+        store.completeNotification(reservation);
+        expect(pushCount(store)).toBe(1);
+        expect(store.webPushEventByLogicalKey(expectedKey)).toMatchObject({ body: "Observed digest" });
+      } finally {
+        store.close();
+      }
+    }
+  });
+
+  it("records no push without an active subscription and never backfills the stale run", async () => {
+    const { store } = await fixture();
+    try {
+      store.syncCronOverview({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob()],
+      });
+      expect(store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:05.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(completedRun("cron:run:unseen", 1, { text: "Missed digest" }))],
+      })).toMatchObject({ changed: true, pushLogicalKeys: [] });
+      expect(pushCount(store)).toBe(0);
+
+      // Subscribing later does not resurrect the already-observed run.
+      subscribePush(store);
+      expect(store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:10.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(completedRun("cron:run:unseen", 1, { text: "Missed digest" }))],
+      })).toMatchObject({ changed: false, pushLogicalKeys: [] });
+      expect(pushCount(store)).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("delivers the enqueued completion through the existing outbox with a thread deep link", async () => {
+    let instant = Date.parse("2026-08-14T10:00:00.000Z");
+    const { store } = await fixture(() => new Date(instant));
+    try {
+      subscribePush(store);
+      const threadId = store.syncCronOverview({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:00.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob()],
+      }).jobs[0]!.threadId;
+      const synced = store.syncCronOverviewResult({
+        sourceId: SOURCE,
+        generatedAt: "2026-08-14T10:00:05.000Z",
+        actionsEnabled: true,
+        jobs: [overviewJob(completedRun("cron:run:deep", 1, { text: "Deep digest" }))],
+      });
+      expect(synced.pushLogicalKeys).toHaveLength(1);
+
+      // The 3s acknowledgement window holds the delivery back first.
+      expect(store.claimDueWebPushDeliveries(4)).toEqual([]);
+      instant += 10_000;
+      const [claimed] = store.claimDueWebPushDeliveries(4);
+      expect(claimed?.event.threadId).toBe(threadId);
+      const payload = JSON.parse(webPushPayload(claimed!)) as {
+        notification: { title: string; body: string; navigate: string };
+      };
+      expect(payload.notification.title).toBe("agent-one · CRON");
+      expect(payload.notification.body).toBe("Deep digest");
+      expect(payload.notification.navigate).toBe(`https://console.example.test/?thread=${threadId}`);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps externally delivered runs visible in history without any notification row", async () => {
+    // Runs answered to Telegram, Slack, or nowhere leave no
+    // notification_deliveries row: history must not depend on one.
+    const { store } = await fixture();
+    try {
+      const threadId = syncCronJob(store).jobs[0]!.threadId;
+      const meaningful = cronRun({ runId: "cron:external:one", sequence: 1, text: "Telegram digest" });
+      const failed = cronRun({
+        runId: "cron:external:two",
+        sequence: 2,
+        status: "failed",
+        startedAt: "2026-08-14T10:01:01.000Z",
+        completedAt: "2026-08-14T10:01:02.000Z",
+        text: "Partial output",
+        error: "Provider exploded.",
+        failureKind: "provider_error",
+      });
+      const bareFailure = cronRun({
+        runId: "cron:external:three",
+        sequence: 3,
+        status: "failed",
+        startedAt: "2026-08-14T10:02:01.000Z",
+        completedAt: "2026-08-14T10:02:02.000Z",
+      });
+      const silent = cronRun({ runId: "cron:external:four", sequence: 4, text: "NOTHING_TO_REPORT" });
+      store.reconcileCronRuns(SOURCE, JOB, [meaningful, failed, bareFailure, silent]);
+
+      const detail = store.getThreadDetail(threadId)!;
+      const texts = detail.messages.flatMap((message) => message.parts.flatMap((part) =>
+        part.type === "text" ? [part.text] : []));
+      expect(texts).toContain("Telegram digest");
+      expect(texts).toContain("Partial output");
+      // A bare failure carries only synthetic state text, but it is still visible.
+      expect(detail.messages).toHaveLength(3);
+      expect(store.storedCronRuns(SOURCE, JOB).runs).toHaveLength(4);
+    } finally {
+      store.close();
+    }
   });
 });

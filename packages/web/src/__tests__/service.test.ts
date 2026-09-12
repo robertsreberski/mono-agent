@@ -19,7 +19,7 @@ import {
 import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../contracts.js";
 import { WEB_MAX_TURN_TEXT_CHARACTERS } from "../contracts.js";
 import { formatCronReplyContext } from "../cron-reply-context.js";
-import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
+import { applyDeltaOps, notificationPushLogicalKey, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -1239,6 +1239,78 @@ describe("WebService", () => {
     expect(snapshot()).toEqual(beforePolls);
     unsubscribe();
     database.close();
+    await service.stop();
+  });
+
+  it("announces a newly observed automation completion for push exactly once", async () => {
+    const runId = "cron:digest:2026-08-14T10:05:00.000Z";
+    let currentOverview = operatorCronOverview();
+    const delegated = operatorFetch({ cronOverview: currentOverview });
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/cron")) return Response.json(currentOverview);
+      return await delegated(input, init);
+    }) as typeof fetch;
+    const service = await createService({ fetchImpl });
+    service.store.registerWebPushSubscription({
+      endpoint: "https://push.example.test/cron-service",
+      p256dh: "p256dh",
+      auth: "auth",
+      siteOrigin: "https://console.example.test",
+      keyFingerprint: "fingerprint",
+    });
+    const threadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+    // No completion yet: the discovery refresh stays quiet.
+    await service.refreshAgents();
+    expect(events.filter((event) => event.type === "push.pending")).toEqual([]);
+
+    // The run completed while native delivery went elsewhere (Telegram here:
+    // no web:new ingress delivery ever arrives). The overview is the observation.
+    const digest = (operatorCronOverview().jobs as Record<string, unknown>[])[0]!;
+    currentOverview = operatorCronOverview({
+      generatedAt: "2026-08-14T10:06:00.000Z",
+      jobs: [{
+        ...digest,
+        lastRun: {
+          projection: "summary",
+          runId,
+          jobId: "digest",
+          scheduledAt: "2026-08-14T10:05:00.000Z",
+          orderedAt: "2026-08-14T10:05:00.000Z",
+          sequence: 5,
+          trigger: "scheduled",
+          status: "succeeded",
+          startedAt: "2026-08-14T10:05:01.000Z",
+          completedAt: "2026-08-14T10:05:02.000Z",
+          text: "Digest ready",
+          eventCount: 0,
+        },
+      }],
+    });
+    await service.refreshAgents();
+    const pending = events.filter((event) => event.type === "push.pending");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ threadId, payload: { threadId } });
+    const expectedKey = notificationPushLogicalKey("agent-one", `${runId}:success`);
+    expect(service.store.webPushEventByLogicalKey(expectedKey)).toMatchObject({
+      kind: "response.ready",
+      threadId,
+      body: "Digest ready",
+    });
+
+    // A repeat poll re-announces nothing and enqueues nothing.
+    events.length = 0;
+    await service.refreshAgents();
+    expect(events.filter((event) => event.type === "push.pending")).toEqual([]);
+    const database = new DatabaseSync(service.store.paths.database, { readOnly: true });
+    try {
+      expect(database.prepare("SELECT COUNT(*) AS count FROM push_events").get()).toEqual({ count: 1 });
+    } finally {
+      database.close();
+    }
+    unsubscribe();
     await service.stop();
   });
 

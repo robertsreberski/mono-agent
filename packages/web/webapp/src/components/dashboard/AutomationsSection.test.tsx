@@ -4,7 +4,7 @@ import { Fragment, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, thread } from "../../test/fixtures";
 import { SEARCH_HIGHLIGHT_CLOSE, SEARCH_HIGHLIGHT_OPEN } from "../../thread-search";
-import type { CronOverview, ThreadSearchHit, ThreadSummary } from "../../types";
+import type { CronJob, CronOverview, ThreadSearchHit, ThreadSummary } from "../../types";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 const apiMock = vi.hoisted(() => ({ searchThreads: vi.fn() }));
@@ -228,8 +228,7 @@ describe("Dashboard Automations chip", () => {
       name: "loading",
       overrides: { cronOverview: null, cronLoading: true, cronError: null },
       copy: "Loading automations…",
-    },
-    {
+    },    {
       name: "unsupported",
       overrides: {
         selectedAgent: agent("agent-one"),
@@ -248,5 +247,125 @@ describe("Dashboard Automations chip", () => {
     Object.assign(storeMock.current!, overrides);
     render(<Dashboard />);
     expect(screen.getByText(copy)).toBeVisible();
+  });
+});
+
+describe("Dashboard Automations ordering", () => {
+  const baseJob: CronJob = {
+    jobId: "daily:brief",
+    expression: "0 8 * * *",
+    timezone: "Europe/Budapest",
+    conversationId: "cron:daily:brief",
+    configured: true,
+    declaredEnabled: true,
+    effectiveEnabled: true,
+    nextRunAt: "2026-09-11T06:00:00.000Z",
+    health: "healthy",
+    threadId: "cron-daily",
+  };
+
+  const jobWithRun = (
+    jobId: string,
+    lastRun: CronJob["lastRun"],
+  ): CronJob => ({
+    ...baseJob,
+    jobId,
+    conversationId: `cron:${jobId}`,
+    threadId: `cron-${jobId}`,
+    lastRun,
+  });
+
+  const runAt = (completedAt: string): CronJob["lastRun"] => ({
+    projection: "summary",
+    runId: `cron:run:${completedAt}`,
+    jobId: "job",
+    scheduledAt: "2026-09-10T07:55:00.000Z",
+    orderedAt: "2026-09-10T07:55:00.000Z",
+    sequence: 1,
+    trigger: "scheduled",
+    status: "succeeded",
+    startedAt: "2026-09-10T07:55:01.000Z",
+    completedAt,
+    text: "Done",
+    eventCount: 0,
+  });
+
+  const rowOrder = (): string[] => screen.getAllByRole("button", { name: /Open run history for /u })
+    .map((row) => row.getAttribute("aria-label")!.replace("Open run history for ", ""));
+
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-09-10T10:00:00.000Z"));
+    storeMock.current!.navigationDestination = "automations";
+    storeMock.current!.selectedAgent = agent("agent-one", {
+      cron: { read: true, actions: false },
+    });
+  });
+
+  it("sorts by most recent invocation, newest first, with never-run jobs last", () => {
+    storeMock.current!.cronOverview = {
+      generatedAt: "2026-09-10T08:00:00.000Z",
+      actionsEnabled: false,
+      // Deliberately out of order: the list must not preserve overview order.
+      jobs: [
+        jobWithRun("never-runs", undefined),
+        jobWithRun("old", runAt("2026-09-10T07:00:00.000Z")),
+        jobWithRun("newest", runAt("2026-09-10T08:00:00.000Z")),
+        jobWithRun("b-tie", runAt("2026-09-10T07:30:00.000Z")),
+        jobWithRun("a-tie", runAt("2026-09-10T07:30:00.000Z")),
+        {
+          ...jobWithRun("started-only", undefined),
+          lastRun: {
+            ...runAt("2026-09-10T07:45:00.000Z")!,
+            completedAt: undefined,
+            startedAt: "2026-09-10T07:45:00.000Z",
+          },
+        },
+        {
+          ...jobWithRun("ordered-only", undefined),
+          lastRun: {
+            ...runAt("2026-09-10T07:15:00.000Z")!,
+            completedAt: undefined,
+            startedAt: undefined,
+            orderedAt: "2026-09-10T07:15:00.000Z",
+          },
+        },
+        {
+          ...jobWithRun("broken-stamp", undefined),
+          lastRun: { ...runAt("2026-09-10T07:50:00.000Z")!, completedAt: "not-a-date" },
+        },
+      ],
+    };
+    render(<Dashboard />);
+
+    expect(rowOrder()).toEqual([
+      "newest",
+      "started-only",
+      "a-tie",
+      "b-tie",
+      "ordered-only",
+      "old",
+      // Unparseable stamps cannot order, so they trail with the never-run jobs.
+      "broken-stamp",
+      "never-runs",
+    ]);
+  });
+
+  it("keeps the invocation order while searching locally", () => {
+    storeMock.current!.cronOverview = {
+      generatedAt: "2026-09-10T08:00:00.000Z",
+      actionsEnabled: false,
+      jobs: [
+        jobWithRun("report:old", runAt("2026-09-10T07:00:00.000Z")),
+        jobWithRun("report:new", runAt("2026-09-10T08:00:00.000Z")),
+        jobWithRun("other", runAt("2026-09-10T09:00:00.000Z")),
+      ],
+    };
+    render(<Dashboard />);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search automations" }), {
+      target: { value: "report" },
+    });
+    expect(rowOrder()).toEqual(["report:new", "report:old"]);
+    expect(storeMock.current!.refreshCron).not.toHaveBeenCalled();
   });
 });
