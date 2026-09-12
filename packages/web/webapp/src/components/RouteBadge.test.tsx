@@ -75,7 +75,7 @@ describe("RouteBadge", () => {
 });
 
 describe("row labels without opening the conversation", () => {
-  it("moves with a thread SSE patch to another row", () => {
+  it("renders new row props without requiring navigation", () => {
     const first = thread("t1", "alpha", { title: "First" });
     const second = thread("t2", "alpha", {
       title: "Second",
@@ -94,7 +94,7 @@ describe("row labels without opening the conversation", () => {
     expect(badge).toHaveAccessibleName(/conversation override/u);
   });
 
-  it("moves with a settings patch to the agent defaults", () => {
+  it("renders changed agent-default props", () => {
     const row = thread("t1", "alpha", { title: "First" });
     const { rerender } = render(<RowLabel row={row} owner={owner()} />);
     expect(screen.getByRole("img").textContent).toContain("Sonnet");

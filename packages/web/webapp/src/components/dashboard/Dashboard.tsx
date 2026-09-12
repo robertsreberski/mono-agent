@@ -147,6 +147,7 @@ export function Dashboard({
             : {})}
           authoritative={authoritative}
           {...(catalogModels === undefined ? {} : { catalogModels })}
+          catalogSourceId={selectedAgentId ?? undefined}
         />
         {/* Projects will take the labelled section between Running and Recent. */}
         <RecentSection

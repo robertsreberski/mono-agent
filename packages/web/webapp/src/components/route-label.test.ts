@@ -44,11 +44,21 @@ describe("effortToken", () => {
 });
 
 describe("shortModelName", () => {
-  it("names the known families in one word", () => {
-    expect(shortModelName(CODEX_SOL, "GPT-5.6 Sol")).toBe("Sol");
-    expect(shortModelName("openai-codex:gpt-6-astra", "GPT-6 Astra")).toBe("Astra");
-    expect(shortModelName(SONNET, "Claude Sonnet 4.5")).toBe("Sonnet");
-    expect(shortModelName("anthropic:claude-fable-5", "Claude Fable 5")).toBe("Fable");
+  it("preserves family and version in compact names", () => {
+    expect(shortModelName(CODEX_SOL, "GPT-5.6 Sol")).toBe("Sol 5.6");
+    expect(shortModelName("openai-codex:gpt-6-astra", "GPT-6 Astra")).toBe("Astra 6");
+    expect(shortModelName(SONNET, "Claude Sonnet 4.5")).toBe("Sonnet 4.5");
+    expect(shortModelName("anthropic:claude-fable-5", "Claude Fable 5")).toBe("Fable 5");
+  });
+
+  it("distinguishes family versions and Codex variants without matching custom names", () => {
+    expect(shortModelName("anthropic:claude-sonnet-5")).toBe("Sonnet 5");
+    expect(shortModelName("anthropic:claude-sonnet-4-5-20250929")).toBe("Sonnet 4.5");
+    expect(shortModelName("openai:gpt-5.1-codex-mini")).toBe("Codex 5.1 mini");
+    expect(shortModelName("openai:gpt-5.1-codex-max")).toBe("Codex 5.1 max");
+    expect(shortModelName("local:my-sonnet-finetune")).toBe("my-sonnet-finetune");
+    expect(shortModelName("ollama:qwen3:8b")).toBe("qwen3:8b");
+    expect(shortModelName("openrouter:anthropic/claude-sonnet-4.5")).toBe("Sonnet 4.5");
   });
 
   it("keeps materially distinct Muse versions apart in the short word", () => {
@@ -57,17 +67,17 @@ describe("shortModelName", () => {
   });
 
   it("reads the id leaf when no display name is known", () => {
-    expect(shortModelName("anthropic:claude-opus-4.1")).toBe("Opus");
-    expect(shortModelName("some-provider:my-custom-model-7")).toBe("my-custom-mod…");
+    expect(shortModelName("anthropic:claude-opus-4.1")).toBe("Opus 4.1");
+    expect(shortModelName("some-provider:my-custom-model-7")).toBe("my-custom-model-7");
   });
 
-  it("ellipsizes long unknown ids while the badge name keeps the whole of them", () => {
+  it("leaves truncation to CSS without discarding unknown identity", () => {
     const long = "provider:a-very-long-custom-model-name-with-version-9";
     const route = resolveThreadRoute(
       { runModel: long, runEffort: "high", sourceId: "alpha" },
       richAgent(),
     );
-    expect(route.modelShort.endsWith("…")).toBe(true);
+    expect(route.modelShort).toBe("a-very-long-custom-model-name-with-version-9");
     expect(route.label).toContain(long);
     expect(route.title).toContain(long);
   });
@@ -81,7 +91,7 @@ describe("resolveThreadRoute", () => {
     );
     expect(route.model).toBe(SONNET);
     expect(route.effort).toBe("high");
-    expect(route.modelShort).toBe("Sonnet");
+    expect(route.modelShort).toBe("Sonnet 4.5");
     expect(route.effortShort).toBe("H");
     expect(route.modelProvenance).toBe("inherited");
     expect(route.effortProvenance).toBe("inherited");
@@ -219,7 +229,7 @@ describe("resolveThreadRoute", () => {
       bare,
       catalogModels,
     );
-    expect(route.modelShort).toBe("Fable");
+    expect(route.modelShort).toBe("Fable 5");
     expect(route.effort).toBe("high");
     expect(route.label).toContain("Claude Fable 5 (anthropic:claude-fable-5)");
   });
@@ -245,7 +255,7 @@ describe("resolveSubagentRoute", () => {
       disposition: "requested",
       transitions: [],
       retries: [],
-    })).toMatchObject({ kind: "executed", modelShort: "Sol", effortShort: "H" });
+    })).toMatchObject({ kind: "executed", modelShort: "Sol 5.6", effortShort: "H" });
 
     expect(completed({
       requested: { model: "primary", effort: "low" },
@@ -253,7 +263,7 @@ describe("resolveSubagentRoute", () => {
       disposition: "requested",
       transitions: [],
       retries: [],
-    })).toMatchObject({ kind: "attempted", modelShort: "Sonnet", effortShort: "M" });
+    })).toMatchObject({ kind: "attempted", modelShort: "Sonnet 4.5", effortShort: "M" });
 
     const requestedOnly = completed({
       requested: { model: SONNET, effort: "medium" },
@@ -261,8 +271,9 @@ describe("resolveSubagentRoute", () => {
       transitions: [],
       retries: [],
     });
-    expect(requestedOnly).toMatchObject({ kind: "requested", modelShort: "Sonnet" });
+    expect(requestedOnly).toMatchObject({ kind: "requested", modelShort: "Sonnet 4.5" });
     expect(requestedOnly?.isRequestedOnly).toBe(true);
+    expect(requestedOnly?.label).not.toContain("Ran with");
     expect(requestedOnly?.label).toContain("requested, not a confirmed run");
   });
 
@@ -287,7 +298,8 @@ describe("resolveSubagentRoute", () => {
       transitions: [],
       retries: [],
     }, "running");
-    expect(route?.label).toContain("Running with");
+    expect(route?.label).toContain("Requested");
+    expect(route?.label).not.toMatch(/Running with|Ran with/u);
   });
 
   it("renders no badge for attribution-free records", () => {

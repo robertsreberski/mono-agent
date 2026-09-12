@@ -127,6 +127,7 @@ export function RecentSection({
   const {
     agents,
     catalogByProvider,
+    selectedAgentId,
     threads,
     visibleThreads,
     showArchived,
@@ -217,7 +218,7 @@ export function RecentSection({
                   <ThreadListItem
                     thread={thread}
                     agent={agentBySourceId.get(thread.sourceId) ?? null}
-                    catalogModels={catalogModels}
+                    catalogModels={thread.sourceId === selectedAgentId ? catalogModels : undefined}
                     unread={unreadThreadIds.has(thread.id)}
                     onNavigate={onNavigate}
                     highlightSelected={highlightSelected}

@@ -17,8 +17,7 @@ import type {
  *
  * Pure derivation, no React and no store: every caller feeds the same inputs
  * (a thread plus ITS agent, or a delegation's own attribution) so the
- * dashboard rows, the search hits and the running cards can never disagree
- * about what a conversation runs on. See issue #861.
+ * dashboard rows, search hits and running cards share the same rules.
  *
  * Two different questions, deliberately separate:
  *
@@ -61,35 +60,25 @@ export const effortFullName = (effort: string): string => {
 };
 
 const MODEL_ID_LEAF = (model: string): string => {
-  const colon = model.lastIndexOf(":");
-  const slash = model.lastIndexOf("/");
-  const cut = Math.max(colon, slash);
-  return cut === -1 ? model : model.slice(cut + 1);
+  // Strip the provider, not the model tag (ollama:qwen3:8b -> qwen3:8b).
+  const colon = model.indexOf(":");
+  const slash = model.indexOf("/");
+  const id = colon >= 0 && (slash < 0 || colon < slash) ? model.slice(colon + 1) : model;
+  return id.slice(id.lastIndexOf("/") + 1);
 };
 
-/**
- * Short recognisable model name for the badge's first half.
- *
- * A small ordered family match over the display name AND the id leaf, so a
- * known family reads as one word (`Sol`, `Sonnet`) while materially distinct
- * ids keep their full identity in the accessible name and `title` -- two
- * versions share the short word but never the same badge name. Anything
- * unrecognised keeps its own text, ellipsized, rather than a guessed family.
- */
+/** Keep family AND version visible; unknown/custom names keep their identity. */
 export function shortModelName(model: string, displayName?: string): string {
-  const haystack = `${displayName ?? ""} ${MODEL_ID_LEAF(model)}`;
-  if (/\bastra\b/iu.test(haystack)) return "Astra";
-  if (/\bsol\b/iu.test(haystack)) return "Sol";
-  if (/fable/iu.test(haystack)) return "Fable";
-  if (/sonnet/iu.test(haystack)) return "Sonnet";
-  if (/\bopus\b/iu.test(haystack)) return "Opus";
-  if (/haiku/iu.test(haystack)) return "Haiku";
-  const muse = haystack.match(/muse[-\s]?spark[-\s]?(\d+(?:\.\d+)*)/iu);
-  if (muse) return `Muse ${muse[1]}`;
-  if (/muse/iu.test(haystack)) return "Muse";
-  if (/codex/iu.test(haystack)) return "Codex";
-  const fallback = (displayName ?? "").trim() || MODEL_ID_LEAF(model).trim() || model.trim();
-  return fallback.length <= 14 ? fallback : `${fallback.slice(0, 13)}…`;
+  const leaf = MODEL_ID_LEAF(model);
+  // Only shorten recognised complete shapes, never a family word buried in a
+  // custom model name. Preserve variant suffixes (e.g. Codex mini/max).
+  const claude = leaf.match(/^(?:claude-)?(sonnet|opus|haiku|fable)-(\d+(?:[.-]\d{1,2})?)(?:-\d{8})?$/iu);
+  if (claude) return `${claude[1]![0]!.toUpperCase()}${claude[1]!.slice(1)} ${claude[2]!.replace(/-/gu, ".")}`;
+  const gpt = leaf.match(/^gpt-(\d+(?:\.\d+)?)-(sol|astra|terra|codex)(-mini|-max|-spark)?$/iu);
+  if (gpt) return `${gpt[2]![0]!.toUpperCase()}${gpt[2]!.slice(1)} ${gpt[1]}${gpt[3] ? ` ${gpt[3].slice(1)}` : ""}`;
+  const muse = leaf.match(/^muse-spark-(\d+(?:\.\d+)*)(-contributor)?$/iu);
+  if (muse) return `Muse ${muse[1]}${muse[2] ? " C" : ""}`;
+  return displayName?.trim() || leaf.trim() || model.trim();
 }
 
 export type RouteProvenance = "override" | "inherited" | "unknown";
@@ -121,8 +110,9 @@ const nonEmpty = (value: string | null | undefined): string =>
  *
  * `agent` must be the thread's OWN sourceId match (fleet cards especially),
  * or null when discovery no longer lists it. `catalogModels` is the store's
- * already-fetched projection; absent catalog data falls back honestly to "—"
- * rather than a guessed effort. No fetching here, so rows stay cheap.
+ * already-fetched, owner-scoped projection. Without it the shared resolver
+ * uses configured route metadata and defaults, just as settings does before
+ * fetching a catalog. This describes settings, not proof of execution.
  */
 export function resolveThreadRoute(
   thread: Pick<ThreadSummary, "runModel" | "runEffort" | "sourceId">,
@@ -222,7 +212,9 @@ export function resolveSubagentRoute(
   const effectiveEffort = (attribution.executed ?? attribution.attempted)?.effectiveEffort;
   const effort = effectiveEffort ?? target.effort ?? "";
   const model = target.model ?? "";
-  const summary = runAttributionSummary(attribution, status);
+  const summary = kind === "requested" || kind === "attempted"
+    ? `${kind === "requested" ? "Requested" : "Attempted"} ${model || "unreported model"}${target.effort ? ` · ${effortFullName(target.effort)}` : ""}${attribution.disposition === "fallback" ? " (fallback)" : ""}`
+    : runAttributionSummary(attribution, status);
   const requestedEffort = attribution.requested.effort;
   const effortNote = effectiveEffort !== undefined && requestedEffort !== undefined &&
       effectiveEffort !== requestedEffort
@@ -233,7 +225,7 @@ export function resolveSubagentRoute(
   const isRequestedOnly = kind === "requested";
   const isFallback = attribution.disposition === "fallback";
   const label = isRequestedOnly
-    ? `Subagent route requested ${summary}${effortNote} -- requested, not a confirmed run`
+    ? `Subagent route: ${summary}${effortNote} — requested, not a confirmed run`
     : `Subagent route: ${summary}${effortNote}`;
   return {
     kind,

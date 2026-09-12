@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { commands, page, userEvent } from "@vitest/browser/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -56,10 +56,10 @@ import { App } from "./App";
 // Inside the webapp root: the browser runner's file access stays within the
 // Vite project, so captures land here and are moved to ROOT/output/issue-861
 // after the run (never committed).
-const SHOT_DIR =
-  "/Users/robertsreberski/worktrees/mono-maintainer/mono-agent/issue-861/packages/web/webapp/.screenshots-issue-861";
+const SHOT_DIR = "./.screenshots/route-badges";
 
-class SyntheticEventSource {
+class SyntheticEventSource extends EventTarget {
+  static instances: SyntheticEventSource[] = [];
   readonly url: string;
   readyState = 1;
   onopen: ((event: Event) => void) | null = null;
@@ -67,12 +67,19 @@ class SyntheticEventSource {
   onerror: ((event: Event) => void) | null = null;
 
   constructor(url: string) {
+    super();
     this.url = url;
+    SyntheticEventSource.instances.push(this);
   }
 
-  addEventListener(): void {}
-  removeEventListener(): void {}
   close(): void { this.readyState = 2; }
+  static threadChanged(thread: ThreadSummary): void {
+    for (const source of this.instances.filter((source) => source.readyState === 1)) {
+      source.dispatchEvent(new MessageEvent("thread.changed", { data: JSON.stringify({
+        version: 1, type: "thread.changed", at: new Date().toISOString(), payload: { thread },
+      }) }));
+    }
+  }
 }
 
 const SONNET = "anthropic:claude-sonnet-4.5";
@@ -97,27 +104,22 @@ const beta = agent("beta", {
 });
 
 const inheritThread = thread("badge-inherit", "alpha", {
-  title: "Inherited defaults triệt",
+  title: "Routing architecture review",
   messageCount: 2,
   lastMessagePreview: "A settled conversation on agent defaults.",
 });
 const solThread = thread("badge-sol", "alpha", {
-  title: "Sol override room",
+  title: "Compact label design",
   messageCount: 3,
   runModel: SOL,
   runEffort: "low",
   lastMessagePreview: "Running hot on Sol.",
 });
 const maxThread = thread("badge-max", "alpha", {
-  title: "Max effort push",
+  title: "Browser regression coverage",
   messageCount: 1,
   runEffort: "max",
   lastMessagePreview: "One big push.",
-});
-const longThread = thread("badge-long", "beta", {
-  title: "Beta long model name",
-  messageCount: 1,
-  lastMessagePreview: "A catalog stranger.",
 });
 const ghostThread = thread("badge-ghost", "ghost", {
   title: "Ghost agent thread",
@@ -146,13 +148,13 @@ const subagentMessage = (threadId: string): WebMessage => ({
       type: "subagent",
       toolCallId: "call-exec",
       name: "researcher",
-      label: "read the router",
+      label: "Trace configured model inheritance",
       status: "complete",
       executionMs: 12_400,
       args: { name: "researcher", prompt: "Read the router and report what it does." },
       result: "The router maps channels to agents.",
       attribution: {
-        requested: { model: SONNET, effort: "high" },
+        requested: { model: SOL, effort: "high" },
         executed: { model: SOL, effort: "high" },
         disposition: "requested",
         transitions: [],
@@ -171,16 +173,17 @@ const subagentMessage = (threadId: string): WebMessage => ({
     {
       type: "subagent",
       toolCallId: "call-fallback",
-      name: "writer",
+      name: "reviewer",
+      label: "Review narrow-screen activity layout",
       status: "complete",
       executionMs: 3_200,
       args: { name: "writer", prompt: "Draft the summary." },
       result: "Summary drafted.",
       attribution: {
-        requested: { model: "primary", effort: "high" },
-        executed: { model: "fallback", effort: "xhigh", effectiveEffort: "max" },
+        requested: { model: "openai-codex:gpt-6-astra", effort: "high" },
+        executed: { model: SONNET, effort: "high", effectiveEffort: "max" },
         disposition: "fallback",
-        transitions: [{ from: "primary", to: "fallback", reason: "overloaded" }],
+        transitions: [{ from: "openai-codex:gpt-6-astra", to: SONNET, reason: "overloaded" }],
         retries: [],
       },
       calls: [],
@@ -229,6 +232,7 @@ async function emulate(colorScheme: "light" | "dark"): Promise<void> {
 beforeEach(async () => {
   await persistence.clearAll();
   vi.clearAllMocks();
+  SyntheticEventSource.instances = [];
   window.history.replaceState(null, "", "/");
   localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
   localStorage.setItem(
@@ -290,15 +294,15 @@ describe("route badges on the dashboard", () => {
     await settled();
 
     // The inherit row and Alpha's running card honestly agree; scope to the row.
-    const inheritRow = screen.getByRole("button", { name: "Open Inherited defaults triệt" });
+    const inheritRow = screen.getByRole("button", { name: "Open Routing architecture review" });
     expect(within(inheritRow).getByRole("img", {
       name: "Model Claude Sonnet 4.5 (anthropic:claude-sonnet-4.5), effort High, inherited agent defaults",
     })).toBeVisible();
-    const solRow = screen.getByRole("button", { name: "Open Sol override room" });
+    const solRow = screen.getByRole("button", { name: "Open Compact label design" });
     expect(within(solRow).getByRole("img", {
       name: `Model GPT-5.6 Sol (${SOL}), effort Low, conversation override`,
     })).toBeVisible();
-    const maxRow = screen.getByRole("button", { name: "Open Max effort push" });
+    const maxRow = screen.getByRole("button", { name: "Open Browser regression coverage" });
     expect(within(maxRow).getByRole("img", { name: /effort Max, conversation override/u })).toBeVisible();
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(1_280);
   });
@@ -331,10 +335,29 @@ describe("route badges on the dashboard", () => {
     await settled();
 
     await userEvent.fill(screen.getByPlaceholderText("Search conversations"), "room");
-    const hit = await screen.findByRole("button", { name: "Open Sol override room" });
+    const hit = await screen.findByRole("button", { name: "Open Compact label design" });
     expect(within(hit).getByRole("img", { name: /conversation override/u })).toBeVisible();
     const ghost = await screen.findByRole("button", { name: "Open Ghost agent thread" });
     expect(within(ghost).getByRole("img", { name: /agent unavailable/u })).toBeVisible();
+  });
+
+  it("updates an unselected conversation through SSE while its search result stays open", async () => {
+    await page.viewport(1_280, 800);
+    vi.mocked(api.searchThreads).mockResolvedValue({ hits: [{ thread: solThread, titleMatch: true, messageMatches: 0 }], truncated: false });
+    openConsole();
+    await settled();
+    const reads = vi.mocked(api.thread).mock.calls.length;
+    await userEvent.fill(screen.getByPlaceholderText("Search conversations"), "label");
+    const row = await screen.findByRole("button", { name: "Open Compact label design" });
+    expect(within(row).getByRole("img", { name: /effort Low/u })).toBeVisible();
+    await act(async () => SyntheticEventSource.threadChanged({ ...solThread, revision: solThread.revision + 1, runModel: SONNET, runEffort: "medium" }));
+    await waitFor(() => expect(within(row).getByRole("img", { name: /Claude Sonnet 4.5.*effort Medium/u })).toBeVisible());
+    expect(api.searchThreads).toHaveBeenCalledTimes(1);
+    expect(api.thread).toHaveBeenCalledTimes(reads);
+    // Returning to the ordinary list must show exactly the same fresh setting.
+    await userEvent.clear(screen.getByPlaceholderText("Search conversations"));
+    const listRow = await screen.findByRole("button", { name: "Open Compact label design" });
+    expect(within(listRow).getByRole("img", { name: /effort Medium/u })).toBeVisible();
   });
 
   it("keeps collapsed subagent badges readable and expands the routing detail", async () => {
@@ -354,7 +377,7 @@ describe("route badges on the dashboard", () => {
     const rows = document.querySelectorAll("details.activity-row.is-subagent");
     expect(rows.length).toBe(2);
     await userEvent.click(rows[1]!.querySelector("summary")!);
-    expect(await screen.findByText("Fallback: primary → fallback · overloaded")).toBeVisible();
+    expect(await screen.findByText("Fallback: openai-codex:gpt-6-astra → anthropic:claude-sonnet-4.5 · overloaded")).toBeVisible();
   });
 });
 
@@ -387,7 +410,7 @@ describe("route badge screenshots", () => {
 
     // The conversation, pushed from its row: collapsed badges plus one open
     // delegation with its routing detail.
-    await userEvent.click(screen.getByRole("button", { name: "Open Inherited defaults triệt" }));
+    await userEvent.click(screen.getByRole("button", { name: "Open Routing architecture review" }));
     await waitFor(() => expect(
       document.querySelector<HTMLElement>(".chat-region")?.getBoundingClientRect().left,
     ).toBe(0));
@@ -403,11 +426,23 @@ describe("route badge screenshots", () => {
     await waitFor(() => expect(screen.getByRole("img", { name: /Subagent route: Fallback/u })).toBeVisible());
     const rows = document.querySelectorAll("details.activity-row.is-subagent");
     await userEvent.click(rows[1]!.querySelector("summary")!);
-    await waitFor(() => expect(screen.getByText("Fallback: primary → fallback · overloaded")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Fallback: openai-codex:gpt-6-astra → anthropic:claude-sonnet-4.5 · overloaded")).toBeVisible());
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(390);
     await page.screenshot({ path: `${SHOT_DIR}/activity-phone-dark-390x844.png` });
 
     await page.viewport(320, 568);
+    await userEvent.click(rows[1]!.querySelector("summary")!);
+    activityTrigger.scrollIntoView({ block: "center" });
+    for (const row of rows) {
+      const summary = row.querySelector("summary")!.getBoundingClientRect();
+      const badge = row.querySelector(".route-badge")!.getBoundingClientRect();
+      const purpose = row.querySelector(".activity-row-summary")!.getBoundingClientRect();
+      const effort = row.querySelector(".route-badge-effort")!;
+      expect(badge.left).toBeGreaterThanOrEqual(summary.left);
+      expect(badge.right).toBeLessThanOrEqual(summary.right);
+      expect(purpose.width).toBeGreaterThan(70);
+      expect(effort.scrollWidth).toBeLessThanOrEqual(effort.clientWidth + 1);
+    }
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(320));
     await page.screenshot({ path: `${SHOT_DIR}/activity-narrow-dark-320x568.png` });
   }, 120_000);

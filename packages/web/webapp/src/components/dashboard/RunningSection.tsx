@@ -79,6 +79,7 @@ export function RunningSection({
   truncated = false,
   authoritative = true,
   catalogModels,
+  catalogSourceId,
 }: {
   readonly groups: readonly RunningAgentGroup[];
   readonly expandedAgentIds: ReadonlySet<string>;
@@ -92,10 +93,11 @@ export function RunningSection({
   readonly authoritative?: boolean;
   /**
    * The store's already-fetched catalog projection. Optional so standalone
-   * callers keep working; without it a catalog-only route honestly reports no
-   * effort rather than a guessed one.
+   * callers keep working. Only cards owned by catalogSourceId may use it;
+   * other cards resolve against their own configured route metadata.
    */
   readonly catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>;
+  readonly catalogSourceId?: string;
 }) {
   if (groups.length === 0) return null;
   const shown = runningThreadCount(groups);
@@ -135,7 +137,7 @@ export function RunningSection({
                 key={thread.id}
                 agent={group.agent}
                 thread={thread}
-                {...(catalogModels === undefined ? {} : { catalogModels })}
+                {...(catalogSourceId !== group.agent.sourceId || catalogModels === undefined ? {} : { catalogModels })}
                 onOpen={onOpen}
               />
             ))}

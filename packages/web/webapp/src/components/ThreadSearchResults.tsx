@@ -6,7 +6,7 @@ import {
   type HighlightSegment,
   type ThreadSearchState,
 } from "../thread-search";
-import type { AgentSummary, CatalogModel, ThreadSearchHit } from "../types";
+import type { AgentSummary, CatalogModel, ThreadSearchHit, ThreadSummary } from "../types";
 import { Icon } from "./Icon";
 import { flattenCatalogModels, resolveThreadRoute } from "./route-label";
 import { RouteBadge } from "./RouteBadge";
@@ -29,11 +29,13 @@ function SearchHit({
   query,
   agent,
   catalogModels,
+  currentThread,
   onSelect,
   highlightSelected,
 }: {
   readonly hit: ThreadSearchHit;
   readonly query: string;
+  readonly currentThread?: ThreadSummary;
   /** The hit's OWN agent match; null when discovery no longer lists it. */
   readonly agent: AgentSummary | null;
   readonly catalogModels: Readonly<Record<string, readonly CatalogModel[]>> | undefined;
@@ -45,7 +47,7 @@ function SearchHit({
   const active = highlightSelected && thread.id === selectedThreadId;
   // Search replaces the list, so its hits carry the same current-settings
   // badge the rows they stand in for draw.
-  const route = resolveThreadRoute(thread, agent, catalogModels);
+  const route = resolveThreadRoute(currentThread !== undefined && currentThread.revision >= thread.revision ? currentThread : thread, agent, catalogModels);
   return (
     <button
       type="button"
@@ -110,7 +112,8 @@ export function ThreadSearchResults({
    */
   readonly highlightSelected?: boolean;
 }) {
-  const { agents, catalogByProvider } = useConsoleStore();
+  const { agents, threads, catalogByProvider, selectedAgentId } = useConsoleStore();
+  const currentById = useMemo(() => new Map(threads.map((thread) => [thread.id, thread])), [threads]);
   const agentBySourceId = useMemo(
     () => new Map(agents.map((agent) => [agent.sourceId, agent])),
     [agents],
@@ -151,7 +154,8 @@ export function ThreadSearchResults({
               hit={hit}
               query={query}
               agent={agentBySourceId.get(hit.thread.sourceId) ?? null}
-              catalogModels={catalogModels}
+              currentThread={currentById.get(hit.thread.id)}
+              catalogModels={hit.thread.sourceId === selectedAgentId ? catalogModels : undefined}
               onSelect={onSelect}
               highlightSelected={highlightSelected}
             />
@@ -167,7 +171,8 @@ export function ThreadSearchResults({
               hit={hit}
               query={query}
               agent={agentBySourceId.get(hit.thread.sourceId) ?? null}
-              catalogModels={catalogModels}
+              currentThread={currentById.get(hit.thread.id)}
+              catalogModels={hit.thread.sourceId === selectedAgentId ? catalogModels : undefined}
               onSelect={onSelect}
               highlightSelected={highlightSelected}
             />

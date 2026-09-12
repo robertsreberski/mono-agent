@@ -422,12 +422,12 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    flag and requested-only keeps its dashed edge, both named in full in the
    accessible label. Type never drops below the row's own floor; the compact
    activity variant sheds padding first. */
-.route-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 6px; overflow: hidden; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 999px; font-size: 9px; line-height: 1.5; white-space: nowrap; }
-.route-badge-model { min-width: 0; max-width: 92px; overflow: hidden; font-weight: 650; text-overflow: ellipsis; }
+.route-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 6px; overflow: hidden; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 5px; font-size: 10px; line-height: 1.5; white-space: nowrap; }
+.route-badge-model { min-width: 0; max-width: 110px; overflow: hidden; font-weight: 650; text-overflow: ellipsis; }
 .route-badge-sep { flex: none; color: var(--text-muted); font-weight: 400; }
-.route-badge-effort { flex: none; font-family: var(--font-mono); font-size: 8.5px; font-weight: 700; letter-spacing: 0.02em; }
+.route-badge-effort { flex: none; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.02em; }
 .route-badge.is-compact { padding: 0 5px; gap: 3px; }
-.route-badge.is-compact .route-badge-model { max-width: 72px; }
+.route-badge.is-compact .route-badge-model { max-width: 100px; }
 .route-badge-flag { flex: none; color: var(--warning); font-weight: 800; }
 .route-badge.is-fallback { border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); }
 .route-badge.is-requested { border-style: dashed; }
@@ -440,8 +440,8 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .activity-row-badge { flex: none; display: inline-flex; min-width: 0; max-width: 42%; }
 .activity-row-badge .route-badge { max-width: 100%; }
 @media (max-width: 380px) {
-  .route-badge-model { max-width: 64px; }
-  .route-badge.is-compact .route-badge-model { max-width: 52px; }
+  .route-badge-model { max-width: 94px; }
+  .route-badge.is-compact .route-badge-model { max-width: 94px; }
   .activity-row-badge { max-width: 38%; }
 }
 .automation-empty { min-height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px 18px; color: var(--text-muted); text-align: center; }
@@ -1158,6 +1158,15 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
 @media (max-width: 560px) {
   .model-controls-label { display: none; }
+  /* Keep the delegation purpose readable: route + accounting sit underneath. */
+  .activity-row.is-subagent:has(.activity-row-badge) > summary { display: grid; grid-template-columns: 18px auto minmax(0, 1fr) auto; column-gap: 6px; row-gap: 4px; padding-block: 7px; }
+  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-glyph { grid-area: 1 / 1; }
+  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-label { grid-area: 1 / 2; }
+  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-summary { grid-area: 1 / 3; }
+  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-chevron { grid-area: 1 / 4; }
+  .activity-row.is-subagent .activity-row-badge { grid-area: 2 / 2; max-width: 100%; }
+  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-time { grid-area: 2 / 3 / 3 / 5; white-space: normal; overflow: visible; }
+  .activity-row.is-subagent:has(.activity-row-badge) .failed-tag { grid-area: 3 / 2 / 4 / 5; justify-self: start; }
   /* A phone's row cannot hold the purpose and the meta side by side: the flex
      line first squeezed the purpose to nothing and then clipped the meta, so a
      failed wake read as "wak…". Job rows alone go to two lines here — purpose
