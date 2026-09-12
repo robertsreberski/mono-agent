@@ -239,6 +239,7 @@ function optionalLiteral(
 }
 
 export interface RuntimeResult {
+  readonly subagentQuestion?: { question: string; options?: string[] };
   readonly text?: string | null;
   readonly structuredResult?: unknown;
   readonly structuredResultSource?: string | null;
@@ -398,6 +399,7 @@ export interface RuntimeMcpAppHost {
 }
 
 export interface RuntimeRunOptions {
+  readonly askParentController?: { submit(question: { question: string; options?: string[] }): Promise<void> };
   /** Host-owned opt-in for settled durable terminal recovery. */
   readonly sessionRecovery?: { runId: string; revision: number } | undefined;
   readonly model: RuntimeModelReference;

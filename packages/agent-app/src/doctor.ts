@@ -1778,6 +1778,9 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
       details.push("Persistent subagents unavailable: effective tool policy must expose both Agent and AgentSend; Agent remains stateless when allowed.");
     }
     if (persistentSubagentsEnabled(config)) {
+      details.push(config.tools.disallowedTools.includes("AskParent")
+        ? "AskParent dialogue disabled by global tool policy (operator choice)."
+        : "AskParent is automatic inside persistent children only; profile denies can disable dialogue.");
       const root = subagentInstancesRoot(config);
       let ancestor = root;
       try {

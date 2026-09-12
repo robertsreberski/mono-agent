@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let persistent children ask their parent for direction with child-only
+  `AskParent`. Questions are durable before the child turn ends, and Agent results
+  return successful `awaiting_reply` with structured question details. Reply with
+  ordinary `AgentSend` in the same session; failed replies preserve the question.
+
 - Keep a subagent's own context across conversation turns with
   `Agent({persist: true})` and `AgentSend`. Persistent instances survive restarts,
   appear in the Session envelope, and enforce idle expiry, capacity, turn limits,

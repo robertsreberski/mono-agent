@@ -695,7 +695,7 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
-  readonly instance?: { readonly sessionId: string; readonly sessionsRoot: string };
+  readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
   readonly model?: RuntimeModelReference;
   readonly effort?: string;
   readonly systemPrompt: string;
@@ -835,7 +835,21 @@ export function buildSubagentsOptions(
       ? request.systemPrompt
       : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
 
+    let subagentQuestion: RuntimeResult["subagentQuestion"];
+    let submitted = false;
+    const currentProfileDenies = subagents.definitions?.find((profile) => profile.name === request.definition.name)?.disallowedTools ?? [];
+    const askParentController = request.instance && scope && ![...config.tools.disallowedTools, ...currentProfileDenies, ...(request.definition.disallowedTools ?? [])].includes("AskParent")
+      ? { submit: async (question: NonNullable<RuntimeResult["subagentQuestion"]>): Promise<void> => {
+        if (submitted) throw new Error("AskParent already submitted a question this turn.");
+        submitted = true;
+        try { await scope.instances.markAwaiting(request.instance!.id, question); } catch (error) {
+          submitted = false; // Preserve exclusion while publishing, but permit a retry after rejection.
+          throw error;
+        }
+        subagentQuestion = structuredClone(question);
+      } } : undefined;
     const result = await runtime.run(childSystemPrompt, {
+      ...(askParentController === undefined ? {} : { askParentController }),
       ...(request.instance === undefined ? {} : {
         sessionId: request.instance.sessionId,
         piSessionsRoot: request.instance.sessionsRoot,
@@ -870,7 +884,7 @@ export function buildSubagentsOptions(
         : { skills: childSkills, skillsRoot: request.skillsRoot }),
       ...((request.definition.effort ?? request.effort) === undefined
         ? {} : { effort: request.definition.effort ?? request.effort }),
-      allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
+      allowedTools: [...new Set([...(request.definition.allowedTools ?? DEFAULT_SUBAGENT_TOOLS), ...(askParentController ? ["AskParent"] : [])])],
       disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...config.tools.disallowedTools, ...SUBAGENT_HARD_DENY])],
       // Only the servers this profile named. A profile that names none gets an
       // empty map, keeping the app-owned AskUser and channel-send tools
@@ -890,7 +904,8 @@ export function buildSubagentsOptions(
       return { ...result, failureKind: "session_continuity_lost",
         error: "The child answered outside its persistent session (for example after retry or fallback). This turn was not retained; close the instance and create another with the context it needs." };
     }
-    return result;
+    return subagentQuestion && !result.error && !result.failureKind && !result.cancelled
+      ? { ...result, subagentQuestion } : result;
   };
 
   return {
@@ -1352,6 +1367,7 @@ async function createConfiguredAgentHarnessInternal(
     ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
       (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
         id: record.id, name: record.name, status: record.status, turns: record.turns,
+        ...(record.pendingQuestion ? { pendingQuestion: record.pendingQuestion } : {}),
         ageMs: Math.max(0, Date.now() - record.updatedAt),
         route: [record.definition.model?.reference, record.definition.effort].filter(Boolean).join("/"),
       })) }),

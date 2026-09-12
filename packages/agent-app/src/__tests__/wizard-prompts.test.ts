@@ -252,8 +252,11 @@ describe("wizard prompt builders", () => {
   it("toolMultiselectOptions appends app and channel tools then AskUser after the built-ins", () => {
     const options = toolMultiselectOptions(["channel:telegram"]);
     const values = options.map((option) => option.value);
-    expect(values.slice(0, BUILTIN_TOOL_NAMES.length)).toEqual([...BUILTIN_TOOL_NAMES]);
-    expect(values.slice(BUILTIN_TOOL_NAMES.length)).toEqual([
+    const parentBuiltins = BUILTIN_TOOL_NAMES.filter((name) => name !== "AskParent");
+    expect(BUILTIN_TOOL_NAMES).toContain("AskParent");
+    expect(values).not.toContain("AskParent");
+    expect(values.slice(0, parentBuiltins.length)).toEqual(parentBuiltins);
+    expect(values.slice(parentBuiltins.length)).toEqual([
       "RunHistory",
       "SessionHistory",
       "SetConversationTitle",
@@ -277,7 +280,7 @@ describe("wizard prompt builders", () => {
 
   it("toolMultiselectOptions offers the built-ins plus channel-agnostic AskUser with no channel", () => {
     const options = toolMultiselectOptions([]);
-    expect(options.map((option) => option.value)).toEqual([...BUILTIN_TOOL_NAMES, ...APP_TOOL_NAMES, "AskUser"]);
+    expect(options.map((option) => option.value)).toEqual([...BUILTIN_TOOL_NAMES.filter((name) => name !== "AskParent"), ...APP_TOOL_NAMES, "AskUser"]);
     const ask = options.find((option) => option.value === "AskUser");
     expect(ask?.hint).toContain("web, Slack, or Telegram");
   });

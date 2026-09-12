@@ -155,3 +155,20 @@ describe("persistent Agent and AgentSend", () => {
     expect(names({ run: vi.fn() })).not.toContain("AgentSend");
   });
 });
+
+it("closes an awaiting instance without running an answer, but keeps a new question open", async () => {
+  const first = setup();
+  await first.agent.execute("a", { persist: true, id: "critic", prompt: "review" });
+  Object.assign(first.records.get("critic"), { status: "awaiting_reply", pendingQuestion: { question: "Scope?" } });
+  await first.send.execute("close", { id: "critic", close: true });
+  expect(first.options.run).toHaveBeenCalledTimes(1);
+  expect(first.instances.close).toHaveBeenCalledWith("critic");
+
+  const second = setup();
+  await second.agent.execute("a", { persist: true, id: "critic", prompt: "review" });
+  second.options.run.mockResolvedValue({ text: "", subagentQuestion: { question: "Another?" } });
+  const result = await second.send.execute("answer", { id: "critic", message: "API", close: true });
+  expect(result.details.subagent).toMatchObject({ status: "awaiting_reply", question: { question: "Another?" } });
+  expect(second.instances.finish).toHaveBeenLastCalledWith("critic", expect.objectContaining({ status: "awaiting_reply", question: { question: "Another?" } }));
+  expect(second.instances.close).not.toHaveBeenCalled();
+});
