@@ -168,27 +168,29 @@ describe("explicit memory forget coordinator", { timeout: 15_000 }, () => {
     rmSync(marker);
   });
 
-  it("rejects mtime-only tampering of both the backup and current root", async () => {
-    const snapshotFixture = await managedFixture();
-    const snapshotApplied = await applyExplicitMemoryForget(options(snapshotFixture));
-    const snapshotDaily = firstDaily(join(snapshotApplied.backupPath, "snapshot"));
-    const snapshotMtime = statSync(snapshotDaily).mtime;
-    utimesSync(snapshotDaily, snapshotMtime, new Date(snapshotMtime.valueOf() - 60_000));
+  /**
+   * One case per tampered side, rather than both inside a single test.
+   *
+   * Each side is a complete apply + restore over a durable root, and every
+   * generation swap in that path fsyncs. Two of them in one test share this
+   * describe's 15 s budget, which is enough on an idle machine (~1.6 s) and not
+   * enough when `pnpm -r run test` is saturating the disk -- the failure then
+   * looked like a hung forget rather than the I/O cost of doing it twice. The
+   * coverage is unchanged: both the backup snapshot and the current root must
+   * still refuse an mtime-only rewrite.
+   */
+  it.each(["backup", "current"] as const)("rejects mtime-only tampering of the %s root", async (side) => {
+    const fixture = await managedFixture();
+    const applied = await applyExplicitMemoryForget(options(fixture));
+    const daily = side === "backup"
+      ? firstDaily(join(applied.backupPath, "snapshot"))
+      : firstDaily(fixture.root);
+    const mtime = statSync(daily).mtime;
+    utimesSync(daily, mtime, new Date(mtime.valueOf() - 60_000));
     await expect(restoreExplicitMemoryForget({
-      root: snapshotFixture.root,
-      backupPath: snapshotApplied.backupPath,
-      expectedRootFingerprint: snapshotFixture.rootFingerprint,
-    })).rejects.toMatchObject({ code: "restore_failed" });
-
-    const currentFixture = await managedFixture();
-    const currentApplied = await applyExplicitMemoryForget(options(currentFixture));
-    const currentDaily = firstDaily(currentFixture.root);
-    const currentMtime = statSync(currentDaily).mtime;
-    utimesSync(currentDaily, currentMtime, new Date(currentMtime.valueOf() - 60_000));
-    await expect(restoreExplicitMemoryForget({
-      root: currentFixture.root,
-      backupPath: currentApplied.backupPath,
-      expectedRootFingerprint: currentFixture.rootFingerprint,
+      root: fixture.root,
+      backupPath: applied.backupPath,
+      expectedRootFingerprint: fixture.rootFingerprint,
     })).rejects.toMatchObject({ code: "restore_failed" });
   });
 

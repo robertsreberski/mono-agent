@@ -500,7 +500,12 @@ describe("monitors service", () => {
     wakeResult = () => ({ delivered: false, code: "conversation_busy", retryable: true });
     persistDispatch = true;
     await waitUntil(() => wakes.length > 0);
-    await pause(50);
+    // `wakes.length` only says the dispatch was OFFERED. The refusal is handled
+    // afterwards, and it is that handling which parks the batch as the retained
+    // representative (`monitor.refused`, counted into `pendingLines`). Emitting
+    // the duplicate before it lands means there is nothing to suppress against
+    // yet, which is how this read came back 1 instead of 2 on a loaded runner.
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.pendingLines).toBe(1));
     fake.process().emit("repeat\n");
     await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(2));
     wakeResult = () => ({ delivered: true, disposition: "follow_up" });
