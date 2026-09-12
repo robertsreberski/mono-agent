@@ -120,9 +120,11 @@ for one built at call time, unless its `tools` request survives the ceiling), an
 it never receives `Agent`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs
-with no provider session of its own. Omitting a profile's `model` inherits the
-parent's configured route, so subagents get the fallback chain and same-model
-retries too; naming a model routes that profile through it instead.
+with no provider session of its own. Without a call-time override or profile pin,
+it inherits the parent's effective model and effort. A child using the base model
+uses the shared fallback/retry runtime; a different resolved model goes through
+the host's `runtimeForModel` callback so the shared router cannot replace it with
+the base model.
 
 **Skills.** A subagent inherits the parent's skill index and the `ReadSkill` tool
 whenever the agent runs with `context.skillDisclosure: "index"` and a
