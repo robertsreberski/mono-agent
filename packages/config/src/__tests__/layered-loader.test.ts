@@ -43,6 +43,12 @@ describe("layerJsonOntoEnv", () => {
       .toEqual([{ model: "openai-codex:gpt-5.6-sol", attempts: 3 }]);
   });
 
+  it("preserves shorthand and named subagent models through JSON layering", () => {
+    const models = ["openai-codex:gpt-5.5", { name: "fable", model: "anthropic:claude-fable-5-1" }];
+    const layered = layerJsonOntoEnv({ subagents: { models } }, {});
+    expect(JSON.parse(layered.MONO_AGENT_SUBAGENTS_JSON as string)).toEqual({ models });
+  });
+
   it("translates JSON sections to env keys", () => {
     const layered = layerJsonOntoEnv(
       {

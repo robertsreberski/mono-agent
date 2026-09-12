@@ -388,6 +388,20 @@ describe("createRuntime subagent seam", () => {
     expect(forwarded.subagents.definitions).toBe(subagents.definitions);
   });
 
+  it.each([
+    [{}, "parent", "xhigh"],
+    [{ model: modelRef("faux", "pinned"), effort: "low" }, "pinned", "low"],
+    [{ model: modelRef("faux", "override"), effort: "high" }, "override", "high"],
+  ])("applies child definition over parent route: %j", async (definition, expectedModel, expectedEffort) => {
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents });
+    const childRun = executeMock.mock.calls[0][1].subagents.run;
+    executeMock.mockClear();
+    await childRun({ systemPrompt: "child", prompt: "x", definition, model: modelRef("faux", "parent"), effort: "xhigh" });
+    expect(executeMock.mock.calls[0][1]).toMatchObject({ model: modelRef("faux", expectedModel), effort: expectedEffort });
+  });
+
   it("does not overwrite a host-supplied run callback", async () => {
     executeMock.mockResolvedValue({ text: "ok", events: [] });
     const hostRun = vi.fn();

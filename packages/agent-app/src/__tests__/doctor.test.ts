@@ -4875,6 +4875,34 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(report.ok).toBe(true);
   });
 
+  it("validates allowed subagent model routes", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
+      subagents: { enabled: true, models: [{ name: "helper-model", model: "openai-codex:gpt-5.5" }] },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(report, "tools").details.join("\n")).toContain('Subagent model "helper-model" openai-codex:gpt-5.5 runs on');
+  });
+
+  it("rejects unresolved allowed subagent models", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
+      subagents: { enabled: true, models: [{ name: "bad-model", model: "openai-codex:nonexistent-subagent-model" }] },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(sectionById(report, "tools").status).toBe("error");
+    expect(sectionById(report, "tools").details.join("\n")).toContain("subagents.models[0] (bad-model)");
+  });
+
+  it("rejects a model alias colliding with a profile before readiness", async () => {
+    const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
+      subagents: { enabled: true, models: [{ name: "helper", model: "openai-codex:gpt-5.5" }],
+        definitions: [{ name: "helper", description: "d", prompt: "p" }],
+      },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    expect(report.ok).toBe(false);
+    expect(JSON.stringify(report)).toContain("collides with a subagent name");
+  });
+
   it("says subagents are off under allow-all, without holding readiness", async () => {
     // The wildcard was the one posture with no signal in either direction: an
     // operator could ask the agent to delegate, watch it silently not do so, and

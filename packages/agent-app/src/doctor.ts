@@ -1803,6 +1803,27 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
         "Subagents are enabled but Agent is not in tools.allowedTools, so the tool is never registered. Add \"Agent\" to tools.allowedTools.",
       );
     }
+    const subagentNames = new Set(["general-purpose", ...(subagents.definitions ?? []).map((definition) => definition.name)]);
+    for (const [index, choice] of (subagents.models ?? []).entries()) {
+      const name = choice.name ?? modelReferenceKey(choice.model);
+      if (subagentNames.has(name)) {
+        status = "error";
+        details.push(`subagents.models[${index}] name "${name}" collides with a subagent name.`);
+      }
+      try {
+        const support = describeMonoRuntimeSupport(choice.model);
+        const issue = piModelResolutionIssue(config, choice.model);
+        if (issue !== undefined) {
+          status = "error";
+          details.push(`subagents.models[${index}] (${name}): ${issue}.`);
+        } else {
+          details.push(`Subagent model "${name}" ${displayReferenceOf(choice.model)} runs on ${support.backend.label}.`);
+        }
+      } catch (error) {
+        status = "error";
+        details.push(`subagents.models[${index}] (${name}): ${displayReason(error)}.`);
+      }
+    }
     for (const definition of subagents.definitions ?? []) {
       if (definition.promptPath !== undefined && !(await pathExists(definition.promptPath))) {
         status = "error";
