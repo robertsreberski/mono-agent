@@ -7,6 +7,12 @@ sidebar:
 
 This playbook shows how one orchestrator agent delegates subtasks to named specialist responders (a researcher and a writer) through the loopback-by-default `AskCollaborator` MCP tool. The wiring is code-only: you build collaborator responders, create a runtime extension, and attach it to the orchestrator per request.
 
+For in-process helpers, the built-in [Agent tool](/runtime/tools-and-guards/#subagents-agent)
+provides a config-first option. Configure `subagents.models` to offer model choices,
+then select `model` and `effort` on each call; omitted values inherit profile pins
+or the parent's effective route. The collaborator setup below remains useful for
+separately composed responders.
+
 ## Who this is for
 
 Workflow designers composing specialist agents — you want a single orchestrator that decides when to hand a subtask to a researcher, a writer, or any other named collaborator, rather than doing everything in one prompt.

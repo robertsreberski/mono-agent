@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+// Exercise the private tool-to-app seam without adding a public runtime export.
+// @ts-expect-error -- package-private JavaScript has no public declaration.
+import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
 import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 
 const harnessMock = vi.fn((options: Record<string, unknown>) => ({
@@ -191,6 +194,48 @@ describe("configured subagents", () => {
       subagents: { depth: 1 },
     });
     expect(options.disallowedTools).toContain("Agent");
+  });
+
+  it("projects named and shorthand model choices", async () => {
+    const { subagents } = await buildSubagents(monoConfig({ enabled: true,
+      models: [{ name: "haiku", model: HAIKU }, { model: PRIMARY }],
+    }));
+    expect(subagents?.models).toEqual([
+      { name: "haiku", model: HAIKU, key: HAIKU.reference },
+      { name: PRIMARY.reference, model: PRIMARY, key: PRIMARY.reference },
+    ]);
+  });
+
+  it.each([
+    [undefined, undefined, HAIKU, "xhigh"],
+    [PRIMARY, "low", PRIMARY, "low"],
+    [PRIMARY, undefined, PRIMARY, "xhigh"],
+  ])("resolves the profile over the effective parent: %j/%s", async (pin, effort, expectedModel, expectedEffort) => {
+    const childRuntime = { run: vi.fn(async (_prompt: string, _options: Record<string, unknown>) => ({ text: "child", events: [] })) };
+    const runtimeForModel = vi.fn(() => childRuntime);
+    const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true }), { runtimeForModel });
+    const run = subagents?.run as (request: unknown) => Promise<unknown>;
+    await run({ systemPrompt: "s", prompt: "x", definition: { name: "helper", model: pin, effort },
+      model: HAIKU, effort: "xhigh", maxTurns: 5, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {},
+    });
+    const selected = expectedModel === PRIMARY ? runtime : childRuntime;
+    expect(selected.run.mock.calls[0]?.[1]).toMatchObject({ model: expectedModel, effort: expectedEffort });
+    if (expectedModel === HAIKU) expect(runtimeForModel).toHaveBeenCalledWith(HAIKU);
+    else expect(runtimeForModel).not.toHaveBeenCalled();
+  });
+
+  it.each([{ name: "researcher" }, {}, { name: "authored", systemPrompt: "s" }])("routes an actual Agent override through runtimeForModel: %j", async (shape) => {
+    const childRuntime = { run: vi.fn(async (_prompt: string, _options: Record<string, unknown>) => ({ text: "child", events: [] })) };
+    const runtimeForModel = vi.fn(() => childRuntime);
+    const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true,
+      definitions: [{ ...RESEARCHER, model: PRIMARY, effort: "low" }],
+      models: [{ name: "haiku", model: HAIKU }],
+    }), { runtimeForModel });
+    const tool = createAgentTool(subagents as never, { model: PRIMARY, effort: "xhigh" });
+    await tool.execute("call", { ...shape, prompt: "x", model: "haiku", effort: "high" });
+    expect(runtimeForModel).toHaveBeenCalledWith(HAIKU);
+    expect(childRuntime.run.mock.calls[0]?.[1]).toMatchObject({ model: HAIKU, effort: "high" });
+    expect(runtime.run).not.toHaveBeenCalled();
   });
 
   it("routes a profile with its own model through runtimeForModel, not the shared router", async () => {

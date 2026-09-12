@@ -266,7 +266,7 @@
  * @property {string} name Model-visible identifier and the tool's `name` enum value.
  * @property {string} description Model-visible: when to pick this profile.
  * @property {string} systemPrompt Full system prompt for the child run.
- * @property {RuntimeModelRef} [model] Absent inherits the parent's configured route.
+ * @property {RuntimeModelRef} [model] Absent inherits the parent's effective route.
  * @property {string} [effort]
  * @property {ReadonlyArray<string>} [allowedTools] Absent uses the safe read-only default set.
  * @property {ReadonlyArray<string>} [disallowedTools]
@@ -300,6 +300,7 @@
 /**
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
+ * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
  * @property {number} [maxPerTurn] Total Agent calls per parent turn. Default 20.

@@ -162,7 +162,8 @@ export function createRuntime(host = {}) {
    * @param {*} request
    */
   const defaultSubagentRun = async (request) => self.run(request.systemPrompt, {
-    model: request.model,
+    // The tool merges call-time overrides into the definition; otherwise inherit.
+    model: request.definition?.model ?? request.model,
     // A child must never be less confined than its parent. The policy is a
     // per-run option, not a host key, so without forwarding it the child would
     // run with no sandbox at all — and its default tools include WebFetch and
@@ -184,7 +185,7 @@ export function createRuntime(host = {}) {
     // A profile that pins effort — declared or authored at call time — means it
     // on this path too; dropping it would silently run the child at the
     // parent's level while reporting the profile's.
-    ...(request.definition?.effort === undefined ? {} : { effort: request.definition.effort }),
+    effort: request.definition?.effort ?? request.effort,
     messages: [{ role: "user", content: request.prompt }],
     maxTurns: request.maxTurns,
     allowedTools: request.definition?.allowedTools,

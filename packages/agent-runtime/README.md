@@ -768,7 +768,13 @@ generation. Diagnostics contain metadata only, never guidance bodies.
 The Pi runtime does not read another tool's filesystem settings, hooks, plugins,
 or project documents. Subagents are the kernel's own in-process delegation
 surface (the `Agent` tool), configured by the host rather than discovered from a
-provider's on-disk profiles.
+provider's on-disk profiles. Hosts can offer `subagents.models` as
+`{name, model, key}[]` to allow call-time `Agent.model` choices. `Agent.effort`
+works for configured, authored, and general-purpose helpers; only `tools`
+requires an authored `systemPrompt`. For model and effort independently, call-time
+values override profile pins, then inherit the parent's effective turn values.
+Pinned or overridden routes appear in the result header and `details.subagent.requested`;
+`details.subagent.executed` records the successful child route when available.
 
 ### Built-in tools
 

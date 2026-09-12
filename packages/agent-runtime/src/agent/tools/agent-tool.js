@@ -99,9 +99,10 @@ function toolDescription(subagents, definitions, ceiling) {
   // splits those across two fields — label into `name`, profile into an
   // invented one — and the closed schema rejects the whole call before any of
   // the handler's precise errors can run.
+  const routeOptions = (subagents.models?.length ?? 0) > 0 ? "`model` or `effort`" : "`effort`";
   const shapes = ceiling === null
     ? ""
-    : `\n\nExactly two ways to call this, and \`name\` carries the agent's identity in both:\n- Use a configured one: set \`name\` to a name from the list above. Nothing else.\n- Build one for this task: set \`name\` to a NEW kebab-case name AND \`systemPrompt\` to its full instructions (optionally \`tools\`, \`effort\`). Do that when no configured one fits — a dedicated prompt beats stuffing constraints into \`prompt\`.\n\n\`description\` is the short label shown in the activity log, never the agent's name. There is no separate field for choosing a configured agent.`;
+    : `\n\nExactly two ways to call this, and \`name\` carries the agent's identity in both:\n- Use a configured one: set \`name\` to a name from the list above. Optionally set ${routeOptions}.\n- Build one for this task: set \`name\` to a NEW kebab-case name AND \`systemPrompt\` to its full instructions (optionally \`tools\` and ${routeOptions}). Do that when no configured one fits — a dedicated prompt beats stuffing constraints into \`prompt\`.\n\n\`description\` is the short label shown in the activity log, never the agent's name. There is no separate field for choosing a configured agent.`;
   // The ceiling is listed because the model has no other way to discover it: a
   // tool it cannot see is indistinguishable from one it forgot to ask for.
   const inline = ceiling === null
@@ -203,7 +204,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{model?: *, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
+ * @param {{model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
  * @returns {*|null}
  */
 export function createAgentTool(subagents, context = {}) {
@@ -216,6 +217,7 @@ export function createAgentTool(subagents, context = {}) {
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const maxPerTurn = positiveInt(subagents.maxPerTurn, DEFAULT_MAX_PER_TURN);
   const names = definitions.map((definition) => definition.name);
+  const models = subagents.models ?? [];
 
   const slots = createCountingSemaphore(maxConcurrent);
   // Budget state hangs off the shared `subagents` options object, NOT this
@@ -260,11 +262,6 @@ export function createAgentTool(subagents, context = {}) {
               maxItems: 20,
               description: `Tools the subagent you author needs, e.g. ["Read","Edit","Bash"]. Only usable with \`systemPrompt\`. Available: ${ceiling.join(", ")}. Omit for a read-only helper.`,
             },
-            effort: {
-              type: "string",
-              enum: [...EFFORT_LEVELS],
-              description: "Reasoning effort for the subagent you author. Only usable with `systemPrompt`. Omit to inherit yours.",
-            },
           }
         : {}),
       ...(ceiling === null && names.length > 0
@@ -276,6 +273,16 @@ export function createAgentTool(subagents, context = {}) {
             },
           }
         : {}),
+      effort: {
+        type: "string",
+        enum: [...EFFORT_LEVELS],
+        description: "Reasoning effort for the subagent. Omit to inherit your own effective effort.",
+      },
+      ...(models.length === 0 ? {} : { model: {
+        type: "string",
+        enum: models.map((choice) => choice.name),
+        description: `Run the subagent on this model instead of inheriting yours. Choices: ${models.map((choice) => `${choice.name} → ${choice.key}`).join(", ")}.`,
+      } }),
       description: {
         type: "string",
         maxLength: 80,
@@ -298,23 +305,41 @@ export function createAgentTool(subagents, context = {}) {
     executionMode: undefined,
     /**
      * @param {string} toolCallId
-     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string}} params
+     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string}} params
      * @param {AbortSignal} [signal]
      */
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
 
       const authored = ceiling !== null && typeof params?.systemPrompt === "string" && params.systemPrompt.trim().length > 0;
-      if (!authored && (params?.tools !== undefined || params?.effort !== undefined)) {
-        throw new Error("Error: `tools` and `effort` only apply when you supply `systemPrompt` to build a subagent. A configured profile brings its own.");
+      if (!authored && params?.tools !== undefined) {
+        throw new Error("Error: `tools` only applies when you supply `systemPrompt` to build a subagent. A configured profile brings its own.");
       }
-      const { profile, droppedTools } = authored
+      const override = params.model === undefined ? undefined : models.find((choice) => choice.name === params.model);
+      if (params.model !== undefined && override === undefined) {
+        throw new Error(`Error: unknown model "${params.model}". Choices: ${models.map((choice) => choice.name).join(", ") || "none configured"}.`);
+      }
+      if (params.effort !== undefined && !EFFORT_LEVELS.includes(params.effort)) {
+        throw new Error(`Error: unknown effort "${params.effort}". Choices: ${EFFORT_LEVELS.join(", ")}.`);
+      }
+      const { profile: selectedProfile, droppedTools } = authored
         ? buildInlineProfile(params, ceiling, names)
         : { profile: resolveProfile(definitions, params?.name, ceiling), droppedTools: [] };
-      if (profile === null) {
+      if (selectedProfile === null) {
         const available = [...names, GENERAL_PURPOSE_SUBAGENT].join(", ");
         throw new Error(`Error: unknown subagent "${params?.name}". Available: ${available}.`);
       }
+
+      const profile = {
+        ...selectedProfile,
+        ...(override === undefined ? {} : { model: override.model }),
+        ...(params.effort === undefined ? {} : { effort: params.effort }),
+      };
+      const requested = {
+        ...(profile.model === undefined ? {} : { model: `${profile.model.provider}:${profile.model.model}` }),
+        ...(profile.effort === undefined ? {} : { effort: profile.effort }),
+      };
+      const routeLabel = [requested.model, requested.effort].filter(Boolean).join("/");
 
       // The concurrency cap bounds resources, not cost: a delegation loop can
       // fire calls serially across turns without ever contending the semaphore.
@@ -371,6 +396,7 @@ export function createAgentTool(subagents, context = {}) {
       const deadline = new Promise((resolve) => { fireDeadline = () => resolve(DEADLINE); });
 
       const collector = createActivityCollector({
+        requested,
         callId: toolCallId,
         profileName: profile.name,
         callIndex,
@@ -399,6 +425,7 @@ export function createAgentTool(subagents, context = {}) {
           prompt: params.prompt,
           definition: profile,
           ...(context.model === undefined ? {} : { model: context.model }),
+          ...(context.effort === undefined ? {} : { effort: context.effort }),
           ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
           ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
           // Inherited, never widened: a profile cannot loosen confinement.
@@ -459,6 +486,7 @@ export function createAgentTool(subagents, context = {}) {
       const { text, savedPath, truncated } = formatSubagentResult({
         profileName: profile.name,
         label: params.description,
+        ...(routeLabel ? { routeLabel } : {}),
         outcome,
         durationMs,
         activity: collector.entries(),
@@ -482,7 +510,9 @@ export function createAgentTool(subagents, context = {}) {
         content: [{ type: "text", text }],
         details: {
           tool: "Agent",
-          subagent: { name: profile.name, callIndex, status: outcome.status, toolCalls: collector.entries().length },
+          subagent: { name: profile.name, callIndex, status: outcome.status, toolCalls: collector.entries().length,
+            ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
+          },
           ...(truncated ? { tool_payload_truncated: true } : {}),
           ...(savedPath === null ? {} : { tool_payload_saved_paths: [savedPath] }),
         },
@@ -519,7 +549,7 @@ function inlineCeiling(inline) {
  * actual tool set, so without an intersection the model could grant a helper a
  * tool its own policy denies it.
  *
- * @param {{name?: string, systemPrompt?: string, description?: string, tools?: ReadonlyArray<string>, effort?: string}} params
+ * @param {{name?: string, systemPrompt?: string, description?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string}} params
  * @param {ReadonlyArray<string>} ceiling
  * @param {ReadonlyArray<string>} configuredNames
  * @returns {{profile: RuntimeSubagentDefinition, droppedTools: string[]}}
@@ -640,9 +670,9 @@ function appendRouteEntry(entries, entry, routeState) {
  * answer body, so forwarding them would splice a subagent's prose into the
  * main agent's reply. Its text reaches the parent through the tool result.
  *
- * @param {{callId: string, profileName: string, callIndex: number, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
+ * @param {{callId: string, profileName: string, callIndex: number, requested?: {model?: string, effort?: string}, label?: string, emit?: (event: *) => void, recordUsage?: (usage: {costUsd: number, input: number, output: number, cacheRead: number, cacheWrite: number}) => void}} options
  */
-function createActivityCollector({ callId, profileName, callIndex, label, emit, recordUsage }) {
+function createActivityCollector({ callId, profileName, callIndex, requested = {}, label, emit, recordUsage }) {
   /** @type {Map<string, {name: string, args: unknown, startedAt: number, ms?: number}>} */
   const open = new Map();
   /** @type {Array<{name: string, args: unknown, ms?: number, isError: boolean}>} */
@@ -650,7 +680,8 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
   /** What the child reported spending, so the parent run can own it. */
   const usage = emptyUsage();
   const subagent = { id: callId, name: profileName, callIndex, ...(label === undefined ? {} : { label }) };
-  const routeState = { requested: {}, attempted: undefined, transitions: [], retries: [], truncated: false };
+  let finalAttribution;
+  const routeState = { requested: { ...requested }, attempted: undefined, transitions: [], retries: [], truncated: false };
 
   /** @param {*} event */
   const publish = (event) => {
@@ -664,6 +695,7 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
 
   return {
     entries: () => done,
+    attribution: () => finalAttribution,
     /** Lifecycle bookends so the subagent is visible before its first tool call. */
     started() {
       publish({
@@ -688,7 +720,7 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
       const requestedModel = routeState.requested.model;
       const fallback = routeState.transitions.length > 0
         || (executed?.model !== undefined && requestedModel !== undefined && executed.model !== requestedModel);
-      const attribution = requestedModel === undefined && routeState.attempted === undefined && executed === undefined
+      const attribution = requestedModel === undefined && routeState.requested.effort === undefined && routeState.attempted === undefined && executed === undefined
         ? undefined
         : {
             requested: routeState.requested,
@@ -699,6 +731,7 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
             retries: routeState.retries,
             ...(routeState.truncated ? { truncated: true } : {}),
           };
+      finalAttribution = attribution;
       publish({
         phase: "agent_completed",
         id: `agent:${callId}`,
@@ -748,6 +781,7 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
           routeState.requested = {
             ...(model === undefined ? {} : { model }),
             ...(effort === undefined ? {} : { effort }),
+            ...routeState.requested,
           };
         }
         return;
@@ -756,7 +790,7 @@ function createActivityCollector({ callId, profileName, callIndex, label, emit, 
         const from = boundedRouteString(event.from);
         const to = boundedRouteString(event.to);
         if (from !== undefined && to !== undefined) {
-          if (routeState.requested.model === undefined) routeState.requested = { model: from };
+          if (routeState.requested.model === undefined) routeState.requested = { ...routeState.requested, model: from };
           const attemptIndex = boundedRouteIndex(event.attemptIndex);
           const reason = boundedRouteString(event.reason, 128);
           appendRouteEntry(routeState.transitions, {
@@ -920,13 +954,13 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
  * cut it off. Without a sink (or when the write fails) the text says so instead,
  * so the caller does not go looking for a file that was never written.
  *
- * @param {{profileName: string, label?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
+ * @param {{profileName: string, label?: string, routeLabel?: string, outcome: {status: string, answer: string, reason?: string}, durationMs: number, activity: ReadonlyArray<{name: string, args: unknown, ms?: number, isError: boolean}>, maxBytes?: number, cwd?: string, notice?: string, persist?: (fullText: string) => string|null}} input
  * @returns {{text: string, savedPath: string|null, truncated: boolean}}
  */
-export function formatSubagentResult({ profileName, label, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
+export function formatSubagentResult({ profileName, label, routeLabel, outcome, durationMs, activity, maxBytes = RESULT_MAX_BYTES, cwd, notice, persist }) {
   const seconds = (durationMs / 1000).toFixed(1);
   const calls = `${activity.length} tool call${activity.length === 1 ? "" : "s"}`;
-  const header = `<subagent: ${profileName}${label ? ` · ${label}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
+  const header = `<subagent: ${profileName}${label ? ` · ${label}` : ""}${routeLabel ? ` · ${routeLabel}` : ""} · ${outcome.status} · ${calls} · ${seconds}s>`;
   // Surfaced before the answer: a request the runtime silently declined would
   // otherwise have the caller re-request it on every future call.
   const preamble = [

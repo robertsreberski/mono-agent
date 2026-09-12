@@ -163,6 +163,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     };
   };
   readonly subagents?: {
+    readonly models?: readonly (string | { readonly name?: string; readonly model: string })[];
     readonly enabled?: boolean;
     readonly maxConcurrent?: number;
     readonly maxPerTurn?: number;

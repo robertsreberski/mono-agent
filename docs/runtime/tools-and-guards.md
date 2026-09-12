@@ -20,6 +20,7 @@ independently and reports back. It exists only on the pi runtime, and only when
   "subagents": {
     "enabled": true,
     "maxConcurrent": 5,
+    "models": [{ "name": "fable", "model": "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],
     "definitions": [
       {
         "name": "researcher",
@@ -34,15 +35,33 @@ independently and reports back. It exists only on the pi runtime, and only when
 ```
 
 Each definition needs exactly one of `prompt` or `promptPath`. The `Agent` tool
-takes `{prompt, name?, description?}`; with no `name` it runs a read-only
-general-purpose researcher on the parent's model.
+takes `{prompt, name?, description?, model?, effort?}`; with no `name` it runs a
+read-only general-purpose researcher. `model` is offered only when the operator
+configures a non-empty `subagents.models` allow-list. Entries can be full model
+reference strings or `{name?, model}` objects. An omitted name uses the canonical
+reference; explicit aliases must be lowercase kebab-case, 1–40 characters, unique,
+and distinct from profile names and `general-purpose`. Duplicate model references
+are rejected. Unknown call-time choices fail with the allowed names.
+
+Model and effort each resolve independently: **call-time override → profile pin →
+parent effective value → base/runtime default**. Inheritance follows the parent's
+current turn, including per-conversation model choices and effort overrides.
+Both options work with configured profiles, authored helpers, and general-purpose,
+even when authoring is disabled. The parent's fallback chain does not implicitly
+add choices to `subagents.models`.
+
+For example, `Agent({name: "researcher", prompt: "Find the relevant callers",
+model: "fable", effort: "high"})` keeps the researcher's prompt and tool policy
+while changing its route. Pinned or overridden values appear in the result header
+and structured `requested` details; `executed` details reflect the successful route
+when the child reports it, including fallback differences.
 
 **Subagents built at call time.** A pre-declared profile means editing config and
 restarting for every new specialization, so the agent can also author one on the
-spot: passing `systemPrompt` (plus a kebab-case `name`, and optionally `tools`
-and `effort`) builds a one-off subagent for that call instead of selecting a
-profile. `tools` and `effort` apply only alongside `systemPrompt` — a configured
-profile brings its own — and a name that collides with a configured profile is
+spot: passing `systemPrompt` (plus a kebab-case `name`, and optionally `tools`,
+`model`, and `effort`) builds a one-off subagent for that call instead of selecting a
+profile. Only `tools` requires `systemPrompt`; configured profiles retain their
+operator-defined tool policy. A name that collides with a configured profile is
 rejected so the activity log stays unambiguous.
 
 What an authored subagent may reach is an operator decision, not the model's.
@@ -101,9 +120,11 @@ for one built at call time, unless its `tools` request survives the ceiling), an
 it never receives `Agent`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs
-with no provider session of its own. Omitting a profile's `model` inherits the
-parent's configured route, so subagents get the fallback chain and same-model
-retries too; naming a model routes that profile through it instead.
+with no provider session of its own. Without a call-time override or profile pin,
+it inherits the parent's effective model and effort. A child using the base model
+uses the shared fallback/retry runtime; a different resolved model goes through
+the host's `runtimeForModel` callback so the shared router cannot replace it with
+the base model.
 
 **Skills.** A subagent inherits the parent's skill index and the `ReadSkill` tool
 whenever the agent runs with `context.skillDisclosure: "index"` and a

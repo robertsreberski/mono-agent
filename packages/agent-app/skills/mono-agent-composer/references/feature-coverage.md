@@ -132,3 +132,12 @@ Prompt-cache diagnostics: set `providers.piNative.promptCacheDiagnostics` (defau
 fingerprints in existing run artifacts. Use the framework script
 `scripts/summarize-prompt-cache.mjs` for token-weighted cache ratios and fingerprint
 changes; see [measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
+
+
+For built-in `Agent` helpers, `subagents.models` offers call-time model choices as
+reference strings or `{name?, model}` objects. Explicit aliases are unique
+lowercase kebab-case names (1–40 characters), distinct from profile names and
+`general-purpose`; unnamed choices use the canonical reference. Model and effort
+resolve independently as call-time override, profile pin, parent effective value,
+then base/runtime default. `effort` works on every call; `model` is offered only
+with a non-empty allow-list. Only `tools` requires an authored `systemPrompt`.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let `Agent` calls select a model from `subagents.models` and set effort for
+  configured, authored, or general-purpose helpers. Call-time values override
+  profile pins; unpinned children inherit the parent's effective model and effort.
+  Report requested and executed routes when a child route is pinned or overridden.
+
 - Label a conversation that belongs to a project wherever it is listed: on its
   row in the console's conversation list and archive shelf, on its card in
   Active now, and on a search hit. Conversation summaries carry the project's

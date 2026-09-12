@@ -541,6 +541,35 @@ describe("loadMonoAgentConfig", () => {
     expect(config.subagents?.definitions?.[1]?.model).toMatchObject({ provider: "openai-codex", model: "gpt-5.6-sol" });
   });
 
+  it("loads named and shorthand subagent model choices", () => {
+    const config = loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ models: ["openai-codex:gpt-5.5", { name: "fable", model: "anthropic:claude-fable-5-1" }] }),
+    } });
+    expect(config.subagents?.models).toEqual([
+      { model: expect.objectContaining({ provider: "openai-codex", model: "gpt-5.5" }) },
+      { name: "fable", model: expect.objectContaining({ provider: "anthropic", model: "claude-fable-5-1" }) },
+    ]);
+  });
+
+  it.each([
+    [{ models: {} }, /models must be an array/u],
+    [{ models: [null] }, /string or object/u],
+    [{ models: [{}] }, /model reference string/u],
+    [{ models: ["not-a-reference"] }, /models\[0\] model .*not a valid runtime model reference/u],
+    [{ models: [{ name: "Bad:name", model: "anthropic:x" }] }, /name must be lowercase/u],
+    [{ models: [{ name: "a".repeat(41), model: "anthropic:x" }] }, /1-40/u],
+    [{ models: [{ model: "anthropic:x", typo: true }] }, /unknown field "typo"/u],
+    [{ models: ["anthropic:x", "pi:anthropic:x"] }, /duplicate model reference/u],
+    [{ models: [{ name: "a", model: "anthropic:x" }, { name: "a", model: "anthropic:y" }] }, /duplicate model name/u],
+    [{ models: [{ name: "general-purpose", model: "anthropic:x" }] }, /collides/u],
+    [{ models: [{ name: "helper", model: "anthropic:x" }], definitions: [{ name: "helper", description: "d", prompt: "p" }] }, /collides/u],
+    [{ models: ["private-provider:x"] }, /subagents.models\[0\].model is not available/u],
+  ])("rejects invalid subagent model choices: %j", (payload, expected) => {
+    expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv,
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify(payload),
+    } })).toThrow(expected);
+  });
+
   it("is absent when no subagents are configured", () => {
     expect(loadMonoAgentConfig({ cwd: "/repo", env: baseEnv }).subagents).toBeUndefined();
   });

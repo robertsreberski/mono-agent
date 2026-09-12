@@ -55,6 +55,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // Subagents the Agent tool can deploy. Requires "Agent" in tools.allowedTools too.
   "subagents": {
     "enabled": true,
+    "models": [{ "name": "fable", "model": "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],
     "maxConcurrent": 5,                    // simultaneous subagents per turn
     "maxPerTurn": 20,                      // total Agent calls per turn (runaway guard)
     "definitions": [
