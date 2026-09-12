@@ -41,6 +41,7 @@ export function RecentSection({
   readonly highlightSelected?: boolean;
 }) {
   const {
+    tagsByAgent,
     agents,
     catalogByProvider,
     projectsByAgent,
@@ -139,6 +140,7 @@ export function RecentSection({
                 return (
                   <ThreadListItem
                     thread={thread}
+                    tags={(tagsByAgent?.[thread.sourceId] ?? []).filter((tag) => thread.tagIds?.includes(tag.id))}
                     agent={agentBySourceId.get(thread.sourceId) ?? null}
                     catalogModels={thread.sourceId === selectedAgentId ? catalogModels : undefined}
                     {...(project === undefined ? {} : { project })}

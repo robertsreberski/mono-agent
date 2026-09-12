@@ -61,6 +61,7 @@ export const thread = (
   title: id,
   archivedAt: null,
   projectId: null,
+  tagIds: [],
   createdAt: "2026-07-17T10:00:00.000Z",
   updatedAt: "2026-07-17T10:00:00.000Z",
   revision: 1,
@@ -202,6 +203,7 @@ export const bootstrap = (
     ? threads[0]?.sourceId ?? agents[0]?.sourceId ?? null
     : scope.threadsSourceId,
   threadsNextCursor: scope.threadsNextCursor ?? null,
+  tags: [],
   projects: scope.projects ?? [],
   projectsSourceId: scope.projectsSourceId === undefined
     ? threads[0]?.sourceId ?? agents[0]?.sourceId ?? null

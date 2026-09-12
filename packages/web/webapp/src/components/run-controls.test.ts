@@ -24,6 +24,7 @@ const detail = (messages: readonly WebMessage[]): ThreadDetail => ({
     title: "Thread",
     archivedAt: null,
     projectId: null,
+  tagIds: [],
     createdAt: "2026-09-09T10:00:00.000Z",
     updatedAt: "2026-09-09T10:00:00.000Z",
     revision: 1,

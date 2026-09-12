@@ -3401,3 +3401,40 @@ describe("conversation projects", () => {
       .toMatchObject({ projectId: null });
   });
 });
+
+describe("conversation tags HTTP", () => {
+  it("supports CRUD and membership with strict validation and agent-scoped errors", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const write = (path: string, method: string, body: Record<string, unknown>) => fetch(`${baseUrl}/api/v1/${path}`, {
+      method, headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    expect((await fetch(`${baseUrl}/api/v1/tags`)).status).toBe(400);
+    expect(await json(await fetch(`${baseUrl}/api/v1/tags?sourceId=agent-one`))).toEqual({ tags: [] });
+    const created = await write("tags", "POST", { sourceId: "agent-one", name: " planning ", color: "green" });
+    expect(created.status).toBe(201);
+    const tag = (await json(created)).tag as { id: string };
+    expect((await write("tags", "POST", { sourceId: "agent-one", name: "PLANNING" })).status).toBe(409);
+    for (const body of [
+      { name: "" }, { name: "a\nb" }, { name: "bad\u0001" }, { name: "a\u0085b" }, { name: "a\u2028b" }, { name: "a\u2029b" }, { name: "x".repeat(121) },
+      { name: "ok", color: "black" }, { name: "ok", archived: true }, { name: "ok", context: "x" },
+    ]) expect((await write("tags", "POST", { sourceId: "agent-one", ...body })).status).toBe(400);
+    const trimmed = await json(await write("tags", "POST", { sourceId: "agent-one", name: `  ${"x".repeat(120)}  ` }));
+    expect(trimmed.tag).toMatchObject({ name: "x".repeat(120) });
+    expect((await write(`tags/${tag.id}`, "PATCH", {})).status).toBe(400);
+    expect((await write(`tags/${tag.id}`, "PATCH", { color: "url(no)" })).status).toBe(400);
+    expect((await write("tags/missing", "PATCH", { name: "missing" })).status).toBe(404);
+    expect((await write("tags", "POST", { sourceId: "missing", name: "ok" })).status).toBe(404);
+    const patched = await write(`tags/${tag.id}`, "PATCH", { name: "implementing", color: "teal" });
+    expect((await json(patched)).tag).toMatchObject({ name: "implementing", color: "teal", revision: 2 });
+    const thread = (await json(await write("threads", "POST", { sourceId: "agent-one" }))).thread as { id: string };
+    expect((await json(await write(`threads/${thread.id}`, "PATCH", { tagIds: [tag.id, tag.id] }))).thread).toMatchObject({ tagIds: [tag.id] });
+    expect((await write(`threads/${thread.id}`, "PATCH", { tagIds: "wrong" })).status).toBe(400);
+    expect((await write(`threads/${thread.id}`, "PATCH", { tagIds: [1] })).status).toBe(400);
+    expect((await write(`threads/${thread.id}`, "PATCH", { tagIds: [], ifRunConfigUnset: true })).status).toBe(400);
+    expect((await write(`threads/${thread.id}`, "PATCH", { tagIds: ["missing"] })).status).toBe(404);
+    const filtered = await json(await fetch(`${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&tagId=${tag.id}`));
+    expect(filtered.threads).toEqual([expect.objectContaining({ id: thread.id, tagIds: [tag.id] })]);
+    expect((await fetch(`${baseUrl}/api/v1/tags/${tag.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await fetch(`${baseUrl}/api/v1/tags/${tag.id}`, { method: "DELETE" })).status).toBe(404);
+  });
+});
