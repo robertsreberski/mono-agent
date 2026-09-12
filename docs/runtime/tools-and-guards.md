@@ -58,7 +58,7 @@ when the child reports it, including fallback differences.
 
 **Subagents built at call time.** A pre-declared profile means editing config and
 restarting for every new specialization, so the agent can also author one on the
-spot: passing `systemPrompt` (plus a kebab-case `name`, and optionally `tools`
+spot: passing `systemPrompt` (plus a kebab-case `name`, and optionally `tools`,
 `model`, and `effort`) builds a one-off subagent for that call instead of selecting a
 profile. Only `tools` requires `systemPrompt`; configured profiles retain their
 operator-defined tool policy. A name that collides with a configured profile is
