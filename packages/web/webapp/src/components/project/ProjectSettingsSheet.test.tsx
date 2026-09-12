@@ -50,7 +50,7 @@ describe("ProjectSettingsSheet", () => {
     expect(screen.getByText("11 chars")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(store().createProject).toHaveBeenCalledWith("Web console", "Stay sharp.", undefined));
+    await waitFor(() => expect(store().createProject).toHaveBeenCalledWith("Web console", "Stay sharp.", undefined, "default"));
     expect(store().openProjectById).toHaveBeenCalledWith("web");
     expect(onClose).toHaveBeenCalled();
   });

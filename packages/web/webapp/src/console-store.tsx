@@ -1,3 +1,4 @@
+import type { ProjectColor } from "./types";
 import {
   createContext,
   type ReactNode,
@@ -232,10 +233,10 @@ interface ConsoleStoreValue {
   readonly projectMembersError: string | null;
   readonly hasMoreProjectMembers: boolean;
   readonly loadProjects: (sourceId: string) => Promise<readonly ProjectSummary[]>;
-  readonly createProject: (name: string, context?: string, sourceId?: string) => Promise<ProjectSummary>;
+  readonly createProject: (name: string, context?: string, sourceId?: string, color?: ProjectColor) => Promise<ProjectSummary>;
   readonly patchProject: (
     projectId: string,
-    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean },
+    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean; readonly color?: ProjectColor },
   ) => Promise<ProjectSummary>;
   readonly archiveProject: (projectId: string) => Promise<void>;
   readonly deleteProject: (projectId: string) => Promise<void>;
@@ -544,6 +545,7 @@ const mergeThreads = (
 const projectDetail = (entry: ThreadCacheEntry): ThreadDetail => ({
   thread: entry.thread,
   messages: entry.messages,
+  projectTransitions: entry.projectTransitions ?? [],
   ...(entry.messagesNextCursor === undefined
     ? {}
     : { messagesNextCursor: entry.messagesNextCursor }),
@@ -2634,6 +2636,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
         cache.restore({
           thread: stored.thread,
           messages: stored.messages,
+          projectTransitions: stored.projectTransitions ?? [],
           ...(stored.messagesNextCursor === undefined
             ? {}
             : { messagesNextCursor: stored.messagesNextCursor }),
@@ -3988,6 +3991,13 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     // A LOCAL decision -- an optimistic edit, a rollback, the repair a refused
     // delete owes -- is being made now and quotes the current epoch.
     if (!admitThread(removedThreadsRef.current, nextThread, issuedAt)) return;
+    const held = threadCacheRef.current.get(nextThread.id);
+    const membershipChanged = held !== undefined && nextThread.revision >= held.thread.revision
+      && held.thread.projectId !== nextThread.projectId;
+    if (membershipChanged) {
+      threadCacheRef.current.markStale(nextThread.id);
+      if (nextThread.id === selectedThreadRef.current) scheduleRefreshRef.current({ detail: true, retryDetailOnFailure: true });
+    }
     reconcileCronRevision(nextThread);
     setBootstrap((current) =>
       current ? { ...current, threads: mergeThreads(current.threads, [nextThread]) } : current,
@@ -4192,12 +4202,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     setProjectMembersError(null);
   }, []);
 
-  const createProject = useCallback(async (name: string, context?: string, sourceId?: string): Promise<ProjectSummary> => {
+  const createProject = useCallback(async (name: string, context?: string, sourceId?: string, color?: ProjectColor): Promise<ProjectSummary> => {
     const agentId = sourceId ?? selectedAgentId;
     if (agentId === null) throw new Error("Select an agent before creating a project.");
     try {
       const project = await boundedRequest(
-        (signal) => api.createProject(agentId, { name, ...(context === undefined ? {} : { context }) }, signal),
+        (signal) => api.createProject(agentId, { name, ...(color === undefined ? {} : { color }), ...(context === undefined ? {} : { context }) }, signal),
         THREAD_WRITE_TIMEOUT_MS,
       );
       applyProjectUpdate(project);
@@ -4211,7 +4221,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
 
   const patchProject = useCallback(async (
     projectId: string,
-    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean },
+    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean; readonly color?: ProjectColor },
   ): Promise<ProjectSummary> => {
     try {
       const project = await boundedRequest(
@@ -5103,6 +5113,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // window rather than dropping the pages the operator scrolled to.
       threadCacheRef.current.prependOlder(current.thread.id, {
         messages: page.messages,
+        projectTransitions: page.projectTransitions ?? [],
         ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       });
       publishDetail(current.thread.id);

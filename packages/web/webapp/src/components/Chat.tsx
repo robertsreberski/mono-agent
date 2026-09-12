@@ -1,3 +1,4 @@
+import { ProjectBadge, StartProjectMarkers } from "./project/ProjectIdentity";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -581,6 +582,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
             {status}
           </span>
         </div>
+        <ProjectBadge />
         <div className="chat-header-actions">
           <ConversationActions />
         </div>
@@ -623,6 +625,7 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
                     Load earlier messages
                   </button>
                 )}
+                <StartProjectMarkers />
                 <ThreadPrimitive.Messages
                   components={{
                     UserMessage,

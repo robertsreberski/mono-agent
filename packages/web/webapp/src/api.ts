@@ -1,3 +1,4 @@
+import type { ProjectColor } from "./types";
 import type {
   ActiveThreads,
   AgentSkillRegistry,
@@ -596,7 +597,7 @@ export const api = {
 
   createProject: async (
     sourceId: string,
-    input: { readonly name: string; readonly context?: string },
+    input: { readonly name: string; readonly context?: string; readonly color?: ProjectColor },
     signal?: AbortSignal,
   ) => {
     const result = await request<{ project: ProjectSummary }>("/api/v1/projects", {
@@ -609,7 +610,7 @@ export const api = {
 
   patchProject: async (
     projectId: string,
-    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean },
+    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean; readonly color?: ProjectColor },
     signal?: AbortSignal,
   ) => {
     const result = await request<{ project: ProjectSummary }>(

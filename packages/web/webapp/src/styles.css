@@ -1454,3 +1454,20 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+/* The palette is shared by project identity surfaces, never arbitrary CSS. */
+[data-project-color] { --project-ink: var(--accent-strong); --project-tint: var(--accent-soft); }
+[data-project-color="blue"] { --project-ink: light-dark(#235d91, #9ecbfa); --project-tint: light-dark(#e3effb, #23394c); }
+[data-project-color="purple"] { --project-ink: light-dark(#70438e, #d5b2ed); --project-tint: light-dark(#f0e6f7, #3c294b); }
+[data-project-color="amber"] { --project-ink: light-dark(#79530a, #e7c37d); --project-tint: light-dark(#f7edcf, #423719); }
+[data-project-color="rose"] { --project-ink: light-dark(#943c59, #efadc2); --project-tint: light-dark(#f9e6ec, #492c38); }
+.project-tile[data-project-color], .project-badge, .project-palette button { color: var(--project-ink); background: var(--project-tint); }
+.chat-project-identity { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; max-width: 32%; gap: 3px; }
+.project-badge { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 6px; padding: 5px 7px; max-width: 100%; font-size: 11px; cursor: pointer; }
+.project-badge span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-pending { font-size: 10px; color: var(--muted); text-align: right; }
+.project-transition { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--project-ink); font-size: 11px; margin: 12px 0; opacity: .8; overflow-wrap: anywhere; }
+.project-palette { display: flex; flex-wrap: wrap; gap: 6px; border: 0; padding: 0; margin: 12px 0; }
+.project-palette legend { margin-bottom: 8px; font-size: 12px; }
+.project-palette button { padding: 8px; border: 2px solid transparent; border-radius: 8px; cursor: pointer; }
+.project-palette button[aria-pressed="true"] { border-color: var(--project-ink); }

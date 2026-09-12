@@ -1,3 +1,4 @@
+import type { ProjectColor } from "../../types";
 import { type RefObject, useEffect, useState } from "react";
 import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
@@ -42,6 +43,7 @@ export function ProjectSettingsSheet({
   const store = useConsoleStore();
   const [name, setName] = useState("");
   const [context, setContext] = useState("");
+  const [color, setColor] = useState<ProjectColor>("default");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -62,6 +64,7 @@ export function ProjectSettingsSheet({
     if (sheetKey === null) return;
     setName(project?.name ?? "");
     setContext(project?.context ?? "");
+    setColor(project?.color ?? "default");
     setError(null);
     setSaving(false);
     // Reset per opened sheet, never per store update: a project event landing
@@ -73,7 +76,7 @@ export function ProjectSettingsSheet({
   const nameValid = name.trim().length > 0;
   const changed = !editing
     || (project !== null
-      && (name.trim() !== project.name || context !== project.context));
+      && (name.trim() !== project.name || context !== project.context || color !== (project.color ?? "default")));
   const inactive = saving || !nameValid || (editing && !changed);
 
   const save = async (): Promise<void> => {
@@ -86,6 +89,7 @@ export function ProjectSettingsSheet({
           name.trim(),
           context,
           sheet.sourceId,
+          color,
         );
         if (sheet.threadId !== undefined) await store.setThreadProject(sheet.threadId, created.id);
         store.openProjectById(created.id);
@@ -93,6 +97,7 @@ export function ProjectSettingsSheet({
         await store.patchProject(project.id, {
           ...(name.trim() !== project.name ? { name: name.trim() } : {}),
           ...(context !== project.context ? { context } : {}),
+          ...(color !== (project.color ?? "default") ? { color } : {}),
         });
       }
       onClose();
@@ -182,6 +187,13 @@ export function ProjectSettingsSheet({
                 disabled={saving}
               />
             </label>
+            <fieldset className="project-palette" disabled={saving}>
+              <legend>Color</legend>
+              {(["default", "blue", "purple", "amber", "rose"] as const).map((choice) => (
+                <button type="button" key={choice} data-project-color={choice} aria-label={`${choice} project color`}
+                  aria-pressed={color === choice} onClick={() => setColor(choice)}>{choice}</button>
+              ))}
+            </fieldset>
             <label className="sheet-field">
               <span className="dashboard-section-label sheet-field-head">
                 Context

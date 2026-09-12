@@ -203,7 +203,7 @@ export const coalesceMonitorWakeMessages = (
 
   for (const message of messages) {
     const monitorId = monitorIdForMessage(message);
-    const hasBoundary = hasMonitorWakePresentationBoundary(message);
+    const hasBoundary = hasMonitorWakePresentationBoundary(message) || (message.projectTransitions?.length ?? 0) > 0;
     const currentCanCarry = message.role === "assistant"
       && monitorId !== undefined
       && (message.status === "running" || message.status === "complete")
@@ -518,6 +518,7 @@ export const convertWebMessage = (
       message.role === "user" ? message.attachments.map(completeAttachment) : undefined,
     metadata: {
       custom: {
+        projectTransitions: message.projectTransitions,
         turnId: message.turnId,
         updatedAt: message.updatedAt,
         ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
@@ -778,16 +779,20 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   const presentation = useMemo(
     () => projectProcessJobPresentation(
       coalesceMonitorWakeMessages(
-        (store.detail?.messages ?? []).filter((message) =>
+        (store.detail?.messages ?? []).map((message) => {
+          const transitions = store.detail?.projectTransitions?.filter((item) => item.afterMessageId === message.id) ?? [];
+          return transitions.length === 0 ? message : { ...message, projectTransitions: transitions };
+        }).filter((message) =>
           !isLegacySilentCronMessage(message)
           && !(message.role === "assistant" && message.status === "complete"
             && message.attachments.length === 0
             && !message.parts.some((part) => part.type === "process-job-wake")
+            && (message.projectTransitions?.length ?? 0) === 0
             && convertWebMessage(message).content?.length === 0)),
       ),
       { selectedModel: store.effectiveModel, threadId: store.selectedThreadId },
     ),
-    [store.detail?.messages, store.effectiveModel, store.selectedThreadId],
+    [store.detail?.messages, store.detail?.projectTransitions, store.effectiveModel, store.selectedThreadId],
   );
   // Changing the selected model deliberately gives assistant-ui a new converter,
   // which reconverts every loaded message so its transient attribution visibility

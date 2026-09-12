@@ -61,7 +61,7 @@ export function ProjectPage({
   };
 
   return (
-    <div className="project-page">
+    <div className="project-page" data-project-color={project.color ?? "default"}>
       <header className="project-header">
         <button
           type="button"

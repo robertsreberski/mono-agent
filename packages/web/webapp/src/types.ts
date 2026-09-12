@@ -463,6 +463,7 @@ export interface ThreadSummary {
   readonly revision: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
   readonly projectId: string | null;
+  readonly pendingProject?: { readonly projectId: string | null; readonly turnId: string };
   readonly trigger?:
     | { readonly kind: "webhook" }
     | { readonly kind: "cron"; readonly jobId?: string; readonly configured?: boolean };
@@ -485,7 +486,18 @@ export interface ThreadSummary {
  * current non-archived members. Absent when no priced observation exists; a
  * measured zero is kept as zero.
  */
+export type ProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
+export interface ProjectTransition {
+  readonly id: number;
+  readonly afterMessageId: string | null;
+  readonly turnId: string | null;
+  readonly before: { readonly id: string; readonly name: string; readonly color: ProjectColor } | null;
+  readonly after: { readonly id: string; readonly name: string; readonly color: ProjectColor } | null;
+  readonly createdAt: string;
+}
+
 export interface ProjectSummary {
+  readonly color?: ProjectColor;
   readonly id: string;
   readonly sourceId: string;
   readonly name: string;
@@ -741,6 +753,8 @@ export interface WebAttachment {
 }
 
 export interface WebMessage {
+  /** Browser presentation only, attached after loading the independent sidecars. */
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly id: string;
   readonly threadId: string;
   readonly turnId?: string;
@@ -822,6 +836,7 @@ export interface MessageDelta {
 }
 
 export interface ThreadDetail {
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
   readonly messagesNextCursor?: string;
@@ -871,6 +886,7 @@ export interface ThreadSearchPage {
 }
 
 export interface MessagePage {
+  readonly projectTransitions?: readonly ProjectTransition[];
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
 }

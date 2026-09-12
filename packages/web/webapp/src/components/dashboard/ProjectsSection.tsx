@@ -64,7 +64,7 @@ function ProjectRow({ project, onOpen }: {
       >
         {/* The Running card's agent tile, holding a folder: a project row and
             a card sit on the same x, and the tile says what the row IS. */}
-        <span className="project-tile" aria-hidden="true">
+        <span className="project-tile" data-project-color={project.color ?? "default"} aria-hidden="true">
           <Icon name="folder" size={15} />
         </span>
         <span className="project-copy">

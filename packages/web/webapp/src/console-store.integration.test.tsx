@@ -9578,7 +9578,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).toBe(imported.id);
       expect(store.current.navigationDestination).toBe("chats");
       expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
-      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages });
+      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages, projectTransitions: [] });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");
       expect(store.current.composerFocusThreadId).toBe(imported.id);
