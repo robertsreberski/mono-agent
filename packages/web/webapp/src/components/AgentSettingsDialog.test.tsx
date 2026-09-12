@@ -92,6 +92,30 @@ const advanceProviderPolls = async (count = 1) => {
   });
 };
 
+/**
+ * A poll is armed by the admission's CONTINUATION, not by the click, and the
+ * effect that arms it commits a render later still. So "advance the clock N
+ * times and then read the spy" is a bet on how many microtask turns that
+ * continuation happens to take on this machine -- the bet a loaded CI runner
+ * loses, reporting `0 calls` as though the component had stopped polling.
+ *
+ * Advance the same deterministic clock until the expectation the test actually
+ * reads holds, and re-throw that expectation's own failure when it never does.
+ * Nothing here waits on wall-clock time, and an exact call count asserted after
+ * this helper still proves the component did not poll more often than it should.
+ */
+const advanceProviderPollsUntil = async (expectation: () => void, maxPolls = 12) => {
+  for (let advanced = 0; ; advanced += 1) {
+    try {
+      expectation();
+      return;
+    } catch (error) {
+      if (advanced >= maxPolls) throw error;
+    }
+    await advanceProviderPolls();
+  }
+};
+
 describe("AgentSettingsDialog", () => {
   it.each(["auth", "check"] as const)("cancels a late %s admission after its dialog closes without losing the response ID", async (kind) => {
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", supportsProviderAuth: true, supportsProviderAuthChecks: true });
@@ -128,6 +152,11 @@ describe("AgentSettingsDialog", () => {
     const cancel = kind === "auth" ? apiMock.cancelProviderAuth : apiMock.cancelProviderAuthCheck;
     const snapshot = (id: string) => kind === "auth" ? sessionSnapshot(id, id) : { ...completedProviderAuthCheck(), id, state: "running" };
     start.mockReturnValueOnce(old.promise).mockResolvedValueOnce(snapshot("NEW OWNED FLOW"));
+    // The new scope polls once a second while this test runs. Answer that poll
+    // with the scope's own snapshot so a poll firing under load cannot be read
+    // as the component losing the flow it owns.
+    const get = kind === "auth" ? apiMock.providerAuthSession : apiMock.providerAuthCheck;
+    get.mockResolvedValue(snapshot("NEW OWNED FLOW"));
     // Model a cancellation transport that ignores abort and never settles.
     cancel.mockReturnValueOnce(new Promise(() => undefined));
     const props = { onClose: vi.fn(), dialogRef: createRef<HTMLElement>() };
@@ -136,16 +165,23 @@ describe("AgentSettingsDialog", () => {
     fireEvent.click(await findStartButton(action));
     storeMock.selectedAgent = agent("alpha", { label: "Alpha", generation: "generation-2", supportsProviderAuth: true, supportsProviderAuthChecks: true });
     view.rerender(<AgentSettingsDialog open {...props} />);
-    fireEvent.click(await screen.findByRole("button", { name: action }));
-    await act(async () => await Promise.resolve());
+    // `findStartButton`, not `findByRole`: the new scope's control renders
+    // disabled until its own status read lands, so clicking the button merely
+    // because it EXISTS can start nothing at all -- and the missing
+    // cancellation below would then read as a failure to disown the old flow.
+    fireEvent.click(await findStartButton(action));
+    await vi.waitFor(() => { expect(start).toHaveBeenCalledTimes(2); });
     await act(async () => {
       old.resolve(snapshot("OLD UNOWNED FLOW"));
       await old.promise;
     });
+    // Await the cancellation itself rather than a fixed number of microtask
+    // turns; the assertion below is about WHICH flow was cancelled.
+    await vi.waitFor(() => { expect(cancel).toHaveBeenCalled(); });
     expect(cancel).toHaveBeenCalledExactlyOnceWith("alpha", "OLD UNOWNED FLOW", expect.any(AbortSignal));
     expect(screen.queryByText("OLD UNOWNED FLOW")).not.toBeInTheDocument();
-    if (kind === "auth") expect(screen.getByText("NEW OWNED FLOW")).toBeVisible();
-    else expect(screen.getByRole("button", { name: "Cancel live provider checks" })).toBeEnabled();
+    if (kind === "auth") expect(await screen.findByText("NEW OWNED FLOW")).toBeVisible();
+    else expect(await findStartButton("Cancel live provider checks")).toBeEnabled();
     view.unmount();
     expect(cancel).toHaveBeenLastCalledWith("alpha", "NEW OWNED FLOW", expect.any(AbortSignal));
   });
@@ -159,8 +195,17 @@ describe("AgentSettingsDialog", () => {
     start.mockReturnValueOnce(late.promise);
     const view = render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
     fireEvent.click(await findStartButton(kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers"));
+    await vi.waitFor(() => { expect(start).toHaveBeenCalledTimes(1); });
     view.unmount();
-    await act(async () => late.resolve(kind === "auth" ? successfulProviderAuthSession() : completedProviderAuthCheck()));
+    await act(async () => {
+      late.resolve(kind === "auth" ? successfulProviderAuthSession() : completedProviderAuthCheck());
+      // Drain the admission's continuation before the negative assertion, so
+      // "no cancellation" means the path decided not to cancel a terminal
+      // admission -- not that it had not run yet. The positive sibling above
+      // proves the same path DOES cancel a still-running one.
+      await late.promise;
+      await Promise.resolve();
+    });
     expect(cancel).not.toHaveBeenCalled();
   });
 
@@ -180,8 +225,7 @@ describe("AgentSettingsDialog", () => {
     const startButton = await findStartButton(kind === "auth" ? "Re-authenticate" : "Run live checks for all displayed providers");
     vi.useFakeTimers();
     fireEvent.click(startButton);
-    await advanceProviderPolls();
-    expect(get).toHaveBeenCalledOnce();
+    await advanceProviderPollsUntil(() => expect(get).toHaveBeenCalledOnce());
     fireEvent.click(screen.getByRole("button", { name: kind === "auth" ? "Cancel authentication" : "Cancel live provider checks" }));
     await act(async () => {
       deletion.resolve();
@@ -225,6 +269,18 @@ describe("AgentSettingsDialog", () => {
     const pin = screen.getByRole("button", { name: "Pin Alpha first" });
     expect(pin).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(pin);
+    expect(storeMock.setAgentPinned).toHaveBeenCalledWith("alpha", true);
+  });
+
+  it("pins without assuming the store action returns a promise", () => {
+    // A store action that returns nothing used to make this click throw
+    // `Cannot read properties of undefined (reading 'catch')` from inside a
+    // React event handler: an unhandled error that fails an entire Vitest run
+    // in which every test passed.
+    storeMock.setAgentPinned.mockReturnValue(undefined as never);
+    render(<AgentSettingsDialog open onClose={vi.fn()} dialogRef={createRef<HTMLElement>()} />);
+
+    expect(() => { fireEvent.click(screen.getByRole("button", { name: "Pin Alpha first" })); }).not.toThrow();
     expect(storeMock.setAgentPinned).toHaveBeenCalledWith("alpha", true);
   });
 
@@ -364,8 +420,8 @@ describe("AgentSettingsDialog", () => {
     fireEvent.click(authenticate);
     await act(async () => await Promise.resolve());
     expect(screen.getByLabelText("Old API key prompt")).toBeVisible();
-    await advanceProviderPolls();
-    expect(apiMock.providerAuthSession).toHaveBeenCalledWith("alpha", "session-old", expect.any(AbortSignal));
+    await advanceProviderPollsUntil(() =>
+      expect(apiMock.providerAuthSession).toHaveBeenCalledWith("alpha", "session-old", expect.any(AbortSignal)));
     const restart = screen.getByRole("button", { name: "Re-authenticate" });
     expect(restart).toBeEnabled();
     fireEvent.click(restart);
@@ -374,8 +430,9 @@ describe("AgentSettingsDialog", () => {
 
     await act(async () => replacementRequest.resolve(replacement));
     expect(screen.getByText("Fresh authentication started")).toBeVisible();
-    await advanceProviderPolls(3);
-    expect(screen.getByText("FRESH SESSION SUCCEEDED")).toBeVisible();
+    await advanceProviderPollsUntil(() => expect(screen.getByText("FRESH SESSION SUCCEEDED")).toBeVisible());
+    // Exact, and asserted after the wait: the replacement is polled three times
+    // and not once more, which is the contract the third response settles.
     expect(apiMock.providerAuthSession.mock.calls.filter(([, sessionId]) => sessionId === replacement.id)).toHaveLength(3);
     await act(async () => oldPoll.resolve({ ...active, state: "succeeded", progress: "STALE OLD SESSION" }));
     expect(screen.queryByText("STALE OLD SESSION")).not.toBeInTheDocument();
@@ -790,9 +847,10 @@ describe("AgentSettingsDialog", () => {
     await act(async () => await Promise.resolve());
 
     expect(screen.getByText("Checking…")).toBeVisible();
-    await advanceProviderPolls(3);
+    await advanceProviderPollsUntil(() => expect(screen.getByText("Check passed")).toBeVisible());
+    // Two unchanged running snapshots, then the completed one: exactly three
+    // reads, so an unchanged snapshot neither stops the polling nor doubles it.
     expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(3);
-    expect(screen.getByText("Check passed")).toBeVisible();
     expect(screen.getByText("Checks complete: 1 of 1 passed.")).toBeVisible();
   }, 6_000);
 
@@ -826,10 +884,12 @@ describe("AgentSettingsDialog", () => {
     fireEvent.click(run);
     await act(async () => await Promise.resolve());
     expect(screen.getByRole("button", { name: "Cancel live provider checks" })).toBeVisible();
-    await advanceProviderPolls();
-    expect(screen.getByRole("button", { name: "Run live checks for all displayed providers" })).toBeVisible();
+    await advanceProviderPollsUntil(() =>
+      expect(screen.getByRole("button", { name: "Run live checks for all displayed providers" })).toBeVisible());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
+    // Unchanged: the guard is that a further second of the clock adds NO read,
+    // so it must stay a plain advance rather than a wait for something.
     await advanceProviderPolls();
     expect(apiMock.providerAuthCheck).toHaveBeenCalledOnce();
   }, 4_000);
@@ -893,8 +953,8 @@ describe("AgentSettingsDialog", () => {
     vi.useFakeTimers();
     fireEvent.click(run);
     await act(async () => await Promise.resolve());
-    await advanceProviderPolls(2);
-    expect(screen.getByText("Check passed")).toBeVisible();
+    await advanceProviderPollsUntil(() => expect(screen.getByText("Check passed")).toBeVisible());
+    // The transient failure cost one read and the retry succeeded: two, exactly.
     expect(apiMock.providerAuthCheck).toHaveBeenCalledTimes(2);
   }, 4_000);
 

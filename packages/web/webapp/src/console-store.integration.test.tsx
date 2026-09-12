@@ -328,6 +328,7 @@ describe("ConsoleStoreProvider integration", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     resetServerClock();
     vi.unstubAllGlobals();
   });
@@ -335,15 +336,20 @@ describe("ConsoleStoreProvider integration", () => {
   it("keeps the server's clock from the stamp on every event", async () => {
     await renderStore();
     const before = Date.now();
+    // Only `Date` is faked, so React and Testing Library keep their real
+    // timers. Without this the drift is measured across two live readings of
+    // the wall clock, and a runner whose clock is being slewed can report
+    // 2,999 ms for a three-second-old stamp -- a property of NTP, not of the
+    // projection under test. Pinned, the expected drift is exact.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(before);
     act(() => FakeEventSource.latest?.emit("agents.changed", {
       id: "event-clock",
       version: 1,
       type: "agents.changed",
       at: new Date(before - 3_000).toISOString(),
     }));
-    const drift = Date.now() - serverNow();
-    expect(drift).toBeGreaterThanOrEqual(3_000);
-    expect(drift).toBeLessThan(3_500);
+    expect(Date.now() - serverNow()).toBe(3_000);
   });
 
   it("recovers a persisted submission reference with GET only and clears it after a known receipt", async () => {
@@ -1327,7 +1333,7 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectionError).toMatch(/not in the jobs loaded/iu));
+    await waitFor(() => expect(store.current.selectionError ?? "").toMatch(/not in the jobs loaded/iu));
     expect(store.current.selectedThreadId).toBeNull();
     expect(store.current.selectionLoading).toBe(false);
     expect(api.thread).not.toHaveBeenCalled();
@@ -1343,7 +1349,11 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose first-class cron/iu));
+    // `?? ""` so a slow settle fails as "expected '' to match /…/" instead of
+    // `.toMatch() expects to receive a string, but got object` -- `typeof null`
+    // is "object", and that TypeError hid the actual state (still null) behind
+    // a matcher complaint every time this timed out on a loaded runner.
+    await waitFor(() => expect(store.current.selectionError ?? "").toMatch(/does not expose first-class cron/iu));
     expect(store.current.selectedThreadId).toBeNull();
     expect(store.current.selectionLoading).toBe(false);
     expect(api.cronOverview).toHaveBeenCalledWith("alpha");
