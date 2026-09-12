@@ -57,3 +57,27 @@ describe("console project tools", () => {
     expect(createClient).toHaveBeenCalledTimes(1);
   });
 });
+
+it("registers the five strict tag schemas and validates the independent palette and additive arguments", async () => {
+  const schemas = CONSOLE_PROJECT_SCHEMAS;
+  const tagTools = ["ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags"] as const;
+  expect(tagTools.every((name) => name in schemas)).toBe(true);
+  expect(schemas.CreateTag.safeParse({ name: "planning", color: "green" }).success).toBe(true);
+  expect(schemas.CreateProject.safeParse({ name: "P", color: "green" }).success).toBe(false);
+  expect(schemas.UpdateTag.safeParse({ tagId: "tag" }).success).toBe(false);
+  expect(schemas.UpdateConversationTags.safeParse({}).success).toBe(false);
+  expect(schemas.UpdateConversationTags.safeParse({ add: [], remove: [] }).success).toBe(true);
+  expect(schemas.ListConversations.safeParse({ tagId: "tag" }).success).toBe(true);
+  for (const name of tagTools) expect(schemas[name].safeParse({ name: "x", tagId: "tag", add: [], sourceId: "forged" }).success).toBe(false);
+  const call = vi.fn().mockResolvedValue({ tags: [] });
+  const bound = await createConsoleProjectsRuntimeExtension({ sourceId: "configured", policy: { allowedTools: ["mcp__mono-agent-console-projects__*"], disallowedTools: [] }, createClient: vi.fn().mockResolvedValue(call) })(request());
+  const client = new Client({ name: "tags-test", version: "1" });
+  try {
+    const spec = (bound.runtimeOptions?.mcpServers as Record<string, { url: string }>)["mono-agent-console-projects"]!;
+    await client.connect(new StreamableHTTPClientTransport(new URL(spec.url)) as never);
+    expect((await client.listTools()).tools.map((tool) => tool.name).sort()).toEqual(Object.keys(schemas).sort());
+    expect((await client.callTool({ name: "ListTags", arguments: {} })).structuredContent).toEqual({ tags: [] });
+    expect((await client.callTool({ name: "UpdateConversationTags", arguments: { tagIds: ["x"] } })).isError).toBe(true);
+    expect(call).toHaveBeenCalledTimes(1);
+  } finally { await client.close(); await bound.cleanup?.(); }
+});

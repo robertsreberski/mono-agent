@@ -6177,3 +6177,144 @@ describe("WebStore console discovery tools", () => {
     store.close();
   });
 });
+
+describe("WebStore conversation tags", () => {
+  async function openTags() {
+    const root = await temporaryRoot(); cleanup.push(root);
+    const stateDir = join(root, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    return { store, stateDir };
+  }
+
+  it("normalizes names, rejects duplicates per agent, validates colors, and increments revisions", async () => {
+    const { store } = await openTags();
+    try {
+      const tag = store.createTag({ sourceId: "agent-one", name: "  Planning  ", color: "green" });
+      expect(tag).toMatchObject({ name: "Planning", color: "green", sourceId: "agent-one", revision: 1 });
+      expect(() => store.createTag({ sourceId: "agent-one", name: "pLANNING" })).toThrowError(expect.objectContaining({ code: "tag_exists", status: 409 }));
+      expect(store.createTag({ sourceId: "agent-two", name: "planning" }).color).toBe("default");
+      const updated = store.patchTag(tag.id, { name: "Reviewing", color: "teal" });
+      expect(updated).toMatchObject({ name: "Reviewing", color: "teal", revision: 2, createdAt: tag.createdAt });
+      const other = store.createTag({ sourceId: "agent-one", name: "Other" });
+      expect(() => store.patchTag(other.id, { name: "reviewing" })).toThrowError(expect.objectContaining({ code: "tag_exists" }));
+      expect(() => store.patchTag(tag.id, { color: "url(no)" as "blue" })).toThrowError(expect.objectContaining({ code: "invalid_tag" }));
+      for (const name of [" ", "x".repeat(121), "line\nbreak", "bad\u0001name"]) {
+        expect(() => store.createTag({ sourceId: "agent-one", name })).toThrowError(expect.objectContaining({ code: "invalid_tag" }));
+      }
+      expect(() => store.patchTag("missing", { name: "Name" })).toThrowError(expect.objectContaining({ code: "tag_not_found" }));
+      store.deleteTag(tag.id); expect(store.getTag(tag.id)).toBeUndefined();
+    } finally { store.close(); }
+  });
+
+  it("enforces both caps, deduplicates assignment, and atomically rejects foreign or unknown tags", async () => {
+    const { store } = await openTags();
+    try {
+      const tags = Array.from({ length: 50 }, (_, i) => store.createTag({ sourceId: "agent-one", name: `tag-${String(i).padStart(2, "0")}` }));
+      expect(() => store.createTag({ sourceId: "agent-one", name: "overflow" })).toThrowError(expect.objectContaining({ code: "tag_limit" }));
+      const thread = store.createThread("agent-one");
+      const ten = tags.slice(0, 10).map((tag) => tag.id);
+      const assigned = store.patchThread(thread.id, { tagIds: [...ten].reverse().concat(ten) });
+      expect(assigned.tagIds).toEqual(ten);
+      expect(assigned.revision).toBe(thread.revision + 1);
+      expect(assigned.updatedAt).toBe(thread.updatedAt);
+      expect(() => store.patchThread(thread.id, { tagIds: tags.slice(0, 11).map((tag) => tag.id) })).toThrowError(expect.objectContaining({ code: "tag_limit" }));
+      const foreign = store.createTag({ sourceId: "agent-two", name: "Foreign" });
+      for (const id of [foreign.id, "missing"]) {
+        expect(() => store.patchThread(thread.id, { tagIds: [id] })).toThrowError(expect.objectContaining({ code: "tag_not_found" }));
+      }
+      expect(store.getThread(thread.id)?.tagIds).toEqual(ten);
+      expect(store.getThread(thread.id)?.revision).toBe(assigned.revision);
+      store.patchThread(thread.id, { tagIds: [] }); expect(store.getThread(thread.id)?.tagIds).toEqual([]);
+    } finally { store.close(); }
+  });
+
+  it("filters before paging, binds tag cursors, and cascades tag and conversation deletion", async () => {
+    const { store } = await openTags();
+    try {
+      const tag = store.createTag({ sourceId: "agent-one", name: "planning" });
+      const members = Array.from({ length: 3 }, () => store.createThread("agent-one"));
+      for (const thread of members) store.patchThread(thread.id, { tagIds: [tag.id] });
+      store.createThread("agent-one");
+      const page = store.listThreadsPage({ sourceId: "agent-one", archived: false, tagId: tag.id, limit: 1 });
+      expect(page.threads).toHaveLength(1); expect(page.threads[0]?.tagIds).toEqual([tag.id]);
+      expect(store.listThreadsPage({ sourceId: "agent-one", archived: false, tagId: tag.id, before: page.nextCursor! }).threads).toHaveLength(2);
+      expect(() => store.listThreadsPage({ sourceId: "agent-one", archived: false, before: page.nextCursor! })).toThrowError(expect.objectContaining({ code: "invalid_page" }));
+      expect(() => store.listThreadsPage({ sourceId: "agent-two", archived: false, tagId: tag.id })).toThrowError(expect.objectContaining({ code: "tag_not_found" }));
+      store.patchThread(members[0]!.id, { archived: true });
+      await store.deleteArchivedThread(members[0]!.id);
+      const database = (store as unknown as { database: DatabaseSync }).database;
+      expect(database.prepare("SELECT * FROM thread_tags WHERE thread_id = ?").all(members[0]!.id)).toEqual([]);
+      const before = store.getThread(members[1]!.id)!;
+      expect(store.deleteTag(tag.id).sort()).toEqual(members.slice(1).map((thread) => thread.id).sort());
+      expect(store.getThread(before.id)).toMatchObject({ tagIds: [], revision: before.revision + 1 });
+      expect(database.prepare("SELECT * FROM thread_tags").all()).toEqual([]);
+      expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally { store.close(); }
+  });
+
+  it("freezes tag context for an active turn while edits apply immediately to the next turn", async () => {
+    const { store } = await openTags();
+    try {
+      const thread = store.createThread("agent-one");
+      const tag = store.createTag({ sourceId: "agent-one", name: "planning" });
+      store.patchThread(thread.id, { tagIds: [tag.id] });
+      const turn = store.beginTurn({ threadId: thread.id, text: "Canonical", attachmentIds: [] });
+      store.patchTag(tag.id, { name: "implementing" });
+      store.deleteTag(tag.id);
+      expect(store.getThread(thread.id)?.tagIds).toEqual([]);
+      expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "", context: "", tags: ["planning"] });
+      const database = (store as unknown as { database: DatabaseSync }).database;
+      expect(JSON.parse((database.prepare("SELECT project_context_json AS snapshot FROM turns WHERE id = ?").get(turn.turnId) as { snapshot: string }).snapshot)).toMatchObject({ tags: ["planning"] });
+      expect(store.getThreadDetail(thread.id)?.messages[0]?.parts).toEqual([{ type: "text", text: "Canonical" }]);
+      store.completeTurn(turn.turnId, "done");
+      const next = store.beginTurn({ threadId: thread.id, text: "Next", attachmentIds: [] });
+      expect(store.projectContextForThread(thread.id)).toBeUndefined();
+      // Historical snapshots did not carry tags. Neither an old object nor null
+      // may acquire the conversation's current tags during resumed dispatch.
+      const newTag = store.createTag({ sourceId: "agent-one", name: "reviewing" });
+      store.patchThread(thread.id, { tagIds: [newTag.id] });
+      database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify({ name: "Old", context: "Brief" }), next.turnId);
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "Old", context: "Brief" });
+      database.prepare("UPDATE turns SET project_context_json = 'null' WHERE id = ?").run(next.turnId);
+      expect(store.projectContextForThread(thread.id)).toBeUndefined();
+    } finally { store.close(); }
+  });
+
+  it("exposes scoped tag tools with strict arguments, additive idempotency and replay invalidations", async () => {
+    const { store } = await openTags();
+    try {
+      const thread = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: thread.id, text: "Organize", attachmentIds: [] });
+      const scope = { sourceId: "agent-one", threadId: thread.id, turnId: turn.turnId };
+      let n = 0;
+      const run = (tool: import("../console-tools.js").ConsoleToolName, args: Record<string, unknown>) => store.consoleToolOperation(scope, { tool, args, operationId: `tags-operation-${String(n++)}` });
+      const operation = { tool: "CreateTag" as const, args: { name: "planning", color: "red" }, operationId: "tags-replayed-create" };
+      const created = store.consoleToolOperation(scope, operation);
+      const id = created.tags[0]!;
+      expect(store.consoleToolOperation(scope, operation)).toEqual({ result: created.result, tags: [], deletedTags: [], projects: [], deletedProjects: [], threads: [] });
+      const other = run("CreateTag", { name: "work" }).tags[0]!;
+      run("UpdateConversationTags", { add: [other] });
+      run("UpdateConversationTags", { add: [id, id] });
+      expect(store.getThread(thread.id)?.tagIds).toEqual([id, other]);
+      const revision = store.getThread(thread.id)?.revision;
+      expect(run("UpdateConversationTags", { add: [id], remove: [] }).threads).toEqual([]);
+      expect(store.getThread(thread.id)?.revision).toBe(revision);
+      expect(run("ListConversations", { tagId: id }).result).toMatchObject({ conversations: [{ tags: [{ id, name: "planning" }, { id: other, name: "work" }] }] });
+      expect(run("UpdateTag", { tagId: id, name: "ready", color: "teal" }).tags).toEqual([id]);
+      expect(run("ListTags", {}).result).toMatchObject({ tags: [{ name: "ready" }, { name: "work" }] });
+      for (const tool of ["ListTags", "CreateTag", "UpdateTag", "DeleteTag", "UpdateConversationTags"] as const) {
+        expect(() => run(tool, { unknown: true })).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      }
+      expect(() => run("UpdateConversationTags", {})).toThrowError(expect.objectContaining({ code: "invalid_console_tool" }));
+      expect(() => run("CreateTag", { name: "bad", color: "black" })).toThrowError(expect.objectContaining({ code: "invalid_tag" }));
+      const foreign = store.createTag({ sourceId: "agent-two", name: "foreign" });
+      for (const tool of ["UpdateTag", "DeleteTag"] as const) expect(() => run(tool, { tagId: foreign.id, ...(tool === "UpdateTag" ? { name: "x" } : {}) })).toThrowError(expect.objectContaining({ code: "tag_not_found" }));
+      expect(() => run("UpdateConversationTags", { remove: [foreign.id] })).toThrowError(expect.objectContaining({ code: "tag_not_found" }));
+      run("UpdateConversationTags", { add: [id], remove: [id] });
+      expect(store.getThread(thread.id)?.tagIds).toEqual([other]);
+      expect(run("DeleteTag", { tagId: other })).toMatchObject({ deletedTags: [other], threads: [thread.id] });
+    } finally { store.close(); }
+  });
+});

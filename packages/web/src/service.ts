@@ -99,6 +99,7 @@ import {
 } from "./discovery.js";
 import { conversationTitleFromFrame } from "./conversation-title.js";
 import { parseCronReplyContext } from "./cron-reply-context.js";
+import type { WebTag, CreateWebTagInput, PatchWebTagInput, WebTagChangedPayload } from "./contracts.js";
 import { withProjectContext, type ProjectContextSource } from "./project-context.js";
 import {
   advertisedEffortLevels,
@@ -813,6 +814,7 @@ export class WebService {
       threads: page.threads,
       threadsSourceId,
       threadsNextCursor: page.nextCursor ?? null,
+      tags: projectsSourceId === null ? [] : this.store.listTags(projectsSourceId),
       projects,
       projectsSourceId,
       activeThreads,
@@ -938,9 +940,37 @@ export class WebService {
         this.emitThread("threads.changed", { thread });
       }
     }
+    for (const id of commit.tags) {
+      const tag = this.store.getTag(id);
+      if (tag !== undefined) this.emitTag({ tag });
+    }
+    for (const tagId of commit.deletedTags) this.emitTag({ tagId, removed: true });
     for (const id of commit.projects) this.refreshProject(id);
     for (const projectId of commit.deletedProjects) this.emitProject({ projectId, removed: true });
     return commit.result;
+  }
+
+  tags(sourceId: string): WebTag[] { return this.store.listTags(sourceId); }
+
+  createTag(input: CreateWebTagInput): WebTag {
+    const tag = this.store.createTag(input);
+    this.emitTag({ tag });
+    return tag;
+  }
+
+  patchTag(id: string, patch: PatchWebTagInput): WebTag {
+    const tag = this.store.patchTag(id, patch);
+    this.emitTag({ tag });
+    return tag;
+  }
+
+  deleteTag(id: string): void {
+    for (const threadId of this.store.deleteTag(id)) {
+      const thread = this.store.getThread(threadId)!;
+      this.emitThread("thread.changed", { thread });
+      this.emitThread("threads.changed", { thread });
+    }
+    this.emitTag({ tagId: id, removed: true });
   }
 
   projects(sourceId: string): WebProject[] {
@@ -1003,6 +1033,7 @@ export class WebService {
     readonly before?: string;
     readonly scope?: WebThreadListScope;
     readonly projectId?: string;
+    readonly tagId?: string;
   }): WebThreadPage {
     return this.store.listThreadsPage(input);
   }
@@ -1329,8 +1360,8 @@ export class WebService {
   }
 
   patchThread(id: string, patch: PatchWebThreadInput): WebThread {
-    if (patch.projectId !== undefined && patch.ifRunConfigUnset === true) {
-      throw new WebConsoleError("invalid_request", "projectId cannot be combined with ifRunConfigUnset.", 400);
+    if ((patch.projectId !== undefined || patch.tagIds !== undefined) && patch.ifRunConfigUnset === true) {
+      throw new WebConsoleError("invalid_request", "projectId and tagIds cannot be combined with ifRunConfigUnset.", 400);
     }
     if (patch.ifRunConfigUnset === true) {
       // Compare-and-set for the console's one-time adoption of a browser-local
@@ -3558,6 +3589,10 @@ export class WebService {
    * Projects are global hints, so one event updates both the page and listing;
    * a second singular event would duplicate the full context on the wire.
    */
+  private emitTag(payload: WebTagChangedPayload): void {
+    this.emit("tags.changed", undefined, payload);
+  }
+
   private emitProject(payload: WebProjectChangedPayload): void {
     this.emit("projects.changed", undefined, payload);
   }

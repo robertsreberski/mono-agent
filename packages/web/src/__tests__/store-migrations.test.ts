@@ -1,10 +1,11 @@
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  validateWebStorageShape,
   runWebStorageMigrations,
   validateWebStorageMigrationRegistry,
   WEB_STORAGE_MIGRATIONS,
@@ -44,7 +45,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["pending_project_memberships", "project_transitions", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["tags", "thread_tags", "pending_project_memberships", "project_transitions", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -405,8 +406,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 28 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(28);
+  it("is immutable and derives schema 29 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(29);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -500,5 +501,42 @@ describe("migration 19 silent history", () => {
       expect(inspected.prepare("PRAGMA table_info(messages)").all()).not.toContainEqual(expect.objectContaining({ name: "cron_suppressed" }));
       expect(inspected.prepare("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 107 });
     } finally { inspected.close(); }
+  });
+});
+
+
+describe("conversation tags migration", () => {
+  it("upgrades a real v27 database to v29, preserves content, validates shape, and reopens", async () => {
+    const stateDir = await seeded(0);
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec(await readFile(new URL("./fixtures/storage-v27.sql", import.meta.url), "utf8"));
+    expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 27 });
+    expect(database.prepare("SELECT name FROM sqlite_master WHERE name IN ('tags', 'thread_tags')").all()).toEqual([]);
+    database.close();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      const thread = store.listThreadsPage({ sourceId: "v27-agent", archived: false }).threads[0]!;
+      expect(thread.tagIds).toEqual(attempt === 0 ? [] : [store.listTags("v27-agent")[0]!.id]);
+      expect(store.getThreadDetail(thread.id)?.messages.map((message) => message.parts)).toContainEqual([{ type: "text", text: "Retained question" }]);
+      expect(store.listProjects("v27-agent")[0]?.name).toBe("Retained project");
+      if (attempt === 0) store.patchThread(thread.id, { tagIds: [store.createTag({ sourceId: "v27-agent", name: "planning", color: "green" }).id] });
+      store.close();
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
+      expect(inspected.prepare("PRAGMA user_version").get()).toEqual({ user_version: 29 });
+      expect(() => validateWebStorageShape(inspected)).not.toThrow();
+      expect((inspected.prepare("PRAGMA index_info(thread_tags_by_tag)").all() as Array<{ name: string }>).map((row) => row.name)).toEqual(["tag_id", "thread_id"]);
+      expect(inspected.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+      inspected.close();
+    }
+  });
+
+  it("rejects schema 29 when thread_tags_by_tag is missing", async () => {
+    const stateDir = await seeded(0);
+    const store = await WebStore.open({ stateDir }); store.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP INDEX thread_tags_by_tag");
+    expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+    database.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
   });
 });

@@ -1,10 +1,10 @@
 /**
- * Project context injection for operator dispatches.
+ * Project and conversation-tag context injection for operator dispatches.
  *
  * A project's free-text CONTEXT is prepended, operator-facing text only and at
  * dispatch time, to every turn of every member conversation -- so existing
  * conversations pick it up on their next turn. It is never persisted in
- * messages, turns, live-input text or submission hashes, and never shown as
+ * messages, live-input text or submission hashes, and never shown as
  * part of the user's message.
  *
  * The envelope technique mirrors the harness's `composeHostTurnEnvelope`
@@ -16,9 +16,10 @@
 export interface ProjectContextSource {
   readonly name: string;
   readonly context: string;
+  readonly tags?: readonly string[];
 }
 
-const PROJECT_CONTEXT_TAG = /<(\/?project_context\b[^>]*>)/giu;
+const PROJECT_CONTEXT_TAG = /<(\/?(?:project_context|conversation_tags)\b[^>]*>)/giu;
 
 /** Neutralise both reserved delimiters in prompt copies, never canonical storage. */
 export function neutraliseProjectContext(value: string): string {
@@ -36,13 +37,18 @@ export function composeProjectPrefix(name: string, context: string): string {
 /**
  * Prepend the project envelope to operator-facing text.
  *
- * Empty or whitespace-only context, or no membership, leaves the text
- * untouched. The stored and displayed user message never passes through here.
+ * Without project prose or tags the text stays untouched. The stored and
+ * displayed user message never passes through here.
  */
 export function withProjectContext(
   operatorText: string,
   project: ProjectContextSource | undefined,
 ): string {
-  if (project === undefined || project.context.trim().length === 0) return operatorText;
-  return `${composeProjectPrefix(project.name, project.context)}\n\n${neutraliseProjectContext(operatorText)}`;
+  if (project === undefined) return operatorText;
+  const prefixes: string[] = [];
+  if (project.context.trim().length > 0) prefixes.push(composeProjectPrefix(project.name, project.context));
+  if (project.tags !== undefined && project.tags.length > 0) {
+    prefixes.push(`<conversation_tags>${project.tags.map(neutraliseProjectContext).join(", ")}</conversation_tags>`);
+  }
+  return prefixes.length === 0 ? operatorText : `${prefixes.join("\n")}\n\n${neutraliseProjectContext(operatorText)}`;
 }

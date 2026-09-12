@@ -699,12 +699,17 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 Writable interactive web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
-`SearchConversations`, `CreateConversation`, and `SetConversationProject` under
+`SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
+`CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags` under
 per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
 alone never authorizes a callback. Tools return real IDs and applied/pending
 results, restrict all targets to the originating agent, and reject late calls.
 Create-and-attach and its operation receipt commit atomically. There is no
-transport retry after unknown delivery. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
+transport retry after unknown delivery. Tags have an independent eight-color
+palette and belong to one agent; `UpdateConversationTags` idempotently adds/removes
+IDs on the current or named conversation without replacing other tags. Tag changes
+apply immediately and reach the next turn's context snapshot. The MCP server name
+and policy aliases remain `mono-agent-console-projects`. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
 
 ### Web conversation titles
 

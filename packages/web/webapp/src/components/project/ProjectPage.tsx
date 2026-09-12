@@ -30,6 +30,7 @@ export function ProjectPage({
   readonly highlightSelected?: boolean;
 }) {
   const {
+    tagsByAgent,
     agents,
     catalogByProvider,
     closeProject,
@@ -150,6 +151,7 @@ export function ProjectPage({
               return thread === undefined ? null : (
                 <ThreadListItem
                   thread={thread}
+                    tags={(tagsByAgent?.[thread.sourceId] ?? []).filter((tag) => thread.tagIds?.includes(tag.id))}
                   agent={projectAgent}
                   catalogModels={catalogModels}
                   unread={unreadThreadIds.has(thread.id)}

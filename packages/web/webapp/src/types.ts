@@ -462,6 +462,7 @@ export interface ThreadSummary {
   readonly updatedAt: string;
   readonly revision: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
+  readonly tagIds: readonly string[];
   readonly projectId: string | null;
   /**
    * That project's name, carried on the row. Running cards cross agents and
@@ -485,6 +486,33 @@ export interface ThreadSummary {
   readonly runEffort?: string | null;
 }
 
+export type TagColor = "default" | "blue" | "purple" | "amber" | "rose" | "green" | "teal" | "red";
+
+export interface TagSummary {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly color: TagColor;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly revision: number;
+}
+
+export interface CreateTagInput {
+  readonly sourceId: string;
+  readonly name: string;
+  readonly color?: TagColor;
+}
+
+export interface PatchTagInput {
+  readonly name?: string;
+  readonly color?: TagColor;
+}
+
+export type TagChangedPayload =
+  | { readonly tag: TagSummary }
+  | { readonly tagId: string; readonly removed: true };
+
 /**
  * A per-agent named container of conversations, mirrored from `WebProject`.
  *
@@ -492,6 +520,7 @@ export interface ThreadSummary {
  * current non-archived members. Absent when no priced observation exists; a
  * measured zero is kept as zero.
  */
+
 export type ProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
 export interface ProjectTransition {
   readonly id: number;
@@ -1051,6 +1080,7 @@ export interface Bootstrap {
    * The resolved agent's projects, archived included: the Dashboard and the
    * conversation picker filter archived out locally.
    */
+  readonly tags: readonly TagSummary[];
   readonly projects: readonly ProjectSummary[];
   /** The agent `projects` belong to, or `null` when there is no agent to open on. */
   readonly projectsSourceId: string | null;
@@ -1073,6 +1103,7 @@ export interface WebEvent {
     | "cron.changed"
     | "threads.changed"
     | "thread.changed"
+    | "tags.changed"
     | "projects.changed"
     | "message.changed"
     | "message.delta"

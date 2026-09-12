@@ -1,3 +1,5 @@
+import type { CreateWebTagInput, PatchWebTagInput } from "./contracts.js";
+import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
@@ -505,6 +507,42 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     }
   });
 
+  app.get("/api/v1/tags", (req, res, next) => {
+    try {
+      const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
+      res.status(200).json({ tags: service.tags(sourceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/tags", (req, res, next) => {
+    try {
+      const input = parseCreateTag(req.body);
+      res.status(201).json({ tag: service.createTag(input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/v1/tags/:id", (req, res, next) => {
+    try {
+      const input = parsePatchTag(req.body);
+      res.status(200).json({ tag: service.patchTag(pathParam(req.params.id), input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/tags/:id", (req, res, next) => {
+    try {
+      service.deleteTag(pathParam(req.params.id));
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/v1/projects", (req, res, next) => {
     try {
       const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
@@ -549,6 +587,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
       }
       const before = optionalQueryString(req.query.before, 4_096);
+      const tagId = optionalQueryString(req.query.tagId, 512);
       const projectId = optionalQueryString(req.query.projectId, 512);
       res.status(200).json(service.threadsPage({
         sourceId,
@@ -559,6 +598,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
         ...(projectId === undefined ? {} : { projectId }),
+        ...(tagId === undefined ? {} : { tagId }),
       }));
     } catch (error) {
       next(error);
@@ -1534,6 +1574,21 @@ function optionalNullableProjectId(value: unknown): string | null | undefined {
   return requireString(value, "projectId", 512);
 }
 
+function parseCreateTag(value: unknown): CreateWebTagInput {
+  const body = requireRecord(value);
+  if (Object.keys(body).some((key) => !["sourceId", "name", "color"].includes(key))) throw invalidBody("Unknown tag field.");
+  return { sourceId: requireString(body.sourceId, "sourceId", 512), name: parseTagName(requireString(body.name, "name", 120)),
+    ...(body.color === undefined ? {} : { color: parseTagColor(body.color) }) };
+}
+
+function parsePatchTag(value: unknown): PatchWebTagInput {
+  const body = requireRecord(value);
+  if (Object.keys(body).some((key) => !["name", "color"].includes(key))) throw invalidBody("Unknown tag field.");
+  if (body.name === undefined && body.color === undefined) throw invalidBody("Provide name or color.");
+  return { ...(body.name === undefined ? {} : { name: parseTagName(requireString(body.name, "name", 120)) }),
+    ...(body.color === undefined ? {} : { color: parseTagColor(body.color) }) };
+}
+
 function parseCreateProject(value: unknown): CreateWebProjectInput {
   const body = requireRecord(value);
   const unknown = Object.keys(body).filter((key) => key !== "sourceId" && key !== "name" && key !== "context" && key !== "color");
@@ -1593,6 +1648,11 @@ function parsePatchAgent(value: unknown): PatchWebAgentInput {
   return { pinned: body.pinned };
 }
 
+function parseTagIds(value: unknown): string[] {
+  if (!Array.isArray(value)) throw invalidBody("tagIds must be an array.");
+  return value.map((id: unknown) => requireString(id, "tagId", 128));
+}
+
 function parsePatchThread(value: unknown): PatchWebThreadInput {
   const body = requireRecord(value);
   const title = optionalString(body.title, "title", 120);
@@ -1604,12 +1664,13 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
   if (ifRunConfigUnset !== undefined && typeof ifRunConfigUnset !== "boolean") {
     throw invalidBody("ifRunConfigUnset must be boolean.");
   }
+  const tagIds = body.tagIds === undefined ? undefined : parseTagIds(body.tagIds);
   const projectId = optionalNullableProjectId(body.projectId);
-  if (projectId !== undefined && ifRunConfigUnset === true) {
-    throw invalidBody("projectId cannot be combined with ifRunConfigUnset.");
+  if ((projectId !== undefined || tagIds !== undefined) && ifRunConfigUnset === true) {
+    throw invalidBody("projectId and tagIds cannot be combined with ifRunConfigUnset.");
   }
   if (title === undefined && archived === undefined && model === undefined && effort === undefined
-    && projectId === undefined) {
+    && projectId === undefined && tagIds === undefined) {
     throw invalidBody("Provide title, archived, model, or effort.");
   }
   return {
@@ -1618,6 +1679,7 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
     ...(projectId === undefined ? {} : { projectId }),
+    ...(tagIds === undefined ? {} : { tagIds }),
     ...(ifRunConfigUnset === undefined ? {} : { ifRunConfigUnset }),
   };
 }

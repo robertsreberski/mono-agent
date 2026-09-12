@@ -1,3 +1,4 @@
+import type { TagSummary, TagColor } from "./types";
 import type { ProjectColor } from "./types";
 import {
   createContext,
@@ -222,6 +223,12 @@ interface ConsoleStoreValue {
    * project may be an archived one only until its removal closes the page.
    * Seeded from the bootstrap, refetched on agent switch and on reconnect.
    */
+  readonly tagsByAgent: Readonly<Record<string, readonly TagSummary[]>>;
+  readonly loadTags: (sourceId: string) => Promise<readonly TagSummary[]>;
+  readonly createTag: (name: string, sourceId?: string, color?: TagColor) => Promise<TagSummary>;
+  readonly patchTag: (id: string, patch: { readonly name?: string; readonly color?: TagColor }) => Promise<TagSummary>;
+  readonly deleteTag: (id: string) => Promise<void>;
+  readonly setThreadTags: (threadId: string, tagIds: readonly string[]) => Promise<void>;
   readonly projectsByAgent: Readonly<Record<string, readonly ProjectSummary[]>>;
   /** The project whose page replaces the Dashboard, or null for the Dashboard. */
   readonly openProjectId: string | null;
@@ -1783,6 +1790,11 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * switch, a reconnect, or an open for a project this tab has not listed yet.
    * The Dashboard and the picker filter archived out of what they draw.
    */
+  const [tagsByAgent, setTagsByAgent] = useState<Readonly<Record<string, readonly TagSummary[]>>>({});
+  const tagsByAgentRef = useRef<Readonly<Record<string, readonly TagSummary[]>>>({});
+  const loadedTagsRef = useRef(new Set<string>());
+  const tagReadsRef = useRef<Map<string, Promise<readonly TagSummary[]>>>(new Map());
+  const removedTagsRef = useRef(new Map<string, number>());
   const [projectsByAgent, setProjectsByAgent] = useState<Readonly<Record<string, readonly ProjectSummary[]>>>({});
   /** The project whose page replaces the Dashboard, or null for the Dashboard. */
   const [openProjectId, setOpenProjectId] = useState<string | null>(null);
@@ -2694,6 +2706,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           threadsNextCursor: bucket?.nextCursor ?? null,
           // Projects are server state this device never kept: the snapshot
           // carries none, and the agent effect below lists them fresh.
+          tags: [],
           projects: [],
           projectsSourceId: agentId,
           limits: snapshot.limits,
@@ -2816,6 +2829,31 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * rows drop only if unchanged since this request began: a creation or update
    * received while the snapshot was in flight is newer than its absence.
    */
+  const mergeTagListing = useCallback((sourceId: string, tags: readonly TagSummary[], observed: typeof tagsByAgent) => {
+    loadedTagsRef.current.add(sourceId);
+    const now = Date.now();
+    for (const [id, until] of removedTagsRef.current) {
+      if (until <= now) removedTagsRef.current.delete(id);
+    }
+    setTagsByAgent((current) => {
+      const heldById = new Map((current[sourceId] ?? []).map((item) => [item.id, item]));
+      const next: TagSummary[] = [];
+      for (const incoming of tags) {
+        if (incoming.sourceId !== sourceId || removedTagsRef.current.has(incoming.id)) continue;
+        const held = heldById.get(incoming.id);
+        next.push(held !== undefined && held.revision > incoming.revision ? held : incoming);
+      }
+      const returnedIds = new Set(tags.map((tag) => tag.id));
+      const observedById = new Map((observed[sourceId] ?? []).map((tag) => [tag.id, tag]));
+      for (const held of heldById.values()) {
+        if (!returnedIds.has(held.id) && !removedTagsRef.current.has(held.id)
+          && observedById.get(held.id) !== held) next.push(held);
+      }
+      next.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      return { ...current, [sourceId]: next };
+    });
+  }, []);
+
   const mergeProjectListing = useCallback((sourceId: string, projects: readonly ProjectSummary[], observed: typeof projectsByAgent) => {
     const now = Date.now();
     for (const [id, until] of removedProjectsRef.current) {
@@ -2840,7 +2878,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     });
   }, []);
 
-  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean, observedProjects: typeof projectsByAgent) => {
+  const applyBootstrap = useCallback((rawNext: Bootstrap, issuedAt: number, archived: boolean, observedProjects: typeof projectsByAgent, observedTags: typeof tagsByAgent) => {
     // BEFORE anything is read off the current selection: what a different
     // console left behind is not a selection to keep.
     discardOtherHostData(rawNext.console.hostName);
@@ -2870,6 +2908,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setThreadCursorByBucket((current) => ({ ...current, [seeded]: next.threadsNextCursor }));
     }
     // The resolved agent's projects land with the snapshot, archived included.
+    if (next.projectsSourceId !== null) mergeTagListing(next.projectsSourceId, next.tags ?? [], observedTags);
     if (next.projectsSourceId !== null) mergeProjectListing(next.projectsSourceId, next.projects, observedProjects);
     setBootstrap(next);
     // The listing is a SERVER SUMMARY for every conversation in it, so it
@@ -3023,6 +3062,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     applyConnection,
     discardOtherHostData,
     failOwnedSelection,
+    mergeTagListing,
     mergeProjectListing,
     publishDetail,
     reconcileCronRevision,
@@ -3066,9 +3106,10 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       // answer says is running describes the fleet as of now, not as of
       // whenever it happens to land.
       const projectionSeq = ++activeThreadsSeqRef.current;
+      const observedTags = tagsByAgentRef.current;
       const observedProjects = projectsByAgentRef.current;
       const next = await boundedRequest((signal) => api.bootstrap(signal, scope), THREAD_READ_TIMEOUT_MS);
-      applyBootstrap(next, issuedAt, scope.archived === true, observedProjects);
+      applyBootstrap(next, issuedAt, scope.archived === true, observedProjects, observedTags);
       acceptActiveThreads(next.activeThreads, projectionSeq);
       applyConnection("live");
     } catch (loadError) {
@@ -3563,6 +3604,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       const heldEtag = refreshThreadId === null
         ? undefined
         : threadCacheRef.current.get(refreshThreadId)?.etag;
+      const observedTags = tagsByAgentRef.current;
       const observedProjects = projectsByAgentRef.current;
       const [nextBootstrap, nextDetail] = await Promise.all([
         scope.bootstrap
@@ -3576,7 +3618,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           : Promise.resolve(null),
       ]);
       if (nextBootstrap !== null) {
-        applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true, observedProjects);
+        applyBootstrap(nextBootstrap, issuedAt, bucket.archived === true, observedProjects, observedTags);
         acceptActiveThreads(nextBootstrap.activeThreads, projectionSeq);
       }
       if (nextDetail === NOT_MODIFIED) {
@@ -4027,6 +4069,27 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * incoming summary wins, so an optimistic edit made at the revision it
    * patches still lands.
    */
+  const applyTagUpdate = useCallback((tag: TagSummary) => {
+    // A tombstoned deletion wins over a late event carrying the same id.
+    if (removedTagsRef.current.has(tag.id)) return;
+    setTagsByAgent((current) => {
+      const list = current[tag.sourceId] ?? [];
+      const held = list.find((item) => item.id === tag.id);
+      if (held !== undefined && held.revision > tag.revision) return current;
+      const next = held === undefined
+        ? [...list, tag]
+        : list.map((item) => item.id === tag.id ? tag : item);
+      next.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+      return { ...current, [tag.sourceId]: next };
+    });
+  }, []);
+
+  const removeTag = useCallback((id: string) => {
+    removedTagsRef.current.set(id, Date.now() + REMOVED_THREAD_TTL_MS);
+    setTagsByAgent((current) => Object.fromEntries(Object.entries(current).map(([sourceId, tags]) =>
+      [sourceId, tags.filter((tag) => tag.id !== id)])));
+  }, []);
+
   const applyProjectUpdate = useCallback((project: ProjectSummary) => {
     // A tombstoned deletion wins over a late event carrying the same id.
     if (removedProjectsRef.current.has(project.id)) return;
@@ -4122,6 +4185,28 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
    * Resolves with the list so `openProjectById` can proceed in the same tick;
    * background refreshes report failures as action errors rather than throwing.
    */
+  const loadTags = useCallback(async (sourceId: string): Promise<readonly TagSummary[]> => {
+    const inFlight = tagReadsRef.current.get(sourceId);
+    if (inFlight !== undefined) return inFlight;
+    const observedTags = tagsByAgentRef.current;
+    const request = boundedRequest(
+      (signal) => api.listTags(sourceId, signal),
+      THREAD_READ_TIMEOUT_MS,
+    ).then((tags) => {
+      mergeTagListing(sourceId, tags, observedTags);
+      return tags;
+    });
+    tagReadsRef.current.set(sourceId, request);
+    try {
+      return await request;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    } finally {
+      if (tagReadsRef.current.get(sourceId) === request) tagReadsRef.current.delete(sourceId);
+    }
+  }, [mergeTagListing]);
+
   const loadProjects = useCallback(async (sourceId: string): Promise<readonly ProjectSummary[]> => {
     const inFlight = projectReadsRef.current.get(sourceId);
     if (inFlight !== undefined) return inFlight;
@@ -4214,6 +4299,47 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     projectMembersCursorRef.current = null;
     setProjectMembersError(null);
   }, []);
+
+  const createTag = useCallback(async (name: string, sourceId?: string, color?: TagColor): Promise<TagSummary> => {
+    const agentId = sourceId ?? selectedAgentId;
+    if (agentId === null) throw new Error("Select an agent before creating a tag.");
+    try {
+      const tag = await boundedRequest(
+        (signal) => api.createTag(agentId, { name, ...(color === undefined ? {} : { color }) }, signal),
+        THREAD_WRITE_TIMEOUT_MS,
+      );
+      applyTagUpdate(tag);
+      setActionError(null);
+      return tag;
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    }
+  }, [applyTagUpdate, selectedAgentId]);
+
+  const patchTag = useCallback(async (id: string, patch: { readonly name?: string; readonly color?: TagColor }): Promise<TagSummary> => {
+    try {
+      const tag = await boundedRequest((signal) => api.patchTag(id, patch, signal), THREAD_WRITE_TIMEOUT_MS);
+      applyTagUpdate(tag); setActionError(null); return tag;
+    } catch (error) { setActionError(errorMessage(error)); throw error; }
+  }, [applyTagUpdate]);
+
+  const deleteTag = useCallback(async (id: string): Promise<void> => {
+    try {
+      await boundedRequest((signal) => api.deleteTag(id, signal), THREAD_WRITE_TIMEOUT_MS);
+      removeTag(id); setActionError(null);
+    } catch (error) { setActionError(errorMessage(error)); throw error; }
+  }, [removeTag]);
+
+  useEffect(() => {
+    if (selectedAgentId === null || loading || !hasBootstrap || error !== null) return;
+    if (!loadedTagsRef.current.has(selectedAgentId)) void loadTags(selectedAgentId).catch(() => undefined);
+  }, [selectedAgentId, loading, hasBootstrap, error, tagsByAgent, loadTags]);
+
+  useEffect(() => {
+    if (streamGeneration <= 1 || selectedAgentId === null || loading || !hasBootstrap || error !== null) return;
+    void loadTags(selectedAgentId).catch(() => undefined);
+  }, [streamGeneration, selectedAgentId, loading, hasBootstrap, error, loadTags]);
 
   const createProject = useCallback(async (name: string, context?: string, sourceId?: string, color?: ProjectColor): Promise<ProjectSummary> => {
     const agentId = sourceId ?? selectedAgentId;
@@ -4641,6 +4767,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           else threadCacheRef.current.markStale(threadId);
           return;
 
+        case "tags.changed": {
+          const payload = (webEvent.payload ?? {}) as { readonly tag?: TagSummary; readonly tagId?: string; readonly removed?: boolean };
+          if (payload.tag !== undefined) applyTagUpdate(payload.tag);
+          else if (payload.removed === true && payload.tagId !== undefined) removeTag(payload.tagId);
+          return;
+        }
         case "projects.changed": {
           // The fresh summary travels with the event, so applying it IS the
           // whole of what this event means -- no listing is re-read. A removal
@@ -4730,6 +4862,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       "cron.changed",
       "threads.changed",
       "thread.changed",
+      "tags.changed",
       "projects.changed",
       "message.changed",
       "message.delta",
@@ -4882,6 +5015,8 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     };
   }, [
     applyMessageDeltaEvent,
+    applyTagUpdate,
+    removeTag,
     applyProjectUpdate,
     applyThreadUpdate,
     beginOperatorSelection,
@@ -4923,6 +5058,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
   // Assigned during render, like `catalogScopeRef` below: the SSE handler reads
   // it when an event fires, and an effect would leave it a commit behind.
   threadsRef.current = threads;
+  tagsByAgentRef.current = tagsByAgent;
   projectsByAgentRef.current = projectsByAgent;
   openProjectIdRef.current = openProjectId;
   projectMembersCursorRef.current = projectMembersCursor;
@@ -6104,6 +6240,21 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
     }).catch(() => undefined);
   }, [loadProjectMembers, loadProjects, selectAgent, setNavigationScope, setShowArchived]);
 
+  const setThreadTags = useCallback(async (threadId: string, tagIds: readonly string[]): Promise<void> => {
+    try {
+      const target = await fetchThreadSummary(threadId);
+      const issuedAt = removedThreadsRef.current.epoch();
+      const thread = await enqueueThreadWrite(target.id, (signal) =>
+        api.patchThread(target.id, { tagIds }, signal));
+      applyThreadUpdate(thread, issuedAt);
+      syncProjectMember(thread);
+      setActionError(null);
+    } catch (error) {
+      setActionError(errorMessage(error));
+      throw error;
+    }
+  }, [applyThreadUpdate, enqueueThreadWrite, fetchThreadSummary, syncProjectMember]);
+
   const setThreadProject = useCallback(async (threadId: string, projectId: string | null): Promise<void> => {
     try {
       const target = await fetchThreadSummary(threadId);
@@ -7075,6 +7226,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       unreadCountByAgent,
       setConversationVisible,
       hasOlderMessages,
+      tagsByAgent,
+      loadTags,
+      createTag,
+      patchTag,
+      deleteTag,
+      setThreadTags,
       projectsByAgent,
       openProjectId,
       openProject,
@@ -7209,6 +7366,12 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       navigationDestination,
       showArchived,
       showOfflineAgents,
+      tagsByAgent,
+      loadTags,
+      createTag,
+      patchTag,
+      deleteTag,
+      setThreadTags,
       projectsByAgent,
       openProjectId,
       openProject,
