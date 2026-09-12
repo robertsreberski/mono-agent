@@ -779,7 +779,7 @@ describe("Agent tool in-flight subagent creation", () => {
     const { properties } = createAgentTool(subagentOptions({ inline: { enabled: false } })).parameters;
     expect(properties.systemPrompt).toBeUndefined();
     expect(properties.tools).toBeUndefined();
-    expect(properties.effort).toBeUndefined();
+    expect(properties.effort.enum).toContain("high");
     expect(properties.name.enum).toEqual(["researcher", "general-purpose"]);
   });
 
@@ -914,12 +914,11 @@ describe("Agent tool in-flight subagent creation", () => {
       .rejects.toThrow(/already a configured subagent/u);
   });
 
-  it("rejects tools or effort without a system prompt", async () => {
+  it("rejects tools without a system prompt", async () => {
     const tool = createAgentTool(inlineOptions());
     await expect(tool.execute("c1", { name: "researcher", tools: ["Read"], prompt: "x" }))
-      .rejects.toThrow(/only apply when you supply `systemPrompt`/u);
-    await expect(tool.execute("c2", { name: "researcher", effort: "high", prompt: "x" }))
-      .rejects.toThrow(/only apply when you supply `systemPrompt`/u);
+      .rejects.toThrow(/only applies when you supply `systemPrompt`/u);
+
   });
 
   it("still routes a configured profile by name", async () => {
@@ -987,5 +986,75 @@ describe("Agent tool activity log rendering", () => {
   it("falls back to unrelativized paths when the parent turn has no cwd", async () => {
     expect(await activityLine("Read", { file_path: "/srv/app/main.ts" }, {}))
       .toBe("1. Read /srv/app/main.ts → ok");
+  });
+});
+
+
+describe("Agent call-time routes", () => {
+  const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+  const pinned = { provider: "anthropic", model: "pinned", reference: "anthropic:pinned" };
+  const override = { provider: "openai", model: "override", reference: "openai:override" };
+  const models = [{ name: "fast", model: override, key: "openai:override" }];
+
+  it.each([undefined, { enabled: false }, { enabled: true }])("offers effort in every schema and model only with choices (%j)", (inline) => {
+    const options = subagentOptions({ inline });
+    expect(createAgentTool(options).parameters.properties.model).toBeUndefined();
+    expect(createAgentTool({ ...options, models: [] }).parameters.properties.model).toBeUndefined();
+    const properties = createAgentTool({ ...options, models }).parameters.properties;
+    expect(properties.model.enum).toEqual(["fast"]);
+    expect(properties.model.description).toContain("fast → openai:override");
+    expect(properties.effort.enum).toContain("high");
+  });
+
+  it.each([
+    { name: "researcher" },
+    { name: "writer", systemPrompt: "Write", tools: ["Read", "Bash"] },
+    {},
+  ])("overrides the route on each call shape without widening tools: %j", async (shape) => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, models, inline: { enabled: true, allowedTools: ["Read"] },
+      definitions: [{ ...PROFILE, model: pinned, effort: "low" }],
+    }), { model: parent, effort: "xhigh" });
+    const result = await tool.execute("override", { ...shape, prompt: "x", model: "fast", effort: "high" });
+    expect(run.mock.calls[0][0]).toMatchObject({ model: parent, effort: "xhigh", definition: { model: override, effort: "high" } });
+    expect(run.mock.calls[0][0].definition.allowedTools).not.toContain("Bash");
+    expect(result.details.subagent.requested).toEqual({ model: "openai:override", effort: "high" });
+    expect(result.content[0].text).toContain("openai:override/high · ok");
+  });
+
+  it("preserves profile pins and leaves unpinned inheritance out of the common header", async () => {
+    const run = okRun();
+    const events = [];
+    const tool = createAgentTool(subagentOptions({ run, definitions: [{ ...PROFILE, model: pinned, effort: "low" }] }),
+      { model: parent, effort: "xhigh", onEvent: (event) => events.push(event) });
+    const result = await tool.execute("pin", { name: "researcher", prompt: "x" });
+    expect(run.mock.calls[0][0]).toMatchObject({ model: parent, effort: "xhigh", definition: { model: pinned, effort: "low" } });
+    expect(result.details.subagent.requested).toEqual({ model: "anthropic:pinned", effort: "low" });
+    expect(events.at(-1).subagent.attribution.requested).toEqual(result.details.subagent.requested);
+    const inherited = await tool.execute("inherit", { prompt: "x" });
+    expect(inherited.content[0].text).toContain("<subagent: general-purpose · ok");
+    expect(inherited.details.subagent.requested).toBeUndefined();
+    expect(run.mock.calls[1][0]).toMatchObject({ model: parent, effort: "xhigh" });
+    expect(run.mock.calls[1][0].definition.model).toBeUndefined();
+  });
+
+  it("keeps requested and executed routes distinct after fallback", async () => {
+    const run = vi.fn(async (request) => {
+      request.onEvent({ type: "provider_execution_config", model: "anthropic:pinned", effort: "low" });
+      return { text: "ok", model: "anthropic:pinned", effort: "low", effectiveEffort: "low" };
+    });
+    const tool = createAgentTool(subagentOptions({ run, models }));
+    const result = await tool.execute("fallback", { prompt: "x", model: "fast", effort: "high" });
+    expect(result.details.subagent.requested).toEqual({ model: "openai:override", effort: "high" });
+    expect(result.details.subagent.executed).toEqual({ model: "anthropic:pinned", effort: "low", effectiveEffort: "low" });
+  });
+
+  it("rejects unknown and unconfigured choices before spending a call", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, models }));
+    await expect(tool.execute("bad", { prompt: "x", model: "nope" })).rejects.toThrow('unknown model "nope". Choices: fast.');
+    await expect(createAgentTool(subagentOptions({ run })).execute("bad", { prompt: "x", model: "fast" }))
+      .rejects.toThrow("Choices: none configured");
+    expect(run).not.toHaveBeenCalled();
   });
 });
