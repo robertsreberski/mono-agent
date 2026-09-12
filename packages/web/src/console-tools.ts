@@ -47,7 +47,7 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
   };
   const conversation = (value: unknown) => {
     const item = store.getThread(value === undefined ? scope.threadId : text(value, "conversationId", 128));
-    if (item === undefined || item.sourceId !== scope.sourceId || item.trigger !== undefined) throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
+    if (item === undefined || item.sourceId !== scope.sourceId || item.trigger?.kind === "cron") throw new WebConsoleError("thread_not_found", "Conversation not found.", 404);
     return item;
   };
   const membership = (id: string) => {

@@ -7070,6 +7070,15 @@ describe("authenticated console project callback", () => {
       expect(service.store.listThreadsPage({ sourceId: "agent-one", archived: false }).threads).toHaveLength(1);
       const created = await call({ operationId: randomUUID(), tool: "CreateConversation", args: { title: "A new topic", projectId: result.projectId } });
       expect(service.store.getThread(String(created.conversationId))?.runState.status).toBe("idle");
+      const notification = service.store.completeNotification(service.store.reserveNotification({ sourceId: "agent-one", triggerKind: "webhook", deliveryKey: "webhook:console-tools:one", text: "A retained notification" }));
+      const movedNotification = await call({ operationId: randomUUID(), tool: "SetConversationProject", args: { conversationId: notification.thread!.id, projectId: result.projectId } });
+      expect(movedNotification).toMatchObject({ projectId: result.projectId, disposition: "applied" });
+      const originAgent = service.store.getAgent("agent-one")!;
+      service.store.replaceAgents([originAgent, { ...originAgent, sourceId: "foreign-agent" }]);
+      const foreignProject = service.store.createProject({ sourceId: "foreign-agent", name: "Private" });
+      await expect(call({ operationId: randomUUID(), tool: "GetProject", args: { projectId: foreignProject.id } })).rejects.toMatchObject({ code: "project_not_found" });
+      const foreignThread = service.store.createThread("foreign-agent");
+      await expect(call({ operationId: randomUUID(), tool: "SetConversationProject", args: { conversationId: foreignThread.id, projectId: result.projectId } })).rejects.toMatchObject({ code: "thread_not_found" });
       const endpoint = new URL("/internal/v1/console-tools", ingress.url);
       expect((await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
       expect((await fetch(endpoint, { method: "POST", headers: { origin: "https://foreign.invalid" }, body: "{}" })).status).toBe(403);
@@ -7078,6 +7087,6 @@ describe("authenticated console project callback", () => {
       await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
       expect(service.store.getThread(thread.id)?.projectId).toBe(independent.projectId);
       await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
-    } finally { await ingress.stop(); await service.stop(); }
+    } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }
   });
 });
