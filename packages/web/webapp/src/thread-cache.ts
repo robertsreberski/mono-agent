@@ -483,6 +483,27 @@ export const isRunAttribution = (value: unknown): boolean => {
   });
 };
 
+/**
+ * A persisted inline-steer marker. `text` is operator prose, so newlines and
+ * tabs are legitimate content and the guard requires only non-blank text; the
+ * server already bounds its length. `receivedAt` stays a presence-and-shape
+ * check, like `deliveryKey` on the wake marker above.
+ */
+const isSteerPart = (part: Record<string, unknown>): boolean => {
+  if (typeof part.inputId !== "string" || part.inputId.length === 0
+    || typeof part.messageId !== "string" || part.messageId.length === 0
+    || typeof part.text !== "string" || part.text.trim().length === 0) {
+    return false;
+  }
+  if (part.receivedAt !== undefined && typeof part.receivedAt !== "string") return false;
+  const quote = part.quote;
+  if (quote === undefined) return true;
+  if (quote === null || typeof quote !== "object" || Array.isArray(quote)) return false;
+  const record = quote as Record<string, unknown>;
+  return typeof record.text === "string" && record.text.trim().length > 0
+    && typeof record.messageId === "string" && record.messageId.length > 0;
+};
+
 const isMessagePart = (value: unknown): value is MessagePart => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
@@ -503,6 +524,8 @@ const isMessagePart = (value: unknown): value is MessagePart => {
     case "process-job-wake":
       return text("jobId") && text("deliveryKey")
         && (part.disposition === "steered" || part.disposition === "follow_up");
+    case "steer":
+      return isSteerPart(part);
     case "monitor-activity":
       return Array.isArray(part.monitors);
     case "cron-reply-context":

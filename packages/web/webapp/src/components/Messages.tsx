@@ -1164,6 +1164,35 @@ function NotePart({ data }: DataMessagePartProps) {
   return <p className="activity-note">{text.trim()}</p>;
 }
 
+/**
+ * An operator follow-up the running turn consumed, rendered where it landed
+ * rather than beside the message that opened the turn. It reads as the
+ * operator's own message (user bubble, full text, quote when present), never
+ * as an activity row. Its position inside the turn carries the whole meaning —
+ * that the run consumed it here — so it needs neither a status line nor a
+ * decorative marker.
+ */
+function InlineSteerPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const text = typeof payload.text === "string" ? payload.text : "";
+  const quote = asRecord(payload.quote);
+  const quoteText = typeof quote.text === "string" ? quote.text : "";
+  if (text.trim().length === 0) return null;
+  return (
+    <div className="message-user inline-steer" role="group" aria-label="Steered follow-up">
+      <div className="message-user-content">
+        {quoteText.trim().length > 0 && (
+          <blockquote className="message-quote">
+            <Icon name="quote" size={14} />
+            <span>{quoteText}</span>
+          </blockquote>
+        )}
+        <p className="inline-steer-text">{text}</p>
+      </div>
+    </div>
+  );
+}
+
 const monitorStateLabel = (state: string): string => state.replaceAll("_", " ");
 
 const monitorActivityStatus = (monitors: readonly MonitorProjection[]): ActivityStatus => {
@@ -1322,6 +1351,7 @@ const parts = {
       "cron-reply-context-details": CronReplyContextDetailsPart,
       subagent: SubagentPart,
       note: NotePart,
+      steer: InlineSteerPart,
       "tool-cluster": ToolClusterPart,
       error: ErrorPart,
       "reply-attachment": ReplyAttachmentPart,
@@ -1447,6 +1477,7 @@ function AssistantParts() {
             if (part.name === "cron-reply-context-details") return <CronReplyContextDetailsPart {...part} />;
             if (part.name === "subagent") return <SubagentPart {...part} />;
             if (part.name === "note") return <NotePart {...part} />;
+            if (part.name === "steer") return <InlineSteerPart {...part} />;
             if (part.name === "tool-cluster") return <ToolClusterPart {...part} />;
             if (part.name === "error") return <ErrorPart {...part} />;
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;

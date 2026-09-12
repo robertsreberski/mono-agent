@@ -2605,6 +2605,48 @@ export class WebStore {
     `).get(turnId, deliveryKey) as { jobId: string; deliveryKey: string } | undefined;
   }
 
+  /**
+   * Resolve only an exact human live-input receipt belonging to this turn.
+   *
+   * The durable path is the steered user message itself: its `live_input`
+   * telemetry carries the `inputId`, so the mapping survives the `live_inputs`
+   * row that `markLiveInputApplied` deletes. The `live_inputs` lookup below
+   * covers only rows offered before this console learned to persist that
+   * marker. Anything else (queued, uncertain, cancelled, another turn) misses
+   * and keeps the legacy synthetic tool row.
+   */
+  private steerForTurn(turnId: string, inputId: string): {
+    readonly inputId: string;
+    readonly messageId: string;
+    readonly text: string;
+    readonly receivedAt: string;
+    readonly quote?: WebQuote;
+  } | undefined {
+    const turn = this.database.prepare(
+      "SELECT id, thread_id FROM turns WHERE id = ?",
+    ).get(turnId) as unknown as { id: string; thread_id: string } | undefined;
+    if (turn === undefined) return undefined;
+    const candidates = this.database.prepare(
+      "SELECT id, parts_json, created_at FROM messages WHERE turn_id = ? AND role = 'user'",
+    ).all(turnId) as unknown as Array<{ id: string; parts_json: string; created_at: string }>;
+    for (const candidate of candidates) {
+      const parts = parseParts(candidate.parts_json);
+      if (liveInputIdFromParts(parts) !== inputId) continue;
+      const marker = steerMarkerFromUserParts(inputId, candidate.id, parts, candidate.created_at);
+      if (marker !== undefined) return marker;
+    }
+    const legacy = this.database.prepare(
+      "SELECT message_id, thread_id, created_at FROM live_inputs WHERE id = ?",
+    ).get(inputId) as unknown as
+      { message_id: string; thread_id: string; created_at: string } | undefined;
+    if (legacy === undefined || legacy.thread_id !== turn.thread_id) return undefined;
+    const row = this.database.prepare(
+      "SELECT parts_json, created_at FROM messages WHERE id = ?",
+    ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
+    if (row === undefined) return undefined;
+    return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
+  }
+
   /** Release a Monitor reservation only before any operator delivery begins. */
   abandonMonitorWake(input: {
     readonly sourceId: string;
@@ -4011,7 +4053,7 @@ export class WebStore {
     const model = active === undefined ? thread.runModel : active.model;
     const effort = active === undefined ? thread.runEffort : active.effort;
     const parts: WebMessagePart[] = [
-      liveInputTelemetry(status === "offered" ? "pending" : "queued"),
+      liveInputTelemetry(status === "offered" ? "pending" : "queued", id),
       ...(quote === undefined
         ? []
         : [{ type: "telemetry" as const, event: QUOTE_TELEMETRY_EVENT, data: quote }]),
@@ -4060,10 +4102,10 @@ export class WebStore {
   markLiveInputApplied(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
-    const message = this.requireMessage(row.message_id);
+    const parts = this.requireRawParts(row.message_id);
     const now = this.now();
     this.transaction(() => {
-      this.writeMessageParts(row.message_id, withLiveInputStatus(message.parts, "applied"), now);
+      this.writeMessageParts(row.message_id, withLiveInputStatus(parts, "applied", id), now);
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -4080,10 +4122,10 @@ export class WebStore {
   markLiveInputUncertain(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
-    const message = this.requireMessage(row.message_id);
+    const parts = this.requireRawParts(row.message_id);
     const now = this.now();
     this.transaction(() => {
-      this.writeMessageParts(row.message_id, withLiveInputStatus(message.parts, "uncertain"), now, { turnId: null });
+      this.writeMessageParts(row.message_id, withLiveInputStatus(parts, "uncertain", id), now, { turnId: null });
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -4106,7 +4148,7 @@ export class WebStore {
   queueLiveInput(id: string, submissionReason?: StoredWebSubmissionReason): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
-    const message = this.requireMessage(row.message_id);
+    const parts = this.requireRawParts(row.message_id);
     const now = this.now();
     this.transaction(() => {
       this.database.prepare(`
@@ -4122,7 +4164,7 @@ export class WebStore {
       }
       this.writeMessageParts(
         row.message_id,
-        withLiveInputStatus(message.parts, "queued"),
+        withLiveInputStatus(parts, "queued", id),
         now,
         { turnId: null },
       );
@@ -4136,12 +4178,12 @@ export class WebStore {
   cancelLiveInput(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
-    const message = this.requireMessage(row.message_id);
+    const parts = this.requireRawParts(row.message_id);
     const now = this.now();
     this.transaction(() => {
       this.writeMessageParts(
         row.message_id,
-        withLiveInputStatus(message.parts, "cancelled"),
+        withLiveInputStatus(parts, "cancelled", id),
         now,
         { turnId: null },
       );
@@ -4162,10 +4204,13 @@ export class WebStore {
     const now = this.now();
     this.transaction(() => {
       for (const row of rows) {
-        const message = this.requireMessage(row.message_id);
         this.writeMessageParts(
           row.message_id,
-          withLiveInputStatus(message.parts, row.dispatch_started_at === null ? "cancelled" : "uncertain"),
+          withLiveInputStatus(
+            this.requireRawParts(row.message_id),
+            row.dispatch_started_at === null ? "cancelled" : "uncertain",
+            row.id,
+          ),
           now,
           { turnId: null },
         );
@@ -4208,7 +4253,7 @@ export class WebStore {
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
     const now = this.projectTurnAdmissionTime(threadId);
-    const userMessage = this.requireMessage(row.message_id);
+    const userMessage = this.requireRawParts(row.message_id);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
@@ -4219,7 +4264,7 @@ export class WebStore {
       `).run(turnId, threadId, row.text, row.model, row.effort, row.model, row.effort, assistantMessageId, now);
       this.writeMessageParts(
         row.message_id,
-        withoutLiveInputTelemetry(userMessage.parts),
+        withoutLiveInputTelemetry(userMessage),
         now,
         { turnId },
       );
@@ -4277,6 +4322,7 @@ export class WebStore {
             frame.event,
             (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey),
             (deliveryKey) => this.processJobWakeForTurn(turnId, deliveryKey),
+            (inputId) => this.steerForTurn(turnId, inputId),
           );
           if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
             const model = canonicalRouteString(frame.event.data?.model);
@@ -5627,14 +5673,14 @@ export class WebStore {
           `).run(row.id);
           this.writeMessageParts(
             row.message_id,
-            withLiveInputStatus(parseParts(persisted.parts_json), "queued"),
+            withLiveInputStatus(parseParts(persisted.parts_json), "queued", row.id),
             now,
             { turnId: null },
           );
         } else {
           this.writeMessageParts(
             row.message_id,
-            withLiveInputStatus(parseParts(persisted.parts_json), "uncertain"),
+            withLiveInputStatus(parseParts(persisted.parts_json), "uncertain", row.id),
             now,
             { turnId: null },
           );
@@ -6300,6 +6346,19 @@ export class WebStore {
     const row = this.database.prepare("SELECT * FROM messages WHERE id = ?").get(id) as unknown as MessageRow | undefined;
     if (row === undefined) throw new WebConsoleError("message_not_found", "Message not found.", 404);
     return this.mapMessage(row);
+  }
+
+  /**
+   * Raw stored parts for a write derived from the row itself. `requireMessage`
+   * strips quote and live-input telemetry for display, so deriving the next
+   * write from it would delete the quote and the input identity the steer
+   * marker resolves through.
+   */
+  private requireRawParts(id: string): WebMessagePart[] {
+    const row = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?").get(id) as unknown as
+      { parts_json: string } | undefined;
+    if (row === undefined) throw new WebConsoleError("message_not_found", "Message not found.", 404);
+    return parseParts(row.parts_json);
   }
 
   private getLiveInput(id: string): LiveInputRow | undefined {
@@ -7238,6 +7297,14 @@ type ProcessJobWakeResolver = (deliveryKey: string) => {
   readonly jobId: string;
   readonly deliveryKey: string;
 } | undefined;
+type SteerMarker = {
+  readonly inputId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly receivedAt: string;
+  readonly quote?: WebQuote;
+};
+type SteerResolver = (inputId: string) => SteerMarker | undefined;
 
 function appliedMonitorWake(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
@@ -7260,6 +7327,7 @@ function applyEvent(
   event: AgentStreamEvent,
   resolveMonitorWake?: MonitorWakeProjectionResolver,
   resolveProcessJobWake?: ProcessJobWakeResolver,
+  resolveSteer?: SteerResolver,
 ): void {
   if (event.type === "assistant_thought") {
     appendTextPart(parts, "reasoning", event.text);
@@ -7268,6 +7336,7 @@ function applyEvent(
   if (event.type === "tool_call_started") {
     if (appliedMonitorWake(event, resolveMonitorWake) !== undefined) return;
     if (appliedProcessJobWake(event, resolveProcessJobWake) !== undefined) return;
+    if (appliedSteer(event, resolveSteer) !== undefined) return;
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
@@ -7319,6 +7388,13 @@ function applyEvent(
       if (!parts.some((part) => part.type === "process-job-wake"
         && part.deliveryKey === processJobWake.deliveryKey)) {
         parts.push({ type: "process-job-wake", ...processJobWake, disposition: "steered" });
+      }
+      return;
+    }
+    const steer = appliedSteer(event, resolveSteer);
+    if (steer !== undefined) {
+      if (!parts.some((part) => part.type === "steer" && part.inputId === steer.inputId)) {
+        parts.push({ type: "steer", ...steer });
       }
       return;
     }
@@ -7395,6 +7471,37 @@ function appliedProcessJobWake(
     return undefined;
   }
   return resolveProcessJobWake(event.metadata.inputId);
+}
+
+/**
+ * A human steer the run consumed: like the wake interceptors above, but the
+ * marker carries the operator's own full text instead of compact activity.
+ * Runs last so Monitor and process-job wakes keep their purpose-built rows.
+ */
+function appliedSteer(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+  resolveSteer: SteerResolver | undefined,
+): SteerMarker | undefined {
+  if (resolveSteer === undefined
+    || event.metadata?.liveInput !== true
+    || event.metadata?.synthetic !== true
+    || typeof event.metadata.inputId !== "string") {
+    return undefined;
+  }
+  const marker = resolveSteer(event.metadata.inputId);
+  if (marker === undefined) return undefined;
+  const receivedAt = validSteerReceivedAt(event.metadata.receivedAt) ?? marker.receivedAt;
+  return receivedAt === marker.receivedAt ? marker : { ...marker, receivedAt };
+}
+
+/** Wire `receivedAt` stays a length/control-char check, like `deliveryKey`. */
+function validSteerReceivedAt(value: unknown): string | undefined {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 1_024
+    && !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : undefined;
 }
 
 type MonitorActivityPart = Extract<WebMessagePart, { readonly type: "monitor-activity" }>;
@@ -8194,6 +8301,10 @@ function parseParts(value: string): WebMessagePart[] {
   if (new Set(wakeKeys).size !== wakeKeys.length) {
     throw new WebConsoleError("storage_corrupt", "Persisted process-job wake activity is duplicated.", 500);
   }
+  const steerKeys = parts.flatMap((part) => part.type === "steer" ? [part.inputId] : []);
+  if (new Set(steerKeys).size !== steerKeys.length) {
+    throw new WebConsoleError("storage_corrupt", "Persisted steer activity is duplicated.", 500);
+  }
   quoteFromParts(parts);
   return parts;
 }
@@ -8203,8 +8314,12 @@ const LIVE_INPUT_TELEMETRY_EVENT = "live_input";
 
 type WebLiveInputStatus = NonNullable<WebMessage["liveInputStatus"]>;
 
-function liveInputTelemetry(status: WebLiveInputStatus): WebMessagePart {
-  return { type: "telemetry", event: LIVE_INPUT_TELEMETRY_EVENT, data: { status } };
+function liveInputTelemetry(status: WebLiveInputStatus, inputId?: string): WebMessagePart {
+  return {
+    type: "telemetry",
+    event: LIVE_INPUT_TELEMETRY_EVENT,
+    data: { status, ...(inputId === undefined ? {} : { inputId }) },
+  };
 }
 
 function withoutLiveInputTelemetry(parts: readonly WebMessagePart[]): WebMessagePart[] {
@@ -8213,11 +8328,28 @@ function withoutLiveInputTelemetry(parts: readonly WebMessagePart[]): WebMessage
   );
 }
 
+function liveInputIdFromParts(parts: readonly WebMessagePart[]): string | undefined {
+  const markers = parts.filter(
+    (part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
+      part.type === "telemetry" && part.event === LIVE_INPUT_TELEMETRY_EVENT,
+  );
+  if (markers.length !== 1) return undefined;
+  const data = markers[0]?.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+  const inputId = (data as Record<string, unknown>).inputId;
+  return typeof inputId === "string" && validRichId(inputId) ? inputId : undefined;
+}
+
 function withLiveInputStatus(
   parts: readonly WebMessagePart[],
   status: WebLiveInputStatus,
+  inputId?: string,
 ): WebMessagePart[] {
-  return [liveInputTelemetry(status), ...withoutLiveInputTelemetry(parts)];
+  // The telemetry marker is the durable inputId carrier: `markLiveInputApplied`
+  // deletes the `live_inputs` row, so the later stream receipt can only map
+  // `metadata.inputId` back to its user message through this marker.
+  const preserved = inputId ?? liveInputIdFromParts(parts);
+  return [liveInputTelemetry(status, preserved), ...withoutLiveInputTelemetry(parts)];
 }
 
 function liveInputStatusFromParts(parts: readonly WebMessagePart[]): WebLiveInputStatus | undefined {
@@ -8236,6 +8368,10 @@ function liveInputStatusFromParts(parts: readonly WebMessagePart[]): WebLiveInpu
   const status = (data as Record<string, unknown>).status;
   if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled" && status !== "uncertain") {
     throw new WebConsoleError("storage_corrupt", "Persisted live-input status is invalid.", 500);
+  }
+  const inputId = (data as Record<string, unknown>).inputId;
+  if (inputId !== undefined && !validRichId(inputId)) {
+    throw new WebConsoleError("storage_corrupt", "Persisted live-input metadata is invalid.", 500);
   }
   return status;
 }
@@ -8261,6 +8397,38 @@ function quoteFromParts(parts: readonly WebMessagePart[]): WebQuote | undefined 
     throw new WebConsoleError("storage_corrupt", "Persisted message quote metadata has an invalid shape.", 500);
   }
   return { text: quote.text, messageId: quote.messageId };
+}
+
+/**
+ * Build the self-contained inline marker from its steered user message.
+ *
+ * The display text is the message's own text parts joined verbatim (the same
+ * bytes the standalone bubble renders), never the 40-code-point activity
+ * preview. Anything unbounded or empty misses and keeps the legacy tool row
+ * rather than persisting a marker the renderers cannot honestly draw.
+ */
+function steerMarkerFromUserParts(
+  inputId: string,
+  messageId: string,
+  parts: readonly WebMessagePart[],
+  receivedAt: string,
+): {
+  readonly inputId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly receivedAt: string;
+  readonly quote?: WebQuote;
+} | undefined {
+  const text = parts.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
+  if (text.trim().length === 0 || text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) return undefined;
+  const quote = quoteFromParts(parts);
+  return {
+    inputId,
+    messageId,
+    text,
+    receivedAt,
+    ...(quote === undefined ? {} : { quote }),
+  };
 }
 
 function isWebToolCallStatus(value: unknown): boolean {
@@ -8467,6 +8635,36 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       && part.deliveryKey.length <= 1_024
       && !/[\u0000-\u001f\u007f]/u.test(part.deliveryKey)
       && (part.disposition === "steered" || part.disposition === "follow_up");
+  }
+  if (part.type === "steer") {
+    // `text` is operator prose: newlines and tabs are legitimate content, so
+    // only the length bound (shared with `reserveLiveInput`) applies to it.
+    // `receivedAt` stays a length/control-char check like `deliveryKey`.
+    if (!hasOnlyKeys(part, new Set(["type", "inputId", "messageId", "text", "receivedAt", "quote"]))) {
+      return false;
+    }
+    if (!validRichId(part.inputId) || !validRichId(part.messageId)) return false;
+    if (typeof part.text !== "string"
+      || part.text.trim().length === 0
+      || part.text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+      return false;
+    }
+    if (part.receivedAt !== undefined
+      && (typeof part.receivedAt !== "string"
+        || part.receivedAt.length === 0
+        || part.receivedAt.length > 1_024
+        || /[\u0000-\u001f\u007f]/u.test(part.receivedAt))) {
+      return false;
+    }
+    if (part.quote === undefined) return true;
+    const quote = part.quote;
+    if (typeof quote !== "object" || quote === null || Array.isArray(quote)) return false;
+    const record = quote as Record<string, unknown>;
+    return Object.keys(record).every((key) => key === "text" || key === "messageId")
+      && typeof record.text === "string"
+      && (record.text as string).trim().length > 0
+      && typeof record.messageId === "string"
+      && validRichId(record.messageId);
   }
   if (part.type === "monitor-activity") {
     if (!hasOnlyKeys(part, new Set(["type", "monitors"]))
