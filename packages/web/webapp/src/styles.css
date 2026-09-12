@@ -1490,3 +1490,9 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 /* The context card is the mockup's plain raised card; the project's ink only
    warms its full border, faintly, rather than marking one edge. */
 .project-page[data-project-color] .project-context-card { border-color: color-mix(in srgb, var(--project-ink) 32%, transparent); }
+/* Inside a project its own actions wear its colour: the new-conversation
+   tile and the context card's Edit take the project ink and tint where the
+   Dashboard's take the accent. */
+.project-page[data-project-color] .new-thread-button { color: var(--project-ink); background: var(--project-tint); }
+.project-page[data-project-color] .project-context-edit { color: var(--project-ink); }
+.project-page[data-project-color] .project-context-edit:hover { color: var(--project-ink); background: var(--project-tint); }
