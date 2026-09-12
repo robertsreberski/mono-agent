@@ -494,7 +494,7 @@ delivery states:
 - **Cancelled** when the active turn is explicitly cancelled before settlement.
 
 After exact consumption is confirmed, the follow-up renders as the operator's
-own message at the point the run consumed it: a `↪️`-marked user bubble with
+own message at the point the run consumed it: an undecorated user bubble with
 the full text (and the quote, when one was attached) that splits the
 assistant's Activity disclosure into the work before it and the work after it.
 The standalone pending bubble is dropped while that inline marker is loaded;

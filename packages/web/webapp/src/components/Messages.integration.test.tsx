@@ -523,7 +523,8 @@ describe("AssistantMessage grouped parts", () => {
     const inline = screen.getByRole("group", { name: "Steered follow-up" });
     expect(within(inline).getByText(steer.text)).toBeVisible();
     expect(within(inline).getByText("the sync approach")).toBeVisible();
-    expect(within(inline).getByText(/↪️/u)).toBeVisible();
+    // Nothing decorates the operator's own prose: no glyph, no status line.
+    expect(within(inline).queryByText(/↪️/u)).toBeNull();
     expect(screen.queryByText(/Steered:/u)).toBeNull();
     // One tool call per band: the steer split Activity in two.
     const bands = screen.getAllByRole("button", { name: "Activity" });

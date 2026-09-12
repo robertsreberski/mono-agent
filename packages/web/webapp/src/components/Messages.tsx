@@ -1168,8 +1168,9 @@ function NotePart({ data }: DataMessagePartProps) {
  * An operator follow-up the running turn consumed, rendered where it landed
  * rather than beside the message that opened the turn. It reads as the
  * operator's own message (user bubble, full text, quote when present), never
- * as an activity row; the lone ↪️ marks it as steered-in rather than
- * turn-opening. Position carries the consumed meaning, so no status line.
+ * as an activity row. Its position inside the turn carries the whole meaning —
+ * that the run consumed it here — so it needs neither a status line nor a
+ * decorative marker.
  */
 function InlineSteerPart({ data }: DataMessagePartProps) {
   const payload = asRecord(data);
@@ -1186,10 +1187,7 @@ function InlineSteerPart({ data }: DataMessagePartProps) {
             <span>{quoteText}</span>
           </blockquote>
         )}
-        <p className="inline-steer-text">
-          <span className="inline-steer-marker" aria-hidden="true">↪️ </span>
-          {text}
-        </p>
+        <p className="inline-steer-text">{text}</p>
       </div>
     </div>
   );

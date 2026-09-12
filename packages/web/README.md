@@ -394,7 +394,7 @@ thread.
 
 Once exact consumption is host-confirmed, the follow-up renders once more as the
 operator's own message at the point the run consumed it, with its full text and
-quote when one was attached: a `↪️`-marked user bubble inside the assistant
+quote when one was attached: an undecorated user bubble inside the assistant
 turn that splits the Activity disclosure into the work before it and the work
 after it. The standalone bubble that carried the pending follow-up is dropped
 while the inline marker is loaded; other channels still show the completed
