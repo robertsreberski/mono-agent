@@ -1,0 +1,1 @@
+Synthetic full-App Chromium captures at a59c368a3a241c708698905b3b66fc404c72e69e. Dark mode, mobile touch context 390x844 and desktop 1280x800, device scale 2; desktop publication resized to 2000px maximum. Not a live console or physical-device drill.
