@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createSubagentInstanceRegistry, subagentConversationRoot, subagentInstanceSessionId } from "../subagent-instances.js";
+import { writeJsonAtomic } from "../continuation-store-fs.js";
+import { SUBAGENT_REGISTRY_MAX_BYTES, SUBAGENT_TERMINAL_MAX_COUNT, createSubagentInstanceRegistry, subagentConversationRoot, subagentInstanceSessionId } from "../subagent-instances.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -89,6 +90,66 @@ describe("persistent subagent registry", () => {
     await handle.begin("process-test");
     expect(child('try { await handle.begin("process-test"); throw new Error("unexpected acquisition"); } catch (error) { if (!error.message.includes("busy")) throw error; console.log("busy"); }')).toContain("busy");
     await handle.finish("process-test", { status: "ok" });
+  });
+
+  it.each([1, 2])("releases a finishing turn when registry publication %i fails", async (failureWrite) => {
+    let failAt = 0;
+    const { root, retireSession, handle } = await setup({ writeRegistry: async (...args: Parameters<typeof writeJsonAtomic>) => {
+      if (failAt > 0 && --failAt === 0) throw new Error("injected disk full");
+      await writeJsonAtomic(...args);
+    } });
+    const record = await handle.create(spec);
+    await handle.begin(record.id);
+    failAt = failureWrite;
+    await expect(handle.finish(record.id, { status: "ok" })).rejects.toThrow("injected disk full");
+    const reopened = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
+    expect(await reopened.get(record.id)).toMatchObject({ status: "idle", lastStatus: "interrupted" });
+    await reopened.begin(record.id);
+    await reopened.finish(record.id, { status: "ok" });
+  });
+
+  it("bounds same-day terminal churn and prunes by bytes before writing", async () => {
+    const { handle, root } = await setup();
+    for (let n = 0; n < SUBAGENT_TERMINAL_MAX_COUNT + 3; n++) {
+      const record = await handle.create({ ...spec, id: `churn-${n}` });
+      await handle.close(record.id);
+    }
+    expect(await handle.list()).toHaveLength(SUBAGENT_TERMINAL_MAX_COUNT);
+    const large = "x".repeat(4 * 1024 * 1024);
+    const one = await handle.create({ ...spec, id: "large-one", systemPrompt: large, definition: { ...spec.definition, systemPrompt: large } });
+    await handle.close(one.id);
+    const two = await handle.create({ ...spec, id: "large-two", systemPrompt: large, definition: { ...spec.definition, systemPrompt: large } });
+    const bytes = await readFile(resolve(subagentConversationRoot(root, "conversation"), "instances.json"));
+    expect(bytes.byteLength).toBeLessThanOrEqual(SUBAGENT_REGISTRY_MAX_BYTES);
+    expect(await handle.get(two.id)).toMatchObject({ status: "idle" });
+    const oversized = "x".repeat(SUBAGENT_REGISTRY_MAX_BYTES);
+    await expect(handle.create({ ...spec, id: "oversized", systemPrompt: oversized, definition: { ...spec.definition, systemPrompt: oversized } })).rejects.toThrow(/16 MiB/u);
+    expect(await handle.get(two.id)).toMatchObject({ status: "idle" });
+  }, 30_000);
+
+  it.each([
+    { usage: [] }, { usage: { input: "oops", output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 } },
+    { usage: { input: -1, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 } },
+    { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: "free" } },
+    { status: ["idle"] }, { createdAt: -1 }, { updatedAt: "now" }, { lastStatus: "invented" },
+    { lastAnswerHead: "x".repeat(301) }, { extra: true }, { name: "mismatch" },
+    { definition: { ...spec.definition, model: { provider: "openai", model: "a", reference: "openai:b" } } },
+    { definition: { ...spec.definition, effort: ["high"] } },
+    { definition: { ...spec.definition, allowedTools: [42] } },
+    { definition: { ...spec.definition, allowedTools: ["AgentSend"] } },
+    { definition: { ...spec.definition, disallowedTools: {} } },
+    { definition: { ...spec.definition, mcpServerNames: [{ command: "stale" }] } },
+    { definition: { ...spec.definition, mcpServers: { stale: { command: "old" } } } },
+    { definition: { ...spec.definition, timeoutMs: -1 } },
+    { definition: { ...spec.definition, systemPrompt: "changed" } },
+  ])("rejects malformed durable fields before mutation: %j", async (patch) => {
+    const { root, handle } = await setup();
+    const record = await handle.create(spec);
+    const file = resolve(subagentConversationRoot(root, "conversation"), "instances.json");
+    const malformed = JSON.stringify([{ ...record, ...patch }]);
+    await writeFile(file, malformed);
+    await expect(handle.list()).rejects.toThrow(/Invalid/u);
+    expect(await readFile(file, "utf8")).toBe(malformed);
   });
 
   it("fails closed on corrupt registry data", async () => {

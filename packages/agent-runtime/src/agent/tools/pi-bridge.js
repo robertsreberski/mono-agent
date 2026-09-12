@@ -506,6 +506,9 @@ export function getPiBuiltinTools(allowedTools, {
   toolExecutionMode = "safe-parallel",
   ctx = null,
 } = {}) {
+  const instancesEnabled = ["Agent", "AgentSend"].every((name) =>
+    (!Array.isArray(allowedTools) || allowedTools.includes("*") || allowedTools.includes(name))
+    && !disallowedTools.includes(name));
   const textLimitSchema = integerSchema();
   const bashLimitSchema = integerSchema();
   const legacyBashTimeoutSchema = {
@@ -634,8 +637,8 @@ export function getPiBuiltinTools(allowedTools, {
     // with "Error:" is not reclassified as a tool failure, discarding its log.
     // The host artifact sink lets an over-cap subagent result spill its full
     // text to the run's tool-output directory instead of being cut.
-    Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}) }),
-    AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}) }),
+    Agent: createAgentTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled }),
+    AgentSend: createAgentSendTool(subagents, { onEvent, persistArtifact, ...(subagentContext || {}), instancesEnabled }),
     Monitor: monitorsController
       ? createBuiltinTool(
         "Monitor",

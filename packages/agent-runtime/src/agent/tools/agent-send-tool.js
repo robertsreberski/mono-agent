@@ -7,7 +7,7 @@ import { createAgentTool } from "./agent-tool.js";
  * @param {Parameters<typeof createAgentTool>[1]} [context]
  */
 export function createAgentSendTool(subagents, context = {}) {
-  if (!subagents?.instances || !subagents.run || Number(subagents.depth ?? 0) > 0) return null;
+  if (context.instancesEnabled === false || !subagents?.instances || !subagents.run || Number(subagents.depth ?? 0) > 0) return null;
   const instances = subagents.instances;
   return {
     name: "AgentSend", label: "AgentSend",

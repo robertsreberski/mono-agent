@@ -619,6 +619,8 @@ describe("loadMonoAgentConfig", () => {
     ["an out-of-range maxConcurrent", JSON.stringify({ maxConcurrent: 99 }), /maxConcurrent must be an integer between 1 and 10/u],
     ["a non-object inline policy", JSON.stringify({ inline: [] }), /inline must be an object/u],
     ["an inline allow-all wildcard", JSON.stringify({ inline: { allowedTools: ["*"] } }), /cannot use the \* wildcard/u],
+    ["a profile AgentSend grant", JSON.stringify({ definitions: [{ name: "a", description: "d", prompt: "p", allowedTools: ["AgentSend"] }] }), /cannot allow Agent or AgentSend/u],
+    ["an inline AgentSend grant", JSON.stringify({ inline: { allowedTools: ["AgentSend"] } }), /cannot allow Agent or AgentSend/u],
     ["an inline Agent grant", JSON.stringify({ inline: { allowedTools: ["Agent"] } }), /subagents never spawn subagents/u],
   ])("rejects %s", (_label, payload, expected) => {
     expect(() => loadMonoAgentConfig({ cwd: "/repo", env: { ...baseEnv, MONO_AGENT_SUBAGENTS_JSON: payload } }))

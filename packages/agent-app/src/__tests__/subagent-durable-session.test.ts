@@ -23,6 +23,7 @@ describe("app persistent subagent durable sessions", () => {
     try {
       const config = loadMonoAgentConfig({ cwd: root, env: {
         MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
+        MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
         MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"),
         MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, inline: { enabled: false }, instances: { root: resolve(root, "children") } }),
       } });

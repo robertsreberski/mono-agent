@@ -4889,6 +4889,17 @@ describe("validateMonoAgentFolder — tools guardrails & channel cross-checks", 
     expect(sectionById(bad, "tools").details.join("\n")).toContain("not creatable/writable");
   });
 
+  it.each([
+    [["Agent"], [], false], [["*"], [], true], [["*"], ["AgentSend"], false],
+    [["*"], ["Agent"], false],
+  ])("reports persistence only when both tools are effective: %j/%j", async (allowedTools, disallowedTools, enabled) => {
+    const configPath = await writeToolsConfig({ allowedTools, disallowedTools }, { subagents: { enabled: true } });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false });
+    const details = sectionById(report, "tools").details.join("\n");
+    expect(details.includes("Persistent subagents:")).toBe(enabled);
+    expect(details.includes("effective tool policy must expose both Agent and AgentSend")).toBe(!enabled);
+  });
+
   it("validates allowed subagent model routes", async () => {
     const configPath = await writeToolsConfig({ allowedTools: ["Read", "Agent"] }, {
       subagents: { enabled: true, models: [{ name: "helper-model", model: "openai-codex:gpt-5.5" }] },

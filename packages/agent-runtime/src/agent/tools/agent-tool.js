@@ -86,9 +86,10 @@ State exactly what you want back ("return a bullet list of file:line and a one-l
  * @param {RuntimeSubagentsOptions} subagents
  * @param {ReadonlyArray<RuntimeSubagentDefinition>} definitions
  * @param {ReadonlyArray<string>|null} ceiling Tools available to the runtime-owned general-purpose or authored profiles, or null when authoring is off.
+ * @param {boolean} instancesEnabled
  * @returns {string}
  */
-function toolDescription(subagents, definitions, ceiling) {
+function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const parallel = `\n\nIssue several Agent calls in ONE message to run them in parallel (up to ${maxConcurrent} at a time). Subagents run concurrently and independently.`;
   const named = definitions.length === 0
@@ -109,7 +110,7 @@ function toolDescription(subagents, definitions, ceiling) {
   const inline = ceiling === null
     ? ""
     : `\n\nTools you may grant a subagent you build: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
-  const base = subagents.instances
+  const base = instancesEnabled
     ? DESCRIPTION_BASE.replace("Bad: anything needing back-and-forth, anything where", "Bad: anything where")
       .replace("- It cannot ask you or the user anything. One shot.", "- It cannot ask you or the user anything. You can send follow-up work to a persistent child with AgentSend.")
     : DESCRIPTION_BASE;
@@ -216,7 +217,7 @@ function positiveInt(value, fallback) {
  * Build the `Agent` tool, or null when subagents are unavailable for this run.
  *
  * @param {RuntimeSubagentsOptions|null|undefined} subagents
- * @param {{model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
+ * @param {{instancesEnabled?: boolean, model?: *, effort?: string, cwd?: string, parentRunId?: string, sandboxPolicy?: *, sandboxEngine?: *, skills?: {name: string, description?: string}[], skillsRoot?: string, toolEnvironment?: *, webSearchConfig?: *, webRequestCoordinator?: *, webFetchConfig?: *, onEvent?: (event: *) => void, persistArtifact?: (artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: string|null}) => string|null}} [context]
  * @param {{record: import("../../ai/types.js").RuntimeSubagentInstance, close?: boolean}} [continuation] Internal AgentSend dispatch; never model supplied.
  * @returns {*|null}
  */
@@ -226,6 +227,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   // `Agent`, regardless of what any host-supplied `run` forwards.
   if (positiveInt(subagents.depth, 0) > 0 || Number(subagents.depth || 0) > 0) return null;
 
+  const instances = context.instancesEnabled === false ? undefined : subagents.instances;
   const definitions = Array.isArray(subagents.definitions) ? subagents.definitions.filter(Boolean) : [];
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const maxPerTurn = positiveInt(subagents.maxPerTurn, DEFAULT_MAX_PER_TURN);
@@ -296,7 +298,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         enum: models.map((choice) => choice.name),
         description: `Run the subagent on this model instead of inheriting yours. Choices: ${models.map((choice) => `${choice.name} → ${choice.key}`).join(", ")}.`,
       } }),
-      ...(subagents.instances ? {
+      ...(instances ? {
         persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend." },
         id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
       } : {}),
@@ -313,7 +315,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions, ceiling) + (subagents.instances ? "\n\nSet persist: true to retain this child’s own context across calls and parent turns. Continue it with AgentSend; close it when done." : ""),
+    description: toolDescription(subagents, definitions, ceiling, Boolean(instances)) + (instances ? "\n\nSet persist: true to retain this child’s own context across calls and parent turns. Continue it with AgentSend; close it when done." : ""),
     parameters,
     // MUST stay undefined. Agent-only batches can overlap when the offered tool
     // set contains no sequential tool. Pi 0.85 exposes only a global harness
@@ -328,7 +330,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
 
-      if (!subagents.instances && (params.persist !== undefined || params.id !== undefined)) {
+      if (!instances && (params.persist !== undefined || params.id !== undefined)) {
         throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       }
       if (params.id !== undefined && params.persist !== true) throw new Error("Error: id requires persist: true.");
@@ -395,12 +397,13 @@ export function createAgentTool(subagents, context = {}, continuation) {
         throw new Error("tool execution aborted");
       }
       try {
-        if (continuation) instance = await subagents.instances.begin(continuation.record.id);
+        if (continuation) instance = await instances.begin(continuation.record.id);
         else if (params.persist) {
-          const created = await subagents.instances.create({ ...(params.id === undefined ? {} : { id: params.id }),
+          const { mcpServers, ...retainedProfile } = profile;
+          const created = await instances.create({ ...(params.id === undefined ? {} : { id: params.id }),
             name: profile.name, systemPrompt: profile.systemPrompt,
-            definition: { ...profile, model: profile.model ?? context.model, effort: profile.effort ?? context.effort } });
-          instance = await subagents.instances.begin(created.id);
+            definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } });
+          instance = await instances.begin(created.id);
         }
       } catch (error) { releaseSlot(); throw error; }
       // The timeout starts only AFTER a slot is held. Started earlier, a call
@@ -459,7 +462,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           ...(instance ? { instance: { sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
           systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
           prompt: params.prompt,
-          definition: profile,
+          definition: instance?.definition ?? profile,
           ...(context.model === undefined ? {} : { model: context.model }),
           ...(context.effort === undefined ? {} : { effort: context.effort }),
           ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
@@ -490,8 +493,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
           const pendingId = instance.id;
           // Keep the instance busy until the actual runner settles, even after the tool deadline.
           void Promise.resolve(running).then(
-            (late) => subagents.instances.finish(pendingId, { status: "timeout", answerHead: late?.text ?? "" }),
-            () => subagents.instances.finish(pendingId, { status: "timeout" }),
+            (late) => instances.finish(pendingId, { status: "timeout", answerHead: late?.text ?? "" }),
+            () => instances.finish(pendingId, { status: "timeout" }),
           ).catch(() => undefined);
         }
         if (settled === DEADLINE) {
@@ -511,11 +514,11 @@ export function createAgentTool(subagents, context = {}, continuation) {
       if (instance && !abandoned) {
         const state = classifyOutcome({ result, thrown, timedOut });
         const usage = result?.usage ?? {};
-        instance = await subagents.instances.finish(instance.id, { status: signal?.aborted ? "cancelled" : state.status,
+        instance = await instances.finish(instance.id, { status: signal?.aborted ? "cancelled" : state.status,
           answerHead: state.answer, usage: { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
             cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
             costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
-        if (continuation?.close) instance = await subagents.instances.close(instance.id);
+        if (continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
       }
       // The parent turn being cancelled is not a subagent outcome — surface it
       // as an aborted tool call the way every other built-in does. Close any
@@ -549,7 +552,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         ...(droppedTools.length === 0 ? {} : {
           notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools.join(", ")}.`,
         }),
-        persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full),
+        persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentSend" : "Agent"),
       });
       budget.bytes += Buffer.byteLength(text, "utf8");
       // `details.subagent.status` is the load-bearing signal: pi hardcodes
@@ -1091,16 +1094,17 @@ function activityLine(entry, index, cwd) {
  * @param {unknown} persistArtifact
  * @param {string} toolCallId
  * @param {string} fullText
+ * @param {string} toolName
  * @returns {string|null}
  */
-function persistSubagentResult(persistArtifact, toolCallId, fullText) {
+function persistSubagentResult(persistArtifact, toolCallId, fullText, toolName) {
   if (typeof persistArtifact !== "function") return null;
   const id = String(toolCallId || "").replace(/[^A-Za-z0-9_.-]+/gu, "_").slice(0, 80) || "call";
   try {
     const path = persistArtifact({
-      filename: `Agent__${id}__full.txt`,
+      filename: `${toolName}__${id}__full.txt`,
       buffer: Buffer.from(fullText, "utf8"),
-      toolName: "Agent",
+      toolName,
       toolUseId: toolCallId,
     });
     return typeof path === "string" && path.length > 0 ? path : null;

@@ -1,4 +1,4 @@
-import { createSubagentInstanceRegistry, isLiveSubagentInstance, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
+import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createAgentHarness,
@@ -661,6 +661,7 @@ function selectMcpServers(
 /** Denied for every subagent regardless of profile. Mirrors the kernel's own list. */
 const SUBAGENT_HARD_DENY = [
   "Agent",
+  "AgentSend",
   "AskUser",
   "SlackSendMessage",
   "TelegramSendMessage",
@@ -706,6 +707,7 @@ interface SubagentRunRequest {
     readonly allowedTools?: readonly string[];
     readonly disallowedTools?: readonly string[];
     readonly mcpServers?: Record<string, unknown>;
+    readonly mcpServerNames?: readonly string[];
   };
   readonly maxTurns: number;
   readonly depth: number;
@@ -804,6 +806,9 @@ export function buildSubagentsOptions(
     // primary instead of the model its profile asked for.
     const childModel = request.definition.model ?? request.model ?? deps.baseModel;
     const overrides = modelReferenceKey(childModel) !== modelReferenceKey(deps.baseModel);
+    if (request.instance && overrides && deps.runtimeForModel === undefined) {
+      throw new Error(`Persistent subagent route ${childModel.reference} is unavailable; the retained model was not changed.`);
+    }
     const runtime = overrides && deps.runtimeForModel !== undefined
       ? deps.runtimeForModel(childModel)
       : deps.runtime;
@@ -866,11 +871,13 @@ export function buildSubagentsOptions(
       ...((request.definition.effort ?? request.effort) === undefined
         ? {} : { effort: request.definition.effort ?? request.effort }),
       allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
-      disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
+      disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...config.tools.disallowedTools, ...SUBAGENT_HARD_DENY])],
       // Only the servers this profile named. A profile that names none gets an
       // empty map, keeping the app-owned AskUser and channel-send tools
       // structurally out of reach rather than merely denied by name.
-      mcpServers: request.definition.mcpServers ?? {},
+      mcpServers: request.instance
+        ? selectMcpServers((toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>, request.definition.mcpServerNames ?? [], request.definition.name)
+        : request.definition.mcpServers ?? {},
       abortSignal: request.abortSignal,
       onEvent: request.onEvent,
       // Depth propagation is the recursion lock the kernel also enforces.
@@ -888,7 +895,7 @@ export function buildSubagentsOptions(
 
   return {
     subagents: {
-      ...(scope === undefined ? {} : { instances: scope.instances }),
+      ...(scope === undefined || !persistentSubagentsEnabled(config) ? {} : { instances: scope.instances }),
       definitions,
       ...(subagents.models === undefined ? {} : { models: subagents.models.map((choice) => ({
         name: choice.name ?? modelReferenceKey(choice.model),
@@ -917,7 +924,9 @@ export function createSubagentsRuntimeExtension(
   deps: Parameters<typeof buildSubagentsOptions>[1],
   registry: ReturnType<typeof createSubagentInstanceRegistry>,
 ): NonNullable<ConfiguredAgentHarnessOptions["runtimeOptionsForRequest"]> {
-  return async ({ request, runId }) => ({
+  return async ({ request, runId }) => !persistentSubagentsEnabled(config)
+    ? { runtimeOptions: buildSubagentsOptions(config, deps)! }
+    : ({
     runtimeOptions: buildSubagentsOptions(config, deps, {
       conversationId: request.conversationId, runId,
       instances: await registry.open(request.conversationId),
@@ -1176,10 +1185,10 @@ async function createConfiguredAgentHarnessInternal(
           : { onUnavailable: options.onMemoryRememberUnavailable }),
       });
   const subagentDeps = { runtime, baseModel: model, ...(runtimeForModel === undefined ? {} : { runtimeForModel }) };
-  const instanceRegistry = config.subagents?.enabled === true && config.subagents.instances?.enabled !== false
+  const instanceRegistry = persistentSubagentsEnabled(config)
     ? createSubagentInstanceRegistry({
         root: subagentInstancesRoot(config),
-        ...config.subagents.instances,
+        ...config.subagents?.instances,
         retireSession: async (id, root) => {
           if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
           await runtime.retireDurableSession(id, root);

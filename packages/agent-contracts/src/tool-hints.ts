@@ -246,7 +246,10 @@ export function formatToolActivityLine(
   const rawName = splitSubagentToolName(typeof toolName === "string" ? toolName.trim() : "").tool;
   const leaf = toolNameLeaf(rawName);
   const normalized = leaf.toLowerCase().replace(/[^a-z0-9]+/gu, "");
-  const spec = activitySpec(normalized, leaf);
+  const spec = normalized === "agentsend" && typeof toolArguments === "object" && toolArguments !== null
+    && "close" in toolArguments && toolArguments.close === true
+    ? { ...activitySpec(normalized, leaf), action: "🤖 Closing agent", actionWithoutPreview: "🤖 Closing a subagent" }
+    : activitySpec(normalized, leaf);
   const result = previewFromArguments(toolArguments, spec, options);
   if (result === undefined) return spec.actionWithoutPreview ?? spec.action;
   const action = result.narrative ? (spec.narrativeAction ?? spec.action) : spec.action;

@@ -242,6 +242,8 @@ type ActivityEntry =
        * subagent to the default.
        */
       readonly name: string;
+      readonly toolName: string;
+      readonly closing: boolean;
       header: string;
       /** Count every observed child start independently of rendered-line eviction. */
       callCount: number;
@@ -447,7 +449,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
           // the tool calls it goes on to make can nest beneath it.
           if (isSubagentLaunchToolName(event.name)) {
             if (!this.terminalSubagentIds.has(event.id)) {
-              this.subagentGroup(event.id, subagentNameFromArguments(event.arguments));
+              this.subagentGroup(event.id, subagentNameFromArguments(event.arguments, event.name), event.name, event.arguments);
               this.renderToolActivity();
             }
           } else {
@@ -495,7 +497,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
         const finished = subagent !== undefined && isSubagentLifecycle(event)
           ? { id: subagent.id, name: subagent.name }
           : subagent === undefined && event.name !== undefined && isSubagentLaunchToolName(event.name)
-            ? { id: event.id, name: subagentNameFromArguments(event.arguments) }
+            ? { id: event.id, name: subagentNameFromArguments(event.arguments, event.name) }
             : undefined;
         if (finished !== undefined && this.showHints) {
           await this.awaitInFlightEdit();
@@ -503,6 +505,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
             ...(event.isError === undefined ? {} : { isError: event.isError }),
             ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }),
             content: event.content,
+            ...(event.name === undefined ? {} : { toolName: event.name }), toolArguments: event.arguments,
           });
           if (this.sentMessage !== undefined) this.scheduleEdit();
           return;
@@ -1091,14 +1094,16 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   }
 
   /** Find or open the ledger group for one subagent launch. */
-  private subagentGroup(id: string, subagentName: string): Extract<ActivityEntry, { kind: "agent" }> {
+  private subagentGroup(id: string, subagentName: string, toolName = "Agent", toolArguments: unknown = { name: subagentName }): Extract<ActivityEntry, { kind: "agent" }> {
     const existing = this.findSubagentGroup(id);
     if (existing !== undefined) return existing;
     const group: Extract<ActivityEntry, { kind: "agent" }> = {
       kind: "agent",
       id,
       name: subagentName,
-      header: formatToolActivityLine("Agent", { name: subagentName }),
+      toolName,
+      closing: toolName.toLowerCase() === "agentsend" && typeof toolArguments === "object" && toolArguments !== null && "close" in toolArguments && toolArguments.close === true,
+      header: formatToolActivityLine(toolName, toolArguments),
       callCount: 0,
       terminal: false,
       isError: false,
@@ -1123,13 +1128,13 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
   private completeSubagentGroup(
     id: string,
     subagentName: string,
-    outcome: { readonly isError?: boolean; readonly executionMs?: number; readonly content: unknown },
+    outcome: { readonly isError?: boolean; readonly executionMs?: number; readonly content: unknown; readonly toolName?: string; readonly toolArguments?: unknown },
   ): void {
     const existing = this.findSubagentGroup(id);
     // The group already completed and its rendered row aged out. A replayed
     // completion must not resurrect it with zeroed metrics.
     if (existing === undefined && this.terminalSubagentIds.has(id)) return;
-    const group = existing ?? this.subagentGroup(id, subagentName);
+    const group = existing ?? this.subagentGroup(id, subagentName, outcome.toolName, outcome.toolArguments);
     const becameError = !group.isError && outcome.isError === true;
     group.terminal = true;
     group.isError ||= outcome.isError === true;
@@ -1147,7 +1152,7 @@ export class ResilientMessageStream implements ResilientAgentMessageStream {
     }
 
     const parts = [
-      `${group.isError ? "⚠️" : "🤖"} Agent ${JSON.stringify(group.name)}`,
+      `${group.isError ? "⚠️" : "🤖"} ${group.toolName.toLowerCase() === "agentsend" ? (group.closing ? "Close agent" : "Continue agent") : "Agent"} ${JSON.stringify(group.name)}`,
       ...(group.isError ? ["failed"] : []),
       `${group.callCount} tool call${group.callCount === 1 ? "" : "s"}`,
       ...(group.executionMs === undefined ? [] : [formatSeconds(group.executionMs)]),
@@ -1426,11 +1431,11 @@ function isSubagentLifecycle(
 }
 
 /** The profile a launch call names, falling back to the runtime's own default. */
-function subagentNameFromArguments(toolArguments: unknown): string {
+function subagentNameFromArguments(toolArguments: unknown, toolName = "Agent"): string {
   if (typeof toolArguments !== "object" || toolArguments === null || Array.isArray(toolArguments)) {
     return "general-purpose";
   }
-  const name = (toolArguments as Record<string, unknown>).name;
+  const name = (toolArguments as Record<string, unknown>)[toolName.toLowerCase() === "agentsend" ? "id" : "name"];
   return typeof name === "string" && name.trim().length > 0 ? name.trim() : "general-purpose";
 }
 

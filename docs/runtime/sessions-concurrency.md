@@ -324,6 +324,7 @@ reported as busy. A process crash releases its locks, so a stale running record
 recovers as idle with an interrupted status on the next access. Session context
 is retained on disk, while an in-flight task is not automatically restarted.
 Idle expiry never interrupts a running child. `restart --clear-sessions` purges
-this configured root with other conversation state. See
+this configured root with other conversation state and reports removed registry
+and child-session file counts, even when no other store existed. See
 [persistent subagent configuration](./tools-and-guards.md#persistent-subagents)
 for limits and lifecycle controls.

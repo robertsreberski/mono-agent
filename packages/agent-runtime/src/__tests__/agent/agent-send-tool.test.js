@@ -72,6 +72,52 @@ describe("persistent Agent and AgentSend", () => {
     expect((await send.execute("c", { id: "critic-1", close: true })).content[0].text).toContain("closed");
     expect(options.run).toHaveBeenCalledTimes(1);
   });
+  it.each([
+    ["busy", { failureKind: "session_busy" }],
+    ["provider error", { error: "provider failed" }],
+    ["continuity loss", { failureKind: "session_continuity_lost", error: "lost" }],
+    ["cancelled", { cancelled: true }],
+    ["empty", { text: "" }],
+  ])("retains the live transcript when message+close returns %s", async (_label, outcome) => {
+    const { agent, send, options, instances } = setup();
+    await agent.execute("a", { prompt: "first", persist: true });
+    options.run.mockResolvedValueOnce(outcome);
+    await send.execute("b", { id: "critic-1", message: "last", close: true });
+    expect(instances.close).not.toHaveBeenCalled();
+    expect((await instances.get("critic-1")).status).toBe("idle");
+  });
+  it("retains message+close after thrown errors and cooperative timeouts", async () => {
+    const { agent, send, options, instances } = setup({ timeoutMs: 10 });
+    await agent.execute("a", { prompt: "first", persist: true });
+    options.run.mockRejectedValueOnce(new Error("failed"));
+    await send.execute("b", { id: "critic-1", message: "last", close: true });
+    options.run.mockImplementationOnce(async ({ abortSignal }) => {
+      await new Promise((done) => abortSignal.addEventListener("abort", done, { once: true }));
+      return { text: "partial", cancelled: true };
+    });
+    await send.execute("c", { id: "critic-1", message: "last", close: true });
+    expect(instances.close).not.toHaveBeenCalled();
+  });
+  it("keeps message+close live when the parent cancels", async () => {
+    const { agent, send, options, instances } = setup();
+    await agent.execute("a", { prompt: "first", persist: true });
+    const controller = new AbortController();
+    options.run.mockImplementationOnce(async () => { controller.abort(); return { text: "answer" }; });
+    await expect(send.execute("b", { id: "critic-1", message: "last", close: true }, controller.signal)).rejects.toThrow(/aborted/);
+    expect(instances.close).not.toHaveBeenCalled();
+    expect(instances.finish).toHaveBeenLastCalledWith("critic-1", expect.objectContaining({ status: "cancelled" }));
+  });
+  it("attributes spilled continuation output to AgentSend", async () => {
+    const { agent, options } = setup();
+    await agent.execute("a", { prompt: "first", persist: true });
+    options.run.mockResolvedValueOnce({ text: "output ".repeat(20_000) });
+    const persistArtifact = vi.fn(() => "/artifacts/continued.txt");
+    const send = createAgentSendTool(options, { parentRunId: "next", persistArtifact });
+    const result = await send.execute("send-id", { id: "critic-1", message: "more" });
+    expect(persistArtifact).toHaveBeenCalledWith(expect.objectContaining({ filename: "AgentSend__send-id__full.txt", toolName: "AgentSend", toolUseId: "send-id" }));
+    expect(result.details.tool_payload_saved_paths).toContain("/artifacts/continued.txt");
+  });
+
   it("rejects unknown, busy, closed, duplicate, and invalid requests", async () => {
     const { agent, send, records } = setup();
     await expect(send.execute("a", { id: "unknown", message: "x" })).rejects.toThrow(/Live ids: none/);
@@ -89,6 +135,19 @@ describe("persistent Agent and AgentSend", () => {
     const result = await agent.execute("a", { prompt: "x", persist: true });
     expect(result.details.subagent.status).toBe("busy");
     expect(instances.finish.mock.calls[0][1].status).toBe("busy");
+  });
+  it.each([
+    [["Agent"], [], false], [["*"], ["AgentSend"], false], [["*"], [], true],
+  ])("gates persistence at the effective pi tool boundary: %j/%j", async (allowed, denied, enabled) => {
+    const { options } = setup();
+    const tools = getPiBuiltinTools(allowed, { disallowedTools: denied, subagents: options });
+    const agent = tools.find((tool) => tool.name === "Agent");
+    expect(agent.parameters.properties.persist !== undefined).toBe(enabled);
+    expect(tools.some((tool) => tool.name === "AgentSend")).toBe(enabled);
+    if (!enabled) {
+      expect(agent.description).not.toContain("AgentSend");
+      await expect(agent.execute("denied", { prompt: "x", persist: true })).rejects.toThrow(/unavailable/);
+    }
   });
   it("registers AgentSend next to Agent only with a registry", () => {
     const names = (subagents) => getPiBuiltinTools(undefined, { subagents }).map((tool) => tool.name);

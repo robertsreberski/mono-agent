@@ -897,6 +897,22 @@ const lastLedger = (transport: FakeTransport): string => {
 };
 
 describe("ResilientMessageStream subagent activity", () => {
+  it.each([false, true])("preserves AgentSend identity through streamed start and completion (close=%s)", async (close) => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+    await stream.event({ type: "tool_call_started", id: "send-1", name: "AgentSend", arguments: { id: "critic-7", ...(close ? { close: true } : { message: "continue" }) } });
+    expect(lastLedger(transport)).toBe(`🤖 ${close ? "Closing" : "Continuing"} agent "critic-7"`);
+    if (!close) {
+      await stream.event(bookend("send-1", "researcher"));
+      await stream.event(childCall("send-1", "researcher", "read", "Read", { file_path: "/repo/a" }));
+      await stream.event({ type: "tool_call_completed", id: "agent:send-1", name: "Agent(researcher)", metadata: { subagent: { id: "send-1", name: "researcher" }, subagentLifecycle: true } });
+    }
+    await stream.event({ type: "tool_call_completed", id: "send-1", name: "AgentSend", executionMs: 10 });
+    expect(lastLedger(transport)).toContain(`${close ? "Close" : "Continue"} agent "critic-7"`);
+    expect(lastLedger(transport)).toContain(`${close ? 0 : 1} tool call`);
+    expect(lastLedger(transport)).not.toContain("general-purpose");
+  });
+
   it("nests a subagent's tool calls under one header", async () => {
     const transport = new FakeTransport({ maxMessageChars: 500 });
     const stream = makeStream(transport, { finalOnly: true, showHints: true });

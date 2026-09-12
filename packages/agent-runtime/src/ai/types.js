@@ -271,6 +271,7 @@
  * @property {ReadonlyArray<string>} [allowedTools] Absent uses the safe read-only default set.
  * @property {ReadonlyArray<string>} [disallowedTools]
  * @property {Object<string, Object>} [mcpServers]
+ * @property {ReadonlyArray<string>} [mcpServerNames] Retained selections, resolved against current host policy.
  * @property {number} [maxTurns]
  * @property {number} [timeoutMs]
  */

@@ -1,4 +1,4 @@
-import { subagentInstancesRoot } from "./subagent-instances.js";
+import { persistentSubagentsEnabled, subagentInstancesRoot } from "./subagent-instances.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -1772,9 +1772,12 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   // Subagents: the Agent tool is registered only when BOTH the capability is
   // enabled and the tool is allowed, so surface either half being missing.
   const subagents = config.subagents;
-  const agentAllowed = allowAll || allowedTools.includes("Agent");
+  const agentAllowed = (allowAll || allowedTools.includes("Agent")) && !config.tools.disallowedTools.includes("Agent");
   if (subagents?.enabled === true) {
-    if (subagents.instances?.enabled !== false) {
+    if (subagents.instances?.enabled !== false && !persistentSubagentsEnabled(config)) {
+      details.push("Persistent subagents unavailable: effective tool policy must expose both Agent and AgentSend; Agent remains stateless when allowed.");
+    }
+    if (persistentSubagentsEnabled(config)) {
       const root = subagentInstancesRoot(config);
       let ancestor = root;
       try {
