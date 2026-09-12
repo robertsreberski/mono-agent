@@ -1,6 +1,8 @@
 import { Fragment } from "react";
 import { Icon } from "../Icon";
-import type { AgentSummary, ThreadSummary } from "../../types";
+import type { AgentSummary, CatalogModel, ThreadSummary } from "../../types";
+import { resolveThreadRoute } from "../route-label";
+import { RouteBadge } from "../RouteBadge";
 import { relativeTime } from "../time";
 import {
   agentInitials,
@@ -14,13 +16,17 @@ import {
 function RunningCard({
   agent,
   thread,
+  catalogModels,
   onOpen,
 }: {
   readonly agent: AgentSummary;
   readonly thread: ThreadSummary;
+  readonly catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>;
   readonly onOpen: (thread: ThreadSummary) => void;
 }) {
   const pending = runningCardPending(thread);
+  // The card's OWN agent, never the selected one: fleet rows span agents.
+  const route = resolveThreadRoute(thread, agent, catalogModels);
   return (
     <button
       type="button"
@@ -31,8 +37,17 @@ function RunningCard({
       <span className="running-card-agent" aria-hidden="true">{agentInitials(agent.label)}</span>
       <span className="running-card-copy">
         <span className="running-card-title">{thread.title}</span>
-        <span className={`running-card-status${pending ? " is-pending" : ""}`}>
-          {runningCardStatus(thread)}
+        <span className="running-card-status-line">
+          <span className={`running-card-status${pending ? " is-pending" : ""}`}>
+            {runningCardStatus(thread)}
+          </span>
+          <RouteBadge
+            modelShort={route.modelShort}
+            effortShort={route.effortShort}
+            effortSignal={route.effortSignal}
+            label={route.label}
+            title={route.title}
+          />
         </span>
       </span>
       <time className="running-card-time" dateTime={thread.updatedAt}>
@@ -64,6 +79,8 @@ export function RunningSection({
   total,
   truncated = false,
   authoritative = true,
+  catalogModels,
+  catalogSourceId,
 }: {
   readonly groups: readonly RunningAgentGroup[];
   readonly expandedAgentIds: ReadonlySet<string>;
@@ -75,6 +92,13 @@ export function RunningSection({
   readonly truncated?: boolean;
   /** A live server answer stands behind this. See the note above. */
   readonly authoritative?: boolean;
+  /**
+   * The store's already-fetched catalog projection. Optional so standalone
+   * callers keep working. Only cards owned by catalogSourceId may use it;
+   * other cards resolve against their own configured route metadata.
+   */
+  readonly catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>;
+  readonly catalogSourceId?: string;
 }) {
   if (groups.length === 0) return null;
   const shown = runningThreadCount(groups);
@@ -110,7 +134,13 @@ export function RunningSection({
         return (
           <Fragment key={group.agent.sourceId}>
             {cards.map((thread) => (
-              <RunningCard key={thread.id} agent={group.agent} thread={thread} onOpen={onOpen} />
+              <RunningCard
+                key={thread.id}
+                agent={group.agent}
+                thread={thread}
+                {...(catalogSourceId !== group.agent.sourceId || catalogModels === undefined ? {} : { catalogModels })}
+                onOpen={onOpen}
+              />
             ))}
             {(hidden > 0 || expanded) && group.threads.length > RUNNING_CARDS_PER_AGENT && (
               <button

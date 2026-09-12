@@ -12,6 +12,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { ReplyAccessProvider } from "./components/reply-access";
 import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
+import { RouteCapabilitiesProvider } from "./components/route-capabilities";
 import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
@@ -882,6 +883,13 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     })();
   }, [attachmentAdapter, recoveries, runtime, selectedCanUpload, turnStarting]);
 
+  // A detail can lag behind a selection during navigation. Never lend its
+  // transcript another agent's model scale, including a same-ID local model.
+  const transcriptThread = store.detail?.thread;
+  const routeOwner = transcriptThread && transcriptThread.id === store.selectedThreadId
+    ? store.agents.find((agent) => agent.sourceId === transcriptThread.sourceId) ?? null
+    : null;
+
   return (
     <ProcessJobPresentationProvider
       threadId={store.selectedThreadId}
@@ -891,9 +899,14 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     >
       <AssistantRuntimeProvider runtime={runtime}>
         <ToolCallRepairProvider repair={store.loadFullToolCall}>
-          <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
-            {children}
-          </ReplyAccessProvider>
+          <RouteCapabilitiesProvider
+            agent={routeOwner}
+            catalogByProvider={routeOwner?.sourceId === store.selectedAgentId ? store.catalogByProvider : undefined}
+          >
+            <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
+              {children}
+            </ReplyAccessProvider>
+          </RouteCapabilitiesProvider>
         </ToolCallRepairProvider>
       </AssistantRuntimeProvider>
     </ProcessJobPresentationProvider>

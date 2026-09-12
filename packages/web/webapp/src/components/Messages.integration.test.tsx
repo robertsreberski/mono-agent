@@ -4,10 +4,11 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useCallback, useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api";
+import { resetDataUsage } from "../data-usage";
 import { writeDataModeSetting } from "../data-mode";
 import {
   ProcessJobPresentationProvider,
@@ -36,6 +37,10 @@ vi.mock("../console-store", () => ({
 }));
 
 afterEach(() => {
+  cleanup();
+  // Fetch mocks still meter response bodies: dispose their module timers before
+  // restoring clocks or tearing down window (hosted CI caught a late settle).
+  resetDataUsage();
   vi.useRealTimers();
   vi.restoreAllMocks();
   // A case that stubs this and then fails would otherwise leave every later
