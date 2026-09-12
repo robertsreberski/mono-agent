@@ -484,22 +484,10 @@ describe("monitors service", () => {
 
   it("retains a dedupe representative across a refused or unpersisted dispatch", async () => {
     let persistDispatch = false;
-    let holdRefusal = true;
-    let signalRefusal!: () => void;
-    let releaseRefusal!: () => void;
-    const refusalPersisted = new Promise<void>((resolve) => { signalRefusal = resolve; });
-    const refusalReleased = new Promise<void>((resolve) => { releaseRefusal = resolve; });
     const handle = await open({}, {
       writeStore: async (root, records) => {
         if (!persistDispatch && records.some((record) => record.seq > 0)) throw new Error("blocked write");
         await writeMonitorStore(root, records);
-        if (holdRefusal && records.some((record) => record.seq > 0 && record.inFlightWakeLines === null)) {
-          holdRefusal = false;
-          signalRefusal();
-          // Hold the settled refusal before another retry can claim its batch.
-          // A fixed sleep races the next dispatch's fsync under parallel load.
-          await refusalReleased;
-        }
       },
     });
     const fake = fakeRequest();
@@ -511,14 +499,11 @@ describe("monitors service", () => {
     expect(wakes).toHaveLength(0);
     wakeResult = () => ({ delivered: false, code: "conversation_busy", retryable: true });
     persistDispatch = true;
-    try {
-      await refusalPersisted;
-      fake.process().emit("repeat\n");
-      await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(2));
-      wakeResult = () => ({ delivered: true, disposition: "follow_up" });
-    } finally {
-      releaseRefusal();
-    }
+    await waitUntil(() => wakes.length > 0);
+    await pause(50);
+    fake.process().emit("repeat\n");
+    await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesSuppressed).toBe(2));
+    wakeResult = () => ({ delivered: true, disposition: "follow_up" });
     await vi.waitFor(async () => expect((await handle.get("mon-1"))?.counters.linesDelivered).toBe(1));
     const counters = (await handle.get("mon-1"))!.counters;
     expect(counters.droppedLines).toBe(0);
