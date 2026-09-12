@@ -112,7 +112,7 @@ function toolDescription(subagents, definitions, ceiling, instancesEnabled) {
     : `\n\nTools you may grant a subagent you build: ${ceiling.join(", ")}. Anything else is dropped. Omit \`tools\` for a read-only helper.`;
   const base = instancesEnabled
     ? DESCRIPTION_BASE.replace("Bad: anything needing back-and-forth, anything where", "Bad: anything where")
-      .replace("- It cannot ask you or the user anything. One shot.", "- It cannot ask you or the user anything. You can send follow-up work to a persistent child with AgentSend.")
+      .replace("- It cannot ask you or the user anything. One shot.", "- A persistent child can ask you through AskParent and return awaiting_reply. Reply with AgentSend. It cannot contact the user.")
     : DESCRIPTION_BASE;
   return `${base}${parallel}${named}${shapes}${inline}`;
 }
@@ -459,7 +459,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
       let abandoned = false;
       try {
         const running = subagents.run({
-          ...(instance ? { instance: { sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
+          ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
           systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
           prompt: params.prompt,
           definition: instance?.definition ?? profile,
@@ -515,7 +515,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         const state = classifyOutcome({ result, thrown, timedOut });
         const usage = result?.usage ?? {};
         instance = await instances.finish(instance.id, { status: signal?.aborted ? "cancelled" : state.status,
-          answerHead: state.answer, usage: { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
+          answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
             cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
             costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
         if (continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
@@ -567,7 +567,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         content: [{ type: "text", text }],
         details: {
           tool: continuation ? "AgentSend" : "Agent",
-          subagent: { ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, toolCalls: collector.entries().length,
+          subagent: { ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
             ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
           },
           ...(truncated ? { tool_payload_truncated: true } : {}),
@@ -663,7 +663,7 @@ function resolveProfile(definitions, name, ceiling) {
     return normalizeProfile({
       name: GENERAL_PURPOSE_SUBAGENT,
       description: "Read-only researcher inheriting the main model.",
-      systemPrompt: "You are a focused research subagent. Work only from the task you were given — you cannot see the parent conversation and cannot ask anyone anything. Investigate with the tools you have, then finish with a written answer in exactly the shape the task requested. Cite file:line where relevant. Never modify files.",
+      systemPrompt: "You are a focused research subagent. Work only from the task you were given — you cannot see the parent conversation. If AskParent is available, use it when you need direction from your parent. Investigate with the tools you have, then finish with a written answer in exactly the shape the task requested. Cite file:line where relevant. Never modify files.",
       allowedTools,
     });
   }
@@ -767,7 +767,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
       // Before the bookend, so the run's own usage report can already include
       // it, and so an abandoned child still hands over whatever it spent.
       recordUsage?.(usage);
-      const executed = status === "ok" && result && typeof result === "object"
+      const executed = ["ok", "awaiting_reply"].includes(status) && result && typeof result === "object"
         ? {
             ...(boundedRouteString(result.model) === undefined ? {} : { model: boundedRouteString(result.model) }),
             ...(boundedRouteString(result.effort, 64) === undefined ? {} : { effort: boundedRouteString(result.effort, 64) }),
@@ -803,7 +803,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
               ...(attribution === undefined ? {} : { attribution }),
             } }
           : {}),
-        isError: status !== "ok",
+        isError: !["ok", "awaiting_reply"].includes(status),
         executionMs: durationMs,
         content: `${status} · ${done.length} tool call${done.length === 1 ? "" : "s"}`,
       });
@@ -968,7 +968,7 @@ function safeJson(value) {
 
 /**
  * @param {{result: *, thrown: unknown, timedOut: boolean, abandoned?: boolean}} input
- * @returns {{status: string, answer: string, reason?: string}}
+ * @returns {{status: string, answer: string, reason?: string, question?: {question: string, options?: string[]}}}
  */
 function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
   if (abandoned) {
@@ -992,6 +992,8 @@ function classifyOutcome({ result, thrown, timedOut, abandoned = false }) {
     const kind = result.failureKind ? `${result.failureKind}: ` : "";
     return { status: "failed", answer: typeof result.text === "string" ? result.text : "", reason: `${kind}${String(result.error ?? "")}`.trim() };
   }
+  if (result?.subagentQuestion) return { status: "awaiting_reply", question: result.subagentQuestion,
+    answer: `Awaiting parent reply: ${result.subagentQuestion.question}${result.subagentQuestion.options ? `\nOptions: ${result.subagentQuestion.options.map((option) => JSON.stringify(option)).join(", ")}` : ""}` };
   const answer = typeof result?.text === "string" ? result.text.trim() : "";
   if (answer.length === 0) {
     return { status: "empty", answer: "", reason: "the subagent produced no final answer" };

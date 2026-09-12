@@ -572,3 +572,31 @@ it("reports an unavailable retained model rather than executing the current prim
   })).rejects.toThrow(/retained model was not changed/u);
   expect(runtime.run).not.toHaveBeenCalled();
 });
+
+describe("AskParent child policy and durable controller", () => {
+  it.each(["allowed", "global-deny", "profile-deny", "stateless"])("applies %s policy", async (policy) => {
+    const root = await mkdtemp(resolve(process.cwd(), ".ask-parent-policy-"));
+    try {
+      const config = monoConfig({ enabled: true, definitions: [{ name: "helper", description: "help", prompt: "Help", allowedTools: ["Read"],
+        ...(policy === "profile-deny" ? { disallowedTools: ["AskParent"] } : {}) }] },
+      { allowedTools: ["Agent", "AgentSend"], disallowedTools: policy === "global-deny" ? ["AskParent"] : [] });
+      const handle = await createSubagentInstanceRegistry({ root, retireSession: async () => {} }).open("conversation");
+      const calls: any[] = [];
+      const runtime = { run: async (_prompt: string, options: any) => {
+        calls.push(options);
+        if (options.askParentController) {
+          await options.askParentController.submit({ question: "Scope?" });
+          expect((await handle.get("helper"))?.pendingQuestion).toEqual({ question: "Scope?" });
+          await expect(options.askParentController.submit({ question: "Again?" })).rejects.toThrow(/already submitted/);
+        }
+        return { text: "done", providerSessionId: options.sessionId };
+      } };
+      const options = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: PRIMARY }, { conversationId: "conversation", runId: "p", instances: handle })!;
+      const result = await createAgentTool(options.subagents, { model: PRIMARY }).execute("call", { name: "helper", prompt: "work", ...(policy === "stateless" ? {} : { persist: true, id: "helper" }) });
+      expect(Boolean(calls[0].askParentController)).toBe(policy === "allowed");
+      expect(calls[0].allowedTools.includes("AskParent")).toBe(policy === "allowed");
+      expect(calls[0].disallowedTools).toEqual(expect.arrayContaining(["AskUser", "SlackSendMessage", "TelegramSendMessage", "TelegramSendFile"]));
+      expect(result.details.subagent.status).toBe(policy === "allowed" ? "awaiting_reply" : "ok");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});

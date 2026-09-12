@@ -30,6 +30,7 @@ export const BUILTIN_TOOL_NAMES = [
   // DEFAULT_SAFE_TOOLS because deploying agents is not a read-only capability.
   "Agent",
   "AgentSend",
+  "AskParent",
 ] as const;
 
 /** App-owned tools injected by the configured host and governed by tool policy. */

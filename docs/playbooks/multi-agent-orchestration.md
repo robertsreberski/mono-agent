@@ -90,3 +90,15 @@ Give the orchestrator a compound task ("research X then write a summary"); confi
 - [Runtime backends](/runtime/backends/)
 - [Observability: artifacts and traces](/observability/artifacts-and-traces/)
 - Composer skill: `mono-agent-composer` (run `/mono-agent-composer` to scaffold and validate an agent from one config).
+
+## Let a persistent child ask for direction
+
+Start a child with `Agent({persist: true, prompt: "Review the design"})`.
+A child can call `AskParent({question: "Which scope?", options: ["API", "UI"]})`
+to save its question and end its turn. The successful parent-facing result has
+status `awaiting_reply`, an instance id, and the structured question. Answer with
+`AgentSend({id, message: "Focus on the API"})`; the child resumes its own durable
+context. Global or profile `AskParent` denies disable this dialogue. The child
+cannot contact the user: the parent decides whether to answer or ask the user.
+Failed replies leave the question pending. Close-only retires the instance;
+there is no background execution or automatic wake in this dialogue path.

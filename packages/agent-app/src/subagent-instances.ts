@@ -18,6 +18,7 @@ export interface InstanceDefinition {
   readonly maxTurns?: number;
   readonly timeoutMs?: number;
 }
+export interface SubagentQuestion { question: string; options?: string[] }
 export interface InstanceUsage { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number }
 export interface SubagentInstance {
   id: string;
@@ -27,7 +28,8 @@ export interface SubagentInstance {
   definition: InstanceDefinition;
   sessionId: string;
   sessionsRoot: string;
-  status: "idle" | "running" | "closed" | "expired";
+  status: "idle" | "running" | "awaiting_reply" | "closed" | "expired";
+  pendingQuestion?: SubagentQuestion;
   turns: number;
   usage: InstanceUsage;
   createdAt: number;
@@ -36,12 +38,13 @@ export interface SubagentInstance {
   lastAnswerHead?: string;
 }
 export interface InstanceSpec { id?: string; name: string; systemPrompt: string; definition: InstanceDefinition }
-export interface InstanceOutcome { status: string; usage?: Partial<InstanceUsage>; answerHead?: string }
+export interface InstanceOutcome { status: string; usage?: Partial<InstanceUsage>; answerHead?: string; question?: SubagentQuestion }
 export interface InstanceRegistryHandle {
   list(): Promise<SubagentInstance[]>;
   get(id: string): Promise<SubagentInstance | undefined>;
   create(spec: InstanceSpec): Promise<SubagentInstance>;
   begin(id: string): Promise<SubagentInstance>;
+  markAwaiting(id: string, question: SubagentQuestion): Promise<SubagentInstance>;
   finish(id: string, outcome: InstanceOutcome): Promise<SubagentInstance>;
   close(id: string): Promise<SubagentInstance>;
 }
@@ -50,19 +53,28 @@ const ID = /^[a-z0-9][a-z0-9-]{0,39}$/u;
 const DAY = 86_400_000;
 export const SUBAGENT_REGISTRY_MAX_BYTES = 16 * 1024 * 1024;
 export const SUBAGENT_TERMINAL_MAX_COUNT = 64;
-const OUTCOMES = ["ok", "failed", "empty", "timeout", "cancelled", "busy", "interrupted"];
+const OUTCOMES = ["ok", "failed", "empty", "timeout", "cancelled", "busy", "interrupted", "awaiting_reply"];
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const keys = (value: Record<string, unknown>, allowed: readonly string[]): boolean => Object.keys(value).every((key) => allowed.includes(key));
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const strings = (value: unknown): boolean => Array.isArray(value) && value.every(text) && new Set(value).size === value.length;
 const integer = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+function validQuestion(value: unknown): value is SubagentQuestion {
+  return object(value) && keys(value, ["question", "options"])
+    && text(value.question) && value.question === value.question.trim() && value.question.length <= 2000
+    && (value.options === undefined || (Array.isArray(value.options) && value.options.length >= 2 && value.options.length <= 5
+      && value.options.every((option) => text(option) && option === option.trim() && option.length <= 200)
+      && new Set(value.options).size === value.options.length));
+}
 function validRecord(value: unknown, conversationId: string, sessionsRoot: string): value is SubagentInstance {
-  if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead"])) return false;
+  if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead", "pendingQuestion"])) return false;
   const d = value.definition;
   const usage = value.usage;
   if (!text(value.id) || !ID.test(value.id) || value.conversationId !== conversationId
     || value.sessionId !== subagentInstanceSessionId(conversationId, value.id) || value.sessionsRoot !== sessionsRoot
-    || typeof value.status !== "string" || !text(value.name) || !text(value.systemPrompt) || !["idle", "running", "closed", "expired"].includes(String(value.status))
+    || typeof value.status !== "string" || !text(value.name) || !text(value.systemPrompt) || !["idle", "running", "awaiting_reply", "closed", "expired"].includes(String(value.status))
+    || (value.pendingQuestion !== undefined && !validQuestion(value.pendingQuestion))
+    || (value.status === "awaiting_reply" && value.pendingQuestion === undefined)
     || !integer(value.turns) || !integer(value.createdAt) || !integer(value.updatedAt) || value.updatedAt < value.createdAt
     || (value.lastStatus !== undefined && (typeof value.lastStatus !== "string" || !OUTCOMES.includes(value.lastStatus)))
     || (value.lastAnswerHead !== undefined && (typeof value.lastAnswerHead !== "string" || value.lastAnswerHead.length > 300))
@@ -99,7 +111,7 @@ export function persistentSubagentsEnabled(config: Pick<MonoAgentConfig, "subage
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 export const subagentConversationRoot = (root: string, conversationId: string): string => resolve(root, hash(conversationId));
 export const subagentInstanceSessionId = (conversationId: string, id: string): string => `sub-${hash(`${conversationId}\0${id}`).slice(0, 40)}`;
-export const isLiveSubagentInstance = (record: SubagentInstance): boolean => record.status === "idle" || record.status === "running";
+export const isLiveSubagentInstance = (record: SubagentInstance): boolean => record.status === "idle" || record.status === "running" || record.status === "awaiting_reply";
 export function subagentInstancesRoot(config: Pick<MonoAgentConfig, "subagents" | "artifacts">): string {
   return config.subagents?.instances?.root ?? resolve(config.artifacts.dir, "..", "subagents");
 }
@@ -175,14 +187,15 @@ export function createSubagentInstanceRegistry(options: {
               try {
                 const abandoned = await acquireContinuationStoreLock(turnPath(record.id));
                 await abandoned.release();
-                record.status = "idle";
+                record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
                 record.lastStatus = "interrupted";
               } catch (error) {
                 if (!String(error).includes("already owned by another live process")) throw error;
               }
             }
-            if (record.status === "idle" && record.updatedAt + (options.idleTtlMs ?? DAY) < now()) {
+            if (["idle", "awaiting_reply"].includes(record.status) && record.updatedAt + (options.idleTtlMs ?? DAY) < now()) {
               record.status = "expired";
+              delete record.pendingQuestion;
               record.updatedAt = now();
               await retire(record);
             }
@@ -246,13 +259,25 @@ export function createSubagentInstanceRegistry(options: {
             throw error;
           }
         },
+        markAwaiting: (id, question) => transaction(async (records) => {
+          const record = required(records, id);
+          if (record.status !== "running" || !turns.has(turnPath(id))) throw new Error(`Subagent instance "${id}" has no turn owned by this process.`);
+          if (!validQuestion(question)) throw new Error("Invalid subagent question.");
+          record.pendingQuestion = structuredClone(question);
+          record.updatedAt = now();
+          return record;
+        }),
         finish: async (id, outcome) => {
           const owned = turns.get(turnPath(id));
           try { return await transaction(async (records) => {
           const record = required(records, id);
           const lock = turns.get(turnPath(id));
           if (record.status !== "running" || !lock) throw new Error(`Subagent instance "${id}" has no turn owned by this process.`);
-          record.status = "idle";
+          if (outcome.status === "awaiting_reply") {
+            if (!validQuestion(outcome.question)) throw new Error("Invalid subagent question.");
+            record.pendingQuestion = structuredClone(outcome.question);
+          } else if (outcome.status === "ok") delete record.pendingQuestion;
+          record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
           record.turns += outcome.status === "busy" ? 0 : 1;
           record.updatedAt = now();
           record.lastStatus = outcome.status;
@@ -274,6 +299,7 @@ export function createSubagentInstanceRegistry(options: {
           const record = required(records, id);
           if (record.status === "running") throw new Error(`Subagent instance "${id}" is busy.`);
           record.status = "closed";
+          delete record.pendingQuestion;
           record.updatedAt = now();
           await retire(record);
           return record;

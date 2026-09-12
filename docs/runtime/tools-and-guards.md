@@ -160,6 +160,23 @@ Use `AgentSend({id: "reviewer", close: true})` when done, or combine a final
 message; busy, cancelled, timed-out, or failed turns keep the instance live.
 Close-only calls do not spend the parent call budget.
 
+Persistent children automatically receive `AskParent({question, options?})`,
+unless global or current profile tool policy denies `AskParent`. It is absent
+from parent and stateless runs. The question must be non-empty and at most 2,000
+characters; optional choices contain 2–5 non-empty strings of at most 200
+characters, deduplicated after trimming (at least two distinct choices remain).
+The tool durably saves the question before ending the child turn. It never
+blocks waiting for a reply, calls the parent directly, or contacts the user.
+`AskUser` and channel send tools remain unavailable to children.
+
+The enclosing `Agent` or `AgentSend` result is successful with
+`details.subagent.status: "awaiting_reply"` and structured `question` details.
+Reply with ordinary `AgentSend({id, message})` into the same child transcript.
+The Session envelope also includes a bounded, quoted pending question for
+restart or compaction recovery. Failed replies retain the question; a successful
+answer clears it; another `AskParent` replaces it. Close-only retires it.
+A message combined with `close: true` stays open if the child asks again.
+
 Configure `subagents.instances`:
 
 | Field | Default | Limits / behavior |
@@ -171,7 +188,7 @@ Configure `subagents.instances`:
 | `maxTurns` | `60` | 1–500 total child turns per instance; close and create another when exhausted. This differs from the per-run `subagents.maxTurns` model-turn cap. |
 
 The registry and Pi JSONL transcripts survive restarts. An interrupted instance
-returns to idle on recovery; it does not rerun automatically. Closed and expired
+returns to `awaiting_reply` when it has a pending question, otherwise idle; it does not rerun automatically. Closed and expired
 records remain for up to 24 hours, bounded to 64 terminal records per
 conversation and a 16 MiB registry. Terminal records are pruned before a write
 would exceed that byte ceiling; an oversized live registry is rejected. Their

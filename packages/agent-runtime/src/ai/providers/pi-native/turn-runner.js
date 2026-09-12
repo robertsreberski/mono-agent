@@ -137,6 +137,7 @@ export async function buildTurnTools(runState, {
       monitorsController: options.monitors,
       toolExecutionMode,
       subagents: options.subagents,
+      askParentController: options.askParentController,
       // The child inherits the parent's route and workspace unless its profile
       // pins a model; the tool closure reads these to build each child request.
       subagentContext: {
@@ -265,7 +266,7 @@ export function toolResultErrorOverride(details) {
     || details?.outcome?.status === "error"
     // A failed subagent returns its answer-plus-log instead of throwing,
     // precisely so a failed delegation keeps its activity log.
-    || (typeof subagentStatus === "string" && subagentStatus !== "ok");
+    || (typeof subagentStatus === "string" && !["ok", "awaiting_reply"].includes(subagentStatus));
   return failed ? { isError: true } : undefined;
 }
 

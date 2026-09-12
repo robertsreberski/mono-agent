@@ -579,3 +579,9 @@ describe("formatProviderStatusLine", () => {
       .toBe("⏳ Retrying ? — attempt 2");
   });
 });
+
+it("renders AskParent as child activity, not another launch", () => {
+  expect(toolHintFor("critic▸AskParent")).toBe("Asking parent…");
+  expect(isSubagentLaunchToolName("AskParent")).toBe(false);
+  expect(formatToolActivityLine("AskParent", { question: "Which scope?" })).toContain("❓ Asking parent:");
+});
