@@ -99,9 +99,10 @@ function toolDescription(subagents, definitions, ceiling) {
   // splits those across two fields — label into `name`, profile into an
   // invented one — and the closed schema rejects the whole call before any of
   // the handler's precise errors can run.
+  const routeOptions = (subagents.models?.length ?? 0) > 0 ? "`model` or `effort`" : "`effort`";
   const shapes = ceiling === null
     ? ""
-    : `\n\nExactly two ways to call this, and \`name\` carries the agent's identity in both:\n- Use a configured one: set \`name\` to a name from the list above. Optionally set \`model\` or \`effort\`.\n- Build one for this task: set \`name\` to a NEW kebab-case name AND \`systemPrompt\` to its full instructions (optionally \`tools\`, \`model\`, \`effort\`). Do that when no configured one fits — a dedicated prompt beats stuffing constraints into \`prompt\`.\n\n\`description\` is the short label shown in the activity log, never the agent's name. There is no separate field for choosing a configured agent.`;
+    : `\n\nExactly two ways to call this, and \`name\` carries the agent's identity in both:\n- Use a configured one: set \`name\` to a name from the list above. Optionally set ${routeOptions}.\n- Build one for this task: set \`name\` to a NEW kebab-case name AND \`systemPrompt\` to its full instructions (optionally \`tools\` and ${routeOptions}). Do that when no configured one fits — a dedicated prompt beats stuffing constraints into \`prompt\`.\n\n\`description\` is the short label shown in the activity log, never the agent's name. There is no separate field for choosing a configured agent.`;
   // The ceiling is listed because the model has no other way to discover it: a
   // tool it cannot see is indistinguishable from one it forgot to ask for.
   const inline = ceiling === null
@@ -261,7 +262,6 @@ export function createAgentTool(subagents, context = {}) {
               maxItems: 20,
               description: `Tools the subagent you author needs, e.g. ["Read","Edit","Bash"]. Only usable with \`systemPrompt\`. Available: ${ceiling.join(", ")}. Omit for a read-only helper.`,
             },
-
           }
         : {}),
       ...(ceiling === null && names.length > 0

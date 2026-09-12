@@ -999,6 +999,7 @@ describe("Agent call-time routes", () => {
   it.each([undefined, { enabled: false }, { enabled: true }])("offers effort in every schema and model only with choices (%j)", (inline) => {
     const options = subagentOptions({ inline });
     expect(createAgentTool(options).parameters.properties.model).toBeUndefined();
+    expect(createAgentTool(options).description).not.toContain("`model`");
     expect(createAgentTool({ ...options, models: [] }).parameters.properties.model).toBeUndefined();
     const properties = createAgentTool({ ...options, models }).parameters.properties;
     expect(properties.model.enum).toEqual(["fast"]);
