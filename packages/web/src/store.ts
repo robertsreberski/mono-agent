@@ -2704,7 +2704,7 @@ export class WebStore {
       `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
-      if (projectId !== null) this.recordProjectTransition(id, null, projectId, now);
+      if (projectId !== null) this.applyProjectMembership(id, null, projectId, now);
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
@@ -3275,7 +3275,7 @@ export class WebStore {
         if (typeof snapshot !== "object" || Array.isArray(snapshot)
           || !("name" in snapshot) || !("context" in snapshot)
           || typeof snapshot.name !== "string" || typeof snapshot.context !== "string") throw new Error();
-        return { name: snapshot.name, context: snapshot.context };
+        return snapshot.context.trim().length === 0 ? undefined : { name: snapshot.name, context: snapshot.context };
       } catch { throw new WebConsoleError("storage_corrupt", "The active project context snapshot is invalid.", 500); }
     }
     const row = this.database.prepare(`
@@ -3362,6 +3362,15 @@ export class WebStore {
     this.database.prepare(`INSERT INTO project_transitions
       (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(threadId, anchor?.id ?? null, anchor?.turn_id ?? null, JSON.stringify(identity(before)), JSON.stringify(identity(after)), now);
+  }
+
+  /** Keep causal turn groups ordered when the wall clock ties or moves backwards. */
+  private projectTurnAdmissionTime(threadId: string): string {
+    const now = this.now();
+    const previous = this.database.prepare("SELECT MAX(started_at) AS latest FROM turns WHERE thread_id = ?")
+      .get(threadId) as { latest: string | null };
+    return previous.latest !== null && previous.latest >= now
+      ? new Date(Date.parse(previous.latest) + 1).toISOString() : now;
   }
 
   /** Internal context snapshot; JSON null explicitly freezes absence of membership. */
@@ -3779,7 +3788,7 @@ export class WebStore {
     const turnId = randomUUID();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
@@ -3881,7 +3890,7 @@ export class WebStore {
     }
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
     if (input.processJobWake !== undefined) {
       const card = this.database.prepare(`
         SELECT 1 FROM process_job_cards AS cards
@@ -4192,7 +4201,7 @@ export class WebStore {
     if (!thread.canSend || thread.archivedAt !== null) return undefined;
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
     const userMessage = this.requireMessage(row.message_id);
     this.transaction(() => {
       this.applyPendingProjectMembership(threadId, now);

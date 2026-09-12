@@ -456,3 +456,30 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 - [Durable continuations](/tools/durable-continuations/) — trusted asynchronous claim, result, synthesis, and delivery.
 - [Slack team bot with MCP tools](/playbooks/slack-team-bot-mcp-tools/) — end-to-end playbook wiring MCP servers into a channel agent.
 - Need to register MCP servers from code instead of config? See [Programmatic composition](/programmatic/composition/).
+
+
+## Console project tools
+
+Writable interactive web turns can use `ListProjects`, `GetProject`,
+`CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
+`CreateConversation`, and `SetConversationProject`. They require no new config.
+Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
+`mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
+They are scoped to the originating agent and unavailable to cron, background
+wakes, archived conversations, and requests without active console authority.
+
+These tools perform synchronous authenticated callbacks and return real IDs and
+applied/pending membership results. `CreateProject` can atomically attach the
+current conversation. `SetConversationProject` defaults to the current
+conversation and accepts a null project to leave. Active turns retain their
+context until settlement. Deleting active or pending projects, or archiving a
+pending destination, returns a conflict; wait for current turns to finish.
+`CreateConversation` creates an idle conversation without running it.
+
+Owner-private loopback discovery issues a capability bound to source,
+conversation, and turn. Credentials and endpoint choices are never model
+arguments or results. Settlement, cancellation, and shutdown revoke access.
+Each call has an independent operation ID; mutation receipts commit atomically
+with changes. Unknown delivery is an error and is never automatically retried.
+Project and conversation listings return at most twenty rows, with a truncation
+flag for projects and a cursor for conversations.

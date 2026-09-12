@@ -9743,6 +9743,24 @@ describe("ConsoleStoreProvider integration", () => {
     return renderStore();
   }
 
+  it("repairs transition sidecars on effective membership change but not pending intent", async () => {
+    const initial = detail(member);
+    vi.mocked(api.thread).mockResolvedValue(initial);
+    const store = await renderProjectStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
+    const reads = vi.mocked(api.thread).mock.calls.length;
+    const pending = { ...member, revision: member.revision + 1, pendingProject: { projectId: null, turnId: "active" } };
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:00Z", payload: { thread: pending } }));
+    await waitFor(() => expect(store.current.detail?.thread.pendingProject).toEqual(pending.pendingProject));
+    expect(api.thread).toHaveBeenCalledTimes(reads);
+    const moved = { ...member, revision: member.revision + 2, projectId: null };
+    const transition = { id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: null,
+      before: { id: webProject.id, name: webProject.name, color: "default" as const }, after: null, createdAt: "2026-09-12T00:00:01Z" };
+    vi.mocked(api.thread).mockResolvedValue({ ...initial, thread: moved, projectTransitions: [transition] });
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:01Z", payload: { thread: moved } }));
+    await waitFor(() => expect(store.current.detail?.projectTransitions).toEqual([transition]));
+  });
+
   it("seeds one agent's projects from bootstrap and lists the next agent on switch", async () => {
     const store = await renderProjectStore();
     expect(store.current.projectsByAgent.alpha).toEqual([webProject]);

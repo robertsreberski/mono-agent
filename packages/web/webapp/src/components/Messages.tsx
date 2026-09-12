@@ -1488,6 +1488,11 @@ export function UserMessage() {
 }
 
 export function AssistantMessage() {
+  const markerOnly = useAuiState((state) => state.message.content.length === 0
+    && state.message.metadata.custom?.runStatus === "complete"
+    && Array.isArray(state.message.metadata.custom?.projectTransitions)
+    && state.message.metadata.custom.projectTransitions.length > 0);
+  if (markerOnly) return <MessageProjectMarkers />;
   return (
     <>
     <MessagePrimitive.Root className="message message-assistant">

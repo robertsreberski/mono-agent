@@ -5549,6 +5549,26 @@ describe("WebStore conversation projects", () => {
     } finally { store.close(); }
   });
 
+  it.each(["new", "queued"] as const)("keeps the %s turn after the membership boundary even with a frozen clock", async (mode) => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date("2026-09-12T00:00:00Z") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const first = store.beginTurn({ threadId: thread.id, text: "first", attachmentIds: [] });
+      store.patchThread(thread.id, { projectId: project.id });
+      const queued = mode === "queued" ? store.reserveLiveInput(thread.id, "second") : undefined;
+      if (queued !== undefined) store.queueLiveInput(queued.input.id);
+      store.completeTurn(first.turnId, "first answer");
+      const second = queued === undefined ? store.beginTurn({ threadId: thread.id, text: "second", attachmentIds: [] }) : store.promoteNextQueuedLiveInput(thread.id)!;
+      store.completeTurn(second.turnId, "second answer");
+      expect(store.listMessagesPage(thread.id).messages.map((item) => item.id)).toEqual([
+        first.userMessageId, first.assistantMessageId, second.userMessageId, second.assistantMessageId,
+      ]);
+    } finally { store.close(); }
+  });
+
   it("creates, lists, reads and patches projects with revision bumps", async () => {
     const { store } = await openStore();
     try {

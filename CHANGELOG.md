@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add project colors, a tinted chat badge, and persisted join/leave/move markers.
+  Membership changes wait for the active turn boundary; steering retains frozen
+  project context. Busy deletion and pending-destination archival return conflicts.
+  Add authenticated, source-scoped console project/conversation MCP tools with
+  atomic create-and-attach and operation receipts. Storage appends migration 27.
+
 - Add Projects to the web console: per-agent named containers of conversations
   with a free-text context (at most 4,000 characters) that is prepended,
   operator-facing text only and at dispatch time, to every turn of every member

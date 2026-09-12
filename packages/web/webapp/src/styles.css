@@ -1471,3 +1471,5 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .project-palette legend { margin-bottom: 8px; font-size: 12px; }
 .project-palette button { padding: 8px; border: 2px solid transparent; border-radius: 8px; cursor: pointer; }
 .project-palette button[aria-pressed="true"] { border-color: var(--project-ink); }
+.project-page[data-project-color] .project-title-block > .dashboard-section-label { color: var(--project-ink); }
+.project-page[data-project-color] .project-context-card { border-inline-start: 3px solid var(--project-ink); }

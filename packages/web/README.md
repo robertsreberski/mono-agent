@@ -456,7 +456,7 @@ prepended, operator-facing text only and at dispatch time, to every turn of
 every member conversation, so existing conversations pick it up on their next
 turn. The envelope is `<project_context name="…">…</project_context>` with
 reserved delimiters neutralised in prompt copies; it is never persisted in
-messages, turns, live-input text, or submission hashes, and never shown as part
+messages, live-input text, or submission hashes, and never shown as part
 of the user's message. Membership is independent of archive state: archiving a
 project hides its navigation entry while keeping chats, membership, and
 injection. Deleting a project detaches its chats back to the agent — never
@@ -470,6 +470,29 @@ detaches; never combined with `ifRunConfigUnset`) and as a `GET /threads`
 filter, membership in `WebThread.projectId`, the resolved agent's projects on
 the bootstrap, and `projects.changed` events carrying the
 fresh summary or a removal.
+
+Projects have a fixed color palette: default, blue, purple, amber, or rose. The
+chat toolbar shows the effective project with a compact tinted badge. Creating
+a project from the conversation menu remains the same creation flow.
+
+Membership requests made during an active turn remain pending until that turn
+settles, including cancellation, failure, and restart recovery. The last request
+wins; returning to the effective membership cancels a pending move. Each turn
+internally snapshots the project name/context, including no project, so steering
+cannot adopt edits midway through a turn. The next turn uses fresh context.
+Color edits are immediate presentation changes. Deleting a project with active
+members or pending references is refused; archiving a pending destination is
+also refused until its turns finish.
+
+Immutable join/leave/move markers retain historical name/color and the actual
+message boundary. `projectTransitions` sidecars accompany detail and message
+pages; they are independent of model messages, prompts, search, cost, counts,
+and copy text. `pendingProject` on the conversation describes deferred intent.
+Schema 27 adds these records and atomic console-tool operation receipts; the
+existing web-state reset and conversation deletion cascade remove owned records.
+
+Interactive web turns can use the app-owned console tools described in
+[Console project tools](../../docs/tools/mcp.md#console-project-tools).
 
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
@@ -753,6 +776,9 @@ ACP_PROTOCOL_VERSION
 AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
+ConsoleToolName
+ConsoleToolOperation
+ConsoleToolScope
 CreateWebCronReplyInput
 CreateWebProjectInput
 CreateWebThreadInput
@@ -827,6 +853,8 @@ WebModelOption
 WebNotificationTriggerKind
 WebProject
 WebProjectChangedPayload
+WebProjectColor
+WebProjectTransition
 WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
@@ -856,6 +884,7 @@ WebThreadNotificationTriggerKind
 WebThreadSearchHit
 WebThreadSearchPage
 WebThreadTrigger
+createWebConsoleToolClient
 defaultTraceRegistryDir
 defaultWebStateDir
 deliverWebNotification

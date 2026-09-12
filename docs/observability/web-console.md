@@ -313,6 +313,20 @@ When no live answer stands behind the section — the event stream has dropped, 
 
 **Projects** are one agent's named containers of conversations, with a **+ New** action in the section head. Opening one replaces the Dashboard in the same slot with the project page: the agent label to walk back, the project name with its `N conversations · N running · $X this month` line, a context card, and the member conversations sorted by recent. The context is free text, prepended operator-facing and at dispatch time to every turn of every member conversation, so existing conversations pick it up on their next turn; it is never stored in a message or shown as part of one. The conversation header menu offers **Add to project…** and **Remove from project** (a member instead offers **Move to…**). Archiving a project hides its entry while keeping chats, membership, and injection; deleting one detaches its chats back to the agent, where they reappear immediately. There is no cross-agent membership and no URL for a project: the open project is transient console state.
 
+Choose a default, blue, purple, amber, or rose tint in project settings. The chat
+toolbar badge shows its effective project. Join, leave, and move requests during
+an active turn show a pending hint and apply after it finishes; the last request
+wins. Persisted faded markers show the actual transition boundary without
+becoming model messages. Name/context edits affect subsequent turns; current
+steering retains the turn's original context, including an original absence of
+membership. Color updates are immediate. Delete waits for active members and
+pending references; archive waits for pending destinations. Creating a project
+from a chat uses the existing conversation menu flow.
+
+The agent can also use [console project tools](../tools/mcp.md#console-project-tools)
+during a writable interactive turn. Creating a conversation does not start it.
+
+
 On narrow touch screens the console opens on the Dashboard. Tapping a row, a
 Running card or the new-conversation control pushes the conversation over it;
 the **Back to dashboard** control at the left edge of the conversation header,
