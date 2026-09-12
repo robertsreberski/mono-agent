@@ -913,6 +913,17 @@ describe("ResilientMessageStream subagent activity", () => {
     expect(lastLedger(transport)).not.toContain("general-purpose");
   });
 
+  it("preserves namespace-qualified AgentSend identity and close semantics", async () => {
+    const transport = new FakeTransport({ maxMessageChars: 500 });
+    const stream = makeStream(transport, { finalOnly: true, showHints: true });
+    const name = "mcp__helper__AgentSend";
+    await stream.event({ type: "tool_call_started", id: "send-qualified", name, arguments: { id: "critic-7", close: true } });
+    expect(lastLedger(transport)).toBe('🤖 Closing agent "critic-7"');
+    await stream.event({ type: "tool_call_completed", id: "send-qualified", name, executionMs: 10 });
+    expect(lastLedger(transport)).toContain('Close agent "critic-7"');
+    expect(lastLedger(transport)).not.toContain("general-purpose");
+  });
+
   it("nests a subagent's tool calls under one header", async () => {
     const transport = new FakeTransport({ maxMessageChars: 500 });
     const stream = makeStream(transport, { finalOnly: true, showHints: true });
