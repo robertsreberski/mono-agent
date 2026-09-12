@@ -165,6 +165,8 @@ const partHasTranscriptPresentation = (part: MessagePart): boolean => {
       return false;
     case "process-job-wake":
       return true;
+    case "steer":
+      return true;
     case "cron-reply-context":
       return true;
     case "tool-call":
@@ -195,6 +197,26 @@ const nonEmptyResponse = (value: string | undefined): string | undefined =>
   value !== undefined && value.trim().length > 0 ? value : undefined;
 
 /**
+ * Drop the standalone bubble of an applied steer while its inline marker is
+ * loaded. Presentation-only: the rows, the search index, counts and quotes
+ * keep resolving the user message. When the marker's assistant message is
+ * paged out the standalone bubble stays, so the transcript degrades to
+ * today's rendering rather than a hole. Marker presence alone decides: the
+ * marker exists only for an applied steer, and the user row's `applied` flip
+ * can arrive one write after the marker without briefly showing both.
+ */
+export const suppressInlineSteers = (
+  messages: readonly WebMessage[],
+): readonly WebMessage[] => {
+  const steeredMessageIds = new Set(messages.flatMap((message) => message.parts.flatMap((part) =>
+    part.type === "steer" ? [part.messageId] : [])));
+  if (steeredMessageIds.size === 0) return messages;
+  return messages.filter(
+    (message) => message.role !== "user" || !steeredMessageIds.has(message.id),
+  );
+};
+
+/**
  * Split the currently loaded conversation into assistant-ui messages and one
  * stable chronological set of background jobs. Monitor shaping deliberately
  * runs before this function so a job remains a boundary between Monitor wakes.
@@ -203,6 +225,9 @@ export const projectProcessJobPresentation = (
   messages: readonly WebMessage[],
   options: { readonly selectedModel?: string | null; readonly threadId?: string | null } = {},
 ): ProcessJobPresentation => {
+  // The inline steer duplicates its user message; shape the transcript without
+  // the duplicate before cards, events and visibility are derived from it.
+  const shaped = suppressInlineSteers(messages);
   const projectedMessages: WebMessage[] = [];
   const jobs: ProcessJobPresentationEntry[] = [];
   const jobIndexes = new Map<string, number>();
@@ -212,11 +237,11 @@ export const projectProcessJobPresentation = (
     readonly receipt: ProcessJobStartReceipt;
   }>>();
   const ambiguousReceipts = new Set<string>();
-  const wakeJobIds = new Set(messages.flatMap((message) => message.parts.flatMap((part) =>
+  const wakeJobIds = new Set(shaped.flatMap((message) => message.parts.flatMap((part) =>
     part.type === "process-job-wake" ? [part.jobId] : [])));
 
   if (options.threadId !== undefined && options.threadId !== null) {
-    for (const message of messages) {
+    for (const message of shaped) {
       if (message.role !== "assistant" || message.threadId !== options.threadId) continue;
       for (const part of message.parts) {
         if (part.type !== "tool-call") continue;
@@ -235,7 +260,7 @@ export const projectProcessJobPresentation = (
     }
   }
 
-  for (const message of messages) {
+  for (const message of shaped) {
     let containedJob = false;
     const remainingParts: MessagePart[] = [];
 

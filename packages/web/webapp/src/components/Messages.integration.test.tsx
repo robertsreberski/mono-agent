@@ -464,7 +464,7 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("Delivery uncertain — not retried")).toBeVisible();
   });
 
-  it("renders an applied live follow-up as a completed Steered tool activity", () => {
+  it("renders a legacy Steered tool row without an inline marker as activity", () => {
     render(<MessageHarness message={{
       ...assistantMessage("complete"),
       parts: [
@@ -487,6 +487,53 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.queryByText("done")).toBeNull();
     fireEvent.click(toolName.closest("summary")!);
     expect(screen.getByText('"Applied to current run"')).toBeVisible();
+  });
+
+  it("renders an applied steer inline with full text, splitting Activity and dropping the duplicate", () => {
+    const steer = {
+      type: "steer" as const,
+      inputId: "input-1",
+      messageId: "steered-user",
+      text: "Use the API instead, with the full operator prose intact rather than a forty-character preview",
+      quote: { text: "the sync approach", messageId: "assistant-source" },
+    };
+    const applied: WebMessage = {
+      ...userMessage,
+      id: "steered-user",
+      liveInputStatus: "applied",
+      parts: [{ type: "text", text: steer.text }],
+    };
+    render(<MessagesHarness messages={[
+      applied,
+      {
+        ...assistantMessage("complete"),
+        id: "assistant-steered",
+        parts: [
+          { type: "tool-call", toolCallId: "t1", toolName: "Read", args: {}, status: "complete" },
+          steer,
+          { type: "tool-call", toolCallId: "t2", toolName: "Write", args: {}, status: "complete" },
+          { type: "text", text: "Done." },
+        ],
+      },
+    ]} />);
+
+    // The standalone bubble is gone; the inline one carries the full text.
+    expect(screen.queryByText("Steering current run…")).toBeNull();
+    expect(screen.queryByText("Consumed by current run")).toBeNull();
+    const inline = screen.getByRole("group", { name: "Steered follow-up" });
+    expect(within(inline).getByText(steer.text)).toBeVisible();
+    expect(within(inline).getByText("the sync approach")).toBeVisible();
+    expect(within(inline).getByText(/↪️/u)).toBeVisible();
+    expect(screen.queryByText(/Steered:/u)).toBeNull();
+    // One tool call per band: the steer split Activity in two.
+    const bands = screen.getAllByRole("button", { name: "Activity" });
+    expect(bands).toHaveLength(2);
+    expect(bands[0]).toHaveTextContent("1 step");
+    expect(bands[1]).toHaveTextContent("1 step");
+    for (const band of bands) fireEvent.click(band);
+    expect(screen.getByText("Read")).toBeVisible();
+    expect(screen.getByText("Write")).toBeVisible();
+    expect(screen.getByText("Done.")).toBeVisible();
   });
 
   it("renders one compact secret-free activity row for a run's Monitor wakes", () => {

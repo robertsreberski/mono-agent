@@ -916,7 +916,62 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("projects synthetic steering events as one completed Steered tool row", async () => {
+  it("projects an applied human steer as one inline marker, not a Steered tool row", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const reserved = store.reserveLiveInput(
+      thread.id,
+      "Use the API instead",
+      { text: "the sync approach", messageId: turn.userMessageId },
+    );
+    expect(reserved.offered).toBe(true);
+    // The host settlement deletes the `live_inputs` row, so the stream receipt
+    // below resolves through the user message's own telemetry marker.
+    expect(store.markLiveInputApplied(reserved.input.id)?.liveInputStatus).toBe("applied");
+
+    const steerEvent = (type: "tool_call_started" | "tool_call_completed") => ({
+      kind: "event" as const,
+      event: {
+        type,
+        id: `live-input:${reserved.input.id}`,
+        name: "↪️ Steered: “Use the API instead”",
+        ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
+        metadata: {
+          liveInput: true,
+          synthetic: true,
+          inputId: reserved.input.id,
+          receivedAt: "2026-09-12T10:00:01.000Z",
+        },
+      },
+    });
+    const frames = [steerEvent("tool_call_started"), steerEvent("tool_call_completed")];
+    store.applyStreamFrames(turn.turnId, frames as never);
+    // A replayed receipt must not duplicate the marker.
+    store.applyStreamFrames(turn.turnId, frames as never);
+    const detail = store.completeTurn(turn.turnId, "done");
+    const assistant = detail.messages.at(-1);
+    expect(assistant?.parts.filter((part) => part.type === "tool-call")).toEqual([]);
+    expect(assistant?.parts).toContainEqual({
+      type: "steer",
+      inputId: reserved.input.id,
+      messageId: reserved.message.id,
+      text: "Use the API instead",
+      receivedAt: "2026-09-12T10:00:01.000Z",
+      quote: { text: "the sync approach", messageId: turn.userMessageId },
+    });
+    // The steered user row keeps its standalone identity for search and quotes.
+    expect(detail.messages.find((message) => message.id === reserved.message.id)).toMatchObject({
+      role: "user",
+      liveInputStatus: "applied",
+    });
+    store.close();
+  });
+
+  it("keeps a synthetic steering row without an inputId as a completed Steered tool row", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -1323,6 +1378,33 @@ describe("WebStore", () => {
       ["assistant", undefined],
     ]);
     store.close();
+  });
+
+  it("keeps a quoted follow-up's quote across every live-input settlement", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Initial request", attachmentIds: [] });
+    const quote = { text: "the sync approach", messageId: turn.userMessageId };
+
+    const applied = store.reserveLiveInput(thread.id, "Applied steer", quote);
+    const queued = store.reserveLiveInput(thread.id, "Queued steer", quote);
+    expect(store.markLiveInputApplied(applied.input.id)).toMatchObject({
+      liveInputStatus: "applied",
+      quote,
+    });
+    expect(store.queueLiveInput(queued.input.id)).toMatchObject({
+      liveInputStatus: "queued",
+      quote,
+    });
+    // A reopened store reads the same durable quote back, not a stripped row.
+    store.close();
+    const reopened = await WebStore.open({ stateDir: join(base, "state") });
+    expect(reopened.getMessage(applied.message.id)).toMatchObject({ quote });
+    expect(reopened.getMessage(queued.message.id)).toMatchObject({ quote });
+    reopened.close();
   });
 
   it("promotes a queued follow-up with the idle thread's captured route", async () => {

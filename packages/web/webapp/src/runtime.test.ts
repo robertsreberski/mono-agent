@@ -568,6 +568,112 @@ describe("projectProcessJobPresentation", () => {
   });
 });
 
+describe("inline steer", () => {
+  const steerPart = {
+    type: "steer" as const,
+    inputId: "input-1",
+    messageId: "user-1",
+    text: "Use the API instead, with the full operator prose intact",
+    receivedAt: "2026-09-12T10:00:01.000Z",
+    quote: { text: "the sync approach", messageId: "assistant-source" },
+  };
+  const appliedUser = (overrides: Partial<WebMessage> = {}): WebMessage => message({
+    id: "user-1",
+    threadId: "thread",
+    role: "user",
+    liveInputStatus: "applied",
+    parts: [{ type: "text", text: steerPart.text }],
+    ...overrides,
+  });
+  const steeredAssistant = (overrides: Partial<WebMessage> = {}): WebMessage => message({
+    id: "assistant-1",
+    threadId: "thread",
+    role: "assistant",
+    status: "complete",
+    finishedAt: "2026-07-17T10:00:12.000Z",
+    parts: [
+      { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+      steerPart,
+      { type: "tool-call", toolCallId: "t2", toolName: "Write", status: "complete" },
+      { type: "text", text: "Done." },
+    ],
+    ...overrides,
+  });
+
+  it("converts a steer marker to a band-breaking data part carrying the full text", () => {
+    const content = convertWebMessage(steeredAssistant({ status: "running" })).content as readonly {
+      readonly type: string; readonly data?: { readonly text?: unknown; readonly quote?: unknown };
+    }[];
+    // Streaming keeps arrival order: the marker sits between the two calls.
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-steer", "tool-call", "text"]);
+    expect(content[1]).toMatchObject({
+      type: "data-steer",
+      data: expect.objectContaining({ text: steerPart.text, quote: steerPart.quote }),
+    });
+  });
+
+  it("holds activity before the steer before it and activity after it after it, answer last", () => {
+    const content = convertWebMessage(steeredAssistant()).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-steer", "tool-call", "text"]);
+    expect(content.at(-1)).toMatchObject({ type: "text" });
+  });
+
+  it("folds interim prose into notes inside its own segment rather than across the steer", () => {
+    const content = convertWebMessage(steeredAssistant({
+      parts: [
+        { type: "text", text: "First I will look." },
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        steerPart,
+        { type: "text", text: "Now with the steer." },
+        { type: "tool-call", toolCallId: "t2", toolName: "Write", status: "complete" },
+        { type: "text", text: "Done." },
+      ],
+    })).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual([
+      "data-note",
+      "tool-call",
+      "data-steer",
+      "data-note",
+      "tool-call",
+      "text",
+    ]);
+  });
+
+  it("keeps genuinely unknown data parts after the answer, not wedged at the steer", () => {
+    const content = convertWebMessage(steeredAssistant({
+      parts: [
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        steerPart,
+        { type: "error", message: "Agent error" },
+        { type: "text", text: "Done." },
+      ],
+    })).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-steer", "text", "data-error"]);
+  });
+
+  it("drops the standalone bubble exactly once while its marker is loaded", () => {
+    const projected = projectProcessJobPresentation(
+      [appliedUser(), steeredAssistant()],
+      { threadId: "thread" },
+    );
+    expect(projected.messages.map(({ id }) => id)).toEqual(["assistant-1"]);
+  });
+
+  it("keeps the standalone bubble when the marker's assistant message is paged out", () => {
+    const projected = projectProcessJobPresentation([appliedUser()], { threadId: "thread" });
+    expect(projected.messages.map(({ id }) => id)).toEqual(["user-1"]);
+  });
+
+  it("keeps non-applied follow-ups standalone even beside an unrelated marker", () => {
+    const pending = appliedUser({ id: "user-2", liveInputStatus: "pending" });
+    const projected = projectProcessJobPresentation(
+      [pending, appliedUser(), steeredAssistant()],
+      { threadId: "thread" },
+    );
+    expect(projected.messages.map(({ id }) => id)).toEqual(["user-2", "assistant-1"]);
+  });
+});
+
 describe("convertWebMessage", () => {
   it("derives transient run-attribution visibility from the selected model", () => {
     const requested = {

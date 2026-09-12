@@ -392,10 +392,14 @@ Cancelling the active turn also cancels its pending or queued live follow-ups.
 Live follow-ups are capped at 8,000 characters and 100 unsettled messages per
 thread.
 
-Once exact consumption is host-confirmed, the assistant's Activity disclosure also
-receives one completed `↪️ Steered: “<safe preview>”` tool row with result
-`Consumed by current run`. The original follow-up remains the full human message;
-the synthetic activity carries only a one-line, redacted, 40-code-point preview.
+Once exact consumption is host-confirmed, the follow-up renders once more as the
+operator's own message at the point the run consumed it, with its full text and
+quote when one was attached: a `↪️`-marked user bubble inside the assistant
+turn that splits the Activity disclosure into the work before it and the work
+after it. The standalone bubble that carried the pending follow-up is dropped
+while the inline marker is loaded; other channels still show the completed
+`↪️ Steered: “<safe preview>”` tool row with result `Consumed by current run`,
+which carries only a one-line, redacted, 40-code-point preview.
 
 The Dashboard header's bell explicitly enables standards-based Web Push. Permission and
 subscription creation happen only after that click; the server keeps one

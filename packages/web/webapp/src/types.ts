@@ -667,6 +667,19 @@ export type MessagePart =
       readonly disposition: "steered" | "follow_up";
     }
   | {
+      /**
+       * Chronological marker for the point where an operator live follow-up
+       * was consumed by the running turn. Rendered inline as the operator's
+       * own message; the standalone user bubble is dropped while loaded.
+       */
+      readonly type: "steer";
+      readonly inputId: string;
+      readonly messageId: string;
+      readonly text: string;
+      readonly receivedAt?: string;
+      readonly quote?: WebQuote;
+    }
+  | {
       readonly type: "monitor-activity";
       readonly monitors: readonly {
         readonly projection: MonitorProjection;

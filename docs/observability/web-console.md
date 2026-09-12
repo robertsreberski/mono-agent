@@ -493,12 +493,18 @@ delivery states:
 - **Delivery uncertain — not retried** when native delivery may have happened;
 - **Cancelled** when the active turn is explicitly cancelled before settlement.
 
-After exact consumption is confirmed, the assistant's Activity disclosure
-also shows one completed `↪️ Steered: “<safe preview>”` tool row with result
-`Consumed by current run`. This synthetic row carries only a one-line,
-secret-redacted, path-collapsed preview capped at 40 Unicode code points; the
-full follow-up stays in its human message. Queued, unavailable, and cancelled
-guidance does not create the row.
+After exact consumption is confirmed, the follow-up renders as the operator's
+own message at the point the run consumed it: a `↪️`-marked user bubble with
+the full text (and the quote, when one was attached) that splits the
+assistant's Activity disclosure into the work before it and the work after it.
+The standalone pending bubble is dropped while that inline marker is loaded;
+when the assistant message is paged out, the standalone bubble stays as the
+honest fallback. Queued, unavailable, and cancelled guidance never moves
+inline and keeps its standalone label. Other channels still show the completed
+`↪️ Steered: “<safe preview>”` tool row with result `Consumed by current run`.
+This synthetic row carries only a one-line, secret-redacted, path-collapsed
+preview capped at 40 Unicode code points; transcripts persisted before the
+inline marker keep rendering that row readably.
 
 Queued guidance starts automatically as a normal turn after the current turn
 settles. It

@@ -1652,9 +1652,13 @@ describe("WebService", () => {
     expect(assistant?.parts.some((part) => part.type === "tool-call"
       && part.toolCallId === `live-input:${terminal.wake.deliveryKey}`)).toBe(false);
     expect(assistant?.parts).toContainEqual(expect.objectContaining({
-      type: "tool-call",
-      toolCallId: `live-input:${ordinaryInputId as string}`,
+      type: "steer",
+      inputId: ordinaryInputId as string,
+      messageId: ordinary.message.id,
+      text: "Also check the real user request",
     }));
+    expect(assistant?.parts.some((part) => part.type === "tool-call"
+      && part.toolCallId === `live-input:${ordinaryInputId as string}`)).toBe(false);
     expect(service.thread(thread.id).messages.find((message) => message.id === ordinary.message.id))
       .toMatchObject({ role: "user", liveInputStatus: "applied" });
     await service.stop();
