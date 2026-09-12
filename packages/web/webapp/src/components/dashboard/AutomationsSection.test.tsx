@@ -178,10 +178,11 @@ describe("Dashboard Automations chip", () => {
     render(<Dashboard />);
 
     // The header announces the connection as a status too; this is the list's own.
-    expect(screen.getByText(/saved snapshot/u).closest('[role="status"]')).not.toBeNull();
+    expect(screen.getAllByRole("status").some((status) =>
+      /saved automation data/iu.test(status.textContent ?? ""))).toBe(true);
     expect(screen.getByRole("note")).toHaveTextContent("removed historical jobs may not be shown");
     const row = screen.getByRole("button", { name: "Open run history for daily:brief" });
-    expect(row).toHaveTextContent("Enabled in snapshot");
+    expect(row).toHaveTextContent("Snapshot");
     expect(row).toHaveTextContent("Next run unavailable");
     expect(row.querySelector("time")).toBeNull();
   });

@@ -87,9 +87,9 @@ function AutomationRow({
   const enabled = job.configured && job.effectiveEnabled;
   const enabledLabel = !job.configured
     ? "Removed"
-    : job.effectiveEnabled
-      ? live ? "Enabled" : "Enabled in snapshot"
-      : live ? "Disabled" : "Disabled in snapshot";
+    : live
+      ? job.effectiveEnabled ? "Enabled" : "Disabled"
+      : "Snapshot";
   const lastRun = job.lastRun;
   const lastRunAt = lastRun?.completedAt ?? lastRun?.startedAt ?? lastRun?.orderedAt;
   // Untrusted wire values parse or lose: an unparseable stamp sorts with the
@@ -269,7 +269,7 @@ export function AutomationsList({
               ? `Couldn’t refresh automations. Showing the saved snapshot from ${snapshotTime}.`
               : cronOverview.degradedReason !== undefined
                 ? `Live schedule state is unavailable: ${cronOverview.degradedReason}`
-                : `Showing the saved snapshot from ${snapshotTime}. Live schedule state is unavailable.`}
+                : `Saved automation data from ${snapshotTime}. Live schedule status is unavailable.`}
           </span>
           {cronError !== null && (
             <button type="button" onClick={() => { void refreshCron().catch(() => undefined); }}>
