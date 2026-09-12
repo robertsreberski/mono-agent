@@ -5448,6 +5448,107 @@ describe("WebStore conversation projects", () => {
     store.completeTurn(turn.turnId, "done", { runtime: { model: "provider/default" } });
   }
 
+  it.each(["complete", "failed", "cancelled", "interrupted"] as const)("applies one last-intent transition after %s, preserving the active context", async (outcome) => {
+    const { store } = await openStore();
+    try {
+      const first = store.createProject({ sourceId: "agent-one", name: "First", context: "Original", color: "blue" });
+      const second = store.createProject({ sourceId: "agent-one", name: "Second", context: "Next", color: "rose" });
+      const thread = store.createThread("agent-one", { projectId: first.id });
+      const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      store.patchProject(first.id, { name: "Edited", context: "Edited context", color: "amber" });
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "First", context: "Original" });
+      store.patchThread(thread.id, { projectId: second.id });
+      expect(store.getThread(thread.id)).toMatchObject({ projectId: first.id, pendingProject: { projectId: second.id, turnId: turn.turnId } });
+      expect(() => store.deleteProject(first.id)).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      expect(() => store.deleteProject(second.id)).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      expect(() => store.patchProject(second.id, { archived: true })).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      store.patchThread(thread.id, { projectId: null });
+      store.patchThread(thread.id, { projectId: first.id });
+      expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
+      store.patchThread(thread.id, { projectId: second.id });
+      store.patchThread(thread.id, { projectId: second.id });
+      expect(store.projectTransitions(thread.id)).toHaveLength(1);
+      if (outcome === "complete") store.completeTurn(turn.turnId, "done");
+      else if (outcome === "interrupted") store.interruptTurn(turn.turnId);
+      else store.failTurn(turn.turnId, { message: "stopped", cancelled: outcome === "cancelled" });
+      expect(store.getThread(thread.id)).toMatchObject({ projectId: second.id });
+      expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "Second", context: "Next" });
+      expect(store.projectTransitions(thread.id)).toHaveLength(2);
+      expect(store.projectTransitions(thread.id)[1]).toMatchObject({
+        afterMessageId: turn.assistantMessageId, turnId: turn.turnId,
+        before: { id: first.id, name: "Edited", color: "amber" },
+        after: { id: second.id, name: "Second", color: "rose" },
+      });
+      store.deleteProject(second.id);
+      expect(store.projectTransitions(thread.id)[2]).toMatchObject({ before: { name: "Second", color: "rose" }, after: null });
+      expect(JSON.stringify(store.getThreadDetail(thread.id))).not.toContain("Edited context");
+    } finally { store.close(); }
+  });
+
+  it("freezes no-project context in assistant-only turns and persists color validation", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P", context: "Next" });
+      expect(project.color).toBe("default");
+      expect(() => store.patchProject(project.id, { color: "url(secret)" as "blue" })).toThrowError(expect.objectContaining({ code: "invalid_project" }));
+      const thread = store.createThread("agent-one");
+      const turn = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake" });
+      store.patchThread(thread.id, { projectId: project.id });
+      expect(store.projectContextForThread(thread.id)).toBeUndefined();
+      store.completeTurn(turn.turnId, "");
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "P", context: "Next" });
+      expect(store.projectTransitions(thread.id)[0]).toMatchObject({ afterMessageId: turn.assistantMessageId });
+    } finally { store.close(); }
+  });
+
+  it("pages every transition with its actual anchor, including start and repeated idle changes", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const thread = store.createThread("agent-one", { projectId: project.id });
+      expect(store.listMessagesPage(thread.id, { limit: 1 }).projectTransitions).toHaveLength(1);
+      const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      store.patchThread(thread.id, { projectId: null });
+      store.completeTurn(turn.turnId, "done");
+      store.patchThread(thread.id, { projectId: project.id });
+      store.patchThread(thread.id, { projectId: null });
+      const latest = store.listMessagesPage(thread.id, { limit: 1 });
+      expect(latest.messages.map((message) => message.id)).toEqual([turn.assistantMessageId]);
+      expect(latest.projectTransitions).toHaveLength(3);
+      const oldest = store.listMessagesPage(thread.id, { limit: 1, before: latest.nextCursor! });
+      expect(oldest.messages.map((message) => message.id)).toEqual([turn.userMessageId]);
+      expect(oldest.projectTransitions).toHaveLength(1);
+      expect(oldest.projectTransitions?.[0]?.afterMessageId).toBeNull();
+      expect(store.getThread(thread.id)?.messageCount).toBe(2);
+    } finally { store.close(); }
+  });
+
+  it("settles persisted pending membership during restart before the next turn", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    let store = await WebStore.open({ stateDir });
+    let threadId: string;
+    let projectId: string;
+    try {
+      store.replaceAgents([agent()]);
+      const project = store.createProject({ sourceId: "agent-one", name: "After restart", context: "Fresh", color: "purple" });
+      projectId = project.id;
+      const thread = store.createThread("agent-one");
+      threadId = thread.id;
+      store.beginTurn({ threadId, text: "work", attachmentIds: [] });
+      store.patchThread(threadId, { projectId });
+    } finally { store.close(); }
+    store = await WebStore.open({ stateDir });
+    try {
+      expect(store.getThread(threadId)).toMatchObject({ projectId });
+      expect(store.getThread(threadId)).not.toHaveProperty("pendingProject");
+      expect(store.projectTransitions(threadId)).toHaveLength(1);
+      expect(store.projectContextForThread(threadId)).toEqual({ name: "After restart", context: "Fresh" });
+    } finally { store.close(); }
+  });
+
   it("creates, lists, reads and patches projects with revision bumps", async () => {
     const { store } = await openStore();
     try {

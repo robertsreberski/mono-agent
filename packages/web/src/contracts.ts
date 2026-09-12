@@ -371,6 +371,8 @@ export interface WebThread {
   readonly revision: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
   readonly projectId: string | null;
+  /** Desired membership; effective only after the named active turn settles. */
+  readonly pendingProject?: { readonly projectId: string | null; readonly turnId: string };
   readonly trigger?: WebThreadTrigger;
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
@@ -398,7 +400,19 @@ export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" |
  * the project's current non-archived members. Absent when no priced
  * observation exists; a measured zero is kept as zero.
  */
+export type WebProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
+
+export interface WebProjectTransition {
+  readonly id: number;
+  readonly afterMessageId: string | null;
+  readonly turnId: string | null;
+  readonly before: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
+  readonly after: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
+  readonly createdAt: string;
+}
+
 export interface WebProject {
+  readonly color?: WebProjectColor;
   readonly id: string;
   readonly sourceId: string;
   readonly name: string;
@@ -415,12 +429,14 @@ export interface WebProject {
 }
 
 export interface CreateWebProjectInput {
+  readonly color?: WebProjectColor;
   readonly sourceId: string;
   readonly name: string;
   readonly context?: string;
 }
 
 export interface PatchWebProjectInput {
+  readonly color?: WebProjectColor;
   readonly name?: string;
   readonly context?: string;
   readonly archived?: boolean;
@@ -691,6 +707,7 @@ export interface WebQuote {
 }
 
 export interface WebThreadDetail {
+  readonly projectTransitions?: readonly WebProjectTransition[];
   readonly thread: WebThread;
   readonly messages: readonly WebMessage[];
   /** Opaque keyset cursor for the next older message page. */
@@ -740,6 +757,7 @@ export interface WebActiveThreads {
 }
 
 export interface WebMessagePage {
+  readonly projectTransitions?: readonly WebProjectTransition[];
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
 }

@@ -1,3 +1,4 @@
+import { parseProjectColor } from "./project-color.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { chmod, open, readFile, rename, unlink } from "node:fs/promises";
@@ -1534,7 +1535,7 @@ function optionalNullableProjectId(value: unknown): string | null | undefined {
 
 function parseCreateProject(value: unknown): CreateWebProjectInput {
   const body = requireRecord(value);
-  const unknown = Object.keys(body).filter((key) => key !== "sourceId" && key !== "name" && key !== "context");
+  const unknown = Object.keys(body).filter((key) => key !== "sourceId" && key !== "name" && key !== "context" && key !== "color");
   if (unknown.length > 0) throw invalidBody(`Unknown project field: ${unknown[0]}.`);
   if (!("sourceId" in body) || !("name" in body)) {
     throw invalidBody("sourceId and name are required.");
@@ -1542,24 +1543,27 @@ function parseCreateProject(value: unknown): CreateWebProjectInput {
   return {
     sourceId: requireString(body.sourceId, "sourceId", 512),
     name: parseProjectName(body.name),
+    ...(body.color === undefined ? {} : { color: parseProjectColor(body.color) }),
     ...(body.context === undefined ? {} : { context: parseProjectContext(body.context) }),
   };
 }
 
 function parsePatchProject(value: unknown): PatchWebProjectInput {
   const body = requireRecord(value);
-  const unknown = Object.keys(body).filter((key) => key !== "name" && key !== "context" && key !== "archived");
+  const unknown = Object.keys(body).filter((key) => key !== "name" && key !== "context" && key !== "color" && key !== "archived");
   if (unknown.length > 0) throw invalidBody(`Unknown project field: ${unknown[0]}.`);
   const archived = body.archived;
   if (archived !== undefined && typeof archived !== "boolean") throw invalidBody("archived must be boolean.");
   const name = body.name === undefined ? undefined : parseProjectName(body.name);
   const context = body.context === undefined ? undefined : parseProjectContext(body.context);
-  if (name === undefined && context === undefined && archived === undefined) {
+  const color = body.color === undefined ? undefined : parseProjectColor(body.color);
+  if (name === undefined && context === undefined && archived === undefined && color === undefined) {
     throw invalidBody("Provide name, context, or archived.");
   }
   return {
     ...(name === undefined ? {} : { name }),
     ...(context === undefined ? {} : { context }),
+    ...(color === undefined ? {} : { color }),
     ...(archived === undefined ? {} : { archived }),
   };
 }

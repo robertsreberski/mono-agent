@@ -323,7 +323,7 @@ describe("web storage migration history", () => {
       } finally { store.close(); }
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 26 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 27 });
         expect(inspected.prepare("PRAGMA table_info(projects)").all()).toEqual(expect.arrayContaining([
           expect.objectContaining({ name: "id", type: "TEXT", pk: 1 }),
           expect.objectContaining({ name: "source_id", type: "TEXT", notnull: 1 }),
@@ -364,7 +364,7 @@ describe("web storage migration history", () => {
       store.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 26 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 27 });
         expect(inspected.prepare("PRAGMA table_info(cron_reply_operations)").all()).toEqual(expect.arrayContaining([
           expect.objectContaining({ name: "operation_id", type: "TEXT", notnull: 0 }),
           expect.objectContaining({ name: "snapshot_text", type: "TEXT", notnull: 0 }),
@@ -405,8 +405,8 @@ describe("web storage migration history", () => {
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 26 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(26);
+  it("is immutable and derives schema 27 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(27);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);

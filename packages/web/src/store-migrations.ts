@@ -132,6 +132,27 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
     database.exec(`CREATE INDEX IF NOT EXISTS threads_by_project
       ON threads(project_id, archived_at, updated_at, id)`);
   } },
+  { version: 27, name: "project-turn-boundaries", up: ({ database }) => {
+    addColumn(database, "projects", "color", "TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose'))");
+    addColumn(database, "turns", "project_context_json", "TEXT");
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS pending_project_memberships (
+        thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE,
+        project_id TEXT REFERENCES projects(id),
+        turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS project_transitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        after_message_id TEXT,
+        turn_id TEXT,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS project_transitions_by_thread ON project_transitions(thread_id, id);
+    `);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -179,14 +200,16 @@ export function validateWebStorageShape(database: DatabaseSync): void {
     const required: Readonly<Record<string, readonly string[]>> = {
       agents: ["cron_read", "cron_actions", "ask_by_id", "providers_json", "discovered", "supports_provider_auth"],
       threads: ["trigger_kind", "run_model", "run_effort", "project_id"],
-      projects: ["source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
+      pending_project_memberships: ["thread_id", "project_id", "turn_id"],
+      project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
+      projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
       cron_overviews: ["jobs_truncated"],
       attachments: ["origin"],
       monitor_wake_deliveries: ["projection_json", "thread_id", "payload_sha256"],
       notification_deliveries: ["message_id", "job_id", "run_id"],
       agent_run_overrides: ["source_id", "model", "effort", "updated_at"],
       messages: ["seq", "cron_suppressed"],
-      turns: ["requested_model", "requested_effort", "effective_effort", "routing_json"],
+      turns: ["project_context_json", "requested_model", "requested_effort", "effective_effort", "routing_json"],
       live_inputs: ["dispatch_started_at"],
       web_submissions: [
         "thread_id", "submission_id", "payload_sha256", "outcome", "reason", "message_id", "turn_id", "input_id", "created_at",

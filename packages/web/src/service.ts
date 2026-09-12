@@ -924,18 +924,20 @@ export class WebService {
       sourceId: input.sourceId,
       name: input.name.trim(),
       context: input.context ?? "",
+      ...(input.color === undefined ? {} : { color: input.color }),
     });
     this.emitProject({ project });
     return project;
   }
 
   patchProject(id: string, patch: PatchWebProjectInput): WebProject {
-    if (patch.name === undefined && patch.context === undefined && patch.archived === undefined) {
-      throw new WebConsoleError("invalid_project", "Provide name, context, or archived.", 400);
+    if (patch.name === undefined && patch.context === undefined && patch.archived === undefined && patch.color === undefined) {
+      throw new WebConsoleError("invalid_project", "Provide name, context, color, or archived.", 400);
     }
     const project = this.store.patchProject(id, {
       ...(patch.name === undefined ? {} : { name: patch.name.trim() }),
       ...(patch.context === undefined ? {} : { context: patch.context }),
+      ...(patch.color === undefined ? {} : { color: patch.color }),
       ...(patch.archived === undefined ? {} : { archived: patch.archived }),
     });
     this.emitProject({ project });
@@ -2313,6 +2315,7 @@ export class WebService {
       this.emitThread("thread.changed", { thread: detail.thread });
       this.emitThread("threads.changed", { thread: detail.thread });
       this.refreshMemberProject(detail.thread);
+      if (started.thread.projectId !== null && started.thread.projectId !== detail.thread.projectId) this.refreshProject(started.thread.projectId);
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
       // Detached: the turn is already finished and reported, and keeping a copy
       // must neither delay nor fail it. The agent is still connected here, which
@@ -2339,6 +2342,7 @@ export class WebService {
       this.emitThread("thread.changed", { thread: detail.thread });
       this.emitThread("threads.changed", { thread: detail.thread });
       this.refreshMemberProject(detail.thread);
+      if (started.thread.projectId !== null && started.thread.projectId !== detail.thread.projectId) this.refreshProject(started.thread.projectId);
       this.announcePushEvent(`turn:${started.turnId}:terminal`);
     } finally {
       releaseAttachmentBudget?.();

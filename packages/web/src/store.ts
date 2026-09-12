@@ -47,6 +47,8 @@ import {
   type WebCronReplySnapshotKind,
   type WebMessagePage,
   type WebProject,
+  type WebProjectColor,
+  type WebProjectTransition,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
   type WebActiveThreads,
@@ -69,6 +71,7 @@ import {
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
 import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
+import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
 import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
 import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
@@ -116,6 +119,7 @@ export interface CreateStoredThreadInput {
 }
 
 interface ProjectRow {
+  color: WebProjectColor;
   id: string;
   source_id: string;
   name: string;
@@ -127,12 +131,14 @@ interface ProjectRow {
 }
 
 export interface CreateStoredProjectInput {
+  readonly color?: WebProjectColor;
   readonly sourceId: string;
   readonly name: string;
   readonly context?: string;
 }
 
 export interface PatchStoredProjectInput {
+  readonly color?: WebProjectColor;
   readonly name?: string;
   readonly context?: string;
   readonly archived?: boolean;
@@ -2697,6 +2703,7 @@ export class WebStore {
       `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
+      if (projectId !== null) this.recordProjectTransition(id, null, projectId, now);
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
@@ -2965,6 +2972,7 @@ export class WebStore {
     return {
       thread,
       messages: page.messages,
+      projectTransitions: page.projectTransitions ?? [],
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
   }
@@ -3023,6 +3031,7 @@ export class WebStore {
     const oldest = pageRows[0];
     return {
       messages: pageRows.map((row) => this.mapMessage(row)),
+      projectTransitions: this.projectTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -3092,11 +3101,16 @@ export class WebStore {
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
+    if (patch.projectId !== undefined && patch.title === undefined && patch.archived === undefined
+      && patch.model === undefined && patch.effort === undefined) {
+      const pending = this.pendingProjectDto(id).pendingProject;
+      if ((pending === undefined && patch.projectId === current.projectId) || (pending !== undefined && patch.projectId === pending.projectId)) return current;
+    }
     const projectId = patch.projectId === undefined
       ? undefined
       : patch.projectId === null
         ? null
-        : this.requireProjectForThread(patch.projectId, current.sourceId).id;
+        : patch.projectId === current.projectId ? current.projectId : this.requireProjectForThread(patch.projectId, current.sourceId).id;
     {
       const sets: string[] = [];
       const values: Array<string | null> = [];
@@ -3117,8 +3131,7 @@ export class WebStore {
         values.push(runEffort);
       }
       if (projectId !== undefined) {
-        sets.push("project_id = ?");
-        values.push(projectId);
+        this.requestProjectMembership(id, current.projectId, projectId, now);
       }
       // A model/effort/project-only patch must not reorder the sidebar, so
       // `updated_at` only advances when title or archived state actually changes.
@@ -3177,9 +3190,9 @@ export class WebStore {
     const id = randomUUID();
     const now = this.now();
     this.database.prepare(`
-      INSERT INTO projects (id, source_id, name, context, created_at, updated_at, archived_at, revision)
-      VALUES (?, ?, ?, ?, ?, ?, NULL, 1)
-    `).run(id, input.sourceId, input.name, input.context ?? "", now, now);
+      INSERT INTO projects (id, source_id, name, context, created_at, updated_at, archived_at, revision, color)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, 1, ?)
+    `).run(id, input.sourceId, input.name, input.context ?? "", now, now, parseProjectColor(input.color ?? "default"));
     return this.mapProject(this.requireProject(id));
   }
 
@@ -3188,6 +3201,13 @@ export class WebStore {
     const now = this.now();
     const sets: string[] = [];
     const values: Array<string | null> = [];
+    if (patch.color !== undefined) {
+      sets.push("color = ?");
+      values.push(parseProjectColor(patch.color));
+    }
+    if (patch.archived === true && this.database.prepare("SELECT 1 FROM pending_project_memberships WHERE project_id = ? LIMIT 1").get(id)) {
+      throw new WebConsoleError("project_busy", "Wait for pending conversation turns before archiving this project.", 409);
+    }
     if (patch.name !== undefined) {
       sets.push("name = ?");
       values.push(patch.name);
@@ -3221,9 +3241,17 @@ export class WebStore {
       const members = (this.database.prepare(`
         SELECT id FROM threads WHERE project_id = ? ORDER BY updated_at ASC, id ASC
       `).all(id) as Array<{ id: string }>).map((member) => member.id);
-      this.database.prepare(`
-        UPDATE threads SET project_id = NULL, revision = revision + 1 WHERE project_id = ?
-      `).run(id);
+      if (this.database.prepare(`
+        SELECT 1 FROM pending_project_memberships WHERE project_id = ?
+        UNION ALL SELECT 1 FROM turns JOIN threads ON threads.id = turns.thread_id
+        WHERE threads.project_id = ? AND turns.status = 'running' LIMIT 1
+      `).get(id, id)) {
+        throw new WebConsoleError("project_busy", "Wait for active and pending conversation turns before deleting this project.", 409);
+      }
+      for (const memberId of members) {
+        this.applyProjectMembership(memberId, id, null, now);
+        this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(memberId);
+      }
       for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
       this.database.prepare("DELETE FROM projects WHERE id = ?").run(id);
       return members;
@@ -3237,6 +3265,9 @@ export class WebStore {
    * context is empty, so dispatch never prefixes then.
    */
   projectContextForThread(threadId: string): { readonly name: string; readonly context: string } | undefined {
+    const active = this.database.prepare("SELECT project_context_json FROM turns WHERE thread_id = ? AND status = 'running'")
+      .get(this.resolveThreadId(threadId)) as { project_context_json: string | null } | undefined;
+    if (active?.project_context_json != null) return JSON.parse(active.project_context_json) ?? undefined;
     const row = this.database.prepare(`
       SELECT p.name AS name, p.context AS context
         FROM threads t JOIN projects p ON p.id = t.project_id
@@ -3244,6 +3275,77 @@ export class WebStore {
     `).get(this.resolveThreadId(threadId)) as unknown as { name: string; context: string } | undefined;
     if (row === undefined || row.context.trim().length === 0) return undefined;
     return { name: row.name, context: row.context };
+  }
+
+  private pendingProjectDto(threadId: string): Pick<WebThread, "pendingProject"> {
+    const row = this.database.prepare("SELECT project_id, turn_id FROM pending_project_memberships WHERE thread_id = ?")
+      .get(threadId) as { project_id: string | null; turn_id: string } | undefined;
+    return row === undefined ? {} : { pendingProject: { projectId: row.project_id, turnId: row.turn_id } };
+  }
+
+  private requestProjectMembership(threadId: string, before: string | null, after: string | null, now: string): void {
+    const active = this.database.prepare("SELECT id FROM turns WHERE thread_id = ? AND status = 'running'")
+      .get(threadId) as { id: string } | undefined;
+    if (before === after || active === undefined) {
+      this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
+      if (before !== after) this.applyProjectMembership(threadId, before, after, now);
+      return;
+    }
+    this.database.prepare(`INSERT INTO pending_project_memberships(thread_id, project_id, turn_id) VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET project_id = excluded.project_id, turn_id = excluded.turn_id`)
+      .run(threadId, after, active.id);
+  }
+
+  private applyPendingProjectMembership(threadId: string, now: string, turnId?: string): void {
+    const pending = this.pendingProjectDto(threadId).pendingProject;
+    if (pending === undefined || (turnId !== undefined && pending.turnId !== turnId)) return;
+    if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId)) return;
+    const before = this.requireThread(threadId).projectId;
+    this.applyProjectMembership(threadId, before, pending.projectId, now, pending.turnId);
+    this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
+  }
+
+  private applyProjectMembership(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+    if (before === after) return;
+    this.recordProjectTransition(threadId, before, after, now, turnId);
+    this.database.prepare("UPDATE threads SET project_id = ? WHERE id = ?").run(after, threadId);
+    for (const id of [before, after]) if (id !== null) {
+      this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(id);
+    }
+  }
+
+  private recordProjectTransition(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+    const identity = (id: string | null): WebProjectTransition["before"] => {
+      if (id === null) return null;
+      const project = this.requireProject(id);
+      return { id, name: project.name, color: project.color };
+    };
+    const anchor = turnId === undefined
+      ? this.database.prepare(`SELECT messages.id, messages.turn_id FROM messages
+          LEFT JOIN turns ON turns.id = messages.turn_id
+          WHERE messages.thread_id = ? AND (turns.status IS NULL OR turns.status <> 'running')
+            AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
+          ORDER BY messages.rowid DESC LIMIT 1`).get(threadId) as { id: string; turn_id: string | null } | undefined
+      : { id: this.requireTurn(turnId).assistant_message_id, turn_id: turnId };
+    this.database.prepare(`INSERT INTO project_transitions
+      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(threadId, anchor?.id ?? null, anchor?.turn_id ?? null, JSON.stringify(identity(before)), JSON.stringify(identity(after)), now);
+  }
+
+  /** Internal context snapshot; JSON null explicitly freezes absence of membership. */
+  private captureProjectContext(turnId: string, threadId: string): void {
+    const row = this.database.prepare(`SELECT p.name, p.context FROM projects p JOIN threads t ON t.project_id = p.id WHERE t.id = ?`)
+      .get(threadId) as { name: string; context: string } | undefined;
+    this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify(row ?? null), turnId);
+  }
+
+  projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
+    return (this.database.prepare(`SELECT * FROM project_transitions WHERE thread_id = ?
+        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
+      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
+        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
+        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
+      }));
   }
 
   private getProjectRow(id: string): ProjectRow | undefined {
@@ -3287,6 +3389,7 @@ export class WebStore {
       sourceId: row.source_id,
       name: row.name,
       context: row.context,
+      color: row.color,
       archivedAt: row.archived_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -3646,6 +3749,7 @@ export class WebStore {
     const assistantMessageId = randomUUID();
     const now = this.now();
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -3694,6 +3798,7 @@ export class WebStore {
             updated_at = ?, revision = revision + 1
         WHERE id = ?
       `).run(title, now, threadId);
+      this.captureProjectContext(turnId, threadId);
       this.recordThreadRevision(threadId, "turn_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -3764,6 +3869,7 @@ export class WebStore {
       ? []
       : [{ type: "process-job-wake", ...input.processJobWake }];
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -3790,6 +3896,7 @@ export class WebStore {
       this.database.prepare(
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
+      this.captureProjectContext(turnId, threadId);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4056,6 +4163,7 @@ export class WebStore {
     const now = this.now();
     const userMessage = this.requireMessage(row.message_id);
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -4075,6 +4183,7 @@ export class WebStore {
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(row.id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
+      this.captureProjectContext(turnId, threadId);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {
@@ -4735,6 +4844,7 @@ export class WebStore {
         CHECK (model IS NOT NULL OR effort IS NOT NULL)
       );
       CREATE TABLE IF NOT EXISTS projects (
+        color TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose')),
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
         name TEXT NOT NULL,
@@ -5590,6 +5700,7 @@ export class WebStore {
     const delta = this.writeMessageDelta(existing, parts, now, { status });
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
+    this.applyPendingProjectMembership(turn.thread_id, now, turnId);
     this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
     const recentEnoughForRecoveredInterruption = status !== "interrupted"
       || new Date(now).getTime() - new Date(existing.updatedAt).getTime() <= 60 * 60 * 1_000;
@@ -5661,6 +5772,10 @@ export class WebStore {
     const runStates = this.latestRunStates(ids);
     const previews = this.lastMessagePreviews(ids);
     const jobActivities = this.jobActivities(ids);
+    const pending = new Map((this.database.prepare(`SELECT thread_id, project_id, turn_id FROM pending_project_memberships
+      WHERE thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
+        thread_id: string; project_id: string | null; turn_id: string;
+      }>).map((row) => [row.thread_id, { projectId: row.project_id, turnId: row.turn_id }]));
     return rows.map((row) => {
       const preview = previews.get(row.id);
       const jobActivity = jobActivities.get(row.id);
@@ -5668,6 +5783,7 @@ export class WebStore {
         id: row.id,
         sourceId: row.source_id,
         projectId: row.project_id,
+        ...(pending.has(row.id) ? { pendingProject: pending.get(row.id)! } : {}),
         title: row.title,
         archivedAt: row.archived_at,
         createdAt: row.created_at,
