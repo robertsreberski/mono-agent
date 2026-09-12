@@ -971,6 +971,61 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it("projects two applied steers in one turn as two markers at their own consumption points", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const first = store.reserveLiveInput(thread.id, "Use the API instead");
+    const second = store.reserveLiveInput(thread.id, "And keep the retry budget");
+    expect(first.offered && second.offered).toBe(true);
+    expect(store.markLiveInputApplied(first.input.id)?.liveInputStatus).toBe("applied");
+    expect(store.markLiveInputApplied(second.input.id)?.liveInputStatus).toBe("applied");
+
+    const steerFrames = (inputId: string, text: string, receivedAt: string) =>
+      (["tool_call_started", "tool_call_completed"] as const).map((type) => ({
+        kind: "event" as const,
+        event: {
+          type,
+          id: `live-input:${inputId}`,
+          name: `↪️ Steered: “${text}”`,
+          ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
+          metadata: { liveInput: true, synthetic: true, inputId, receivedAt },
+        },
+      }));
+    const tool = (id: string) => [
+      { kind: "event" as const, event: { type: "tool_call_started" as const, id, name: "Read", arguments: {} } },
+      { kind: "event" as const, event: { type: "tool_call_completed" as const, id, name: "Read", content: "ok" } },
+    ];
+    store.applyStreamFrames(turn.turnId, [
+      ...tool("tool-1"),
+      ...steerFrames(first.input.id, "Use the API instead", "2026-09-12T10:00:01.000Z"),
+      ...tool("tool-2"),
+      ...steerFrames(second.input.id, "And keep the retry budget", "2026-09-12T10:00:02.000Z"),
+      ...tool("tool-3"),
+    ] as never);
+    const detail = store.completeTurn(turn.turnId, "done");
+    const assistant = detail.messages.at(-1);
+    // Each steer lands between the work before and after it; no Steered rows remain.
+    expect(assistant?.parts.map((part) => part.type === "tool-call" ? part.toolCallId : part.type)).toEqual([
+      "tool-1", "steer", "tool-2", "steer", "tool-3", "text",
+    ]);
+    expect(assistant?.parts.filter((part) => part.type === "steer")).toEqual([
+      expect.objectContaining({ inputId: first.input.id, messageId: first.message.id, text: "Use the API instead" }),
+      expect.objectContaining({ inputId: second.input.id, messageId: second.message.id, text: "And keep the retry budget" }),
+    ]);
+    // Both user rows keep their standalone identity, each applied.
+    for (const reserved of [first, second]) {
+      expect(detail.messages.find((message) => message.id === reserved.message.id)).toMatchObject({
+        role: "user",
+        liveInputStatus: "applied",
+      });
+    }
+    store.close();
+  });
+
   it("keeps a synthetic steering row without an inputId as a completed Steered tool row", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);

@@ -664,6 +664,41 @@ describe("inline steer", () => {
     expect(projected.messages.map(({ id }) => id)).toEqual(["user-1"]);
   });
 
+  it("keeps two steers in one turn as two barriers, each with its own segment", () => {
+    const secondSteer = { ...steerPart, inputId: "input-2", messageId: "user-2", text: "And keep the retry budget" };
+    const secondUser = appliedUser({ id: "user-2", parts: [{ type: "text", text: secondSteer.text }] });
+    const assistant = steeredAssistant({
+      parts: [
+        { type: "text", text: "First I will look." },
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        steerPart,
+        { type: "tool-call", toolCallId: "t2", toolName: "Write", status: "complete" },
+        secondSteer,
+        { type: "text", text: "Now with both steers." },
+        { type: "tool-call", toolCallId: "t3", toolName: "Bash", status: "complete" },
+        { type: "text", text: "Done." },
+      ],
+    });
+    const content = convertWebMessage(assistant).content as readonly {
+      readonly type: string; readonly data?: { readonly inputId?: unknown };
+    }[];
+    expect(content.map((part) => part.type)).toEqual([
+      "data-note",
+      "tool-call",
+      "data-steer",
+      "tool-call",
+      "data-steer",
+      "data-note",
+      "tool-call",
+      "text",
+    ]);
+    expect(content.filter((part) => part.type === "data-steer").map((part) => part.data?.inputId))
+      .toEqual(["input-1", "input-2"]);
+    // Both standalone bubbles go, each by its own marker.
+    const projected = projectProcessJobPresentation([appliedUser(), secondUser, assistant], { threadId: "thread" });
+    expect(projected.messages.map(({ id }) => id)).toEqual(["assistant-1"]);
+  });
+
   it("keeps non-applied follow-ups standalone even beside an unrelated marker", () => {
     const pending = appliedUser({ id: "user-2", liveInputStatus: "pending" });
     const projected = projectProcessJobPresentation(

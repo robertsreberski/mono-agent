@@ -537,6 +537,49 @@ describe("AssistantMessage grouped parts", () => {
     expect(screen.getByText("Done.")).toBeVisible();
   });
 
+  it("renders two steers in one turn as two ordered bubbles splitting Activity into three bands", () => {
+    const steers = [
+      { type: "steer" as const, inputId: "input-1", messageId: "steered-user-1", text: "Use the API instead" },
+      { type: "steer" as const, inputId: "input-2", messageId: "steered-user-2", text: "And keep the retry budget" },
+    ];
+    const applied = steers.map((steer): WebMessage => ({
+      ...userMessage,
+      id: steer.messageId,
+      liveInputStatus: "applied",
+      parts: [{ type: "text", text: steer.text }],
+    }));
+    render(<MessagesHarness messages={[
+      ...applied,
+      {
+        ...assistantMessage("complete"),
+        id: "assistant-steered-twice",
+        parts: [
+          { type: "tool-call", toolCallId: "t1", toolName: "Read", args: {}, status: "complete" },
+          steers[0]!,
+          { type: "tool-call", toolCallId: "t2", toolName: "Write", args: {}, status: "complete" },
+          steers[1]!,
+          { type: "tool-call", toolCallId: "t3", toolName: "Bash", args: {}, status: "complete" },
+          { type: "text", text: "Done." },
+        ],
+      },
+    ]} />);
+
+    expect(screen.queryByText("Steering current run…")).toBeNull();
+    expect(screen.queryByText(/Steered:/u)).toBeNull();
+    const inline = screen.getAllByRole("group", { name: "Steered follow-up" });
+    expect(inline.map((bubble) => bubble.textContent)).toEqual(steers.map((steer) => steer.text));
+    // Each steer's text appears exactly once: inline, never as a standalone bubble too.
+    for (const steer of steers) expect(screen.getAllByText(steer.text)).toHaveLength(1);
+    const bands = screen.getAllByRole("button", { name: "Activity" });
+    expect(bands).toHaveLength(3);
+    for (const band of bands) expect(band).toHaveTextContent("1 step");
+    // Document order: band, bubble, band, bubble, band, answer.
+    const order = [bands[0], inline[0], bands[1], inline[1], bands[2], screen.getByText("Done.")] as HTMLElement[];
+    for (let index = 1; index < order.length; index += 1) {
+      expect(order[index - 1]!.compareDocumentPosition(order[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
+
   it("renders one compact secret-free activity row for a run's Monitor wakes", () => {
     const first = monitor();
     const second = monitor({

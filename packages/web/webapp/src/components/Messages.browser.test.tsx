@@ -414,9 +414,31 @@ const steeredResponse: WebMessage = {
   ],
 };
 
-function SteerHarness({ width }: { readonly width: number }) {
+const secondSteerText = "And keep the retry budget where it is; only the transport changes";
+
+const steeredTwiceUser: WebMessage = {
+  ...steeredUser,
+  id: "steered-user-2",
+  createdAt: "2026-09-12T10:00:03.000Z",
+  updatedAt: "2026-09-12T10:00:03.000Z",
+  parts: [{ type: "text", text: secondSteerText }],
+};
+
+/** The same turn steered twice: three bands, two bubbles, answer last. */
+const steeredTwiceResponse: WebMessage = {
+  ...steeredResponse,
+  id: "steered-twice-response",
+  parts: [
+    ...steeredResponse.parts.slice(0, -1),
+    { type: "steer", inputId: "input-2", messageId: "steered-user-2", text: secondSteerText },
+    { type: "tool-call", toolCallId: "bash-1", toolName: "Bash", status: "complete" },
+    { type: "text", text: "Applied the API approach throughout, retry budget untouched." },
+  ],
+};
+
+function SteerHarness({ width, messages }: { readonly width: number; readonly messages: readonly WebMessage[] }) {
   const presentation = projectProcessJobPresentation(
-    coalesceMonitorWakeMessages([steeredUser, steeredResponse]),
+    coalesceMonitorWakeMessages(messages),
     { selectedModel: "provider:primary", threadId: "thread" },
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
@@ -445,7 +467,9 @@ describe("inline steer in Chromium", () => {
     [390, 844, "mobile"],
   ] as const)("splits Activity around the consumed steer at %ipx (%s)", async (width, height, label) => {
     await page.viewport(width, height);
-    const { container } = render(<SteerHarness width={Math.min(width, 760)} />);
+    const { container } = render(
+      <SteerHarness width={Math.min(width, 760)} messages={[steeredUser, steeredResponse]} />,
+    );
 
     // The duplicate standalone bubble is gone; the inline one keeps everything.
     expect(screen.getByRole("group", { name: "Steered follow-up" })).toBeVisible();
@@ -461,5 +485,38 @@ describe("inline steer in Chromium", () => {
     const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
     expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
     await capture(`steer-inline-${label}-${width}x${height}`);
+  });
+
+  it.each([
+    [1280, 800, "desktop"],
+    [390, 844, "mobile"],
+  ] as const)("keeps two steers in order at %ipx (%s)", async (width, height, label) => {
+    await page.viewport(width, height);
+    const { container } = render(
+      <SteerHarness
+        width={Math.min(width, 760)}
+        messages={[steeredUser, steeredTwiceUser, steeredTwiceResponse]}
+      />,
+    );
+
+    const bubbles = screen.getAllByRole("group", { name: "Steered follow-up" });
+    expect(bubbles.map((bubble) => bubble.textContent)).toEqual([`the sync approach${steerText}`, secondSteerText]);
+    expect(screen.getAllByText(steerText)).toHaveLength(1);
+    expect(screen.getAllByText(secondSteerText)).toHaveLength(1);
+    expect(screen.queryByText(/Steered:/u)).toBeNull();
+    const bands = screen.getAllByRole("button", { name: "Activity" });
+    expect(bands).toHaveLength(3);
+    for (const band of bands) fireEvent.click(band);
+    expect(screen.getByText("Read")).toBeVisible();
+    expect(screen.getByText("Write")).toBeVisible();
+    expect(screen.getByText("Bash")).toBeVisible();
+    const answer = screen.getByText("Applied the API approach throughout, retry budget untouched.");
+    const order = [bands[0]!, bubbles[0]!, bands[1]!, bubbles[1]!, bands[2]!, answer];
+    for (let index = 1; index < order.length; index += 1) {
+      expect(order[index - 1]!.compareDocumentPosition(order[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
+    expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
+    await capture(`steer-inline-two-${label}-${width}x${height}`);
   });
 });
