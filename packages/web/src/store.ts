@@ -1,4 +1,4 @@
-import { executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
+import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -3287,15 +3287,21 @@ export class WebStore {
     return { name: row.name, context: row.context };
   }
 
-  /** Commit the operation receipt with its mutations, including create-and-attach. */
+  /**
+   * Commit the operation receipt with its mutations, including create-and-attach.
+   * Read-only tools authenticate and scope the same way but leave no receipt:
+   * a repeated read answers from current state, and a read never writes.
+   */
   consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
     if (!/^[a-zA-Z0-9-]{16,128}$/u.test(operation.operationId)) throw new WebConsoleError("invalid_operation", "Invalid operation identity.", 400);
+    const readOnly = CONSOLE_READ_TOOL_NAMES.has(operation.tool);
     const canonicalArgs = Object.fromEntries(Object.entries(operation.args).sort(([a], [b]) => a.localeCompare(b)));
     const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs })).digest("hex");
     return this.transaction(() => {
       const origin = this.requireThread(scope.threadId);
       if (origin.sourceId !== scope.sourceId || origin.trigger !== undefined || origin.archivedAt !== null
         || this.activeTurn(scope.threadId)?.id !== scope.turnId) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+      if (readOnly) return executeConsoleTool(this, scope, operation);
       const prior = this.database.prepare("SELECT payload_sha256, result_json FROM console_tool_operations WHERE operation_id = ?")
         .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
       if (prior !== undefined) {

@@ -699,8 +699,8 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 Writable interactive web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
-`CreateConversation`, and `SetConversationProject` under per-tool allow/deny
-policy. The app authenticates through owner-private console discovery; metadata
+`SearchConversations`, `CreateConversation`, and `SetConversationProject` under
+per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
 alone never authorizes a callback. Tools return real IDs and applied/pending
 results, restrict all targets to the originating agent, and reject late calls.
 Create-and-attach and its operation receipt commit atomically. There is no

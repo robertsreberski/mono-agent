@@ -1,3 +1,4 @@
+import type { WebThread } from "./contracts.js";
 import type { WebStore } from "./store.js";
 import { WebConsoleError } from "./errors.js";
 import { parseProjectColor } from "./project-color.js";
@@ -7,8 +8,15 @@ export interface ConsoleToolScope {
   readonly threadId: string;
   readonly turnId: string;
 }
-export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "CreateConversation", "SetConversationProject"] as const;
+export const CONSOLE_TOOL_NAMES = ["ListProjects", "GetProject", "CreateProject", "UpdateProject", "DeleteProject", "ListConversations", "SearchConversations", "CreateConversation", "SetConversationProject"] as const;
 export type ConsoleToolName = typeof CONSOLE_TOOL_NAMES[number];
+/** Tools that never change state: no operation receipt is written for them. */
+export const CONSOLE_READ_TOOL_NAMES: ReadonlySet<ConsoleToolName> = new Set<ConsoleToolName>(["ListProjects", "GetProject", "ListConversations", "SearchConversations"]);
+/** Rows one listing or search returns unless the caller asks for fewer; the hard cap matches the console's own search. */
+const CONSOLE_TOOL_PAGE_DEFAULT = 20;
+const CONSOLE_TOOL_PAGE_MAX = 50;
+/** The search bar's minimum query, pinned by the store's search tests. */
+const SEARCH_MIN_QUERY = 2;
 export interface ConsoleToolOperation {
   readonly operationId: string;
   readonly tool: ConsoleToolName;
@@ -28,6 +36,14 @@ const text = (value: unknown, name: string, max: number, empty = false): string 
   if (name === "name" && /[\r\n]/u.test(value)) return invalid("name must not contain line breaks.");
   return value;
 };
+const pageLimit = (value: unknown): number => {
+  if (value === undefined) return CONSOLE_TOOL_PAGE_DEFAULT;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > CONSOLE_TOOL_PAGE_MAX) return invalid(`limit must be 1-${String(CONSOLE_TOOL_PAGE_MAX)}.`);
+  return value;
+};
+/** What the model needs to pick or move a conversation: identity, placement and recency, never message bodies. */
+const conversationSummary = ({ id, title, projectId, pendingProject, archivedAt, updatedAt }: WebThread) =>
+  ({ id, title, projectId, ...(pendingProject === undefined ? {} : { pendingProject }), archived: archivedAt !== null, updatedAt });
 
 /** Strict source-scoped operations shared by the authenticated callback and its tests. */
 export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
@@ -35,7 +51,7 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
   const keys: Record<ConsoleToolName, readonly string[]> = {
     ListProjects: [], GetProject: ["projectId"], CreateProject: ["name", "context", "color", "attachCurrentConversation"],
     UpdateProject: ["projectId", "name", "context", "color", "archived"], DeleteProject: ["projectId"],
-    ListConversations: ["projectId", "cursor"], CreateConversation: ["title", "projectId"], SetConversationProject: ["conversationId", "projectId"],
+    ListConversations: ["projectId", "archived", "limit", "cursor"], SearchConversations: ["query", "limit"], CreateConversation: ["title", "projectId"], SetConversationProject: ["conversationId", "projectId"],
   };
   if (!CONSOLE_TOOL_NAMES.includes(operation.tool) || !args || Array.isArray(args) || typeof args !== "object"
     || Object.keys(args).some((key) => !keys[operation.tool].includes(key))) return invalid("Unknown tool or argument.");
@@ -95,10 +111,27 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       result = { projectId: item.id, deleted: true }; break;
     }
     case "ListConversations": {
+      if (args.archived !== undefined && typeof args.archived !== "boolean") return invalid("archived must be boolean.");
       const projectId = args.projectId === undefined ? undefined : project(args.projectId).id;
-      const page = store.listThreadsPage({ sourceId: scope.sourceId, archived: false, scope: "chats", limit: 20,
+      const page = store.listThreadsPage({ sourceId: scope.sourceId, archived: args.archived === true, scope: "chats", limit: pageLimit(args.limit),
         ...(projectId === undefined ? {} : { projectId }), ...(args.cursor === undefined ? {} : { before: text(args.cursor, "cursor", 2048) }) });
-      result = { conversations: page.threads.map(({ id, title, projectId, pendingProject }) => ({ id, title, projectId, pendingProject })), ...(page.nextCursor === undefined ? {} : { cursor: page.nextCursor }) };
+      result = { conversations: page.threads.map(conversationSummary), ...(page.nextCursor === undefined ? {} : { cursor: page.nextCursor }) };
+      break;
+    }
+    case "SearchConversations": {
+      // The search bar's own path: FTS5 over message text plus title substring
+      // matches, ranked the same way, over this agent's chats (archived included).
+      const query = text(args.query, "query", 512).trim();
+      if (query.length < SEARCH_MIN_QUERY) return invalid(`query needs at least ${String(SEARCH_MIN_QUERY)} characters.`);
+      const page = store.searchThreads({ sourceId: scope.sourceId, query, limit: pageLimit(args.limit), scope: "chats" });
+      result = {
+        conversations: page.hits.map((hit) => ({
+          ...conversationSummary(hit.thread), titleMatch: hit.titleMatch, messageMatches: hit.messageMatches,
+          // The console wraps matches in control-character sentinels for highlighting; a model wants plain text.
+          ...(hit.snippet === undefined ? {} : { snippet: hit.snippet.replace(/[\u0002\u0003]/gu, "") }),
+        })),
+        truncated: page.truncated,
+      };
       break;
     }
     case "CreateConversation": {

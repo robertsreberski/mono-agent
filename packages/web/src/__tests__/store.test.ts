@@ -5826,3 +5826,56 @@ describe("WebStore conversation projects", () => {
     }
   });
 });
+
+describe("WebStore console discovery tools", () => {
+  it("lists and searches only the invoking agent's chats, and reads leave no receipt", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    const say = (threadId: string, prompt: string, answer: string): void => {
+      store.completeTurn(store.beginTurn({ threadId, text: prompt, attachmentIds: [] }).turnId, answer);
+    };
+    const other = store.createThread("agent-one");
+    store.patchThread(other.id, { title: "Exporter setup" });
+    say(other.id, "how do I reach the exporter", "Point it at the Tailscale address.");
+    const archived = store.createThread("agent-one");
+    store.patchThread(archived.id, { title: "Old tailscale notes" });
+    say(archived.id, "keep these", "Kept.");
+    store.patchThread(archived.id, { archived: true });
+    const foreign = store.createThread("agent-two");
+    say(foreign.id, "tailscale on the other agent", "Not yours.");
+    const origin = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: origin.id, text: "Find the exporter thread", attachmentIds: [] });
+    const scope = { sourceId: "agent-one", threadId: origin.id, turnId: turn.turnId };
+    const run = (tool: "ListConversations" | "SearchConversations", args: Record<string, unknown>) =>
+      store.consoleToolOperation(scope, { operationId: `op-${tool}-${String(Object.keys(args).length)}-0000000000`, tool, args }).result;
+
+    const search = run("SearchConversations", { query: "tailscale" }) as { conversations: Array<Record<string, unknown>>; truncated: boolean };
+    expect(search.truncated).toBe(false);
+    expect(search.conversations.map((hit) => hit.id).sort()).toEqual([other.id, archived.id].sort());
+    const messageHit = search.conversations.find((hit) => hit.id === other.id)!;
+    expect(messageHit).toMatchObject({ title: "Exporter setup", titleMatch: false, messageMatches: 1, archived: false, projectId: null });
+    expect(messageHit.snippet).toContain("Tailscale");
+    expect(messageHit.snippet).not.toMatch(/[\u0002\u0003]/u);
+    expect(search.conversations.find((hit) => hit.id === archived.id)).toMatchObject({ titleMatch: true, archived: true });
+
+    const active = run("ListConversations", {}) as { conversations: Array<Record<string, unknown>>; cursor?: string };
+    expect(active.conversations.map((row) => row.id)).toEqual([origin.id, other.id]);
+    expect(active.conversations[1]).toMatchObject({ title: "Exporter setup", archived: false, updatedAt: expect.any(String) });
+    expect(active.cursor).toBeUndefined();
+    expect((run("ListConversations", { archived: true }) as { conversations: Array<{ id: string }> }).conversations.map((row) => row.id)).toEqual([archived.id]);
+    const first = run("ListConversations", { limit: 1 }) as { conversations: Array<{ id: string }>; cursor?: string };
+    expect(first.conversations.map((row) => row.id)).toEqual([origin.id]);
+    expect(first.cursor).toEqual(expect.any(String));
+    expect((run("ListConversations", { limit: 1, cursor: first.cursor }) as { conversations: Array<{ id: string }> }).conversations.map((row) => row.id)).toEqual([other.id]);
+
+    expect(() => run("SearchConversations", { query: "t" })).toThrow(WebConsoleError);
+    expect(() => run("ListConversations", { limit: 0 })).toThrow(WebConsoleError);
+    expect(() => run("ListConversations", { limit: 51 })).toThrow(WebConsoleError);
+    const receipts = (store as unknown as { database: DatabaseSync }).database
+      .prepare("SELECT COUNT(*) AS count FROM console_tool_operations").get() as { count: number };
+    expect(receipts.count).toBe(0);
+    store.close();
+  });
+});

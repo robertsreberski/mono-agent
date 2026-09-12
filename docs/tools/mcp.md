@@ -462,7 +462,8 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 Writable interactive web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
-`CreateConversation`, and `SetConversationProject`. They require no new config.
+`SearchConversations`, `CreateConversation`, and `SetConversationProject`. They
+require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
 They are scoped to the originating agent and unavailable to cron, background
@@ -481,5 +482,11 @@ conversation, and turn. Credentials and endpoint choices are never model
 arguments or results. Settlement, cancellation, and shutdown revoke access.
 Each call has an independent operation ID; mutation receipts commit atomically
 with changes. Unknown delivery is an error and is never automatically retried.
-Project and conversation listings return at most twenty rows, with a truncation
-flag for projects and a cursor for conversations.
+Project and conversation listings return at most twenty rows by default, with a
+truncation flag for projects and a cursor for conversations. `ListConversations`
+lists the agent's chats newest first (active by default, `archived: true` for
+archived ones, optionally within a project) and accepts `limit` up to fifty.
+`SearchConversations` is the console search bar's own full-text search — FTS5
+over message text plus title matches, ranked the same way — over the agent's
+chats including archived ones; it returns conversation ids with title, project,
+a plain-text snippet and match counts. Neither read writes an operation receipt.

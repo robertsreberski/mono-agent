@@ -17,7 +17,8 @@ export const CONSOLE_PROJECT_SCHEMAS = {
   CreateProject: z.object({ name, context: context.optional(), color: color.optional(), attachCurrentConversation: z.boolean().optional() }).strict(),
   UpdateProject: z.object({ projectId: id, name: name.optional(), context: context.optional(), color: color.optional(), archived: z.boolean().optional() }).strict(),
   DeleteProject: z.object({ projectId: id }).strict(),
-  ListConversations: z.object({ projectId: id.optional(), cursor: z.string().max(2048).optional() }).strict(),
+  ListConversations: z.object({ projectId: id.optional(), archived: z.boolean().optional(), limit: z.number().int().min(1).max(50).optional(), cursor: z.string().max(2048).optional() }).strict(),
+  SearchConversations: z.object({ query: z.string().trim().min(2).max(512), limit: z.number().int().min(1).max(50).optional() }).strict(),
   CreateConversation: z.object({ title: z.string().trim().min(1).max(80).optional(), projectId: id.optional() }).strict(),
   SetConversationProject: z.object({ conversationId: id.optional(), projectId: id.nullable() }).strict(),
 } as const;
@@ -35,7 +36,8 @@ const descriptions: Record<ToolName, string> = {
   CreateProject: "Create a project. attachCurrentConversation atomically adds this conversation, effective after its current turn finishes.",
   UpdateProject: "Update a project's name, shared context, color, or archive status. Name/context changes affect subsequent turns. Archiving a pending destination is refused until its turns finish.",
   DeleteProject: "Delete a project and retain its conversations. Refused while active members or pending destinations reference it.",
-  ListConversations: "List this agent's interactive conversations, optionally within a project. Use the returned cursor for the next page.",
+  ListConversations: "List this agent's conversations, newest first: active by default, archived with archived=true, optionally within a project. Returns id, title, projectId, archived and updatedAt; use the returned cursor for the next page.",
+  SearchConversations: "Find this agent's conversations by words in their titles or messages (the console's full-text search). Returns ranked conversation ids with a matching snippet; use ListConversations to browse instead.",
   CreateConversation: "Create a conversation for this agent, optionally within a project. Does not start a model turn.",
   SetConversationProject: "Join, move, or leave a project (projectId null). Defaults to this conversation. Active turns retain their existing context; the result reports pending membership. Never wait for your own turn to finish.",
 };

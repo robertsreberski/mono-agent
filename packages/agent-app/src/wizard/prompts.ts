@@ -141,6 +141,7 @@ const APP_TOOL_HINTS: Readonly<Record<string, string>> = {
   UpdateProject: "edit console project name, context, color, or archive state",
   DeleteProject: "delete an idle console project while retaining its conversations",
   ListConversations: "list the originating agent's console conversations",
+  SearchConversations: "find the originating agent's console conversations by title or message text",
   CreateConversation: "create an idle console conversation",
   SetConversationProject: "join, move, or leave a project at the turn boundary",
   MemoryJournal: "browse bounded curated memory over an explicit calendar-date range",

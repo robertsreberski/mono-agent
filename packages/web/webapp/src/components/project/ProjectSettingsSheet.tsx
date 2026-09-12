@@ -3,6 +3,11 @@ import { type RefObject, useEffect, useState } from "react";
 import { useConsoleStore } from "../../console-store";
 import { Icon } from "../Icon";
 
+const PROJECT_COLOR_CHOICES = ["default", "blue", "purple", "amber", "rose"] as const satisfies readonly ProjectColor[];
+const PROJECT_COLOR_LABELS: Readonly<Record<ProjectColor, string>> = {
+  default: "Accent", blue: "Blue", purple: "Purple", amber: "Amber", rose: "Rose",
+};
+
 export type ProjectSettingsState =
   /** `threadId`: the conversation the new project is made from; it becomes the first member. */
   | { readonly mode: "create"; readonly sourceId?: string; readonly threadId?: string }
@@ -187,13 +192,30 @@ export function ProjectSettingsSheet({
                 disabled={saving}
               />
             </label>
-            <fieldset className="project-palette" disabled={saving}>
-              <legend>Color</legend>
-              {(["default", "blue", "purple", "amber", "rose"] as const).map((choice) => (
-                <button type="button" key={choice} data-project-color={choice} aria-label={`${choice} project color`}
-                  aria-pressed={color === choice} onClick={() => setColor(choice)}>{choice}</button>
-              ))}
-            </fieldset>
+            <div className="sheet-field">
+              <span className="dashboard-section-label sheet-field-head">
+                Color
+                <span className="sheet-field-hint">{PROJECT_COLOR_LABELS[color]}</span>
+              </span>
+              {/* Swatches, not words: the folder tile's own tint at the size a
+                  thumb can hit, the chosen one marked with a check. */}
+              <div className="project-palette" role="radiogroup" aria-label="Project color">
+                {PROJECT_COLOR_CHOICES.map((choice) => (
+                  <button
+                    type="button"
+                    role="radio"
+                    key={choice}
+                    data-project-color={choice}
+                    aria-label={`${PROJECT_COLOR_LABELS[choice]} project color`}
+                    aria-checked={color === choice}
+                    disabled={saving}
+                    onClick={() => setColor(choice)}
+                  >
+                    {color === choice && <Icon name="check" size={13} />}
+                  </button>
+                ))}
+              </div>
+            </div>
             <label className="sheet-field">
               <span className="dashboard-section-label sheet-field-head">
                 Context

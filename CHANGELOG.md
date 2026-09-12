@@ -6,7 +6,9 @@
   Membership changes wait for the active turn boundary; steering retains frozen
   project context. Busy deletion and pending-destination archival return conflicts.
   Add authenticated, source-scoped console project/conversation MCP tools with
-  atomic create-and-attach and operation receipts. Storage appends migration 27.
+  atomic create-and-attach and operation receipts, plus `SearchConversations`
+  (the search bar's full-text search) and archived/limit options on
+  `ListConversations`. Storage appends migration 27.
 
 - Add Projects to the web console: per-agent named containers of conversations
   with a free-text context (at most 4,000 characters) that is prepended,
