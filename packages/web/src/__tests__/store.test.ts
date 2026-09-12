@@ -6000,6 +6000,131 @@ describe("WebStore conversation projects", () => {
   });
 });
 
+describe("WebStore model transitions", () => {
+  async function openStore(): Promise<WebStore> {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    return store;
+  }
+
+  /** One settled turn on an explicitly resolved route, as a dispatch would record it. */
+  function ran(store: WebStore, threadId: string, text: string, model: string, effort?: string): { turnId: string; userMessageId: string; assistantMessageId: string } {
+    const turn = store.beginTurn({
+      threadId,
+      text,
+      attachmentIds: [],
+      requestedModel: model,
+      ...(effort === undefined ? {} : { requestedEffort: effort }),
+    });
+    store.completeTurn(turn.turnId, `answered ${text}`);
+    return turn;
+  }
+
+  it("records the route change between the turns it sits between, and nothing for the first one", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      const first = ran(store, thread.id, "one", "provider/sol", "low");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      const second = ran(store, thread.id, "two", "provider/astra", "high");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+        afterMessageId: first.assistantMessageId,
+        turnId: second.turnId,
+        before: { model: "provider/sol", effort: "low" },
+        after: { model: "provider/astra", effort: "high" },
+      });
+    } finally { store.close(); }
+  });
+
+  it("collapses picker noise: only what the next turn actually ran on is a change", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      ran(store, thread.id, "one", "provider/sol", "low");
+      // Flipped away and back with no turn in between: nothing happened.
+      store.patchThread(thread.id, { model: "provider/astra" });
+      store.patchThread(thread.id, { model: "provider/sol" });
+      ran(store, thread.id, "two", "provider/sol", "low");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      // Effort alone still counts, and it names itself by the pair it changed.
+      ran(store, thread.id, "three", "provider/sol", "high");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+        before: { model: "provider/sol", effort: "low" },
+        after: { model: "provider/sol", effort: "high" },
+      });
+    } finally { store.close(); }
+  });
+
+  it("never claims a change against a route nothing resolved", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      // A turn dispatched with no reported model is neither a change nor a
+      // baseline: the one before it is what the next turn is measured against.
+      const unreported = store.beginTurn({ threadId: thread.id, text: "unreported", attachmentIds: [] });
+      store.completeTurn(unreported.turnId, "answered");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      const first = ran(store, thread.id, "one", "provider/sol", "low");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      const blind = store.beginTurn({ threadId: thread.id, text: "blind", attachmentIds: [] });
+      store.completeTurn(blind.turnId, "answered");
+      const next = ran(store, thread.id, "two", "provider/astra", "low");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+        afterMessageId: blind.assistantMessageId,
+        turnId: next.turnId,
+        before: { model: "provider/sol", effort: "low" },
+      });
+      // An effort only one side reports stays unclaimed while the model holds.
+      ran(store, thread.id, "three", "provider/astra");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+    } finally { store.close(); }
+  });
+
+  it("records assistant-only and promoted turns, and serves each row with its own page", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      const first = ran(store, thread.id, "one", "provider/sol", "low");
+      const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake", requestedModel: "provider/astra", requestedEffort: "low" });
+      store.completeTurn(wake.turnId, "woke");
+      expect(store.modelTransitions(thread.id)).toMatchObject([
+        { afterMessageId: first.assistantMessageId, turnId: wake.turnId, after: { model: "provider/astra" } },
+      ]);
+      const queued = store.reserveLiveInput(thread.id, "queued work");
+      store.queueLiveInput(queued.input.id);
+      store.patchThread(thread.id, { model: "provider/terra" });
+      const promoted = store.promoteNextQueuedLiveInput(thread.id);
+      expect(promoted).toBeDefined();
+      store.completeTurn(promoted!.turnId, "answered");
+      // The queued input froze the agent default, which resolves to no reported
+      // route, so the promotion claims nothing; the turn after it is measured
+      // against the last route that WAS reported.
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      const last = ran(store, thread.id, "last", "provider/terra", "high");
+      const rows = store.modelTransitions(thread.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toMatchObject({
+        afterMessageId: promoted!.assistantMessageId,
+        turnId: last.turnId,
+        before: { model: "provider/astra" },
+        after: { model: "provider/terra", effort: "high" },
+      });
+      const detail = store.getThreadDetail(thread.id);
+      expect(detail?.modelTransitions).toHaveLength(2);
+      const latest = store.listMessagesPage(thread.id, { limit: 1 });
+      expect(latest.modelTransitions).toEqual([]);
+      const pageWithAnchor = store.listMessagesPage(thread.id, { limit: 3 });
+      expect(pageWithAnchor.modelTransitions).toHaveLength(1);
+      expect(pageWithAnchor.modelTransitions?.[0]?.afterMessageId).toBe(promoted!.assistantMessageId);
+    } finally { store.close(); }
+  });
+});
+
 describe("WebStore console discovery tools", () => {
   it("lists and searches only the invoking agent's chats, and reads leave no receipt", async () => {
     const base = await temporaryRoot();

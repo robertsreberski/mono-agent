@@ -9578,7 +9578,7 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.selectedThreadId).toBe(imported.id);
       expect(store.current.navigationDestination).toBe("chats");
       expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
-      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages, projectTransitions: [] });
+      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages, projectTransitions: [], modelTransitions: [] });
       expect(window.location.pathname).toBe("/");
       expect(readComposerDraft("alpha", imported.id)).toBe("");
       expect(store.current.composerFocusThreadId).toBe(imported.id);
@@ -9759,6 +9759,27 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.thread).mockResolvedValue({ ...initial, thread: moved, projectTransitions: [transition] });
     act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:01Z", payload: { thread: moved } }));
     await waitFor(() => expect(store.current.detail?.projectTransitions).toEqual([transition]));
+  });
+
+  it("delivers a route-change sidecar with the read that follows the send", async () => {
+    // The picker's own write says nothing about the transcript: the marker is
+    // written when the next turn is admitted, and the read `sendTurn` already
+    // issues is what carries it. No new event, no extra request.
+    const initial = detail(member);
+    vi.mocked(api.thread).mockResolvedValue(initial);
+    const store = await renderProjectStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
+    expect(store.current.detail?.modelTransitions).toEqual([]);
+    const transition = {
+      id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: "turn-next",
+      before: { model: "provider/sol", effort: "low" },
+      after: { model: "provider/astra", effort: "high" },
+      createdAt: "2026-09-12T00:00:02Z",
+    };
+    vi.mocked(api.startTurn).mockResolvedValue({ thread: member, turn: { id: "turn-next", status: "running" } });
+    vi.mocked(api.thread).mockResolvedValue({ ...initial, modelTransitions: [transition] });
+    await act(async () => { await store.current.sendTurn({ text: "go" }); });
+    await waitFor(() => expect(store.current.detail?.modelTransitions).toEqual([transition]));
   });
 
   it("seeds one agent's projects from bootstrap and lists the next agent on switch", async () => {

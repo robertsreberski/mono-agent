@@ -160,6 +160,24 @@ export const WEB_STORAGE_MIGRATIONS: readonly WebStorageMigration[] = Object.fre
       CREATE INDEX IF NOT EXISTS project_transitions_by_thread ON project_transitions(thread_id, id);
     `);
   } },
+  { version: 28, name: "model-transitions", up: ({ database }) => {
+    // The membership sidecar's shape, for the selected route: immutable rows
+    // anchored after a settled message. A separate table rather than a `kind`
+    // column on the project one, because each carries its own before/after
+    // identity and the project rows are already a served contract.
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS model_transitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        after_message_id TEXT,
+        turn_id TEXT,
+        before_json TEXT NOT NULL,
+        after_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS model_transitions_by_thread ON model_transitions(thread_id, id);
+    `);
+  } },
 ] satisfies WebStorageMigration[]).map((step) => Object.freeze(step)));
 
 export const WEB_STORAGE_SCHEMA_VERSION = WEB_STORAGE_MIGRATIONS.at(-1)!.version;
@@ -210,6 +228,7 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       console_tool_operations: ["operation_id", "thread_id", "turn_id", "payload_sha256", "result_json"],
       pending_project_memberships: ["thread_id", "project_id", "turn_id"],
       project_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
+      model_transitions: ["thread_id", "after_message_id", "turn_id", "before_json", "after_json", "created_at"],
       projects: ["color", "source_id", "name", "context", "created_at", "updated_at", "archived_at", "revision"],
       cron_overviews: ["jobs_truncated"],
       attachments: ["origin"],

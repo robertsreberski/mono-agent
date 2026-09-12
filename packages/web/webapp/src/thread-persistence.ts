@@ -1,5 +1,6 @@
+import { readModelTransitions } from "./model-transitions";
 import { readProjectTransitions } from "./project-transitions";
-import type { ProjectTransition } from "./types";
+import type { ModelTransition, ProjectTransition } from "./types";
 import { sanitizeCronTranscript } from "./cron-visibility";
 import { mergeSeenRevisions, readSeenRevisions, type SeenRevision } from "./unread";
 import type { ThreadCacheEntry } from "./thread-cache";
@@ -83,6 +84,7 @@ const SEEN_KEY = "seen";
 /** One conversation, as it is written to the device. */
 export interface PersistedThread {
   readonly projectTransitions?: readonly ProjectTransition[];
+  readonly modelTransitions?: readonly ModelTransition[];
   readonly id: string;
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
@@ -308,6 +310,7 @@ const readThreadRow = (value: unknown): PersistedThread | undefined => {
     thread: sanitized.thread,
     messages: sanitized.messages,
     projectTransitions: readProjectTransitions(value.projectTransitions),
+    modelTransitions: readModelTransitions(value.modelTransitions),
     ...(typeof value.messagesNextCursor === "string"
       ? { messagesNextCursor: value.messagesNextCursor }
       : {}),
@@ -602,6 +605,7 @@ export const createThreadPersistence = (
   ): boolean => previous !== undefined
     && previous.thread === entry.thread
     && previous.projectTransitions === entry.projectTransitions
+    && previous.modelTransitions === entry.modelTransitions
     && previous.messages === entry.messages
     && previous.messagesNextCursor === entry.messagesNextCursor
     && previous.etag === entry.etag
@@ -616,6 +620,7 @@ export const createThreadPersistence = (
       thread: entry.thread,
       messages: transcript.messages,
       projectTransitions: entry.projectTransitions ?? [],
+      modelTransitions: entry.modelTransitions ?? [],
       ...(entry.messagesNextCursor === undefined
         ? {}
         : { messagesNextCursor: entry.messagesNextCursor }),

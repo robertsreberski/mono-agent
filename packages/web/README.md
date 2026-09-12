@@ -294,6 +294,19 @@ level. Configured subagents keep independent attribution in their own Activity
 row. The browser never infers a fallback from selector state, and the
 route-attribution payload never carries raw provider errors or request identifiers.
 
+Where the conversation's selected route changes, the transcript says so: a quiet
+rule between the last turn on the old model and the first turn admitted on the
+new one, reading `Model  Sol 5.6 · high → Astra 6 · medium` (or `Effort` alone
+when only the grade moved), with the full provider ids and effort names in its
+accessible name. It is written at turn admission from that turn's own frozen
+resolved route, not from picker writes: flipping the selector and coming back
+before sending leaves nothing behind, a run of flips leaves one marker, a route
+nothing resolved is never claimed as a change, and the first routed turn is a
+baseline rather than a change. A provider fallback is not a route change and
+stays in the message's own attribution, above. `modelTransitions` sidecars
+accompany detail and message pages exactly as `projectTransitions` do, and
+schema 28 adds their records.
+
 The dashboard header's settings action opens a separate **Agent settings** dialog.
 Its model and effort choices become the defaults for subsequently created web
 console conversations for that agent. Either field may inherit resolved config,
