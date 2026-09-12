@@ -593,6 +593,28 @@ export type WebMessagePart =
       readonly disposition: "steered" | "follow_up";
     }
   | {
+      /**
+       * Chronological marker for the point where an operator's live follow-up
+       * ("steer") was consumed by the running turn. The steered user message
+       * row stays in the database and API untouched; the browser renders the
+       * inline bubble from this self-contained marker and drops the duplicate
+       * standalone bubble. Full operator text (bounded by
+       * `AGENT_LIVE_INPUT_MAX_CHARACTERS`) travels here so the marker needs
+       * no second fetch when the user row is paged out.
+       */
+      readonly type: "steer";
+      /** `live_inputs.id`, matching the synthetic event's `metadata.inputId`. */
+      readonly inputId: string;
+      /** The steered user message this marker duplicates inline. */
+      readonly messageId: string;
+      /** Full operator text, verbatim (never the 40-code-point preview). */
+      readonly text: string;
+      /** When the operator sent the steer, when known. Length/control-char checked only. */
+      readonly receivedAt?: string;
+      /** The steer author's quote, when the standalone bubble carries one. */
+      readonly quote?: WebQuote;
+    }
+  | {
       readonly type: "monitor-activity";
       /** One compact run-level row, with one latest projection per Monitor. */
       readonly monitors: readonly {

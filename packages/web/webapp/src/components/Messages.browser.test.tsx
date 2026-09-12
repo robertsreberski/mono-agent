@@ -4,12 +4,25 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
-import { convertWebMessage } from "../runtime";
+import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
+import { projectProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
 import type { WebMessage } from "../types";
 import "../styles.css";
 import { AssistantMessage, SystemMessage, UserMessage } from "./Messages";
+
+/**
+ * Screenshot evidence is opt-in: `VITE_STEER_INLINE_SHOTS=<absolute dir>`
+ * captures the split transcript, and CI runs the same assertions without it.
+ */
+const shotDirectory = import.meta.env.VITE_STEER_INLINE_SHOTS as string | undefined;
+
+const capture = async (name: string): Promise<void> => {
+  if (shotDirectory === undefined || shotDirectory.length === 0) return;
+  await page.screenshot({ path: `${shotDirectory}/${name}.png` });
+};
 
 const consoleStoreMock = vi.hoisted(() => ({
   current: {
@@ -359,5 +372,151 @@ describe("imported cron Reply context in Chromium", () => {
     const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
     expect(messageRoot.getBoundingClientRect().right).toBeLessThanOrEqual(width);
     expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
+  });
+});
+
+const steerText = "Use the API instead — the sync path deadlocks under load, and the retry budget is already spent";
+
+const steeredUser: WebMessage = {
+  id: "steered-user",
+  threadId: "thread",
+  role: "user",
+  createdAt: "2026-09-12T10:00:01.000Z",
+  updatedAt: "2026-09-12T10:00:02.000Z",
+  status: "complete",
+  liveInputStatus: "applied",
+  attachments: [],
+  parts: [{ type: "text", text: steerText }],
+};
+
+const steeredResponse: WebMessage = {
+  id: "steered-response",
+  threadId: "thread",
+  role: "assistant",
+  createdAt: "2026-09-12T10:00:00.000Z",
+  updatedAt: "2026-09-12T10:00:05.000Z",
+  finishedAt: "2026-09-12T10:00:05.000Z",
+  status: "complete",
+  attachments: [],
+  parts: [
+    { type: "reasoning", text: "Reading the workspace first." },
+    { type: "tool-call", toolCallId: "read-1", toolName: "Read", status: "complete" },
+    {
+      type: "steer",
+      inputId: "input-1",
+      messageId: "steered-user",
+      text: steerText,
+      receivedAt: "2026-09-12T10:00:01.000Z",
+      quote: { text: "the sync approach", messageId: "assistant-source" },
+    },
+    { type: "tool-call", toolCallId: "write-1", toolName: "Write", status: "complete" },
+    { type: "text", text: "Applied the API approach throughout." },
+  ],
+};
+
+const secondSteerText = "And keep the retry budget where it is; only the transport changes";
+
+const steeredTwiceUser: WebMessage = {
+  ...steeredUser,
+  id: "steered-user-2",
+  createdAt: "2026-09-12T10:00:03.000Z",
+  updatedAt: "2026-09-12T10:00:03.000Z",
+  parts: [{ type: "text", text: secondSteerText }],
+};
+
+/** The same turn steered twice: three bands, two bubbles, answer last. */
+const steeredTwiceResponse: WebMessage = {
+  ...steeredResponse,
+  id: "steered-twice-response",
+  parts: [
+    ...steeredResponse.parts.slice(0, -1),
+    { type: "steer", inputId: "input-2", messageId: "steered-user-2", text: secondSteerText },
+    { type: "tool-call", toolCallId: "bash-1", toolName: "Bash", status: "complete" },
+    { type: "text", text: "Applied the API approach throughout, retry budget untouched." },
+  ],
+};
+
+function SteerHarness({ width, messages }: { readonly width: number; readonly messages: readonly WebMessage[] }) {
+  const presentation = projectProcessJobPresentation(
+    coalesceMonitorWakeMessages(messages),
+    { selectedModel: "provider:primary", threadId: "thread" },
+  );
+  const runtime = useExternalStoreRuntime<WebMessage>({
+    messages: presentation.messages,
+    convertMessage: (value) => convertWebMessage(value, {
+      selectedModel: "provider:primary",
+      processJobEvents: presentation.eventsByMessageId.get(value.id),
+      processJobs: presentation.jobsById,
+    }),
+    onNew: async () => undefined,
+  });
+  return (
+    <div style={{ width, minHeight: 320 }}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ThreadPrimitive.Root>
+          <ThreadPrimitive.Messages components={{ AssistantMessage, SystemMessage, UserMessage }} />
+        </ThreadPrimitive.Root>
+      </AssistantRuntimeProvider>
+    </div>
+  );
+}
+
+describe("inline steer in Chromium", () => {
+  it.each([
+    [1280, 800, "desktop"],
+    [390, 844, "mobile"],
+  ] as const)("splits Activity around the consumed steer at %ipx (%s)", async (width, height, label) => {
+    await page.viewport(width, height);
+    const { container } = render(
+      <SteerHarness width={Math.min(width, 760)} messages={[steeredUser, steeredResponse]} />,
+    );
+
+    // The duplicate standalone bubble is gone; the inline one keeps everything.
+    expect(screen.getByRole("group", { name: "Steered follow-up" })).toBeVisible();
+    expect(screen.getByText(steerText)).toBeVisible();
+    expect(screen.getByText("the sync approach")).toBeVisible();
+    expect(screen.queryByText(/Steered:/u)).toBeNull();
+    expect(screen.getByText("Applied the API approach throughout.")).toBeVisible();
+    const bands = screen.getAllByRole("button", { name: "Activity" });
+    expect(bands).toHaveLength(2);
+    for (const band of bands) fireEvent.click(band);
+    expect(screen.getByText("Read")).toBeVisible();
+    expect(screen.getByText("Write")).toBeVisible();
+    const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
+    expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
+    await capture(`steer-inline-${label}-${width}x${height}`);
+  });
+
+  it.each([
+    [1280, 800, "desktop"],
+    [390, 844, "mobile"],
+  ] as const)("keeps two steers in order at %ipx (%s)", async (width, height, label) => {
+    await page.viewport(width, height);
+    const { container } = render(
+      <SteerHarness
+        width={Math.min(width, 760)}
+        messages={[steeredUser, steeredTwiceUser, steeredTwiceResponse]}
+      />,
+    );
+
+    const bubbles = screen.getAllByRole("group", { name: "Steered follow-up" });
+    expect(bubbles.map((bubble) => bubble.textContent)).toEqual([`the sync approach${steerText}`, secondSteerText]);
+    expect(screen.getAllByText(steerText)).toHaveLength(1);
+    expect(screen.getAllByText(secondSteerText)).toHaveLength(1);
+    expect(screen.queryByText(/Steered:/u)).toBeNull();
+    const bands = screen.getAllByRole("button", { name: "Activity" });
+    expect(bands).toHaveLength(3);
+    for (const band of bands) fireEvent.click(band);
+    expect(screen.getByText("Read")).toBeVisible();
+    expect(screen.getByText("Write")).toBeVisible();
+    expect(screen.getByText("Bash")).toBeVisible();
+    const answer = screen.getByText("Applied the API approach throughout, retry budget untouched.");
+    const order = [bands[0]!, bubbles[0]!, bands[1]!, bubbles[1]!, bands[2]!, answer];
+    for (let index = 1; index < order.length; index += 1) {
+      expect(order[index - 1]!.compareDocumentPosition(order[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    const messageRoot = container.querySelector<HTMLElement>(".message-assistant")!;
+    expect(messageRoot.scrollWidth).toBeLessThanOrEqual(messageRoot.clientWidth);
+    await capture(`steer-inline-two-${label}-${width}x${height}`);
   });
 });

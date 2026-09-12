@@ -435,6 +435,23 @@ describe("readMessageDelta", () => {
     expect(setOp(null)).toBeUndefined();
   });
 
+  it("reads an inline-steer marker and refuses one without operator text", () => {
+    const setOp = (part: unknown) => readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part }] });
+
+    expect(setOp({
+      type: "steer",
+      inputId: "input-1",
+      messageId: "user-1",
+      text: "Use the API instead",
+      receivedAt: "2026-09-12T10:00:01.000Z",
+      quote: { text: "the sync approach", messageId: "assistant-source" },
+    })).toBeDefined();
+    expect(setOp({ type: "steer", inputId: "input-1", messageId: "user-1", text: "   " }))
+      .toBeUndefined();
+    expect(setOp({ type: "steer", messageId: "user-1", text: "Use the API instead" }))
+      .toBeUndefined();
+  });
+
   it("refuses an op whose own shape is wrong", () => {
     expect(readMessageDelta({ ...wire, ops: [{ op: "truncate" }] })).toBeUndefined();
     expect(readMessageDelta({ ...wire, ops: [{ op: "append", index: 0 }] })).toBeUndefined();

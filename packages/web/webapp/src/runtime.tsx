@@ -164,6 +164,7 @@ const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
         return part.event === "cron_run";
       case "process-job":
       case "process-job-wake":
+      case "steer":
       case "cron-reply-context":
       case "error":
       case "attachment":
@@ -300,6 +301,11 @@ const convertPart = (
         data: jsonObject(processJobTerminalEvent(job, part.deliveryKey)),
       };
     }
+    case "steer":
+      // A consumed steer renders as the operator's own message in place, so
+      // it converts to a named data part that deliberately belongs to neither
+      // the activity set nor the answer: it breaks the Activity band instead.
+      return { type: "data-steer", data: jsonObject(part) };
     case "monitor-activity":
       return { type: "data-monitor-activity", data: jsonObject(part) };
     case "cron-reply-context":
@@ -396,6 +402,9 @@ const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
 const isBlankText = (part: ConvertedPart): boolean =>
   part.type === "text" && part.text.trim().length === 0;
 
+/** A consumed steer, which splits settled activity instead of joining it. */
+const isSteerPart = (part: ConvertedPart): boolean => part.type === "data-steer";
+
 /**
  * Lay a completed assistant turn out as one activity log over one answer.
  *
@@ -405,6 +414,11 @@ const isBlankText = (part: ConvertedPart): boolean =>
  * wedged into three paragraphs. In a completed turn the last prose IS the answer
  * and everything before it is working-out, so interim prose becomes a `note`
  * (activity, like a tool row) and the whole run closes up.
+ *
+ * A consumed steer is an ordering barrier inside that log: activity produced
+ * before the steer stays before it and activity produced after stays after, so
+ * the band splits at exactly the point the run consumed the follow-up. The
+ * answer still closes the turn.
  *
  * An error part is neither: it stays behind the answer so it cannot split the
  * log, and so does any data part a newer server sends that this bundle cannot
@@ -418,17 +432,28 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
   });
   if (answerIndex < 0) return visible;
 
-  const activity: ConvertedPart[] = [];
+  const folded: ConvertedPart[] = [];
+  let activity: ConvertedPart[] = [];
   const afterAnswer: ConvertedPart[] = [];
+  const flush = (): void => {
+    folded.push(...activity);
+    activity = [];
+  };
   visible.forEach((part, index) => {
     if (index === answerIndex) return;
+    if (isSteerPart(part)) {
+      flush();
+      folded.push(part);
+      return;
+    }
     if (part.type === "text") {
       activity.push({ type: "data-note", data: { text: part.text } });
       return;
     }
     (ACTIVITY_PART_TYPES.has(part.type) ? activity : afterAnswer).push(part);
   });
-  return [...activity, visible[answerIndex]!, ...afterAnswer];
+  flush();
+  return [...folded, visible[answerIndex]!, ...afterAnswer];
 };
 
 interface ConvertWebMessageOptions {
@@ -787,7 +812,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           !isLegacySilentCronMessage(message)
           && !(message.role === "assistant" && message.status === "complete"
             && message.attachments.length === 0
-            && !message.parts.some((part) => part.type === "process-job-wake")
+            && !message.parts.some((part) => part.type === "process-job-wake" || part.type === "steer")
             && (message.projectTransitions?.length ?? 0) === 0
             && convertWebMessage(message).content?.length === 0)),
       ),
