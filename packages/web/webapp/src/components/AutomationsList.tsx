@@ -32,7 +32,7 @@ function compareAutomations(left: CronJob, right: CronJob): number {
     if (rightAt === undefined) return -1;
     if (rightAt !== leftAt) return rightAt - leftAt;
   }
-  return left.jobId.localeCompare(right.jobId);
+  return left.jobId < right.jobId ? -1 : left.jobId > right.jobId ? 1 : 0;
 }
 
 /** Require an unambiguous future instant, rejecting dates JavaScript normalizes. */

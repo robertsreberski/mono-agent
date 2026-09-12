@@ -228,7 +228,8 @@ describe("Dashboard Automations chip", () => {
       name: "loading",
       overrides: { cronOverview: null, cronLoading: true, cronError: null },
       copy: "Loading automations…",
-    },    {
+    },
+    {
       name: "unsupported",
       overrides: {
         selectedAgent: agent("agent-one"),
