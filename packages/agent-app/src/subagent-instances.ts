@@ -28,7 +28,8 @@ export interface SubagentInstance {
   definition: InstanceDefinition;
   sessionId: string;
   sessionsRoot: string;
-  status: "idle" | "running" | "awaiting_reply" | "closed" | "expired";
+  reservation?: { token: string };
+  status: "queued" | "idle" | "running" | "awaiting_reply" | "closed" | "expired";
   pendingQuestion?: SubagentQuestion;
   turns: number;
   usage: InstanceUsage;
@@ -43,9 +44,11 @@ export interface InstanceRegistryHandle {
   list(): Promise<SubagentInstance[]>;
   get(id: string): Promise<SubagentInstance | undefined>;
   create(spec: InstanceSpec): Promise<SubagentInstance>;
-  begin(id: string): Promise<SubagentInstance>;
+  reserve(id: string, token: string): Promise<SubagentInstance>;
+  releaseReservation(id: string, token: string): Promise<void>;
+  begin(id: string, token?: string): Promise<SubagentInstance>;
   markAwaiting(id: string, question: SubagentQuestion): Promise<SubagentInstance>;
-  finish(id: string, outcome: InstanceOutcome): Promise<SubagentInstance>;
+  finish(id: string, outcome: InstanceOutcome, token?: string): Promise<SubagentInstance>;
   close(id: string): Promise<SubagentInstance>;
 }
 
@@ -67,12 +70,15 @@ function validQuestion(value: unknown): value is SubagentQuestion {
       && new Set(value.options).size === value.options.length));
 }
 function validRecord(value: unknown, conversationId: string, sessionsRoot: string): value is SubagentInstance {
-  if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead", "pendingQuestion"])) return false;
+  if (!object(value) || !keys(value, ["id", "conversationId", "name", "systemPrompt", "definition", "sessionId", "sessionsRoot", "status", "turns", "usage", "createdAt", "updatedAt", "lastStatus", "lastAnswerHead", "pendingQuestion", "reservation"])) return false;
+  if (value.reservation !== undefined && (!object(value.reservation) || !keys(value.reservation, ["token"])
+    || typeof value.reservation.token !== "string" || !/^[a-f0-9-]{36}$/u.test(value.reservation.token))) return false;
+  if (value.status === "queued" && value.reservation === undefined) return false;
   const d = value.definition;
   const usage = value.usage;
   if (!text(value.id) || !ID.test(value.id) || value.conversationId !== conversationId
     || value.sessionId !== subagentInstanceSessionId(conversationId, value.id) || value.sessionsRoot !== sessionsRoot
-    || typeof value.status !== "string" || !text(value.name) || !text(value.systemPrompt) || !["idle", "running", "awaiting_reply", "closed", "expired"].includes(String(value.status))
+    || typeof value.status !== "string" || !text(value.name) || !text(value.systemPrompt) || !["queued", "idle", "running", "awaiting_reply", "closed", "expired"].includes(String(value.status))
     || (value.pendingQuestion !== undefined && !validQuestion(value.pendingQuestion))
     || (value.status === "awaiting_reply" && value.pendingQuestion === undefined)
     || !integer(value.turns) || !integer(value.createdAt) || !integer(value.updatedAt) || value.updatedAt < value.createdAt
@@ -111,14 +117,14 @@ export function persistentSubagentsEnabled(config: Pick<MonoAgentConfig, "subage
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
 export const subagentConversationRoot = (root: string, conversationId: string): string => resolve(root, hash(conversationId));
 export const subagentInstanceSessionId = (conversationId: string, id: string): string => `sub-${hash(`${conversationId}\0${id}`).slice(0, 40)}`;
-export const isLiveSubagentInstance = (record: SubagentInstance): boolean => record.status === "idle" || record.status === "running" || record.status === "awaiting_reply";
+export const isLiveSubagentInstance = (record: SubagentInstance): boolean => record.status === "queued" || record.status === "idle" || record.status === "running" || record.status === "awaiting_reply";
 export function subagentInstancesRoot(config: Pick<MonoAgentConfig, "subagents" | "artifacts">): string {
   return config.subagents?.instances?.root ?? resolve(config.artifacts.dir, "..", "subagents");
 }
 
 // Serialize callers in this process before taking the cross-process file lock.
 const tails = new Map<string, Promise<void>>();
-const turns = new Map<string, { release(): Promise<void> }>();
+const turns = new Map<string, { release(): Promise<void>; token?: string }>();
 async function serialize<T>(path: string, fn: () => Promise<T>): Promise<T> {
   const previous = tails.get(path) ?? Promise.resolve();
   let release!: () => void;
@@ -183,12 +189,13 @@ export function createSubagentInstanceRegistry(options: {
           }
           // Validate the complete snapshot before recovery can retire any session.
           for (const record of records) {
-            if (record.status === "running" && !turns.has(turnPath(record.id))) {
+            if (["queued", "running"].includes(record.status) && !turns.has(turnPath(record.id))) {
               try {
                 const abandoned = await acquireContinuationStoreLock(turnPath(record.id));
                 await abandoned.release();
                 record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
                 record.lastStatus = "interrupted";
+                delete record.reservation;
               } catch (error) {
                 if (!String(error).includes("already owned by another live process")) throw error;
               }
@@ -242,13 +249,45 @@ export function createSubagentInstanceRegistry(options: {
           records.push(record);
           return record;
         }),
-        begin: async (id) => {
+        reserve: async (id, token) => {
+          let acquired: { release(): Promise<void> } | undefined;
+          try { return await transaction(async (records) => {
+            const record = required(records, id);
+            if (["queued", "running"].includes(record.status)) throw new Error(`Subagent instance "${id}" is busy.`);
+            if (record.turns >= (options.maxTurns ?? 60)) throw new Error(`Subagent instance "${id}" reached maxTurns.`);
+            acquired = await acquireContinuationStoreLock(turnPath(id));
+            turns.set(turnPath(id), { release: () => acquired!.release(), token });
+            record.status = "queued";
+            record.reservation = { token };
+            record.updatedAt = now();
+            return record;
+          }); } catch (error) {
+            if (acquired) { await acquired.release(); turns.delete(turnPath(id)); }
+            throw error;
+          }
+        },
+        releaseReservation: async (id, token) => {
+          let released: { release(): Promise<void> } | undefined;
+          try { await transaction(async (records) => {
+            const record = records.find((entry) => entry.id === id);
+            if (record?.status !== "queued" || record.reservation?.token !== token) return;
+            released = turns.get(turnPath(id));
+            record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
+            delete record.reservation;
+          }); } finally {
+            if (released && turns.get(turnPath(id)) === released) {
+              try { await released.release(); } finally { turns.delete(turnPath(id)); }
+            }
+          }
+        },
+        begin: async (id, token) => {
           let acquired: { release(): Promise<void> } | undefined;
           try { return await transaction(async (records) => {
           const record = required(records, id);
-          if (record.status === "running") throw new Error(`Subagent instance "${id}" is busy.`);
+          if (record.status === "running" || (record.status === "queued" && record.reservation?.token !== token)) throw new Error(`Subagent instance "${id}" is busy.`);
           if (record.turns >= (options.maxTurns ?? 60)) throw new Error(`Subagent instance "${id}" reached maxTurns; close it and create another.`);
-          const lock = await acquireContinuationStoreLock(turnPath(id));
+          const lock = record.status === "queued" ? turns.get(turnPath(id)) : await acquireContinuationStoreLock(turnPath(id));
+          if (!lock) throw new Error("Subagent reservation ownership was lost.");
           acquired = lock;
           turns.set(turnPath(id), lock);
           record.status = "running";
@@ -267,17 +306,20 @@ export function createSubagentInstanceRegistry(options: {
           record.updatedAt = now();
           return record;
         }),
-        finish: async (id, outcome) => {
-          const owned = turns.get(turnPath(id));
+        finish: async (id, outcome, token) => {
+          const candidate = turns.get(turnPath(id));
+          const owned = candidate?.token === token ? candidate : undefined;
           try { return await transaction(async (records) => {
           const record = required(records, id);
           const lock = turns.get(turnPath(id));
+          if (record.reservation?.token !== token) throw new Error("Subagent turn ownership changed.");
           if (record.status !== "running" || !lock) throw new Error(`Subagent instance "${id}" has no turn owned by this process.`);
           if (outcome.status === "awaiting_reply") {
             if (!validQuestion(outcome.question)) throw new Error("Invalid subagent question.");
             record.pendingQuestion = structuredClone(outcome.question);
           } else if (outcome.status === "ok") delete record.pendingQuestion;
           record.status = record.pendingQuestion ? "awaiting_reply" : "idle";
+          delete record.reservation;
           record.turns += outcome.status === "busy" ? 0 : 1;
           record.updatedAt = now();
           record.lastStatus = outcome.status;
@@ -297,7 +339,7 @@ export function createSubagentInstanceRegistry(options: {
         },
         close: (id) => transaction(async (records) => {
           const record = required(records, id);
-          if (record.status === "running") throw new Error(`Subagent instance "${id}" is busy.`);
+          if (["queued", "running"].includes(record.status)) throw new Error(`Subagent instance "${id}" is busy.`);
           record.status = "closed";
           delete record.pendingQuestion;
           record.updatedAt = now();

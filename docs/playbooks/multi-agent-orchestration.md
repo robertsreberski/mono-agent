@@ -102,3 +102,13 @@ context. Global or profile `AskParent` denies disable this dialogue. The child
 cannot contact the user: the parent decides whether to answer or ask the user.
 Failed replies leave the question pending. Close-only retires the instance;
 there is no background execution or automatic wake in this dialogue path.
+
+## Detached persistent work
+
+Use `Agent` with `persist:true, background:true` when the current reply need not
+wait for the child. Continue it with `AgentSend` and `background:true` plus a
+message. The started receipt is durable, and the exact originating conversation
+wakes on completion, failure, interruption or AskParent. Answer an awaiting
+child with AgentSend. Do not poll or replay. A terminal `childStillBusy:true` job
+means another send must wait for actual child settlement. See
+[background child lifecycle](/tools/background-process-jobs/#detached-persistent-children).

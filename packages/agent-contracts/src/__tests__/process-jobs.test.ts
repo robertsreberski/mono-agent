@@ -65,6 +65,19 @@ describe("process-job contracts", () => {
     expect(parseProcessJobProjections([value])).toEqual([value]);
   });
 
+  it("discriminates private subagent projections and bounds structured questions", () => {
+    const internal = { ...projection(), kind: "internal", tool: "AgentSend", instanceId: "helper", childStillBusy: true,
+      subagentQuestion: { question: "Which branch?", options: ["one", "two"] } };
+    expect(parseProcessJobProjection(internal)).toEqual(internal);
+    for (const invalid of [
+      { ...internal, kind: undefined }, { ...internal, tool: "Exec" },
+      { ...internal, childStillBusy: undefined }, { ...internal, instanceId: "../helper" },
+      { ...internal, subagentQuestion: { question: "x".repeat(2001) } },
+      { ...internal, subagentQuestion: { question: "q", options: ["same", "same"] } },
+      { ...projection(), childStillBusy: false },
+    ]) expect(() => parseProcessJobProjection(invalid)).toThrow(TypeError);
+  });
+
   it("accepts the configured retention plus transient active-record boundary", () => {
     const value = projection();
     const atCap = Array.from({ length: 10_096 }, (_, index) => ({

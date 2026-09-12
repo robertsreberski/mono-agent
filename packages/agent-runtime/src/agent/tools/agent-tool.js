@@ -12,6 +12,8 @@
 
 // @ts-check
 
+import { randomUUID } from "node:crypto";
+
 import { homedir } from "node:os";
 
 import { createCountingSemaphore } from "./shared/semaphore.js";
@@ -228,6 +230,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   if (positiveInt(subagents.depth, 0) > 0 || Number(subagents.depth || 0) > 0) return null;
 
   const instances = context.instancesEnabled === false ? undefined : subagents.instances;
+  const background = instances?.reserve && instances?.releaseReservation ? subagents.backgroundSubagentController : undefined;
   const definitions = Array.isArray(subagents.definitions) ? subagents.definitions.filter(Boolean) : [];
   const maxConcurrent = positiveInt(subagents.maxConcurrent, DEFAULT_MAX_CONCURRENT);
   const maxPerTurn = positiveInt(subagents.maxPerTurn, DEFAULT_MAX_PER_TURN);
@@ -302,6 +305,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         persist: { type: "boolean", description: "Keep this subagent alive so you can continue it with AgentSend." },
         id: { type: "string", pattern: INLINE_NAME_RE.source, description: "Instance id; only with persist." },
       } : {}),
+      ...(background ? { background: { type: "boolean", description: "Run a persistent child detached; this conversation wakes on completion or AskParent. Do not poll or replay." } } : {}),
       description: {
         type: "string",
         maxLength: 80,
@@ -315,7 +319,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
   return {
     name: "Agent",
     label: "Agent",
-    description: toolDescription(subagents, definitions, ceiling, Boolean(instances)) + (instances ? "\n\nSet persist: true to retain this child’s own context across calls and parent turns. Continue it with AgentSend; close it when done." : ""),
+    description: toolDescription(subagents, definitions, ceiling, Boolean(instances)) + (instances ? "\n\nSet persist: true to retain this child’s own context across calls and parent turns. Continue it with AgentSend; close it when done." : "") + (background ? " Set background: true with persist: true to return a durable started receipt and wake this exact conversation when the child settles or asks you a question. Do not poll or replay." : ""),
     parameters,
     // MUST stay undefined. Agent-only batches can overlap when the offered tool
     // set contains no sequential tool. Pi 0.85 exposes only a global harness
@@ -324,12 +328,17 @@ export function createAgentTool(subagents, context = {}, continuation) {
     executionMode: undefined,
     /**
      * @param {string} toolCallId
-     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string}} params
+     * @param {{prompt: string, name?: string, description?: string, systemPrompt?: string, tools?: ReadonlyArray<string>, effort?: string, model?: string, persist?: boolean, id?: string, background?: boolean}} params
      * @param {AbortSignal} [signal]
      */
     async execute(toolCallId, params, signal) {
       if (signal?.aborted) throw new Error("tool execution aborted");
 
+      if (params.background !== undefined && typeof params.background !== "boolean") throw new Error("Error: background must be a boolean.");
+      if (params.background === true && !background) throw new Error("Error: background subagents are unavailable in this conversation.");
+      if (params.background === true && !continuation && params.persist !== true) throw new Error("Error: background requires persist: true.");
+      const detached = params.background === true;
+      const reservation = detached ? randomUUID() : undefined;
       if (!instances && (params.persist !== undefined || params.id !== undefined)) {
         throw new Error("Error: persistent subagent instances are unavailable in this conversation.");
       }
@@ -380,200 +389,241 @@ export function createAgentTool(subagents, context = {}, continuation) {
       budget.total += 1;
       const callIndex = budget.total;
 
-      if (slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
-        budget.warnedQueued = true;
-        context.onEvent?.({
-          type: "runtime_warning",
-          warning_kind: "subagent_queued",
-          message: `Subagent concurrency limit (${maxConcurrent}) reached; further Agent calls queue.`,
-        });
-      }
-
-      const releaseSlot = await slots.acquire(signal);
-      // The parent can abort while this call was queued; without rechecking, an
-      // already-cancelled turn would still spawn a child.
-      if (signal?.aborted) {
-        releaseSlot();
-        throw new Error("tool execution aborted");
-      }
-      try {
-        if (continuation) instance = await instances.begin(continuation.record.id);
-        else if (params.persist) {
-          const { mcpServers, ...retainedProfile } = profile;
-          const created = await instances.create({ ...(params.id === undefined ? {} : { id: params.id }),
-            name: profile.name, systemPrompt: profile.systemPrompt,
-            definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } });
-          instance = await instances.begin(created.id);
-        }
-      } catch (error) { releaseSlot(); throw error; }
-      // The timeout starts only AFTER a slot is held. Started earlier, a call
-      // queued behind five long-running siblings would time out having never run.
-      const timeoutMs = positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS));
-      const maxTurns = positiveInt(profile.maxTurns, positiveInt(subagents.maxTurns, DEFAULT_MAX_TURNS));
-
-      const controller = new AbortController();
-      let timedOut = false;
-      const onParentAbort = () => controller.abort();
-      if (signal?.aborted) controller.abort();
-      else signal?.addEventListener("abort", onParentAbort, { once: true });
-      const timer = setTimeout(() => {
-        timedOut = true;
-        // Ask first — a cooperative runner settles and we keep its partial text.
-        if (!controller.signal.aborted) controller.abort();
-        // Then stop waiting regardless, after a short grace period.
-        setTimeout(() => fireDeadline?.(), DEADLINE_GRACE_MS).unref?.();
-      }, timeoutMs);
-
-      /** @type {(() => void)|undefined} */
-      let fireDeadline;
-      // A signal only ASKS a runner to stop. A runner that ignores both its
-      // abort signal and its deadline would otherwise keep `execute()` pending
-      // forever, holding its permit and wedging every queued sibling. Racing an
-      // enforceable deadline lets the slot go; the abandoned work is left to
-      // settle on its own and its late result is ignored.
-      const deadline = new Promise((resolve) => { fireDeadline = () => resolve(DEADLINE); });
-
-      const collector = createActivityCollector({
-        requested,
-        callId: toolCallId,
-        profileName: profile.name,
-        callIndex,
-        ...(params.description === undefined ? {} : { label: params.description }),
-        ...(context.onEvent === undefined ? {} : { emit: context.onEvent }),
-        // Summed, not replaced: a turn can delegate a dozen times and the run
-        // owns all of it. Lives on the run budget so router attempts share it.
-        recordUsage: (spent) => {
-          budget.usage.costUsd += spent.costUsd;
-          budget.usage.input += spent.input;
-          budget.usage.output += spent.output;
-          budget.usage.cacheRead += spent.cacheRead;
-          budget.usage.cacheWrite += spent.cacheWrite;
-        },
-      });
-      collector.started();
-      const startedAt = Date.now();
-      /** @type {*} */
-      let result;
-      /** @type {unknown} */
-      let thrown;
-      let abandoned = false;
-      try {
-        const running = subagents.run({
-          ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
-          systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
-          prompt: params.prompt,
-          definition: instance?.definition ?? profile,
-          ...(context.model === undefined ? {} : { model: context.model }),
-          ...(context.effort === undefined ? {} : { effort: context.effort }),
-          ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
-          ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
-          // Inherited, never widened: a profile cannot loosen confinement.
-          ...(context.sandboxPolicy === undefined ? {} : { sandboxPolicy: context.sandboxPolicy }),
-          ...(context.sandboxEngine === undefined ? {} : { sandboxEngine: context.sandboxEngine }),
-          // The parent's disclosed skills. Offered, not imposed — the host's
-          // `run` decides whether this child may have them, since only it knows
-          // the child's resolved route and deny lists.
-          ...(context.skills === undefined ? {} : { skills: context.skills }),
-          ...(context.skillsRoot === undefined ? {} : { skillsRoot: context.skillsRoot }),
-          ...(context.toolEnvironment === undefined ? {} : { toolEnvironment: context.toolEnvironment }),
-          ...(context.webSearchConfig === undefined ? {} : { webSearchConfig: context.webSearchConfig }),
-          ...(context.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: context.webRequestCoordinator }),
-          ...(context.webFetchConfig === undefined ? {} : { webFetchConfig: context.webFetchConfig }),
-          abortSignal: controller.signal,
-          maxTurns,
-          callId: toolCallId,
-          callIndex,
-          depth: positiveInt(subagents.depth, 0) + 1,
-          onEvent: collector.observe,
-        });
-        // Never let an abandoned runner surface as an unhandled rejection.
-        void Promise.resolve(running).catch(() => undefined);
-        const settled = await Promise.race([running, deadline]);
-        if (settled === DEADLINE && instance) {
-          const pendingId = instance.id;
-          // Keep the instance busy until the actual runner settles, even after the tool deadline.
-          void Promise.resolve(running).then(
-            (late) => instances.finish(pendingId, { status: "timeout", answerHead: late?.text ?? "" }),
-            () => instances.finish(pendingId, { status: "timeout" }),
-          ).catch(() => undefined);
-        }
-        if (settled === DEADLINE) {
-          timedOut = true;
-          abandoned = true;
-        } else {
-          result = settled;
-        }
-      } catch (error) {
-        thrown = error;
-      } finally {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", onParentAbort);
-        releaseSlot();
-      }
-
-      if (instance && !abandoned) {
-        const state = classifyOutcome({ result, thrown, timedOut });
-        const usage = result?.usage ?? {};
-        instance = await instances.finish(instance.id, { status: signal?.aborted ? "cancelled" : state.status,
-          answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
-            cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
-            costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
-        if (continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
-      }
-      // The parent turn being cancelled is not a subagent outcome — surface it
-      // as an aborted tool call the way every other built-in does. Close any
-      // still-open child activity first so the operator surfaces do not keep a
-      // spinner running for a tool that will never report.
-      if (signal?.aborted && !timedOut) {
-        collector.drain("parent turn cancelled");
-        collector.finished({ status: "cancelled", durationMs: Date.now() - startedAt });
-        throw new Error("tool execution aborted");
-      }
-      collector.drain("subagent ended before this tool reported");
-
-      const durationMs = Date.now() - startedAt;
-      const outcome = classifyOutcome({ result, thrown, timedOut, abandoned });
-      collector.finished({ status: outcome.status, durationMs, result });
-      // Each result is individually capped, but the parent's context sees the
-      // SUM. The description encourages parallel calls, so twenty valid results
-      // would otherwise land ~480KB in one batch. Later calls get whatever
-      // budget remains.
-      const remaining = Math.max(0, TURN_RESULT_MAX_BYTES - budget.bytes);
-      const { text, savedPath, truncated } = formatSubagentResult({
-        profileName: profile.name,
-        ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}),
-        label: params.description,
-        ...(routeLabel ? { routeLabel } : {}),
-        outcome,
-        durationMs,
-        activity: collector.entries(),
-        maxBytes: Math.min(RESULT_MAX_BYTES, remaining),
-        ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
-        ...(droppedTools.length === 0 ? {} : {
-          notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools.join(", ")}.`,
-        }),
-        persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentSend" : "Agent"),
-      });
-      budget.bytes += Buffer.byteLength(text, "utf8");
-      // `details.subagent.status` is the load-bearing signal: pi hardcodes
-      // isError:false for every resolved execute(), so the pi-native
-      // `tool_result` hook reads this to restore the error flag. A top-level
-      // `error` field here would be silently ignored.
-      //
-      // `tool_payload_saved_paths` is the key the tool-lifecycle reader collects
-      // artifact references from (the bloat guard sets the same one), so a
-      // spilled subagent result is recorded in tool history like any other.
-      return {
-        content: [{ type: "text", text }],
-        details: {
-          tool: continuation ? "AgentSend" : "Agent",
-          subagent: { ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
-            ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
-          },
-          ...(truncated ? { tool_payload_truncated: true } : {}),
-          ...(savedPath === null ? {} : { tool_payload_saved_paths: [savedPath] }),
-        },
+      const finishInstance = (id, outcome) => reservation === undefined
+        ? instances.finish(id, outcome) : instances.finish(id, outcome, reservation);
+      const createInstance = async () => {
+        const { mcpServers, ...retainedProfile } = profile;
+        return await instances.create({ ...(params.id === undefined ? {} : { id: params.id }),
+          name: profile.name, systemPrompt: profile.systemPrompt,
+          definition: { ...retainedProfile, mcpServerNames: profile.mcpServerNames ?? Object.keys(mcpServers ?? {}), model: profile.model ?? context.model, effort: profile.effort ?? context.effort } });
       };
+      if (detached) {
+        const retained = continuation?.record ?? await createInstance();
+        instance = await instances.reserve(retained.id, reservation);
+        try {
+          const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentSend" : "Agent",
+            jobId: reservation, instanceId: retained.id,
+            timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)),
+            // The identity is host-validated; raw prompts and tool parameters never enter job metadata.
+            cleanup: () => instances.releaseReservation(retained.id, reservation),
+            run: async (childSignal) => {
+              try {
+                const result = await runTurn(childSignal);
+                return { status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
+                  output: JSON.stringify({ instanceId: retained.id, ...result.details.subagent,
+                    answer: result.content[0].text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
+              } finally { await instances.releaseReservation(retained.id, reservation); }
+            },
+          });
+          return { content: [{ type: "text", text: `Background subagent started. This conversation will wake on completion or AskParent. Do not poll, replay, or report completion yet.\n${JSON.stringify({ jobId: started.jobId, instanceId: retained.id, state: started.state })}` }],
+            details: { tool: continuation ? "AgentSend" : "Agent", jobId: started.jobId, instanceId: retained.id, state: started.state,
+              outcome: { status: "ok", code: "background_started", retryable: false, attempts: 1, durationMs: 0,
+                bytes: 0, truncated: false, exitCode: null, signal: null, timedOut: false, background: true,
+                job_id: started.jobId, state: started.state, started_at: started.startedAt } } };
+        } catch (error) { await instances.releaseReservation(retained.id, reservation); throw error; }
+      }
+      return await runTurn(signal);
+
+      /** @param {AbortSignal} [signal] */
+      async function runTurn(signal) {
+        if (slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
+          budget.warnedQueued = true;
+          context.onEvent?.({
+            type: "runtime_warning",
+            warning_kind: "subagent_queued",
+            message: `Subagent concurrency limit (${maxConcurrent}) reached; further Agent calls queue.`,
+          });
+        }
+
+        const releaseSlot = await slots.acquire(signal);
+        // The parent can abort while this call was queued; without rechecking, an
+        // already-cancelled turn would still spawn a child.
+        if (signal?.aborted) {
+          releaseSlot();
+          throw new Error("tool execution aborted");
+        }
+        try {
+          if (detached) instance = await instances.begin(instance.id, reservation);
+          else if (continuation) instance = await instances.begin(continuation.record.id);
+          else if (params.persist) {
+            const created = await createInstance();
+            instance = await instances.begin(created.id);
+          }
+        } catch (error) { releaseSlot(); throw error; }
+        // The timeout starts only AFTER a slot is held. Started earlier, a call
+        // queued behind five long-running siblings would time out having never run.
+        const timeoutMs = positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS));
+        const maxTurns = positiveInt(profile.maxTurns, positiveInt(subagents.maxTurns, DEFAULT_MAX_TURNS));
+
+        const controller = new AbortController();
+        let timedOut = false;
+        let graceTimer;
+        const requestDeadline = () => { graceTimer ??= setTimeout(() => fireDeadline?.(), DEADLINE_GRACE_MS); };
+        const onParentAbort = () => { controller.abort(); if (detached) { clearTimeout(timer); requestDeadline(); } };
+        if (signal?.aborted) { controller.abort(); if (detached) requestDeadline(); }
+        else signal?.addEventListener("abort", onParentAbort, { once: true });
+        const timer = setTimeout(() => {
+          timedOut = true;
+          // Ask first — a cooperative runner settles and we keep its partial text.
+          if (!controller.signal.aborted) controller.abort();
+          // Then stop waiting regardless, after a short grace period.
+          requestDeadline();
+        }, timeoutMs);
+
+        /** @type {(() => void)|undefined} */
+        let fireDeadline;
+        // A signal only ASKS a runner to stop. A runner that ignores both its
+        // abort signal and its deadline would otherwise keep `execute()` pending
+        // forever, holding its permit and wedging every queued sibling. Racing an
+        // enforceable deadline lets the slot go; the abandoned work is left to
+        // settle on its own and its late result is ignored.
+        const deadline = new Promise((resolve) => { fireDeadline = () => resolve(DEADLINE); });
+
+        const collector = createActivityCollector({
+          requested,
+          callId: toolCallId,
+          profileName: profile.name,
+          callIndex,
+          ...(params.description === undefined ? {} : { label: params.description }),
+          ...(context.onEvent === undefined ? {} : { emit: context.onEvent }),
+          // Summed, not replaced: a turn can delegate a dozen times and the run
+          // owns all of it. Lives on the run budget so router attempts share it.
+          recordUsage: (spent) => {
+            budget.usage.costUsd += spent.costUsd;
+            budget.usage.input += spent.input;
+            budget.usage.output += spent.output;
+            budget.usage.cacheRead += spent.cacheRead;
+            budget.usage.cacheWrite += spent.cacheWrite;
+          },
+        });
+        collector.started();
+        const startedAt = Date.now();
+        /** @type {*} */
+        let result;
+        /** @type {unknown} */
+        let thrown;
+        let abandoned = false;
+        try {
+          const running = subagents.run({
+            ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
+            systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
+            prompt: params.prompt,
+            definition: instance?.definition ?? profile,
+            ...(context.model === undefined ? {} : { model: context.model }),
+            ...(context.effort === undefined ? {} : { effort: context.effort }),
+            ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
+            ...(context.parentRunId === undefined ? {} : { parentRunId: context.parentRunId }),
+            // Inherited, never widened: a profile cannot loosen confinement.
+            ...(context.sandboxPolicy === undefined ? {} : { sandboxPolicy: context.sandboxPolicy }),
+            ...(context.sandboxEngine === undefined ? {} : { sandboxEngine: context.sandboxEngine }),
+            // The parent's disclosed skills. Offered, not imposed — the host's
+            // `run` decides whether this child may have them, since only it knows
+            // the child's resolved route and deny lists.
+            ...(context.skills === undefined ? {} : { skills: context.skills }),
+            ...(context.skillsRoot === undefined ? {} : { skillsRoot: context.skillsRoot }),
+            ...(context.toolEnvironment === undefined ? {} : { toolEnvironment: context.toolEnvironment }),
+            ...(context.webSearchConfig === undefined ? {} : { webSearchConfig: context.webSearchConfig }),
+            ...(context.webRequestCoordinator === undefined ? {} : { webRequestCoordinator: context.webRequestCoordinator }),
+            ...(context.webFetchConfig === undefined ? {} : { webFetchConfig: context.webFetchConfig }),
+            abortSignal: controller.signal,
+            maxTurns,
+            callId: toolCallId,
+            callIndex,
+            depth: positiveInt(subagents.depth, 0) + 1,
+            onEvent: collector.observe,
+          });
+          // Never let an abandoned runner surface as an unhandled rejection.
+          void Promise.resolve(running).catch(() => undefined);
+          const settled = await Promise.race([running, deadline]);
+          if (settled === DEADLINE && instance) {
+            const pendingId = instance.id;
+            // Keep the instance busy until the actual runner settles, even after the tool deadline.
+            void Promise.resolve(running).then(
+              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", answerHead: late?.text ?? "" }),
+              () => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled" }),
+            ).catch(() => undefined);
+          }
+          if (settled === DEADLINE) {
+            timedOut ||= !detached || !signal?.aborted;
+            abandoned = true;
+          } else {
+            result = settled;
+          }
+        } catch (error) {
+          thrown = error;
+        } finally {
+          clearTimeout(timer);
+          if (graceTimer) clearTimeout(graceTimer);
+          signal?.removeEventListener("abort", onParentAbort);
+          releaseSlot();
+        }
+
+        if (instance && !abandoned) {
+          const state = classifyOutcome({ result, thrown, timedOut });
+          const usage = result?.usage ?? {};
+          instance = await finishInstance(instance.id, { status: signal?.aborted ? "cancelled" : state.status,
+            answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
+              cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
+              costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
+          if (continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
+        }
+        // The parent turn being cancelled is not a subagent outcome — surface it
+        // as an aborted tool call the way every other built-in does. Close any
+        // still-open child activity first so the operator surfaces do not keep a
+        // spinner running for a tool that will never report.
+        if (signal?.aborted && !timedOut && !detached) {
+          collector.drain("parent turn cancelled");
+          collector.finished({ status: "cancelled", durationMs: Date.now() - startedAt });
+          throw new Error("tool execution aborted");
+        }
+        collector.drain("subagent ended before this tool reported");
+
+        const durationMs = Date.now() - startedAt;
+        const outcome = detached && signal?.aborted && !timedOut
+          ? { status: "cancelled", answer: "", reason: "subagent cancelled" }
+          : classifyOutcome({ result, thrown, timedOut, abandoned });
+        collector.finished({ status: outcome.status, durationMs, result });
+        // Each result is individually capped, but the parent's context sees the
+        // SUM. The description encourages parallel calls, so twenty valid results
+        // would otherwise land ~480KB in one batch. Later calls get whatever
+        // budget remains.
+        const remaining = detached ? RESULT_MAX_BYTES : Math.max(0, TURN_RESULT_MAX_BYTES - budget.bytes);
+        const { text, savedPath, truncated } = formatSubagentResult({
+          profileName: profile.name,
+          ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}),
+          label: params.description,
+          ...(routeLabel ? { routeLabel } : {}),
+          outcome,
+          durationMs,
+          activity: collector.entries(),
+          maxBytes: Math.min(RESULT_MAX_BYTES, remaining),
+          ...(context.cwd === undefined ? {} : { cwd: context.cwd }),
+          ...(droppedTools.length === 0 ? {} : {
+            notice: `${droppedTools.join(", ")} ${droppedTools.length === 1 ? "is" : "are"} not available to a subagent you build; it ran with ${profile.allowedTools.join(", ")}.`,
+          }),
+          persist: (full) => persistSubagentResult(context.persistArtifact, toolCallId, full, continuation ? "AgentSend" : "Agent"),
+        });
+        if (!detached) budget.bytes += Buffer.byteLength(text, "utf8");
+        // `details.subagent.status` is the load-bearing signal: pi hardcodes
+        // isError:false for every resolved execute(), so the pi-native
+        // `tool_result` hook reads this to restore the error flag. A top-level
+        // `error` field here would be silently ignored.
+        //
+        // `tool_payload_saved_paths` is the key the tool-lifecycle reader collects
+        // artifact references from (the bloat guard sets the same one), so a
+        // spilled subagent result is recorded in tool history like any other.
+        return {
+          content: [{ type: "text", text }],
+          details: {
+            tool: continuation ? "AgentSend" : "Agent",
+            subagent: { ...(detached ? { childStillBusy: abandoned } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
+              ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
+            },
+            ...(truncated ? { tool_payload_truncated: true } : {}),
+            ...(savedPath === null ? {} : { tool_payload_saved_paths: [savedPath] }),
+          },
+        };
+      }
     },
   };
 }

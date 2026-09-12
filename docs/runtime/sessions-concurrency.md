@@ -334,3 +334,10 @@ this configured root with other conversation state and reports removed registry
 and child-session file counts, even when no other store existed. See
 [persistent subagent configuration](./tools-and-guards.md#persistent-subagents)
 for limits and lifecycle controls.
+
+Detached persistent child turns hold their own runtime generation lease after the
+parent returns. Their queued reservation prevents duplicate admission. After an
+unresolved timeout/cancellation, the reporting job may be terminal with
+`childStillBusy:true` while the child still owns its lock and lease. Only actual
+settlement or process death releases that ownership; a late result cannot emit a
+second wake. See [detached persistent children](/tools/background-process-jobs/#detached-persistent-children).

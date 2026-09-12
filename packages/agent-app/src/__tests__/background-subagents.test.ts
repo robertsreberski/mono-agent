@@ -1,0 +1,273 @@
+import { fileURLToPath } from "node:url";
+import { loadMonoAgentConfig } from "@mono-agent/config";
+import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+import { buildSubagentsOptions } from "../configured-agent.js";
+// @ts-expect-error Real Pi test seam; transport only is fake.
+import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+import { openProcessJobsService, type ProcessJobsServiceHandle } from "../process-jobs-service.js";
+import { PROCESS_JOBS_DEFAULTS } from "../process-jobs-config.js";
+import { openProcessJobStore } from "../process-jobs-store.js";
+import { launchInternalProcessJob } from "../process-jobs-internal.js";
+// @ts-expect-error Private kernel test seam.
+import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
+// @ts-expect-error Private kernel test seam.
+import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
+
+const origin = { conversationId: "slack:C1:1.1#bucket", baseConversationId: "slack:C1:1.1", bucket: "bucket",
+  replyToConversationId: "slack:C1:1.1", normalizedReplyTarget: "slack:C1:1.1", runId: "parent", historyBoundary: "parent", channel: "slack" };
+const spec = { id: "helper", name: "helper", systemPrompt: "Review", definition: { name: "helper", description: "Review", systemPrompt: "Review" } };
+const roots: string[] = [];
+const services: ProcessJobsServiceHandle[] = [];
+afterEach(async () => {
+  vi.useRealTimers();
+  await Promise.all(services.splice(0).map((s) => s.stop()));
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; }
+async function fixture(overrides = {}, retireSession: (id: string, root: string) => Promise<unknown> = async () => undefined) {
+  const root = await mkdtemp(resolve(process.cwd(), ".background-subagents-")); roots.push(root);
+  const wake = vi.fn(async (_input: unknown) => ({ delivered: true as const }));
+  const signalProcess = vi.fn();
+  const options = { cwd: root, workspace: root,
+    settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir: resolve(root, "jobs"), ...overrides },
+    registration: {} as never, attestRegistration: async () => ({} as never), wake, signalProcess,
+    acquireLock: async () => ({ release: async () => undefined }) as never };
+  const service = await openProcessJobsService(options); services.push(service); await service.activateWakes();
+  const registry = createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession });
+  const instances = await registry.open(origin.conversationId);
+  return { root, service, instances, registry, wake, signalProcess, options };
+}
+function tools(f: Awaited<ReturnType<typeof fixture>>, run: (request: any) => Promise<any>, extra = {}) {
+  const options = { instances: f.instances, run, backgroundSubagentController: f.service.internalController(origin, 0), ...extra };
+  return { options, agent: createAgentTool(options), send: createAgentSendTool(options) };
+}
+const done = async (service: ProcessJobsServiceHandle, id: string) => {
+  await vi.waitFor(async () => expect((await service.get(id))?.wake.state).toBe("delivered"), { timeout: 5000 });
+  return (await service.get(id))!;
+};
+
+describe("detached persistent subagents", () => {
+  it("returns before completion, keeps metadata prompt-free, and wakes the exact origin once", async () => {
+    const f = await fixture(); const gate = deferred<any>();
+    const { agent, send } = tools(f, () => gate.promise);
+    const receipt = await agent.execute("a", { persist: true, background: true, id: "helper", prompt: "PRIVATE_PROMPT_MARKER" });
+    const id = receipt.details.jobId;
+    expect(receipt.details.state).toBe("running");
+    expect(receipt.details.outcome).toMatchObject({ code: "background_started", job_id: id });
+    expect(f.wake).not.toHaveBeenCalled();
+    await expect(send.execute("b", { id: "helper", message: "racing", background: true })).rejects.toThrow(/busy/);
+    const store = await openProcessJobStore(f.root, f.options.settings.stateDir);
+    expect(JSON.stringify(await store.list())).not.toContain("PRIVATE_PROMPT_MARKER");
+    gate.resolve({ text: "answer" });
+    expect(await done(f.service, id)).toMatchObject({ kind: "internal", tool: "Agent", state: "succeeded", childStillBusy: false });
+    expect(f.wake).toHaveBeenCalledOnce();
+    expect(f.wake.mock.calls[0]![0]).toMatchObject({ conversationId: origin.replyToConversationId, chainDepth: 1, projection: { instanceId: "helper", origin: { conversationId: origin.conversationId } } });
+    expect((await f.instances.get("helper"))?.status).toBe("idle");
+    expect(f.signalProcess).not.toHaveBeenCalled();
+  });
+
+  it("reserves queued sends, cancels without executing or charging turns, and rolls back rejected admission", async () => {
+    const f = await fixture({ maxConcurrent: 1, maxQueued: 1, maxActivePerConversation: 3 });
+    const gate = deferred<any>(); const run = vi.fn(() => gate.promise); const { agent, send } = tools(f, run);
+    const first = await agent.execute("a", { persist: true, background: true, id: "first", prompt: "first" });
+    await f.instances.create(spec);
+    const queued = await send.execute("b", { id: "helper", message: "queued", background: true });
+    expect(queued.details.state).toBe("queued");
+    expect(await f.instances.get("helper")).toMatchObject({ status: "queued", turns: 0, reservation: { token: queued.details.jobId } });
+    await expect(send.execute("c", { id: "helper", message: "duplicate", background: true })).rejects.toThrow(/busy/);
+    const denied = tools(f, run, { backgroundSubagentController: { startInternal: async () => { throw new Error("admission rejected"); } } });
+    await expect(denied.agent.execute("d", { persist: true, background: true, id: "denied", prompt: "reject" })).rejects.toThrow("admission rejected");
+    expect(await f.instances.get("denied")).toMatchObject({ status: "idle", turns: 0 });
+    await f.service.cancel(queued.details.jobId); await done(f.service, queued.details.jobId);
+    expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 0 });
+    expect(run).toHaveBeenCalledOnce();
+    gate.resolve({ text: "done" }); await done(f.service, first.details.jobId);
+  });
+
+  it.each(["timeout", "cancel"])("reports unresolved %s once, retains the lock/question, and permits continuation only after late settlement", async (mode) => {
+    const f = await fixture(); const gate = deferred<any>();
+    const { agent, send } = tools(f, async (request) => { await f.instances.markAwaiting(request.instance.id, { question: "Scope?" }); return gate.promise; },
+      { timeoutMs: mode === "timeout" ? 30 : 60_000 });
+    const receipt = await agent.execute("a", { persist: true, background: true, id: "helper", prompt: "work" });
+    if (mode === "cancel") await f.service.cancel(receipt.details.jobId);
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 8000 });
+    const job = await f.service.get(receipt.details.jobId);
+    expect(job).toMatchObject({ state: mode === "timeout" ? "timed_out" : "cancelled", childStillBusy: true });
+    expect(JSON.stringify(f.wake.mock.calls[0])).toContain('childStillBusy');
+    expect(await f.instances.get("helper")).toMatchObject({ status: "running", pendingQuestion: { question: "Scope?" } });
+    await expect(send.execute("busy", { id: "helper", message: "reply" })).rejects.toThrow(/busy/);
+    await f.service.stop(); // Already abandoned children do not hold the service open.
+    gate.resolve({ text: "late" });
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("awaiting_reply"));
+    expect(await f.service.get(receipt.details.jobId)).toEqual(job);
+    expect(f.wake).toHaveBeenCalledOnce();
+    const next = tools(f, async () => ({ text: "replied" }));
+    expect((await next.send.execute("reply", { id: "helper", message: "Small", close: true })).details.subagent.instance.status).toBe("closed");
+  }, 12_000);
+
+  it("stop aborts active work, bounds waiting, and restart delivers the retained interruption once", async () => {
+    const f = await fixture(); const gate = deferred<any>();
+    const { agent } = tools(f, () => gate.promise);
+    const receipt = await agent.execute("a", { persist: true, background: true, id: "helper", prompt: "work" });
+    await f.service.stop();
+    expect(await f.service.get(receipt.details.jobId)).toMatchObject({ state: "interrupted", childStillBusy: true, wake: { state: "pending" } });
+    expect((await f.instances.get("helper"))?.status).toBe("running");
+    gate.resolve({ text: "late" });
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"));
+    const restarted = await openProcessJobsService(f.options); services.push(restarted); await restarted.activateWakes();
+    await done(restarted, receipt.details.jobId);
+    expect(f.wake).toHaveBeenCalledOnce(); expect(f.signalProcess).not.toHaveBeenCalled();
+  }, 12_000);
+
+  it("recovers persisted internal running work without process signals or replay", async () => {
+    const f = await fixture(); await f.service.stop();
+    // Produce a valid record through admission, then simulate its crash snapshot.
+    const live = await openProcessJobsService(f.options); services.push(live);
+    const id = randomUUID();
+    await live.internalController(origin, 0).startInternal({ kind: "internal", jobId: id, instanceId: "helper", tool: "Agent", run: async () => ({ status: "ok", output: "done" }), cleanup: async () => {} });
+    await vi.waitFor(async () => expect((await live.get(id))?.state).toBe("succeeded")); await live.stop();
+    const store = await openProcessJobStore(f.root, f.options.settings.stateDir);
+    await store.mutate((records) => { const r = records.get(id)!; r.state = "running"; r.completedAt = null; r.exitCode = null; r.durationMs = null; r.wake.state = "pending"; });
+    const restarted = await openProcessJobsService(f.options); services.push(restarted); await restarted.activateWakes();
+    expect(await done(restarted, id)).toMatchObject({ state: "interrupted", childStillBusy: false, lastError: { code: "process_job_agent_restarted" } });
+    expect(f.wake).toHaveBeenCalledOnce(); expect(f.signalProcess).not.toHaveBeenCalled();
+  });
+
+  it("validates background schemas, close-only and persist requirements before admission", async () => {
+    const f = await fixture(); const run = vi.fn(); const { agent, send } = tools(f, run);
+    expect(agent.parameters.properties.background).toBeDefined(); expect(send.parameters.properties.background).toBeDefined();
+    await expect(agent.execute("a", { prompt: "x", background: true })).rejects.toThrow(/persist/);
+    await expect(send.execute("b", { id: "helper", close: true, background: true })).rejects.toThrow(/message/);
+    const bare = createAgentTool({ instances: f.instances, run });
+    expect(bare.parameters.properties.background).toBeUndefined();
+    await expect(bare.execute("c", { prompt: "x", persist: true, background: true })).rejects.toThrow(/unavailable/);
+    expect(run).not.toHaveBeenCalled(); expect(await f.service.list()).toEqual([]);
+  });
+
+  it("keeps reservation ownership through failed stale-token finish and recovers orphan reservations", async () => {
+    const f = await fixture(); await f.instances.create(spec); const token = randomUUID();
+    await f.instances.reserve("helper", token); await f.instances.begin("helper", token);
+    await expect(f.instances.finish("helper", { status: "ok" }, randomUUID())).rejects.toThrow(/ownership/);
+    await expect(f.instances.begin("helper")).rejects.toThrow(/busy/);
+    await f.instances.finish("helper", { status: "ok" }, token);
+    const file = resolve(subagentConversationRoot(resolve(f.root, "children"), origin.conversationId), "instances.json");
+    const records = JSON.parse(await readFile(file, "utf8")); records[0].status = "queued"; records[0].reservation = { token: randomUUID() };
+    await writeFile(file, JSON.stringify(records));
+    expect(await f.instances.get("helper")).toMatchObject({ status: "idle", lastStatus: "interrupted" });
+    expect((await f.instances.get("helper"))?.reservation).toBeUndefined();
+    expect(await (await f.registry.open("slack:other:1")).get("helper")).toBeUndefined();
+  });
+
+  it("keeps cancellation authoritative when its grace crosses the original timeout", async () => {
+    vi.useFakeTimers();
+    const gate = deferred<any>();
+    const launched = launchInternalProcessJob({ kind: "internal", tool: "AgentSend", jobId: randomUUID(), instanceId: "helper",
+      run: () => gate.promise, cleanup: async () => {} }, 10, 64, 20);
+    await vi.advanceTimersByTimeAsync(5);
+    launched.cancel();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(await launched.completion).toMatchObject({ aborted: true, timedOut: false, childStillBusy: true });
+    gate.resolve({ status: "ok", output: "late" });
+    expect(await launched.completion).toMatchObject({ aborted: true, timedOut: false, childStillBusy: true });
+  });
+
+  it("bounds output, rejects exhausted lineage, and uses one terminal result for a late runner", async () => {
+    const f = await fixture({ maxOutputBytes: 64 });
+    const request = { kind: "internal" as const, jobId: randomUUID(), instanceId: "helper", tool: "Agent" as const,
+      run: async () => ({ status: "ok", output: "x".repeat(1000) }), cleanup: async () => {} };
+    await expect(f.service.internalController(origin, f.service.settings.maxChainDepth).startInternal(request)).rejects.toMatchObject({ code: "process_job_chain_depth_exceeded" });
+    await f.service.internalController(origin, 0).startInternal(request);
+    const job = await done(f.service, request.jobId);
+    expect(job.output.stdoutBytes).toBeLessThanOrEqual(64); expect(job.output.truncated).toBe(true);
+    const gate = deferred<any>(); vi.useFakeTimers();
+    const launched = launchInternalProcessJob({ ...request, run: () => gate.promise }, 10, 64, 5);
+    await vi.advanceTimersByTimeAsync(15);
+    expect(await launched.completion).toMatchObject({ timedOut: true, childStillBusy: true });
+    gate.resolve({ status: "ok", output: "late" });
+    expect(await launched.completion).toMatchObject({ timedOut: true, childStillBusy: true });
+  });
+});
+
+
+it("real Pi fake transport: detached AskParent and background reply resume one JSONL, then close", async () => {
+  const owner = createMonoRuntime();
+  const f = await fixture({}, async (id, root) => owner.retireDurableSession!(id, root));
+  try {
+    const config = loadMonoAgentConfig({ cwd: f.root, env: {
+      MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"),
+      MONO_AGENT_MODEL: "openai-codex:gpt-5.5", MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend",
+      MONO_AGENT_SUBAGENTS_JSON: JSON.stringify({ enabled: true, instances: { root: resolve(f.root, "children") } }),
+    } });
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+    const faux = fauxProvider({ provider: config.runtime.model.provider, models: [{ id: config.runtime.model.model }], tokensPerSecond: undefined });
+    const models = createModels(); models.setProvider(faux.provider);
+    const gate = deferred<void>();
+    const runtime = { run: async (prompt: string, options: any) => {
+      await gate.promise;
+      return generatePiNativeResponse(prompt, { ...options, piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+    } };
+    const subagents: any = buildSubagentsOptions(config, { runtime: runtime as never, baseModel: config.runtime.model },
+      { conversationId: origin.conversationId, runId: "parent", instances: f.instances })!.subagents;
+    subagents.backgroundSubagentController = f.service.internalController(origin, 0);
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("AskParent", { question: "Which scope?", options: ["Small", "Large"] })])]);
+    const first = await createAgentTool(subagents, { model: config.runtime.model }).execute("first", { persist: true, background: true, id: "helper", prompt: "first task" });
+    expect(f.wake).not.toHaveBeenCalled(); gate.resolve();
+    const questionJob = await done(f.service, first.details.jobId);
+    expect(questionJob.state).toBe("succeeded");
+    expect(questionJob.subagentQuestion).toEqual({ question: "Which scope?", options: ["Small", "Large"] }); expect(questionJob.output.preview).toContain("Which scope?");
+    expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", turns: 1 });
+    const record = (await f.instances.get("helper"))!;
+    const transcripts = async () => (await readdir(record.sessionsRoot, { recursive: true })).filter((file) => file.endsWith(".jsonl"));
+    const files = await transcripts(); expect(files).toHaveLength(1);
+    expect(await readFile(resolve(record.sessionsRoot, files[0]!), "utf8")).toContain("first task");
+    await owner.disposeSession!(record.sessionId);
+    let input: any;
+    faux.setResponses([(context: any) => { input = context; return fauxAssistantMessage([fauxText("Small scope answer")]); }]);
+    const second = await createAgentSendTool(subagents).execute("second", { id: "helper", message: "Small", background: true });
+    expect((await done(f.service, second.details.jobId)).state).toBe("succeeded");
+    expect(JSON.stringify(input.messages)).toContain("first task"); expect(JSON.stringify(input.messages)).toContain("Which scope?");
+    expect(await transcripts()).toEqual(files);
+    expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 2 });
+    faux.setResponses([fauxAssistantMessage([fauxText("Closed successfully")])]);
+    const third = await createAgentSendTool(subagents).execute("third", { id: "helper", message: "Finish", background: true, close: true });
+    await done(f.service, third.details.jobId);
+    expect((await f.instances.get("helper"))?.status).toBe("closed");
+    expect(await transcripts()).toEqual([]); expect(f.wake).toHaveBeenCalledTimes(3);
+  } finally { await owner.disposeAllSessions?.(); }
+}, 15000);
+
+it("failed child preserves a pending question and bounded question wakes survive preview truncation", async () => {
+  const f = await fixture({ previewChars: 80 });
+  const question = { question: "Which scope? ".repeat(100), options: ["Small", "Large"] };
+  const id = randomUUID();
+  await f.service.internalController(origin, 0).startInternal({ kind: "internal", jobId: id, instanceId: "helper", tool: "Agent",
+    run: async () => ({ status: "awaiting_reply", output: "output ".repeat(100), question }), cleanup: async () => {} });
+  const job = await done(f.service, id);
+  expect(job.output.preview.length).toBeLessThanOrEqual(80);
+  expect(job.subagentQuestion).toEqual(question);
+  expect((f.wake.mock.calls[0]![0] as any).prompt).toContain(question.question);
+  await f.instances.create(spec); await f.instances.begin("helper");
+  await f.instances.markAwaiting("helper", { question: "Pending?" });
+  await f.instances.finish("helper", { status: "awaiting_reply", question: { question: "Pending?" } });
+  const { send } = tools(f, async () => { throw new Error("provider unavailable"); });
+  const failed = await send.execute("failed", { id: "helper", message: "Try", background: true, close: true });
+  expect((await done(f.service, failed.details.jobId)).state).toBe("failed");
+  expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending?" } });
+});
+
+it("queue expiry releases the reservation without invoking the child", async () => {
+  const f = await fixture({ maxConcurrent: 1, maxQueueAgeMs: 1500 });
+  const gate = deferred<any>(); const run = vi.fn(() => gate.promise); const { agent } = tools(f, run);
+  const first = await agent.execute("a", { persist: true, id: "first", prompt: "hold", background: true });
+  const queued = await agent.execute("b", { persist: true, id: "second", prompt: "expire", background: true });
+  expect((await done(f.service, queued.details.jobId)).state).toBe("queue_expired");
+  expect(await f.instances.get("second")).toMatchObject({ status: "idle", turns: 0 });
+  expect(run).toHaveBeenCalledOnce();
+  gate.resolve({ text: "done" }); await done(f.service, first.details.jobId);
+});

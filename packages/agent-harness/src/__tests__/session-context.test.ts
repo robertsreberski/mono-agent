@@ -414,3 +414,13 @@ it("renders bounded quoted awaiting questions without allowing envelope markup",
   expect(rendered).not.toContain("x".repeat(2001));
   expect(rendered).toContain('"options":["a","b"]');
 });
+
+it("describes detached child availability and retained job identity without exposing private parameters", () => {
+  const rendered = sessionContextBlock({ conversationId: "web:thread", text: "hello" } as never, {
+    backgroundSubagents: true,
+    subagentInstances: [{ id: "helper", name: "helper", status: "queued", turns: 0, ageMs: 0, jobId: "job-identity" }],
+  });
+  expect(rendered).toContain("background: true");
+  expect(rendered).toContain("childStillBusy:true");
+  expect(rendered).toContain("job job-identity");
+});

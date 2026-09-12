@@ -42,7 +42,11 @@ export type ProcessJobState =
 export interface ProcessJobProjection {
   readonly schema: "mono-agent.process-job-projection.v1";
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash";
+  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
+  readonly kind?: "internal";
+  readonly instanceId?: string;
+  readonly childStillBusy?: boolean;
+  readonly subagentQuestion?: { readonly question: string; readonly options?: string[] };
   readonly state: ProcessJobState;
   readonly summary: string;
   readonly origin: {

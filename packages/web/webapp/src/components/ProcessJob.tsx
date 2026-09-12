@@ -201,7 +201,7 @@ const activityEvent = (value: unknown): ProcessJobActivityEvent | undefined => {
       || typeof record.id !== "string"
       || typeof record.toolCallId !== "string"
       || typeof record.jobId !== "string"
-      || (record.tool !== "Exec" && record.tool !== "Bash")
+      || !["Exec", "Bash", "Agent", "AgentSend"].includes(String(record.tool))
       || typeof record.summary !== "string"
       || (record.phase !== "started" && record.phase !== "terminal")
       || typeof record.state !== "string"
@@ -304,6 +304,7 @@ const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode
   const timing = processJobTiming(job);
   const exit = processJobExitLabel(job);
   const items: ReactNode[] = [];
+  if (job.childStillBusy) items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
   if (processJobStatus(job.state) !== "failed") items.push(processJobStateLabel(job.state));
   // A settled job with no finish stamp has nothing honest to show; leave the slot out.
   if (timing !== undefined && (!terminal || timing.finishedAt !== undefined)) {
