@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type { RuntimeModelReference } from "@mono-agent/runtime-adapter";
 
-import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, writeJsonAtomic } from "./continuation-store-fs.js";
+import { acquireContinuationStoreLock, ensureOwnerOnlyDirectory, readBoundedOwnerOnlyFile, writeJsonAtomic } from "./continuation-store-fs.js";
 
 export interface InstanceDefinition {
   readonly name: string;
@@ -97,7 +96,7 @@ export function createSubagentInstanceRegistry(options: {
         try {
           let records: SubagentInstance[];
           try {
-            const raw: unknown = JSON.parse(await readFile(file, "utf8"));
+            const raw: unknown = JSON.parse(await readBoundedOwnerOnlyFile(file, 16 * 1024 * 1024, "Subagent instance registry"));
             if (!Array.isArray(raw)) throw new Error("Invalid subagent instance registry.");
             records = raw as SubagentInstance[];
           } catch (error) {
@@ -167,21 +166,30 @@ export function createSubagentInstanceRegistry(options: {
             await options.retireSession(previous.sessionId, sessionsRoot);
             records.splice(records.indexOf(previous), 1);
           }
+          // Retention may have removed an earlier record with this deterministic session id.
+          if (!previous) await options.retireSession(subagentInstanceSessionId(conversationId, id), sessionsRoot);
           const record: SubagentInstance = { ...structuredClone(spec), id, conversationId, sessionId: subagentInstanceSessionId(conversationId, id), sessionsRoot,
             status: "idle", turns: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 }, createdAt: now(), updatedAt: now() };
           records.push(record);
           return record;
         }),
-        begin: (id) => transaction(async (records) => {
+        begin: async (id) => {
+          let acquired: { release(): Promise<void> } | undefined;
+          try { return await transaction(async (records) => {
           const record = required(records, id);
           if (record.status === "running") throw new Error(`Subagent instance "${id}" is busy.`);
           if (record.turns >= (options.maxTurns ?? 60)) throw new Error(`Subagent instance "${id}" reached maxTurns; close it and create another.`);
           const lock = await acquireContinuationStoreLock(turnPath(id));
+          acquired = lock;
           turns.set(turnPath(id), lock);
           record.status = "running";
           record.updatedAt = now();
           return record;
-        }),
+          }); } catch (error) {
+            if (acquired) { await acquired.release(); turns.delete(turnPath(id)); }
+            throw error;
+          }
+        },
         finish: (id, outcome) => transaction(async (records) => {
           const record = required(records, id);
           const lock = turns.get(turnPath(id));

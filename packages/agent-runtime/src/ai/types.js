@@ -276,12 +276,17 @@
  */
 
 /**
+ * @typedef {Object<string, *> & {instance?: {sessionId: string, sessionsRoot: string}}} RuntimeSubagentRunRequest
+ * Instance routing is host-owned; the child receives only its own durable transcript.
+ */
+
+/**
  * @callback RuntimeSubagentRun
  * Owning-layer callback that actually executes one child turn. The kernel
  * supplies a self-run fallback so `createRuntime` works without host wiring;
  * agent-app replaces it so subagent runs get the configured fallback chain,
  * same-model retries, and run recording.
- * @param {Object} request
+ * @param {RuntimeSubagentRunRequest} request
  * @returns {Promise<RuntimeResult>}
  */
 

@@ -1,3 +1,4 @@
+import { subagentInstancesRoot } from "./subagent-instances.js";
 import { inspectWebControl } from "./web-request-coordinator.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
@@ -1773,6 +1774,24 @@ async function toolsSection(config: MonoAgentConfig, input: ValidateMonoAgentFol
   const subagents = config.subagents;
   const agentAllowed = allowAll || allowedTools.includes("Agent");
   if (subagents?.enabled === true) {
+    if (subagents.instances?.enabled !== false) {
+      const root = subagentInstancesRoot(config);
+      let ancestor = root;
+      try {
+        while (true) {
+          try { const info = await stat(ancestor); if (!info.isDirectory()) throw new Error("not a directory"); await access(ancestor, constants.W_OK); break; }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            const parent = resolve(ancestor, "..");
+            if (parent === ancestor) throw error;
+            ancestor = parent;
+          }
+        }
+        details.push(`Persistent subagents: ${root}; maxPerConversation ${subagents.instances?.maxPerConversation ?? 8}, idleTtlMs ${subagents.instances?.idleTtlMs ?? 86_400_000}, maxTurns ${subagents.instances?.maxTurns ?? 60}.`);
+      } catch (error) { status = "error"; details.push(`subagents.instances.root is not creatable/writable: ${displayReason(error)}.`); }
+      const cap = subagents.instances?.maxPerConversation ?? 8;
+      if (!Number.isInteger(cap) || cap < 1 || cap > 32) { status = "error"; details.push("subagents.instances.maxPerConversation must be an integer from 1 to 32."); }
+    }
     const count = subagents.definitions?.length ?? 0;
     const inline = subagents.inline?.enabled === false
       ? "; call-time authoring off"

@@ -1140,7 +1140,8 @@ function sameWireIdentity(
 function isPurgeKind(value: unknown): value is ResolvedConversationStatePurgeRoot["kind"] {
   return value === "Pi provider sessions"
     || value === "durable session/tool history"
-    || value === "ACP sessions";
+    || value === "ACP sessions"
+    || value === "persistent subagent instances";
 }
 
 async function assertMissing(path: string, message: string): Promise<void> {

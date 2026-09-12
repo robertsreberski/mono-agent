@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -72,6 +73,24 @@ describe("persistent subagent registry", () => {
     now += 86_400_001;
     expect(await handle.list()).toEqual([]);
   });
+  it("recovers a built registry after process exit and excludes a competing process during an active turn", async () => {
+    const { root, handle } = await setup();
+    await handle.create({ ...spec, id: "process-test" });
+    const moduleUrl = new URL("../../dist/subagent-instances.js", import.meta.url).href;
+    const child = (operation: string) => execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { createSubagentInstanceRegistry } from ${JSON.stringify(moduleUrl)};
+      const registry = createSubagentInstanceRegistry({ root: ${JSON.stringify(root)}, retireSession: async () => {} });
+      const handle = await registry.open("conversation");
+      ${operation}
+      process.exit(0);
+    `], { cwd: root, encoding: "utf8", timeout: 10_000 });
+    child('await handle.begin("process-test");');
+    expect(await handle.get("process-test")).toMatchObject({ status: "idle", lastStatus: "interrupted" });
+    await handle.begin("process-test");
+    expect(child('try { await handle.begin("process-test"); throw new Error("unexpected acquisition"); } catch (error) { if (!error.message.includes("busy")) throw error; console.log("busy"); }')).toContain("busy");
+    await handle.finish("process-test", { status: "ok" });
+  });
+
   it("fails closed on corrupt registry data", async () => {
     const { root, handle } = await setup();
     await writeFile(resolve(subagentConversationRoot(root, "conversation"), "instances.json"), '{}');

@@ -1,3 +1,4 @@
+import { createSubagentInstanceRegistry, isLiveSubagentInstance, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createAgentHarness,
@@ -14,6 +15,7 @@ import {
 import type {
   AgentHarness,
   AgentHarnessOptions,
+  AgentHarnessRequest,
   AgentHarnessRuntimeOptionsExtension,
   AgentHarnessRuntimeOptionsInput,
   AgentHarnessToolHistoryOptions,
@@ -692,6 +694,7 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly instance?: { readonly sessionId: string; readonly sessionsRoot: string };
   readonly model?: RuntimeModelReference;
   readonly effort?: string;
   readonly systemPrompt: string;
@@ -759,13 +762,14 @@ function resolveSubagentPrompt(definition: { readonly prompt?: string; readonly 
  * through the shared router is what gives subagents the configured fallback
  * chain and same-model retries for free.
  */
-function subagentsRuntimeOptions(
+export function buildSubagentsOptions(
   config: MonoAgentConfig,
   deps: {
     readonly runtime: MonoRuntimeLike;
     readonly baseModel: RuntimeModelReference;
     readonly runtimeForModel?: AgentHarnessOptions["runtimeForModel"];
   },
+  scope?: { conversationId: string; runId: string; instances: InstanceRegistryHandle },
 ): StaticRuntimeOptions | undefined {
   const subagents = config.subagents;
   if (subagents?.enabled !== true) {
@@ -827,6 +831,13 @@ function subagentsRuntimeOptions(
       : `${request.systemPrompt}\n\n${renderSkillIndexSection(childSkills)}`;
 
     return await runtime.run(childSystemPrompt, {
+      ...(request.instance === undefined ? {} : {
+        sessionId: request.instance.sessionId,
+        piSessionsRoot: request.instance.sessionsRoot,
+        sessionKeepAlive: true,
+        sessionIdleTimeoutMs: subagents.instances?.idleTtlMs ?? 86_400_000,
+        ...(config.runtime.compaction === undefined ? {} : { compaction: config.runtime.compaction }),
+      }),
       model: childModel,
       messages: [{ role: "user", content: request.prompt }],
       maxTurns: request.maxTurns,
@@ -869,6 +880,7 @@ function subagentsRuntimeOptions(
 
   return {
     subagents: {
+      ...(scope === undefined ? {} : { instances: scope.instances }),
       definitions,
       ...(subagents.models === undefined ? {} : { models: subagents.models.map((choice) => ({
         name: choice.name ?? modelReferenceKey(choice.model),
@@ -888,6 +900,21 @@ function subagentsRuntimeOptions(
       run,
     },
   } as unknown as StaticRuntimeOptions;
+}
+
+
+/** Complete options object, constructed once per logical request and reused by router attempts. */
+export function createSubagentsRuntimeExtension(
+  config: MonoAgentConfig,
+  deps: Parameters<typeof buildSubagentsOptions>[1],
+  registry: ReturnType<typeof createSubagentInstanceRegistry>,
+): NonNullable<ConfiguredAgentHarnessOptions["runtimeOptionsForRequest"]> {
+  return async ({ request, runId }) => ({
+    runtimeOptions: buildSubagentsOptions(config, deps, {
+      conversationId: request.conversationId, runId,
+      instances: await registry.open(request.conversationId),
+    })!,
+  });
 }
 
 
@@ -1140,11 +1167,25 @@ async function createConfiguredAgentHarnessInternal(
           ? {}
           : { onUnavailable: options.onMemoryRememberUnavailable }),
       });
+  const subagentDeps = { runtime, baseModel: model, ...(runtimeForModel === undefined ? {} : { runtimeForModel }) };
+  const instanceRegistry = config.subagents?.enabled === true && config.subagents.instances?.enabled !== false
+    ? createSubagentInstanceRegistry({
+        root: subagentInstancesRoot(config),
+        ...config.subagents.instances,
+        retireSession: async (id, root) => {
+          if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
+          await runtime.retireDurableSession(id, root);
+        },
+      })
+    : undefined;
+  const persistentSubagents = instanceRegistry === undefined ? undefined
+    : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([
     memoryRecall,
     memoryJournal,
     memoryRemember,
     options.runtimeOptionsForRequest,
+    persistentSubagents,
   ], {
     // The app-owned, read-only MemoryRecall endpoint is part of every configured
     // memory tier. Preserve only this exact extension under an authenticated
@@ -1185,7 +1226,7 @@ async function createConfiguredAgentHarnessInternal(
     monitoredRuntimeOptionsForRequest,
     toolOutputArtifactRoot,
   );
-  const subagents = subagentsRuntimeOptions(config, {
+  const subagents = buildSubagentsOptions(config, {
     runtime,
     baseModel: model,
     ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
@@ -1291,6 +1332,12 @@ async function createConfiguredAgentHarnessInternal(
           },
         }),
     runtimeOptions,
+    ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
+      (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
+        id: record.id, name: record.name, status: record.status, turns: record.turns,
+        ageMs: Math.max(0, Date.now() - record.updatedAt),
+        route: [record.definition.model?.reference, record.definition.effort].filter(Boolean).join("/"),
+      })) }),
     ...(runtimeOptionsForRequest === undefined
       ? {}
       : { runtimeOptionsForRequest }),

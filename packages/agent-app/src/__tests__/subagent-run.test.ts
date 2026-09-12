@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { resolve } from "node:path";
+import { createSubagentInstanceRegistry } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -471,4 +474,21 @@ describe("in-flight subagent ceiling", () => {
     }));
     expect(subagents?.inline).toBeUndefined();
   });
+});
+
+
+it("wires the Session envelope to the current conversation's live registry", async () => {
+  const root = await mkdtemp(resolve(process.cwd(), ".subagent-envelope-"));
+  try {
+    await buildSubagents(monoConfig({ enabled: true, instances: { root } }));
+    const options = harnessMock.mock.calls[0]![0] as { subagentInstancesFor: (input: unknown) => Promise<unknown[]> };
+    expect(await options.subagentInstancesFor({ request: { conversationId: "one" }, runId: "a" })).toEqual([]);
+    const registry = createSubagentInstanceRegistry({ root, retireSession: async () => {} });
+    const handle = await registry.open("one");
+    const record = await handle.create({ name: "critic", systemPrompt: "review", definition: { name: "critic", description: "review", systemPrompt: "review" } });
+    expect(await options.subagentInstancesFor({ request: { conversationId: "one" }, runId: "b" })).toMatchObject([{ id: record.id, name: "critic", status: "idle", turns: 0 }]);
+    expect(await options.subagentInstancesFor({ request: { conversationId: "two" }, runId: "c" })).toEqual([]);
+    await handle.close(record.id);
+    expect(await options.subagentInstancesFor({ request: { conversationId: "one" }, runId: "d" })).toEqual([]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
