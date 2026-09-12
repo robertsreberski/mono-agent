@@ -1,3 +1,4 @@
+import { MessageModelMarkers } from "./ModelMarkers";
 import { MessageProjectMarkers } from "./project/ProjectIdentity";
 import { isSilentCronData } from "../cron-visibility";
 import {
@@ -1514,6 +1515,7 @@ export function UserMessage() {
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
     <MessageProjectMarkers />
+    <MessageModelMarkers />
     </>
   );
 }
@@ -1521,9 +1523,11 @@ export function UserMessage() {
 export function AssistantMessage() {
   const markerOnly = useAuiState((state) => state.message.content.length === 0
     && state.message.metadata.custom?.runStatus === "complete"
-    && Array.isArray(state.message.metadata.custom?.projectTransitions)
-    && state.message.metadata.custom.projectTransitions.length > 0);
-  if (markerOnly) return <MessageProjectMarkers />;
+    && ((Array.isArray(state.message.metadata.custom?.projectTransitions)
+      && state.message.metadata.custom.projectTransitions.length > 0)
+      || (Array.isArray(state.message.metadata.custom?.modelTransitions)
+        && state.message.metadata.custom.modelTransitions.length > 0)));
+  if (markerOnly) return <><MessageProjectMarkers /><MessageModelMarkers /></>;
   return (
     <>
     <MessagePrimitive.Root className="message message-assistant">
@@ -1538,6 +1542,7 @@ export function AssistantMessage() {
       </MessageGallery>
     </MessagePrimitive.Root>
     <MessageProjectMarkers />
+    <MessageModelMarkers />
     </>
   );
 }
@@ -1549,6 +1554,7 @@ export function SystemMessage() {
       <MessagePrimitive.Parts components={parts} />
     </MessagePrimitive.Root>
     <MessageProjectMarkers />
+    <MessageModelMarkers />
     </>
   );
 }

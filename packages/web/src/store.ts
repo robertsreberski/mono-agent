@@ -50,6 +50,8 @@ import {
   type WebProject,
   type WebProjectColor,
   type WebProjectTransition,
+  type WebModelTransition,
+  type WebRouteSelection,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
   type WebActiveThreads,
@@ -3017,6 +3019,7 @@ export class WebStore {
       thread,
       messages: page.messages,
       projectTransitions: page.projectTransitions ?? [],
+      modelTransitions: page.modelTransitions ?? [],
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
   }
@@ -3076,6 +3079,7 @@ export class WebStore {
     return {
       messages: pageRows.map((row) => this.mapMessage(row)),
       projectTransitions: this.projectTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
+      modelTransitions: this.modelTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -3431,6 +3435,69 @@ export class WebStore {
 
   projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
     return (this.database.prepare(`SELECT * FROM project_transitions WHERE thread_id = ?
+        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
+      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
+        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
+        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
+      }));
+  }
+
+  /**
+   * Record a change of the conversation's selected route at the boundary where
+   * it takes effect, for the turn `turnId` that was just admitted.
+   *
+   * The picker persists an override the instant it is touched, so a log of
+   * those writes would be a log of hesitation: three flips before one message,
+   * and a line for a model that never ran. This compares the admitted turn's
+   * OWN frozen resolved route with the last turn that reported one, which is
+   * the only pair a transcript can honestly put a rule between. A→B→A
+   * therefore leaves nothing behind, A→B→C leaves one line, and a change of
+   * the agent's own default is reported the same way as a picker change --
+   * because the route the next turn runs on is what actually changed.
+   *
+   * Called inside the admitting transaction, after that turn's own messages
+   * exist: the anchor is the newest settled message NOT part of this turn, so
+   * the rule renders between the two turns. Nothing is recorded when either
+   * side is unresolved, when this is the first routed turn (it establishes the
+   * baseline rather than changing anything), or when no message precedes it.
+   */
+  private recordModelTransition(threadId: string, turnId: string, now: string): void {
+    type RouteRow = { requested_model: string | null; requested_effort: string | null };
+    const selection = (row: RouteRow): WebRouteSelection =>
+      ({ model: row.requested_model, effort: row.requested_effort });
+    const current = this.database.prepare("SELECT requested_model, requested_effort FROM turns WHERE id = ?")
+      .get(turnId) as RouteRow | undefined;
+    if (current === undefined || current.requested_model === null) return;
+    // Turns that reported no model at all -- cron rows, a queued input frozen
+    // on the agent's default -- are neither a change nor a baseline: skipping
+    // them keeps the comparison between two routes that are actually known.
+    const previous = this.database.prepare(`SELECT requested_model, requested_effort FROM turns
+        WHERE thread_id = ? AND id <> ? AND requested_model IS NOT NULL
+        ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+      .get(threadId, turnId) as RouteRow | undefined;
+    if (previous === undefined) return;
+    const modelChanged = previous.requested_model !== current.requested_model;
+    // An effort that one side never reported is unknown, not "off": a rule
+    // claiming `— → high` would be inventing the half it does not have.
+    const effortChanged = previous.requested_effort !== null && current.requested_effort !== null
+      && previous.requested_effort !== current.requested_effort;
+    if (!modelChanged && !effortChanged) return;
+    const anchor = this.database.prepare(`SELECT messages.id FROM messages
+        LEFT JOIN turns ON turns.id = messages.turn_id
+        WHERE messages.thread_id = ? AND (messages.turn_id IS NULL OR messages.turn_id <> ?)
+          AND (turns.status IS NULL OR turns.status <> 'running')
+          AND ${visibleMessageSql("messages")}
+          AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
+        ORDER BY messages.rowid DESC LIMIT 1`)
+      .get(threadId, turnId) as { id: string } | undefined;
+    if (anchor === undefined) return;
+    this.database.prepare(`INSERT INTO model_transitions
+      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(threadId, anchor.id, turnId, JSON.stringify(selection(previous)), JSON.stringify(selection(current)), now);
+  }
+
+  modelTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebModelTransition[] {
+    return (this.database.prepare(`SELECT * FROM model_transitions WHERE thread_id = ?
         ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
       .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
         id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
@@ -3889,6 +3956,7 @@ export class WebStore {
         WHERE id = ?
       `).run(title, now, threadId);
       this.captureProjectContext(turnId, threadId);
+      this.recordModelTransition(threadId, turnId, now);
       this.recordThreadRevision(threadId, "turn_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -3987,6 +4055,7 @@ export class WebStore {
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
       this.captureProjectContext(turnId, threadId);
+      this.recordModelTransition(threadId, turnId, now);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -4277,6 +4346,7 @@ export class WebStore {
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
       this.captureProjectContext(turnId, threadId);
+      this.recordModelTransition(threadId, turnId, now);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {

@@ -1223,7 +1223,7 @@ describe("silent cron projections", () => {
       expect(store.getThread(thread)).toMatchObject({ messageCount: 0, revision: before.revision + 1 });
       expect(store.getThread(thread)!.lastMessagePreview).toBeUndefined();
       expect(store.getMessage(message.id)).toBeUndefined();
-      expect(store.listMessagesPage(thread, { limit: 1 })).toEqual({ messages: [], projectTransitions: [] });
+      expect(store.listMessagesPage(thread, { limit: 1 })).toEqual({ messages: [], projectTransitions: [], modelTransitions: [] });
       expect(store.searchThreads({ sourceId: "agent-one", query: "silently" }).hits).toEqual([]);
       expect(store.storedCronRuns("agent-one", "daily:brief")).toMatchObject({ runs: [expect.objectContaining({ runId: run.runId })], messages: [] });
       expect(store.reconcileCronRunsResult("agent-one", "daily:brief", [{ ...silent, eventCount: 2 }]).changed).toBe(false);

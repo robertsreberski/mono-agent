@@ -542,10 +542,15 @@ const mergeThreads = (
  * to the same `messages` array it did last time, which is what assistant-ui
  * short-circuits its whole store update on.
  */
+const NO_SIDECARS = Object.freeze([]) as readonly never[];
+
 const projectDetail = (entry: ThreadCacheEntry): ThreadDetail => ({
   thread: entry.thread,
   messages: entry.messages,
-  projectTransitions: entry.projectTransitions ?? [],
+  // One shared empty array, so a conversation with no sidecars projects to the
+  // same identity every time and `publishDetail` below can compare them.
+  projectTransitions: entry.projectTransitions ?? NO_SIDECARS,
+  modelTransitions: entry.modelTransitions ?? NO_SIDECARS,
   ...(entry.messagesNextCursor === undefined
     ? {}
     : { messagesNextCursor: entry.messagesNextCursor }),
@@ -2556,9 +2561,15 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       setDetail(null);
       return;
     }
+    // The sidecars are compared too: a transition arrives on a read that
+    // changed neither the summary nor a single message -- the marker IS the
+    // only new thing in that answer -- and comparing only those two published
+    // the transcript without it until the next unrelated write.
     setDetail((current) => (current !== null
       && current.thread === entry.thread
       && current.messages === entry.messages
+      && current.projectTransitions === (entry.projectTransitions ?? NO_SIDECARS)
+      && current.modelTransitions === (entry.modelTransitions ?? NO_SIDECARS)
       && current.messagesNextCursor === entry.messagesNextCursor)
       ? current
       : projectDetail(entry));
@@ -2638,6 +2649,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
           thread: stored.thread,
           messages: stored.messages,
           projectTransitions: stored.projectTransitions ?? [],
+          modelTransitions: stored.modelTransitions ?? [],
           ...(stored.messagesNextCursor === undefined
             ? {}
             : { messagesNextCursor: stored.messagesNextCursor }),
@@ -5116,6 +5128,7 @@ export function ConsoleStoreProvider({ children }: { readonly children: ReactNod
       threadCacheRef.current.prependOlder(current.thread.id, {
         messages: page.messages,
         projectTransitions: page.projectTransitions ?? [],
+        modelTransitions: page.modelTransitions ?? [],
         ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
       });
       publishDetail(current.thread.id);
