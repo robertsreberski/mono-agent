@@ -1,4 +1,5 @@
 import type { JsonEnvFieldSpec, SettingsJsonValue } from "@mono-agent/agent-contracts";
+import { DEFAULT_AGENT_ATTACHMENT_MAX_BYTES } from "@mono-agent/agent-contracts";
 import {
   ALLOW_ALL_TOOLS,
   CONFIG_ENV_KEYS,
@@ -1509,6 +1510,7 @@ function defaultValueFor(id: string): SettingsJsonValue | undefined {
     "webhook.defaultMode": "sync",
     "webhook.retentionMs": 300_000,
     "webhook.maxStoredRequests": 100,
+    "webhook.maxAttachmentBytes": DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
     "cron.operatorActions.enabled": false,
     "cron.enabled": false,
     "cron.dir": "cron",

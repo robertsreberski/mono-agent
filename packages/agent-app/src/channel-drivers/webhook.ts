@@ -99,6 +99,7 @@ export function createWebhookChannelDriver(
         defaultMode: input.config.defaultMode,
         retentionMs: input.config.retentionMs,
         maxStoredRequests: input.config.maxStoredRequests,
+        ...(input.config.maxAttachmentBytes === undefined ? {} : { maxAttachmentBytes: input.config.maxAttachmentBytes }),
         maxRunMs: input.config.maxRunMs ?? DEFAULT_WEBHOOK_MAX_RUN_MS,
         endpoints: endpoints.map((endpoint) => ({
           name: endpoint.name,

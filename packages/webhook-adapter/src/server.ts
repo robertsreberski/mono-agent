@@ -4,9 +4,12 @@ import { dirname } from "node:path/posix";
 
 import {
   BufferedMessageStream,
+  DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
+  DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   isAgentResponseCancelledError,
   isDeliverableConversation,
   unsupportedReplyPartDeliveryOutcomes,
+  type AgentAttachment,
   type AgentMessageStream,
   type AgentReplyPartDeliveryOutcome,
   type AgentRequestBase,
@@ -38,6 +41,9 @@ export interface WebhookRequestMetadata {
   readonly remoteAddress?: string;
   readonly headers: Record<string, string | string[] | undefined>;
   readonly payloadMetadata?: unknown;
+  /** Present when the invocation carried an audio upload (counts attachments, never bytes). */
+  readonly hasAttachments?: boolean;
+  readonly attachmentCount?: number;
   readonly nativeNotify?: {
     readonly enabled: true;
     readonly conversationId?: string;
@@ -167,6 +173,13 @@ export interface WebhookAdapterOptions {
    * client disconnect to bound them.
    */
   readonly maxRunMs?: number;
+  /**
+   * Decoded-byte ceiling for one inbound audio attachment (multipart/form-data
+   * or raw `audio/*` bodies). Oversize uploads are rejected with HTTP 413.
+   * Omit to use `DEFAULT_AGENT_ATTACHMENT_MAX_BYTES`. The 1 MB JSON limit is
+   * unaffected.
+   */
+  readonly maxAttachmentBytes?: number;
   readonly responder: AgentResponder<WebhookInvocationRequest, AgentMessageStream, AgentResponse>;
   readonly logger?: WebhookAdapterLogger;
   /**
@@ -269,6 +282,39 @@ interface NormalizedBody {
   readonly effort?: string;
 }
 
+/**
+ * Audio upload decoded by the invoke-body middleware and stashed for
+ * `handleInvoke`. `text` stays optional here: when absent the endpoint prompt
+ * (or a fixed fallback line) becomes the user message.
+ */
+interface WebhookAudioInput {
+  readonly text?: string;
+  readonly conversationId?: string;
+  readonly mode?: string;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly metadata?: unknown;
+  readonly hasMetadata: boolean;
+  readonly mimeType: string;
+  readonly bytes: Buffer;
+  /** Client-supplied filename (trimmed, length-capped), when usable. */
+  readonly fileName?: string;
+}
+
+interface NormalizedAudioBody {
+  readonly text?: string;
+  readonly conversationId: string;
+  readonly mode: WebhookInvocationMode;
+  readonly metadata?: unknown;
+  readonly model?: string;
+  readonly effort?: string;
+  readonly attachment: AgentAttachment;
+}
+
+type AudioParseResult =
+  | { readonly ok: true; readonly value: WebhookAudioInput }
+  | { readonly ok: false; readonly status: number; readonly error: string };
+
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 0;
 const DEFAULT_PATH = "/webhook/invoke";
@@ -276,6 +322,43 @@ const DEFAULT_MODE: WebhookInvocationMode = "sync";
 const DEFAULT_RETENTION_MS = 300_000;
 const DEFAULT_MAX_STORED_REQUESTS = 100;
 const MAX_RUN_MS = 86_400_000;
+/** Upper bound for the operator-configured attachment ceiling (mirrors Telegram). */
+const MAX_ATTACHMENT_CONFIG_BYTES = 2_147_483_648;
+/**
+ * Slack above `maxAttachmentBytes` for the multipart framing itself
+ * (boundaries, part headers, text fields). The audio file bytes are still
+ * capped exactly; only the envelope may use this headroom.
+ */
+const MULTIPART_FORM_OVERHEAD_BYTES = 1_048_576;
+/** User message when an audio upload carries no text and the endpoint has no prompt. */
+const VOICE_MESSAGE_FALLBACK_TEXT = "Voice message attached.";
+/** Multipart field names accepted for the single audio file part. */
+const AUDIO_FILE_FIELD_NAMES: readonly string[] = ["audio", "file"];
+/** Client filenames are display-only; cap them so they stay out of status noise. */
+const MAX_AUDIO_FILE_NAME_CHARS = 120;
+/** Apple/encoder MIME aliases normalized to the allowlist's canonical form. */
+const AUDIO_MIME_ALIASES: Record<string, string> = {
+  "audio/x-m4a": "audio/mp4",
+  "audio/m4a": "audio/mp4",
+  "audio/x-wav": "audio/wav",
+  "audio/mp3": "audio/mpeg",
+};
+/** Extension for generated `voice-<requestId>` names (the harness sanitizes names for disk). */
+const AUDIO_MIME_EXTENSIONS: Record<string, string> = {
+  "audio/ogg": ".ogg",
+  "audio/mpeg": ".mp3",
+  "audio/mp4": ".m4a",
+  "audio/aac": ".aac",
+  "audio/wav": ".wav",
+  "audio/webm": ".webm",
+  "audio/flac": ".flac",
+};
+/** Audio subset of the shared attachment allowlist; anything else is HTTP 415. */
+const AUDIO_ATTACHMENT_MIME_ALLOWLIST: readonly string[] = DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST.filter(
+  (mime) => mime.startsWith("audio/"),
+);
+/** Per-request audio stash: set by the body middleware, consumed once by `handleInvoke`. */
+const audioInputs = new WeakMap<object, WebhookAudioInput>();
 const FORCE_CLOSE_AFTER_MS = 250;
 export async function startWebhookAdapter(options: WebhookAdapterOptions): Promise<WebhookAdapterStartResult> {
   validateOptions(options);
@@ -284,6 +367,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const apiKey = normalizeOptionalString(options.apiKey);
   const retentionMs = options.retentionMs ?? DEFAULT_RETENTION_MS;
   const maxStoredRequests = options.maxStoredRequests ?? DEFAULT_MAX_STORED_REQUESTS;
+  const maxAttachmentBytes = options.maxAttachmentBytes ?? DEFAULT_AGENT_ATTACHMENT_MAX_BYTES;
   const endpoints = resolveEndpoints(options);
   assertSafeBind(host, options.allowNonLoopback === true, (boundHost) =>
     new WebhookAdapterError(
@@ -308,6 +392,13 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
   const statuses = new Map<string, StoredStatus>();
 
   const parseJsonBody = express.json({ limit: "1mb" });
+  // Raw audio bodies are capped exactly at the attachment ceiling; multipart
+  // gets headroom for its framing while the file bytes stay capped exactly.
+  const parseRawAudioBody = express.raw({ type: "audio/*", limit: maxAttachmentBytes });
+  const parseMultipartBody = express.raw({
+    type: "multipart/form-data",
+    limit: maxAttachmentBytes + MULTIPART_FORM_OVERHEAD_BYTES,
+  });
   for (const endpoint of endpoints) {
     app.post(
       endpoint.path,
@@ -316,7 +407,12 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           next();
         }
       },
+      parseRawAudioBody,
+      parseMultipartBody,
       parseJsonBody,
+      (req, res, next) => {
+        void decodeAudioBody(req, res, next, maxAttachmentBytes);
+      },
       (req, res) => {
         void handleInvoke(req, res, endpoint).catch((error: unknown) => {
           options.logger?.error?.("Webhook invocation failed before response.", {
@@ -347,9 +443,16 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
       res.status(200).json(sanitizeWebhookInvocationStatus(stored.status));
     });
   }
-  app.use((error: unknown, _req: Request, res: Response, next: NextFunction) => {
+  app.use((error: unknown, req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) {
       next(error);
+      return;
+    }
+    if (isEntityTooLargeError(error) && (isMultipartContent(req) || isAudioContent(req))) {
+      res.status(413).json({
+        status: "failed",
+        error: `Webhook audio body exceeds the ${String(maxAttachmentBytes)}-byte attachment limit.`,
+      });
       return;
     }
     res.status(400).json({ status: "failed", error: errorToMessage(error) });
@@ -410,10 +513,17 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
     pruneStatuses(statuses, retentionMs, maxStoredRequests);
     const requestId = randomUUID();
     const receivedAt = new Date().toISOString();
-    const body = normalizeBody(req.body, {
-      requestId,
-      defaultMode: endpoint.mode,
-    });
+    const audio = takeAudioInput(req);
+    const body: NormalizedBody | NormalizedAudioBody = audio === undefined
+      ? normalizeBody(req.body, {
+        requestId,
+        defaultMode: endpoint.mode,
+      })
+      : normalizeAudioBody(audio, {
+        requestId,
+        defaultMode: endpoint.mode,
+      });
+    const attachment = "attachment" in body ? body.attachment : undefined;
     const statusUrl = `${endpoint.statusBasePath}/${requestId}`;
     const runKey = `${endpoint.name}:${body.conversationId}`;
     const maxRunMs = endpoint.maxRunMs ?? options.maxRunMs;
@@ -445,8 +555,15 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
 
     const request: WebhookInvocationRequest = {
       conversationId: body.conversationId,
-      text: composePromptText(endpoint.prompt, body.text),
+      // Audio uploads may omit text: the endpoint prompt (or a fixed fallback
+      // line) becomes the user message while the file rides as an attachment.
+      text: body.text === undefined
+        ? (endpoint.prompt === undefined || endpoint.prompt.length === 0
+          ? VOICE_MESSAGE_FALLBACK_TEXT
+          : endpoint.prompt)
+        : composePromptText(endpoint.prompt, body.text),
       abortSignal: controller.signal,
+      ...(attachment === undefined ? {} : { attachments: [attachment] }),
       metadata: {
         webhook: {
           requestId,
@@ -457,6 +574,7 @@ export async function startWebhookAdapter(options: WebhookAdapterOptions): Promi
           receivedAt,
           ...(req.socket.remoteAddress === undefined ? {} : { remoteAddress: req.socket.remoteAddress }),
           headers: sanitizeInboundHttpHeaders(req.headers),
+          ...(attachment === undefined ? {} : { hasAttachments: true, attachmentCount: 1 }),
           ...(body.metadata === undefined ? {} : { payloadMetadata: body.metadata }),
           ...(endpoint.notify === true
             ? {
@@ -854,6 +972,252 @@ function normalizeBody(body: unknown, input: { readonly requestId: string; reado
   };
 }
 
+/**
+ * Decode a buffered multipart/form-data or raw `audio/*` body into a stashed
+ * audio input. JSON bodies (non-Buffer) pass through untouched. Format-level
+ * failures answer directly with their contract status (400/413/415); semantic
+ * failures (e.g. an invalid `mode`) stay with `normalizeAudioBody` so they
+ * surface exactly like their JSON equivalents.
+ */
+async function decodeAudioBody(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  maxAttachmentBytes: number,
+): Promise<void> {
+  if (!Buffer.isBuffer(req.body)) {
+    next();
+    return;
+  }
+  const raw = req.body as Buffer;
+  const parsed = isMultipartContent(req)
+    ? await parseMultipartAudioBody(requestContentType(req), raw, maxAttachmentBytes)
+    : decodeRawAudioBody(req, raw, maxAttachmentBytes);
+  if (!parsed.ok) {
+    res.status(parsed.status).json({ status: "failed", error: parsed.error });
+    return;
+  }
+  audioInputs.set(req, parsed.value);
+  next();
+}
+
+function decodeRawAudioBody(req: Request, raw: Buffer, maxAttachmentBytes: number): AudioParseResult {
+  const mimeType = normalizeAudioMimeType(requestContentType(req));
+  if (mimeType === undefined) {
+    return audioParseFailure(415, unsupportedAudioMimeError(displayRequestContentType(req)));
+  }
+  if (raw.byteLength === 0) {
+    return audioParseFailure(400, "Webhook audio body is empty.");
+  }
+  if (raw.byteLength > maxAttachmentBytes) {
+    return audioParseFailure(413, oversizeAudioError(maxAttachmentBytes));
+  }
+  const fileName = normalizeAudioFileName(
+    normalizeOptionalString(req.get("X-File-Name")) ?? firstQueryParam(req.query.name),
+  );
+  const text = firstQueryParam(req.query.text);
+  const conversationId = firstQueryParam(req.query.conversationId);
+  const mode = firstQueryParam(req.query.mode);
+  const model = firstQueryParam(req.query.model);
+  const effort = firstQueryParam(req.query.effort);
+  return {
+    ok: true,
+    value: {
+      ...(text === undefined ? {} : { text }),
+      ...(conversationId === undefined ? {} : { conversationId }),
+      ...(mode === undefined ? {} : { mode }),
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+      hasMetadata: false,
+      mimeType,
+      bytes: raw,
+      ...(fileName === undefined ? {} : { fileName }),
+    },
+  };
+}
+
+/**
+ * Parse a buffered multipart body with undici's `Response.formData()` (Node >=
+ * 24, no extra dependency): exactly one file part under `audio`/`file`, plus
+ * the JSON-equivalent text fields. `metadata` may be a JSON string field.
+ */
+async function parseMultipartAudioBody(
+  contentType: string,
+  raw: Buffer,
+  maxAttachmentBytes: number,
+): Promise<AudioParseResult> {
+  let form: FormData;
+  try {
+    form = await new Response(raw, { headers: { "content-type": contentType } }).formData();
+  } catch {
+    return audioParseFailure(400, "Webhook multipart body could not be parsed.");
+  }
+  const fields = new Map<string, string>();
+  const files: Array<{ readonly field: string; readonly file: File }> = [];
+  for (const [name, value] of form.entries()) {
+    if (typeof value === "string") {
+      if (!fields.has(name)) {
+        fields.set(name, value);
+      }
+    } else {
+      files.push({ field: name, file: value });
+    }
+  }
+  if (files.length === 0) {
+    return audioParseFailure(400, "Multipart webhook invocation requires exactly one \"audio\" or \"file\" part.");
+  }
+  if (files.length > 1) {
+    return audioParseFailure(400, "Multipart webhook invocation accepts a single audio file part.");
+  }
+  const single = files[0];
+  if (single === undefined || !AUDIO_FILE_FIELD_NAMES.includes(single.field)) {
+    return audioParseFailure(
+      400,
+      `Multipart file part must use the "audio" or "file" field name (received "${single?.field ?? "(missing)"}").`,
+    );
+  }
+  const mimeType = normalizeAudioMimeType(single.file.type);
+  if (mimeType === undefined) {
+    return audioParseFailure(415, unsupportedAudioMimeError(single.file.type === "" ? "(missing)" : single.file.type));
+  }
+  const bytes = Buffer.from(await single.file.arrayBuffer());
+  if (bytes.byteLength === 0) {
+    return audioParseFailure(400, "Webhook audio file is empty.");
+  }
+  if (bytes.byteLength > maxAttachmentBytes) {
+    return audioParseFailure(413, oversizeAudioError(maxAttachmentBytes));
+  }
+  const rawMetadata = fields.get("metadata");
+  let metadata: unknown;
+  if (rawMetadata !== undefined) {
+    try {
+      metadata = JSON.parse(rawMetadata) as unknown;
+    } catch {
+      return audioParseFailure(400, "Webhook metadata field must contain valid JSON.");
+    }
+  }
+  const fileName = normalizeAudioFileName(single.file.name);
+  const text = normalizeOptionalString(fields.get("text"));
+  const conversationId = normalizeOptionalString(fields.get("conversationId"));
+  const mode = normalizeOptionalString(fields.get("mode"));
+  const model = normalizeOptionalString(fields.get("model"));
+  const effort = normalizeOptionalString(fields.get("effort"));
+  return {
+    ok: true,
+    value: {
+      ...(text === undefined ? {} : { text }),
+      ...(conversationId === undefined ? {} : { conversationId }),
+      ...(mode === undefined ? {} : { mode }),
+      ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
+      ...(rawMetadata === undefined ? { hasMetadata: false as const } : { hasMetadata: true as const, metadata }),
+      mimeType,
+      bytes,
+      ...(fileName === undefined ? {} : { fileName }),
+    },
+  };
+}
+
+/**
+ * Mirror `normalizeBody` for audio uploads, except `text` is optional. The
+ * attachment becomes an ordinary `document` `AgentAttachment` (the same shape
+ * Telegram voice notes use); the harness persists it and exposes it to MCP
+ * request-context transcribe tools. The adapter never transcribes.
+ */
+function normalizeAudioBody(
+  audio: WebhookAudioInput,
+  input: { readonly requestId: string; readonly defaultMode: WebhookInvocationMode },
+): NormalizedAudioBody {
+  const mode = audio.mode ?? input.defaultMode;
+  if (mode !== "sync" && mode !== "async") {
+    throw new WebhookAdapterError("invalid_config", "Webhook mode must be sync or async.");
+  }
+  return {
+    ...(audio.text === undefined ? {} : { text: audio.text }),
+    conversationId: audio.conversationId ?? `webhook:${input.requestId}`,
+    mode,
+    ...(audio.hasMetadata ? { metadata: audio.metadata } : {}),
+    ...(audio.model === undefined ? {} : { model: audio.model }),
+    ...(audio.effort === undefined ? {} : { effort: audio.effort }),
+    attachment: {
+      kind: "document",
+      mimeType: audio.mimeType,
+      data: audio.bytes.toString("base64"),
+      name: audio.fileName ?? `voice-${input.requestId}${AUDIO_MIME_EXTENSIONS[audio.mimeType] ?? ""}`,
+      sizeBytes: audio.bytes.byteLength,
+    },
+  };
+}
+
+function takeAudioInput(req: Request): WebhookAudioInput | undefined {
+  const audio = audioInputs.get(req);
+  if (audio !== undefined) {
+    audioInputs.delete(req);
+  }
+  return audio;
+}
+
+/** Lowercase MIME base type with Apple/encoder aliases resolved; undefined when unsupported. */
+function normalizeAudioMimeType(rawMimeType: string): string | undefined {
+  const base = rawMimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (base.length === 0) {
+    return undefined;
+  }
+  const canonical = AUDIO_MIME_ALIASES[base] ?? base;
+  return AUDIO_ATTACHMENT_MIME_ALLOWLIST.includes(canonical) ? canonical : undefined;
+}
+
+/** Client filenames are display-only metadata; trim and cap them, never treat them as paths. */
+function normalizeAudioFileName(rawName: string | undefined): string | undefined {
+  const trimmed = normalizeOptionalString(rawName);
+  if (trimmed === undefined) {
+    return undefined;
+  }
+  if (trimmed === "blob") {
+    return undefined;
+  }
+  return trimmed.slice(0, MAX_AUDIO_FILE_NAME_CHARS);
+}
+
+function firstQueryParam(value: unknown): string | undefined {
+  return normalizeOptionalString(Array.isArray(value) ? value[0] : value);
+}
+
+function requestContentType(req: Request): string {
+  return req.get("content-type") ?? "";
+}
+
+function displayRequestContentType(req: Request): string {
+  const base = requestContentType(req).split(";")[0]?.trim() ?? "";
+  return base.length === 0 ? "(missing)" : base;
+}
+
+function isAudioContent(req: Request): boolean {
+  return (requestContentType(req).split(";")[0]?.trim().toLowerCase() ?? "").startsWith("audio/");
+}
+
+function isMultipartContent(req: Request): boolean {
+  return (requestContentType(req).split(";")[0]?.trim().toLowerCase() ?? "") === "multipart/form-data";
+}
+
+function isEntityTooLargeError(error: unknown): boolean {
+  return typeof error === "object"
+    && error !== null
+    && (error as { readonly type?: unknown }).type === "entity.too.large";
+}
+
+function unsupportedAudioMimeError(received: string): string {
+  return `Unsupported audio MIME type "${received}". Supported types: ${AUDIO_ATTACHMENT_MIME_ALLOWLIST.join(", ")}.`;
+}
+
+function oversizeAudioError(maxAttachmentBytes: number): string {
+  return `Webhook audio exceeds the ${String(maxAttachmentBytes)}-byte attachment limit.`;
+}
+
+function audioParseFailure(status: number, error: string): AudioParseResult {
+  return { ok: false, status, error };
+}
+
 function setStatus(
   statuses: Map<string, StoredStatus>,
   status: WebhookInvocationStatus,
@@ -1025,6 +1389,7 @@ function validateOptions(options: WebhookAdapterOptions): void {
   }
   validatePositiveInteger(options.retentionMs, "retentionMs");
   validatePositiveInteger(options.maxStoredRequests, "maxStoredRequests");
+  validateAttachmentBytes(options.maxAttachmentBytes);
   const mode = options.defaultMode ?? DEFAULT_MODE;
   if (mode !== "sync" && mode !== "async") {
     throw new WebhookAdapterError("invalid_config", "Webhook defaultMode must be sync or async.");
@@ -1172,6 +1537,18 @@ function validatePositiveInteger(value: number | undefined, name: string): void 
   }
   if (!Number.isInteger(value) || value < 1) {
     throw new WebhookAdapterError("invalid_config", `Webhook ${name} must be a positive integer.`);
+  }
+}
+
+function validateAttachmentBytes(value: number | undefined): void {
+  if (value === undefined) {
+    return;
+  }
+  if (!Number.isInteger(value) || value < 1 || value > MAX_ATTACHMENT_CONFIG_BYTES) {
+    throw new WebhookAdapterError(
+      "invalid_config",
+      `Webhook maxAttachmentBytes must be an integer from 1 to ${String(MAX_ATTACHMENT_CONFIG_BYTES)} bytes.`,
+    );
   }
 }
 
