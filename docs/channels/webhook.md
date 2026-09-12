@@ -49,6 +49,7 @@ omitted from a hand-written config, the webhook channel remains off.
 | `apiKey` | string | — | Optional static bearer token on loopback; required for a non-loopback bind. Prefer `MONO_AGENT_WEBHOOK_API_KEY` over committed JSON. Protects invoke and status routes. |
 | `retentionMs` | integer | `300000` | How long completed/request statuses are retained (min 1, max 86_400_000). |
 | `maxStoredRequests` | integer | `100` | Maximum status entries kept before oldest-first pruning (min 1, max 10_000). |
+| `maxAttachmentBytes` | integer | `20971520` | Decoded-byte ceiling for one inbound audio upload (min 1, max 2_147_483_648). Oversize uploads are rejected with HTTP `413`. See [Audio input](#audio-input-apple-shortcuts). |
 | `maxRunMs` | integer | `1200000` | Adapter-level wall-clock fallback per run (20 min). `endpoints[].maxRunMs` wins; `0` disables. Min 0, max 86_400_000. See [Run watchdog](#run-watchdog-a-wedged-run-is-aborted-not-left-to-starve). |
 | `endpoints[].maxRunMs` | integer | inherited | Per-endpoint watchdog override. `0` disables only that endpoint; otherwise min 1, max 86_400_000. |
 | `prompt` | string | — | Pre-instructions prepended to the request text (see [Prompts](#endpoint-prompts)). |
@@ -77,6 +78,50 @@ The request body is a JSON object. `text` is required; everything else is option
 | `model` | no | Per-request model override (`sdk:model` / `sdk:provider:model`). Wins over the endpoint's `model`. See [Per-trigger model & effort](#per-trigger-model--effort). |
 | `effort` | no | Per-request reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` warns and names the nearest supported level when the configured value is outside the model's advertised set. Ranking above `max` only prevents keyword downgrade. Wins over the endpoint's `effort`. |
 | `metadata` | no | Arbitrary JSON passed through to the turn. |
+
+### Audio input (Apple Shortcuts)
+
+An invoke route also accepts a recorded audio file (e.g. Apple's Record Audio
+`m4a`) as an ordinary `document` attachment, so an agent with a transcribe
+tool (an MCP request-context `transcribe` server) can work on the file — the
+same path Telegram voice notes take. The adapter never transcribes: it only
+ingests bytes.
+
+Two inbound formats, in addition to JSON (`text` stays required there):
+
+- `multipart/form-data`: exactly one file part under the `audio` or `file`
+  field, plus the usual text fields (`text`, `conversationId`, `mode`,
+  `model`, `effort`; `metadata` may be a JSON string field and must parse).
+  `text` is optional when the file is present.
+- Raw `audio/*` body: the whole body is the file; optional params ride the
+  query string and the `X-File-Name` header (or `name` query param) gives the
+  filename.
+
+```bash
+# Raw body (Shortcuts "Get Contents of URL" with Request Body: File).
+curl -X POST "http://127.0.0.1:${PORT}/webhook/invoke?mode=sync" \
+  -H 'content-type: audio/x-m4a' \
+  --data-binary @note.m4a
+
+# Multipart (Shortcuts "Get Contents of URL" with Request Body: Form).
+curl -X POST "http://127.0.0.1:${PORT}/webhook/invoke" \
+  -F 'audio=@note.m4a;type=audio/x-m4a' -F 'mode=sync'
+```
+
+Apple encoder aliases are normalized (`audio/x-m4a` and `audio/m4a` →
+`audio/mp4`, `audio/x-wav` → `audio/wav`, `audio/mp3` → `audio/mpeg`);
+anything outside the audio allowlist is rejected with HTTP `415`, empty files
+with `400`, and uploads past `webhook.maxAttachmentBytes` with `413`.
+Without `text` the user message is the endpoint `prompt`, or
+`Voice message attached.` when the endpoint has none. The audio bytes never
+appear in status JSON or metadata — only `hasAttachments` /
+`attachmentCount`.
+
+Shortcuts recipe: **Record Audio** → **Get Contents of URL** (`POST` the
+invoke URL, header `Authorization: Bearer <key>` when the endpoint sets
+`apiKey`, Request Body: File for the raw format or Form with an `audio` file
+field plus `mode=sync` for multipart) → **Get Dictionary Value** `text` →
+**Show Result** (or Speak Text).
 
 ### Sync mode
 
@@ -126,6 +171,9 @@ and result callbacks receive separate copies of the same sanitized outcome.
 | Unknown or expired request id | `404` | `not_found` | No entry exists. |
 | Missing or invalid configured bearer | `401` | `unauthorized` | Never parsed or stored. |
 | Invalid JSON/request shape | `400` | `failed` | Never admitted or stored. |
+| Empty audio upload, malformed multipart, or unparsable multipart `metadata` | `400` | `failed` | Never admitted or stored. |
+| Audio upload past `webhook.maxAttachmentBytes` | `413` | `failed` | Never admitted or stored. |
+| Non-audio upload (multipart file or `audio/*` outside the allowlist) | `415` | `failed` | Never admitted or stored. |
 | Adapter stopping before admission | `503` | `failed` | Never admitted or stored. |
 
 The status map is adapter-owned, bounded process memory; it is not durable and
@@ -246,6 +294,7 @@ Every key has a `MONO_AGENT_WEBHOOK_*` override, which takes precedence over the
 | `MONO_AGENT_WEBHOOK_API_KEY` | `webhook.apiKey` |
 | `MONO_AGENT_WEBHOOK_RETENTION_MS` | `webhook.retentionMs` |
 | `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | `webhook.maxStoredRequests` |
+| `MONO_AGENT_WEBHOOK_MAX_ATTACHMENT_BYTES` | `webhook.maxAttachmentBytes` |
 | `MONO_AGENT_WEBHOOK_MAX_RUN_MS` | `webhook.maxRunMs` |
 | `MONO_AGENT_WEBHOOK_PROMPT` | `webhook.prompt` |
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` |
