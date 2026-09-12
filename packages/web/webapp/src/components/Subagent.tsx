@@ -419,27 +419,30 @@ export function SubagentPart({ data }: DataMessagePartProps) {
   // inventing one would rewrite history -- and the expanded RunAttribution
   // below keeps the full warnings and retry detail.
   const route = resolveSubagentRoute(view.attribution, view.status);
-  const badge = route === undefined ? undefined : (
-    <RouteBadge
-      modelShort={route.modelShort}
-      effortShort={route.effortShort}
-      label={route.label}
-      title={route.title}
-      compact
-      fallback={route.isFallback}
-      requestedOnly={route.isRequestedOnly}
-    />
+  const badge = (
+    <>
+      {task !== undefined && <span className="subagent-profile" title={view.name}>{view.name}</span>}
+      {route !== undefined && <RouteBadge
+        modelShort={route.modelShort}
+        effortShort={route.effortShort}
+        label={route.label}
+        title={route.title}
+        compact
+        fallback={route.isFallback}
+        requestedOnly={route.isRequestedOnly}
+      />}
+    </>
   );
 
   return (
     <ActivityRow
       variant="subagent"
       status={view.status}
-      label="Subagent"
-      summary={task === undefined ? view.name : `${view.name} — ${task}`}
+      summary={task ?? view.name}
+      ariaLabel={`Subagent ${view.name}${task === undefined ? "" : `: ${task}`}`}
       failed={failedLabel(view.status === "failed" ? 1 : 0, false)}
       duration={meta}
-      {...(badge === undefined ? {} : { badge })}
+      badge={badge}
     >
       <div className="activity-steps">
         <RunAttribution attribution={view.attribution} status={view.status} />

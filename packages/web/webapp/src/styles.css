@@ -415,34 +415,29 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .automation-enabled { flex: none; padding: 2px 5px; color: var(--text-muted); background: var(--surface-subtle); border-radius: 5px; font-size: 8px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .automation-enabled.is-enabled { color: var(--accent); background: var(--accent-soft); }
 .thread-preview-text time { color: var(--text-soft); }
-/* Route badges: the quiet split label for a conversation's current settings
-   and a delegation's reported route. One neutral pill -- short model name, a
-   separator, a distinct mono effort token -- so the title line and the status
-   stay primary. Colour never carries the meaning alone: fallbacks keep their
-   flag and requested-only keeps its dashed edge, both named in full in the
-   accessible label. Type never drops below the row's own floor; the compact
-   activity variant sheds padding first. */
-.route-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 6px; overflow: hidden; color: var(--text-soft); background: var(--surface-subtle); border: 1px solid var(--line); border-radius: 5px; font-size: 10px; line-height: 1.5; white-space: nowrap; }
-.route-badge-model { min-width: 0; max-width: 110px; overflow: hidden; font-weight: 650; text-overflow: ellipsis; }
-.route-badge-sep { flex: none; color: var(--text-muted); font-weight: 400; }
-.route-badge-effort { flex: none; font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.02em; }
-.route-badge.is-compact { padding: 0 5px; gap: 3px; }
+/* Route metadata stays quieter than titles and activity purposes. Full effort
+   words avoid a legend; no border/fill competes with actual status badges. */
+.route-badge { flex: none; display: inline-flex; align-items: baseline; gap: 4px; max-width: 100%; padding: 0; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.5; white-space: nowrap; }
+.route-badge-model { min-width: 0; max-width: 110px; overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
+.route-badge-sep { flex: none; color: var(--text-muted); }
+.route-badge-effort { flex: none; max-width: 70px; overflow: hidden; font-size: inherit; font-weight: 400; text-overflow: ellipsis; }
+.route-badge.is-compact { gap: 3px; font-size: 9.5px; }
 .route-badge.is-compact .route-badge-model { max-width: 100px; }
-.route-badge-flag { flex: none; color: var(--warning); font-weight: 800; }
-.route-badge.is-fallback { border-color: color-mix(in srgb, var(--warning) 45%, var(--line)); }
-.route-badge.is-requested { border-style: dashed; }
-/* A running card's second line: the status keeps its ellipsis and the badge
-   trails it, on the same line the fleet column already budgets. */
+.route-badge-flag { flex: none; color: var(--warning); font-weight: 700; }
+.route-badge.is-requested .route-badge-model { text-decoration: underline dotted; text-underline-offset: 3px; }
 .running-card-status-line { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .running-card-status-line .running-card-status { min-width: 0; flex: 1; }
-/* Collapsed activity metadata: inside the summary line, never a second row,
-   and bounded so a long delegation name still owns the line. */
-.activity-row-badge { flex: none; display: inline-flex; min-width: 0; max-width: 42%; }
-.activity-row-badge .route-badge { max-width: 100%; }
+.activity-row-badge { flex: none; display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; max-width: 50%; }
+.activity-row-badge .route-badge { min-width: 0; max-width: 100%; }
+.activity-row-meta { min-width: 0; max-width: 65%; display: flex; align-items: baseline; gap: 7px; }
+.activity-row-meta .activity-row-badge { max-width: 100%; }
+.activity-row-meta .activity-row-badge:not(:empty) ~ .activity-row-time::before { content: "·"; margin-right: 7px; }
+.subagent-profile { min-width: 0; max-width: 90px; overflow: hidden; color: var(--text-muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-profile + .route-badge::before { content: "·"; margin-right: 3px; color: var(--text-muted); }
+.activity-row.is-subagent .activity-row-summary { color: var(--text-soft); font-weight: 500; }
 @media (max-width: 380px) {
   .route-badge-model { max-width: 94px; }
   .route-badge.is-compact .route-badge-model { max-width: 94px; }
-  .activity-row-badge { max-width: 38%; }
 }
 .automation-empty { min-height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px 18px; color: var(--text-muted); text-align: center; }
 .automation-empty > svg { color: var(--accent); }
@@ -1158,15 +1153,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
 @media (max-width: 560px) {
   .model-controls-label { display: none; }
-  /* Keep the delegation purpose readable: route + accounting sit underneath. */
-  .activity-row.is-subagent:has(.activity-row-badge) > summary { display: grid; grid-template-columns: 18px auto minmax(0, 1fr) auto; column-gap: 6px; row-gap: 4px; padding-block: 7px; }
-  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-glyph { grid-area: 1 / 1; }
-  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-label { grid-area: 1 / 2; }
-  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-summary { grid-area: 1 / 3; }
-  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-chevron { grid-area: 1 / 4; }
-  .activity-row.is-subagent .activity-row-badge { grid-area: 2 / 2; max-width: 100%; }
-  .activity-row.is-subagent:has(.activity-row-badge) .activity-row-time { grid-area: 2 / 3 / 3 / 5; white-space: normal; overflow: visible; }
-  .activity-row.is-subagent:has(.activity-row-badge) .failed-tag { grid-area: 3 / 2 / 4 / 5; justify-self: start; }
+  /* Spend the first line on the task, not on repeated type/profile labels.
+     Metadata wraps naturally below, rather than clipping purpose or effort. */
+  .activity-row.is-subagent > summary { min-height: 44px; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 7px; row-gap: 1px; padding-block: 5px; }
+  .activity-row.is-subagent .activity-row-glyph { grid-area: 1 / 1; }
+  .activity-row.is-subagent .activity-row-summary { grid-area: 1 / 2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; }
+  .activity-row.is-subagent .activity-row-chevron { grid-area: 1 / 3; }
+  .activity-row.is-subagent .activity-row-meta { grid-area: 2 / 2 / 3 / 4; max-width: 100%; flex-wrap: wrap; column-gap: 7px; row-gap: 0; }
+  .activity-row.is-subagent .activity-row-badge { max-width: 100%; }
+  .activity-row.is-subagent .activity-row-time { white-space: nowrap; overflow: visible; font-size: 9px; line-height: 1.3; }
+
   /* A phone's row cannot hold the purpose and the meta side by side: the flex
      line first squeezed the purpose to nothing and then clipped the meta, so a
      failed wake read as "wak…". Job rows alone go to two lines here — purpose

@@ -114,9 +114,17 @@ export function ActivityRow({
         </span>
         {label !== undefined && <strong className="activity-row-label">{label}</strong>}
         {summary !== undefined && <span className="activity-row-summary">{summary}</span>}
-        {badge !== undefined && <span className="activity-row-badge">{badge}</span>}
-        {failed !== undefined && <span className="failed-tag">{failed}</span>}
-        {duration !== undefined && <span className="activity-row-time">{duration}</span>}
+        {variant === "subagent" ? (
+          <span className="activity-row-meta">
+            {badge !== undefined && <span className="activity-row-badge">{badge}</span>}
+            {failed !== undefined && <span className="failed-tag">{failed}</span>}
+            {duration !== undefined && <span className="activity-row-time">{duration}</span>}
+          </span>
+        ) : <>
+          {badge !== undefined && <span className="activity-row-badge">{badge}</span>}
+          {failed !== undefined && <span className="failed-tag">{failed}</span>}
+          {duration !== undefined && <span className="activity-row-time">{duration}</span>}
+        </>}
         <Icon className="activity-row-chevron" name="chevron-down" size={13} />
       </summary>
       {children}

@@ -90,7 +90,7 @@ describe("row labels without opening the conversation", () => {
     rerender(<RowLabel row={second} owner={owner()} />);
     const badge = screen.getByRole("img");
     expect(badge.textContent).toContain("Sol");
-    expect(badge.textContent).toContain("L");
+    expect(badge.textContent).toContain("low");
     expect(badge).toHaveAccessibleName(/conversation override/u);
   });
 
@@ -149,6 +149,9 @@ describe("subagent collapsed badges", () => {
     }));
     const badge = screen.getByRole("img", { name: /Subagent route: Ran with/u });
     expect(badge.textContent).toContain("Sonnet");
+    // The purpose owns the row; profile/route are secondary metadata.
+    expect(screen.getByText("read the router")).toBeVisible();
+    expect(screen.queryByText("Subagent")).toBeNull();
     // The expanded routing detail stays where it was.
     expect(screen.getByText(/Ran with/u)).toBeInTheDocument();
   });
@@ -183,7 +186,7 @@ describe("subagent collapsed badges", () => {
     }));
     const badge = screen.getByRole("img", { name: /Fallback/u });
     expect(badge).toHaveClass("is-fallback");
-    expect(badge.textContent).toContain("Max");
+    expect(badge.textContent).toContain("max");
     expect(badge).toHaveAccessibleName(/requested High/u);
     expect(badge).toHaveAccessibleName(/effective Max/u);
   });
@@ -191,7 +194,7 @@ describe("subagent collapsed badges", () => {
   it("invents no badge for attribution-free records", () => {
     const { container } = render(part(delegation));
     expect(container.querySelector(".route-badge")).toBeNull();
-    expect(screen.getByText("researcher — read the router")).toBeVisible();
+    expect(screen.getByText("read the router")).toBeVisible();
   });
 });
 

@@ -25,20 +25,20 @@ const richAgent = (): AgentSummary => agent("alpha", {
 });
 
 describe("effortToken", () => {
-  it("uses L/M/H/XH/Max plus explicit off/minimal values", () => {
-    expect(effortToken("low")).toBe("L");
-    expect(effortToken("medium")).toBe("M");
-    expect(effortToken("high")).toBe("H");
-    expect(effortToken("xhigh")).toBe("XH");
-    expect(effortToken("max")).toBe("Max");
-    expect(effortToken("none")).toBe("Off");
-    expect(effortToken("minimal")).toBe("Min");
-    expect(effortToken("ultra")).toBe("Ultra");
+  it("uses plain-language effort without a badge legend", () => {
+    expect(effortToken("low")).toBe("low");
+    expect(effortToken("medium")).toBe("medium");
+    expect(effortToken("high")).toBe("high");
+    expect(effortToken("xhigh")).toBe("extra high");
+    expect(effortToken("max")).toBe("max");
+    expect(effortToken("none")).toBe("off");
+    expect(effortToken("minimal")).toBe("minimal");
+    expect(effortToken("ultra")).toBe("ultra");
   });
 
   it("keeps unknown efforts readable instead of blanking them", () => {
     expect(effortToken("turbo")).toBe("turbo");
-    expect(effortToken("super-turbo-plus")).toBe("super-t…");
+    expect(effortToken("super-turbo-plus")).toBe("super-turbo-plus");
     expect(effortFullName("turbo")).toBe("turbo");
   });
 });
@@ -92,7 +92,7 @@ describe("resolveThreadRoute", () => {
     expect(route.model).toBe(SONNET);
     expect(route.effort).toBe("high");
     expect(route.modelShort).toBe("Sonnet 4.5");
-    expect(route.effortShort).toBe("H");
+    expect(route.effortShort).toBe("high");
     expect(route.modelProvenance).toBe("inherited");
     expect(route.effortProvenance).toBe("inherited");
     expect(route.label).toContain("Claude Sonnet 4.5 (anthropic:claude-sonnet-4.5)");
@@ -255,7 +255,7 @@ describe("resolveSubagentRoute", () => {
       disposition: "requested",
       transitions: [],
       retries: [],
-    })).toMatchObject({ kind: "executed", modelShort: "Sol 5.6", effortShort: "H" });
+    })).toMatchObject({ kind: "executed", modelShort: "Sol 5.6", effortShort: "high" });
 
     expect(completed({
       requested: { model: "primary", effort: "low" },
@@ -263,7 +263,7 @@ describe("resolveSubagentRoute", () => {
       disposition: "requested",
       transitions: [],
       retries: [],
-    })).toMatchObject({ kind: "attempted", modelShort: "Sonnet 4.5", effortShort: "M" });
+    })).toMatchObject({ kind: "attempted", modelShort: "Sonnet 4.5", effortShort: "medium" });
 
     const requestedOnly = completed({
       requested: { model: SONNET, effort: "medium" },
@@ -285,7 +285,7 @@ describe("resolveSubagentRoute", () => {
       transitions: [{ from: "primary", to: "fallback", reason: "overloaded" }],
       retries: [],
     });
-    expect(route).toMatchObject({ kind: "executed", effortShort: "Max", isFallback: true });
+    expect(route).toMatchObject({ kind: "executed", effortShort: "max", isFallback: true });
     expect(route?.label).toContain("Fallback");
     expect(route?.label).toContain("requested High");
     expect(route?.label).toContain("effective Max");

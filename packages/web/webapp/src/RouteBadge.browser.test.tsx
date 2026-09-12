@@ -440,7 +440,9 @@ describe("route badge screenshots", () => {
       const effort = row.querySelector(".route-badge-effort")!;
       expect(badge.left).toBeGreaterThanOrEqual(summary.left);
       expect(badge.right).toBeLessThanOrEqual(summary.right);
-      expect(purpose.width).toBeGreaterThan(70);
+      expect(purpose.width).toBeGreaterThan(180);
+      expect(summary.height).toBeGreaterThanOrEqual(44);
+      expect(summary.height).toBeLessThanOrEqual(60);
       expect(effort.scrollWidth).toBeLessThanOrEqual(effort.clientWidth + 1);
     }
     await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(320));

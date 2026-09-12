@@ -32,15 +32,9 @@ import type {
 /** Tiny effort token for the badge's second half. Full meaning in `title`/`aria-label`. */
 export const effortToken = (effort: string): string => {
   switch (effort) {
-    case "none": return "Off";
-    case "minimal": return "Min";
-    case "low": return "L";
-    case "medium": return "M";
-    case "high": return "H";
-    case "xhigh": return "XH";
-    case "max": return "Max";
-    case "ultra": return "Ultra";
-    default: return effort.length <= 8 ? effort : `${effort.slice(0, 7)}…`;
+    case "none": return "off";
+    case "xhigh": return "extra high";
+    default: return effort;
   }
 };
 

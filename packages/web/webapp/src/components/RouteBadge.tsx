@@ -1,5 +1,5 @@
 /**
- * Quiet split badge: short model name plus a distinct effort token.
+ * Quiet inline route label: recognisable model and plain-language effort.
  *
  * A `span`, never a button: rows already navigate, so the badge must not
  * swallow clicks, keys or disclosure. Full identity lives in `aria-label`
@@ -18,7 +18,7 @@ export function RouteBadge({
   readonly effortShort: string;
   /** Accessible name; always the full route, never the short words. */
   readonly label: string;
-  /** Mouse/long-press detail; mirrors the accessible name. */
+  /** Hover detail; mirrors the accessible name. */
   readonly title: string;
   /** Even smaller activity variant: less padding first, same type floor. */
   readonly compact?: boolean;
@@ -41,7 +41,7 @@ export function RouteBadge({
     >
       {fallback && <span className="route-badge-flag" aria-hidden="true">!</span>}
       <span className="route-badge-model">{modelShort}</span>
-      <span className="route-badge-sep" aria-hidden="true">|</span>
+      <span className="route-badge-sep" aria-hidden="true">·</span>
       <span className="route-badge-effort">{effortShort}</span>
     </span>
   );
