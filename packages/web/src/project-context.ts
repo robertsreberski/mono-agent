@@ -48,7 +48,7 @@ export function withProjectContext(
   const prefixes: string[] = [];
   if (project.context.trim().length > 0) prefixes.push(composeProjectPrefix(project.name, project.context));
   if (project.tags !== undefined && project.tags.length > 0) {
-    prefixes.push(`<conversation_tags>${project.tags.map(neutraliseProjectContext).join(", ")}</conversation_tags>`);
+    prefixes.push(`<conversation_tags>${project.tags.map((name) => JSON.stringify(neutraliseProjectContext(name))).join(", ")}</conversation_tags>`);
   }
   return prefixes.length === 0 ? operatorText : `${prefixes.join("\n")}\n\n${neutraliseProjectContext(operatorText)}`;
 }

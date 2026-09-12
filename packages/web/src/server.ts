@@ -1577,7 +1577,7 @@ function optionalNullableProjectId(value: unknown): string | null | undefined {
 function parseCreateTag(value: unknown): CreateWebTagInput {
   const body = requireRecord(value);
   if (Object.keys(body).some((key) => !["sourceId", "name", "color"].includes(key))) throw invalidBody("Unknown tag field.");
-  return { sourceId: requireString(body.sourceId, "sourceId", 512), name: parseTagName(requireString(body.name, "name", 120)),
+  return { sourceId: requireString(body.sourceId, "sourceId", 512), name: parseTagName(body.name),
     ...(body.color === undefined ? {} : { color: parseTagColor(body.color) }) };
 }
 
@@ -1585,7 +1585,7 @@ function parsePatchTag(value: unknown): PatchWebTagInput {
   const body = requireRecord(value);
   if (Object.keys(body).some((key) => !["name", "color"].includes(key))) throw invalidBody("Unknown tag field.");
   if (body.name === undefined && body.color === undefined) throw invalidBody("Provide name or color.");
-  return { ...(body.name === undefined ? {} : { name: parseTagName(requireString(body.name, "name", 120)) }),
+  return { ...(body.name === undefined ? {} : { name: parseTagName(body.name) }),
     ...(body.color === undefined ? {} : { color: parseTagColor(body.color) }) };
 }
 

@@ -270,6 +270,11 @@ export function validateWebStorageShape(database: DatabaseSync): void {
       ],
     };
     for (const [table, names] of Object.entries(required)) assertColumns(database, table, names);
+    const tagDdl = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'tags'").get() as { sql: string };
+    if (!/UNIQUE\s*\(\s*source_id\s*,\s*name\s*\)/iu.test(tagDdl.sql)
+      || !/\bname\s+TEXT\s+NOT\s+NULL\s+COLLATE\s+NOCASE\b/iu.test(tagDdl.sql)) {
+      throw new Error("Invalid tag name uniqueness.");
+    }
     const seq = (database.prepare("PRAGMA table_info(messages)").all() as Array<{
       name: string; type: string; notnull: number; dflt_value: string | null;
     }>).find((column) => column.name === "seq");

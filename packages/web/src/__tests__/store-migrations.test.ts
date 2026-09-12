@@ -540,3 +540,19 @@ describe("conversation tags migration", () => {
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
   });
 });
+
+
+it.each([
+  ["unique constraint", /,\s*UNIQUE\(source_id, name\)/u],
+  ["case-insensitive collation", / COLLATE NOCASE/u],
+])("rejects tags without their %s", async (_label, missing) => {
+  const stateDir = await seeded(0);
+  const store = await WebStore.open({ stateDir }); store.close();
+  const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+  const { sql } = database.prepare("SELECT sql FROM sqlite_master WHERE name = 'tags'").get() as { sql: string };
+  expect(sql).toMatch(missing);
+  database.exec(`DROP TABLE tags; ${sql.replace(missing, "")}`);
+  expect(() => validateWebStorageShape(database)).toThrowError(expect.objectContaining({ code: "storage_corrupt" }));
+  database.close();
+  await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "storage_corrupt" });
+});

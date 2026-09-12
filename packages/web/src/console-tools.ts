@@ -1,7 +1,7 @@
-import type { WebThread } from "./contracts.js";
+import type { WebTag, WebThread } from "./contracts.js";
 import type { WebStore } from "./store.js";
 import { WebConsoleError } from "./errors.js";
-import { parseTagColor } from "./tag-color.js";
+import { parseTagColor, parseTagName } from "./tag-color.js";
 import { parseProjectColor } from "./project-color.js";
 
 export interface ConsoleToolScope {
@@ -45,8 +45,8 @@ const pageLimit = (value: unknown): number => {
   return value;
 };
 /** What the model needs to pick or move a conversation: identity, placement and recency, never message bodies. */
-const conversationSummary = (store: WebStore, { id, title, projectId, tagIds, pendingProject, archivedAt, updatedAt }: WebThread) =>
-  ({ id, title, projectId, tags: tagIds.flatMap((tagId) => { const tag = store.getTag(tagId); return tag === undefined ? [] : [{ id: tag.id, name: tag.name }]; }), ...(pendingProject === undefined ? {} : { pendingProject }), archived: archivedAt !== null, updatedAt });
+const conversationSummary = (tags: ReadonlyMap<string, WebTag>, { id, title, projectId, tagIds, pendingProject, archivedAt, updatedAt }: WebThread) =>
+  ({ id, title, projectId, tags: tagIds.flatMap((tagId) => { const tag = tags.get(tagId); return tag === undefined ? [] : [{ id: tag.id, name: tag.name }]; }), ...(pendingProject === undefined ? {} : { pendingProject }), archived: archivedAt !== null, updatedAt });
 
 /** Strict source-scoped operations shared by the authenticated callback and its tests. */
 export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
@@ -86,13 +86,13 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
   switch (operation.tool) {
     case "ListTags": result = { tags: store.listTags(scope.sourceId) }; break;
     case "CreateTag": {
-      const created = store.createTag({ sourceId: scope.sourceId, name: text(args.name, "name", 120),
+      const created = store.createTag({ sourceId: scope.sourceId, name: parseTagName(args.name),
         ...(args.color === undefined ? {} : { color: parseTagColor(args.color) }) });
       tags.push(created.id); result = { tag: created, tagId: created.id }; break;
     }
     case "UpdateTag": {
       const item = tag(args.tagId);
-      const updated = store.patchTag(item.id, { ...(args.name === undefined ? {} : { name: text(args.name, "name", 120) }),
+      const updated = store.patchTag(item.id, { ...(args.name === undefined ? {} : { name: parseTagName(args.name) }),
         ...(args.color === undefined ? {} : { color: parseTagColor(args.color) }) });
       tags.push(item.id); result = { tag: updated }; break;
     }
@@ -105,7 +105,7 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       if (args.add === undefined && args.remove === undefined) return invalid("Provide add or remove.");
       const resolve = (value: unknown): string[] => {
         if (value === undefined) return [];
-        if (!Array.isArray(value)) return invalid("add and remove must be arrays.");
+        if (!Array.isArray(value) || value.length > 20) return invalid("add and remove must be arrays of at most 20 tag IDs.");
         return value.map((id: unknown) => tag(id).id);
       };
       const add = resolve(args.add), remove = new Set(resolve(args.remove));
@@ -160,7 +160,9 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       const page = store.listThreadsPage({ sourceId: scope.sourceId, archived: args.archived === true, scope: "chats", limit: pageLimit(args.limit),
         ...(tagId === undefined ? {} : { tagId }),
         ...(projectId === undefined ? {} : { projectId }), ...(args.cursor === undefined ? {} : { before: text(args.cursor, "cursor", 2048) }) });
-      result = { conversations: page.threads.map((thread) => conversationSummary(store, thread)), ...(page.nextCursor === undefined ? {} : { cursor: page.nextCursor }) };
+      // One source-scoped lookup serves every summary, regardless of tag count.
+      const tagMap = new Map(store.listTags(scope.sourceId).map((tag) => [tag.id, tag]));
+      result = { conversations: page.threads.map((thread) => conversationSummary(tagMap, thread)), ...(page.nextCursor === undefined ? {} : { cursor: page.nextCursor }) };
       break;
     }
     case "SearchConversations": {
@@ -169,9 +171,10 @@ export function executeConsoleTool(store: WebStore, scope: ConsoleToolScope, ope
       const query = text(args.query, "query", 512).trim();
       if (query.length < SEARCH_MIN_QUERY) return invalid(`query needs at least ${String(SEARCH_MIN_QUERY)} characters.`);
       const page = store.searchThreads({ sourceId: scope.sourceId, query, limit: pageLimit(args.limit), scope: "chats" });
+      const tagMap = new Map(store.listTags(scope.sourceId).map((tag) => [tag.id, tag]));
       result = {
         conversations: page.hits.map((hit) => ({
-          ...conversationSummary(store, hit.thread), titleMatch: hit.titleMatch, messageMatches: hit.messageMatches,
+          ...conversationSummary(tagMap, hit.thread), titleMatch: hit.titleMatch, messageMatches: hit.messageMatches,
           // The console wraps matches in control-character sentinels for highlighting; a model wants plain text.
           ...(hit.snippet === undefined ? {} : { snippet: hit.snippet.replace(/[\u0002\u0003]/gu, "") }),
         })),

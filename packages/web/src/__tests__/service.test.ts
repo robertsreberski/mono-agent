@@ -7122,9 +7122,12 @@ describe("conversation tags service", () => {
       const updated = service.patchThread(thread.id, { tagIds: [tag.id] });
       expect(events).toContainEqual(expect.objectContaining({ type: "thread.changed", payload: { thread: updated } }));
       expect(events).toContainEqual(expect.objectContaining({ type: "threads.changed", payload: { thread: updated } }));
+      const eventCount = events.length;
+      expect(service.patchThread(thread.id, { tagIds: [tag.id, tag.id] }).revision).toBe(updated.revision);
+      expect(events).toHaveLength(eventCount);
       await service.startTurn(thread.id, { text: "Canonical text" });
       await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
-      expect(bodies[0]?.text).toBe("<conversation_tags>planning</conversation_tags>\n\nCanonical text");
+      expect(bodies[0]?.text).toBe('<conversation_tags>"planning"</conversation_tags>\n\nCanonical text');
       expect(service.thread(thread.id).messages.find((message) => message.role === "user")?.parts).toEqual([{ type: "text", text: "Canonical text" }]);
       const edited = service.patchTag(tag.id, { name: "reviewing" });
       expect(events.at(-1)).toMatchObject({ type: "tags.changed", payload: { tag: edited } });

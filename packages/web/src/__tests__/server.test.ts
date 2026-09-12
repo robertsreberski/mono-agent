@@ -3415,9 +3415,11 @@ describe("conversation tags HTTP", () => {
     const tag = (await json(created)).tag as { id: string };
     expect((await write("tags", "POST", { sourceId: "agent-one", name: "PLANNING" })).status).toBe(409);
     for (const body of [
-      { name: "" }, { name: "a\nb" }, { name: "bad\u0001" }, { name: "x".repeat(121) },
+      { name: "" }, { name: "a\nb" }, { name: "bad\u0001" }, { name: "a\u0085b" }, { name: "a\u2028b" }, { name: "a\u2029b" }, { name: "x".repeat(121) },
       { name: "ok", color: "black" }, { name: "ok", archived: true }, { name: "ok", context: "x" },
     ]) expect((await write("tags", "POST", { sourceId: "agent-one", ...body })).status).toBe(400);
+    const trimmed = await json(await write("tags", "POST", { sourceId: "agent-one", name: `  ${"x".repeat(120)}  ` }));
+    expect(trimmed.tag).toMatchObject({ name: "x".repeat(120) });
     expect((await write(`tags/${tag.id}`, "PATCH", {})).status).toBe(400);
     expect((await write(`tags/${tag.id}`, "PATCH", { color: "url(no)" })).status).toBe(400);
     expect((await write("tags/missing", "PATCH", { name: "missing" })).status).toBe(404);

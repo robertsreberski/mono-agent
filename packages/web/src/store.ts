@@ -3153,6 +3153,11 @@ export class WebStore {
   private writeThreadPatch(id: string, patch: ThreadPatch): WebThread {
     id = this.resolveThreadId(id);
     const current = this.requireThread(id);
+    const tagIds = patch.tagIds === undefined ? undefined : [...new Set(patch.tagIds)];
+    const tagsChanged = tagIds !== undefined
+      && (tagIds.length !== current.tagIds.length || tagIds.some((tagId) => !current.tagIds.includes(tagId)));
+    if (tagIds !== undefined && !tagsChanged && patch.projectId === undefined && patch.title === undefined
+      && patch.archived === undefined && patch.model === undefined && patch.effort === undefined) return current;
     const now = this.now();
     const title = patch.title === undefined ? undefined : normalizeTitle(patch.title);
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
@@ -3187,8 +3192,8 @@ export class WebStore {
         sets.push("run_effort = ?");
         values.push(runEffort);
       }
-      if (patch.tagIds !== undefined) {
-        const ids = [...new Set(patch.tagIds)];
+      if (tagsChanged && tagIds !== undefined) {
+        const ids = tagIds;
         for (const tagId of ids) this.requireTagForAgent(tagId, current.sourceId);
         if (ids.length > 10) throw new WebConsoleError("tag_limit", "A conversation can have at most 10 tags.", 409);
         this.database.prepare("DELETE FROM thread_tags WHERE thread_id = ?").run(id);
@@ -3217,7 +3222,7 @@ export class WebStore {
               : "unarchived"
             : projectId !== undefined
               ? "project_changed"
-              : patch.tagIds !== undefined ? "tags_changed" : "run_config_changed",
+              : tagsChanged ? "tags_changed" : "run_config_changed",
         now,
       );
       if (patch.archived === true && this.currentThreadId() === id) {

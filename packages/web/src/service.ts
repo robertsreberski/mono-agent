@@ -1381,6 +1381,7 @@ export class WebService {
     }
     const before = this.store.getThread(id);
     const thread = this.store.patchThread(id, patch);
+    if (patch.tagIds !== undefined && before?.revision === thread.revision) return thread;
     this.emitThread("thread.changed", { thread });
     this.emitThread("threads.changed", { thread });
     if (before?.projectId !== thread.projectId || before?.archivedAt !== thread.archivedAt) {

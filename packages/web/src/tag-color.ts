@@ -8,9 +8,10 @@ export function parseTagColor(value: unknown): WebTagColor {
   throw new WebConsoleError("invalid_tag", "Choose default, blue, purple, amber, rose, green, teal, or red for tag color.", 400);
 }
 
-export function parseTagName(value: string): string {
+export function parseTagName(value: unknown): string {
+  if (typeof value !== "string") throw new WebConsoleError("invalid_tag", "Tag names must be strings.", 400);
   const name = value.trim();
-  if (name.length === 0 || value.length > 120 || /[\u0000-\u001f\u007f]/u.test(value)) {
+  if (name.length === 0 || name.length > 120 || /[\u0000-\u001f\u007f\u0085\u2028\u2029]/u.test(value)) {
     throw new WebConsoleError("invalid_tag", "Tag names must be one non-empty line of at most 120 characters without control characters.", 400);
   }
   return name;

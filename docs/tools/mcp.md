@@ -502,14 +502,14 @@ or `red`; the project palette is unchanged. `DeleteTag` removes membership
 without deleting conversations. Tags are deleted, never archived.
 
 `UpdateConversationTags` accepts an optional `conversationId` (current conversation
-by default), and at least one of `add` or `remove`, containing tag IDs. It is
+by default), and at least one of `add` or `remove`, each containing at most 20 tag IDs. It is
 idempotent and preserves other tags; removal wins when an ID appears in both
 arrays. A conversation can carry at most ten tags. Unknown or foreign tags
 return `tag_not_found` (404), duplicate names `tag_exists` (409), and either
 limit `tag_limit` (409).
 
 Tag changes apply immediately, including during an active turn. Each admitted
-turn snapshots its tags and receives one `<conversation_tags>planning, reviewing</conversation_tags>`
+turn snapshots its tags and receives one `<conversation_tags>"planning", "reviewing"</conversation_tags>`
 line alongside any project context. Steering retains that snapshot; the next
 turn gets fresh tags. Stored user messages stay unprefixed. There is no pending
 tag membership or separate enablement key: the MCP server remains
