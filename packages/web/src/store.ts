@@ -149,6 +149,7 @@ interface ThreadRow {
   id: string;
   source_id: string;
   project_id: string | null;
+  project_name: string | null;
   title: string;
   title_manual: number;
   archived_at: string | null;
@@ -5876,6 +5877,9 @@ export class WebStore {
         id: row.id,
         sourceId: row.source_id,
         projectId: row.project_id,
+        ...(row.project_id === null || row.project_name === null
+          ? {}
+          : { projectName: row.project_name }),
         ...(pending.has(row.id) ? { pendingProject: pending.get(row.id)! } : {}),
         title: row.title,
         archivedAt: row.archived_at,
@@ -6777,7 +6781,8 @@ function priorOutcomeCandidateSql(): string {
 
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.project_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
+           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
@@ -6787,6 +6792,9 @@ function threadSelectSql(suffix: string): string {
            (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND ${visibleMessageSql("m")}) AS message_count
     FROM threads t JOIN agents a ON a.source_id = t.source_id
     LEFT JOIN cron_channels cc ON cc.thread_id = t.id
+    -- The member's own row carries its project's name, so a listing that
+    -- crosses agents can label the row without a second read per project.
+    LEFT JOIN projects p ON p.id = t.project_id
     ${suffix}
   `;
 }

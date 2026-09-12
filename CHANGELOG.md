@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Label a conversation that belongs to a project wherever it is listed: on its
+  row in the console's conversation list and archive shelf, on its card in
+  Active now, and on a search hit. Conversation summaries carry the project's
+  name as `projectName`, so a card for another agent's project can name it
+  without that agent's project list. The chat header's project badge is set in
+  sentence case at the conversation title's left edge.
+
 - Add project colors, a tinted chat badge, and persisted join/leave/move markers.
   Membership changes wait for the active turn boundary; steering retains frozen
   project context. Busy deletion and pending-destination archival return conflicts.

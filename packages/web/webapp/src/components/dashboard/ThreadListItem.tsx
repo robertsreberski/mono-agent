@@ -3,8 +3,9 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { threadPresentation } from "../../thread-presentation";
-import type { AgentSummary, CatalogModel, ThreadSummary } from "../../types";
+import type { AgentSummary, CatalogModel, ProjectColor, ThreadSummary } from "../../types";
 import { Icon } from "../Icon";
+import { ProjectTag } from "../project/ProjectTag";
 import { resolveThreadRoute } from "../route-label";
 import { RouteBadge } from "../RouteBadge";
 import { relativeTime } from "../time";
@@ -25,6 +26,7 @@ export function ThreadListItem({
   thread,
   agent,
   catalogModels,
+  project,
   unread,
   onNavigate,
   highlightSelected,
@@ -33,6 +35,12 @@ export function ThreadListItem({
   /** The thread's OWN agent match; null when discovery no longer lists it. */
   readonly agent: AgentSummary | null;
   readonly catalogModels: Readonly<Record<string, readonly CatalogModel[]>> | undefined;
+  /**
+   * The project this row belongs to, where saying so means something: the
+   * agent's list and its archive shelf. The project page passes none -- every
+   * row on it is the same project.
+   */
+  readonly project?: { readonly name: string; readonly color: ProjectColor };
   /** This device has not seen the conversation as it now stands. */
   readonly unread: boolean;
   /** Closing the drawer belongs to the row that navigated, not to a click that
@@ -64,7 +72,9 @@ export function ThreadListItem({
     >
       <ThreadListItemPrimitive.Trigger
         className="thread-trigger"
-        aria-label={`Open ${thread.title}`}
+        aria-label={project === undefined
+          ? `Open ${thread.title}`
+          : `Open ${thread.title}, in project ${project.name}`}
         onClick={onNavigate}
       >
         <span className={`thread-kind is-${kind}`} role="img" aria-label={kindName} title={kindName}>
@@ -80,6 +90,7 @@ export function ThreadListItem({
           </span>
           <span className="thread-preview">
             {presentation.active && <i className="thread-running" role="img" aria-label={presentation.text} />}
+            {project !== undefined && <ProjectTag name={project.name} color={project.color} />}
             <span className="thread-preview-text" title={presentation.text}>
               {presentation.text}
             </span>

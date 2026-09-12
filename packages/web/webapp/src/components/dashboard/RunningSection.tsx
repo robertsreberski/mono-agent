@@ -1,7 +1,8 @@
 import { Fragment } from "react";
 import { Icon } from "../Icon";
-import type { AgentSummary, CatalogModel, ThreadSummary } from "../../types";
+import type { AgentSummary, CatalogModel, ProjectSummary, ThreadSummary } from "../../types";
 import { resolveThreadRoute } from "../route-label";
+import { ProjectTag } from "../project/ProjectTag";
 import { RouteBadge } from "../RouteBadge";
 import { relativeTime } from "../time";
 import {
@@ -10,6 +11,7 @@ import {
   runningCardStatus,
   RUNNING_CARDS_PER_AGENT,
   runningThreadCount,
+  threadProjectLabel,
   type RunningAgentGroup,
 } from "./dashboard-model";
 
@@ -17,27 +19,38 @@ function RunningCard({
   agent,
   thread,
   catalogModels,
+  projectsByAgent,
   onOpen,
 }: {
   readonly agent: AgentSummary;
   readonly thread: ThreadSummary;
   readonly catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>;
+  readonly projectsByAgent: Readonly<Record<string, readonly ProjectSummary[]>>;
   readonly onOpen: (thread: ThreadSummary) => void;
 }) {
   const pending = runningCardPending(thread);
   // The card's OWN agent, never the selected one: fleet rows span agents.
   const route = resolveThreadRoute(thread, agent, catalogModels);
+  // A project's conversations are not in the agent's list any more, so a card
+  // for one has to say where it came from -- and this section crosses agents,
+  // which is why the row's own project name is the fallback.
+  const project = threadProjectLabel(thread, projectsByAgent);
   return (
     <button
       type="button"
       className="running-card"
-      aria-label={`Open ${thread.title} on ${agent.label}`}
+      aria-label={project === undefined
+        ? `Open ${thread.title} on ${agent.label}`
+        : `Open ${thread.title} on ${agent.label}, in project ${project.name}`}
       onClick={() => onOpen(thread)}
     >
       <span className="running-card-agent" aria-hidden="true">{agentInitials(agent.label)}</span>
       <span className="running-card-copy">
         <span className="running-card-title">{thread.title}</span>
         <span className="running-card-status-line">
+          {project !== undefined && (
+            <ProjectTag name={project.name} color={project.color} />
+          )}
           <span className={`running-card-status${pending ? " is-pending" : ""}`}>
             {runningCardStatus(thread)}
           </span>
@@ -81,6 +94,7 @@ export function RunningSection({
   authoritative = true,
   catalogModels,
   catalogSourceId,
+  projectsByAgent = {},
 }: {
   readonly groups: readonly RunningAgentGroup[];
   readonly expandedAgentIds: ReadonlySet<string>;
@@ -99,6 +113,12 @@ export function RunningSection({
    */
   readonly catalogModels?: Readonly<Record<string, readonly CatalogModel[]>>;
   readonly catalogSourceId?: string;
+  /**
+   * The console's loaded projects, by agent. Only the selected agent's are
+   * held, so another agent's card labels itself with the name its own row
+   * carries; see `threadProjectLabel`.
+   */
+  readonly projectsByAgent?: Readonly<Record<string, readonly ProjectSummary[]>>;
 }) {
   if (groups.length === 0) return null;
   const shown = runningThreadCount(groups);
@@ -139,6 +159,7 @@ export function RunningSection({
                 agent={group.agent}
                 thread={thread}
                 {...(catalogSourceId !== group.agent.sourceId || catalogModels === undefined ? {} : { catalogModels })}
+                projectsByAgent={projectsByAgent}
                 onOpen={onOpen}
               />
             ))}

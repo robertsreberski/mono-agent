@@ -186,6 +186,42 @@ describe.each([
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
+  it("names the project on a conversation's row and on its running card", async () => {
+    await page.viewport(width, height);
+    const running = { ...first, runState: { status: "running" as const } };
+    const own = thread("own-one", "alpha", { title: "Agent conversation" });
+    storeMock.current = dashboardStore({
+      threads: [running, second, own],
+      visibleThreads: [running, second, own],
+      activeThreads: {
+        threads: [running],
+        total: 1,
+        truncated: false,
+        runningCounts: { alpha: 1 },
+        authoritative: true,
+      },
+    });
+    render(
+      <WebRuntimeProvider>
+        <Dashboard highlightSelected={false} />
+      </WebRuntimeProvider>,
+    );
+
+    // The list carries every conversation; the ones in a project say so.
+    const row = await screen.findByRole("button", {
+      name: "Open Dashboard drawer redesign plan, in project Web console",
+    });
+    expect(row).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open Agent conversation" })).toBeVisible();
+    // And a running one wears the same label on its card.
+    const card = screen.getByRole("button", {
+      name: "Open Console conversation and cron-list polish on Alpha, in project Web console",
+    });
+    expect(card.querySelector(".project-badge")).toHaveTextContent("Web console");
+    await capture(`labelled-project-chats-${label}`);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+  });
+
   it("draws the project page with its context card and members", async () => {
     await page.viewport(width, height);
     storeMock.current = dashboardStore({

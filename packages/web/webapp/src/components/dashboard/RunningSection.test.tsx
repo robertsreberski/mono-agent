@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { agent, thread } from "../../test/fixtures";
+import { agent, project, thread } from "../../test/fixtures";
 import { RunningSection } from "./RunningSection";
 
 const alpha = agent("alpha", { label: "Alpha" });
@@ -40,6 +40,40 @@ describe("RunningSection", () => {
     expect(within(cards[1]!).getByRole("img", { name: /local:shared-model/u })).toHaveAccessibleName(/effort Low/u);
     expect(within(cards[1]!).queryByRole("img", { name: /Alpha only/u })).toBeNull();
   });
+  it("says which project a running conversation belongs to, across agents", () => {
+    const beta = agent("beta", { label: "Beta" });
+    const mine = thread("mine", "alpha", {
+      title: "Mine",
+      projectId: "p1",
+      projectName: "Stale name",
+      runState: { status: "running" },
+    });
+    const theirs = thread("theirs", "beta", {
+      title: "Theirs",
+      projectId: "p9",
+      projectName: "Their project",
+      runState: { status: "running" },
+    });
+    renderSection({
+      groups: [
+        { agent: alpha, threads: [mine, working] },
+        { agent: beta, threads: [theirs] },
+      ],
+      projectsByAgent: { alpha: [project("p1", "alpha", { name: "Console work", color: "blue" })] },
+    });
+
+    // A project's conversations are no longer in the agent's list, so the card
+    // is where the operator learns this one is a project chat.
+    const card = screen.getByRole("button", { name: "Open Mine on Alpha, in project Console work" });
+    expect(within(card).getByTitle("In project Console work")).toHaveTextContent("Console work");
+    // Another agent's card labels itself with the name its own row carries.
+    expect(screen.getByRole("button", { name: "Open Theirs on Beta, in project Their project" }))
+      .toBeInTheDocument();
+    // A conversation that belongs to its agent says nothing at all.
+    const plain = screen.getByRole("button", { name: "Open Alpha work on Alpha" });
+    expect(within(plain).queryByTitle(/^In project/u)).toBeNull();
+  });
+
   it("draws nothing rather than an empty shelf", () => {
     const { container } = render(
       <RunningSection

@@ -371,6 +371,13 @@ export interface WebThread {
   readonly revision: number;
   /** The project this conversation belongs to, or null when it belongs to the agent directly. */
   readonly projectId: string | null;
+  /**
+   * That project's name, carried on the summary so a reader can label the row
+   * without holding the project list it came from. Present exactly when
+   * `projectId` is; a listing that crosses agents (Running) has no other way to
+   * say which project a card belongs to.
+   */
+  readonly projectName?: string;
   /** Desired membership; effective only after the named active turn settles. */
   readonly pendingProject?: { readonly projectId: string | null; readonly turnId: string };
   readonly trigger?: WebThreadTrigger;
