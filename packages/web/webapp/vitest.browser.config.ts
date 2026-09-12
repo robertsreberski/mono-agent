@@ -28,7 +28,7 @@ export default defineConfig({
       headless: true,
       provider: "playwright",
       screenshotFailures: false,
-      instances: [{ browser: "chromium" }],
+      instances: [{ browser: "chromium", context: { viewport: { width: 1440, height: 1000 } } }],
       commands: { emulateColorScheme },
     },
   },

@@ -14,6 +14,9 @@ import {
 } from "./ActivityRow";
 import { finiteDuration, formatToolDuration } from "./duration";
 import { safeJson } from "./json";
+import { resolveSubagentRoute } from "./route-label";
+import { useRouteCapabilities } from "./route-capabilities";
+import { RouteBadge } from "./RouteBadge";
 import { toolHistoryFailure } from "./tool-history";
 import { useToolCallRepair } from "./tool-call-repair";
 import { RunAttribution } from "./RunAttribution";
@@ -391,6 +394,7 @@ function SubagentNote({
  */
 export function SubagentPart({ data }: DataMessagePartProps) {
   const repairToolCall = useToolCallRepair();
+  const capabilities = useRouteCapabilities();
   const view = subagentView(data);
   if (view === undefined) return null;
   const historyFailure = toolHistoryFailure(view.history);
@@ -412,15 +416,36 @@ export function SubagentPart({ data }: DataMessagePartProps) {
     // the wording and the error code, so the two must not disagree.
     ...(historyFailure === undefined ? [] : ["history not saved"]),
   ].join(" · ");
+  // The delegation's OWN reported route, collapsed-visible: executed, then
+  // attempted, then requested. Old attribution-free records get no badge --
+  // inventing one would rewrite history -- and the expanded RunAttribution
+  // below keeps the full warnings and retry detail.
+  const route = resolveSubagentRoute(view.attribution, view.status, capabilities.agent, capabilities.catalogModels);
+  const badge = (
+    <>
+      {task !== undefined && <span className="subagent-profile" title={view.name}>{view.name}</span>}
+      {route !== undefined && <RouteBadge
+        modelShort={route.modelShort}
+        effortShort={route.effortShort}
+        effortSignal={route.effortSignal}
+        label={route.label}
+        title={route.title}
+        compact
+        fallback={route.isFallback}
+        requestedOnly={route.isRequestedOnly}
+      />}
+    </>
+  );
 
   return (
     <ActivityRow
       variant="subagent"
       status={view.status}
-      label="Subagent"
-      summary={task === undefined ? view.name : `${view.name} — ${task}`}
+      summary={task ?? view.name}
+      ariaLabel={`Subagent ${view.name}${task === undefined ? "" : `: ${task}`}`}
       failed={failedLabel(view.status === "failed" ? 1 : 0, false)}
       duration={meta}
+      badge={badge}
     >
       <div className="activity-steps">
         <RunAttribution attribution={view.attribution} status={view.status} />

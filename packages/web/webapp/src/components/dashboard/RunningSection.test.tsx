@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { agent, thread } from "../../test/fixtures";
 import { RunningSection } from "./RunningSection";
@@ -26,6 +26,20 @@ const renderSection = (
 };
 
 describe("RunningSection", () => {
+  it("never uses the selected agent's catalog for another agent's identical model ID", () => {
+    const model = "local:shared-model";
+    const alpha = agent("alpha", { defaultModel: "local:primary", defaultEffort: "high" });
+    const beta = agent("beta", { defaultModel: "local:primary", defaultEffort: "low" });
+    renderSection({
+      groups: [alpha, beta].map((owner) => ({ agent: owner, threads: [thread(owner.sourceId, owner.sourceId, { runModel: model })] })),
+      catalogSourceId: "alpha",
+      catalogModels: { local: [{ id: "shared-model", provider: "local", providerLabel: "Local", name: "Alpha only", reasoning: false }] },
+    });
+    const cards = screen.getAllByRole("button", { name: /^Open/u });
+    expect(within(cards[0]!).getByRole("img", { name: /Alpha only/u })).toHaveAccessibleName(/effort not reported/u);
+    expect(within(cards[1]!).getByRole("img", { name: /local:shared-model/u })).toHaveAccessibleName(/effort Low/u);
+    expect(within(cards[1]!).queryByRole("img", { name: /Alpha only/u })).toBeNull();
+  });
   it("draws nothing rather than an empty shelf", () => {
     const { container } = render(
       <RunningSection

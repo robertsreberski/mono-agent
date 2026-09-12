@@ -415,6 +415,33 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
 .automation-enabled { flex: none; padding: 2px 5px; color: var(--text-muted); background: var(--surface-subtle); border-radius: 5px; font-size: 8px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
 .automation-enabled.is-enabled { color: var(--accent); background: var(--accent-soft); }
 .thread-preview-text time { color: var(--text-soft); }
+/* Route metadata stays quieter than titles and activity purposes. Model-specific
+   effort signals stay light; no badge border/fill competes with actual status. */
+.route-badge { flex: none; display: inline-flex; align-items: baseline; gap: 4px; max-width: 100%; padding: 0; overflow: hidden; color: var(--text-muted); font-size: 10px; line-height: 1.5; white-space: nowrap; }
+.route-badge-model { min-width: 0; max-width: 110px; overflow: hidden; font-weight: 500; text-overflow: ellipsis; }
+.route-badge-sep { flex: none; color: var(--text-muted); }
+.route-badge-effort { flex: none; max-width: 70px; overflow: hidden; font-size: inherit; font-weight: 400; text-overflow: ellipsis; }
+.effort-signal { flex: none; display: inline-flex; align-items: flex-end; gap: 2px; height: 8px; }
+.effort-signal > i { display: block; width: 2px; background: currentColor; border-radius: 1px; opacity: .28; }
+.effort-signal > i.is-filled { opacity: 1; }
+.route-badge.is-compact { gap: 3px; font-size: 9.5px; }
+.route-badge.is-compact .route-badge-model { max-width: 100px; }
+.route-badge-flag { flex: none; color: var(--warning); font-weight: 700; }
+.route-badge.is-requested .route-badge-model { text-decoration: underline dotted; text-underline-offset: 3px; }
+.running-card-status-line { min-width: 0; display: flex; align-items: center; gap: 6px; }
+.running-card-status-line .running-card-status { min-width: 0; flex: 1; }
+.activity-row-badge { flex: none; display: inline-flex; align-items: baseline; gap: 7px; min-width: 0; max-width: 50%; }
+.activity-row-badge .route-badge { min-width: 0; max-width: 100%; }
+.activity-row-meta { min-width: 0; max-width: 65%; display: flex; align-items: baseline; gap: 7px; }
+.activity-row-meta .activity-row-badge { max-width: 100%; }
+.activity-row-meta .activity-row-badge:not(:empty) ~ .activity-row-time::before { content: "·"; margin-right: 7px; }
+.subagent-profile { min-width: 0; max-width: 90px; overflow: hidden; color: var(--text-muted); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-profile + .route-badge::before { content: "·"; margin-right: 3px; color: var(--text-muted); }
+.activity-row.is-subagent .activity-row-summary { color: var(--text-soft); font-weight: 500; }
+@media (max-width: 380px) {
+  .route-badge-model { max-width: 94px; }
+  .route-badge.is-compact .route-badge-model { max-width: 94px; }
+}
 .automation-empty { min-height: 190px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 24px 18px; color: var(--text-muted); text-align: center; }
 .automation-empty > svg { color: var(--accent); }
 .automation-empty strong { color: var(--text-soft); font-size: 12px; }
@@ -1129,6 +1156,16 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 .activity-row-alert { color: var(--danger); font-weight: 700; white-space: nowrap; }
 @media (max-width: 560px) {
   .model-controls-label { display: none; }
+  /* Spend the first line on the task, not on repeated type/profile labels.
+     Metadata wraps naturally below, rather than clipping purpose or effort. */
+  .activity-row.is-subagent > summary { min-height: 44px; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; column-gap: 7px; row-gap: 1px; padding-block: 5px; }
+  .activity-row.is-subagent .activity-row-glyph { grid-area: 1 / 1; }
+  .activity-row.is-subagent .activity-row-summary { grid-area: 1 / 2; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.4; }
+  .activity-row.is-subagent .activity-row-chevron { grid-area: 1 / 3; }
+  .activity-row.is-subagent .activity-row-meta { grid-area: 2 / 2 / 3 / 4; max-width: 100%; flex-wrap: wrap; column-gap: 7px; row-gap: 0; }
+  .activity-row.is-subagent .activity-row-badge { max-width: 100%; }
+  .activity-row.is-subagent .activity-row-time { white-space: nowrap; overflow: visible; font-size: 9px; line-height: 1.3; }
+
   /* A phone's row cannot hold the purpose and the meta side by side: the flex
      line first squeezed the purpose to nothing and then clipped the meta, so a
      failed wake read as "wak…". Job rows alone go to two lines here — purpose
