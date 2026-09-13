@@ -567,41 +567,24 @@ describe("per-request override warnings bound the value they echo", () => {
   });
 
   /**
-   * The escalation `info` is the same kind of record as the warnings above it: the keyword it
-   * prints is a slice of the operator's own message, so it carries no printable/single-line
-   * guarantee of its own and gets the one echo budget every other operator surface uses.
+   * Prose effort triggers were retired: `think`, `ultra think` and their hostile spellings are
+   * ordinary message text. Nothing is escalated, nothing is logged, and the message body is
+   * never echoed -- which is what closes the operator-text echo path these inputs used to reach.
    */
-  it("escapes a newline inside the matched keyword it logs", async () => {
-    const logger = { warn: vi.fn(), info: vi.fn() };
-    await run(undefined, { logger, baseEffort: "medium" }, `ultra${NEWLINE}think about it`);
-    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
-    expect(logged.keyword).toBe(echo(`ultra${NEWLINE}think`));
-    expect(logged.keyword).not.toContain(NEWLINE);
-  });
-
-  /**
-   * The phrase separator is any ONE whitespace code point, and `\s` includes U+2028 -- a line
-   * separator, invisible and cursor-moving. A newline-only escape is not enough here, which is
-   * why the keyword goes through the same full sanitizer as every other echo.
-   */
-  it("escapes a line separator used as the phrase separator", async () => {
+  it("treats effort keywords in the message as ordinary text, never logging or escalating", async () => {
     const separator = String.fromCharCode(0x2028);
-    const logger = { warn: vi.fn(), info: vi.fn() };
-    await run(undefined, { logger, baseEffort: "medium" }, `ultra${separator}think about it`);
-    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
-    expect(logged.keyword).toBe(String.raw`ultra\u2028think`);
-    expect(logged.keyword).not.toContain(separator);
-  });
-
-  it("bounds the matched keyword when the message floods the phrase separator", async () => {
-    const logger = { warn: vi.fn(), info: vi.fn() };
-    await run(undefined, { logger, baseEffort: "medium" }, `ultra${" ".repeat(1_000_000)}think`);
-    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string; to: string };
-    expect(byteLength(logged.keyword)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
-    // A million spaces is not the phrase "ultra think", so the standalone `think` is what
-    // actually matched -- the escalation stays, one rung lower, and is reported as such.
-    expect(logged.keyword).toBe("think");
-    expect(logged.to).toBe("high");
+    for (const message of [
+      `ultra${NEWLINE}think about it`,
+      `ultra${separator}think about it`,
+      `ultra${" ".repeat(1_000_000)}think`,
+      "please think hard, extra think, ultrathink",
+    ]) {
+      const logger = { warn: vi.fn(), info: vi.fn() };
+      const { runtimeOptions } = await run(undefined, { logger, baseEffort: "medium" }, message);
+      expect(runtimeOptions).toEqual({});
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+    }
   });
 
   /** The error the parser actually throws for `model`, for asserting against its two layers. */
