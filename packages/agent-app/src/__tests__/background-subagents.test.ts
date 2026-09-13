@@ -28,6 +28,10 @@ const origin = { conversationId: "slack:C1:1.1#bucket", baseConversationId: "sla
 const spec = { id: "helper", name: "helper", systemPrompt: "Review", definition: { name: "helper", description: "Review", systemPrompt: "Review" } };
 const roots: string[] = [];
 const services: ProcessJobsServiceHandle[] = [];
+// Full-package runs overlap this file with physical crash, compiler, and app
+// fixtures. Durable publication plus wake settlement has repeatedly taken
+// 7-9s under that load, while the same path completes quickly in isolation.
+const DURABLE_DELIVERY_TIMEOUT_MS = 15_000;
 afterEach(async () => {
   vi.useRealTimers();
   await Promise.all(services.splice(0).map((s) => s.stop()));
@@ -55,7 +59,7 @@ function tools(f: Awaited<ReturnType<typeof fixture>>, run: (request: any) => Pr
   return { options, agent: createAgentTool(options, context), send: createAgentSendTool(options, context) };
 }
 const done = async (service: ProcessJobsServiceHandle, id: string) => {
-  await vi.waitFor(async () => expect((await service.get(id))?.wake.state).toBe("delivered"), { timeout: 5000 });
+  await vi.waitFor(async () => expect((await service.get(id))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
   const job = (await service.get(id))!;
   if (job.kind !== "internal") throw new Error("Expected an internal subagent job");
   return job;
@@ -108,8 +112,8 @@ describe("managed detached production execution", () => {
     }
     const { agent, send } = tools(f, run);
     const receipt = await agent.execute(`reason-write-${fault}`, { persist: true, background: true, id: "helper", prompt: "fail once" });
-    await vi.waitFor(() => expect(reasonIntent).toBe(true));
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(reasonIntent).toBe(true), { timeout: 10_000 });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce(), { timeout: 10_000 });
     expect(f.wake).not.toHaveBeenCalled();
     const instance = await f.instances.get("helper");
     expect(instance).toMatchObject({ status: "running" });
@@ -118,6 +122,10 @@ describe("managed detached production execution", () => {
     expect(run).toHaveBeenCalledOnce(); expect(f.wake).not.toHaveBeenCalled();
     const stored = await f.store.get(receipt.details.jobId).catch(() => undefined);
     if (stored) expect(stored.state).not.toBe("succeeded");
+    if (fault === "registry-reason-intent") {
+      await expect(f.service.stop()).resolves.toBeUndefined();
+      services.splice(services.indexOf(f.service), 1);
+    }
   });
 
   it("G05: a late observation persistence failure degrades storage without changing the settled result or waking twice", async () => {
@@ -194,7 +202,7 @@ describe("managed detached production execution", () => {
     let shutdown: Promise<void> | undefined;
     try {
       const receipt = await tools(f, run, { timeoutMs: 1500 }).agent.execute("entered-publication", { persist: true, background: true, id: "helper", prompt: "work" });
-      await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+      await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
       provider.resolve({ text: "late settlement starts publication" });
       await entered.promise; // Real registry transaction owns its lock and is at its actual write boundary.
       shutdown = f.service.stop().then(() => { stopped = true; });
@@ -208,7 +216,7 @@ describe("managed detached production execution", () => {
       // The incomplete publication stays recoverable; do not drop P to make shutdown pass.
       expect((await f.store.get(receipt.details.jobId))?.subagentOwnership).toMatchObject({ owner: { settlement: "settled" }, publication: { state: "pending" } });
     } finally { release.resolve(); provider.resolve({ text: "cleanup" }); await shutdown; }
-  }, 15_000);
+  }, 25_000);
 
   it.each(["retained", "job-removed", "registry-removed", "degraded"])("G01/G04/G06: live managed provider cannot regain write authority after same-process reopen (%s)", async (mode) => {
     let oldServiceStopped = false; let writesAfterStop = 0;
@@ -241,6 +249,10 @@ describe("managed detached production execution", () => {
       // Default real owner-private lifetime lock, not fixture's no-op lock.
       await expect(openProcessJobsService(f.options)).rejects.toMatchObject({ code: "process_job_controller_unavailable" });
       if (mode === "degraded") {
+        // Cross the real store serialization boundary before replacing its
+        // transaction-file path with the fault-injection directory. Waiting
+        // only for provider entry races admission's final durable mutations.
+        await f.store.mutate(() => undefined);
         const journal = resolve(f.store.stateDir, PROCESS_JOB_TRANSACTION_FILE); await mkdir(journal);
         await expect(f.store.mutate((records) => { records.get(receipt.details.jobId)!.cancelRequested = true; })).rejects.toThrow();
         await expect(f.service.stop()).rejects.toThrow("Process-job shutdown encountered failures");
@@ -384,7 +396,7 @@ describe("managed detached production execution", () => {
   }, 10_000);
 
   it.each(["ordinary", "late-provider"])("F1: drains queued managed work after %s publication releases capacity", async (mode) => {
-    const f = await managedFixture(undefined, { maxQueued: 1, maxActivePerConversation: 3, maxQueueAgeMs: 3000 });
+    const f = await managedFixture(undefined, { maxQueued: 1, maxActivePerConversation: 3, maxQueueAgeMs: 10_000 });
     const gate = deferred<any>(); const firstRun = vi.fn(() => gate.promise);
     const first = tools(f, firstRun, { timeoutMs: mode === "ordinary" ? 20_000 : 1500 });
     const nextRun = vi.fn(async () => ({ text: "queued child actually ran" }));
@@ -397,7 +409,7 @@ describe("managed detached production execution", () => {
       await vi.waitFor(() => expect(firstRun).toHaveBeenCalledOnce());
       if (mode === "late-provider") {
         // The reporting boundary includes its existing bounded abandonment grace.
-        await vi.waitFor(async () => expect((await f.service.get(a.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+        await vi.waitFor(async () => expect((await f.service.get(a.details.jobId))?.wake.state).toBe("delivered"), { timeout: DURABLE_DELIVERY_TIMEOUT_MS });
         expect((await f.service.get(a.details.jobId))?.state).toBe("timed_out");
         expect((await f.store.get(a.details.jobId))?.subagentOwnership?.owner.settlement).toBe("running");
       }
@@ -415,7 +427,7 @@ describe("managed detached production execution", () => {
       expect((await f.service.get(a.details.jobId))?.state).toBe(mode === "ordinary" ? "succeeded" : "timed_out");
       expect(f.wake).toHaveBeenCalledTimes(2); // Late release adds no second wake for A.
     } finally { gate.resolve({ text: "cleanup" }); }
-  }, 12_000);
+  }, 25_000);
 
   it.each(["before-write", "after-write-lost-ack"])("F2 crash boundary %s pins delivered jobs through reopen-before-bind retention", async (fault) => {
     const f = await managedFixture(); const provider = deferred<any>(); let intercepted = false;
