@@ -33,6 +33,13 @@ Using that field without `background: true` is invalid. Host-provided
 `processJobsAvailability` exposes lineage and exhaustion diagnostics even
 when a request has no start controller.
 
+An optional host `ownedForegroundProcesses` capability instead keeps Bash/Exec
+awaited while delegating gated process ownership and cleanup to that host. It
+carries tool-call identity through the Pi wrapper and does not enable background
+commands. The host must durably attest before releasing a target; a rejected or
+unresolved owned command never falls back to ordinary foreground execution. This
+seam alone is not a restart-recovery implementation.
+
 Create one runtime for a host, parse a model reference, and run a turn:
 
 ```js

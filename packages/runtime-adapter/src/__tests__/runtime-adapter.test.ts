@@ -231,6 +231,25 @@ describe("runtime adapter fallback chain", () => {
     expect(JSON.stringify(result)).not.toContain("privateSentinel");
   });
 
+  it("forwards the awaited owner but strips route-attempt owner replacement", async () => {
+    const attempt = { run: vi.fn() };
+    const forAttempt = vi.fn(() => attempt);
+    const substituted = vi.fn(() => ({ run: vi.fn() }));
+    const model = parseMonoRuntimeModelReference("anthropic:claude-sonnet-4-6");
+    const runtime = createMonoRuntime({ fallbackChain: [{ model }], resolveAttempt: () => ({
+      runtime: { configureTools() {}, run: async (_prompt: string, options: { ownedForegroundProcesses: { forAttempt(): unknown } }) => {
+        expect(options.ownedForegroundProcesses.forAttempt()).toHaveProperty("run");
+        return { text: "ok", events: [] };
+      } } as never,
+      options: { ownedForegroundProcesses: { forAttempt: substituted } } as never,
+    }) });
+    const result = await runtime.run("SYSTEM", { model, messages: [{ role: "user", content: "hi" }],
+      abortSignal: new AbortController().signal, ownedForegroundProcesses: { forAttempt } });
+    expect(result.text).toBe("ok");
+    expect(forAttempt).toHaveBeenCalledOnce();
+    expect(substituted).not.toHaveBeenCalled();
+  });
+
   it("rejects malformed effort values", () => {
     expect(() => createMonoRuntime({
       fallbackChain: [{

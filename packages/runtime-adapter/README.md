@@ -143,6 +143,14 @@ provider kernel:
    runtime options without importing channel or application code.
 5. `bridgeProcessJobsController()` validates host limits and adapts the typed
    process-job controller to the kernel's JSDoc-only structural shape.
+6. `bridgeOwnedForegroundProcesses()` forwards an optional, host-owned awaited
+   command capability. Each Pi invocation receives its own attempt controller;
+   Bash/Exec pass the host tool-call identity and exact prepared command without
+   enabling background schemas. The owner must persist gated process identity
+   before release and retain cleanup authority on rejection or unknown group
+   exit. This low-level seam alone does not implement durable child recovery;
+   hosts without it retain ordinary foreground behavior. Route-attempt plugins
+   cannot replace the owner.
 
 Live-input callbacks separate native queue acceptance (`accepted`), exact
 transcript consumption (`acknowledge`), uncertain terminal delivery
@@ -238,6 +246,9 @@ MonoRuntimeSandboxEngine
 MonoRuntimeSupportDescription
 NormalizedMcpServer
 NormalizedMcpTransport
+OwnedForegroundProcessController
+OwnedForegroundProcessRequest
+OwnedForegroundProcesses
 PI_TRANSPORTS
 PiTransport
 PrepareSandboxedCommandInput
@@ -301,6 +312,7 @@ SrtSandboxEngineOptions
 SrtSettings
 assertParsedRuntimeModelReference
 bridgeMonitorsController
+bridgeOwnedForegroundProcesses
 bridgeProcessJobsController
 createMonoRuntime
 createPiOAuthApiKeyResolver

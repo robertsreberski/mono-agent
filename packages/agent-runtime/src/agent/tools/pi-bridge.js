@@ -300,7 +300,7 @@ function isStructuredToolRun(value) {
  * @param {any} description
  * @param {any} parameters
  * @param {any} execute
- * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: any, monitorsController?: any, forceSequential?: boolean}} [options]
+ * @param {{cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, ctx?: any, processJobsController?: any, ownedForegroundProcessController?: any, monitorsController?: any, forceSequential?: boolean}} [options]
  */
 function createBuiltinTool(name, label, description, parameters, execute, {
   cwd,
@@ -311,6 +311,7 @@ function createBuiltinTool(name, label, description, parameters, execute, {
   sandboxEngine,
   ctx,
   processJobsController,
+  ownedForegroundProcessController,
   monitorsController,
   forceSequential = false,
 } = {}) {
@@ -341,12 +342,14 @@ function createBuiltinTool(name, label, description, parameters, execute, {
       const shouldTrackWrite = name === "Write" && typeof normalized.file_path === "string" && normalized.file_path.length > 0;
       const beforeWrite = shouldTrackWrite ? readFileChangeSnapshot(normalized.file_path) : null;
       const raw = await execute(normalized, {
+        toolCallId,
         toolLimits,
         signal,
         sandboxPolicy,
         sandboxEngine,
         ctx,
         processJobsController,
+        ownedForegroundProcessController,
         monitorsController,
       });
       // Image reads (e.g. Read on a .png) come back as a structured image
@@ -478,7 +481,7 @@ export function createStructuredOutputTool(outputSchema, onStructuredOutput) {
 
 /**
  * @param {any} allowedTools
- * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, processJobsAvailability?: any, monitorsController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, askParentController?: any, subagentContext?: any, ctx?: any}} [options]
+ * @param {{disallowedTools?: any[], skillNames?: any[], skills?: any[], skillsRoot?: any, dataDir?: any, cwd?: any, onEvent?: (event: any) => void, toolLimits?: any, persistArtifact?: any, onTruncate?: any, toolPayloadMaxBytes?: number, imageInlineMaxBytes?: any, toolPolicy?: any, sandboxPolicy?: any, sandboxEngine?: any, approvalManager?: any, approvalModel?: any, nodeReplController?: any, webController?: any, processJobsController?: any, ownedForegroundProcessController?: any, processJobsAvailability?: any, monitorsController?: any, toolExecutionMode?: "sequential"|"safe-parallel", subagents?: any, askParentController?: any, subagentContext?: any, ctx?: any}} [options]
  */
 export function getPiBuiltinTools(allowedTools, {
   disallowedTools = [],
@@ -501,6 +504,7 @@ export function getPiBuiltinTools(allowedTools, {
   nodeReplController = null,
   webController = null,
   processJobsController = null,
+  ownedForegroundProcessController = null,
   processJobsAvailability,
   monitorsController = null,
   subagents = null,
@@ -563,6 +567,7 @@ export function getPiBuiltinTools(allowedTools, {
     sandboxPolicy,
     sandboxEngine,
     processJobsController,
+    ownedForegroundProcessController,
     monitorsController,
     forceSequential: toolExecutionMode === "sequential",
     ctx,

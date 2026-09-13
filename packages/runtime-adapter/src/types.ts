@@ -1,3 +1,4 @@
+import type { OwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import type {
   AgentReplyMcpAppPart,
   AgentReplyPartFailure,
@@ -422,6 +423,8 @@ export interface RuntimeRunOptions {
   readonly toolEnvironment?: AgentToolEnvironment;
   /** Host-only Pi-native process-job controller; never model/provider visible. */
   readonly processJobs?: ProcessJobsController;
+  /** Host-scoped awaited command ownership; does not enable background tools. */
+  readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
   /** Request lineage diagnostics, including when no start controller is available. */
   readonly processJobsAvailability?: {
     readonly chainDepth: number;

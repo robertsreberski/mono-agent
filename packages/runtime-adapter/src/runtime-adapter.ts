@@ -1,3 +1,4 @@
+import { bridgeOwnedForegroundProcesses } from "./owned-foreground-processes.js";
 import {
   createPiOAuthApiKeyResolver,
   createRouterRuntime,
@@ -247,6 +248,7 @@ export interface MonoRuntimeAttemptResolution {
     readonly sandbox?: never;
     /** Attempt plugins cannot replace the host's durable process-job owner. */
     readonly processJobs?: never;
+    readonly ownedForegroundProcesses?: never;
     /** Attempt plugins cannot replace the host's durable monitor owner. */
     readonly monitors?: never;
     /** Attempt plugins cannot replace the host's run-bound artifact sink. */
@@ -326,6 +328,9 @@ export function createMonoRuntime(options: CreateMonoRuntimeOptions = {}): MonoR
         ...(runOptions.processJobs === undefined
           ? {}
           : { processJobs: bridgeProcessJobsController(runOptions.processJobs) }),
+        ...(runOptions.ownedForegroundProcesses === undefined
+          ? {}
+          : { ownedForegroundProcesses: bridgeOwnedForegroundProcesses(runOptions.ownedForegroundProcesses) }),
         ...(runOptions.monitors === undefined
           ? {}
           : { monitors: bridgeMonitorsController(runOptions.monitors) }),
@@ -408,10 +413,11 @@ function protectAttemptResolver(
 
 function withoutProtectedAttemptOptions<T extends Readonly<Record<string, unknown>>>(
   input: T,
-): Omit<T, "sandbox" | "processJobs" | "monitors" | "persistArtifact"> {
+): Omit<T, "sandbox" | "processJobs" | "ownedForegroundProcesses" | "monitors" | "persistArtifact"> {
   const {
     sandbox: _callerSandbox,
     processJobs: _processJobs,
+    ownedForegroundProcesses: _ownedForegroundProcesses,
     monitors: _monitors,
     persistArtifact: _persistArtifact,
     ...rest
