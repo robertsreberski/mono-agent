@@ -1,3 +1,4 @@
+import { SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
 import { lstat, readdir, realpath, rm } from "node:fs/promises";
@@ -89,6 +90,8 @@ interface ActiveProcessJob extends PendingProcessJob {
   readonly handle: Pick<ProcessJobProcessHandle, "cancel" | "completion">;
   readonly outputTail: ProcessJobOutputTail;
   groupExitConfirmed?: boolean;
+  progress?: SubagentJobProgress;
+  progressTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface ProcessJobMutationSnapshot {
@@ -367,7 +370,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private projectWithOutput(record: DurableProcessJobRecord): ProcessJobProjection {
     const completion = this.completionOverlays.get(record.jobId);
     if (completion !== undefined) return completion;
-    const projection = projectProcessJob(record);
+    let projection = projectProcessJob(record);
+    const progress = this.active.get(record.jobId)?.progress;
+    if (projection.kind === "internal" && progress) projection = { ...projection, subagentProgress: progress.snapshot() };
     if (isTerminalProcessJobState(record.state)) return projection;
     const snapshot = this.active.get(record.jobId)?.outputTail.snapshot();
     if (snapshot === undefined) return projection;
@@ -784,8 +789,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.scheduleWake(jobId);
         throw new ProcessJobServiceError("process_job_store_error");
       }
-      const handle = launchInternalProcessJob(pending.request, current.maxRuntimeMs, current.maxOutputBytes, undefined, (chunk) => outputTail.writeStdout(chunk));
-      this.active.set(jobId, { ...pending, handle, outputTail });
+      const progress = new SubagentJobProgress(pending.redactionSecrets);
+      const handle = launchInternalProcessJob(pending.request, current.maxRuntimeMs, current.maxOutputBytes, undefined,
+        (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event));
+      this.active.set(jobId, { ...pending, handle, outputTail, progress });
       const settlement = handle.completion.then((result) => this.complete(jobId, result))
         .catch((error: unknown) => { if (this.stopping) this.shutdownFailures.push(error); })
         .finally(() => this.settlements.delete(jobId));
@@ -886,6 +893,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       } else {
         try { await active.cleanup(); } catch { cleanupIncomplete = true; }
       }
+      clearTimeout(this.active.get(jobId)?.progressTimer);
       this.active.delete(jobId);
       this.pending.delete(jobId);
       let failureRecorded = false;
@@ -933,11 +941,35 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     return { jobId, state: "running", startedAt: handle.startedAt, maxRuntimeMs: current.maxRuntimeMs };
   }
 
+  /** Coalesce only child telemetry; ordinary command lifecycle scheduling stays unchanged. */
+  private reportSubagentProgress(jobId: string, event: SubagentProgressEvent): void {
+    const active = this.active.get(jobId);
+    if (!active?.progress?.report(event) || active.progressTimer !== undefined) return;
+    active.progressTimer = setTimeout(() => {
+      void this.withLock(async () => {
+        if (this.active.get(jobId) !== active || !this.storageOperational) return;
+        delete active.progressTimer;
+        await this.storeMutate("progress.persist", (records) => {
+          const record = records.get(jobId);
+          if (record?.kind === "internal" && !isTerminalProcessJobState(record.state)) {
+            record.subagentProgress = active.progress!.snapshot();
+          }
+        });
+        this.scheduleSurfaceUpdate(jobId);
+      }).catch(() => {
+        this.options.logger?.warn?.("Subagent progress could not be persisted.", { jobId });
+      });
+    }, 250);
+    active.progressTimer.unref?.();
+  }
+
   private async complete(jobId: string, result: InternalProcessJobResult): Promise<void> {
     await this.withLock(async () => {
       const active = this.active.get(jobId);
       if (active === undefined) return;
       try {
+      clearTimeout(active.progressTimer);
+      const finalProgress = active.progress?.finish(result.answer);
       const finalTail = active.outputTail.finalize();
       let cleanupError: unknown;
       if (result.groupExitConfirmed === false) {
@@ -972,6 +1004,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           const alreadyTerminal = isTerminalProcessJobState(record.state);
           if (record.kind === "internal") {
             record.childStillBusy = result.childStillBusy === true;
+            if (finalProgress) record.subagentProgress = finalProgress;
             if (result.question) {
               const options = [...new Set(result.question.options?.map((option) => redactOutput(option, active.redactionSecrets).slice(0, 200).trim()).filter(Boolean))].slice(0, 5);
               record.subagentQuestion = {
@@ -1087,6 +1120,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
             || stdout.truncated
             || stderr.truncated
             || artifactError !== undefined;
+          if (completionRecord.kind === "internal" && finalProgress) completionRecord.subagentProgress = finalProgress;
           completionRecord.preview = finalTail?.preview.length
             ? finalTail.preview
             : outputPreview(stdout.text, stderr.text, completionRecord.previewChars);
@@ -1133,6 +1167,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.scheduleSurfaceUpdate(jobId);
         this.scheduleWake(jobId);
       }
+      clearTimeout(this.active.get(jobId)?.progressTimer);
       this.active.delete(jobId);
       this.pending.delete(jobId);
       await this.storeApplyRetention("complete.retention");
@@ -1140,7 +1175,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       } finally {
         // Store reads can fail before terminal mutation begins. Ownership must
         // still retire so one poisoned record cannot leak the global slot.
-        this.active.delete(jobId);
+        clearTimeout(this.active.get(jobId)?.progressTimer);
+      this.active.delete(jobId);
         this.pending.delete(jobId);
       }
     });
@@ -1520,7 +1556,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
               }
             }
             active.outputTail.discard();
-            this.active.delete(jobId);
+            clearTimeout(this.active.get(jobId)?.progressTimer);
+      this.active.delete(jobId);
             this.pending.delete(jobId);
           }
         });

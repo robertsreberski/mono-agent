@@ -373,3 +373,47 @@ it("retains observed detached spend when the child throws without a result", asy
   expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 9, output: 4, costUsd: 0.2 });
   expect(subagentUsageForRun(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
 });
+
+
+it("keeps detached live progress out of the parent stream and persists it separately from wake output", async () => {
+  const f = await fixture();
+  const gate = deferred<any>();
+  const parentEvents = vi.fn();
+  let emit!: (event: any) => void;
+  const { agent } = tools(f, async (request) => {
+    emit = request.onEvent;
+    emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "read", name: "Read", input: { file_path: "src/file.ts", prompt: "PRIVATE_PROMPT" } }] } });
+    return await gate.promise;
+  }, { onEvent: parentEvents });
+  const receipt = await agent.execute("parent-call", { persist: true, background: true, id: "helper", prompt: "PRIVATE_PROMPT" });
+  const id = receipt.details.jobId;
+  await vi.waitFor(async () => expect((await f.service.get(id) as any).subagentProgress?.toolCalls).toBe(1));
+  expect(parentEvents.mock.calls.flat().some((event: any) => event.type === "subagent_activity")).toBe(false);
+  await vi.waitFor(async () => expect((await f.store.get(id))?.subagentProgress?.toolCalls).toBe(1));
+  expect(JSON.stringify((await f.store.get(id))?.subagentProgress)).not.toContain("PRIVATE_PROMPT");
+  emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "read", content: "PRIVATE_TOOL_RESULT" }] } });
+  gate.resolve({ text: "Child final report" });
+  const job = await done(f.service, id);
+  expect(job.subagentProgress).toMatchObject({ toolCalls: 1, failedCalls: 0, answerHead: "Child final report", recent: [{ status: "complete", toolName: "Read" }] });
+  expect(JSON.stringify(job.subagentProgress)).not.toMatch(/PRIVATE_PROMPT|PRIVATE_TOOL_RESULT/u);
+  const reopened = await openProcessJobStore(f.root, f.options.settings.stateDir);
+  expect((await reopened.get(id))?.subagentProgress).toEqual(job.subagentProgress);
+  const output = await readFile(resolve(f.options.settings.stateDir, job.output.stdoutRef!), "utf8");
+  // Ambient secret redaction can replace even JSON literals; do not parse an output artifact.
+  expect(output).toContain('"instanceId":"helper"');
+  expect(output).toContain("Child final report");
+  expect(output).not.toContain("subagentProgress");
+  expect((f.wake.mock.calls[0]![0] as any).prompt).not.toContain("subagentProgress");
+});
+
+it("ignores private progress emitted after internal cancellation grace expires", async () => {
+  const gate = deferred<any>();
+  let emit!: (event: any) => void;
+  const progress = vi.fn();
+  const launched = launchInternalProcessJob({ kind: "internal", tool: "Agent", jobId: randomUUID(), instanceId: "helper", cleanup: async () => {},
+    run: async (_signal, _write, report) => { emit = report; return gate.promise; } }, 10, 64, 5, undefined, progress);
+  await launched.completion;
+  emit({ type: "started", profile: "too late" });
+  gate.resolve({ status: "ok", output: "late" });
+  expect(progress).not.toHaveBeenCalled();
+});

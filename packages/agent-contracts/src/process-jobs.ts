@@ -131,6 +131,51 @@ export interface ProcessJobProjectionError {
   readonly message: string;
 }
 
+/** Bounded, redacted UI evidence; never included in the parent's wake output. */
+export interface ProcessJobSubagentProgress {
+  readonly revision: number;
+  readonly profile: string;
+  readonly label?: string;
+  readonly toolCalls: number;
+  readonly failedCalls: number;
+  readonly recent: readonly {
+    readonly id: string;
+    readonly toolName: string;
+    readonly argsSummary?: string;
+    readonly status: "running" | "complete" | "failed";
+    readonly executionMs?: number;
+  }[];
+  readonly answerHead?: string;
+  readonly answerTruncated?: boolean;
+}
+
+/** Shared strict validator for both durable records and operator projections. */
+export function isProcessJobSubagentProgress(value: unknown): value is ProcessJobSubagentProgress {
+  if (!isRecord(value)
+    || !hasExactlyKeys(value, ["revision", "profile", "toolCalls", "failedCalls", "recent",
+      ...["label", "answerHead", "answerTruncated"].filter((key) => Object.hasOwn(value, key))])
+    || !nonNegativeInteger(value.revision) || !boundedNonEmptyString(value.profile, 128)
+    || (value.label !== undefined && !boundedString(value.label, 256))
+    || !nonNegativeInteger(value.toolCalls) || !nonNegativeInteger(value.failedCalls)
+    || value.failedCalls > value.toolCalls
+    || (value.answerHead !== undefined && !boundedString(value.answerHead, 8_000))
+    || (value.answerTruncated !== undefined && typeof value.answerTruncated !== "boolean")
+    || !Array.isArray(value.recent) || value.recent.length > 50 || value.recent.length > value.toolCalls) return false;
+  const ids = new Set<string>();
+  return value.recent.every((call: unknown) => {
+    if (!isRecord(call)
+      || !hasExactlyKeys(call, ["id", "toolName", "status",
+        ...["argsSummary", "executionMs"].filter((key) => Object.hasOwn(call, key))])
+      || !boundedNonEmptyString(call.id, 256) || ids.has(call.id)
+      || !boundedNonEmptyString(call.toolName, 128)
+      || (call.argsSummary !== undefined && !boundedString(call.argsSummary, 256))
+      || !["running", "complete", "failed"].includes(String(call.status))
+      || (call.executionMs !== undefined && !nonNegativeInteger(call.executionMs))) return false;
+    ids.add(call.id);
+    return true;
+  });
+}
+
 /**
  * Secret-free operator projection of one durable process job.
  *
@@ -143,7 +188,7 @@ export interface ProcessJobProjectionError {
 export type ProcessJobProjection = ProcessJobProjectionBase & (
   | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
   | { readonly tool: "Agent" | "AgentSend"; readonly kind: "internal"; readonly instanceId: string;
-      readonly childStillBusy: boolean; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
+      readonly childStillBusy: boolean; readonly subagentProgress?: ProcessJobSubagentProgress; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
 );
 
 interface ProcessJobProjectionBase {
@@ -192,15 +237,16 @@ const PROJECTION_KEYS = [
 
 /** Strictly parse one projection, rejecting unknown keys at every depth. */
 export function parseProcessJobProjection(value: unknown): ProcessJobProjection {
-  if (!isRecord(value) || !hasExactlyKeys(value, [...PROJECTION_KEYS, ...["kind", "instanceId", "childStillBusy", "subagentQuestion"].filter((key) => Object.prototype.hasOwnProperty.call(value, key))])) {
+  if (!isRecord(value) || !hasExactlyKeys(value, [...PROJECTION_KEYS, ...["kind", "instanceId", "childStillBusy", "subagentQuestion", "subagentProgress"].filter((key) => Object.prototype.hasOwnProperty.call(value, key))])) {
     throw invalid("envelope");
   }
   if (value.schema !== "mono-agent.process-job-projection.v1"
     || !boundedNonEmptyString(value.jobId, 256)
     || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
       || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || (value.subagentProgress !== undefined && !isProcessJobSubagentProgress(value.subagentProgress))
       || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))
-      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined
+      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined || value.subagentProgress !== undefined
         || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)
