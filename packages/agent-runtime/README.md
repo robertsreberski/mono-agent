@@ -117,6 +117,13 @@ the [architecture guide](https://github.com/robertsreberski/mono-agent/blob/main
 
 ### Managed-tool lifecycle fidelity
 
+Native event admission precedes queued storage: observers receive `recordEvent`
+and optional `recordToolLifecycle` callbacks synchronously. The latter receives
+the normalized lifecycle event before persistence begins. This lets the harness
+retain work emitted before cancellation while its sidecar is busy. Persistence
+and client delivery remain serialized; later cancellation cannot reclassify an
+already admitted tool result.
+
 `RuntimeRunOptions.toolLifecycleSink` is an awaited host-owned boundary. The
 runtime sends redaction-eligible raw arguments/content plus stable provider call
 id and name; the host returns only record/sequence, persistence/truncation byte
@@ -711,7 +718,8 @@ Returns:
 - `configureTools(next)` — update the tool runtime context after construction.
 - `syncSession(id)` — fsync provider-owned durable state before canonical history commits.
 - `refreshSession(id)` — guarantee the next resume cannot reuse process-local state; absence succeeds and cleanup uncertainty rejects.
-- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. If the matching live session is still unwinding after cancellation or failure, refresh it out of the registry and unlink and fsync its current JSONL; a post-runtime retry also removes any headerless exact-name file recreated by a late append. Pi first rolls a resumed failed turn back to its previous leaf; host retirement then discards that entire epoch so the next turn can seed the canonical continuity account into a fresh one.
+- `recoverSession(receipt, { appliedInputIds })` — validate and fsync an opted-in, settled durable Pi tail without executing the provider or appending a message. A host-owned `sessionRecovery: { runId, revision }` run option enables receipts; retries/backups strip that option and every returned receipt. Pending recovery blocks native resume. Failed/aborted assistant messages stay on disk and are filtered by Pi; completed tool evidence retains its native bytes. False or uncertain recovery requires host retirement. See [session recovery](../../docs/runtime/sessions-concurrency.md).
+- `retireDurableSession(id, sessionsRoot)` — delete and verify every exact-id durable Pi transcript, including cold duplicates. If the matching live session is still unwinding after cancellation or failure, refresh it out of the registry and unlink and fsync its current JSONL; a post-runtime retry also removes any headerless exact-name file recreated by a late append. Uncoordinated calls retain the legacy rollback behavior; opted-in admitted durable calls can retain a provisional tail for host recovery.
 - `disposeSession(id)` / `invalidateSession(id)` / `disposeAllSessions()` — ordinary best-effort eviction, destructive live invalidation, and shutdown cleanup.
 
 #### `runtime.run(systemPrompt, options)`
@@ -735,8 +743,9 @@ Per-call options (a non-exhaustive selection):
 | `maxTurns` | `number` | Hard cap on agent turns. |
 | `outputSchema` | `JSONSchema` | Requests structured JSON; see “Structured output” below. |
 | `abortSignal` | `AbortSignal` | Cancel the run. |
-| `liveInput` | `AsyncIterable<{ body: string; id?: string; receivedAt?: string; acknowledge?: () => void; reject?: (error?: unknown) => void }>` | Stream of in-flight user messages for steering the active run. The bridge acknowledges only after its native steering boundary accepts the message; per-attempt rejection permits router replay. Acknowledgement emits metadata-only `live_input_applied` telemetry. |
+| `liveInput` | `AsyncIterable<RuntimeLiveInputMessage>` | Stream of in-flight user messages. `accepted` reports native queue acceptance; `acknowledge` reports exact owned-operation transcript consumption; `uncertain` fences ambiguous delivery; proved-safe `reject` permits identified router replay. Stable nonblank IDs are required for cross-attempt replay. |
 | `onEvent` | `(event) => void` | Fired for every runtime event (assistant text, tool calls/results, applied live input, runtime warnings, structured output). |
+| `persistArtifact` | `({ filename, buffer, toolName, toolUseId }) => path \| null` | Synchronous artifact sink for this run. A run value overrides the host default and route-attempt resolvers cannot replace it. |
 | `runId` | `string` | Tag this run for downstream callbacks (e.g. `onCompactionRecorded`). |
 | `providerSessionId` | `string` | Resume a prior provider session. |
 | `runArtifactDir` | `string` | Used as the Playwright MCP filename target. |
@@ -750,22 +759,34 @@ The `"allow_all_only"` value survives for custom structural bridges that accept
 only an effective unrestricted policy; omission by such a bridge means the
 capability is unknown.
 
-Live input is native on the Pi bridge.
-After the bridge invokes `acknowledge()`, the runtime emits exactly one
-`{ type: "live_input_applied", inputId, receivedAt? }` event for that logical
-run. It deliberately omits the guidance body. A fallback router reuses the same
-instrumented input stream, so replay or duplicate acknowledgement cannot emit a
-second applied event. A throwing host `acknowledge` or `reject` callback cannot
-undo the steer that already reached the harness; it surfaces as a bounded
-`live_input_failed` runtime warning and ends that run's live-input consumer, so
-later guidance for the same run is no longer steered.
+Live input is native on the Pi bridge. Native acceptance is not consumption.
+Consumption requires the exact Pi entry's user `message_end` in the one
+main-lane prompt operation owned by the Mono run, plus the prompt result's
+matching operation ID. This proves transcript incorporation only—not provider
+receipt, answer use, or adherence. `live_input_consumed` records native
+evidence; legacy `live_input_applied` follows only when host acknowledgement
+returns exactly `recorded`. Void, `ignored`, throwing, or thenable callbacks
+produce settlement-unconfirmed diagnostics instead of false success.
+
+The logical-run fence keys stable IDs across retry and failover. The first
+occurrence owns its body and callbacks; later same-ID occurrences are suppressed
+as invalid duplicates. A proved pre-acceptance rejection or native queue removal
+can replay the original owner. Accepted, consumed, and uncertain IDs never
+replay. Missing IDs remain compatible but are exposed only in the first iterator
+generation. Diagnostics contain metadata only, never guidance bodies.
 
 ### Project instructions
 
 The Pi runtime does not read another tool's filesystem settings, hooks, plugins,
 or project documents. Subagents are the kernel's own in-process delegation
 surface (the `Agent` tool), configured by the host rather than discovered from a
-provider's on-disk profiles.
+provider's on-disk profiles. Hosts can offer `subagents.models` as
+`{name, model, key}[]` to allow call-time `Agent.model` choices. `Agent.effort`
+works for configured, authored, and general-purpose helpers; only `tools`
+requires an authored `systemPrompt`. For model and effort independently, call-time
+values override profile pins, then inherit the parent's effective turn values.
+Pinned or overridden routes appear in the result header and `details.subagent.requested`;
+`details.subagent.executed` records the successful child route when available.
 
 ### Built-in tools
 
@@ -780,7 +801,7 @@ by one lazily started Node.js REPL child per run. You select them via
 
 - `cwd` (required for path-based tools)
 - The runtime context's `workspace` / `repoRoot` allow-list (paths outside both, plus `/tmp` and `process.cwd()`, are rejected), with optional `additionalReadRoots` / `additionalWriteRoots` for narrowly scoped managed file-tool access. Additional roots require both the requested path and its realpath to stay inside the configured roots, so a symlink cannot escape them.
-- Output truncation with optional artifact persistence (`{toolArtifactDir}/tool-output/{runId}/...` when `toolArtifactDir` is configured)
+- Output truncation with optional host-provided artifact persistence. The configured app binds this per run under `artifacts.dir/tool-output/<runId>/`.
 
 The Pi-native tool context may structurally receive a host process-job
 controller. Only then do Exec and Bash add optional `background` and
@@ -818,6 +839,13 @@ cooldown skips, and quota skips do not spend it. Rate-limited providers are
 deferred for that run, with retry timing and an explicit next action returned
 to the model; children and later runs receive fresh budgets.
 
+Each normalized WebSearch result caps its title at 500 characters and its
+snippet at 4,000 characters, including a visible truncation marker directing
+the model to `WebFetch`. The ranked result body is capped at 64 KiB UTF-8;
+lower-ranked snippets shrink before whole results are omitted, while the
+control, metadata, filter, and balanced untrusted-result framing always remain.
+Ollama receives the caller's effective 1–10 result limit as `max_results`.
+
 Pi runs with selected skills also expose `ReadSkill`. It returns the complete
 skill instructions by default, including content beyond the former
 12,000-character boundary. Programmatic callers of
@@ -841,7 +869,24 @@ JSON as `result.structuredResult`.
 
 ### Provider fallback router
 
-`createRouterRuntime({ host, chain, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. A chain is stateless across provider sessions. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
+`createRouterRuntime({ host, chain, resolveAttempt })` wraps the standard runtime with an ordered chain of model references. On a retryable provider/auth failure it retries the logical run against the next entry with one bounded transcript-tail snapshot. Only the primary's first attempt can keep a provider session; retries and backups are stateless and their successful results withhold `providerSessionId`. Entry `effort` is tri-state: a string fixes that route, `null` asks for provider default, and omission inherits the legacy per-run effort.
+
+The primary's first attempt owns the provider session. Retries and failovers run
+stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+any answer from a retry or backup retires the primary epoch. The next turn
+cold-reseeds from canonical history; after a primary first-attempt success,
+subsequent turns resume the new session and are eligible for provider caching.
+
+On a warm turn whose primary attempt fails, the retry or backup attempt runs
+stateless with the current message and a bounded snapshot of the failed attempt,
+without the earlier conversation; the next turn reseeds from canonical history.
+
+Provider attribution remains stable across attempts even when the router withholds
+the resumable result id. Fresh stateless Pi calls use a private in-memory repository
+to avoid colliding with, or deleting, a primary transcript sharing that attribution.
+Lifecycle methods forward to the router's original inner runtime; a custom
+`resolveAttempt().runtime` must not assume those methods target its own independent
+session store.
 
 ```js
 import { createRouterRuntime, parseRuntimeModelReference } from "@mono-agent/agent-runtime";
@@ -983,10 +1028,17 @@ boundary, not approving the call.
 The kernel's tool-bloat guard (`agent/tool-bloat.js`, internal) enforces a 256 KB default cap per `tool_result`. When a payload exceeds the cap, the kernel:
 
 1. Calls your `persistArtifact({ filename, buffer, toolName, toolUseId })` callback (if you supplied one).
-2. Substitutes a compact text reference in the agent's transcript.
+2. For text-only overflow, substitutes a compact summary plus a UTF-8-safe
+   60/40 head/tail sample inside a new balanced untrusted frame. The explicit
+   notice says the omitted middle may contain content and the retained tail is
+   not the source ending. Image, binary, and mixed payloads stay summary-only.
 3. Emits a `runtime_warning` with `warning_kind: "tool_payload_truncated"` and the saved-paths array.
 
-Hosts that don't supply `persistArtifact` get the truncation summary but no on-disk capture.
+Hosts that don't supply `persistArtifact`, or whose sink fails, get honest
+`persistence unavailable` text and no on-disk capture; the tool call still
+completes. The configured app writes owner-private raw, untrusted files under
+`artifacts.dir/tool-output/<runId>/`. Neither run-artifact retention nor
+tool-history retention cleans them up automatically.
 
 Before that byte cap runs, the builtin `Read` tool normalizes raster images with an edge longer than 8,000 px to fit within an 8,000 × 8,000 px box. Resizing preserves aspect ratio and the source format (resized BMP input becomes PNG), retains GIF/WebP animation, and never modifies the source file. Images already within the limit are embedded byte-for-byte unchanged.
 
@@ -1011,8 +1063,41 @@ guidance only says complete instructions may remain visible.
 
 ### Context compaction
 
-The sole pi bridge runs on pi-agent-core's native `AgentHarness`. pi performs **no**
-automatic in-loop compaction, so the bridge drives it: before each turn it estimates the
+Summary preparation preserves labelled heads and tails of text tool results within
+Pi's 2,000-character serializer allowance. Copies retain tool identities and
+arguments; live results remain unchanged. Confirmed `Read`/`Write`/`Edit` results
+augment file metadata using `file_path`; failed or unmatched writes remain
+unresolved evidence. File metadata and supplemental file-operation evidence each
+have a 4 KiB bound, with omission counts. Record references remain unavailable
+without a proven host resolver.
+
+A versioned focus supplements both Pi summary requests, including split turns:
+intent, approval constraints, open work, decisions, exact symbols, errors, and next
+action, distinguishing current instructions from superseded ones. Pi's prompts,
+cut rules, recent tail and output budgets remain unchanged. Empty, malformed,
+aborted and output-truncated summaries are rejected before persistence.
+
+Each `context_compaction` event includes metadata-only `accounting` (version 1).
+Terminal events retain separately identified summary requests and their status,
+duration, provider tokens and cost, including rejected requests. Missing usage or
+cost stays `null`. Transcript and full-request before/after estimates are comparable
+and explicitly inexact; `afterSource` distinguishes a candidate preview from the
+persisted context. Summary text estimates, appended metadata bytes, tail
+estimate, policy and preparation omission counts are separate. Summary content,
+paths, tool arguments and raw cache keys are excluded from accounting.
+
+With prompt-cache diagnostics enabled, assistant payload diagnostics and usage
+share a request ID and phase. `context_usage.providerCostUsd` preserves unknown
+provider cost as `null` alongside the existing compatibility cost field. Summary requests use operation-scoped IDs in
+compaction accounting; their usage never flows into assistant request totals.
+`scripts/summarize-prompt-cache.mjs` reports boundaries, separate assistant/summary
+cost, and first differing observed message fingerprints for full inputs. Differences
+are evidence of payload changes, not proof of cache misses; delta/unsupported
+prefix comparisons remain unknown. Pi summary requests retain their existing
+`cacheRetention: "none"` behavior.
+
+The sole pi bridge runs on pi-agent-core's native `AgentHarness`. Pi supports native checkpoint and overflow compaction; mono-agent disables that path
+and drives guarded compaction itself: before each turn it estimates the
 running model's context usage and calls `AgentHarness.compact()` when near the window
 (proactive), and if a turn still overflows it compacts once and re-prompts exactly once
 only after a rebuilt-context preview proves positive reduction (reactive recovery).

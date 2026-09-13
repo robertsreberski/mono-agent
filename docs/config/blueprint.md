@@ -55,6 +55,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
   // Subagents the Agent tool can deploy. Requires "Agent" in tools.allowedTools too.
   "subagents": {
     "enabled": true,
+    "models": [{ "name": "fable", "model": "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],
     "maxConcurrent": 5,                    // simultaneous subagents per turn
     "maxPerTurn": 20,                      // total Agent calls per turn (runaway guard)
     "definitions": [
@@ -128,6 +129,7 @@ See [Folder layout](/config/folder-layout/) for the full directory contract.
     // Pi-native bridge tuning (all optional).
     "piNative": {
       "transport": "auto",                // auto | sse | websocket | websocket-cached
+      "promptCacheDiagnostics": false,     // metadata-only request fingerprints in run artifacts
       "piMaxRetries": 2,                   // 0-8; transient provider-transport retries
       "maxRetryDelayMs": 60000,            // backoff cap between retries (ms)
       "piSessionsRoot": ".mono-agent/sessions" // durable JSONL sessions → resume across restarts (unset = in-memory)

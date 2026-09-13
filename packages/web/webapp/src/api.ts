@@ -1,11 +1,19 @@
+import type { ProjectColor } from "./types";
 import type {
+  ActiveThreads,
   AgentSkillRegistry,
   AgentSummary,
   AskAnswer,
   AskSnapshot,
   AskSubmissionResult,
   Bootstrap,
+  ChannelConfigView,
+  CronJob,
+  CronMutationResult,
   CronOverview,
+  CronReplyReceipt,
+  CronReplySnapshotKind,
+  CronRun,
   CronRunPage,
   LiveInputReceipt,
   McpAppPart,
@@ -14,12 +22,14 @@ import type {
   MessagePart,
   ModelCatalogPage,
   ProcessJobProjection,
+  ProjectSummary,
   ProviderAuthMethod,
   ProviderAuthCheckSessionSnapshot,
   ProviderAuthSessionSnapshot,
   ProviderAuthStatusSnapshot,
   PushSubscriptionStatus,
   StartTurnInput,
+  SubmissionReceipt,
   ThreadDetail,
   ThreadPage,
   ThreadSearchPage,
@@ -33,12 +43,19 @@ import { recordEstimatedUsage, recordResponsePayload, recordTransferredBody } fr
 export class ApiError extends Error {
   readonly status: number;
   readonly code?: string;
+  readonly details?: Readonly<Record<string, unknown>>;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(
+    message: string,
+    status: number,
+    code?: string,
+    details?: Readonly<Record<string, unknown>>,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -59,23 +76,33 @@ const readJson = async <T>(response: Response): Promise<T> => {
 const readError = async (response: Response): Promise<ApiError> => {
   let message = `${response.status} ${response.statusText}`.trim();
   let code: string | undefined;
+  let details: Readonly<Record<string, unknown>> | undefined;
   try {
     const payload = await readJson<{
-      error?: string | { message?: string; code?: string };
+      error?: string | { message?: string; code?: string; details?: unknown };
       message?: string;
       code?: string;
+      details?: unknown;
     }>(response);
     if (typeof payload.error === "string") message = payload.error;
     if (payload.error && typeof payload.error === "object") {
       message = payload.error.message ?? message;
       code = payload.error.code;
+      if (payload.error.details !== null
+        && typeof payload.error.details === "object"
+        && !Array.isArray(payload.error.details)) {
+        details = payload.error.details as Readonly<Record<string, unknown>>;
+      }
     }
     message = payload.message ?? message;
     code = payload.code ?? code;
+    if (payload.details !== null && typeof payload.details === "object" && !Array.isArray(payload.details)) {
+      details = payload.details as Readonly<Record<string, unknown>>;
+    }
   } catch {
     // The status line is still useful when the response is not JSON.
   }
-  return new ApiError(message, response.status, code);
+  return new ApiError(message, response.status, code, details);
 };
 
 /**
@@ -110,6 +137,23 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
     throw new ApiError("The server answered a read that quoted no validator with 304.", 304);
   }
   return await readJson<T>(response);
+};
+
+const cronMutation = async <T>(
+  path: string,
+  body: Readonly<Record<string, unknown>>,
+): Promise<CronMutationResult<T>> => {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-Mono-Agent-Web-Origin": window.location.origin,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok && response.status !== 428) throw await readError(response);
+  return await readJson<CronMutationResult<T>>(response);
 };
 
 /**
@@ -332,6 +376,7 @@ export interface BootstrapScope {
   readonly sourceId?: string;
   readonly archived?: boolean;
   readonly limit?: number;
+  readonly scope?: "chats";
 }
 
 export const api = {
@@ -340,6 +385,7 @@ export const api = {
     if (scope?.sourceId !== undefined) query.set("sourceId", scope.sourceId);
     if (scope?.archived !== undefined) query.set("archived", String(scope.archived));
     if (scope?.limit !== undefined) query.set("limit", String(scope.limit));
+    if (scope?.scope !== undefined) query.set("scope", scope.scope);
     const search = query.toString();
     return request<Bootstrap>(
       search === "" ? "/api/v1/bootstrap" : `/api/v1/bootstrap?${search}`,
@@ -395,10 +441,47 @@ export const api = {
       sourceId,
       archived: String(archived),
       limit: String(limit),
+      scope: "chats",
     });
     if (before !== undefined) query.set("before", before);
     return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
   },
+
+  /**
+   * One project's member conversations, newest first.
+   *
+   * Unlike `threads` this names no archive bucket: the page shows active
+   * members, and a member archived elsewhere drops out on the next read. No
+   * scope either: the page lists members only, whatever started them.
+   */
+  projectThreads: (
+    sourceId: string,
+    projectId: string,
+    before?: string,
+    signal?: AbortSignal,
+    limit: number = THREAD_PAGE_LIMIT,
+  ) => {
+    const query = new URLSearchParams({
+      sourceId,
+      archived: "false",
+      limit: String(limit),
+      projectId,
+    });
+    if (before !== undefined) query.set("before", before);
+    return request<ThreadPage>(`/api/v1/threads?${query.toString()}`, { signal });
+  },
+
+  /**
+   * What the WHOLE fleet has in flight -- the one read on this client that is
+   * not scoped to an agent or an archive bucket.
+   *
+   * No parameters, by contract: the scope and the cap are fixed server-side, so
+   * there is nothing here for a console to walk. It is re-read after any event
+   * that could have changed what is running, and the response settles
+   * membership, truncation and the per-agent counts together.
+   */
+  activeThreads: (signal?: AbortSignal) =>
+    request<ActiveThreads>("/api/v1/threads/active", { signal }),
 
   /**
    * Server-side search over titles and message prose. Unlike `threads`, this is
@@ -406,7 +489,7 @@ export const api = {
    * older than the sidebar has fetched.
    */
   searchThreads: (sourceId: string, query: string, signal?: AbortSignal) => {
-    const params = new URLSearchParams({ sourceId, q: query });
+    const params = new URLSearchParams({ sourceId, q: query, scope: "chats" });
     return request<ThreadSearchPage>(
       `/api/v1/threads/search?${params.toString()}`,
       { signal },
@@ -485,14 +568,87 @@ export const api = {
     sourceId: string,
     runConfig: { readonly model?: string | null; readonly effort?: string | null } = {},
     signal?: AbortSignal,
+    projectId?: string,
   ) => {
     const result = await request<{ thread: ThreadSummary }>("/api/v1/threads", {
       method: "POST",
-      body: JSON.stringify({ sourceId, ...runConfig }),
+      body: JSON.stringify({
+        sourceId,
+        ...runConfig,
+        ...(projectId === undefined ? {} : { projectId }),
+      }),
       ...(signal === undefined ? {} : { signal }),
     });
     return result.thread;
   },
+
+  /**
+   * One agent's projects, archived included: the Dashboard and the
+   * conversation picker filter archived out locally.
+   */
+  projects: async (sourceId: string, signal?: AbortSignal) => {
+    const query = new URLSearchParams({ sourceId });
+    const result = await request<{ projects: ProjectSummary[] }>(
+      `/api/v1/projects?${query.toString()}`,
+      { ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.projects;
+  },
+
+  createProject: async (
+    sourceId: string,
+    input: { readonly name: string; readonly context?: string; readonly color?: ProjectColor },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ project: ProjectSummary }>("/api/v1/projects", {
+      method: "POST",
+      body: JSON.stringify({ sourceId, ...input }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    return result.project;
+  },
+
+  patchProject: async (
+    projectId: string,
+    patch: { readonly name?: string; readonly context?: string; readonly archived?: boolean; readonly color?: ProjectColor },
+    signal?: AbortSignal,
+  ) => {
+    const result = await request<{ project: ProjectSummary }>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}`,
+      { method: "PATCH", body: JSON.stringify(patch), ...(signal === undefined ? {} : { signal }) },
+    );
+    return result.project;
+  },
+
+  deleteProject: async (projectId: string, signal?: AbortSignal) => {
+    const response = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+      method: "DELETE",
+      headers: { Accept: "application/json" },
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (!response.ok) throw await readError(response);
+  },
+
+  cronReply: (
+    sourceId: string,
+    jobId: string,
+    runId: string,
+    input: {
+      readonly operationId: string;
+      readonly snapshotKind: CronReplySnapshotKind;
+    },
+    signal?: AbortSignal,
+  ) => request<CronReplyReceipt>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}`
+      + `/cron/jobs/${encodeURIComponent(jobId)}`
+      + `/runs/${encodeURIComponent(runId)}/reply-threads`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "X-Mono-Agent-Web-Origin": window.location.origin },
+      ...(signal === undefined ? {} : { signal }),
+    },
+  ),
 
   patchAgent: async (sourceId: string, pinned: boolean) => {
     const result = await request<{ agent: AgentSummary }>(
@@ -670,6 +826,7 @@ export const api = {
       archived?: boolean;
       model?: string | null;
       effort?: string | null;
+      projectId?: string | null;
       ifRunConfigUnset?: boolean;
     },
     signal?: AbortSignal,
@@ -701,6 +858,17 @@ export const api = {
     request<{ thread: ThreadSummary; turn: { id: string; status: string } }>(
       `/api/v1/threads/${encodeURIComponent(threadId)}/turns`,
       { method: "POST", body: JSON.stringify(input) },
+    ),
+
+  submit: async (threadId: string, submissionId: string, input: StartTurnInput) =>
+    request<SubmissionReceipt>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/submissions`,
+      { method: "POST", body: JSON.stringify({ submissionId, ...input }) },
+    ),
+
+  submission: async (threadId: string, submissionId: string) =>
+    request<SubmissionReceipt>(
+      `/api/v1/threads/${encodeURIComponent(threadId)}/submissions/${encodeURIComponent(submissionId)}`,
     ),
 
   liveInput: async (threadId: string, text: string) =>
@@ -756,6 +924,35 @@ export const api = {
     );
     return result.message;
   },
+
+  cronConfigView: async (sourceId: string, signal?: AbortSignal) => {
+    const result = await request<{ configView: ChannelConfigView }>(
+      `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/config-view`,
+      { signal },
+    );
+    return result.configView;
+  },
+
+  cronRunNow: (
+    sourceId: string,
+    jobId: string,
+    idempotencyKey: string,
+    confirmationToken?: string,
+  ) => cronMutation<{ readonly run: CronRun }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/run`,
+    { idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
+  ),
+
+  cronSetEnabled: (
+    sourceId: string,
+    jobId: string,
+    enabled: boolean,
+    idempotencyKey: string,
+    confirmationToken?: string,
+  ) => cronMutation<{ readonly job: CronJob }>(
+    `/api/v1/agents/${encodeURIComponent(sourceId)}/cron/jobs/${encodeURIComponent(jobId)}/effective-enabled`,
+    { enabled, idempotencyKey, ...(confirmationToken === undefined ? {} : { confirmationToken }) },
+  ),
 
   registerPushSubscription: async (subscription: PushSubscription, previousSubscriptionId?: string) => {
     const serialized = subscription.toJSON();

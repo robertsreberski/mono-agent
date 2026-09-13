@@ -1,4 +1,6 @@
 import {
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+  AGENT_CONTEXT_IMPORT_VERSION,
   CronOperatorWireError,
   MCP_APP_SUPPORTED_VERSIONS,
   parseCronOperatorJob,
@@ -81,6 +83,20 @@ const PRESERVED_PROVIDER_AUTH_ERRORS = new Map<string, number>([
 ]);
 const CANCEL_TIMEOUT_MS = 2_000;
 const HISTORY_APPEND_TIMEOUT_MS = 5_000;
+const CONTEXT_IMPORT_TIMEOUT_MS = 5_000;
+/**
+ * "This agent has no such job" is an ANSWER, not a transport failure: card
+ * reconciliation retires a card on it, and the proxy route turns it into its
+ * own 404 rather than a 502 about an agent that replied perfectly well.
+ */
+const PRESERVED_PROCESS_JOB_ERRORS = new Map<string, number>([
+  ["process_job_not_found", 404],
+]);
+const PRESERVED_CONTEXT_IMPORT_ERRORS = new Map<string, number>([
+  ["context_import_conflict", 409],
+  ["context_import_failed", 500],
+  ["context_import_unsupported", 501],
+]);
 // The provider summary rides `/v1/info`, which shares one 1 MiB body cap with
 // every other field and is polled every 5s, so this parse stays bounded: an
 // oversized summary must cost the summary, never the whole response (which
@@ -124,9 +140,14 @@ export interface OperatorInfo {
   readonly skills?: OperatorSkillRegistry;
   readonly supportsAttachments: boolean;
   readonly supportsHistoryAppend: boolean;
+  readonly contextImport?: {
+    readonly version: typeof AGENT_CONTEXT_IMPORT_VERSION;
+    readonly maxTextBytes: number;
+  };
   readonly supportsAskUser: boolean;
   readonly supportsAskById?: boolean;
   readonly supportsLiveInput: boolean;
+  readonly supportsLiveInputTargeting?: true;
   readonly supportsToolEnvironment?: boolean;
   readonly replyAttachments?: { readonly version: 1; readonly maxBytes: number };
   readonly mcpApps?: {
@@ -150,6 +171,8 @@ export interface OperatorLiveInputInput {
   readonly text: string;
   readonly receivedAt: string;
   readonly deliveryKey?: string;
+  readonly targetTurnId?: string;
+  readonly targetRunId?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -163,6 +186,7 @@ export interface OperatorTurnInput {
   readonly toolEnvironment?: AgentToolEnvironment;
   readonly signal: AbortSignal;
   readonly onFrame: (frame: AgentStreamWireFrame) => void | Promise<void>;
+  readonly onAdmitted?: () => void;
 }
 
 export interface OperatorTurnResult {
@@ -222,6 +246,7 @@ export class OperatorClient {
     const cron = record(capabilities?.cron);
     const replyAttachments = parseReplyAttachmentsCapability(capabilities?.replyAttachments);
     const mcpApps = parseMcpAppsCapability(capabilities?.mcpApps);
+    const contextImport = parseContextImportCapability(capabilities?.contextImport);
     return {
       schema: body.schema,
       ...(typeof body.label === "string" ? { label: body.label } : {}),
@@ -233,9 +258,11 @@ export class OperatorClient {
       ...(skills === undefined ? {} : { skills }),
       supportsAttachments: capabilities?.attachments === true,
       supportsHistoryAppend: capabilities?.historyAppend === true,
+      ...(contextImport === undefined ? {} : { contextImport }),
       supportsAskUser: capabilities?.askUser === true,
       ...(capabilities?.askById === true ? { supportsAskById: true } : {}),
       supportsLiveInput: capabilities?.liveInput === true,
+      ...(record(capabilities?.liveInputTargeting)?.version === 1 ? { supportsLiveInputTargeting: true } : {}),
       ...(capabilities?.toolEnvironment === true ? { supportsToolEnvironment: true } : {}),
       ...(replyAttachments === undefined ? {} : { replyAttachments }),
       ...(mcpApps === undefined ? {} : { mcpApps }),
@@ -371,6 +398,7 @@ export class OperatorClient {
     if (response.body === null) {
       throw new WebConsoleError("empty_operator_stream", "The agent returned an empty response stream.", 502);
     }
+    input.onAdmitted?.();
     try {
       for await (const frame of readOperatorStreamFrames(response.body, MAX_NDJSON_FRAME_BYTES)) {
         if (frame.kind === "finish") {
@@ -418,6 +446,8 @@ export class OperatorClient {
           id: input.id,
           text: input.text,
           receivedAt: input.receivedAt,
+          ...(input.targetTurnId === undefined ? {} : { targetTurnId: input.targetTurnId }),
+          ...(input.targetRunId === undefined ? {} : { targetRunId: input.targetRunId }),
           ...(input.deliveryKey === undefined ? {} : { deliveryKey: input.deliveryKey }),
         }),
       },
@@ -431,6 +461,9 @@ export class OperatorClient {
     }
     if (body.status === "discarded" && body.reason === "cancelled") {
       return { status: "discarded", reason: "cancelled" };
+    }
+    if (body.status === "uncertain" && body.reason === "delivery_uncertain") {
+      return { status: "uncertain", reason: "delivery_uncertain" };
     }
     if (
       body.status === "requeue"
@@ -458,11 +491,62 @@ export class OperatorClient {
     });
   }
 
+  async recordContextImport(
+    conversationId: string,
+    text: string,
+    idempotencyKey: string,
+  ): Promise<"appended" | "duplicate"> {
+    let response: Response;
+    try {
+      response = await this.request(
+        `${this.baseUrl}/v1/conversations/${encodeURIComponent(conversationId)}/context-imports`,
+        {
+          method: "POST",
+          headers: this.headers(true),
+          signal: AbortSignal.timeout(CONTEXT_IMPORT_TIMEOUT_MS),
+          body: JSON.stringify({ text, idempotencyKey }),
+        },
+        PRESERVED_CONTEXT_IMPORT_ERRORS,
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        throw new WebConsoleError(
+          "context_import_outcome_unknown",
+          "Canonical context import timed out; its outcome is unknown.",
+          504,
+        );
+      }
+      throw error;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readBoundedBody(
+        response,
+        MAX_INFO_BODY_BYTES,
+        "context_import_response_too_large",
+      )) as unknown;
+    } catch (error) {
+      if (error instanceof WebConsoleError) throw error;
+      throw new WebConsoleError("invalid_context_import_response", "The agent returned invalid context-import JSON.", 502);
+    }
+    const body = record(raw);
+    if (body?.imported !== true
+      || (body.status !== "appended" && body.status !== "duplicate")
+      || body.conversationId !== conversationId) {
+      throw new WebConsoleError("invalid_context_import_response", "The agent returned an invalid context-import receipt.", 502);
+    }
+    return body.status;
+  }
+
   async getJob(jobId: string, signal?: AbortSignal): Promise<ProcessJobProjection> {
-    const response = await this.request(`${this.baseUrl}/v1/jobs/${encodeURIComponent(boundedJobId(jobId))}`, {
-      headers: this.processJobHeaders(),
-      ...(signal === undefined ? {} : { signal }),
-    });
+    const response = await this.request(
+      `${this.baseUrl}/v1/jobs/${encodeURIComponent(boundedJobId(jobId))}`,
+      {
+        headers: this.processJobHeaders(),
+        ...(signal === undefined ? {} : { signal }),
+      },
+      PRESERVED_PROCESS_JOB_ERRORS,
+    );
     return parseProcessJobProjection(
       JSON.parse(await readBoundedBody(response, MAX_PROCESS_JOBS_BODY_BYTES, "operator_job_too_large")),
     );
@@ -827,9 +911,12 @@ export class OperatorClient {
           preserved.code,
           preserved.message,
           response.status,
-          typeof retryAfterSeconds === "number" && Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0
-            ? { retryAfterSeconds }
-            : undefined,
+          {
+            ...(typeof retryAfterSeconds === "number" && Number.isSafeInteger(retryAfterSeconds) && retryAfterSeconds > 0
+              ? { retryAfterSeconds }
+              : {}),
+            ...(preserved.reason === undefined ? {} : { reason: preserved.reason }),
+          },
         );
       }
       throw new WebConsoleError(
@@ -846,7 +933,7 @@ function preservedOperatorError(
   body: string,
   status: number,
   expected: ReadonlyMap<string, number>,
-): { readonly code: string; readonly message: string } | undefined {
+): { readonly code: string; readonly message: string; readonly reason?: string } | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body) as unknown;
@@ -858,8 +945,13 @@ function preservedOperatorError(
   if (code === undefined || expected.get(code) !== status) return undefined;
   const message = typeof error?.message === "string" && error.message.length <= 1_024
     ? error.message
-    : "The MCP App audit operation failed.";
-  return { code, message };
+    // The agent named the failure; only a missing or oversized message lands
+    // here, and this helper now serves more than one route.
+    : "The agent reported a failure without a usable message.";
+  const reason = typeof error?.reason === "string" && error.reason.length <= 128
+    ? error.reason
+    : undefined;
+  return { code, message, ...(reason === undefined ? {} : { reason }) };
 }
 
 function invalidCronResponse(): never {
@@ -874,6 +966,15 @@ function parseReplyAttachmentsCapability(
     && Number.isSafeInteger(capability.maxBytes)
     && Number(capability.maxBytes) > 0
     ? { version: 1, maxBytes: capability.maxBytes as number }
+    : undefined;
+}
+
+function parseContextImportCapability(value: unknown): OperatorInfo["contextImport"] | undefined {
+  const capability = record(value);
+  return capability?.version === AGENT_CONTEXT_IMPORT_VERSION
+    && Number.isSafeInteger(capability.maxTextBytes)
+    && Number(capability.maxTextBytes) >= AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+    ? { version: AGENT_CONTEXT_IMPORT_VERSION, maxTextBytes: Number(capability.maxTextBytes) }
     : undefined;
 }
 
@@ -1174,6 +1275,9 @@ function parseModelOptions(value: unknown): Record<string, WebModelOption> | und
     const effortLevels = stringArray(option.effortLevels);
     result[model] = {
       ...(effortLevels === undefined ? {} : { effortLevels }),
+      ...(typeof option.effort === "string" || option.effort === null
+        ? { effort: option.effort }
+        : {}),
       ...(typeof option.reasoning === "boolean" ? { reasoning: option.reasoning } : {}),
       ...(typeof option.reasoningMode === "string" ? { reasoningMode: option.reasoningMode } : {}),
       ...(typeof option.label === "string" ? { label: option.label } : {}),

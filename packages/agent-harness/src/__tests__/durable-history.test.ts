@@ -32,7 +32,10 @@ async function tempDir(): Promise<string> {
 async function compileDurableHistoryFixture(dir: string): Promise<string> {
   const compiledPath = join(dir, "durable-history.mjs");
   const compilerOptions = { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 } as const;
-  const durableSource = await readFile(new URL("../durable-history.ts", import.meta.url), "utf8");
+  const contractsUrl = new URL("../../../agent-contracts/dist/index.js", import.meta.url).href;
+  const durableSource = (await readFile(new URL("../durable-history.ts", import.meta.url), "utf8"))
+    .replace('"@mono-agent/agent-contracts"', JSON.stringify(contractsUrl))
+    .replace('"./session-runtime.js"', JSON.stringify(new URL("../../dist/session-runtime.js", import.meta.url).href));
   const livenessSource = await readFile(
     new URL("../history-process-liveness.ts", import.meta.url),
     "utf8",
@@ -53,6 +56,183 @@ afterEach(async () => {
 });
 
 describe("DurableConversationHistoryStore", () => {
+  it("imports one complete canonical pair and keeps retained retries idempotent", async () => {
+    const dir = await tempDir();
+    const store = createDurableHistoryStore({ root: join(dir, "history"), maxMessages: 2 });
+    expect(store.contextImport).toMatchObject({ version: 1, maxTextBytes: 32_768, providerState: "absent" });
+    const request = {
+      text: "quote \" slash \\ control \u0000 and 東京",
+      idempotencyKey: "cron:job-1:run-1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    };
+
+    await expect(store.contextImport!.prepareImport("blank-text", { ...request, text: " \t\n" }))
+      .rejects.toThrow("context import text must be a non-empty string");
+    await expect(store.contextImport!.prepareImport("blank-key", { ...request, idempotencyKey: " \t\n" }))
+      .rejects.toThrow("context import idempotencyKey must be a non-empty string");
+
+    const first = await store.contextImport!.prepareImport("web:cron:job-1", request);
+    expect(first.result).toEqual({ status: "appended" });
+    await first.append!.commit();
+    const history = await store.load("web:cron:job-1");
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({ role: "system", name: "context-import-provenance" });
+    expect(history[1]).toEqual({
+      role: "assistant",
+      name: "context-import",
+      content: request.text,
+      timestamp: request.timestamp,
+      idempotencyKey: request.idempotencyKey,
+    });
+
+    const duplicate = await store.contextImport!.prepareImport("web:cron:job-1", request);
+    expect(duplicate).toEqual({ result: { status: "duplicate" } });
+    expect(await store.load("web:cron:job-1")).toEqual(history);
+    expect((await store.contextImport!.prepareImport("web:cron:job-1", { ...request, text: "changed" })).result)
+      .toEqual({ status: "conflict", reason: "idempotency_conflict" });
+  });
+
+  it("advertises import only when a full pair fits and preserves bounded retry semantics", async () => {
+    const dir = await tempDir();
+    expect(createDurableHistoryStore({ root: join(dir, "too-short"), maxMessages: 1 }).contextImport).toBeUndefined();
+    expect(createDurableHistoryStore({ root: join(dir, "no-conversations"), maxConversations: 0 }).contextImport).toBeUndefined();
+
+    const store = createDurableHistoryStore({ root: join(dir, "history"), maxMessages: 2 });
+    const request = { text: "snapshot", idempotencyKey: "run:1", timestamp: "2026-09-08T10:00:00.000Z" };
+    const prepared = await store.contextImport!.prepareImport("c", request);
+    await prepared.append!.commit();
+    await expect(store.append("c", [{ role: "user", content: "later send" }])).resolves.toBeUndefined();
+    expect((await store.contextImport!.prepareImport("c", request)).result).toEqual({
+      status: "conflict",
+      reason: "conversation_not_empty",
+    });
+
+    await store.reset("c");
+    const afterDeletionBoundary = await store.contextImport!.prepareImport("c", request);
+    expect(afterDeletionBoundary.result).toEqual({ status: "appended" });
+    await afterDeletionBoundary.append!.abort();
+
+    const retainedStore = createDurableHistoryStore({ root: join(dir, "retained-history") });
+    const retainedImport = await retainedStore.contextImport!.prepareImport("c", request);
+    await retainedImport.append!.commit();
+    await retainedStore.append("c", [{ role: "user", content: "later send" }]);
+    expect((await retainedStore.contextImport!.prepareImport("c", request)).result)
+      .toEqual({ status: "duplicate" });
+  });
+
+  it("fails strict import closed on a stable truncated record while legacy load stays cold", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    const store = createDurableHistoryStore({ root });
+    await store.load("corrupt");
+    const corruptPath = join(root, `${historyKeyForTest("corrupt")}.history.json`);
+    await writeFile(corruptPath, '{"version":2', { mode: 0o600 });
+    await expect(store.load("corrupt")).resolves.toEqual([]);
+    await expect(store.contextImport!.prepareImport("corrupt", {
+      text: "must not overwrite",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    })).rejects.toThrow();
+    expect(await readFile(corruptPath, "utf8")).toBe('{"version":2');
+  });
+
+  it("orders import behind a non-provider exclusive turn without holding a physical shard transaction", async () => {
+    const dir = await tempDir();
+    const store = createDurableHistoryStore({ root: join(dir, "history") });
+    const firstId = "short-lease-a";
+    let secondId = "";
+    for (let index = 0; index < 10_000; index += 1) {
+      const candidate = `short-lease-b-${String(index)}`;
+      if (conversationShardForTest(candidate) === conversationShardForTest(firstId)) {
+        secondId = candidate;
+        break;
+      }
+    }
+    expect(secondId).not.toBe("");
+    const turn = await store.contextImport!.beginExclusiveTurn(firstId);
+    const unrelated = await store.contextImport!.prepareImport(secondId, {
+      text: "same shard proceeds",
+      idempotencyKey: "run:2",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await unrelated.append!.commit();
+
+    let sameSettled = false;
+    const same = store.contextImport!.prepareImport(firstId, {
+      text: "waits",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    }).then((value) => { sameSettled = true; return value; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(sameSettled).toBe(false);
+    const commit = await turn.prepareCommit([{ role: "user", content: "send" }]);
+    await commit.append.commit();
+    const conflict = await same;
+    expect(conflict.result).toEqual({ status: "conflict", reason: "conversation_not_empty" });
+  });
+
+  it("recovers an independent-process exclusive lease after owner death without duplicating import", async () => {
+    const dir = await tempDir();
+    const root = join(dir, "history");
+    await compileDurableHistoryFixture(dir);
+    const workerPath = join(dir, "exclusive-lease-crash-worker.mjs");
+    await writeFile(workerPath, [
+      'import { createDurableHistoryStore } from "./durable-history.mjs";',
+      "const store = createDurableHistoryStore({ root: process.argv[2] });",
+      'await store.contextImport.beginExclusiveTurn("cross-process");',
+      'process.stdout.write("HELD\\n");',
+      "setInterval(() => undefined, 1000);",
+    ].join("\n"));
+    const child = spawn(process.execPath, [workerPath, root], { stdio: ["ignore", "pipe", "pipe"] });
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    const [held] = await once(child.stdout, "data") as [Buffer];
+    expect(held.toString("utf8")).toContain("HELD");
+
+    const store = createDurableHistoryStore({ root });
+    let settled = false;
+    const importing = store.contextImport!.prepareImport("cross-process", {
+      text: "one snapshot",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    }).then((value) => { settled = true; return value; });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(settled).toBe(false);
+    child.kill("SIGKILL");
+    await once(child, "exit");
+    const prepared = await importing;
+    expect(prepared.result).toEqual({ status: "appended" });
+    await prepared.append!.commit();
+    expect((await store.contextImport!.prepareImport("cross-process", {
+      text: "one snapshot",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    })).result).toEqual({ status: "duplicate" });
+    expect(Buffer.concat(stderr).toString("utf8")).toBe("");
+  }, 20_000);
+
+  it("retires provider state before importing when configured fail-closed", async () => {
+    const dir = await tempDir();
+    const retired: string[] = [];
+    const store = createDurableHistoryStore({
+      root: join(dir, "history"),
+      retireProviderSession: async (id) => { retired.push(id); },
+    });
+    expect(store.contextImport?.providerState).toBe("retire-fail-closed");
+    await store.append("c", []);
+    await store.reset("c");
+    retired.length = 0;
+    const imported = await store.contextImport!.prepareImport("c", {
+      text: "snapshot",
+      idempotencyKey: "run:1",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await imported.append!.commit();
+    expect(retired).toHaveLength(1);
+    await store.reset("c");
+    expect(retired.length).toBeGreaterThan(1);
+  });
+
   it("atomically resets one conversation and retires its provider epoch", async () => {
     const dir = await tempDir();
     const root = join(dir, "history");
@@ -699,7 +879,8 @@ describe("DurableConversationHistoryStore", () => {
     const retired: string[] = [];
     let victimPath: string | undefined;
     let savedVictimPath: string | undefined;
-    const retireProviderSession = async (providerSessionId: string): Promise<void> => {
+    const retireProviderSession = async (providerSessionId: string, modelKey?: string): Promise<void> => {
+      expect(modelKey).toBe("faux:override");
       retired.push(providerSessionId);
       if (victimPath === undefined || savedVictimPath !== undefined) return;
       savedVictimPath = `${victimPath}.saved`;
@@ -708,7 +889,7 @@ describe("DurableConversationHistoryStore", () => {
       await writeFile(join(victimPath, "blocks-unlink"), "occupied", { mode: 0o600 });
     };
     const seed = createDurableHistoryStore({ root, retireProviderSession });
-    const victim = await seed.beginProviderSessionTurn("victim", "run-victim");
+    const victim = await seed.beginProviderSessionTurn("victim", "run-victim", { modelKey: "faux:override" });
     const victimCommit = await victim.prepareCommit([
       { role: "assistant", content: "context that must replay" },
     ], { providerSessionSynced: true });
@@ -730,6 +911,8 @@ describe("DurableConversationHistoryStore", () => {
     expect(retired).toContain(victim.providerSessionId);
     await expect(seed.load("victim")).resolves.toMatchObject([{ content: "context that must replay" }]);
     expect(await dirtyFenceKeys(root)).toContain(historyKeyForTest("victim"));
+    expect(JSON.parse(await readFile(join(root, ".locks", `${historyKeyForTest("victim")}.dirty.json`), "utf8")))
+      .toMatchObject({ version: 4, modelKey: "faux:override" });
     const recovered = await seed.beginProviderSessionTurn("victim", "run-recovered");
     expect(recovered.providerSessionId).not.toBe(victim.providerSessionId);
     await recovered.abort();
@@ -1606,3 +1789,171 @@ async function dirtyFenceKeys(root: string): Promise<string[]> {
     })
     .sort();
 }
+
+describe("durable provider model binding", () => {
+  const a = { modelKey: "faux:base" };
+  const b = { modelKey: "faux:override" };
+
+  it("loads a pre-binding v2 history fixture and binds only after a cold reseed", async () => {
+    const root = join(await tempDir(), "history");
+    const retired: Array<[string, string | undefined]> = [];
+    const store = createDurableHistoryStore({ root,
+      retireProviderSession: async (id, key) => { retired.push([id, key]); } });
+    await store.append("legacy-unbound", []);
+    const file = (await historyRecords(root)).get("legacy-unbound")!;
+    const fixture = await readFile(new URL("./fixtures/history-v2-unbound.json", import.meta.url));
+    await writeFile(file, fixture, { mode: 0o600 });
+    expect(await store.load("legacy-unbound")).toHaveLength(2);
+    const old = await readHistoryRecord(root, "legacy-unbound");
+    const turn = await store.beginProviderSessionTurn("legacy-unbound", "bind", b);
+    expect(turn).toMatchObject({
+      modelKey: b.modelKey,
+      previousModelWasUnbound: true,
+      providerSessionRevision: 0,
+    });
+    expect(turn.previousModelKey).toBeUndefined();
+    expect(retired).toEqual([[expect.any(String), undefined]]);
+    await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+    expect((await readHistoryRecord(root, "legacy-unbound")).providerSession)
+      .toMatchObject({ modelKey: b.modelKey, revision: 1 });
+    expect((await readHistoryRecord(root, "legacy-unbound")).providerSession?.epoch).not.toBe(old.providerSession?.epoch);
+    const next = await createDurableHistoryStore({ root }).beginProviderSessionTurn("legacy-unbound", "next", b);
+    expect(next.providerSessionId).toBe(turn.providerSessionId);
+    await next.abort();
+  });
+
+  it("retires both committed and dirty-only epochs with their original model keys", async () => {
+    const root = join(await tempDir(), "history");
+    const retired: Array<[string, string | undefined]> = [];
+    const store = createDurableHistoryStore({ root,
+      retireProviderSession: async (id, key) => { retired.push([id, key]); } });
+    const first = await store.beginProviderSessionTurn("c", "one", a);
+    await (await first.prepareCommit([{ role: "user", content: "canonical" }], { providerSessionSynced: true })).commit();
+    const second = await store.beginProviderSessionTurn("c", "two", b);
+    expect(second.previousModelKey).toBe(a.modelKey);
+    await second.abort();
+    retired.length = 0;
+    const recovered = await store.beginProviderSessionTurn("c", "three", { modelKey: "faux:third" });
+    expect(retired).toContainEqual([first.providerSessionId, a.modelKey]);
+    expect(retired).toContainEqual([second.providerSessionId, b.modelKey]);
+    expect(recovered.providerSessionId).not.toBe(second.providerSessionId);
+    expect(await store.load("c")).toEqual([{ role: "user", content: "canonical" }]);
+    await recovered.abort();
+  });
+
+  it("fails closed when model-change retirement cannot complete", async () => {
+    const root = join(await tempDir(), "history");
+    let fail = false;
+    const store = createDurableHistoryStore({ root, retireProviderSession: async () => {
+      if (fail) throw new Error("owner unavailable");
+    } });
+    const first = await store.beginProviderSessionTurn("c", "one", a);
+    await (await first.prepareCommit([], { providerSessionSynced: true })).commit();
+    const before = await readHistoryRecord(root, "c");
+    fail = true;
+    await expect(store.beginProviderSessionTurn("c", "two", b)).rejects.toThrow("owner unavailable");
+    expect(await readHistoryRecord(root, "c")).toEqual(before);
+    fail = false;
+    const next = await store.beginProviderSessionTurn("c", "three", b);
+    expect(next.providerSessionId).not.toBe(first.providerSessionId);
+    await next.abort();
+  });
+
+  it("preserves binding through unsynced commit host-only rotation and revision overflow", async () => {
+    const root = join(await tempDir(), "history");
+    const store = createDurableHistoryStore({ root, retireProviderSession: async () => undefined });
+    const first = await store.beginProviderSessionTurn("c", "one", b);
+    await (await first.prepareCommit([], { providerSessionSynced: false })).commit();
+    expect((await readHistoryRecord(root, "c")).providerSession).toMatchObject({ ...b, revision: 0 });
+    await store.append("c", [{ role: "user", content: "host-only" }]);
+    const record = await readHistoryRecord(root, "c");
+    expect(record.providerSession).toMatchObject(b);
+    await writeFile((await historyRecords(root)).get("c")!, JSON.stringify({ ...record,
+      providerSession: { ...record.providerSession, revision: Number.MAX_SAFE_INTEGER } }));
+    const next = await store.beginProviderSessionTurn("c", "next", b);
+    expect(next).toMatchObject({ ...b, providerSessionRevision: 0 });
+    expect(next.previousModelKey).toBeUndefined();
+    await next.abort();
+  });
+
+  it("strictly validates bound history and version four dirty fences", async () => {
+    const root = join(await tempDir(), "history");
+    const store = createDurableHistoryStore({ root });
+    const turn = await store.beginProviderSessionTurn("c", "one", b);
+    const fencePath = join(root, ".locks", `${historyKeyForTest("c")}.dirty.json`);
+    const fence = JSON.parse(await readFile(fencePath, "utf8"));
+    expect(fence).toMatchObject({ version: 4, ...b });
+    await (await turn.prepareCommit([], { providerSessionSynced: true })).commit();
+    const file = (await historyRecords(root)).get("c")!;
+    const record = await readHistoryRecord(root, "c");
+    for (const bad of [{ ...record.providerSession, extra: true }, { ...record.providerSession, modelKey: null },
+      { ...record.providerSession, modelKey: "pi:faux:override" }, { epoch: record.providerSession?.epoch, ...b }]) {
+      await writeFile(file, JSON.stringify({ ...record, providerSession: bad }));
+      await expect(store.load("c")).rejects.toThrow();
+    }
+    await writeFile(file, JSON.stringify(record));
+    await expect(store.beginProviderSessionTurn("c", "oversized", { modelKey: `faux:${"a".repeat(2000)}` })).rejects.toThrow();
+    for (const bad of [{ ...fence, extra: true }, { ...fence, modelKey: null },
+      { ...fence, modelKey: "pi:faux:override" }, { ...fence, runIdDigest: "invalid" }]) {
+      await writeFile(fencePath, JSON.stringify(bad), { mode: 0o600 });
+      await expect(store.beginProviderSessionTurn("c", "bad-fence", b)).rejects.toThrow();
+    }
+    await rm(fencePath);
+  });
+  it("carries model ownership through retention logical reset and fence recovery", async () => {
+    const root = join(await tempDir(), "history");
+    const retired: Array<[string, string | undefined]> = [];
+    const retireProviderSession = async (id: string, key?: string) => { retired.push([id, key]); };
+    const store = createDurableHistoryStore({ root, retireProviderSession });
+    const dirty = await store.beginProviderSessionTurn("c#2026-09-09", "dirty", b);
+    await dirty.abort();
+    await store.resetLogicalConversation("c");
+    expect(retired).toEqual([[dirty.providerSessionId, b.modelKey]]);
+    expect(await dirtyFenceKeys(root)).toEqual([]);
+    const first = await store.beginProviderSessionTurn("victim", "first", b);
+    await (await first.prepareCommit([], { providerSessionSynced: true })).commit();
+    const path = (await historyRecords(root)).get("victim")!;
+    await utimes(path, new Date(1000), new Date(1000));
+    const bounded = createDurableHistoryStore({ root, maxConversations: 1, retireProviderSession });
+    await bounded.append("new", [{ role: "user", content: "new" }]);
+    expect(retired).toContainEqual([first.providerSessionId, b.modelKey]);
+    expect(await store.load("victim")).toEqual([]);
+
+    // A matching epoch/revision with another model is not proof of commit.
+    const active = await store.beginProviderSessionTurn("proof", "one", b);
+    const fencePath = join(root, ".locks", `${historyKeyForTest("proof")}.dirty.json`);
+    const fence = JSON.parse(await readFile(fencePath, "utf8"));
+    await (await active.prepareCommit([], { providerSessionSynced: true })).commit();
+    await writeFile(fencePath, JSON.stringify({ ...fence, modelKey: a.modelKey }), { mode: 0o600 });
+    await expect(store.beginProviderSessionTurn("proof", "mismatch", b)).rejects.toThrow("conflicting model bindings");
+    expect(JSON.parse(await readFile(fencePath, "utf8")).modelKey).toBe(a.modelKey);
+    retired.length = 0;
+    // The unrelated mutation's maintenance sweep must reject the same conflict.
+    await expect(store.append("maintenance", [{ role: "user", content: "trigger" }]))
+      .rejects.toThrow("conflicting model bindings");
+    expect(retired).toEqual([]);
+    expect(JSON.parse(await readFile(fencePath, "utf8")).modelKey).toBe(a.modelKey);
+  });
+
+});
+
+it("commits recovered continuity at the same epoch and next revision without recovery metadata", async () => {
+  const root = await tempDir();
+  const retired: string[] = [];
+  const store = createDurableHistoryStore({ root, retireProviderSession: async (id) => { retired.push(id); } });
+  expect(store.providerSessionRecovery).toBe("v1");
+  const first = await store.beginProviderSessionTurn("recovered", "run-one", { modelKey: "faux:fixture" });
+  await (await first.prepareCommit([{ role: "user", content: "cancelled ask" }, { role: "assistant", content: "continuity account" }], { providerSessionSynced: true })).commit();
+  const next = await store.beginProviderSessionTurn("recovered", "run-two", { modelKey: "faux:fixture" });
+  expect(next.providerSessionId).toBe(first.providerSessionId);
+  expect(next.providerSessionRevision).toBe(1);
+  await expect(next.prepareCommit([], { providerSessionSynced: "yes" } as never)).rejects.toThrow("providerSessionSynced must be a boolean");
+  await (await next.prepareCommit([{ role: "user", content: "unsafe tail" }], { providerSessionSynced: false })).commit();
+  expect(retired).toContain(first.providerSessionId);
+  const cold = await store.beginProviderSessionTurn("recovered", "run-three", { modelKey: "faux:fixture" });
+  expect(cold.providerSessionId).not.toBe(first.providerSessionId);
+  expect(cold.providerSessionRevision).toBe(0);
+  await cold.abort();
+  const record = JSON.parse(await readFile(join(root, `${createHash("sha256").update("mono-agent-history-v1\0recovered").digest("hex")}.history.json`), "utf8"));
+  expect(Object.keys(record.providerSession).sort()).toEqual(["epoch", "modelKey", "revision"]);
+});

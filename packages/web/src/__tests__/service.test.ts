@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { startWebNotificationIngress } from "../notification-ingress.js";
+import { createWebConsoleToolClient } from "../notification-client.js";
 import { createHash } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,14 +9,17 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   isChannelUserCancelReason,
   type AgentReplyPart,
 } from "@mono-agent/agent-contracts";
 
-import type { WebEvent, WebMessageDelta, WebMessagePart } from "../contracts.js";
-import { applyDeltaOps, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
+import type { WebEvent, WebMessage, WebMessageDelta, WebMessagePart } from "../contracts.js";
+import { WEB_MAX_TURN_TEXT_CHARACTERS } from "../contracts.js";
+import { formatCronReplyContext } from "../cron-reply-context.js";
+import { applyDeltaOps, WebStore, WEB_MESSAGE_PAGE_DEFAULT, WEB_THREAD_PAGE_DEFAULT } from "../store.js";
 import { agentGeneration, WebService, WeightedTurnBudget } from "../service.js";
 import { fakeDiscoveredAgent, fakeMonitor, fakeProcessJob, operatorFetch, temporaryRoot } from "./helpers.js";
 
@@ -54,9 +60,14 @@ function isAssistantWrite(service: WebService, _threadId: string, event: WebEven
   return service.store.getMessage(messageId)?.role === "assistant";
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+async function waitFor(
+  // Awaited, so a predicate that has to build a bootstrap is not read as "true"
+  // because a promise is truthy.
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() >= deadline) throw new Error("Timed out waiting for service state.");
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
   }
@@ -176,6 +187,50 @@ describe("projected web capabilities", () => {
       // The provider-auth capability still reaches the browser because it is
       // projected from the live connection rather than persisted.
       expect((await service.bootstrap()).agents[0]?.supportsProviderAuth).toBe(true);
+    } finally {
+      unsubscribe();
+      await service.stop();
+    }
+  });
+
+  it("does not let a running conversation turn a discovery heartbeat into a fleet change", async () => {
+    // `runningCount` is a MOMENT, not a capability. Persisting it, or letting
+    // the discovery comparison see it, would make every started and finished
+    // turn on any agent look like an agent that advertises something different
+    // -- and each of those costs every connected console its skills, its cron
+    // overview and a fresh snapshot.
+    let discovered: readonly ReturnType<typeof fakeDiscoveredAgent>[] = [];
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: operatorFetch(),
+    });
+    const events: unknown[] = [];
+    const unsubscribe = service.subscribe((event) => {
+      if (event.type === "agents.changed") events.push(event.payload);
+    });
+    const base = fakeDiscoveredAgent();
+    const poll = async (updatedAt: string): Promise<void> => {
+      discovered = [fakeDiscoveredAgent({ source: { ...base.source, updatedAt } })];
+      await service.refreshAgents();
+    };
+    try {
+      await poll("2026-07-17T09:00:00.000Z");
+      expect(events).toEqual([undefined]);
+      const thread = service.createThread("agent-one");
+      // A turn nobody will answer, so it stays running for the poll below.
+      void service.startTurn(thread.id, { text: "work" }).catch(() => undefined);
+      await waitFor(async () => (await service.bootstrap()).agents[0]?.runningCount === 1);
+      const running = await service.bootstrap();
+      expect(running.agents[0]?.runningCount).toBe(1);
+      expect(running.activeThreads).toMatchObject({
+        total: 1,
+        truncated: false,
+        runningCounts: { "agent-one": 1 },
+      });
+      expect(running.activeThreads?.threads.map((item) => item.id)).toEqual([thread.id]);
+
+      await poll("2026-07-17T09:00:05.000Z");
+      expect(events).toEqual([undefined]);
     } finally {
       unsubscribe();
       await service.stop();
@@ -1558,14 +1613,58 @@ describe("WebService", () => {
     expect(service.thread(thread.id).messages.filter((message) => message.role === "user"))
       .toHaveLength(1);
 
+    const ordinary = service.submitLiveInput(thread.id, "Also check the real user request");
+    await waitFor(() => service.thread(thread.id).messages.some(
+      (message) => message.id === ordinary.message.id && message.liveInputStatus === "applied",
+    ));
+    const ordinaryInputId = liveInputs[1]?.body.id;
+    expect(typeof ordinaryInputId).toBe("string");
+    const liveInputEvent = (type: "tool_call_started" | "tool_call_completed", inputId: string) => ({
+      kind: "event",
+      event: {
+        type,
+        id: `live-input:${inputId}`,
+        name: "↪️ Steered: wake",
+        ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
+        metadata: { liveInput: true, synthetic: true, inputId },
+      },
+    });
+    stream?.enqueue(encoder.encode([
+      JSON.stringify(liveInputEvent("tool_call_started", terminal.wake.deliveryKey)),
+      JSON.stringify(liveInputEvent("tool_call_completed", terminal.wake.deliveryKey)),
+      JSON.stringify(liveInputEvent("tool_call_started", ordinaryInputId as string)),
+      JSON.stringify(liveInputEvent("tool_call_completed", ordinaryInputId as string)),
+      "",
+    ].join("\n")));
+
     stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Initial done" })}\n`));
     stream?.close();
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
     expect(service.store.getThread(thread.id)?.runState.attribution?.requested).toEqual(requestedBeforeSteer);
+    const assistant = service.thread(thread.id).messages.find((message) => message.turnId !== undefined
+      && message.role === "assistant");
+    expect(assistant?.parts).toContainEqual({
+      type: "process-job-wake",
+      jobId: terminal.jobId,
+      deliveryKey: terminal.wake.deliveryKey,
+      disposition: "steered",
+    });
+    expect(assistant?.parts.some((part) => part.type === "tool-call"
+      && part.toolCallId === `live-input:${terminal.wake.deliveryKey}`)).toBe(false);
+    expect(assistant?.parts).toContainEqual(expect.objectContaining({
+      type: "steer",
+      inputId: ordinaryInputId as string,
+      messageId: ordinary.message.id,
+      text: "Also check the real user request",
+    }));
+    expect(assistant?.parts.some((part) => part.type === "tool-call"
+      && part.toolCallId === `live-input:${ordinaryInputId as string}`)).toBe(false);
+    expect(service.thread(thread.id).messages.find((message) => message.id === ordinary.message.id))
+      .toMatchObject({ role: "user", liveInputStatus: "applied" });
     await service.stop();
   });
 
-  it.each(["TimeoutError", "Error"])("suppresses replay but releases ordinary response pushes after steering %s", async (errorName) => {
+  it.each(["TimeoutError", "Error", "uncertain"])("suppresses replay but releases ordinary response pushes after steering %s", async (errorName) => {
     let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const turnBodies: Record<string, unknown>[] = [];
     let now = new Date("2026-09-07T10:00:00.000Z");
@@ -1578,6 +1677,7 @@ describe("WebService", () => {
         }),
         onTurn(body) { turnBodies.push(body); },
         async onLiveInput() {
+          if (errorName === "uncertain") return { status: "uncertain", reason: "delivery_uncertain" };
           throw new DOMException("Steering receipt was lost after delivery", errorName);
         },
       }),
@@ -1641,19 +1741,13 @@ describe("WebService", () => {
   });
 
   it("runs one visible assistant-only fallback turn when no web turn is active", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const turnBodies: Record<string, unknown>[] = [];
     const service = await createService({
       fetchImpl: operatorFetch({
         onTurn(body) { turnBodies.push(body); },
-        turns: () => [
-          JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "provider/fallback", effort: "high", effectiveEffort: "high" } } }),
-          JSON.stringify({ kind: "event", event: { type: "provider_status", kind: "failover_started", from: "provider/fallback", to: "provider/default", attemptIndex: 1, reason: "overloaded" } }),
-          JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "provider/default", effort: "medium", effectiveEffort: "low" } } }),
-          JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "result.txt" } } }),
-          JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t1", name: "Read", result: "ok" } }),
-          JSON.stringify({ kind: "finish", finalText: "Worker result processed", metadata: { runtime: { model: "provider/default", effort: "medium", effectiveEffort: "low" } } }),
-          "",
-        ].join("\n"),
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
       }),
     });
     const thread = service.createThread("agent-one", { model: "provider/fallback", effort: "high" });
@@ -1676,10 +1770,24 @@ describe("WebService", () => {
       duplicate: false,
       delivery: { delivered: true, disposition: "follow_up" },
     });
+    expect(stream).toBeDefined();
+    expect(service.store.getThread(thread.id)?.runState.status).toBe("running");
     await expect(service.deliverNotification(input)).resolves.toMatchObject({
       duplicate: true,
       delivery: { delivered: true, disposition: "follow_up" },
     });
+    expect(turnBodies).toHaveLength(1);
+
+    stream?.enqueue(encoder.encode([
+      JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "provider/fallback", effort: "high", effectiveEffort: "high" } } }),
+      JSON.stringify({ kind: "event", event: { type: "provider_status", kind: "failover_started", from: "provider/fallback", to: "provider/default", attemptIndex: 1, reason: "overloaded" } }),
+      JSON.stringify({ kind: "event", event: { type: "runtime_telemetry", kind: "provider_execution_config", data: { model: "provider/default", effort: "medium", effectiveEffort: "low" } } }),
+      JSON.stringify({ kind: "event", event: { type: "tool_call_started", id: "t1", name: "Read", arguments: { path: "result.txt" } } }),
+      JSON.stringify({ kind: "event", event: { type: "tool_call_completed", id: "t1", name: "Read", result: "ok" } }),
+      JSON.stringify({ kind: "finish", finalText: "Worker result processed", metadata: { runtime: { model: "provider/default", effort: "medium", effectiveEffort: "low" } } }),
+      "",
+    ].join("\n")));
+    stream?.close();
     await waitFor(() => service.thread(thread.id).messages.some(
       (message) => message.attribution?.disposition === "fallback",
     ));
@@ -1696,9 +1804,19 @@ describe("WebService", () => {
     expect(messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "assistant", parts: [expect.objectContaining({ type: "process-job" })] }),
       expect.objectContaining({ role: "assistant", parts: expect.arrayContaining([
+        expect.objectContaining({ type: "tool-call", toolCallId: "t1" }),
         expect.objectContaining({ type: "text", text: "Worker result processed" }),
       ]) }),
     ]));
+    const followUp = messages.find((message) => message.parts.some(
+      (part) => part.type === "text" && part.text === "Worker result processed",
+    ));
+    expect(followUp?.parts[0]).toEqual({
+      type: "process-job-wake",
+      jobId: terminal.jobId,
+      deliveryKey: terminal.wake.deliveryKey,
+      disposition: "follow_up",
+    });
     expect(messages.find((message) => message.attribution?.disposition === "fallback")?.attribution).toMatchObject({
       requested: { model: "provider/fallback", effort: "high" },
       attempted: { model: "provider/default", effort: "medium", effectiveEffort: "low" },
@@ -1711,6 +1829,464 @@ describe("WebService", () => {
       && (event.payload as WebMessageDelta).attribution?.disposition === "fallback")).toBe(true);
     unsubscribe();
     await service.stop();
+  });
+
+  it("keeps a confirmed process-job delivery while exposing its later provider failure", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const logError = vi.fn();
+    const service = await createService({
+      logger: { error: logError },
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    stream?.error(new Error("provider stream failed"));
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "failed");
+    expect(service.store.getThread(thread.id)?.runState).toMatchObject({
+      status: "failed",
+      error: { message: "provider stream failed" },
+    });
+    await expect(service.deliverNotification(input)).resolves.toMatchObject({
+      duplicate: true,
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    expect(turnBodies).toHaveLength(1);
+    expect(logError).not.toHaveBeenCalled();
+    await service.stop();
+  });
+
+  it("contains a detached terminal-persistence rejection after process-job admission", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const logError = vi.fn(() => { throw new Error("logger unavailable"); });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+    const service = await createService({
+      logger: { error: logError },
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+
+    try {
+      await expect(service.deliverNotification(input)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      const internals = service as unknown as {
+        readonly activeTurns: Map<string, { readonly turnId: string; readonly completion: Promise<void> }>;
+      };
+      const turnId = internals.activeTurns.get(thread.id)?.turnId;
+      expect(turnId).toBeTypeOf("string");
+      vi.spyOn(service.store, "failTurn").mockImplementationOnce(() => {
+        throw new Error("terminal persistence unavailable");
+      });
+
+      stream?.error(new Error("provider stream failed"));
+      stream = undefined;
+      await waitFor(() => internals.activeTurns.size === 0 && logError.mock.calls.length === 1);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
+      expect(logError).toHaveBeenCalledWith(
+        "Web process-job follow-up turn settlement failed after admission.",
+        { threadId: thread.id, turnId, errorCode: "unknown" },
+      );
+      expect(unhandled).toEqual([]);
+      expect(service.store.turnStatus(turnId!)).toBe("running");
+      await expect(service.deliverNotification(input)).resolves.toMatchObject({
+        duplicate: true,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      stream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
+  it("releases a waiting process-job wake when the prior admitted turn rejects before dispatch", async () => {
+    const encoder = new TextEncoder();
+    let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let secondStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const logError = vi.fn();
+    const service = await createService({
+      logger: { error: logError },
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => turnBodies.length === 1
+          ? new ReadableStream<Uint8Array>({ start(controller) { firstStream = controller; } })
+          : new ReadableStream<Uint8Array>({ start(controller) { secondStream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const firstJob = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const secondJob = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
+    const firstInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: firstJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: firstJob,
+      wakePrompt: "Handle the first job.",
+    };
+    const secondInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: secondJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: secondJob,
+      wakePrompt: "Handle the second job.",
+    };
+
+    try {
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      const internals = service as unknown as {
+        readonly activeTurns: Map<string, { readonly turnId: string; readonly completion: Promise<void> }>;
+      };
+      const firstTurnId = internals.activeTurns.get(thread.id)?.turnId;
+      expect(firstTurnId).toBeTypeOf("string");
+      const secondDelivery = service.deliverNotification(secondInput);
+      await waitFor(() => {
+        const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+        const claim = raw.prepare(`
+          SELECT state, turn_id AS turnId FROM process_job_wake_deliveries
+          WHERE source_id = ? AND job_id = ?
+        `).get("agent-one", secondJob.jobId) as unknown as { state: string; turnId: string | null } | undefined;
+        raw.close();
+        return claim?.state === "accepted" && claim.turnId === null;
+      });
+      expect(turnBodies).toHaveLength(1);
+      vi.spyOn(service.store, "failTurn").mockImplementationOnce(() => {
+        throw new Error("terminal persistence unavailable");
+      });
+
+      firstStream?.error(new Error("provider stream failed"));
+      firstStream = undefined;
+      await expect(secondDelivery).resolves.toMatchObject({
+        delivery: {
+          delivered: false,
+          code: "process_job_wake_failed",
+          retryable: false,
+        },
+      });
+      await waitFor(() => logError.mock.calls.length === 1);
+      expect(logError).toHaveBeenCalledWith(
+        "Web process-job follow-up turn settlement failed after admission.",
+        { threadId: thread.id, turnId: firstTurnId, errorCode: "unknown" },
+      );
+      expect(turnBodies).toHaveLength(1);
+
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+
+      service.store.failTurn(firstTurnId!, { message: "Recovered terminal persistence failure." });
+      expect(service.store.turnStatus(firstTurnId!)).toBe("failed");
+      const retriedSecondDelivery = service.deliverNotification(secondInput);
+      await waitFor(() => secondStream !== undefined);
+      await expect(retriedSecondDelivery).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies.map((body) => body.processJobWakeDeliveryKey)).toEqual([
+        firstJob.wake.deliveryKey,
+        secondJob.wake.deliveryKey,
+      ]);
+      secondStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Second job handled" })}\n`));
+      secondStream?.close();
+      secondStream = undefined;
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(turnBodies).toHaveLength(2);
+    } finally {
+      firstStream?.error(new Error("test cleanup"));
+      secondStream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
+  it("keeps a waiting process-job wake ambiguous when its pre-dispatch cleanup fails", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const firstJob = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const secondJob = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
+    const firstInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: firstJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: firstJob,
+      wakePrompt: "Handle the first job.",
+    };
+    const secondInput = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: secondJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: secondJob,
+      wakePrompt: "Handle the second job.",
+    };
+
+    try {
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      const secondDelivery = service.deliverNotification(secondInput);
+      await waitFor(() => {
+        const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+        const claim = raw.prepare(`
+          SELECT state FROM process_job_wake_deliveries
+          WHERE source_id = ? AND job_id = ?
+        `).get("agent-one", secondJob.jobId) as unknown as { state: string } | undefined;
+        raw.close();
+        return claim?.state === "accepted";
+      });
+      vi.spyOn(service.store, "failTurn").mockImplementationOnce(() => {
+        throw new Error("terminal persistence unavailable");
+      });
+      vi.spyOn(service.store, "abandonProcessJobWake").mockImplementationOnce(() => {
+        throw new Error("reservation cleanup unavailable");
+      });
+
+      stream?.error(new Error("provider stream failed"));
+      stream = undefined;
+      await expect(secondDelivery).resolves.toMatchObject({
+        delivery: {
+          delivered: false,
+          code: "process_job_wake_ambiguous",
+          retryable: false,
+          ambiguous: true,
+        },
+      });
+      expect(turnBodies).toHaveLength(1);
+      expect(service.store.reserveProcessJobWake({
+        sourceId: "agent-one",
+        threadId: thread.id,
+        jobId: secondJob.jobId,
+        deliveryKey: secondJob.wake.deliveryKey,
+      })).toEqual({ kind: "uncertain" });
+      await expect(service.deliverNotification(firstInput)).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      stream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
+  it("keeps an admission-to-receipt store failure uncertain without replay", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    vi.spyOn(service.store, "completeProcessJobWake").mockImplementationOnce(() => {
+      throw new Error("claim completion unavailable");
+    });
+
+    try {
+      await expect(service.deliverNotification(input)).rejects.toThrow("claim completion unavailable");
+      await expect(service.deliverNotification(input)).resolves.toMatchObject({
+        duplicate: true,
+        delivery: {
+          delivered: false,
+          code: "process_job_wake_ambiguous",
+          retryable: false,
+          ambiguous: true,
+        },
+      });
+      expect(turnBodies).toHaveLength(1);
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done once" })}\n`));
+      stream?.close();
+      stream = undefined;
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      stream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
+  /**
+   * The agent binds the wake's host-owned chain depth and background starts to
+   * the exact turn request it accepts. Receipting before that acceptance ends
+   * the wake route on the agent side and leaves the follow-up unable to start
+   * the next job, so the receipt must wait for admission -- and only admission.
+   */
+  it("holds the process-job wake receipt until the operator admits the follow-up turn", async () => {
+    let admit!: (body: ReadableStream<Uint8Array>) => void;
+    const admission = new Promise<ReadableStream<Uint8Array>>((resolve) => { admit = resolve; });
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => admission,
+      }),
+    });
+    const events: WebEvent[] = [];
+    const unsubscribe = service.subscribe((event) => { events.push(event); });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    const claim = (): { state: string; disposition: string | null; turnId: string | null } | undefined => {
+      const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      const row = raw.prepare(`
+        SELECT state, disposition, turn_id AS turnId FROM process_job_wake_deliveries
+        WHERE source_id = ? AND job_id = ?
+      `).get("agent-one", terminal.jobId) as unknown as {
+        state: string;
+        disposition: string | null;
+        turnId: string | null;
+      } | undefined;
+      raw.close();
+      return row;
+    };
+
+    try {
+      const pending = Symbol("pending");
+      const delivery = service.deliverNotification(input);
+      await waitFor(() => turnBodies.length === 1);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+
+      // The console already has the running assistant turn...
+      expect(service.store.getThread(thread.id)?.runState.status).toBe("running");
+      expect(events.some((event) => event.type === "turn.changed" && event.threadId === thread.id)).toBe(true);
+      // ...while the receipt is still withheld and the claim is unsettled.
+      expect(await Promise.race([delivery, Promise.resolve(pending)])).toBe(pending);
+      expect(claim()).toMatchObject({ state: "accepted", disposition: null, turnId: expect.any(String) });
+
+      admit(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
+      await expect(delivery).resolves.toMatchObject({
+        duplicate: false,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      // Admission, not completion: the model turn is still running.
+      expect(service.store.getThread(thread.id)?.runState.status).toBe("running");
+      expect(claim()).toMatchObject({ state: "completed", disposition: "follow_up" });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      unsubscribe();
+      // Unblock the operator response even when an assertion above failed, so a
+      // regression reports its assertion rather than hanging `stop()`.
+      admit(new ReadableStream<Uint8Array>({ start(controller) { stream ??= controller; } }));
+      stream?.error(new Error("test cleanup"));
+      await service.stop();
+    }
+  });
+
+  it("keeps a process-job wake ambiguous when its follow-up turn never reaches the operator", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => Promise.reject(new Error("operator unavailable")),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const input = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: terminal.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: terminal,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    const ambiguous = {
+      delivered: false,
+      code: "process_job_wake_ambiguous",
+      retryable: false,
+      ambiguous: true,
+    };
+
+    try {
+      await expect(service.deliverNotification(input)).resolves.toMatchObject({ delivery: ambiguous });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "failed");
+      // The request may still have reached the agent, so the claim stays
+      // accepted: no abandon, and every retry fails closed on that claim.
+      const raw = new DatabaseSync(service.store.paths.database, { readOnly: true });
+      const row = raw.prepare(`
+        SELECT state, disposition FROM process_job_wake_deliveries
+        WHERE source_id = ? AND job_id = ?
+      `).get("agent-one", terminal.jobId) as unknown as { state: string; disposition: string | null };
+      raw.close();
+      expect(row).toMatchObject({ state: "accepted", disposition: null });
+
+      await expect(service.deliverNotification(input)).resolves.toMatchObject({
+        duplicate: true,
+        delivery: ambiguous,
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      await service.stop();
+    }
   });
 
   it("runs one assistant-only Monitor wake in its exact web thread and durably suppresses replay", async () => {
@@ -2046,17 +2622,29 @@ describe("WebService", () => {
   it("serializes process-job and Monitor follow-ups through one host-wake lane", async () => {
     const encoder = new TextEncoder();
     let firstStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let secondStream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const turnBodies: Record<string, unknown>[] = [];
     const service = await createService({
       fetchImpl: operatorFetch({
         onTurn(body) { turnBodies.push(body); },
-        turns: () => turnBodies.length === 1
-          ? new ReadableStream<Uint8Array>({ start(controller) { firstStream = controller; } })
-          : `${JSON.stringify({ kind: "finish", finalText: "Monitor handled" })}\n`,
+        turns: () => {
+          if (turnBodies.length === 1) {
+            return new ReadableStream<Uint8Array>({ start(controller) { firstStream = controller; } });
+          }
+          if (turnBodies.length === 2) {
+            return new ReadableStream<Uint8Array>({ start(controller) { secondStream = controller; } });
+          }
+          return `${JSON.stringify({ kind: "finish", finalText: "Monitor handled" })}\n`;
+        },
       }),
     });
     const thread = service.createThread("agent-one");
     const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const secondJob = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
     const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
     const jobDelivery = service.deliverNotification({
       sourceId: "agent-one",
@@ -2067,6 +2655,16 @@ describe("WebService", () => {
       wakePrompt: "Handle the job.",
     });
     await waitFor(() => firstStream !== undefined);
+    await expect(jobDelivery).resolves.toMatchObject({ delivery: { delivered: true, disposition: "follow_up" } });
+    expect(service.store.getThread(thread.id)?.runState.status).toBe("running");
+    const secondJobDelivery = service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: secondJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: secondJob,
+      wakePrompt: "Handle the second job.",
+    });
     const monitorDelivery = service.deliverNotification({
       sourceId: "agent-one",
       triggerKind: "monitor",
@@ -2081,10 +2679,18 @@ describe("WebService", () => {
 
     firstStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Job handled" })}\n`));
     firstStream?.close();
-    await expect(jobDelivery).resolves.toMatchObject({ delivery: { delivered: true } });
+    await waitFor(() => secondStream !== undefined);
+    await expect(secondJobDelivery).resolves.toMatchObject({
+      delivery: { delivered: true, disposition: "follow_up" },
+    });
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    expect(turnBodies).toHaveLength(2);
+    secondStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Second job handled" })}\n`));
+    secondStream?.close();
     await expect(monitorDelivery).resolves.toMatchObject({ delivery: { delivered: true } });
     expect(turnBodies.map((body) => body.processJobWakeDeliveryKey)).toEqual([
       job.wake.deliveryKey,
+      secondJob.wake.deliveryKey,
       `monitor:${monitor.monitorId}:1`,
     ]);
     expect(turnBodies[1]).toMatchObject({
@@ -2123,6 +2729,11 @@ describe("WebService", () => {
     await service.startTurn(thread.id, { text: "Keep working" });
     await waitFor(() => activeStream !== undefined);
     const job = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+    const secondJob = fakeProcessJob({
+      conversationId: `web:${thread.id}`,
+      state: "succeeded",
+      jobId: "33333333-3333-4333-8333-333333333333",
+    });
     const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
     const jobDelivery = service.deliverNotification({
       sourceId: "agent-one",
@@ -2140,6 +2751,14 @@ describe("WebService", () => {
       monitor,
       wakePrompt: "Handle the monitor.",
     });
+    const secondJobDelivery = service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: secondJob.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: secondJob,
+      wakePrompt: "Handle the second job.",
+    });
     await waitFor(() => liveInputs.length > 0);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
     expect(liveInputs).toHaveLength(1);
@@ -2147,9 +2766,11 @@ describe("WebService", () => {
     settleFirst?.({ status: "applied", runId: "active-run" });
     await expect(jobDelivery).resolves.toMatchObject({ delivery: { delivered: true, disposition: "steered" } });
     await expect(monitorDelivery).resolves.toMatchObject({ delivery: { delivered: true, disposition: "steered" } });
+    await expect(secondJobDelivery).resolves.toMatchObject({ delivery: { delivered: true, disposition: "steered" } });
     expect(liveInputs.map((body) => body.deliveryKey)).toEqual([
       job.wake.deliveryKey,
       `monitor:${monitor.monitorId}:1`,
+      secondJob.wake.deliveryKey,
     ]);
 
     activeStream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
@@ -3605,6 +4226,276 @@ describe("WebService", () => {
     stream?.close();
     await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
     await service.stop();
+  });
+
+  it("deduplicates one targeted submission and ignores the draft model for the owned active run", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const delivered: Record<string, unknown>[] = [];
+    let discovered = [fakeDiscoveredAgent()];
+    const service = await createService({
+      discoverImpl: async () => discovered,
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        supportsLiveInputTargeting: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onLiveInput(_conversationId, body) {
+          delivered.push(body);
+          return { status: "applied", runId: "owned-run" };
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    const started = await service.startTurn(thread.id, {
+      text: "Initial task",
+      model: "provider/default",
+    });
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    const input = {
+      submissionId,
+      text: "Use this correction",
+      model: "provider/fallback",
+    };
+
+    const first = service.submit(thread.id, input);
+    expect(service.submit(thread.id, input)).toEqual(first);
+    await waitFor(() => delivered.length === 1);
+    expect(delivered).toEqual([expect.objectContaining({
+      id: expect.any(String),
+      text: "Use this correction",
+      targetTurnId: started.turn.id,
+    })]);
+    expect(() => service.submit(thread.id, {
+      submissionId,
+      text: "Conflicting correction",
+    })).toThrowError(expect.objectContaining({ code: "submission_conflict" }));
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.submission(thread.id, submissionId)).toMatchObject({
+      submissionId,
+      outcome: "live-input",
+      message: { liveInputStatus: "applied" },
+    });
+    discovered = [];
+    await service.refreshAgents();
+    expect(service.store.getThread(thread.id)?.canSend).toBe(false);
+    expect(service.submit(thread.id, input)).toMatchObject({
+      submissionId,
+      outcome: "live-input",
+      message: { liveInputStatus: "applied" },
+    });
+    expect(delivered).toHaveLength(1);
+    await service.stop();
+  });
+
+  it("rejects oversized formatted submission text before receipt, turn, or dispatch mutation", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Source prompt" });
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    const sourceMessage = service.thread(thread.id).messages.at(-1)!;
+    const submissionId = "44444444-4444-4444-8444-444444444444";
+    const input = {
+      submissionId,
+      text: "x".repeat(199_990),
+      quote: { text: "First line", messageId: sourceMessage.id },
+    };
+    const before = service.thread(thread.id);
+
+    expect(() => service.submit(thread.id, input))
+      .toThrowError(expect.objectContaining({ code: "turn_text_too_large", status: 413 }));
+
+    expect(service.store.webSubmission(thread.id, submissionId)).toBeUndefined();
+    expect(service.store.activeTurn(thread.id)).toBeUndefined();
+    expect(service.thread(thread.id)).toEqual(before);
+    expect(turnBodies).toHaveLength(1);
+
+    const existingInput = { ...input, submissionId: "55555555-5555-4555-8555-555555555555" };
+    const payloadSha256 = createHash("sha256").update(JSON.stringify({
+      text: existingInput.text,
+      quote: existingInput.quote,
+      attachmentIds: [],
+      model: null,
+      effort: null,
+    })).digest("hex");
+    service.store.claimWebSubmission({
+      threadId: thread.id,
+      submissionId: existingInput.submissionId,
+      payloadSha256,
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    });
+    const existingReceipt = service.submission(thread.id, existingInput.submissionId);
+    expect(service.submit(thread.id, existingInput)).toEqual(existingReceipt);
+    expect(turnBodies).toHaveLength(1);
+    await service.stop();
+  });
+
+  it("keeps an active-attachment rejection durable and accepts a corrected new-id send", async () => {
+    const encoder = new TextEncoder();
+    const streams: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const turns: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        supportsLiveInputTargeting: true,
+        onTurn(body) { turns.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { streams.push(controller); },
+        }),
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const attachment = service.createUpload({ name: "keep.txt", contentType: "text/plain", sizeBytes: 5 });
+    const stored = service.storedAttachment(attachment.id);
+    await writeFile(service.store.attachmentPath(stored), "hello", { mode: 0o600 });
+    service.completeUpload(attachment.id, 5);
+    const rejectedId = "22222222-2222-4222-8222-222222222222";
+    const rejectedInput = {
+      submissionId: rejectedId,
+      text: "Keep this draft",
+      attachmentIds: [attachment.id],
+    };
+
+    const rejected = service.submit(thread.id, rejectedInput);
+    expect(rejected).toMatchObject({
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+
+    expect(service.submit(thread.id, rejectedInput)).toEqual(rejected);
+    expect(service.submission(thread.id, rejectedId)).toEqual(rejected);
+    expect(service.submit(thread.id, rejectedInput)).toEqual(rejected);
+    expect(service.thread(thread.id).messages).toHaveLength(2);
+
+    await waitFor(() => streams.length === 1);
+    streams[0]?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    streams[0]?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(service.submission(thread.id, rejectedId)).toEqual(rejected);
+
+    const corrected = service.submit(thread.id, {
+      submissionId: "33333333-3333-4333-8333-333333333333",
+      text: "Send after completion",
+      attachmentIds: [attachment.id],
+    });
+    expect(corrected.outcome).toBe("turn");
+    await waitFor(() => turns.length === 2 && streams.length === 2);
+    expect(turns).toHaveLength(2);
+    expect(turns[1]?.attachments).toEqual([{
+      kind: "document",
+      mimeType: "text/plain",
+      data: "aGVsbG8=",
+      name: "keep.txt",
+      sizeBytes: 5,
+    }]);
+    streams[1]?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Corrected done" })}\n`));
+    streams[1]?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    await service.stop();
+  });
+
+  it.each([
+    ["explicit uncertainty", async () => ({ status: "uncertain", reason: "delivery_uncertain" })],
+    ["rejected settlement", async () => { throw new Error("connection ended after dispatch"); }],
+  ])("does not retry live input after %s", async (_label, onLiveInput) => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turns: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        onTurn(body) { turns.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+            controller.enqueue(encoder.encode(`${JSON.stringify({ kind: "status", text: "working" })}\n`));
+          },
+        }),
+        onLiveInput,
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    const receipt = service.submitLiveInput(thread.id, "Do not duplicate this");
+
+    await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "uncertain");
+    expect(service.store.queuedLiveInputThreadIds()).toEqual([]);
+    expect(turns).toHaveLength(1);
+
+    stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Done" })}\n`));
+    stream?.close();
+    await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    expect(turns).toHaveLength(1);
+    await service.stop();
+  });
+
+  it("persists dispatched live input as uncertain before the shutdown abort cut-point", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    let turnStream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let resolveLiveInput: ((result: Record<string, unknown>) => void) | undefined;
+    const service = await createService({
+      stateDir,
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { turnStream = controller; },
+        }),
+        onLiveInput() {
+          return new Promise<Record<string, unknown>>((resolve) => { resolveLiveInput = resolve; });
+        },
+      }),
+    });
+    const thread = service.createThread("agent-one");
+    await service.startTurn(thread.id, { text: "Initial task" });
+    await waitFor(() => turnStream !== undefined);
+    const receipt = service.submitLiveInput(thread.id, "Do not replay after shutdown");
+    await waitFor(() => resolveLiveInput !== undefined);
+
+    const internals = service as unknown as {
+      readonly activeTurns: Map<string, { readonly completion: Promise<void> }>;
+      readonly activeLiveInputs: Map<string, {
+        readonly controller: AbortController;
+        readonly completion: Promise<void>;
+      }>;
+      readonly pushDispatcher: { stopAndDrain(timeoutMs: number): Promise<void> };
+    };
+    const turnCompletion = [...internals.activeTurns.values()][0]?.completion;
+    const live = [...internals.activeLiveInputs.values()][0];
+    expect(live).toBeDefined();
+    const crash = new Error("simulated crash immediately before live-input abort");
+    let statusAtAbort: string | undefined;
+    live!.controller.abort = () => {
+      statusAtAbort = service.store.getMessage(receipt.message.id)?.liveInputStatus;
+      throw crash;
+    };
+
+    await expect(service.stop()).rejects.toBe(crash);
+    turnStream?.error(new Error("simulated process death"));
+    if (turnCompletion !== undefined) await Promise.allSettled([turnCompletion]);
+    await internals.pushDispatcher.stopAndDrain(5_000);
+    service.store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    const recoveredStatus = reopened.getMessage(receipt.message.id)?.liveInputStatus;
+    const queuedThreads = reopened.queuedLiveInputThreadIds();
+    reopened.close();
+    await (service as unknown as { readonly lease: { release(): Promise<void> } }).lease.release();
+    resolveLiveInput?.({ status: "uncertain", reason: "delivery_uncertain" });
+    if (live !== undefined) await Promise.allSettled([live.completion]);
+
+    expect(statusAtAbort).toBe("uncertain");
+    expect(recoveredStatus).toBe("uncertain");
+    expect(queuedThreads).toEqual([]);
   });
 
   it("promotes idle live input exactly once with the thread's captured route", async () => {
@@ -5185,5 +6076,1021 @@ describe("every transcript-moving write names its message", () => {
     expect(messageEvents(events)).toEqual([]);
     unsubscribe();
     await service.stop();
+  });
+});
+
+describe("cron Reply import orchestration", () => {
+  const run = {
+    projection: "summary",
+    runId: "cron:digest:2026-09-08T10:00:00.000Z",
+    jobId: "digest",
+    scheduledAt: "2026-09-08T10:00:00.000Z",
+    orderedAt: "2026-09-08T10:00:01.000Z",
+    sequence: 11,
+    trigger: "scheduled",
+    status: "succeeded",
+    completedAt: "2026-09-08T10:00:02.000Z",
+    text: "Synthetic digest result",
+    eventCount: 0,
+  } as const;
+  const operationId = "33333333-3333-4333-8333-333333333333";
+
+  it("coalesces an overlapping operation around one reservation/import and exposes only the completed thread", async () => {
+    let imports = 0;
+    let finishImport: ((value: Record<string, unknown>) => void) | undefined;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          imports += 1;
+          return new Promise((resolve) => {
+            finishImport = (value) => resolve({ ...value, conversationId });
+          });
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const first = service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      });
+      const second = service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      });
+      expect(second).toBe(first);
+      expect(imports).toBe(1);
+      expect(service.store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 100 }).threads)
+        .not.toEqual(expect.arrayContaining([expect.objectContaining({ title: expect.stringContaining("Reply to") })]));
+      finishImport?.({ imported: true, status: "appended" });
+      const receipt = await first;
+      await expect(second).resolves.toEqual(receipt);
+      expect(receipt).toMatchObject({ duplicate: false, sourceId: "agent-one", jobId: "digest", runId: run.runId });
+      expect(receipt.messages).toHaveLength(1);
+      expect(receipt.messages[0]?.parts[0]).toMatchObject({
+        type: "cron-reply-context",
+        source: { sourceId: "agent-one", jobId: "digest", runId: run.runId },
+        result: { text: "Synthetic digest result" },
+      });
+      expect(service.thread(receipt.thread.id).messages).toEqual(receipt.messages);
+    } finally { await service.stop(); }
+  });
+
+  it("shapes only the strict host-seeded context, folds provenance, and keeps full reads byte-identical", async () => {
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => ({ imported: true, status: "appended", conversationId }),
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const receipt = await service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      });
+      const stored = service.store.getThreadDetail(receipt.thread.id)?.messages ?? [];
+      expect(stored).toHaveLength(2);
+      expect(stored[0]).toMatchObject({
+        role: "system",
+        parts: [{ type: "text", text: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE }],
+      });
+      const rawText = stored[1]?.parts[0];
+      expect(rawText).toMatchObject({ type: "text", text: expect.stringContaining("Synthetic digest result") });
+
+      const normal = service.thread(receipt.thread.id);
+      expect(normal.messages).toHaveLength(1);
+      expect(normal.messages[0]?.parts[0]).toMatchObject({
+        type: "cron-reply-context",
+        schema: "mono-agent.web.cron-reply-context.v1",
+        untrusted: true,
+        snapshot: { kind: "summary" },
+        result: { text: "Synthetic digest result" },
+      });
+      expect(service.thread(receipt.thread.id, { full: true }).messages).toEqual(stored);
+
+      const newest = service.messagePage(receipt.thread.id, { limit: 1 });
+      expect(newest.messages).toHaveLength(1);
+      expect(newest.messages[0]?.parts[0]?.type).toBe("cron-reply-context");
+      expect(newest.nextCursor).toBeDefined();
+      if (newest.nextCursor === undefined) throw new Error("expected older provenance page");
+      const older = service.messagePage(receipt.thread.id, { limit: 1, before: newest.nextCursor });
+      expect(older.messages).toEqual([]);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves malformed, tampered, model-owned, and multi-part lookalikes as text", async () => {
+    const service = await createService();
+    const candidate = {
+      sourceId: "agent-one",
+      jobId: "digest",
+      runId: run.runId,
+      snapshotKind: "summary" as const,
+      capturedAt: "2026-09-08T10:00:03.000Z",
+      run,
+      text: "Synthetic digest result",
+      sourceTruncationKnown: true,
+    };
+    const validText = formatCronReplyContext(candidate);
+    const tampered = validText.replace('"untrusted":true', '"untrusted":false');
+    const shape = (message: WebMessage): WebMessage => (service as unknown as {
+      shapeMessage: (value: WebMessage) => WebMessage;
+    }).shapeMessage(message);
+    const seeded = (text: string, overrides: Partial<WebMessage> = {}): WebMessage => ({
+      id: "seeded",
+      threadId: "thread",
+      role: "assistant" as const,
+      parts: [{ type: "text" as const, text }],
+      attachments: [] as const,
+      createdAt: "2026-09-08T10:00:03.000Z",
+      updatedAt: "2026-09-08T10:00:03.000Z",
+      status: "complete" as const,
+      seq: 0,
+      ...overrides,
+    });
+    try {
+      expect(shape(seeded("Imported cron result snapshot (mono-agent.web.cron-reply-context.v1)\nnot json")))
+        .toMatchObject({ parts: [{ type: "text" }] });
+      expect(shape(seeded(tampered))).toMatchObject({ parts: [{ type: "text", text: tampered }] });
+      expect(shape(seeded(validText, { turnId: "model-turn" }))).toMatchObject({ parts: [{ type: "text" }] });
+      expect(shape(seeded(validText, { parts: [{ type: "text", text: validText }, { type: "text", text: "extra" }] })))
+        .toMatchObject({ parts: [{ type: "text" }, { type: "text" }] });
+    } finally { await service.stop(); }
+  });
+
+  it("keeps unknown transport outcomes pending until an explicit same-operation retry settles them", async () => {
+    let attempts = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("synthetic lost response");
+          return { imported: true, status: "duplicate", conversationId };
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const input = { operationId, snapshotKind: "summary" as const };
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .rejects.toMatchObject({ code: "cron_reply_outcome_unknown", status: 504 });
+      expect(service.store.cronReplyOperation(operationId))
+        .toMatchObject({ kind: "pending", operation: { snapshotText: expect.stringContaining("Synthetic digest result") } });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .resolves.toMatchObject({ duplicate: false, thread: { sourceId: "agent-one" } });
+      const completed = service.store.cronReplyOperation(operationId);
+      expect(completed).toMatchObject({ kind: "completed" });
+      if (completed?.kind === "completed") expect(completed.receipt.thread).not.toHaveProperty("trigger");
+      expect(attempts).toBe(2);
+    } finally { await service.stop(); }
+  });
+
+  it("keeps a pending operation unresolved across offline preflight and completes the same identity", async () => {
+    let online = true;
+    let attempts = 0;
+    const service = await createService({
+      discoverImpl: async () => {
+        const discovered = fakeDiscoveredAgent();
+        if (online) return [discovered];
+        const { baseUrl: _baseUrl, ...offline } = discovered;
+        return [offline];
+      },
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          attempts += 1;
+          if (attempts === 1) throw new Error("synthetic lost response after canonical completion");
+          return { imported: true, status: "duplicate", conversationId };
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      const input = { operationId, snapshotKind: "summary" as const };
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .rejects.toMatchObject({ code: "cron_reply_outcome_unknown", status: 504 });
+      const pending = service.store.cronReplyOperation(operationId);
+      expect(pending).toMatchObject({ kind: "pending" });
+
+      online = false;
+      await service.refreshAgents();
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, input))
+        .rejects.toMatchObject({ code: "cron_reply_agent_offline", status: 503 });
+      expect(service.store.cronReplyOperation(operationId)).toEqual(pending);
+      expect(attempts).toBe(1);
+
+      online = true;
+      await service.refreshAgents();
+      const receipt = await service.createCronReplyThread("agent-one", "digest", run.runId, input);
+      expect(receipt).toMatchObject({ operationId, duplicate: false, thread: { sourceId: "agent-one" } });
+      expect(service.store.cronReplyOperation(operationId)).toMatchObject({ kind: "completed" });
+      expect(attempts).toBe(2);
+    } finally { await service.stop(); }
+  });
+
+  it("requires positive sufficient capability before durable reservation or network import", async () => {
+    let imports = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: () => {
+          imports += 1;
+          return {};
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      })).rejects.toMatchObject({ code: "cron_reply_unsupported" });
+      expect(service.store.cronReplyOperation(operationId)).toBeUndefined();
+      expect(imports).toBe(0);
+    } finally { await service.stop(); }
+  });
+
+  it("terminally records producer failure and lets a later deliberate Reply use a new operation", async () => {
+    let attempts = 0;
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: operatorCronOverview(),
+        cronRuns: { runs: [run] },
+        onContextImport: (conversationId) => {
+          attempts += 1;
+          if (attempts === 1) {
+            return Response.json({
+              error: { code: "context_import_failed", message: "Import failed.", reason: "operation_failed" },
+            }, { status: 500 });
+          }
+          return { imported: true, status: "appended", conversationId };
+        },
+      }),
+    });
+    try {
+      await service.cronRuns("agent-one", "digest", { limit: 100 });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId,
+        snapshotKind: "summary",
+      })).rejects.toMatchObject({ code: "cron_reply_failed", status: 409 });
+      expect(service.store.cronReplyOperation(operationId))
+        .toMatchObject({ kind: "failed", operation: { failureReason: "operation_failed" } });
+      await expect(service.createCronReplyThread("agent-one", "digest", run.runId, {
+        operationId: "66666666-6666-4666-8666-666666666666",
+        snapshotKind: "summary",
+      })).resolves.toMatchObject({ duplicate: false });
+      expect(attempts).toBe(2);
+    } finally { await service.stop(); }
+  });
+});
+
+/**
+ * A card written `queued|starting|running` leaves that state only when a
+ * terminal projection arrives. When that notification never lands -- the agent
+ * restarted while this service was disconnected, a wake was lost -- nothing
+ * else in the store moves it, and the Dashboard reports work that stopped days
+ * ago. These are about re-asking the agent instead.
+ */
+describe("unsettled process-job card reconciliation", () => {
+  /** An agent that goes away for one discovery pass and comes back. */
+  const reconnecting = (): {
+    readonly discoverImpl: () => Promise<readonly ReturnType<typeof fakeDiscoveredAgent>[]>;
+    setPresent: (present: boolean) => void;
+  } => {
+    let present = true;
+    return {
+      discoverImpl: async () => present
+        ? [fakeDiscoveredAgent({ processJobsBearer: "owner-job-key" })]
+        : [],
+      setPresent: (next: boolean) => { present = next; },
+    };
+  };
+
+  const carded = async (service: WebService): Promise<{ threadId: string; jobId: string }> => {
+    const thread = service.createThread("agent-one");
+    const running = fakeProcessJob({ conversationId: `web:${thread.id}` });
+    await service.deliverNotification({
+      sourceId: "agent-one",
+      triggerKind: "job",
+      deliveryKey: running.wake.deliveryKey,
+      threadId: thread.id,
+      processJob: running,
+    });
+    expect(service.activeThreads().threads.map((item) => item.id)).toEqual([thread.id]);
+    return { threadId: thread.id, jobId: running.jobId };
+  };
+
+  it("retires a card the agent reports finished, and the fleet listing loses it", async () => {
+    const agent = reconnecting();
+    let jobs = [fakeProcessJob({ conversationId: "web:placeholder" })];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({ supportsJobs: true, jobForRequest: () => jobs[0] }),
+    });
+    try {
+      const { threadId } = await carded(service);
+      jobs = [fakeProcessJob({
+        conversationId: `web:${threadId}`,
+        state: "succeeded",
+        wakeState: "delivered",
+      })];
+      const events: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event); });
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+      unsubscribe();
+
+      const card = service.thread(threadId).messages[0]?.parts[0];
+      expect(card).toMatchObject({ type: "process-job", job: { state: "succeeded" } });
+      // Gone from both surfaces the stale card was showing up on.
+      expect(service.activeThreads()).toMatchObject({ threads: [], total: 0 });
+      expect(service.thread(threadId).thread.jobActivity)
+        .toMatchObject({ running: 0, latestTerminal: { state: "succeeded" } });
+      // An open console is told, exactly as a notification would have told it.
+      expect(events.filter((event) => event.type === "message.changed")).toHaveLength(1);
+      expect(events.some((event) => event.type === "thread.changed")).toBe(true);
+    } finally { await service.stop(); }
+  });
+
+  it("retires a card the agent no longer knows as interrupted, and says why", async () => {
+    const agent = reconnecting();
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({ supportsJobs: true, jobForRequest: () => undefined }),
+    });
+    try {
+      const { threadId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      expect(service.thread(threadId).messages[0]?.parts[0]).toMatchObject({
+        type: "process-job",
+        job: {
+          state: "interrupted",
+          lastError: { code: "process_job_agent_restarted" },
+        },
+      });
+      expect(service.activeThreads()).toMatchObject({ threads: [], total: 0 });
+    } finally { await service.stop(); }
+  });
+
+  it("leaves a card alone when the agent could not be asked", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => { throw new Error("connection reset"); },
+      }),
+    });
+    try {
+      const { threadId, jobId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      // The agent WAS asked, and answered with a transport failure. "This
+      // console could not ask" is not "the job ended".
+      expect(probes).toEqual([jobId]);
+      expect(service.thread(threadId).messages[0]?.parts[0])
+        .toMatchObject({ type: "process-job", job: { state: "running" } });
+      expect(service.activeThreads().threads.map((item) => item.id)).toEqual([threadId]);
+    } finally { await service.stop(); }
+  });
+
+  it("asks about a card once per sweep, and does not sweep a settled connection again", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => { throw new Error("connection reset"); },
+      }),
+    });
+    try {
+      const { jobId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+
+      // The connection did not move, and the slow floor has not passed.
+      await service.refreshAgents();
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves every card alone for an agent that does not support jobs", async () => {
+    const agent = reconnecting();
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agent.discoverImpl,
+      fetchImpl: operatorFetch({
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => undefined,
+      }),
+    });
+    try {
+      const { threadId } = await carded(service);
+
+      agent.setPresent(false);
+      await service.refreshAgents();
+      agent.setPresent(true);
+      await service.refreshAgents();
+
+      expect(probes).toEqual([]);
+      expect(service.activeThreads().threads.map((item) => item.id)).toEqual([threadId]);
+    } finally { await service.stop(); }
+  });
+});
+
+describe("fleet-bounded process-job card reconciliation", () => {
+  /** The service's own floor under a connection that never dropped. */
+  const RECONCILE_INTERVAL_MS = 15 * 60 * 1_000;
+
+  /** Two job-capable agents that go away for one discovery pass and come back. */
+  const fleet = (sourceIds: readonly string[]): {
+    readonly discoverImpl: () => Promise<readonly ReturnType<typeof fakeDiscoveredAgent>[]>;
+    setPresent: (present: boolean) => void;
+  } => {
+    let present = true;
+    const base = fakeDiscoveredAgent();
+    return {
+      discoverImpl: async () => present
+        ? sourceIds.map((sourceId, index) => fakeDiscoveredAgent({
+          processJobsBearer: "owner-job-key",
+          baseUrl: `http://127.0.0.1:4520${String(index)}/gui`,
+          source: { ...base.source, sourceId, label: sourceId, pid: 1_000 + index },
+        }))
+        : [],
+      setPresent: (next: boolean) => { present = next; },
+    };
+  };
+
+  /** `count` unsettled cards for one agent, in the order the store will read them. */
+  const seedRunningCards = async (
+    service: WebService,
+    sourceId: string,
+    count: number,
+  ): Promise<readonly string[]> => {
+    const jobIds: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const thread = service.createThread(sourceId);
+      const jobId = `${sourceId}-job-${String(index).padStart(3, "0")}`;
+      const running = fakeProcessJob({ conversationId: `web:${thread.id}`, jobId });
+      // eslint-disable-next-line no-await-in-loop -- the cards' order is the point.
+      await service.deliverNotification({
+        sourceId,
+        triggerKind: "job",
+        deliveryKey: running.wake.deliveryKey,
+        threadId: thread.id,
+        processJob: running,
+      });
+      jobIds.push(jobId);
+    }
+    return jobIds;
+  };
+
+  /** One reconnect: the whole fleet drops out of discovery and comes back. */
+  const reconnect = async (
+    service: WebService,
+    agents: { setPresent: (present: boolean) => void },
+  ): Promise<void> => {
+    agents.setPresent(false);
+    await service.refreshAgents();
+    agents.setPresent(true);
+    await service.refreshAgents();
+  };
+
+  it("never has more than four job reads in flight for the whole fleet", async () => {
+    const agents = fleet(["agent-one", "agent-two"]);
+    const pending: Array<() => void> = [];
+    const probes: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const answer = operatorFetch({
+      supportsJobs: true,
+      onJobRequest: (jobId) => { probes.push(jobId); },
+      // Nothing settles, so no card can leave the set and shorten the pass.
+      jobForRequest: (jobId) => fakeProcessJob({ jobId }),
+    });
+    const service = await createService({
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (/\/v1\/jobs\//u.test(url)) {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          await new Promise<void>((resolve) => { pending.push(resolve); });
+          inFlight -= 1;
+        }
+        return answer(input, init);
+      }) as typeof fetch,
+    });
+    try {
+      await seedRunningCards(service, "agent-one", 8);
+      await seedRunningCards(service, "agent-two", 8);
+
+      agents.setPresent(false);
+      await service.refreshAgents();
+      agents.setPresent(true);
+      let finished = false;
+      const sweep = service.refreshAgents().then(() => { finished = true; });
+      // Everything the pool is willing to start has started by now.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const admitted = inFlight;
+
+      while (!finished) {
+        pending.splice(0).forEach((release) => { release(); });
+        // eslint-disable-next-line no-await-in-loop -- draining one wave at a time is the point.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await sweep;
+
+      // Four for the SERVICE, not four per agent: per agent this would be
+      // eight here, and four times the fleet size on a real reconnect.
+      expect(admitted).toBe(4);
+      expect(peak).toBe(4);
+      expect(probes).toHaveLength(16);
+    } finally { await service.stop(); }
+  });
+
+  it("spends one card budget across the fleet, evenly, instead of one budget each", async () => {
+    const agents = fleet(["agent-one", "agent-two"]);
+    const probes: string[] = [];
+    const service = await createService({
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: (jobId) => fakeProcessJob({ jobId }),
+      }),
+    });
+    try {
+      await seedRunningCards(service, "agent-one", 30);
+      await seedRunningCards(service, "agent-two", 30);
+
+      await reconnect(service, agents);
+
+      // 50 for the pass, not 50 each, and neither agent takes the other's share.
+      expect(probes).toHaveLength(50);
+      expect(probes.filter((jobId) => jobId.startsWith("agent-one"))).toHaveLength(25);
+      expect(probes.filter((jobId) => jobId.startsWith("agent-two"))).toHaveLength(25);
+    } finally { await service.stop(); }
+  });
+
+  it("asks about the card behind the first full page instead of the same page for ever", async () => {
+    const agents = fleet(["agent-one"]);
+    const probes: string[] = [];
+    let now = Date.parse("2026-09-10T10:00:00.000Z");
+    const service = await createService({
+      clock: () => new Date(now),
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        // Every card but the last is still running; the last one ended while
+        // this console was not listening and nothing else will ever say so.
+        jobForRequest: (jobId) => fakeProcessJob({
+          jobId,
+          ...(jobId === "agent-one-job-050" ? { state: "succeeded" as const, wakeState: "delivered" as const } : {}),
+        }),
+      }),
+    });
+    try {
+      const jobIds = await seedRunningCards(service, "agent-one", 51);
+      const stale = jobIds.at(-1)!;
+
+      await reconnect(service, agents);
+      // The first pass spends the whole budget on the oldest page, and none of
+      // those cards leaves the set, so a fixed page would stop here for ever.
+      expect(probes).toHaveLength(50);
+      expect(probes).not.toContain(stale);
+
+      now += RECONCILE_INTERVAL_MS;
+      await service.refreshAgents();
+
+      expect(probes).toContain(stale);
+      expect(service.activeThreads().threads.map((item) => item.id)).toHaveLength(50);
+    } finally { await service.stop(); }
+  });
+
+  it("re-asks a still-connected agent only once the fifteen minutes have elapsed", async () => {
+    const agents = fleet(["agent-one"]);
+    const probes: string[] = [];
+    let now = Date.parse("2026-09-10T10:00:00.000Z");
+    const service = await createService({
+      clock: () => new Date(now),
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: (jobId) => fakeProcessJob({ jobId }),
+      }),
+    });
+    try {
+      const [jobId] = await seedRunningCards(service, "agent-one", 1);
+
+      await reconnect(service, agents);
+      expect(probes).toEqual([jobId]);
+
+      // One millisecond under the floor is still under it.
+      now += RECONCILE_INTERVAL_MS - 1;
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId]);
+
+      now += 1;
+      await service.refreshAgents();
+      expect(probes).toEqual([jobId, jobId]);
+    } finally { await service.stop(); }
+  });
+
+  it("leaves the cards of a source discovery no longer reports alone", async () => {
+    const agents = fleet(["agent-one"]);
+    const probes: string[] = [];
+    let now = Date.parse("2026-09-10T10:00:00.000Z");
+    const service = await createService({
+      clock: () => new Date(now),
+      discoverImpl: agents.discoverImpl,
+      fetchImpl: operatorFetch({
+        supportsJobs: true,
+        onJobRequest: (jobId) => { probes.push(jobId); },
+        jobForRequest: () => undefined,
+      }),
+    });
+    try {
+      await seedRunningCards(service, "agent-one", 1);
+      const [threadId] = service.activeThreads().threads.map((item) => item.id);
+
+      // Gone, and staying gone: there is nobody to ask, and a card nobody can
+      // confirm is not evidence that the job ended.
+      agents.setPresent(false);
+      await service.refreshAgents();
+      now += RECONCILE_INTERVAL_MS;
+      await service.refreshAgents();
+
+      expect(probes).toEqual([]);
+      expect(service.thread(threadId!).messages[0]?.parts[0])
+        .toMatchObject({ type: "process-job", job: { state: "running" } });
+    } finally { await service.stop(); }
+  });
+});
+
+describe("conversation project context injection", () => {
+  it("prefixes member turns and keeps the stored message clean", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const project = service.createProject({
+        sourceId: "agent-one",
+        name: "Web console",
+        context: "Stay sharp.",
+      });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Do the thing" });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+      expect(turnBodies).toHaveLength(1);
+      expect(turnBodies[0]).toMatchObject({
+        text: "<project_context name=\"Web console\">\nStay sharp.\n</project_context>\n\nDo the thing",
+      });
+      const userMessage = service.thread(thread.id).messages.find((message) => message.role === "user");
+      expect(userMessage?.parts).toEqual([{ type: "text", text: "Do the thing" }]);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("combines the prefix with quote formatting without persisting either", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "First message" });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      turnBodies.length = 0;
+      const first = service.thread(thread.id).messages;
+      await service.startTurn(thread.id, {
+        text: "Follow up",
+        quote: { text: "quoted line", messageId: first[0]!.id },
+      });
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+
+      expect(turnBodies).toHaveLength(1);
+
+      expect(turnBodies[0]).toMatchObject({
+        text: "<project_context name=\"P\">\nC.\n</project_context>\n\nQuoted context:\n> quoted line\n\nFollow up",
+      });
+      const userMessage = service.thread(thread.id).messages.find((message) =>
+        message.parts.some((part) => part.type === "text" && part.text === "Follow up"));
+      expect(userMessage).toBeDefined();
+      expect(JSON.stringify(userMessage)).not.toContain("project_context");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("sends no prefix for non-members and empty contexts", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const blank = service.createProject({ sourceId: "agent-one", name: "Blank", context: "   " });
+      const blankMember = service.createThread("agent-one", { projectId: blank.id });
+      const outsider = service.createThread("agent-one");
+      await service.startTurn(blankMember.id, { text: "blank context" });
+      await waitFor(() => service.store.getThread(blankMember.id)?.runState.status === "complete");
+      await service.startTurn(outsider.id, { text: "no project" });
+      await waitFor(() => service.store.getThread(outsider.id)?.runState.status === "complete");
+
+      expect(turnBodies.map((body) => body.text)).toEqual(["blank context", "no project"]);
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("prefixes live-input dispatch while the queued text stays raw", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const liveInputs: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onLiveInput(conversationId, body) {
+          liveInputs.push({ conversationId, body });
+          return { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Initial task" });
+      await waitFor(() => stream !== undefined);
+      const receipt = service.submitLiveInput(thread.id, "Steer this");
+      await waitFor(() => service.store.getMessage(receipt.message.id)?.liveInputStatus === "applied");
+
+      expect(liveInputs).toHaveLength(1);
+      expect(liveInputs[0]?.body).toMatchObject({
+        text: "<project_context name=\"P\">\nC.\n</project_context>\n\nSteer this",
+      });
+      expect(service.store.getMessage(receipt.message.id)?.parts).toContainEqual(
+        { type: "text", text: "Steer this" },
+      );
+      expect(JSON.stringify(service.store.getMessage(receipt.message.id))).not.toContain("project_context");
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("prefixes a steered process-job wake without touching the stored wake", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const liveInputs: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        supportsLiveInput: true,
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onLiveInput(conversationId, body) {
+          liveInputs.push({ conversationId, body });
+          return { status: "applied", runId: "active-run" };
+        },
+      }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Initial task" });
+      await waitFor(() => stream !== undefined);
+      const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      await expect(service.deliverNotification({
+        sourceId: "agent-one",
+        triggerKind: "job",
+        deliveryKey: terminal.wake.deliveryKey,
+        threadId: thread.id,
+        processJob: terminal,
+        wakePrompt: "Inspect the completed worker result",
+      })).resolves.toMatchObject({
+        delivery: { delivered: true, disposition: "steered" },
+      });
+
+      expect(liveInputs).toHaveLength(1);
+      expect(liveInputs[0]?.body).toMatchObject({
+        text: "<project_context name=\"P\">\nC.\n</project_context>\n\nInspect the completed worker result",
+      });
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("emits one project summary per affected project on CRUD, membership moves and delete", async () => {
+    const service = await createService({});
+    try {
+      const events: WebEvent[] = [];
+      const unsubscribe = service.subscribe((event) => { events.push(event); });
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      expect(events).toHaveLength(1);
+      expect(events[0]?.type).toBe("projects.changed");
+      expect(events[0]?.payload).toMatchObject({ project: { id: project.id, conversationCount: 0 } });
+
+      events.length = 0;
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      expect(events.filter((event) => event.type === "projects.changed")).toHaveLength(1);
+      expect(events.find((event) => event.type === "projects.changed")?.payload)
+        .toMatchObject({ project: { id: project.id, conversationCount: 1 } });
+
+      events.length = 0;
+      const other = service.createProject({ sourceId: "agent-one", name: "Q" });
+      events.length = 0;
+      service.patchThread(thread.id, { projectId: other.id });
+      const moved = events.filter((event) => event.type === "projects.changed");
+      expect(moved.map((event) => (event.payload as { project: { id: string } }).project.id).sort())
+        .toEqual([other.id, project.id].sort());
+
+      events.length = 0;
+      service.patchProject(project.id, { context: "Updated." });
+      expect(events.filter((event) => event.type === "projects.changed")).toHaveLength(1);
+
+      events.length = 0;
+      service.deleteProject(other.id);
+      const removed = events.filter((event) => event.type === "projects.changed");
+      expect(removed.map((event) => event.payload)).toContainEqual({ projectId: other.id, removed: true });
+      const detached = events.filter((event) =>
+        (event.type === "thread.changed" || event.type === "threads.changed")
+        && "thread" in ((event.payload ?? {}) as object));
+      expect(detached.length).toBeGreaterThanOrEqual(2);
+      expect(service.store.getThread(thread.id)?.projectId).toBeNull();
+      unsubscribe();
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+describe("conversation project dispatch bounds", () => {
+  it("fails an oversized queued promotion without calling the operator", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+        onTurn(body) { turnBodies.push(body); },
+      }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      await service.startTurn(thread.id, { text: "Initial task" });
+      await waitFor(() => stream !== undefined);
+      // Queue while the first turn is active, then enlarge the context past
+      // the turn bound before the queue drains.
+      const receipt = service.submit(thread.id, {
+        submissionId: "11111111-1111-4111-8111-111111111111",
+        text: "Steer this",
+      });
+      expect(receipt.outcome).toBe("live-input");
+      service.patchProject(project.id, { context: `Enlarged ${"x".repeat(WEB_MAX_TURN_TEXT_CHARACTERS)}` });
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "failed");
+
+      expect(turnBodies).toHaveLength(1);
+      expect(service.store.getThread(thread.id)?.runState).toMatchObject({
+        status: "failed",
+        error: { code: "operator_too_large" },
+      });
+      const userMessages = service.thread(thread.id).messages.filter((message) => message.role === "user");
+      expect(userMessages.map((message) => message.parts)).toContainEqual([{ type: "text", text: "Steer this" }]);
+      expect(JSON.stringify(userMessages)).not.toContain("project_context");
+    } finally {
+      await service.stop();
+    }
+  });
+
+  it("bounds an oversized wake follow-up without creating a turn", async () => {
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({
+      fetchImpl: operatorFetch({ onTurn(body) { turnBodies.push(body); } }),
+    });
+    try {
+      const project = service.createProject({ sourceId: "agent-one", name: "P", context: "C." });
+      const thread = service.createThread("agent-one", { projectId: project.id });
+      const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      const receipt = await service.deliverNotification({
+        sourceId: "agent-one",
+        triggerKind: "job",
+        deliveryKey: terminal.wake.deliveryKey,
+        threadId: thread.id,
+        processJob: terminal,
+        wakePrompt: "x".repeat(WEB_MAX_TURN_TEXT_CHARACTERS),
+      });
+      expect(receipt).toMatchObject({
+        delivery: { delivered: false, code: "process_job_wake_failed", retryable: false },
+      });
+      expect(turnBodies).toHaveLength(0);
+      expect(service.store.getThread(thread.id)?.runState.status).toBe("idle");
+      // The durable job card is intake state, not a turn: nothing may carry a turn.
+      expect(service.thread(thread.id).messages.every((message) => message.turnId === undefined)).toBe(true);
+    } finally {
+      await service.stop();
+    }
+  });
+});
+
+
+describe("authenticated console project callback", () => {
+  it("commits create-and-attach once, binds source and turn, then rejects late calls", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const service = await createService({ fetchImpl: operatorFetch({
+      turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+    }) });
+    const ingress = await startWebNotificationIngress(service);
+    try {
+      const thread = service.createThread("agent-one");
+      await service.startTurn(thread.id, { text: "Organize this conversation" });
+      await waitFor(() => stream !== undefined);
+      const turnId = service.store.activeTurn(thread.id)!.id;
+      const scope = { sourceId: "agent-one", threadId: thread.id, turnId };
+      const options = { stateDir: service.store.paths.root };
+      const call = await createWebConsoleToolClient(scope, options);
+      await expect(createWebConsoleToolClient({ ...scope, sourceId: "wrong-source" }, options)).rejects.toMatchObject({ code: "console_tool_revoked" });
+      const operation = { operationId: randomUUID(), tool: "CreateProject" as const, args: { name: "Created by tool", color: "rose", attachCurrentConversation: true } };
+      const result = await call(operation);
+      expect(result).toMatchObject({ projectId: expect.any(String), attachment: { conversationId: thread.id, projectId: null, disposition: "pending" } });
+      expect(await call(operation)).toEqual(result);
+      expect(service.projects("agent-one")).toHaveLength(1);
+      await expect(call({ ...operation, args: { name: "Conflicting" } })).rejects.toMatchObject({ code: "operation_conflict" });
+      const independent = await call({ ...operation, operationId: randomUUID() });
+      expect(independent.projectId).not.toBe(result.projectId);
+      expect(service.projects("agent-one")).toHaveLength(2);
+      await expect(call({ operationId: randomUUID(), tool: "CreateConversation", args: { title: "x".repeat(81) } })).rejects.toMatchObject({ code: "invalid_console_tool" });
+      expect(service.store.listThreadsPage({ sourceId: "agent-one", archived: false }).threads).toHaveLength(1);
+      const created = await call({ operationId: randomUUID(), tool: "CreateConversation", args: { title: "A new topic", projectId: result.projectId } });
+      expect(service.store.getThread(String(created.conversationId))?.runState.status).toBe("idle");
+      const notification = service.store.completeNotification(service.store.reserveNotification({ sourceId: "agent-one", triggerKind: "webhook", deliveryKey: "webhook:console-tools:one", text: "A retained notification" }));
+      const movedNotification = await call({ operationId: randomUUID(), tool: "SetConversationProject", args: { conversationId: notification.thread!.id, projectId: result.projectId } });
+      expect(movedNotification).toMatchObject({ projectId: result.projectId, disposition: "applied" });
+      const originAgent = service.store.getAgent("agent-one")!;
+      service.store.replaceAgents([originAgent, { ...originAgent, sourceId: "foreign-agent" }]);
+      const foreignProject = service.store.createProject({ sourceId: "foreign-agent", name: "Private" });
+      await expect(call({ operationId: randomUUID(), tool: "GetProject", args: { projectId: foreignProject.id } })).rejects.toMatchObject({ code: "project_not_found" });
+      const foreignThread = service.store.createThread("foreign-agent");
+      await expect(call({ operationId: randomUUID(), tool: "SetConversationProject", args: { conversationId: foreignThread.id, projectId: result.projectId } })).rejects.toMatchObject({ code: "thread_not_found" });
+      const endpoint = new URL("/internal/v1/console-tools", ingress.url);
+      expect((await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status).toBe(401);
+      expect((await fetch(endpoint, { method: "POST", headers: { origin: "https://foreign.invalid" }, body: "{}" })).status).toBe(403);
+      stream?.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(service.store.getThread(thread.id)?.projectId).toBe(independent.projectId);
+      await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
+    } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }
   });
 });

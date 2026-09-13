@@ -13,6 +13,7 @@ import type { AgentHarnessRuntimeOptionsInput } from "@mono-agent/agent-harness"
 import {
   createRequestModelOverrideRuntimeExtension,
   requestModelOverrideRoutesOnlyPiNative,
+  requestModelOverrideTargetsPiNative,
 } from "../request-model-override.js";
 import { composeRuntimeOptionExtensions } from "../runtime-option-extensions.js";
 
@@ -21,6 +22,8 @@ interface RunOptions {
   readonly localProviders?: readonly LocalProviderDefinition[];
   readonly baseModel?: RuntimeModelReference;
   readonly fallbackModels?: readonly RuntimeModelReference[];
+  readonly fallbackRoutes?: readonly { readonly model: RuntimeModelReference; readonly effort?: string }[];
+  readonly baseEffort?: string;
 }
 
 function run(metadata: Record<string, unknown> | undefined, options: RunOptions = {}, userMessage?: string) {
@@ -29,6 +32,8 @@ function run(metadata: Record<string, unknown> | undefined, options: RunOptions 
     ...(options.localProviders === undefined ? {} : { localProviders: options.localProviders }),
     ...(options.baseModel === undefined ? {} : { baseModel: options.baseModel }),
     ...(options.fallbackModels === undefined ? {} : { fallbackModels: options.fallbackModels }),
+    ...(options.fallbackRoutes === undefined ? {} : { fallbackRoutes: options.fallbackRoutes }),
+    ...(options.baseEffort === undefined ? {} : { baseEffort: options.baseEffort }),
   });
   return extension({
     request: {
@@ -51,6 +56,48 @@ const OLLAMA_PROVIDER: LocalProviderDefinition = {
   baseUrl: "http://localhost:11434",
   enabled: true,
 };
+
+const EFFORT_MODELS_PROVIDER: LocalProviderDefinition = {
+  id: "localx",
+  type: "lmstudio",
+  baseUrl: "http://localhost:1234",
+  enabled: true,
+  models: [
+    {
+      name: "graded",
+      capabilities: {
+        reasoning: true,
+        reasoning_mode: "effort",
+        reasoning_levels: ["low", "medium", "xhigh"],
+      },
+    },
+    { name: "toggle", capabilities: { reasoning: true, reasoning_mode: "toggle" } },
+    { name: "plain", capabilities: { reasoning: false, reasoning_mode: "none" } },
+  ],
+};
+
+describe("requestModelOverrideTargetsPiNative", () => {
+  it("offers Pi-native tools when an accepted override targets Pi", () => {
+    expect(requestModelOverrideTargetsPiNative(
+      { tui: { model: "openai-codex:gpt-5.6-terra" } },
+      { baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8") },
+    )).toBe(true);
+  });
+
+  it("offers Pi-native tools when only a configured fallback targets Pi", () => {
+    expect(requestModelOverrideTargetsPiNative(undefined, {
+      baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8"),
+      fallbackModels: [parseMonoRuntimeModelReference("openai-codex:gpt-5.6-terra")],
+    })).toBe(true);
+  });
+
+  it("offers Pi-native tools for every parsed provider route", () => {
+    expect(requestModelOverrideTargetsPiNative(undefined, {
+      baseModel: parseMonoRuntimeModelReference("anthropic:claude-opus-4-8"),
+      fallbackModels: [parseMonoRuntimeModelReference("github-copilot:gpt-5.1")],
+    })).toBe(true);
+  });
+});
 
 describe("requestModelOverrideRoutesOnlyPiNative", () => {
   const piPrimary = parseMonoRuntimeModelReference("openai-codex:gpt-5.6-sol");
@@ -158,6 +205,91 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     const result = await run({ cron: { model: "openai-codex:gpt-5.5" } });
     expect(result.runtimeOptions.model).toEqual(expect.objectContaining({ provider: "openai-codex", model: "gpt-5.5" }));
     expect(result.runtimeOptions.effort).toBeUndefined();
+  });
+
+  describe("model-only inherited effort", () => {
+    const baseModel = parseMonoRuntimeModelReference("unknown-provider:primary");
+    const fallbackPinned = parseMonoRuntimeModelReference("unknown-provider:fallback-pinned");
+    const fallbackDefault = parseMonoRuntimeModelReference("unknown-provider:fallback-default");
+    const fallbackRoutes = [
+      { model: fallbackPinned, effort: "xhigh" },
+      { model: fallbackDefault },
+    ];
+
+    it("keeps the configured effort for the default model", async () => {
+      const result = await run(
+        { web: { model: baseModel.reference } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions).not.toHaveProperty("effort");
+    });
+
+    it("uses a configured fallback's pinned effort", async () => {
+      const result = await run(
+        { cron: { model: fallbackPinned.reference } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions.effort).toBe("xhigh");
+    });
+
+    it("selects provider default for a configured fallback without effort", async () => {
+      const result = await run(
+        { webhook: { model: fallbackDefault.reference } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions.effort).toBeNull();
+    });
+
+    it("inherits only when a local model's advertised ladder admits the base effort", async () => {
+      const excluded = await run(
+        { web: { model: "localx:graded" } },
+        { baseModel, baseEffort: "high", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      const included = await run(
+        { web: { model: "localx:graded" } },
+        { baseModel, baseEffort: "xhigh", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      expect(excluded.runtimeOptions.effort).toBeNull();
+      expect(included.runtimeOptions).not.toHaveProperty("effort");
+    });
+
+    it("admits only high/none for a toggle model", async () => {
+      const high = await run(
+        { telegram: { model: "localx:toggle" } },
+        { baseModel, baseEffort: "high", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      const medium = await run(
+        { telegram: { model: "localx:toggle" } },
+        { baseModel, baseEffort: "medium", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      expect(high.runtimeOptions).not.toHaveProperty("effort");
+      expect(medium.runtimeOptions.effort).toBeNull();
+    });
+
+    it("selects provider default for a non-reasoning model", async () => {
+      const result = await run(
+        { slack: { model: "localx:plain" } },
+        { baseModel, baseEffort: "high", localProviders: [EFFORT_MODELS_PROVIDER] },
+      );
+      expect(result.runtimeOptions.effort).toBeNull();
+    });
+
+    it("keeps permissive inheritance for an unknown cloud model", async () => {
+      const result = await run(
+        { web: { model: "unknown-provider:other" } },
+        { baseModel, baseEffort: "high" },
+      );
+      expect(result.runtimeOptions).not.toHaveProperty("effort");
+    });
+
+    it("always lets an explicit request effort win", async () => {
+      const result = await run(
+        { web: { model: fallbackDefault.reference, effort: "medium" } },
+        { baseModel, baseEffort: "high", fallbackRoutes },
+      );
+      expect(result.runtimeOptions.effort).toBe("medium");
+    });
+
   });
 
   it("prefers webhook metadata over cron metadata when both are present", async () => {
@@ -367,70 +499,6 @@ describe("createRequestModelOverrideRuntimeExtension", () => {
     );
   });
 
-  describe("explicit effort only", () => {
-    it.each(["I think the button is broken", "please extra think about it", "What does 'ultra think' mean?", "ultrathink"])(
-      "keeps configured effort for ordinary message text: %s",
-      async (message) => {
-        const logger = { warn: vi.fn(), info: vi.fn() };
-        const result = await run(undefined, { logger }, message);
-        expect(result.runtimeOptions.effort).toBeUndefined();
-        expect(logger.info).not.toHaveBeenCalled();
-      },
-    );
-
-    it.each(["low", "max", "ultra"])("preserves explicit metadata effort %s", async (effort) => {
-      const result = await run({ webhook: { effort } }, {}, "ultra think through it");
-      expect(result.runtimeOptions.effort).toBe(effort);
-    });
-
-    it("warns on invalid metadata effort without interpreting message text", async () => {
-      const logger = { warn: vi.fn() };
-      const result = await run({ webhook: { effort: "turbo" } }, { logger }, "think it over");
-      expect(result.runtimeOptions.effort).toBeUndefined();
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.stringContaining("invalid per-request effort"),
-        expect.objectContaining({ effort: "turbo" }),
-      );
-    });
-  });
-});
-
-// Mirrors the app.ts wiring shape: sibling extensions composed BEFORE the
-// model-override extension, merged later-wins — explicit effort must survive the
-// merge and sibling keys must not be dropped.
-describe("composeRuntimeOptionExtensions with explicit effort", () => {
-  it("preserves explicit request effort and sibling runtime options", async () => {
-    const sibling = async () => ({
-      runtimeOptions: {
-        mcpServers: { memo: { url: "http://127.0.0.1:1" } },
-        allowedTools: ["memo_tool"],
-      },
-      cleanup: async () => {},
-    });
-    const overrideExtension = createRequestModelOverrideRuntimeExtension({});
-    const composed = composeRuntimeOptionExtensions([
-      sibling,
-      async (input) => overrideExtension({ request: input.request }),
-    ]);
-    expect(composed).toBeDefined();
-
-    const input = {
-      request: {
-        conversationId: "conv-1",
-        userMessage: "please ultrathink this",
-        metadata: { tui: { effort: "low" } },
-        abortSignal: new AbortController().signal,
-      },
-      runId: "run-1",
-      context: {},
-    } as unknown as AgentHarnessRuntimeOptionsInput;
-    const result = await composed!(input);
-
-    expect(result.runtimeOptions?.effort).toBe("low");
-    expect(result.runtimeOptions?.mcpServers).toEqual({ memo: { url: "http://127.0.0.1:1" } });
-    expect(result.runtimeOptions?.allowedTools).toContain("memo_tool");
-    await result.cleanup?.();
-  });
 });
 
 /**
@@ -496,6 +564,44 @@ describe("per-request override warnings bound the value they echo", () => {
     const logged = logger.warn.mock.calls[0]?.[1] as { effort: string };
     expect(logged.effort).toBe(echo(effort));
     expect(byteLength(logged.effort)).toBeLessThan(1_000);
+  });
+
+  /**
+   * The escalation `info` is the same kind of record as the warnings above it: the keyword it
+   * prints is a slice of the operator's own message, so it carries no printable/single-line
+   * guarantee of its own and gets the one echo budget every other operator surface uses.
+   */
+  it("escapes a newline inside the matched keyword it logs", async () => {
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    await run(undefined, { logger, baseEffort: "medium" }, `ultra${NEWLINE}think about it`);
+    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
+    expect(logged.keyword).toBe(echo(`ultra${NEWLINE}think`));
+    expect(logged.keyword).not.toContain(NEWLINE);
+  });
+
+  /**
+   * The phrase separator is any ONE whitespace code point, and `\s` includes U+2028 -- a line
+   * separator, invisible and cursor-moving. A newline-only escape is not enough here, which is
+   * why the keyword goes through the same full sanitizer as every other echo.
+   */
+  it("escapes a line separator used as the phrase separator", async () => {
+    const separator = String.fromCharCode(0x2028);
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    await run(undefined, { logger, baseEffort: "medium" }, `ultra${separator}think about it`);
+    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string };
+    expect(logged.keyword).toBe(String.raw`ultra\u2028think`);
+    expect(logged.keyword).not.toContain(separator);
+  });
+
+  it("bounds the matched keyword when the message floods the phrase separator", async () => {
+    const logger = { warn: vi.fn(), info: vi.fn() };
+    await run(undefined, { logger, baseEffort: "medium" }, `ultra${" ".repeat(1_000_000)}think`);
+    const logged = logger.info.mock.calls[0]?.[1] as { keyword: string; to: string };
+    expect(byteLength(logged.keyword)).toBeLessThanOrEqual(MODEL_REFERENCE_ECHO_MAX_BYTES);
+    // A million spaces is not the phrase "ultra think", so the standalone `think` is what
+    // actually matched -- the escalation stays, one rung lower, and is reported as such.
+    expect(logged.keyword).toBe("think");
+    expect(logged.to).toBe("high");
   });
 
   /** The error the parser actually throws for `model`, for asserting against its two layers. */
@@ -597,4 +703,35 @@ describe("per-request override warnings bound the value they echo", () => {
     expect(logged.model).not.toContain("g".repeat(200));
     expect(logged.reason).not.toContain("g".repeat(200));
   });
+});
+
+it("matches harness session-model declaration precedence", async () => {
+  const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { createAgentHarness, createInMemoryHistoryStore } = await import("@mono-agent/agent-harness");
+  const dir = await mkdtemp(join(tmpdir(), "override-precedence-"));
+  const identityPath = join(dir, "IDENTITY.md");
+  await writeFile(identityPath, "You are Mono.");
+  const base = parseMonoRuntimeModelReference("faux:base");
+  const primary = parseMonoRuntimeModelReference("faux:primary");
+  const sources = ["webhook", "cron", "web", "tui", "telegram", "slack"];
+  const logger = { warn: vi.fn() };
+  const calls: RuntimeModelReference[] = [];
+  const harness = createAgentHarness({ identityPath, model: base, historyStore: createInMemoryHistoryStore(),
+    session: { mode: "continuous", supportsResume: true, idleTimeoutMs: 60000 },
+    runtime: { run: async (_prompt, options) => { calls.push(options.model); return { text: "ok", providerSessionId: "id" }; } },
+    runtimeOptionsForRequest: createRequestModelOverrideRuntimeExtension({ baseModel: base, logger }) });
+  try {
+    for (const [index, source] of sources.entries()) {
+      for (const declared of [primary.reference, undefined, "", "invalid"]) {
+        const metadata = Object.fromEntries(sources.slice(index).map((key) => [key, { model: "faux:lower" }]));
+        metadata[source] = declared === undefined ? {} as { model: string } : { model: declared };
+        expect((await harness.run({ conversationId: `${source}:${String(declared)}`, userMessage: "hello",
+          abortSignal: new AbortController().signal, metadata })).text).toBe("ok");
+        expect(calls.at(-1)).toEqual(declared === primary.reference ? primary : base);
+      }
+    }
+    expect(logger.warn).toHaveBeenCalled();
+  } finally { await harness.dispose?.(); await rm(dir, { recursive: true, force: true }); }
 });

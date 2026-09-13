@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StartTurnInput, WebMessage } from "./types";
-import { agent, attachment, monitor, thread, uploadLimits } from "./test/fixtures";
+import { agent, attachment, monitor, processJob, thread, uploadLimits } from "./test/fixtures";
 
 const storeMock = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
 
@@ -28,6 +28,7 @@ import {
   resetComposerDraft,
 } from "./composer-draft";
 import { Composer } from "./components/Composer";
+import { useProcessJobPresentation } from "./process-job-presentation";
 import { WebRuntimeProvider } from "./runtime";
 
 const onlineAgent = agent("agent");
@@ -53,6 +54,8 @@ const createStore = (
   selectedThreadId: idleThread.id,
   loading: false,
   detailLoading: false,
+  selectionLoading: false,
+  selectionError: null,
   error: null,
   actionError: null,
   connection: "live",
@@ -69,12 +72,14 @@ const createStore = (
   archiveThread: vi.fn(),
   unarchiveThread: vi.fn(),
   sendTurn,
+  sendSubmission: sendTurn,
   sendLiveInput: vi.fn().mockResolvedValue(undefined),
   cancelTurn: vi.fn(),
   setShowArchived: vi.fn(),
   setModel: vi.fn(),
   setEffort: vi.fn(),
   retry: vi.fn(),
+  retrySelection: vi.fn(),
   clearActionError: vi.fn(),
   ...overrides,
 });
@@ -147,6 +152,23 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     }));
   });
 
+  it("keeps an implicit submission blocked while the current selection has failed", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+    storeMock.current = createStore(sendTurn, { selectionError: "detail unavailable" });
+    const { runtime } = await renderRuntime();
+    const composer = runtime.thread.composer;
+
+    expect(composer.getState().canSend).toBe(false);
+    act(() => {
+      composer.setText("must stay local");
+      composer.send();
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(sendTurn).not.toHaveBeenCalled();
+    expect(composer.getState().text).toBe("must stay local");
+  });
+
   it("hides legacy silent cron rows while coalescing Monitor activity and keeping rich cron content", async () => {
     const wake = (id: string): WebMessage => ({
       id, threadId: idleThread.id, turnId: `turn-${id}`, role: "assistant", status: "complete",
@@ -177,6 +199,95 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     ] } });
     const view = await renderRuntime();
     expect(view.runtime.thread.getState().messages.map((message) => message.id)).toEqual(["activity", "running"]);
+  });
+
+  it("gives assistant-ui and the conversation stack one separated provider snapshot", async () => {
+    const ordinary: WebMessage = {
+      id: "ordinary", threadId: idleThread.id, role: "assistant", status: "complete",
+      createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", attachments: [],
+      parts: [{ type: "text", text: "Visible reply" }],
+    };
+    const jobOnly: WebMessage = {
+      ...ordinary,
+      id: "job-only",
+      parts: [{ type: "process-job", job: processJob() }],
+    };
+    storeMock.current = createStore(vi.fn(), {
+      detail: { thread: idleThread, messages: [ordinary, jobOnly] },
+      hasOlderMessages: true,
+    });
+    let runtime: AssistantRuntime | undefined;
+    let presentation: ReturnType<typeof useProcessJobPresentation> | undefined;
+    function PresentationCapture() {
+      presentation = useProcessJobPresentation();
+      return null;
+    }
+    render(
+      <WebRuntimeProvider>
+        <RuntimeCapture onReady={(value) => { runtime = value; }} />
+        <PresentationCapture />
+      </WebRuntimeProvider>,
+    );
+
+    await waitFor(() => expect(runtime).toBeDefined());
+    expect(runtime?.thread.getState().messages.map(({ id }) => id)).toEqual(["ordinary"]);
+    expect(presentation?.jobs.map(({ part }) => part.job.jobId)).toEqual([processJob().jobId]);
+    expect(presentation?.historyIsBounded).toBe(true);
+  });
+
+  it("updates lifecycle events on the exact launch response while retaining one stack entry", async () => {
+    const runningJob = processJob({
+      state: "running",
+      timestamps: { ...processJob().timestamps, completedAt: null },
+      durationMs: null,
+      exitCode: null,
+      wake: { ...processJob().wake, state: "pending", attempts: 0, lastAttemptAt: null },
+    });
+    const receipt = {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: runningJob.jobId,
+      tool: runningJob.tool,
+      state: "running",
+      startedAt: runningJob.timestamps.startedAt,
+    } as const;
+    const origin: WebMessage = {
+      id: "origin", threadId: idleThread.id, role: "assistant", status: "complete",
+      createdAt: "2026-07-17T10:00:00.000Z", updatedAt: "2026-07-17T10:00:00.000Z", attachments: [],
+      parts: [{ type: "tool-call", toolCallId: "launch", toolName: "Exec", status: "complete", structuredResult: receipt }],
+    };
+    const carrier = (job: ReturnType<typeof processJob>): WebMessage => ({
+      ...origin,
+      id: "job-card",
+      parts: [{ type: "process-job", job }],
+    });
+    storeMock.current = createStore(vi.fn(), {
+      detail: { thread: idleThread, messages: [origin, carrier(runningJob)] },
+    });
+    let presentation: ReturnType<typeof useProcessJobPresentation> | undefined;
+    function PresentationCapture() {
+      presentation = useProcessJobPresentation();
+      return null;
+    }
+    let runtime: AssistantRuntime | undefined;
+    const tree = () => (
+      <WebRuntimeProvider>
+        <RuntimeCapture onReady={(value) => { runtime = value; }} />
+        <PresentationCapture />
+      </WebRuntimeProvider>
+    );
+    const view = render(tree());
+    await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
+      .toEqual(["tool-call", "data"]));
+    expect(presentation?.jobs).toHaveLength(1);
+
+    storeMock.current = createStore(vi.fn(), {
+      detail: { thread: idleThread, messages: [origin, carrier(processJob())] },
+    });
+    view.rerender(tree());
+    await waitFor(() => expect(runtime?.thread.getState().messages[0]?.content?.map((part) => part.type))
+      .toEqual(["tool-call", "data", "data"]));
+    expect(runtime?.thread.getState().messages[0]?.id).toBe("origin");
+    expect(presentation?.jobs).toHaveLength(1);
   });
 
   it("restores a rejected turn as a retryable composer draft without an unhandled rejection", async () => {
@@ -280,7 +391,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     await waitFor(() => expect(composer.getState().text).toBe("second"));
   });
 
-  it("routes text submitted during a running turn to live input instead of starting another turn", async () => {
+  it("routes text submitted during a running turn through the unified server-authoritative action", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
@@ -300,12 +411,15 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       composer.send();
     });
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the smaller scope"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use the smaller scope" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(composer.getState().text).toBe("");
   });
 
-  it("offers explicit Steer on a running conversation and routes it to live input", async () => {
+  it("shows one Send action on a running conversation and no Steer action", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
@@ -319,23 +433,22 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     const { runtime } = await renderComposerRuntime();
     const input = screen.getByRole("combobox", { name: "Message" });
-    const steer = screen.getByRole("button", { name: "Steer this message" });
-
-    expect(steer).toBeDisabled();
-    expect(steer).toHaveAttribute(
-      "title",
-      "Offer to the active run.",
-    );
+    expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
+    const send = screen.getByRole("button", { name: "Send message" });
+    expect(send).toBeDisabled();
     fireEvent.change(input, { target: { value: "Treat the browser state as stale" } });
-    await waitFor(() => expect(steer).toBeEnabled());
-    fireEvent.click(steer);
+    await waitFor(() => expect(send).toBeEnabled());
+    fireEvent.click(send);
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Treat the browser state as stale"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Treat the browser state as stale" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
-  it("forces live input from Ctrl+Shift+Enter while the conversation appears idle", async () => {
+  it("aliases Ctrl+Shift+Enter to the same Send action while the conversation appears idle", async () => {
     const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     storeMock.current = createStore(sendTurn, { sendLiveInput });
@@ -350,13 +463,18 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       shiftKey: true,
     });
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the forced shortcut"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use the forced shortcut" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
-  it("fails a forced attachment closed and restores its text, quote, and upload", async () => {
-    const sendTurn = vi.fn<SendTurn>().mockResolvedValue(undefined);
+  it("restores text, quote, and upload when an active attachment submission is rejected", async () => {
+    const sendTurn = vi.fn<SendTurn>().mockRejectedValue(new Error(
+      "Files can be sent when this response finishes. Your draft and files are kept.",
+    ));
     const sendLiveInput = vi.fn().mockResolvedValue(undefined);
     const runningThread = thread("thread", "agent", {
       runState: { id: "turn-running", status: "running" },
@@ -376,9 +494,7 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     act(() => composer.setQuote({ text: "quoted context", messageId: "source-message" }));
     fireEvent.change(input, { target: { value: "Do not drop this" } });
-    const steer = screen.getByRole("button", { name: "Steer this message" });
-    expect(steer).toBeDisabled();
-    expect(steer).toHaveAttribute("title", "Steering is text-only.");
+    expect(screen.queryByRole("button", { name: "Steer this message" })).not.toBeInTheDocument();
 
     fireEvent.keyDown(input, {
       key: "Enter",
@@ -393,8 +509,15 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
       messageId: "source-message",
     });
     expect(composer.getState().attachments).toMatchObject([{ name: "keep.md" }]);
+    expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Do not drop this",
+        quote: { text: "quoted context", messageId: "source-message" },
+        attachmentIds: ["upload-1"],
+      }),
+      expect.any(Function),
+    );
     expect(sendLiveInput).not.toHaveBeenCalled();
-    expect(sendTurn).not.toHaveBeenCalled();
   });
 
   it("does not offer explicit Steer for an idle conversation, a new conversation, or cron channel", async () => {
@@ -442,15 +565,18 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     });
     const { runtime } = await renderComposerRuntime();
     const input = screen.getByRole("combobox", { name: "Message" });
-    const send = screen.getByRole("button", { name: "Send live follow-up" });
+    const send = screen.getByRole("button", { name: "Send message" });
 
     expect(send).toBeDisabled();
     fireEvent.change(input, { target: { value: "Use the actual button" } });
     await waitFor(() => expect(send).toBeEnabled());
     fireEvent.click(send);
 
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use the actual button"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use the actual button" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 
@@ -475,8 +601,11 @@ describe("WebRuntimeProvider assistant-ui submission integration", () => {
     expect(runtime.thread.composer.getState().text).toBe("Use Enter");
 
     fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
-    await waitFor(() => expect(sendLiveInput).toHaveBeenCalledWith("Use Enter"));
-    expect(sendTurn).not.toHaveBeenCalled();
+    await waitFor(() => expect(sendTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Use Enter" }),
+      expect.any(Function),
+    ));
+    expect(sendLiveInput).not.toHaveBeenCalled();
     expect(runtime.thread.composer.getState().text).toBe("");
   });
 

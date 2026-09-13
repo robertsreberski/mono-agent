@@ -26,7 +26,10 @@ object keys are redacted; numeric values under matched keys are retained; retain
 free text is scanned for a closed set of high-confidence credential shapes. A
 `tokens` object is retained only when it is a non-empty, closed envelope of
 recognized token-usage keys whose values are finite non-negative numbers;
-mixed, unknown, or string-valued token objects remain fully redacted.
+mixed, unknown, or string-valued token objects remain fully redacted. Compaction
+metadata also preserves boolean `tokenCountsExact` and null
+`generatedSummaryTokens`/`tailEstimateTokens`; strings or objects under those names
+remain redacted.
 Phoenix export keeps its separate, default-off `contentPatternRedaction` policy
 for content supplied directly to an exporter.
 
@@ -80,6 +83,10 @@ import { createPhoenixRunExporter } from "@mono-agent/observability-phoenix";
    readers use to discover each agent's artifact directory.
 4. Browser consumers pass recorded events through `./event-timeline` for
    display rows or `./run-export` for Node-free span attributes.
+5. `pruneRunArtifacts` applies one policy to terminal summary/event pairs and
+   the separate `tool-output/` run-directory pool, protecting running,
+   uncertain, or recently modified directories while still cleaning recordless
+   aged orphans.
 
 The local recorder remains primary, exporters are additive, and operator
 readers consume completed write boundaries rather than the in-memory live
@@ -93,6 +100,7 @@ stream.
 | `@mono-agent/observability/event-timeline` | Browser-safe adjacent-event coalescing for display. |
 | `@mono-agent/observability/run-export` | Node-free event-to-span mapping and exporter helpers. |
 | `src/recorder.ts` / `src/recorded-runs.ts` | Artifact write boundaries and bounded, hostile-file-safe reads. |
+| `src/artifact-retention.ts` / `src/tool-output-path.ts` | Terminal-run and raw tool-output retention with shared canonical containment and run-directory naming. |
 | `src/trace-sources.ts` | File-backed source manifests, heartbeat updates, discovery, and per-source run reads. |
 
 ### Recorder checkpoints and reads
@@ -179,6 +187,7 @@ policy is independent of the local recorder's always-on credential-shape scan.
 | root | `createJsonlRunRecorder` | Record one bounded local run. |
 | root | `listRecordedRuns` / `readRecordedRun` | Build bounded local history views. |
 | root | `auditRecordedRuns` / `summarizeRecordedRunMetrics` | Inspect artifact health and aggregate operational metrics. |
+| root | `pruneRunArtifacts` | Apply age/count/dry-run retention to terminal JSONL pairs and tool-output run directories. |
 | root | `registerTraceSource` / `listTraceSources` | Publish and discover running agent sources. |
 | root | `createCompositeRunRecorder` | Keep local recording primary while adding a best-effort exporter. |
 | `./event-timeline` | `combineRecordedRunEvents` | Render a browser-safe, coalesced event timeline. |
@@ -292,6 +301,7 @@ auditRecordedRuns
 buildEventSpanAttributes
 buildRootSpanAttributes
 cacheUsageMetrics
+canonicalToolArtifactRoot
 combineRecordedRunEvents
 containsVisibleSensitiveText
 countRuntimeWarnings
@@ -319,6 +329,7 @@ segmentTimelineTurns
 spanKindHint
 spanStatusFor
 summarizeRecordedRunMetrics
+toolOutputRunDirectoryName
 truncateVisibleText
 ```
 

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
 import {
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
   MAX_INFO_PROVIDER_ID_BYTES,
   MAX_INFO_PROVIDER_ITEMS,
 } from "@mono-agent/agent-contracts";
@@ -44,6 +45,53 @@ const replyPartOutcomes = [{
 }];
 
 describe("OperatorClient", () => {
+  it("accepts only a sufficient v1 context-import capability", async () => {
+    const info = async (contextImport: unknown) => await new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json({
+        schema: 1,
+        capabilities: { contextImport },
+      })) as typeof fetch,
+    }).info();
+
+    await expect(info({ version: 1, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES }))
+      .resolves.toMatchObject({ contextImport: { version: 1, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } });
+    await expect(info({ version: 2, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES }))
+      .resolves.not.toHaveProperty("contextImport");
+    await expect(info({ version: 1, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES - 1 }))
+      .resolves.not.toHaveProperty("contextImport");
+  });
+
+  it("posts canonical context import and preserves bounded conflict reasons", async () => {
+    const requests: Array<{ url: string; body: string }> = [];
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async (input, init) => {
+        const url = String(input);
+        requests.push({ url, body: String(init?.body) });
+        if (url.includes("conflict")) {
+          return Response.json({
+            error: { code: "context_import_conflict", message: "Import conflicts.", reason: "conversation_not_empty" },
+          }, { status: 409 });
+        }
+        return Response.json({ imported: true, status: "appended", conversationId: "web:one" });
+      }) as typeof fetch,
+    });
+
+    await expect(client.recordContextImport("web:one", "snapshot", "operation:one"))
+      .resolves.toBe("appended");
+    expect(requests[0]).toEqual({
+      url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Aone/context-imports",
+      body: JSON.stringify({ text: "snapshot", idempotencyKey: "operation:one" }),
+    });
+    await expect(client.recordContextImport("conflict", "snapshot", "operation:two"))
+      .rejects.toMatchObject({
+        code: "context_import_conflict",
+        status: 409,
+        details: { reason: "conversation_not_empty" },
+      });
+  });
+
   it("keeps status, login, and check routes keyless without an agent key and sends the bearer when configured", async () => {
     const requests: { url: string; authorization: string | null; body?: string }[] = [];
     const baseStatus = {
@@ -279,6 +327,7 @@ describe("OperatorClient", () => {
         modelOptions: {
           "p/m": {
             effortLevels: ["low", "high"],
+            effort: null,
             reasoning: true,
             contextWindow: 128_000,
           },
@@ -305,6 +354,7 @@ describe("OperatorClient", () => {
       modelOptions: {
         "p/m": {
           effortLevels: ["low", "high"],
+          effort: null,
           reasoning: true,
           contextWindow: 128_000,
         },
@@ -326,12 +376,13 @@ describe("OperatorClient", () => {
     });
   });
 
-  it("intersects additive reply attachment and MCP Apps capabilities", async () => {
+  it("intersects additive targeting, reply attachment, and MCP Apps capabilities", async () => {
     const client = new OperatorClient({
       baseUrl: "http://127.0.0.1:1234/gui",
       fetchImpl: (async () => Response.json({
         schema: 1,
         capabilities: {
+          liveInputTargeting: { version: 1 },
           replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 },
           mcpApps: {
             bridgeVersion: 1,
@@ -343,6 +394,7 @@ describe("OperatorClient", () => {
     });
 
     await expect(client.info()).resolves.toMatchObject({
+      supportsLiveInputTargeting: true,
       replyAttachments: { version: 1, maxBytes: 20 * 1024 * 1024 },
       mcpApps: {
         bridgeVersion: 1,
@@ -508,6 +560,8 @@ describe("OperatorClient", () => {
       text: "Use the new constraint",
       receivedAt: "2026-07-21T09:00:00.000Z",
       deliveryKey: "process-job:job-7",
+      targetTurnId: "web-turn-7",
+      targetRunId: "run-7",
     })).resolves.toEqual({ status: "applied", runId: "run-7" });
     expect(request).toEqual({
       url: "http://127.0.0.1:1234/gui/v1/conversations/web%3Athread%2Fone/live-input",
@@ -516,8 +570,32 @@ describe("OperatorClient", () => {
         text: "Use the new constraint",
         receivedAt: "2026-07-21T09:00:00.000Z",
         deliveryKey: "process-job:job-7",
+        targetTurnId: "web-turn-7",
+        targetRunId: "run-7",
       },
     });
+  });
+
+  it("parses explicit uncertain live-input settlement and rejects unknown statuses", async () => {
+    const responses = [
+      { status: "uncertain", reason: "delivery_uncertain" },
+      { status: "future_result", reason: "retry_me" },
+    ];
+    const client = new OperatorClient({
+      baseUrl: "http://127.0.0.1:1234/gui",
+      fetchImpl: (async () => Response.json(responses.shift())) as typeof fetch,
+    });
+    const input = {
+      conversationId: "web:thread",
+      id: "input",
+      text: "Guide",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    };
+    await expect(client.liveInput(input)).resolves.toEqual({
+      status: "uncertain",
+      reason: "delivery_uncertain",
+    });
+    await expect(client.liveInput(input)).rejects.toMatchObject({ code: "invalid_operator_live_input" });
   });
 
   it("reads and submits structured AskUser state on the encoded conversation route", async () => {
@@ -612,13 +690,18 @@ describe("OperatorClient", () => {
       }) as typeof fetch,
     });
     const frames: unknown[] = [];
+    let admitted = false;
     const result = await client.turn({
       conversationId: "web:thread",
       text: "prompt",
       attachments: [{ kind: "document", mimeType: "text/plain", data: "aGk=", name: "a.txt", sizeBytes: 2 }],
       metadata: { web: { model: "p/m" }, tui: { model: "p/m" } },
       signal: new AbortController().signal,
-      onFrame(frame) { frames.push(frame); },
+      onAdmitted() { admitted = true; },
+      onFrame(frame) {
+        expect(admitted).toBe(true);
+        frames.push(frame);
+      },
     });
 
     expect(requestBody).toMatchObject({ client: "web", conversationId: "web:thread", text: "prompt" });

@@ -6,6 +6,8 @@ export type { AppliedLiveInput, LiveInputMailbox } from "./live-input.js";
 export { createInMemoryHistoryStore } from "./history.js";
 export { createDurableHistoryStore, DurableConversationHistoryStore } from "./durable-history.js";
 export { isProcessAlive } from "./history-process-liveness.js";
+export { createToolHistoryArtifactSink } from "./tool-history-artifacts.js";
+export type { ToolHistoryArtifactSinkInput } from "./tool-history-artifacts.js";
 export type { DurableHistoryStoreOptions, DurableHistoryStoreStats } from "./durable-history.js";
 export {
   acquireToolHistoryWriter,
@@ -40,7 +42,7 @@ export type {
   ToolHistoryWriterOptions,
 } from "./tool-history-store.js";
 export { NoopRunRecorder } from "./recorder.js";
-export { createRuntimeSessionStore } from "./sessions.js";
+export { CONVERSATION_HISTORY_VERSION_MAX_BYTES, createRuntimeSessionStore } from "./sessions.js";
 export {
   classifyContinuationMcpServerTransport,
   isStdioMcpServerSpec,
@@ -84,12 +86,15 @@ export type {
   AgentHarnessTurnHistoryEnricher,
   AgentSessionMode,
   ConversationHistoryProviderSessionTurn,
+  ConversationHistoryExclusiveTurn,
+  ConversationHistoryContextImport,
   ConversationHistoryStore,
   ExternalRunSummary,
   InMemoryHistoryStoreOptions,
   MemoryWriteMode,
   PreparedHistoryAppend,
   ProviderSessionTurnCommitOptions,
+  ProviderSessionTurnBinding,
 } from "./types.js";
 export { buildAgentContext } from "./context/context-builder.js";
 export { DEFAULT_SOUL_TEXT } from "./context/default-soul.js";
@@ -147,3 +152,6 @@ export type {
   ToolPolicyInput,
   ToolPolicyRuntimeOptions,
 } from "./tool-policy/policy.js";
+
+export { createSessionRuntimeResolver } from "./session-runtime.js";
+export type { ProviderSessionHandle, SessionRuntimeResolver } from "./session-runtime.js";

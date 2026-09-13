@@ -10,13 +10,15 @@
 // createSessionLiveness primitives so the await-free spans are enforced by
 // construction rather than by inline sequencing.
 
-import { JsonlSessionRepo, MemorySessionRepo } from "@earendil-works/pi-agent-core";
+import { JsonlSessionRepo, MemorySessionRepo, laneConfig, laneState, operationMeta, operationResult, operationState } from "@earendil-works/pi-agent-core";
+import { validRecoveryProjection } from "./terminal-recovery.js";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { createHash } from "node:crypto";
 import { access, open, readdir, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createSessionRegistry } from "../../runtime/sessions.js";
 import { createSessionLiveness } from "../../runtime/session-liveness.js";
-import { createPiSessionAdapter, PI_CONTEXT } from "./harness-adapter.js";
+import { buildPiSessionContext, createPiSessionAdapter, PI_CONTEXT } from "./harness-adapter.js";
 
 async function syncPath(path) {
   const handle = await open(path, "r");
@@ -28,6 +30,7 @@ async function syncPath(path) {
 }
 
 async function syncDurableTranscript(entry) {
+  if (entry.recoveryPending) throw new Error("Pi terminal recovery is pending");
   if (!entry.durable) return;
   const path = entry.metadata?.path;
   if (typeof path !== "string" || !path) {
@@ -91,7 +94,7 @@ async function closeAndDeleteSession(session, repo, knownMetadata) {
 // reach over native pi sessions that the legacy bridge had.
 const nativeSessionRepo = new MemorySessionRepo();
 const nativeSessions = createSessionRegistry({
-  isBusy: (entry) => entry.busy === true,
+  isBusy: (entry) => entry.busy === true || entry.recoveryPending === true,
   onSync: syncDurableTranscript,
   onEvict: async (entry, reason) => {
     // Ordinary disposal/TTL only drops registry metadata so durable sessions
@@ -415,7 +418,7 @@ export async function resolveSession(runState, {
       // (F4) safe. Do not introduce any await in this span or the TOCTOU window
       // reopens. `claim` re-reads the same registry entry and sets busy in one
       // await-free step; a busy entry loses and returns session_busy.
-      const claimed = liveness.claim(requestedSessionId);
+      const claimed = entry.recoveryPending ? { ok: /** @type {const} */ (false), reason: "busy" } : liveness.claim(requestedSessionId);
       if (!claimed.ok) {
         // claim() can lose two ways: "busy" (the entry adopted above is
         // mid-turn) or "missing" (no live entry). "missing" is UNREACHABLE on
@@ -446,6 +449,7 @@ export async function resolveSession(runState, {
         };
       }
       runState.sessionEntry = claimed.entry;
+      delete claimed.entry.recovery;
       try {
         runState.session = createPiSessionAdapter(await claimed.entry.repo.open(
           claimed.entry.metadata,
@@ -463,10 +467,11 @@ export async function resolveSession(runState, {
       }
     }
   } else {
-    // Fresh runs persist into the durable jsonl repo when piSessionsRoot is
-    // set, so a kept-alive session can be reopened from disk after the live
-    // entry is evicted; otherwise the in-memory repo is used.
-    runState.session = createPiSessionAdapter(await (durableRepo || nativeSessionRepo)
+    // Attribution may equal a live primary's id on a stateless retry/backup.
+    // A private ephemeral repo prevents both create collisions and cleanup of
+    // that primary's transcript. Only keep-alive calls use a shared repository.
+    if (options.sessionKeepAlive !== true) runState.ephemeralSessionRepo = new MemorySessionRepo();
+    runState.session = createPiSessionAdapter(await (runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo)
       .create({ id: providerSessionId, cwd: cwd || process.cwd() }, PI_CONTEXT));
   }
   return { done: false };
@@ -488,7 +493,7 @@ export async function discardUncommittedSession(runState, { durableRepo }) {
   if (runState.session && !runState.sessionEntry) {
     await closeAndDeleteSession(
       runState.session,
-      durableRepo || nativeSessionRepo,
+      runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo,
     );
   }
   // Drop the create-on-miss BUSY reservation too, else the busy placeholder
@@ -517,7 +522,7 @@ export async function commitSession(runState, {
   onEvent,
 }) {
   const { session, sessionEntry, baselineLeafId, reservation } = runState;
-  if (options.sessionKeepAlive === true && !externalAbort && !errorMessage) {
+  if (options.sessionKeepAlive === true && ((!externalAbort && !errorMessage) || runState.retainRecoveryTail)) {
     try {
       if (sessionEntry) {
         // Resumed run: the harness appended this run's turns onto the live
@@ -540,6 +545,8 @@ export async function commitSession(runState, {
         else nativeSessions.set(providerSessionId, entry, { idleTimeoutMs: sessionTtlMs });
         runState.registeredSessionEntry = entry;
       }
+      const retained = runState.sessionEntry || runState.registeredSessionEntry;
+      if (runState.retainRecoveryTail && retained) retained.recoveryPending = !!externalAbort || !!errorMessage;
     } catch (err) {
       // Session persistence must never fail the run; drop the (now
       // inconsistent) session instead of resuming from a broken transcript.
@@ -573,7 +580,7 @@ export async function commitSession(runState, {
     // (the success keep-alive path overwrites it with the finalized entry, so
     // it is only this drop branch that must clean it up).
     if (reservation) reservation.release();
-    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
+    await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);
   }
 }
 
@@ -594,8 +601,9 @@ export async function rollbackAbortedTurn(runState, { requestedSessionId, provid
     }
     nativeSessions.delete(requestedSessionId);
   } else {
-    nativeSessions.delete(providerSessionId);
-    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
+    // A stateless call never registered this id; it may belong to the primary.
+    if (!runState.ephemeralSessionRepo) nativeSessions.delete(providerSessionId);
+    await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);
   }
 }
 
@@ -618,7 +626,7 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
   // resumed user session here would be data loss) and never when the throw
   // preceded session create.
   if (session && !sessionEntry) {
-    await closeAndDeleteSession(session, durableRepo || nativeSessionRepo);
+    await closeAndDeleteSession(session, runState.ephemeralSessionRepo || durableRepo || nativeSessionRepo);
   }
   // Drop a create-on-miss BUSY placeholder (R8) left in the registry by a throw
   // during/after the reservation — including a throw inside the create await
@@ -640,5 +648,80 @@ export async function cleanupSessionOnThrow(runState, { durableRepo }) {
       try { await session.moveTo(baselineLeafId); } catch { /* best-effort */ }
     }
     try { await session.close(); } catch { /* best-effort */ }
+  }
+}
+
+/** Capture only after close; pending entries cannot be driven by another turn. */
+export async function captureSessionRecovery(runState, { options, providerSessionId, modelKey, model, pending }) {
+  const entry = runState.sessionEntry || runState.registeredSessionEntry;
+  if (!entry?.durable) return undefined;
+  try {
+    if (!Array.isArray(runState.recoveryInputIds)) throw new Error("Pi session recovery input identities are unavailable");
+    const tipId = await runState.session.getLeafId();
+    if (typeof tipId !== "string" || !tipId) throw new Error("Pi session recovery tip is unavailable");
+    const ancestry = createHash("sha256").update(JSON.stringify(await runState.session.getEntries())).digest("hex");
+    await runState.session.close();
+    const receipt = { runId: options.sessionRecovery.runId, revision: options.sessionRecovery.revision, providerSessionId, modelKey, tipId };
+    entry.recovery = { receipt: { ...receipt }, model: { ...model, input: [...model.input] }, ancestry, operationId: runState.recoveryOperationId, baselineTipId: runState.recoveryBaselineTipId, inputIds: runState.recoveryInputIds };
+    entry.recoveryPending = pending || !!options.abortSignal?.aborted;
+    return receipt;
+  } catch (error) {
+    // The run's outer catch performs legacy rollback/close or fresh deletion.
+    // Release provisional recovery state first so failed capture cannot strand
+    // an entry as busy without a receipt that could settle it.
+    entry.recoveryPending = false;
+    delete entry.recovery;
+    throw error;
+  }
+}
+
+/** Read-only settlement: never drive an operation or append host-authored prose. */
+export async function recoverDurableNativeSession(receipt, context) {
+  const entry = nativeSessions.get(receipt?.providerSessionId);
+  const proof = entry?.recovery;
+  if (!entry?.durable || entry.busy || !proof
+    || !["runId", "revision", "providerSessionId", "modelKey", "tipId"].every((key) => receipt[key] === proof.receipt[key])
+    || !Array.isArray(context?.appliedInputIds)
+    || proof.inputIds.some((id) => typeof id !== "string")
+    || JSON.stringify([...proof.inputIds].sort()) !== JSON.stringify([...context.appliedInputIds].sort())) return false;
+  entry.busy = true;
+  let raw;
+  try {
+    const matches = (await entry.repo.list(undefined, PI_CONTEXT)).filter((record) => record.id === receipt.providerSessionId);
+    if (matches.length !== 1 || matches[0].path !== entry.metadata.path) return false;
+    raw = await entry.repo.open(matches[0], PI_CONTEXT);
+    const branch = await raw.branch("main", PI_CONTEXT);
+    if (!branch || await branch.getTipId(PI_CONTEXT) !== receipt.tipId) return false;
+    const state = (await raw.getValue(laneState("main"), PI_CONTEXT))?.value;
+    const config = (await raw.getValue(laneConfig("main"), PI_CONTEXT))?.value;
+    const terminal = (await raw.getValue(operationResult(proof.operationId), PI_CONTEXT))?.value;
+    const meta = (await raw.getValue(operationMeta(proof.operationId), PI_CONTEXT))?.value;
+    if (!state || state.currentOperationId !== null || state.lastOperationId !== proof.operationId || state.inbox.length !== 0
+      || config?.model.provider !== proof.model.provider || config?.model.modelId !== proof.model.id
+      || !terminal || !["completed", "failed", "aborted"].includes(terminal.status) || terminal.tipId !== receipt.tipId
+      || meta !== undefined || terminal.kind !== "run" || terminal.fromTipId !== proof.baselineTipId
+      || await raw.getValue(operationState(proof.operationId), PI_CONTEXT)) return false;
+    const entries = await branch.findEntries({ order: "oldestFirst" }, PI_CONTEXT);
+    if (createHash("sha256").update(JSON.stringify(entries)).digest("hex") !== proof.ancestry) return false;
+    const baseline = proof.baselineTipId === null ? -1 : entries.findIndex((item) => item.id === proof.baselineTipId);
+    if (proof.baselineTipId !== null && baseline < 0) return false;
+    const tail = entries.slice(baseline + 1);
+    if (tail[0]?.type !== "message" || tail[0].message.role !== "user"
+      || tail.filter((item) => item.type === "message" && item.message.role === "user").length !== 1 + proof.inputIds.length) return false;
+    if (!validRecoveryProjection(buildPiSessionContext(entries), proof.model)) return false;
+    await raw.close(PI_CONTEXT);
+    raw = undefined;
+    // Pending is cleared only after persistence is certain. Bypass the ordinary
+    // sync guard while keeping the public busy reservation throughout the fsync.
+    await syncPath(entry.metadata.path);
+    await syncPath(dirname(entry.metadata.path));
+    entry.recoveryPending = false;
+    delete entry.recovery;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try { await raw?.close(PI_CONTEXT); } catch { /* already failed closed */ }
+    entry.busy = false;
   }
 }

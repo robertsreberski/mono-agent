@@ -71,6 +71,32 @@ describe("RenderErrorBoundary", () => {
     expect(reporter).toHaveBeenCalledTimes(1);
   });
 
+  it("does not clear an error first caught during a reset-key transition", () => {
+    const reporter = vi.fn();
+    const tree = (resetKey: string, fail: boolean) => (
+      <StrictMode>
+        <RenderErrorBoundary
+          scope="conversation"
+          resetKey={resetKey}
+          reporter={reporter}
+          fallback={() => <p>Conversation failed</p>}
+        >
+          <ControlledChild fail={fail} />
+        </RenderErrorBoundary>
+      </StrictMode>
+    );
+    const view = render(tree("alpha:first", false));
+
+    view.rerender(tree("beta:first", true));
+
+    expect(screen.getByText("Conversation failed")).toBeVisible();
+    expect(reporter).toHaveBeenCalledTimes(1);
+
+    view.rerender(tree("alpha:second", false));
+    expect(screen.getByText("Recovered content")).toBeVisible();
+    expect(reporter).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a persistent error contained when reset retries it", () => {
     const reporter = vi.fn();
     render(

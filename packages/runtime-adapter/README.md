@@ -92,6 +92,13 @@ be replaced through `resolveAttempt().options`.
 
 `RuntimeRunOptions.providerAttributionSessionId` is a host-owned continuity key
 for provider attribution, not permission to resume provider transcript state.
+`MonoRuntimeLike.recoverSession(receipt, { appliedInputIds })` forwards optional
+host-coordinated durable terminal recovery. `RuntimeRunOptions.sessionRecovery`
+opts in with run id and canonical revision; `RuntimeResult.providerSessionRecovery`
+proves the exact session/model/tip after successful native close. Recovery appends
+nothing and returns false when the tail cannot be proven safe. It does not change
+the durable history record format.
+
 The agent harness supplies the active provider-session epoch automatically for
 continuous conversations and protects it from route-attempt overrides. Direct
 runtime callers that need attribution continuity across calls must reuse a safe,
@@ -107,6 +114,10 @@ return exposes only stable record/sequence, persistence and truncation/byte
 metadata, and opaque artifact references. Hosts should make this sink
 idempotent: a retry of an identical phase returns the same record and a
 conflicting retry fails rather than overwriting history.
+
+`RuntimeRunOptions.persistArtifact` is the synchronous, host-owned artifact
+sink for oversized tool blocks. A per-run value overrides the kernel host
+default. Fallback route-attempt resolvers cannot supply or replace it.
 
 ## Architecture
 
@@ -125,13 +136,25 @@ provider kernel:
    shape and canonical spelling.
 2. `createMonoRuntime()` injects the mono-agent sandbox implementation exactly
    once, then constructs either one runtime or an ordered fallback router.
-3. `MonoRuntimeLike` exposes `run()`, acknowledged live-input messages, an
+3. `MonoRuntimeLike` exposes `run()`, consumption-aware live-input messages, an
    awaited incremental tool-lifecycle sink, tool reconfiguration, and bounded
    provider session lifecycle methods to `agent-harness`.
 4. Local-provider and MCP helpers translate host config into provider-neutral
    runtime options without importing channel or application code.
 5. `bridgeProcessJobsController()` validates host limits and adapts the typed
    process-job controller to the kernel's JSDoc-only structural shape.
+
+Live-input callbacks separate native queue acceptance (`accepted`), exact
+transcript consumption (`acknowledge`), uncertain terminal delivery
+(`uncertain`), and proved-safe attempt rejection (`reject`). Callback return
+types are `unknown` for source compatibility; only exact synchronous
+`recorded` and `ignored` literals confirm host handling. Thenables are never
+awaited. Stable nonblank IDs enable replay across route attempts; anonymous
+input remains legal but is never replayed. A host that independently fences
+callback leases may attach one opaque `logicalOwner` object to every fresh
+lease of the same message. The runtime keeps the first occurrence's immutable
+body and ID, refreshes callbacks only when that exact object matches, and still
+suppresses unrelated same-ID callback owners.
 
 ### Package structure
 
@@ -231,7 +254,10 @@ RuntimeAdapterErrorCode
 RuntimeAdapterErrorDetails
 RuntimeCompactionPolicy
 RuntimeEventLike
+RuntimeLiveInputCallbackDisposition
+RuntimeLiveInputEvidence
 RuntimeLiveInputMessage
+RuntimeLiveInputUncertainty
 RuntimeMcpAppConnection
 RuntimeMcpAppHost
 RuntimeMcpAppRegistration

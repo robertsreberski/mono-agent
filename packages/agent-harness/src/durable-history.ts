@@ -5,19 +5,32 @@ import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+  AGENT_CONTEXT_IMPORT_VERSION,
+  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
+  type AgentContextImportRequest,
+  type AgentContextImportResult,
+} from "@mono-agent/agent-contracts";
+
 import type { HistoryMessage } from "./context/index.js";
 import type {
   ConversationHistoryProviderSessionTurn,
+  ConversationHistoryExclusiveTurn,
+  ConversationHistoryContextImport,
   ConversationHistoryStore,
   PreparedHistoryAppend,
   ProviderSessionTurnCommitOptions,
+  ProviderSessionTurnBinding,
 } from "./types.js";
+import { assertSessionModelKey, uniqueSessionHandles, type ProviderSessionHandle } from "./session-runtime.js";
 import { isProcessAlive } from "./history-process-liveness.js";
 
 const LEGACY_STORE_VERSION = 1;
 const STORE_VERSION = 2;
 const DEFAULT_MAX_MESSAGES = 64;
-const MAX_CONVERSATION_ID_BYTES = 4 * 1024;
 const MAX_MESSAGE_CONTENT_BYTES = 64 * 1024;
 const MAX_MESSAGE_ENVELOPE_BYTES = 16 * 1024;
 // JSON may encode one content byte as a six-byte escape (for example, NUL).
@@ -49,6 +62,13 @@ const DIRTY_FENCE_TEMP_PATTERN = /^\.([a-f0-9]{64})\.([0-9]+)\.([a-f0-9]{24})\.d
 const MAX_ACTIVE_MARKER_BYTES = 4 * 1024;
 const MAX_DIRTY_FENCE_BYTES = 1024;
 const MAX_RUN_ID_BYTES = 4 * 1024;
+// JSON can escape every decoded byte as six bytes. The remaining allowance
+// covers both message envelopes, the fixed provenance, timestamp and v2 record.
+const MAX_CONTEXT_IMPORT_RECORD_BYTES = 6 * (
+  AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
+  + AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
+  + AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+) + (2 * MAX_MESSAGE_ENVELOPE_BYTES) + (64 * 1024);
 
 // Config reloads can briefly leave old and new harness instances alive in the
 // same owner process. Module-level queues serialize both same-conversation
@@ -78,7 +98,7 @@ export interface DurableHistoryStoreOptions {
    * store may coordinate durable provider sessions across processes; every
    * epoch made unreachable is retired before the owning history mutation.
    */
-  readonly retireProviderSession?: (providerSessionId: string) => Promise<void>;
+  readonly retireProviderSession?: (providerSessionId: string, modelKey?: string) => Promise<void>;
 }
 
 export interface DurableHistoryStoreStats {
@@ -97,6 +117,7 @@ export interface DurableHistoryStoreStats {
 }
 
 interface ProviderSessionState {
+  readonly modelKey?: string;
   readonly epoch: string;
   readonly revision?: number;
   readonly dirtyRunId?: string;
@@ -136,6 +157,7 @@ interface ActiveMarker {
 }
 
 interface DirtyFence {
+  readonly modelKey?: string;
   readonly path: string;
   readonly conversationKey: string;
   readonly logicalConversationKey?: string;
@@ -185,7 +207,10 @@ interface CommittedEntry {
  * root retention across both store instances and independent processes.
  */
 export class DurableConversationHistoryStore implements ConversationHistoryStore {
+  readonly providerSessionModelBinding = "v1" as const;
+  readonly providerSessionRecovery = "v1" as const;
   readonly providerSessionRetirement: "fail-closed" | undefined;
+  readonly contextImport: ConversationHistoryContextImport | undefined;
   private readonly root: string;
   private readonly maxMessages: number;
   private readonly maxStoreBytes: number;
@@ -193,7 +218,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   private readonly maxConversations: number;
   private readonly maxAgeMs: number;
   private readonly now: () => number;
-  private readonly retireProviderSession: ((providerSessionId: string) => Promise<void>) | undefined;
+  private readonly retireProviderSession: ((providerSessionId: string, modelKey?: string) => Promise<void>) | undefined;
   private rootReady: Promise<DirectoryIdentity> | undefined;
   private locksRootReady: Promise<DirectoryIdentity> | undefined;
 
@@ -237,13 +262,25 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     this.now = options.now ?? Date.now;
     this.retireProviderSession = options.retireProviderSession;
     this.providerSessionRetirement = options.retireProviderSession === undefined ? undefined : "fail-closed";
+    this.contextImport = maxMessages >= 2
+      && maxStoreBytes >= MAX_CONTEXT_IMPORT_RECORD_BYTES
+      && maxStagedBytes >= MAX_CONTEXT_IMPORT_RECORD_BYTES
+      && maxConversations >= 1
+      ? {
+        version: AGENT_CONTEXT_IMPORT_VERSION,
+        maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+        providerState: options.retireProviderSession === undefined ? "absent" : "retire-fail-closed",
+        beginExclusiveTurn: async (conversationId) => await this.beginExclusiveTurn(conversationId),
+        prepareImport: async (conversationId, request) => await this.prepareContextImport(conversationId, request),
+      }
+      : undefined;
   }
 
   async load(conversationId: string): Promise<readonly HistoryMessage[]> {
     const normalizedId = normalizeConversationId(conversationId);
     const rootIdentity = await this.ensureRoot();
     const record = await this.readRecord(normalizedId, rootIdentity);
-    const retained = this.maxMessages === 0 ? [] : record.messages.slice(-this.maxMessages);
+    const retained = retainHistoryMessages(record.messages, this.maxMessages);
     return retained.map(cloneMessage);
   }
 
@@ -330,7 +367,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // does not partially unlink its dirty-only membership evidence. Discovery,
       // retirement, unlink, and directory durability share the root transaction
       // so an unrelated maintenance sweep cannot consume the same journal.
-      await this.retireProviderSessionIds(matching.map((entry) => entry.providerSessionId));
+      await this.retireProviderSessions(matching.map((entry) => ({ providerSessionId: entry.providerSessionId, ...modelBinding(entry.fence.modelKey) })));
       for (const { fence } of matching) {
         await rm(fence.path);
       }
@@ -362,7 +399,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         version: STORE_VERSION,
         conversationId,
         messages: [],
-        providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
+        providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
       }, held, rootIdentity, undefined, retirementFence);
     } catch (error) {
       await this.releaseConversation(held, rootIdentity).catch(() => undefined);
@@ -388,16 +425,170 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const existing = await this.readRecord(normalizedId, rootIdentity);
       const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
       const combined = [...existing.messages, ...admitted];
-      const retained = this.maxMessages === 0 ? [] : combined.slice(-this.maxMessages);
+      const retained = retainHistoryMessages(combined, this.maxMessages);
       const record: HistoryFileV2 = {
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: retained,
         // Host-only history is not present in a provider transcript. Rotate on
         // every ordinary append so no old provider cache can be resumed.
-        providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
+        providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
       };
       return await this.prepareRecord(record, held, rootIdentity, undefined, retirementFence);
+    } catch (error) {
+      await this.releaseConversation(held, rootIdentity).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn> {
+    const normalizedId = normalizeConversationId(conversationId);
+    const heldLogical = await this.acquireLogicalConversation(logicalConversationIdForFence(normalizedId));
+    let heldExact: HeldExactConversationClaim | undefined;
+    let marker: ActiveMarker | undefined;
+    let settled = false;
+    let prepared = false;
+    let operation = Promise.resolve();
+    const serialize = <T>(action: () => Promise<T>): Promise<T> => {
+      const current = operation.then(action, action);
+      operation = current.then(() => undefined, () => undefined);
+      return current;
+    };
+    const releaseLease = async (): Promise<void> => {
+      if (settled) return;
+      const errors: unknown[] = [];
+      if (marker !== undefined) {
+        const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity).catch((error) => {
+          errors.push(error);
+          return undefined;
+        });
+        if (releaseRoot !== undefined) {
+          try {
+            await this.removeActiveMarker(marker).catch((error) => errors.push(error));
+          } finally {
+            await releaseRoot().catch((error) => errors.push(error));
+          }
+        }
+      }
+      await heldExact?.release().catch((error) => errors.push(error));
+      await heldLogical.release().catch((error) => errors.push(error));
+      settled = true;
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, "Exclusive history turn cleanup failed.");
+    };
+    try {
+      if (requiresExactConversationClaim(normalizedId)) {
+        heldExact = await this.acquireExactConversationClaim(normalizedId);
+      }
+      const locksIdentity = await this.ensureLocksRoot();
+      const releaseRoot = await this.acquireRootTransaction(heldLogical.rootIdentity);
+      try {
+        await this.retireInactiveDirtyFences(
+          heldLogical.rootIdentity,
+          locksIdentity,
+          historyKey(normalizedId),
+        );
+        marker = await this.createActiveMarker(historyKey(normalizedId), locksIdentity);
+      } finally {
+        await releaseRoot();
+      }
+      const existing = await this.readRecord(normalizedId, heldLogical.rootIdentity);
+      const historyVersion = historyRecordVersion(existing);
+      return {
+        history: existing.messages.map(cloneMessage),
+        historyVersion,
+        prepareCommit: async (messages) => await serialize(async () => {
+          if (settled) throw new Error("Exclusive history turn is already settled.");
+          if (prepared) throw new Error("Exclusive history turn already has a prepared commit.");
+          prepared = true;
+          const admitted = validateAppendMessages(messages);
+          let held: HeldConversation | undefined;
+          try {
+            held = await this.acquireConversation(normalizedId, heldLogical, heldExact);
+            const current = await this.readRecord(normalizedId, held.rootIdentity);
+            if (historyRecordVersion(current) !== historyVersion) {
+              throw new Error("Canonical conversation history changed during the exclusive turn.");
+            }
+            const retirementFence = await this.prepareProviderRetirement(current, held.rootIdentity);
+            const retained = retainHistoryMessages([...current.messages, ...admitted], this.maxMessages);
+            const record: HistoryFileV2 = {
+              version: STORE_VERSION,
+              conversationId: normalizedId,
+              messages: retained,
+              providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(current.providerSession?.modelKey) },
+            };
+            const inner = await this.prepareRecord(record, held, held.rootIdentity, undefined, retirementFence);
+            held = undefined;
+            let appendState: "open" | "committed" | "aborted" = "open";
+            const append: PreparedHistoryAppend = {
+              commit: async () => {
+                if (appendState === "committed") return;
+                if (appendState === "aborted") throw new Error("Cannot commit an aborted history append.");
+                await inner.commit();
+                appendState = "committed";
+                await releaseLease();
+              },
+              abort: async () => {
+                if (appendState !== "open") return;
+                appendState = "aborted";
+                const errors: unknown[] = [];
+                await inner.abort().catch((error) => errors.push(error));
+                await releaseLease().catch((error) => errors.push(error));
+                if (errors.length === 1) throw errors[0];
+                if (errors.length > 1) throw new AggregateError(errors, "Exclusive history append abort failed.");
+              },
+            };
+            return { append, committedHistoryVersion: historyRecordVersion(record) };
+          } catch (error) {
+            if (held !== undefined) await this.releaseConversation(held, held.rootIdentity).catch(() => undefined);
+            await releaseLease().catch(() => undefined);
+            throw error;
+          }
+        }),
+        abort: async () => await serialize(releaseLease),
+      };
+    } catch (error) {
+      await releaseLease().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async prepareContextImport(
+    conversationId: string,
+    request: AgentContextImportRequest & { readonly timestamp: string },
+  ): Promise<{ readonly result: AgentContextImportResult; readonly append?: PreparedHistoryAppend }> {
+    if (this.contextImport === undefined) throw new Error("Canonical context import is unsupported by this store configuration.");
+    const normalizedId = normalizeConversationId(conversationId);
+    const normalized = validateContextImportRequest(request);
+    const held = await this.acquireConversation(normalizedId);
+    const rootIdentity = held.rootIdentity;
+    try {
+      const existing = await this.readRecord(normalizedId, rootIdentity, true);
+      const exactPair = findContextImportPair(existing.messages, normalized.idempotencyKey);
+      if (exactPair !== undefined) {
+        await this.releaseConversation(held, rootIdentity);
+        if (exactPair.valid && exactPair.text === normalized.text) return { result: { status: "duplicate" } };
+        return { result: { status: "conflict", reason: "idempotency_conflict" } };
+      }
+      if (existing.messages.length > 0) {
+        await this.releaseConversation(held, rootIdentity);
+        return { result: { status: "conflict", reason: "conversation_not_empty" } };
+      }
+      const retirementFence = await this.prepareProviderRetirement(existing, rootIdentity);
+      const messages: readonly HistoryMessage[] = [
+        { role: "system", name: "context-import-provenance", content: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE, timestamp: normalized.timestamp },
+        { role: "assistant", name: "context-import", content: normalized.text, timestamp: normalized.timestamp, idempotencyKey: normalized.idempotencyKey },
+      ];
+      const record: HistoryFileV2 = {
+        version: STORE_VERSION,
+        conversationId: normalizedId,
+        messages,
+        providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(existing.providerSession?.modelKey) },
+      };
+      return {
+        result: { status: "appended" },
+        append: await this.prepareRecord(record, held, rootIdentity, undefined, retirementFence),
+      };
     } catch (error) {
       await this.releaseConversation(held, rootIdentity).catch(() => undefined);
       throw error;
@@ -407,7 +598,9 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
   async beginProviderSessionTurn(
     conversationId: string,
     runId: string,
+    binding?: ProviderSessionTurnBinding,
   ): Promise<ConversationHistoryProviderSessionTurn> {
+    if (binding !== undefined) assertSessionModelKey(binding.modelKey);
     const normalizedId = normalizeConversationId(conversationId);
     const normalizedRunId = normalizeRunId(runId);
     const held = await this.acquireConversation(normalizedId);
@@ -423,6 +616,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     try {
       const existing = await this.readRecord(normalizedId, rootIdentity);
       const existingProvider = existing.sourceVersion === STORE_VERSION ? existing.providerSession : undefined;
+      const modelKey = binding?.modelKey ?? existingProvider?.modelKey;
+      const previousModelKey = binding !== undefined && existingProvider?.modelKey !== modelKey
+        ? existingProvider?.modelKey : undefined;
+      const previousModelWasUnbound = binding !== undefined
+        && existingProvider !== undefined
+        && existingProvider.modelKey === undefined
+        && (existingProvider.revision ?? 0) > 0;
       const conversationKey = historyKey(normalizedId);
       const locksIdentity = await this.ensureLocksRoot();
       let fence: DirtyFence;
@@ -431,20 +631,21 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const releaseRoot = await this.acquireRootTransaction(rootIdentity);
       try {
         const existingFence = await this.findDirtyFence(conversationKey, locksIdentity);
-        const reusable = this.maxMessages > 0
+        const reusable = (binding === undefined || existingProvider?.modelKey === binding.modelKey)
+          && this.maxMessages > 0
           && existingFence === undefined
           && existingProvider !== undefined
           && existingProvider.dirtyRunId === undefined
           && existingProvider.revision !== undefined
           && existingProvider.revision < Number.MAX_SAFE_INTEGER;
         if (!reusable) {
-          await this.retireProviderSessionIds([
+          await this.retireProviderSessions([
             ...(existingProvider === undefined
               ? []
-              : [deriveProviderSessionId(normalizedId, existingProvider.epoch)]),
+              : [{ providerSessionId: deriveProviderSessionId(normalizedId, existingProvider.epoch), ...modelBinding(existingProvider.modelKey) }]),
             ...(existingFence === undefined
               ? []
-              : [existingFence.providerSessionId ?? deriveProviderSessionId(normalizedId, existingFence.epoch)]),
+              : [{ providerSessionId: existingFence.providerSessionId ?? deriveProviderSessionId(normalizedId, existingFence.epoch), ...modelBinding(existingFence.modelKey) }]),
           ]);
         }
         epoch = reusable ? existingProvider.epoch : createProviderSessionEpoch();
@@ -453,8 +654,8 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         const projectedCleanRecord: HistoryFileV2 = {
           version: STORE_VERSION,
           conversationId: normalizedId,
-          messages: this.maxMessages === 0 ? [] : existing.messages.slice(-this.maxMessages),
-          providerSession: { epoch, revision: revision + 1 },
+          messages: retainHistoryMessages(existing.messages, this.maxMessages),
+          providerSession: { epoch, revision: revision + 1, ...modelBinding(modelKey) },
         };
         await this.validateRetentionReservation(rootIdentity, [this.projectRecord(projectedCleanRecord)]);
         await this.reserveDirtyFenceCapacity(conversationKey, rootIdentity, locksIdentity);
@@ -463,6 +664,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
           logicalConversationKey: historyKey(logicalConversationIdForFence(normalizedId)),
           epoch,
           providerSessionId,
+          ...modelBinding(modelKey),
           revision,
           runIdDigest: digestRunId(normalizedRunId),
         }, locksIdentity);
@@ -473,12 +675,15 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         version: STORE_VERSION,
         conversationId: normalizedId,
         messages: existing.messages,
-        providerSession: { epoch, revision },
+        providerSession: { epoch, revision, ...modelBinding(modelKey) },
       };
       const providerSessionId = deriveProviderSessionId(normalizedId, epoch);
 
       return {
         providerSessionId,
+        ...modelBinding(modelKey),
+        ...(previousModelKey === undefined ? {} : { previousModelKey }),
+        ...(previousModelWasUnbound ? { previousModelWasUnbound: true } : {}),
         providerSessionRevision: revision,
         prepareCommit: async (
           messages: readonly HistoryMessage[],
@@ -494,10 +699,10 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             // The harness normally invalidates a failed/unsynced live handle
             // first. Retire by exact durable id as a second fail-closed layer:
             // a cold/unknown registry entry must not strand its JSONL.
-            await this.retireProviderSessionIds([providerSessionId]);
+            await this.retireProviderSessions([{ providerSessionId, ...modelBinding(modelKey) }]);
           }
           const combined = [...turnBaseRecord.messages, ...admitted];
-          const retained = this.maxMessages === 0 ? [] : combined.slice(-this.maxMessages);
+          const retained = retainHistoryMessages(combined, this.maxMessages);
           const cleanRecord: HistoryFileV2 = {
             version: STORE_VERSION,
             conversationId: normalizedId,
@@ -505,6 +710,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
             providerSession: {
               epoch: options.providerSessionSynced ? epoch : createProviderSessionEpoch(),
               revision: options.providerSessionSynced ? revision + 1 : 0,
+              ...modelBinding(modelKey),
             },
           };
           prepared = await this.prepareRecord(cleanRecord, held, rootIdentity, () => {
@@ -635,7 +841,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         // not reclaimable safely because its conversation id is intentionally
         // one-way hashed in the filename.
         if (fence.providerSessionId === undefined) continue;
-        await this.retireProviderSessionIds([fence.providerSessionId]);
+        await this.retireProviderSessions([{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
       }
       await rm(fence.path);
       removed = true;
@@ -821,6 +1027,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       if (
         current.conversationKey !== fence.conversationKey
         || current.logicalConversationKey !== fence.logicalConversationKey
+        || current.modelKey !== fence.modelKey
         || current.epoch !== fence.epoch
         || current.providerSessionId !== fence.providerSessionId
         || current.revision !== fence.revision
@@ -845,6 +1052,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
               ? {}
               : { logicalConversationKey: fence.logicalConversationKey }),
             epoch: fence.epoch,
+            ...modelBinding(fence.modelKey),
             ...(fence.providerSessionId === undefined ? {} : { providerSessionId: fence.providerSessionId }),
             revision: fence.revision,
             runIdDigest: fence.runIdDigest,
@@ -901,7 +1109,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       const retirementFence = this.retireProviderSession === undefined
         ? undefined
         : await this.ensureRetirementFence(record, rootIdentity, await this.ensureLocksRoot());
-      await this.retireProviderSessionIds(this.providerSessionIdsForRetirement(record, retirementFence));
+      await this.retireProviderSessions(this.providerSessionsForRetirement(record, retirementFence));
       await rm(entry.path);
       await fsyncDirectory(this.root, rootIdentity);
       if (retirementFence !== undefined) await this.removeDirtyFenceAfterCommit(retirementFence);
@@ -1428,6 +1636,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
         : await this.readCommittedEntryRecord(committedEntry, rootIdentity);
       const canonicalProvesCommit = committedRecord?.sourceVersion === STORE_VERSION
         && committedRecord.providerSession?.epoch === fence.epoch
+        && committedRecord.providerSession.modelKey === fence.modelKey
         && committedRecord.providerSession.dirtyRunId === undefined
         && committedRecord.providerSession.revision === fence.revision + 1;
       // The fence is the crash-recovery journal: durable transcript deletion
@@ -1437,7 +1646,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       // A canonical epoch at exactly revision+1 proves the history rename won
       // and only fence cleanup crashed; preserve that valid transcript.
       if (!canonicalProvesCommit) {
-        await this.retireProviderSessionIds([fence.providerSessionId]);
+        const sameCommittedEpoch = committedRecord?.sourceVersion === STORE_VERSION
+          && committedRecord.providerSession?.epoch === fence.epoch;
+        // Contradictory owners for one id are corruption, not a retirement hint.
+        // Validate both before invoking either runtime or losing the journal.
+        await this.retireProviderSessions(sameCommittedEpoch
+          ? this.providerSessionsForRetirement(committedRecord, fence)
+          : [{ providerSessionId: fence.providerSessionId, ...modelBinding(fence.modelKey) }]);
         if (
           committedEntry !== undefined
           && committedRecord?.sourceVersion === STORE_VERSION
@@ -1452,10 +1667,14 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     if (removed) await fsyncDirectory(join(this.root, LOCKS_DIRECTORY), locksIdentity);
   }
 
-  private async readRecord(conversationId: string, rootIdentity: DirectoryIdentity): Promise<LoadedHistoryRecord> {
+  private async readRecord(
+    conversationId: string,
+    rootIdentity: DirectoryIdentity,
+    strict = false,
+  ): Promise<LoadedHistoryRecord> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        return await this.readRecordOnce(conversationId, rootIdentity);
+        return await this.readRecordOnce(conversationId, rootIdentity, strict);
       } catch (error) {
         if (attempt < 2 && (error instanceof ConcurrentHistoryMutationError || isErrno(error, "ENOENT"))) {
           continue;
@@ -1466,7 +1685,11 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     throw new Error("History record could not be read atomically.");
   }
 
-  private async readRecordOnce(conversationId: string, rootIdentity: DirectoryIdentity): Promise<LoadedHistoryRecord> {
+  private async readRecordOnce(
+    conversationId: string,
+    rootIdentity: DirectoryIdentity,
+    strict: boolean,
+  ): Promise<LoadedHistoryRecord> {
     await assertDirectoryIdentity(this.root, rootIdentity);
     const path = this.recordPath(conversationId);
     let before: Stats;
@@ -1499,7 +1722,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       try {
         record = parseHistoryFile(bytes, path);
       } catch (error) {
-        if (error instanceof TruncatedHistoryRecordError) {
+        if (!strict && error instanceof TruncatedHistoryRecordError) {
           // Atomic replacement means our own writes cannot publish a partial
           // record. If the filesystem nevertheless presents stable truncated
           // JSON, fail cold instead of poisoning every future turn. Keep the
@@ -1534,7 +1757,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     } finally {
       await releaseRoot();
     }
-    await this.retireProviderSessionIds(this.providerSessionIdsForRetirement(record, fence));
+    await this.retireProviderSessions(this.providerSessionsForRetirement(record, fence));
     return fence;
   }
 
@@ -1553,23 +1776,24 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       conversationKey,
       logicalConversationKey: historyKey(logicalConversationIdForFence(record.conversationId)),
       epoch: record.providerSession.epoch,
+      ...modelBinding(record.providerSession.modelKey),
       providerSessionId,
       revision: record.providerSession.revision ?? 0,
       runIdDigest: digestRunId(`history-retirement-${randomBytes(16).toString("hex")}`),
     }, locksIdentity);
   }
 
-  private providerSessionIdsForRetirement(
+  private providerSessionsForRetirement(
     record: LoadedHistoryRecord,
     fence?: DirtyFence,
-  ): readonly string[] {
+  ): readonly ProviderSessionHandle[] {
     return [
       ...(record.sourceVersion !== STORE_VERSION || record.providerSession === undefined
         ? []
-        : [deriveProviderSessionId(record.conversationId, record.providerSession.epoch)]),
+        : [{ providerSessionId: deriveProviderSessionId(record.conversationId, record.providerSession.epoch), ...modelBinding(record.providerSession.modelKey) }]),
       ...(fence === undefined
         ? []
-        : [fence.providerSessionId ?? deriveProviderSessionId(record.conversationId, fence.epoch)]),
+        : [{ providerSessionId: fence.providerSessionId ?? deriveProviderSessionId(record.conversationId, fence.epoch), ...modelBinding(fence.modelKey) }]),
     ];
   }
 
@@ -1612,7 +1836,7 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
       version: STORE_VERSION,
       conversationId: record.conversationId,
       messages: record.messages,
-      providerSession: { epoch: createProviderSessionEpoch(), revision: 0 },
+      providerSession: { epoch: createProviderSessionEpoch(), revision: 0, ...modelBinding(record.providerSession.modelKey) },
     };
     const stage = await this.writeStage(rotated, rootIdentity);
     let published = false;
@@ -1625,13 +1849,13 @@ export class DurableConversationHistoryStore implements ConversationHistoryStore
     }
   }
 
-  private async retireProviderSessionIds(providerSessionIds: readonly string[]): Promise<void> {
+  private async retireProviderSessions(handles: readonly ProviderSessionHandle[]): Promise<void> {
     if (this.retireProviderSession === undefined) return;
-    for (const providerSessionId of new Set(providerSessionIds)) {
+    for (const { providerSessionId, modelKey } of uniqueSessionHandles(handles)) {
       if (!/^[a-f0-9]{64}$/u.test(providerSessionId)) {
         throw new Error("History produced an invalid provider session id for retirement.");
       }
-      await this.retireProviderSession(providerSessionId);
+      await this.retireProviderSession(providerSessionId, modelKey);
     }
   }
 
@@ -1685,13 +1909,112 @@ function compareRetentionEntries(left: CommittedEntry, right: CommittedEntry): n
   return left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name);
 }
 
+function historyRecordVersion(record: LoadedHistoryRecord | HistoryFileV2): string {
+  return createHash("sha256")
+    .update("mono-agent-history-version-v1\0")
+    .update(JSON.stringify({
+      sourceVersion: "sourceVersion" in record ? record.sourceVersion : STORE_VERSION,
+      conversationId: record.conversationId,
+      messages: record.messages,
+      providerSession: record.providerSession,
+    }), "utf8")
+    .digest("hex");
+}
+
+function validateContextImportRequest(
+  request: AgentContextImportRequest & { readonly timestamp: string },
+): AgentContextImportRequest & { readonly timestamp: string } {
+  if (!isRecord(request)) throw new TypeError("context import request must be an object.");
+  const keys = Object.keys(request).sort();
+  if (keys.join("\0") !== ["idempotencyKey", "text", "timestamp"].join("\0")) {
+    throw new TypeError("context import request must contain only text, idempotencyKey, and timestamp.");
+  }
+  if (typeof request.text !== "string" || request.text.trim().length === 0) {
+    throw new TypeError("context import text must be a non-empty string.");
+  }
+  if (Buffer.byteLength(request.text, "utf8") > AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES) {
+    throw new TypeError(`context import text must not exceed ${AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES} UTF-8 bytes.`);
+  }
+  if (typeof request.idempotencyKey !== "string" || request.idempotencyKey.trim().length === 0) {
+    throw new TypeError("context import idempotencyKey must be a non-empty string.");
+  }
+  if (Buffer.byteLength(request.idempotencyKey, "utf8") > AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES) {
+    throw new TypeError(`context import idempotencyKey must not exceed ${AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES} UTF-8 bytes.`);
+  }
+  if (request.idempotencyKey.includes("\0")) {
+    throw new TypeError("context import idempotencyKey must not contain NUL bytes.");
+  }
+  if (typeof request.timestamp !== "string") throw new TypeError("context import timestamp must be a string.");
+  const parsed = new Date(request.timestamp);
+  if (!Number.isFinite(parsed.valueOf()) || parsed.toISOString() !== request.timestamp) {
+    throw new TypeError("context import timestamp must be a canonical ISO-8601 timestamp.");
+  }
+  return { text: request.text, idempotencyKey: request.idempotencyKey, timestamp: request.timestamp };
+}
+
+function findContextImportPair(
+  messages: readonly HistoryMessage[],
+  idempotencyKey: string,
+): { readonly valid: boolean; readonly text: string } | undefined {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?.idempotencyKey !== idempotencyKey) continue;
+    const provenance = messages[index - 1];
+    if (
+      message.role === "assistant"
+      && message.name === "context-import"
+      && provenance?.role === "system"
+      && provenance.name === "context-import-provenance"
+      && provenance.content === AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE
+      && provenance.timestamp === message.timestamp
+    ) {
+      return { valid: true, text: message.content };
+    }
+    return { valid: false, text: "" };
+  }
+  return undefined;
+}
+
+function retainHistoryMessages(messages: readonly HistoryMessage[], maxMessages: number): readonly HistoryMessage[] {
+  if (maxMessages === 0 || messages.length === 0) return [];
+  const units: Array<readonly HistoryMessage[]> = [];
+  for (let index = 0; index < messages.length; index += 1) {
+    const first = messages[index]!;
+    const second = messages[index + 1];
+    if (
+      first.role === "system"
+      && first.name === "context-import-provenance"
+      && first.content === AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE
+      && second?.role === "assistant"
+      && second.name === "context-import"
+      && second.timestamp === first.timestamp
+      && second.idempotencyKey !== undefined
+    ) {
+      units.push([first, second]);
+      index += 1;
+    } else {
+      units.push([first]);
+    }
+  }
+  const retained: HistoryMessage[][] = [];
+  let remaining = maxMessages;
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index]!;
+    if (unit.length > remaining) continue;
+    retained.unshift(unit.map(cloneMessage));
+    remaining -= unit.length;
+    if (remaining === 0) break;
+  }
+  return retained.flat();
+}
+
 function normalizeConversationId(conversationId: string): string {
   if (typeof conversationId !== "string") throw new TypeError("conversationId must be a non-empty string.");
   const normalized = conversationId.trim();
   const bytes = Buffer.byteLength(normalized, "utf8");
   if (bytes === 0) throw new TypeError("conversationId must be a non-empty string.");
-  if (bytes > MAX_CONVERSATION_ID_BYTES) {
-    throw new TypeError(`conversationId must not exceed ${MAX_CONVERSATION_ID_BYTES} UTF-8 bytes.`);
+  if (bytes > AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES) {
+    throw new TypeError(`conversationId must not exceed ${AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES} UTF-8 bytes.`);
   }
   if (normalized.includes("\0")) throw new TypeError("conversationId must not contain NUL bytes.");
   return normalized;
@@ -1840,6 +2163,12 @@ function serializeHistoryFile(record: HistoryFileV2): Buffer {
 }
 
 function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffer {
+  if (value.modelKey !== undefined) {
+    assertSessionModelKey(value.modelKey);
+    if (value.logicalConversationKey === undefined || value.providerSessionId === undefined) {
+      throw new Error("Bound dirty fences require logical and provider session identities.");
+    }
+  }
   if (!/^[a-f0-9]{64}$/u.test(value.conversationKey)) {
     throw new Error("History dirty fence has an invalid conversation key.");
   }
@@ -1859,10 +2188,11 @@ function serializeDirtyFence(value: Omit<DirtyFence, "path" | "mtimeMs">): Buffe
     throw new Error("History dirty fence has an invalid run digest.");
   }
   const bytes = Buffer.from(`${JSON.stringify({
-    version: value.logicalConversationKey !== undefined
+    version: value.modelKey !== undefined ? 4 : value.logicalConversationKey !== undefined
       ? 3
       : value.providerSessionId === undefined ? 1 : 2,
     conversationKey: value.conversationKey,
+    ...modelBinding(value.modelKey),
     ...(value.logicalConversationKey === undefined
       ? {}
       : { logicalConversationKey: value.logicalConversationKey }),
@@ -1941,12 +2271,15 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
     && providerKeys !== "dirtyRunId,epoch"
     && providerKeys !== "epoch,revision"
     && providerKeys !== "dirtyRunId,epoch,revision"
+    && providerKeys !== "epoch,modelKey,revision"
+    && providerKeys !== "dirtyRunId,epoch,modelKey,revision"
   ) {
     throw new Error(`History file ${path} has an unsupported provider session schema.`);
   }
   if (typeof value.providerSession.epoch !== "string" || !/^[a-f0-9]{64}$/u.test(value.providerSession.epoch)) {
     throw new Error(`History file ${path} has an invalid provider session epoch.`);
   }
+  if ("modelKey" in value.providerSession) assertSessionModelKey(value.providerSession.modelKey);
   let revision: number | undefined;
   if (value.providerSession.revision !== undefined) {
     revision = value.providerSession.revision as number;
@@ -1967,6 +2300,7 @@ function parseHistoryFile(bytes: Buffer, path: string): LoadedHistoryRecord {
     messages,
     providerSession: {
       epoch: value.providerSession.epoch,
+      ...modelBinding(value.providerSession.modelKey as string | undefined),
       ...(revision === undefined ? {} : { revision }),
       ...(dirtyRunId === undefined ? {} : { dirtyRunId }),
     },
@@ -2384,9 +2718,17 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
       && /^[a-f0-9]{64}$/u.test(value.logicalConversationKey)
       && typeof value.providerSessionId === "string"
       && /^[a-f0-9]{64}$/u.test(value.providerSessionId);
+    const bound = isRecord(value)
+      && value.version === 4
+      && keys === "conversationKey,epoch,logicalConversationKey,modelKey,providerSessionId,revision,runIdDigest,version"
+      && typeof value.logicalConversationKey === "string"
+      && /^[a-f0-9]{64}$/u.test(value.logicalConversationKey)
+      && typeof value.providerSessionId === "string"
+      && /^[a-f0-9]{64}$/u.test(value.providerSessionId);
+    if (bound && isRecord(value)) assertSessionModelKey(value.modelKey);
     if (
       !isRecord(value)
-      || (!legacy && !current && !logical)
+      || (!legacy && !current && !logical && !bound)
       || typeof value.conversationKey !== "string"
       || !/^[a-f0-9]{64}$/u.test(value.conversationKey)
       || typeof value.epoch !== "string"
@@ -2400,10 +2742,11 @@ async function readDirtyFence(path: string): Promise<DirtyFence> {
     }
     return {
       path,
+      ...(bound ? { modelKey: value.modelKey as string } : {}),
       conversationKey: value.conversationKey,
-      ...(logical ? { logicalConversationKey: value.logicalConversationKey as string } : {}),
+      ...(logical || bound ? { logicalConversationKey: value.logicalConversationKey as string } : {}),
       epoch: value.epoch,
-      ...(current || logical ? { providerSessionId: value.providerSessionId as string } : {}),
+      ...(current || logical || bound ? { providerSessionId: value.providerSessionId as string } : {}),
       revision: value.revision as number,
       runIdDigest: value.runIdDigest,
     };
@@ -2572,4 +2915,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isErrno(error: unknown, code: string): boolean {
   return (error as NodeJS.ErrnoException)?.code === code;
+}
+
+function modelBinding(modelKey: string | undefined): { readonly modelKey?: string } {
+  return modelKey === undefined ? {} : { modelKey };
 }

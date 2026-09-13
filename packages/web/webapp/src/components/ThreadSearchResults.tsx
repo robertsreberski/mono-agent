@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useMemo } from "react";
 import { useConsoleStore } from "../console-store";
 import {
   highlightSegments,
@@ -6,8 +6,12 @@ import {
   type HighlightSegment,
   type ThreadSearchState,
 } from "../thread-search";
-import type { ThreadSearchHit } from "../types";
+import type { AgentSummary, CatalogModel, ProjectSummary, ThreadSearchHit, ThreadSummary } from "../types";
+import { threadProjectLabel } from "./dashboard/dashboard-model";
 import { Icon } from "./Icon";
+import { ProjectTag } from "./project/ProjectTag";
+import { flattenCatalogModels, resolveThreadRoute } from "./route-label";
+import { RouteBadge } from "./RouteBadge";
 import { relativeTime } from "./time";
 
 function Highlighted({ segments }: { readonly segments: readonly HighlightSegment[] }) {
@@ -25,19 +29,39 @@ function Highlighted({ segments }: { readonly segments: readonly HighlightSegmen
 function SearchHit({
   hit,
   query,
+  agent,
+  catalogModels,
+  currentThread,
+  projectsByAgent,
   onSelect,
+  highlightSelected,
 }: {
   readonly hit: ThreadSearchHit;
   readonly query: string;
+  readonly currentThread?: ThreadSummary;
+  /** The hit's OWN agent match; null when discovery no longer lists it. */
+  readonly agent: AgentSummary | null;
+  readonly catalogModels: Readonly<Record<string, readonly CatalogModel[]>> | undefined;
+  readonly projectsByAgent: Readonly<Record<string, readonly ProjectSummary[]>>;
   readonly onSelect?: () => void;
+  readonly highlightSelected: boolean;
 }) {
   const { selectThread, selectedThreadId } = useConsoleStore();
   const { thread } = hit;
+  const active = highlightSelected && thread.id === selectedThreadId;
+  // Search replaces the list, so its hits carry the same current-settings
+  // badge the rows they stand in for draw.
+  const route = resolveThreadRoute(currentThread !== undefined && currentThread.revision >= thread.revision ? currentThread : thread, agent, catalogModels);
+  // Search still reads every conversation of the agent, project members
+  // included -- so a hit says which project it was found in.
+  const project = threadProjectLabel(currentThread ?? thread, projectsByAgent);
   return (
     <button
       type="button"
-      className={`thread-search-hit${thread.id === selectedThreadId ? " is-active" : ""}`}
-      aria-label={`Open ${thread.title}`}
+      className={`thread-search-hit${active ? " is-active" : ""}`}
+      aria-label={project === undefined
+        ? `Open ${thread.title}`
+        : `Open ${thread.title}, in project ${project.name}`}
       onClick={() => {
         selectThread(thread.id);
         onSelect?.();
@@ -53,6 +77,7 @@ function SearchHit({
         <time dateTime={thread.updatedAt}>{relativeTime(thread.updatedAt)}</time>
       </span>
       <span className="thread-preview">
+        {project !== undefined && <ProjectTag name={project.name} color={project.color} />}
         <span className="thread-preview-text">
           {hit.snippet === undefined
             ? hit.titleMatch
@@ -63,6 +88,13 @@ function SearchHit({
         {hit.messageMatches > 1 && (
           <span className="thread-search-count">{`${String(hit.messageMatches)} matches`}</span>
         )}
+        <RouteBadge
+          modelShort={route.modelShort}
+          effortShort={route.effortShort}
+          effortSignal={route.effortSignal}
+          label={route.label}
+          title={route.title}
+        />
       </span>
     </button>
   );
@@ -78,11 +110,29 @@ export function ThreadSearchResults({
   query,
   search,
   onSelect,
+  highlightSelected = true,
 }: {
   readonly query: string;
   readonly search: ThreadSearchState;
   readonly onSelect?: () => void;
+  /**
+   * Whether the selected conversation is marked here. The phone Dashboard is
+   * the whole screen and the conversation it would be pointing at is not on
+   * it, so the mark is withheld -- the store's selection is untouched, exactly
+   * as it is for the ordinary rows this list replaces.
+   */
+  readonly highlightSelected?: boolean;
 }) {
+  const { agents, threads, catalogByProvider, projectsByAgent, selectedAgentId } = useConsoleStore();
+  const currentById = useMemo(() => new Map(threads.map((thread) => [thread.id, thread])), [threads]);
+  const agentBySourceId = useMemo(
+    () => new Map(agents.map((agent) => [agent.sourceId, agent])),
+    [agents],
+  );
+  const catalogModels = useMemo(
+    () => flattenCatalogModels(catalogByProvider),
+    [catalogByProvider],
+  );
   const active = search.hits.filter((hit) => hit.thread.archivedAt === null);
   const archived = search.hits.filter((hit) => hit.thread.archivedAt !== null);
 
@@ -110,7 +160,17 @@ export function ThreadSearchResults({
         <section>
           <h2 className="thread-search-group">Conversations</h2>
           {active.map((hit) => (
-            <SearchHit key={hit.thread.id} hit={hit} query={query} onSelect={onSelect} />
+            <SearchHit
+              key={hit.thread.id}
+              hit={hit}
+              query={query}
+              agent={agentBySourceId.get(hit.thread.sourceId) ?? null}
+              currentThread={currentById.get(hit.thread.id)}
+              catalogModels={hit.thread.sourceId === selectedAgentId ? catalogModels : undefined}
+              projectsByAgent={projectsByAgent}
+              onSelect={onSelect}
+              highlightSelected={highlightSelected}
+            />
           ))}
         </section>
       )}
@@ -118,7 +178,17 @@ export function ThreadSearchResults({
         <section>
           <h2 className="thread-search-group">Archived</h2>
           {archived.map((hit) => (
-            <SearchHit key={hit.thread.id} hit={hit} query={query} onSelect={onSelect} />
+            <SearchHit
+              key={hit.thread.id}
+              hit={hit}
+              query={query}
+              agent={agentBySourceId.get(hit.thread.sourceId) ?? null}
+              currentThread={currentById.get(hit.thread.id)}
+              catalogModels={hit.thread.sourceId === selectedAgentId ? catalogModels : undefined}
+              projectsByAgent={projectsByAgent}
+              onSelect={onSelect}
+              highlightSelected={highlightSelected}
+            />
           ))}
         </section>
       )}

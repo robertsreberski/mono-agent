@@ -11,7 +11,9 @@ import {
 } from "./background-snapshot-key.js";
 import {
   fingerprintBackgroundOperationalEnvironment,
+  fingerprintSystemdBackgroundOperationalEnvironment,
   isBackgroundOperationalEnvName,
+  isSystemdBackgroundOperationalEnvName,
   selectBackgroundOperationalEnvironment,
 } from "./background-environment.js";
 import { readCliConfigSnapshot, readCliDotenvSnapshot } from "./first-run-readiness.js";
@@ -89,6 +91,8 @@ export interface CaptureBackgroundSnapshotInput {
   readonly envFile?: string;
   /** Effective worker environment after dotenv loading/sanitisation. */
   readonly env: Readonly<Record<string, string | undefined>>;
+  /** Selects the fixed Linux systemd user-session additions to the operational environment. */
+  readonly operationalEnvironmentPolicy?: "systemd";
   /** Test/internal seam. Production uses the owner-only per-config key. */
   readonly proofKey?: Uint8Array;
 }
@@ -173,7 +177,12 @@ export async function captureBackgroundSnapshot(
     readCliDotenvSnapshot(dotenvPath),
     fingerprintOptionalRegularFile(dotenvPath, "dotenv", proofKey),
   ]);
-  assertDotenvMatchesEffectiveEnvironment(dotenv.env, input.env, dotenvPath);
+  assertDotenvMatchesEffectiveEnvironment(
+    dotenv.env,
+    input.env,
+    dotenvPath,
+    input.operationalEnvironmentPolicy,
+  );
   const core = await loadAppCoreConfig({ cwd, configPath, env: input.env });
   const identityPath = resolve(core.context.identityPath);
   const identityFingerprint = await fingerprintRegularFile(identityPath, "identity", proofKey);
@@ -215,7 +224,12 @@ export async function captureBackgroundSnapshot(
   ) {
     throw new Error("Refusing to prove background readiness because a durable input changed during startup capture.");
   }
-  assertDotenvMatchesEffectiveEnvironment(dotenvAfter.env, input.env, dotenvPath);
+  assertDotenvMatchesEffectiveEnvironment(
+    dotenvAfter.env,
+    input.env,
+    dotenvPath,
+    input.operationalEnvironmentPolicy,
+  );
   return {
     schema: BACKGROUND_SNAPSHOT_SCHEMA,
     configPath,
@@ -228,7 +242,9 @@ export async function captureBackgroundSnapshot(
     ...(mcpConfigPath === undefined || mcpConfigFingerprint === undefined
       ? {}
       : { mcpConfigPath, mcpConfigFingerprint }),
-    operationalEnvironmentFingerprint: fingerprintBackgroundOperationalEnvironment(input.env),
+    operationalEnvironmentFingerprint: input.operationalEnvironmentPolicy === "systemd"
+      ? fingerprintSystemdBackgroundOperationalEnvironment(input.env)
+      : fingerprintBackgroundOperationalEnvironment(input.env),
   };
 }
 
@@ -359,13 +375,17 @@ function assertDotenvMatchesEffectiveEnvironment(
   dotenv: Readonly<Record<string, string>>,
   env: Readonly<Record<string, string | undefined>>,
   dotenvPath: string,
+  operationalEnvironmentPolicy: "systemd" | undefined,
 ): void {
   const dotenvNames = new Set(Object.keys(dotenv));
+  const isOperational = operationalEnvironmentPolicy === "systemd"
+    ? isSystemdBackgroundOperationalEnvName
+    : isBackgroundOperationalEnvName;
   for (const [name, value] of Object.entries(dotenv)) {
-    // launchd explicitly materialises operational values and Node's dotenv
-    // semantics leave them in precedence. Every other dotenv entry must be the
-    // value the worker is actually about to use.
-    if (!isBackgroundOperationalEnvName(name) && env[name] !== value) {
+    // Background supervisors explicitly materialise operational values and
+    // Node's dotenv semantics leave them in precedence. Every other dotenv
+    // entry must be the value the worker is actually about to use.
+    if (!isOperational(name) && env[name] !== value) {
       throw new Error(
         `Refusing to prove background readiness because the effective ${name} value does not match ${dotenvPath}.`,
       );
@@ -374,7 +394,7 @@ function assertDotenvMatchesEffectiveEnvironment(
   for (const [name, value] of Object.entries(env)) {
     if (
       value !== undefined
-      && !isBackgroundOperationalEnvName(name)
+      && !isOperational(name)
       && !dotenvNames.has(name)
     ) {
       throw new Error(

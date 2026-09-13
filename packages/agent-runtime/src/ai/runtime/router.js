@@ -28,6 +28,8 @@
 // Result:
 //   The success run's result, with `failoverHistory` appended describing every
 //   prior attempt: [{ model, failureKind, requestId, retryableSubkind }].
+//   Successful retries/backups withhold providerSessionId: their stateless
+//   answer cannot synchronize the primary provider session.
 //   If every eligible retryable/auth entry in the chain fails, returns the last
 //   result with `failureKind: "provider_unavailable_exhausted"`. Terminal
 //   non-retryable failures are returned as-is with their failover history.
@@ -95,12 +97,12 @@ const ROUTER_TOOL_CONTEXT_KEYS = [
 ];
 const RESOLVER_PROTECTED_OPTION_KEYS = new Set([
   "model", "effort", "messages", "abortSignal", "onEvent",
-  "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
+  "sessionRecovery", "sessionId", "providerSessionId", "providerAttributionSessionId", "sessionKeepAlive", "sessionIdleTimeoutMs",
   "diagnosticsSeed", "systemPromptPrefix", "sandboxPolicy", "sandboxEngine", "sandbox",
   "allowedTools", "disallowedTools", "mcpServers", "mcpApps", "skills",
   "mcpCallNoTotalTimeoutTools",
   "webSearchState",
-  "outputSchema", "liveInput", "toolEnvironment",
+  "outputSchema", "liveInput", "toolEnvironment", "persistArtifact",
 ]);
 
 class ResolverProtectedOptionError extends Error {
@@ -255,13 +257,12 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           }
 
           applyEntryEffort(callOptions, entry.effort);
-          // A provider session belongs to the route AND to the attempt that
-          // created it. The entire chain is stateless whenever a fallback exists,
-          // keeping the full logical run replayable regardless of which route is
-          // attempted. A same-model retry re-sends the whole logical turn, so
-          // resuming the session the failed attempt already appended into would
-          // duplicate the turn or hit session_busy.
-          if (entries.length > 1 || i > 0 || retryIndex > 0 || !entrySupportsSessionResume(entry)) {
+          // Only the primary's first attempt may own a provider session. Retries
+          // replay the logical turn and must not resume a transcript the failed
+          // attempt may have appended to; backup routes never inherit that session.
+          const sessionEligibleAttempt = i === 0 && retryIndex === 0 && entrySupportsSessionResume(entry);
+          if (!sessionEligibleAttempt) {
+            delete callOptions.sessionRecovery;
             delete callOptions.sessionId;
             delete callOptions.providerSessionId;
             delete callOptions.sessionKeepAlive;
@@ -319,6 +320,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
           }
 
           result = normalizeProviderAuthFailure(result);
+          if (!sessionEligibleAttempt) {
+            const { providerSessionRecovery: _receipt, ...unownedResult } = result;
+            result = unownedResult;
+          }
 
           const retryability = retryableProviderFailureInfo({
             errorText: result.error || "",
@@ -341,7 +346,10 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
                 model: modelKey(entry.model),
               });
             }
-            return { ...result, failoverHistory };
+            // Pi may report the attribution id as its session id even on a
+            // stateless call. Withhold that resumable id so host history cannot
+            // synchronize an untouched or failed primary transcript.
+            return { ...result, ...(sessionEligibleAttempt ? {} : { providerSessionId: undefined }), failoverHistory };
           }
 
           failoverHistory.push({
@@ -435,6 +443,9 @@ export function createRouterRuntime({ host = {}, chain = [], resolveAttempt, ret
     configureTools(next = {}) {
       configuredTools = { ...(configuredTools || {}), ...next };
       inner.configureTools?.(next);
+    },
+    async recoverSession(receipt, context) {
+      return await inner.recoverSession?.(receipt, context) === true;
     },
     async syncSession(providerSessionId) {
       return Boolean(await inner.syncSession?.(providerSessionId));

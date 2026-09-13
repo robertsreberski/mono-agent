@@ -1734,7 +1734,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
                 ? "applied"
                 : "discarded",
           ),
-          () => decision.resolve("run"),
+          () => decision.resolve("discarded"),
         );
         if (reactions?.working === true) {
           await applyReaction(chatId, triggeredMessage.message_id, REACTION_WORKING);
@@ -2403,7 +2403,7 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         admissionQueues.set(queueKey, queue);
       }
       if (!queue.full) {
-        const decision = createDeferred<"run" | "steered">();
+        const decision = createDeferred<"run" | "steered" | "uncertain">();
         const reserved = queue.run(async (): Promise<TelegramNotifyResult> => {
           const next = await decision.promise;
           if (next === "run") {
@@ -2419,6 +2419,16 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
             return { ...outcome, disposition: "follow_up" as const };
           }
           unregisterController(chatId, controller);
+          if (next === "uncertain") {
+            return {
+              delivered: false,
+              code: "delivery_uncertain",
+              reason: "Live-input delivery is uncertain and was not retried.",
+              retryable: false,
+              ambiguous: true,
+              channelId: "telegram" as const,
+            };
+          }
           return {
             delivered: true,
             code: "delivered",
@@ -2449,8 +2459,14 @@ export function createTelegramBot(options: CreateTelegramBotOptions): TelegramBo
         }
         if (offer.status === "accepted") {
           void offer.settled.then(
-            (settlement) => decision.resolve(settlement.status === "applied" ? "steered" : "run"),
-            () => decision.resolve("run"),
+            (settlement) => decision.resolve(
+              settlement.status === "applied"
+                ? "steered"
+                : settlement.status === "requeue"
+                  ? "run"
+                  : "uncertain",
+            ),
+            () => decision.resolve("uncertain"),
           );
         } else {
           decision.resolve("run");

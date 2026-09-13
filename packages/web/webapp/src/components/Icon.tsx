@@ -3,6 +3,7 @@ import type { SVGProps } from "react";
 export type IconName =
   | "activity"
   | "agent"
+  | "alert"
   | "archive"
   | "arrow-down"
   | "attach"
@@ -14,6 +15,7 @@ export type IconName =
   | "chevron"
   | "chevron-down"
   | "chevron-left"
+  | "clock"
   | "download"
   | "close"
   | "command"
@@ -21,6 +23,7 @@ export type IconName =
   | "eye"
   | "eye-off"
   | "file"
+  | "folder"
   | "menu"
   | "more"
   | "new"
@@ -32,6 +35,7 @@ export type IconName =
   | "spark"
   | "star"
   | "stop"
+  | "terminal"
   | "trash"
   | "threads";
 
@@ -41,6 +45,12 @@ const paths: Record<IconName, React.ReactNode> = {
     <>
       <rect x="5" y="7" width="14" height="12" rx="4" />
       <path d="M9 7V5m6 2V5M8.5 12h.01M15.5 12h.01M9 16c2 1 4 1 6 0" />
+    </>
+  ),
+  alert: (
+    <>
+      <path d="M12 4.5 2.8 20h18.4z" />
+      <path d="M12 10v4M12 17h.01" />
     </>
   ),
   archive: (
@@ -78,6 +88,12 @@ const paths: Record<IconName, React.ReactNode> = {
   chevron: <path d="m9 18 6-6-6-6" />,
   "chevron-down": <path d="m6 9 6 6 6-6" />,
   "chevron-left": <path d="m15 18-6-6 6-6" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
   download: <path d="M12 4v11m0 0-4-4m4 4 4-4M5 19h14" />,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   command: (
@@ -108,6 +124,7 @@ const paths: Record<IconName, React.ReactNode> = {
       <path d="M14 3v5h5M9 13h6M9 17h5" />
     </>
   ),
+  folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   more: <path d="M5 12h.01M12 12h.01M19 12h.01" />,
   new: <path d="M12 5v14M5 12h14" />,
@@ -141,6 +158,7 @@ const paths: Record<IconName, React.ReactNode> = {
   spark: <path d="M12 2c.6 5.4 4.6 9.4 10 10-5.4.6-9.4 4.6-10 10-.6-5.4-4.6-9.4-10-10 5.4-.6 9.4-4.6 10-10z" />,
   star: <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z" />,
   stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
+  terminal: <path d="m4 17 6-6-6-6M12 19h8" />,
   trash: (
     <>
       <path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13" />

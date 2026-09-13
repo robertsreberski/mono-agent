@@ -334,10 +334,14 @@ matches the exact active delivery key; unrelated and stale keys cannot silence
 another turn. Web removes the sentinel from the settled reply and emits no
 response push for a reply without visible content.
 
-A timeout while awaiting a wake receipt may leave the actual turn running.
-The terminal wake state is `unknown`, with an explicit outcome-unknown error;
-automatic replay is suppressed, including after restart. A definite refusal
-remains failed or follows its existing bounded safe-retry policy.
+A timeout before the destination confirms steering or durably admits the exact
+follow-up may leave delivery uncertain. The terminal wake state is `unknown`,
+with an explicit outcome-unknown error; automatic replay is suppressed,
+including after restart. The web destination receipts a durably admitted
+follow-up without waiting for its model turn to finish; that turn's later
+success, failure, cancellation, or interruption remains independently visible.
+A definite refusal remains failed or follows its existing bounded safe-retry
+policy.
 
 The process owns its sandbox settings until every process remaining in its
 owned POSIX process group exits.
@@ -384,21 +388,29 @@ could duplicate a real first delivery.
 
 For an active turn in the exact originating conversation, the adapter first
 offers the completion as live input targeted to that run id. It reserves the
-normal follow-up position before making the offer. A confirmed provider
-acknowledgement keeps the completion in that turn; an explicit unavailable,
-discarded, or requeued settlement runs the reserved normal follow-up turn. An
-unknown settlement is ambiguous and never triggers an automatic duplicate.
+normal follow-up position before making the offer. Confirmed exact transcript
+consumption keeps the completion in that turn; only an explicit unavailable or
+requeued settlement runs the reserved normal follow-up turn. Discarded,
+uncertain, rejected, or unknown settlement is ambiguous and never triggers an
+automatic duplicate. Consumption does not prove provider receipt or adherence.
 Slack, Telegram, and WhatsApp use their ordinary visible thinking/tool/final
 stream for the fallback. The web console creates an assistant-only turn, emits
 the same NDJSON activity/tool frames, and never invents a user message.
 
 Every steer or fallback carries the stable delivery key out of band. The web
-console durably records accepted and completed claims: after restart a completed
-claim returns its prior `steered` or `follow_up` receipt, while an accepted but
-unsettled claim fails closed as ambiguous. A wake is a genuine tool-capable
+console durably records accepted and completed delivery claims. A `steered`
+completion means the exact active run accepted the live input; a `follow_up`
+completion means the agent accepted that exact assistant turn request, not that
+its model work succeeded. Acceptance is also when the wake's host-owned
+capability binds to the request, so the follow-up keeps the parent's chain depth
+and its remaining background starts; a receipt that returned earlier would end
+the wake and leave the turn it raised unable to start the next job. After
+restart a completed claim returns its prior receipt
+while the associated turn can independently recover as interrupted; an accepted
+but unsettled claim fails closed as ambiguous. A wake is a genuine tool-capable
 turn, not continuation synthesis. The host raises the active controller to the
 parent job's chain depth plus one before any steered tool call can start; a
-non-applied offer rolls that provisional depth back, and the configured maximum
+non-consumed offer rolls that provisional depth back, and the configured maximum
 remains authoritative.
 
 A Slack or Telegram conversation that is already at its pre-turn admission cap
@@ -545,22 +557,43 @@ The command refuses remote endpoints, derives an independent owner capability
 from the selected agent's private store, and exits `1` with
 `agent_unreachable` when the agent cannot be reached. Misuse exits `2`.
 
+Successful background `Exec`/`Bash` completions carry a bounded versioned start
+receipt in their machine-readable tool result. The receipt records the exact job
+id, tool, admission state, and real start stamp when one exists; the human result
+text is not an identity source. The web console uses that causal receipt only
+when both the launching response and its card are loaded. Its response Activity
+then shows real start and terminal evidence, including failed, timed-out,
+cancelled, spawn-failed, queue-expired, and interrupted outcomes. Queued or
+starting jobs without a real start stamp do not gain a start row, and missing
+timestamps are never synthesized. Older launches without the receipt remain in
+the separate job stack only.
+
 An enabled local operator endpoint exposes bearer-protected
 `GET /gui/v1/jobs`, `GET /gui/v1/jobs/:jobId`, and
 `POST /gui/v1/jobs/:jobId/cancel`. Its info response advertises `jobs: true`
 only while the controller and its owner bearer are present. List responses keep
 every queued, starting, and running projection and add a deterministic
-newest-terminal prefix within the 16 MiB response ceiling. The web console keeps
-running and terminal jobs in the transcript as compact Activity rows (tool,
-purpose, state and elapsed time on the row; output tail, artifact paths, wake
-state and the wake's response behind it). A running row polls its exact job once
-per second and opens when its first output arrives. Operators may collapse it;
-later output and settlement preserve that choice, and the tail follows the
+newest-terminal prefix within the 16 MiB response ceiling. The web console
+collects running and terminal jobs from the loaded transcript window into one
+stack after the conversation (tool, purpose, state and elapsed time on each
+card; output tail, wake state and the wake's response behind it, without the
+host-local artifact paths an operator cannot open from a browser). Queued,
+starting, and running work stays visible by default. Every terminal
+outcome remains mounted but hidden until the operator expands history; that
+choice is remembered per conversation for the browser session. The stack labels
+its active and history counts as loaded and points to **Load earlier messages**
+whenever older history is available. A running card polls its exact job once per
+second and opens when its first output arrives. Operators may collapse that
+card; later output and settlement preserve the choice, and the tail follows the
 bottom only until the operator scrolls upward. Queued/starting jobs and failed
-reads retain bounded backoff. Each nonterminal row polls only its
+reads retain bounded backoff. Each nonterminal card polls only its
 exact authenticated, source- and thread-bound
 `GET /api/v1/threads/:id/jobs/:jobId` proxy with bounded backoff; it does not
 clone or serialize the retained job list on every refresh.
+
+The stack remains the only live card and poller. Response Activity rows do not
+poll, show output/artifacts/wake details, offer cancellation, or duplicate the
+completion response.
 
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and

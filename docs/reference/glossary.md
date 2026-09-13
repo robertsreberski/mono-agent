@@ -25,7 +25,7 @@ The Pi runtime that actually runs the model. mono-agent is Pi-only: every provid
 
 ## Bloat guard
 
-The automatic 256KB truncation of oversized tool output, with each original block offered to a separate best-effort artifact sink instead of being inlined into context. It is built in (coverage: `auto`); successfully saved blocks land under `artifacts.dir/tool-output/`, while a missing or failed sink leaves only the compact truncation summary. Images get a separate, larger budget. See [Tools and guards](/runtime/tools-and-guards/).
+The automatic 256KB truncation of oversized tool output. Text-only overflow retains a UTF-8-safe head/tail sample inside balanced untrusted framing; image, binary, and mixed overflow remains summary-only. Each original block is also offered to a best-effort per-run sink under `artifacts.dir/tool-output/<runId>/`. The hourly artifact sweep bounds those raw, access-controlled run directories with `artifacts.retention`, while active, uncertain, or recently modified runs are kept. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## BuJo
 
@@ -37,7 +37,7 @@ The composable factory behind an adapter (e.g. `createTelegramChannelDriver`, or
 
 ## Context compaction
 
-When a turn approaches the model's context window, the pi bridge drives `AgentHarness.compact()` — proactively at a model-window-derived trigger and reactively with one re-prompt only after a preview proves positive reduction. Rejected previews are not persisted. Configure the adaptive policy through `runtime.compaction.*`; numeric and generic provider overflows lower a learned process-local ceiling. Runs report request estimates and before/after effectiveness. Persistent overflow is `context_limit` and may advance to the next configured fallback. See [Tools and guards](/runtime/tools-and-guards/).
+When a turn approaches the model's context window, the pi bridge drives `AgentHarness.compact()` — proactively at a model-window-derived trigger and reactively with one re-prompt only after a preview proves positive reduction. Rejected previews and empty or output-truncated summaries are not persisted. Summary preparation preserves bounded tool-result tails, confirmed built-in file operations and a supplemental focus on active constraints and unfinished work. Operation accounting separates summary cost from assistant requests. Pi supports native checkpoint/overflow compaction, which mono-agent deliberately disables. Configure the adaptive policy through `runtime.compaction.*`; numeric and generic provider overflows lower a learned process-local ceiling. Runs report request estimates and before/after effectiveness. Persistent overflow is `context_limit` and may advance to the next configured fallback. See [Tools and guards](/runtime/tools-and-guards/).
 
 ## Entity graph
 
@@ -49,7 +49,7 @@ The default-deny posture. It survives in two places: the **programmatic** harnes
 
 ## Fallback router
 
-The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover and safety history, keeps the chain provider-session-stateless, and carries bounded transcript context between attempts. Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); the legacy `runtime.fallbackModels` CSV form is retired and is now **rejected at load**, each surface naming its own repair: the JSON key fails with `` `runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ "model": "..." }]` ``, and `MONO_AGENT_FALLBACK_MODELS` fails with `` `MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON` ``.
+The retry layer that walks ordered canonical `{model, effort?}` routes after fallback-eligible provider/auth failures. It records failover history and keeps provider sessions only on the primary's first attempt. Retries and backups use bounded transcript snapshots; on warm failover they lack earlier conversation history. A retry/backup answer rotates the coordinated durable epoch and the next turn cold-reseeds; see [fallback sessions](/runtime/fallback/). Configured via `runtime.fallbacks` (`MONO_AGENT_FALLBACKS_JSON`); the legacy `runtime.fallbackModels` CSV form is retired and is now **rejected at load**, each surface naming its own repair: the JSON key fails with `` `runtime.fallbackModels` was replaced by `runtime.fallbacks: [{ "model": "..." }]` ``, and `MONO_AGENT_FALLBACK_MODELS` fails with `` `MONO_AGENT_FALLBACK_MODELS` was replaced by `MONO_AGENT_FALLBACKS_JSON` ``.
 
 ```json
 {

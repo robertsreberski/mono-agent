@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode, type ReactNode } from "react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agent, thread } from "../test/fixtures";
+import { agent, processJob, thread } from "../test/fixtures";
 import { WebRuntimeProvider } from "../runtime";
 import type { ThreadDetail, ThreadSummary, WebMessage } from "../types";
 
@@ -194,15 +194,22 @@ const chatStore = (
     selectedThreadId,
     loading: false,
     detailLoading,
+    selectionLoading: detailLoading,
+    creatingThread: false,
+    selectionError: null,
     connection: "live" as const,
     model: "",
     effort: "",
     createThread: vi.fn(),
+    retrySelection: vi.fn(),
     selectThread: vi.fn(),
     renameThread: vi.fn(),
     archiveThread: vi.fn().mockResolvedValue(undefined),
     unarchiveThread: vi.fn().mockResolvedValue(undefined),
     deleteThread: vi.fn().mockResolvedValue(undefined),
+    projectsByAgent: {},
+    loadProjects: vi.fn().mockResolvedValue([]),
+    setThreadProject: vi.fn().mockResolvedValue(undefined),
     hasOlderMessages: false,
     loadOlderMessages: vi.fn().mockResolvedValue(undefined),
     sendTurn: vi.fn().mockResolvedValue(undefined),
@@ -214,11 +221,168 @@ const chatStore = (
 
 const chatTree = () => (
   <WebRuntimeProvider>
-    <Chat onOpenAgents={() => undefined} onOpenThreads={() => undefined} />
+    <Chat onBack={() => undefined} />
   </WebRuntimeProvider>
 );
 
+it("shows an owned loading surface instead of a false new-conversation state", () => {
+  const prior = thread("thread-a", "agent");
+  storeMock.current = {
+    ...chatStore(prior, null),
+    selectedThread: null,
+    selectedThreadId: null,
+    detail: null,
+    selectionLoading: true,
+  };
+
+  render(chatTree());
+
+  expect(screen.getByRole("button", { name: "Loading conversation…" })).toBeDisabled();
+  expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+  expect(screen.getAllByRole("status").some((item) => item.textContent?.includes("Loading"))).toBe(true);
+});
+
+it("shows conversation creation as pending while retaining the previous transcript", () => {
+  const prior = thread("thread-a", "agent", { title: "Prior conversation" });
+  storeMock.current = {
+    ...chatStore(prior, chatDetail(prior, 1)),
+    selectionLoading: true,
+    creatingThread: true,
+  };
+
+  render(chatTree());
+
+  expect(screen.getByRole("button", { name: "Creating conversation…" })).toBeDisabled();
+  expect(screen.getByRole("status", { name: "Creating conversation" })).toBeInTheDocument();
+  expect(screen.getAllByRole("status").some(
+    (item) => item.textContent?.includes("Creating conversation"),
+  )).toBe(true);
+  expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
+});
+
+it("keeps a failed selection explicit after its transient notice is gone", () => {
+  const prior = thread("thread-a", "agent");
+  const retrySelection = vi.fn();
+  storeMock.current = {
+    ...chatStore(prior, null),
+    selectedThread: null,
+    selectedThreadId: null,
+    detail: null,
+    selectionError: "bucket unavailable",
+    retrySelection,
+    actionError: null,
+  };
+
+  render(chatTree());
+
+  expect(screen.getByRole("alert")).toHaveTextContent("Conversation could not be loaded");
+  expect(screen.getByRole("alert")).toHaveTextContent("bucket unavailable");
+  expect(screen.queryByRole("heading", { name: "Start a new conversation" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+  expect(screen.queryByRole("status", { name: "Loading conversation" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Retry conversation" }));
+  expect(retrySelection).toHaveBeenCalledTimes(1);
+});
+
 describe("Chat conversation viewport", () => {
+  it("places one loaded job stack in the footer above the composer", () => {
+    const selected = thread("thread-a", "agent");
+    const ordinary = chatMessage("ordinary", selected.id);
+    const jobOnly: WebMessage = {
+      ...chatMessage("job-only", selected.id),
+      parts: [{
+        type: "process-job",
+        job: processJob({
+          origin: {
+            ...processJob().origin,
+            conversationId: `web:${selected.id}`,
+            historyBoundary: `web:${selected.id}`,
+          },
+        }),
+      }],
+    };
+    storeMock.current = {
+      ...chatStore(selected, { thread: selected, messages: [ordinary, jobOnly] }),
+      hasOlderMessages: true,
+      selectionError: null,
+    };
+
+    const view = render(chatTree());
+
+    expect(screen.getAllByTestId("thread-message")).toHaveLength(1);
+    const column = view.container.querySelector<HTMLElement>(".message-column")!;
+    const stack = view.container.querySelector<HTMLElement>(".process-job-stack")!;
+    const footer = view.container.querySelector<HTMLElement>(".thread-footer")!;
+    expect(column).not.toContainElement(stack);
+    expect(stack.parentElement).toBe(footer);
+    expect(stack.querySelector(".message-actions")).toBeNull();
+    expect(screen.getByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("isolates same-id job state while retaining history preference through the keyed viewport", () => {
+    const first = thread("thread-a", "agent");
+    const second = thread("thread-b", "agent");
+    const terminal = processJob({ jobId: "same-job" });
+    const running = processJob({
+      ...terminal,
+      state: "running",
+      origin: {
+        ...terminal.origin,
+        conversationId: `web:${first.id}`,
+        historyBoundary: `web:${first.id}`,
+      },
+      timestamps: { ...terminal.timestamps, completedAt: null },
+      output: { ...terminal.output, stdoutBytes: 0, preview: "", stdoutRef: null, stderrRef: null },
+      wake: { ...terminal.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      exitCode: null,
+      durationMs: null,
+    });
+    const old = processJob({ jobId: "thread-a-history" });
+    const messageWith = (selected: ThreadSummary, jobs: readonly typeof terminal[]): WebMessage => ({
+      ...chatMessage(`${selected.id}-jobs`, selected.id),
+      parts: jobs.map((job) => ({ type: "process-job" as const, job })),
+    });
+    storeMock.current = chatStore(first, {
+      thread: first,
+      messages: [messageWith(first, [running, old])],
+    });
+
+    const view = render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
+
+    storeMock.current = chatStore(second, {
+      thread: second,
+      messages: [messageWith(second, [{
+        ...terminal,
+        origin: {
+          ...terminal.origin,
+          conversationId: `web:${second.id}`,
+          historyBoundary: `web:${second.id}`,
+        },
+      }])],
+    });
+    view.rerender(chatTree());
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("group", { name: "Exec background job succeeded" })).toBeNull();
+
+    storeMock.current = chatStore(first, {
+      thread: first,
+      messages: [messageWith(first, [running, old])],
+    });
+    view.rerender(chatTree());
+    expect(screen.getByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: "Exec background job running" })).toHaveClass("is-running");
+    expect(screen.getByRole("group", { name: "Exec background job succeeded" })).toHaveClass("is-complete");
+  });
+
   it("contains one StrictMode message-row failure and reloads only the conversation pane", () => {
     const selected = thread("thread-a", "agent");
     storeMock.current = chatStore(selected, chatDetail(selected, 2));
@@ -228,8 +392,7 @@ describe("Chat conversation viewport", () => {
     render(<StrictMode>{chatTree()}</StrictMode>);
 
     expect(screen.getByRole("heading", { name: "Something went wrong" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Choose agent" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Open conversations" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Back to dashboard" })).toBeVisible();
     expect(consoleError.mock.calls.filter(
       ([first]) => first === "[mono-agent] conversation render failed",
     )).toHaveLength(1);
@@ -376,6 +539,78 @@ describe("Chat conversation actions", () => {
     expect(store.archiveThread).not.toHaveBeenCalled();
     confirm.mockRestore();
   });
+
+  it("offers adding a loose conversation to a project", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent");
+    const store = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: {
+        agent: [
+          project("p-one", "agent", { name: "First" }),
+          project("p-two", "agent", { name: "Second", archivedAt: "2026-09-01T00:00:00.000Z" }),
+        ],
+      },
+    };
+    storeMock.current = store;
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add to project" }));
+    expect(store.loadProjects).toHaveBeenCalledWith("agent");
+
+    fireEvent.click(await screen.findByRole("menuitem", { name: "First" }));
+    expect(store.setThreadProject).toHaveBeenCalledWith("thread-a", "p-one");
+    // Archived projects stay out of the picker.
+    expect(screen.queryByRole("menuitem", { name: "Second" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Remove from project" })).toBeNull();
+  });
+
+  it("keeps an archived member's project in the menu", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent", { projectId: "p-one", archivedAt: "2026-09-01T00:00:00.000Z" });
+    storeMock.current = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: { agent: [project("p-one", "agent", { name: "First" })] },
+    };
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Move to project First" })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: "Remove from project" })).toBeVisible();
+  });
+
+  it("makes a new project from this chat", async () => {
+    const selected = thread("thread-a", "agent");
+    storeMock.current = { ...chatStore(selected, chatDetail(selected, 0)), projectsByAgent: {} };
+    const listener = vi.fn();
+    window.addEventListener("mono-agent:project-settings", listener);
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "New project from this chat" }));
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect((listener.mock.calls[0]![0] as CustomEvent).detail)
+      .toEqual({ mode: "create", sourceId: "agent", threadId: "thread-a" });
+    window.removeEventListener("mono-agent:project-settings", listener);
+  });
+
+  it("offers moving and removing a project member", async () => {
+    const { project } = await import("../test/fixtures");
+    const selected = thread("thread-a", "agent", { projectId: "p-one" });
+    const store = {
+      ...chatStore(selected, chatDetail(selected, 0)),
+      projectsByAgent: { agent: [project("p-one", "agent", { name: "First" })] },
+    };
+    storeMock.current = store;
+
+    render(chatTree());
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    // The row carries where the chat is now.
+    expect(await screen.findByRole("menuitem", { name: "Move to project First" })).toBeVisible();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Remove from project" }));
+    expect(store.setThreadProject).toHaveBeenCalledWith("thread-a", null);
+  });
 });
 
 describe("ModelControls", () => {
@@ -409,6 +644,67 @@ describe("ModelControls", () => {
       }),
       detail: null,
     };
+  });
+
+  it("shows a reversible cold-turn status for model changes, but not effort changes", async () => {
+    const otherModel = "pi:anthropic:claude-sonnet-4.5";
+    const selectedThread = thread("thread", "agent", { runModel: MODEL });
+    const attributedAssistant = {
+      ...chatMessage("assistant", selectedThread.id),
+      attribution: {
+        requested: { model: MODEL, effort: "high" },
+        executed: { model: MODEL, effort: "high" },
+        disposition: "requested" as const,
+        transitions: [],
+        retries: [],
+      },
+    };
+    const setModel = vi.fn((next: string) => {
+      storeMock.current = {
+        ...storeMock.current,
+        model: next,
+        effectiveModel: next,
+      };
+    });
+    const setEffort = vi.fn((next: string) => {
+      storeMock.current = { ...storeMock.current, effort: next, effectiveEffort: next };
+    });
+    storeMock.current = {
+      ...storeMock.current,
+      model: MODEL,
+      modelOptions: [MODEL, otherModel],
+      selectedThread,
+      detail: { thread: selectedThread, messages: [attributedAssistant] },
+      setModel,
+      setEffort,
+      selectedAgent: agent("agent", {
+        models: [MODEL, otherModel],
+        defaultModel: MODEL,
+        defaultEffort: "high",
+        modelOptions: {
+          [MODEL]: { label: "GPT-5.5 Codex", reasoning: true, effortLevels: ["low", "high"] },
+          [otherModel]: { label: "Claude Sonnet 4.5", reasoning: true, effortLevels: ["low", "high"] },
+        },
+      }),
+    };
+
+    const view = render(<ModelControls />);
+    fireEvent.click(screen.getByRole("button", { name: "Model and reasoning effort" }));
+    const effortGroup = await screen.findByRole("radiogroup", { name: "Reasoning effort" });
+    fireEvent.click(within(effortGroup).getByRole("radio", { name: "Low" }));
+    view.rerender(<ModelControls />);
+    expect(setEffort).toHaveBeenCalledWith("low");
+    expect(screen.queryByText(/Model changed —/u)).toBeNull();
+
+    fireEvent.click(screen.getByRole("option", { name: /Claude Sonnet 4\.5/u }));
+    view.rerender(<ModelControls />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Model changed — the next reply rebuilds this conversation's context from its text history.",
+    );
+
+    fireEvent.click(screen.getByRole("option", { name: /^GPT-5\.5 Codex/u }));
+    view.rerender(<ModelControls />);
+    expect(screen.queryByText(/Model changed —/u)).toBeNull();
   });
 
   it("shows the advertised label while submitting the canonical model reference", async () => {

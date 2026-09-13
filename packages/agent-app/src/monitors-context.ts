@@ -138,12 +138,16 @@ export function bindMonitorWakeContextToResponder(
       }
     },
     ...(responder.cancel === undefined ? {} : { cancel: responder.cancel.bind(responder) }),
+    ...(responder.liveInputOwnership === undefined ? {} : { liveInputOwnership: responder.liveInputOwnership }),
     ...(responder.offerLiveInput === undefined
       ? {}
       : { offerLiveInput: (request: AgentLiveInputRequest): AgentLiveInputOffer => responder.offerLiveInput!(request) }),
     ...(responder.deliverVerbatim === undefined
       ? {}
       : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+    ...(responder.importContext === undefined
+      ? {}
+      : { importContext: responder.importContext.bind(responder) }),
     ...(responder.openReplyArtifact === undefined
       ? {}
       : { openReplyArtifact: responder.openReplyArtifact.bind(responder) }),

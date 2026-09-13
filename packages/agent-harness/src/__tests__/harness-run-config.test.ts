@@ -11,7 +11,7 @@ import { parseMonoRuntimeModelReference } from "@mono-agent/runtime-adapter";
 
 import { createAgentHarness } from "../index.js";
 import { requestOverridesModel, runSourceFromRequest } from "../harness.js";
-import { interactiveModelOverrideCanOwnLiveInput } from "../harness/request-routing.js";
+import { requestSessionModel } from "../harness/request-routing.js";
 import type { AgentHarnessRecorderFactoryInput, AgentHarnessRequest } from "../types.js";
 
 const tempDirs: string[] = [];
@@ -95,9 +95,10 @@ describe("runSourceFromRequest", () => {
     });
   });
 
-  it("derives 'slack' and 'telegram' from their metadata blocks", () => {
+  it("derives 'slack', 'telegram', and 'messenger' from their metadata blocks", () => {
     expect(runSourceFromRequest(req({ slack: { channel: "C1" } }))).toEqual({ source: "slack" });
     expect(runSourceFromRequest(req({ telegram: { chatId: 1 } }))).toEqual({ source: "telegram" });
+    expect(runSourceFromRequest(req({ messenger: { user: { id: "42" } } }))).toEqual({ source: "messenger" });
   });
 
   it("falls back to conversationId-prefix derivation for absent/unknown metadata", () => {
@@ -105,6 +106,7 @@ describe("runSourceFromRequest", () => {
     expect(runSourceFromRequest(req({ somethingElse: true }, "webhook:my-endpoint"))).toEqual({ source: "webhook" });
     expect(runSourceFromRequest(req(undefined, "tui-local"))).toEqual({ source: "tui" });
     expect(runSourceFromRequest(req(undefined, "openai-api:resp-123"))).toEqual({ source: "openai-api" });
+    expect(runSourceFromRequest(req(undefined, "messenger:42"))).toEqual({ source: "messenger" });
   });
 
   it("never throws on unusual metadata shapes", () => {
@@ -165,135 +167,20 @@ describe("requestOverridesModel", () => {
   });
 });
 
-describe("interactiveModelOverrideCanOwnLiveInput", () => {
-  const defaultModel = parseMonoRuntimeModelReference("anthropic:claude-fable-5");
-  const differentModel = "anthropic:claude-opus-4-8";
-  const hostWakeSymbol = Symbol.for("mono-agent.process-job-wake.delivery-key.v1");
-  const req = (
-    metadata?: Record<string, unknown>,
-    continuation?: AgentHarnessRequest["continuation"],
-  ): AgentHarnessRequest => ({
-    conversationId: "c",
-    userMessage: "hi",
-    abortSignal: new AbortController().signal,
-    ...(metadata === undefined ? {} : { metadata }),
-    ...(continuation === undefined ? {} : { continuation }),
-  });
-
-  it.each([
-    ["web", { source: "web", web: { model: differentModel } }],
-    ["tui", { source: "tui", tui: { model: differentModel } }],
-    ["telegram", { telegram: { model: differentModel } }],
-    ["telegram with source", { source: "telegram", telegram: { model: differentModel } }],
-    ["slack", { slack: { model: differentModel } }],
-    ["slack with source", { source: "slack", slack: { model: differentModel } }],
-  ])("admits an actual interactive %s model override", (_name, metadata) => {
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(true);
-  });
-
-  it.each([
-    ["same model", { source: "web", web: { model: defaultModel.reference } }],
-    ["effort only", { source: "web", web: { effort: "high" } }],
-    ["invalid model", { source: "web", web: { model: "not a model" } }],
-    ["bare web source", { source: "web" }],
-    ["conflicting web source", { source: "tui", web: { model: differentModel } }],
-    ["conflicting Telegram source", { source: "web", telegram: { model: differentModel } }],
-    ["ACP", { source: "acp", tui: { model: differentModel } }],
-    ["WhatsApp", { whatsapp: { model: differentModel } }],
-  ])("rejects %s", (_name, metadata) => {
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
-  });
-
-  it("preserves precedence when a higher-priority block has no model", () => {
-    const metadata = {
-      webhook: { effort: "high" },
-      web: { model: differentModel },
-      source: "web",
-    };
-    expect(requestOverridesModel(req(metadata), defaultModel)).toBe(false);
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
-  });
-
-  it.each([
-    ["cron", { source: "web", web: { model: differentModel }, cron: { model: differentModel } }],
-    ["webhook", { source: "web", web: { model: differentModel }, webhook: { model: differentModel } }],
-  ])("rejects mixed interactive + %s metadata", (_name, metadata) => {
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
-  });
-
-  it("rejects a continuation with interactive-looking metadata", () => {
-    expect(interactiveModelOverrideCanOwnLiveInput(req(
-      { source: "web", web: { model: differentModel } },
-      {
-        continuationId: "continuation-1",
-        originRunId: "run-origin",
-        toolsDisabled: true,
-        deferHistoryCommit: true,
-        originContextPolicy: "detached_latest",
-      },
-    ), defaultModel)).toBe(false);
-  });
-
-  it.each([
-    ["enumerable ProcessJob", true, "process-job:one:1"],
-    ["non-enumerable Monitor", false, "monitor:one:1"],
-  ])("rejects an %s host-wake data descriptor", (_name, enumerable, value) => {
-    const metadata: Record<PropertyKey, unknown> = {
-      source: "web",
-      web: { model: differentModel },
-    };
-    Object.defineProperty(metadata, hostWakeSymbol, { enumerable, configurable: true, value });
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata as Record<string, unknown>), defaultModel)).toBe(false);
-  });
-
-  it("rejects a host-wake accessor descriptor without executing its getter", () => {
-    let getterCalls = 0;
-    const metadata: Record<PropertyKey, unknown> = {
-      source: "web",
-      web: { model: differentModel },
-    };
-    Object.defineProperty(metadata, hostWakeSymbol, {
-      enumerable: true,
-      configurable: true,
-      get: () => {
-        getterCalls += 1;
-        return "must-not-be-read";
-      },
-    });
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata as Record<string, unknown>), defaultModel)).toBe(false);
-    expect(getterCalls).toBe(0);
-  });
-
-  it.each(["cron", "webhook"] as const)("rejects an accessor %s marker without executing its getter", (property) => {
-    let getterCalls = 0;
-    const metadata: Record<string, unknown> = {
-      source: "web",
-      web: { model: differentModel },
-    };
-    Object.defineProperty(metadata, property, {
-      enumerable: true,
-      configurable: true,
-      get: () => {
-        getterCalls += 1;
-        return undefined;
-      },
-    });
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
-    expect(getterCalls).toBe(0);
-  });
-
-  it.each(["cron", "webhook", "host wake"] as const)("fails closed when %s descriptor inspection throws", (kind) => {
-    const key: PropertyKey = kind === "host wake" ? hostWakeSymbol : kind;
-    const metadata = new Proxy<Record<string, unknown>>({
-      source: "web",
-      web: { model: differentModel },
-    }, {
-      getOwnPropertyDescriptor(target, property) {
-        if (property === key) throw new Error("descriptor trap");
-        return Reflect.getOwnPropertyDescriptor(target, property);
-      },
-    });
-    expect(interactiveModelOverrideCanOwnLiveInput(req(metadata), defaultModel)).toBe(false);
+describe("requestSessionModel", () => {
+  it("selects the session model with webhook cron web tui telegram slack precedence", () => {
+    const base = parseMonoRuntimeModelReference("anthropic:claude-fable-5");
+    const origins = ["webhook", "cron", "web", "tui", "telegram", "slack"];
+    for (let i = 0; i < origins.length; i += 1) {
+      const metadata = Object.fromEntries(origins.slice(i).map((origin, index) => [origin,
+        { model: index === 0 ? "openai-codex:gpt-5.5" : "anthropic:claude-opus-4-8" }]));
+      const req = { conversationId: "c", userMessage: "hi", abortSignal: new AbortController().signal, metadata };
+      expect(requestSessionModel(req, base).reference).toBe("openai-codex:gpt-5.5");
+      for (const model of [undefined, "", "not a model"]) {
+        metadata[origins[i]!] = { model } as never;
+        expect(requestSessionModel(req, base)).toEqual(base);
+      }
+    }
   });
 });
 
@@ -459,5 +346,30 @@ describe("AgentHarness run_config synthetic event", () => {
     expect(recorderRunConfig).toMatchObject({ effort: "high", overridden: true });
     const hostRunConfig = hostEvents.find((event) => event.type === "run_config");
     expect(hostRunConfig).toMatchObject({ effort: "high", overridden: true });
+  });
+
+  it("marks provider-default effort as overridden without attributing a grade", async () => {
+    const identityPath = await identityFixture();
+    const fake = createFakeRuntime();
+    const recorder = new SpyRecorder();
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      effort: "high",
+      recorderFactory: () => recorder,
+      runtimeOptionsForRequest: () => ({ runtimeOptions: { effort: null } }),
+    });
+
+    await harness.run({
+      conversationId: "conv-provider-default",
+      userMessage: "tick",
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(fake.calls[0]?.options).not.toHaveProperty("effort");
+    const runConfig = recorder.events.find((event) => event.type === "run_config");
+    expect(runConfig).toMatchObject({ overridden: true });
+    expect(runConfig).not.toHaveProperty("effort");
   });
 });

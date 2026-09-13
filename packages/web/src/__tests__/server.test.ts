@@ -72,6 +72,20 @@ async function createThread(baseUrl: string, sourceId: string): Promise<string> 
   return ((await json(response)).thread as { id: string }).id;
 }
 
+async function waitFor(
+  // Awaited, so a predicate that has to ASK the server -- a read of the running
+  // listing, of a conversation -- is not read as "true" because a promise is
+  // truthy.
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for server state.");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+  }
+}
+
 interface ScopedBootstrap {
   readonly threads: readonly { readonly id: string; readonly sourceId: string }[];
   readonly threadsSourceId: string | null;
@@ -654,11 +668,11 @@ describe("web HTTP server", () => {
   });
 
   it.each([
-    ["evergreen", "#0f1110"],
-    ["ocean", "#0d1115"],
-    ["plum", "#120f14"],
-    ["terracotta", "#130f0d"],
-  ] as const)("publishes the selected %s theme and distinct install manifest colors", async (theme, backgroundColor) => {
+    ["evergreen", "#141715", "#0f1110"],
+    ["ocean", "#13191e", "#0d1115"],
+    ["plum", "#18141a", "#120f14"],
+    ["terracotta", "#191411", "#130f0d"],
+  ] as const)("publishes the selected %s theme and distinct install manifest colors", async (theme, themeColor, backgroundColor) => {
     const { baseUrl } = await start({ theme });
 
     expect(await json(await fetch(`${baseUrl}/api/v1/bootstrap`))).toMatchObject({
@@ -674,7 +688,7 @@ describe("web HTTP server", () => {
       short_name: hostname(),
       start_url: "/",
       scope: "/",
-      theme_color: "#191c1a",
+      theme_color: themeColor,
       background_color: backgroundColor,
       icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml" }],
     }));
@@ -902,6 +916,94 @@ describe("web HTTP server", () => {
         }),
       ]),
     });
+  });
+
+  it("creates and replays a cron Reply only through the exact source-qualified same-origin route", async () => {
+    const summary = {
+      projection: "summary",
+      runId: "cron:digest:2026-09-08T10:00:00.000Z",
+      jobId: "digest",
+      scheduledAt: "2026-09-08T10:00:00.000Z",
+      orderedAt: "2026-09-08T10:00:01.000Z",
+      sequence: 4,
+      trigger: "scheduled",
+      status: "succeeded",
+      text: "Synthetic result",
+      eventCount: 0,
+    };
+    const imports: Array<{ conversationId: string; body: Record<string, unknown> }> = [];
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({
+        supportsContextImport: true,
+        cronOverview: {
+          generatedAt: "2026-09-08T10:00:00.000Z",
+          actionsEnabled: false,
+          jobs: [{
+            jobId: "digest",
+            expression: "*/5 * * * *",
+            timezone: "UTC",
+            conversationId: "cron:digest",
+            configured: true,
+            declaredEnabled: true,
+            effectiveEnabled: true,
+            health: "healthy",
+            lastRun: summary,
+          }],
+        },
+        cronRuns: { runs: [summary] },
+        onContextImport: (conversationId, body) => {
+          imports.push({ conversationId, body });
+          return { imported: true, status: "appended", conversationId };
+        },
+      }),
+    });
+    await fetch(`${baseUrl}/api/v1/agents/agent-one/cron/jobs/digest/runs?limit=100`);
+    const operationId = "55555555-5555-4555-8555-555555555555";
+    const endpoint = `${baseUrl}/api/v1/agents/agent-one/cron/jobs/digest/runs/${encodeURIComponent(summary.runId)}/reply-threads`;
+    const post = () => fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Mono-Agent-Web-Origin": baseUrl,
+      },
+      body: JSON.stringify({ operationId, snapshotKind: "summary" }),
+    });
+
+    const created = await post();
+    expect(created.status).toBe(201);
+    expect(await json(created)).toMatchObject({
+      operationId,
+      duplicate: false,
+      sourceId: "agent-one",
+      jobId: "digest",
+      runId: summary.runId,
+      messages: [{
+        role: "assistant",
+        parts: [{
+          type: "cron-reply-context",
+          source: { sourceId: "agent-one", jobId: "digest", runId: summary.runId },
+          run: { sequence: 4, trigger: "scheduled", status: "succeeded" },
+          snapshot: { kind: "summary" },
+          result: { text: "Synthetic result" },
+        }],
+      }],
+    });
+    const replay = await post();
+    expect(replay.status).toBe(200);
+    expect(await json(replay)).toMatchObject({ operationId, duplicate: true });
+    expect(imports).toHaveLength(1);
+    expect(imports[0]?.body).toMatchObject({
+      text: expect.stringContaining("Synthetic result"),
+      idempotencyKey: expect.stringMatching(/^web-cron-reply:v1:/u),
+    });
+
+    const invalid = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Mono-Agent-Web-Origin": baseUrl },
+      body: JSON.stringify({ operationId, snapshotKind: "summary", extra: true }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(await json(invalid)).toMatchObject({ error: { code: "invalid_request" } });
   });
 
   it("rejects DNS-rebinding hosts and cross-origin mutations while accepting the exact configured hostname", async () => {
@@ -1695,6 +1797,91 @@ describe("web HTTP server", () => {
     expect(JSON.stringify(message.parts)).not.toContain("mono-agent-artifact");
   });
 
+  it("receipts a durably admitted process-job follow-up before its provider turn completes", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const { baseUrl, handle } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        onTurn(body) { turnBodies.push(body); },
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+      }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const processJob = fakeProcessJob({
+      conversationId: `web:${threadId}`,
+      state: "succeeded",
+    });
+    const notification = {
+      sourceId: "agent-one",
+      triggerKind: "job" as const,
+      deliveryKey: processJob.wake.deliveryKey,
+      threadId,
+      processJob,
+      wakePrompt: "Inspect the completed worker result",
+    };
+    const delivery = deliverWebNotification(notification, {
+      stateDir: handle.stateDir,
+      timeoutMs: 100,
+    });
+
+    try {
+      await expect(delivery).resolves.toEqual({
+        threadId,
+        duplicate: false,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(stream).toBeDefined();
+      expect(turnBodies).toHaveLength(1);
+
+      const paths = await prepareWebStatePaths({ stateDir: handle.stateDir });
+      const raw = new DatabaseSync(paths.database, { readOnly: true });
+      const claim = raw.prepare(`
+        SELECT state, disposition, turn_id AS turnId
+        FROM process_job_wake_deliveries
+        WHERE source_id = ? AND job_id = ?
+      `).get("agent-one", processJob.jobId) as unknown as {
+        state: string;
+        disposition: string | null;
+        turnId: string | null;
+      };
+      const turnBeforeCompletion = raw.prepare("SELECT status FROM turns WHERE id = ?")
+        .get(claim.turnId) as unknown as { status: string };
+      raw.close();
+      expect(claim).toMatchObject({ state: "completed", disposition: "follow_up", turnId: expect.any(String) });
+      expect(turnBeforeCompletion).toEqual({ status: "running" });
+
+      await expect(deliverWebNotification(notification, {
+        stateDir: handle.stateDir,
+        timeoutMs: 100,
+      })).resolves.toEqual({
+        threadId,
+        duplicate: true,
+        delivery: { delivered: true, disposition: "follow_up" },
+      });
+      expect(turnBodies).toHaveLength(1);
+
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "Worker result processed" })}\n`));
+      stream?.close();
+      stream = undefined;
+      await waitFor(() => {
+        const database = new DatabaseSync(paths.database, { readOnly: true });
+        const turn = database.prepare("SELECT status FROM turns WHERE id = ?").get(claim.turnId) as unknown as {
+          status: string;
+        } | undefined;
+        database.close();
+        return turn?.status === "complete";
+      });
+      expect(turnBodies).toHaveLength(1);
+    } finally {
+      stream?.error(new Error("test cleanup"));
+      await delivery.catch(() => undefined);
+    }
+  });
+
   it("accepts a live follow-up for the active web turn and exposes its applied status", async () => {
     const encoder = new TextEncoder();
     let finishTurn = () => undefined;
@@ -1756,7 +1943,185 @@ describe("web HTTP server", () => {
       conversationId: `web:${thread.id}`,
       body: expect.objectContaining({ text: "Use the smaller scope" }),
     }]);
+    const rejectedSubmissionId = "22222222-2222-4222-8222-222222222222";
+    const submissionsPath = `${baseUrl}/api/v1/threads/${thread.id}/submissions`;
+    const rejected = await fetch(submissionsPath, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        submissionId: rejectedSubmissionId,
+        text: "Keep this draft",
+        attachmentIds: ["staged-upload"],
+      }),
+    });
+    expect(rejected.status).toBe(409);
+    const rejectedReceipt = await json(rejected);
+    expect(rejectedReceipt).toMatchObject({
+      submissionId: rejectedSubmissionId,
+      threadId: thread.id,
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+    const recoveredRejection = await fetch(`${submissionsPath}/${rejectedSubmissionId}`);
+    expect(recoveredRejection.status).toBe(200);
+    expect(await json(recoveredRejection)).toEqual(rejectedReceipt);
     finishTurn();
+  });
+
+  it("serves one idempotent no-store submission receipt and validates its UUID on POST and GET", async () => {
+    const turns: Record<string, unknown>[] = [];
+    const { baseUrl, root } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    const submissionId = "abcdefab-cdef-4abc-8def-abcdefabcdef";
+    const uppercaseSubmissionId = submissionId.toUpperCase();
+    const path = `${baseUrl}/api/v1/threads/${threadId}/submissions`;
+    const mutation = { "content-type": "application/json", origin: baseUrl };
+    const body = JSON.stringify({ submissionId: uppercaseSubmissionId, text: "One send" });
+
+    const first = await fetch(path, { method: "POST", headers: mutation, body });
+    expect(first.status).toBe(202);
+    expect(first.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    const receipt = await json(first) as Record<string, unknown> & {
+      message: { id: string };
+      turn: { id: string };
+    };
+    expect(receipt).toMatchObject({ submissionId, threadId, outcome: "turn" });
+
+    const replay = await fetch(path, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ submissionId, text: "One send" }),
+    });
+    expect(replay.status).toBe(202);
+    const replayReceipt = await json(replay) as Record<string, unknown> & {
+      message: { id: string };
+      turn: { id: string };
+    };
+    expect(replayReceipt).toMatchObject({ submissionId, threadId, outcome: "turn" });
+    expect(replayReceipt.message.id).toBe(receipt.message.id);
+    expect(replayReceipt.turn.id).toBe(receipt.turn.id);
+    expect(turns).toHaveLength(1);
+
+    const recovered = await fetch(`${path}/${submissionId}`);
+    expect(recovered.status).toBe(200);
+    expect(recovered.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(recovered)).toEqual(replayReceipt);
+
+    const database = new DatabaseSync(join(root, "state", "state.sqlite"));
+    database.prepare(
+      "INSERT INTO thread_redirects (old_thread_id, new_thread_id, created_at) VALUES (?, ?, ?)",
+    ).run("legacy-submission-thread", threadId, new Date().toISOString());
+    database.close();
+    const aliasReplay = await fetch(
+      `${baseUrl}/api/v1/threads/legacy-submission-thread/submissions`,
+      { method: "POST", headers: mutation, body },
+    );
+    expect(aliasReplay.status).toBe(202);
+    expect(await json(aliasReplay)).toMatchObject({
+      submissionId,
+      threadId,
+      message: { id: receipt.message.id },
+      turn: { id: receipt.turn.id },
+    });
+    expect(turns).toHaveLength(1);
+
+    const secondThreadId = await createThread(baseUrl, "agent-one");
+    const isolated = await fetch(`${baseUrl}/api/v1/threads/${secondThreadId}/submissions`, {
+      method: "POST",
+      headers: mutation,
+      body,
+    });
+    expect(isolated.status).toBe(202);
+    expect(await json(isolated)).toMatchObject({ submissionId, threadId: secondThreadId, outcome: "turn" });
+    expect(turns).toHaveLength(2);
+
+    const conflict = await fetch(path, {
+      method: "POST",
+      headers: mutation,
+      body: JSON.stringify({ submissionId: uppercaseSubmissionId, text: "Different content" }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(conflict.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(conflict)).toMatchObject({ error: { code: "submission_conflict" } });
+
+    for (const response of [
+      await fetch(path, {
+        method: "POST",
+        headers: mutation,
+        body: JSON.stringify({ submissionId: "not-a-uuid", text: "No" }),
+      }),
+      await fetch(`${path}/not-a-uuid`),
+    ]) {
+      expect(response.status).toBe(400);
+      expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+      expect(await json(response)).toMatchObject({ error: { code: "invalid_request" } });
+    }
+
+    const malformed = await fetch(path, { method: "POST", headers: mutation, body: "{" });
+    expect(malformed.status).toBe(400);
+    expect(malformed.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+
+    const unknown = await fetch(`${path}/22222222-2222-4222-8222-222222222222`);
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+
+    const crossOrigin = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://evil.example" },
+      body,
+    });
+    expect(crossOrigin.status).toBe(403);
+  });
+
+  it("rejects oversized formatted submissions before receipt, turn, or dispatch admission", async () => {
+    const turns: Record<string, unknown>[] = [];
+    const { baseUrl } = await start({
+      fetchImpl: operatorFetch({ onTurn: (body) => turns.push(body) }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({ text: "Source prompt" }),
+    });
+    let sourceMessageId: string | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`)) as {
+        thread: { runState: { status: string } };
+        messages: Array<{ id: string }>;
+      };
+      if (detail.thread.runState.status === "complete") {
+        sourceMessageId = detail.messages.at(-1)?.id;
+        break;
+      }
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+    }
+    expect(sourceMessageId).toEqual(expect.any(String));
+    const submissionId = "44444444-4444-4444-8444-444444444444";
+    const path = `${baseUrl}/api/v1/threads/${threadId}/submissions`;
+
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: baseUrl },
+      body: JSON.stringify({
+        submissionId,
+        text: "x".repeat(199_990),
+        quote: { text: "First line", messageId: sourceMessageId },
+      }),
+    });
+    expect(response.status).toBe(413);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await json(response)).toMatchObject({ error: { code: "turn_text_too_large" } });
+    expect(turns).toHaveLength(1);
+
+    const receipt = await fetch(`${path}/${submissionId}`);
+    expect(receipt.status).toBe(404);
+    const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+    expect(detail).toMatchObject({ thread: { runState: { status: "complete" } } });
+    expect((detail.messages as unknown[])).toHaveLength(2);
   });
 
   it("proxies pending and submitted AskUser state for a web conversation", async () => {
@@ -2483,6 +2848,149 @@ describe("web HTTP server", () => {
     }
     await reader.cancel();
   });
+
+  it("answers the cross-agent running listing on its own literal route", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) {
+            stream = controller;
+            controller.enqueue(encoder.encode(`${JSON.stringify({
+              kind: "event",
+              event: { type: "tool_call_started", id: "call-1", name: "Read" },
+            })}\n`));
+          },
+        }),
+      }),
+    });
+    const running = await createThread(baseUrl, "agent-one");
+    const idle = await createThread(baseUrl, "agent-one");
+    try {
+      await fetch(`${baseUrl}/api/v1/threads/${running}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "read it" }),
+      });
+      // "active" is a LITERAL route: registered under `/threads/:id` it would
+      // be read as a conversation id and answered with a 404.
+      await waitFor(async () => {
+        const probe = await json(await fetch(`${baseUrl}/api/v1/threads/active`));
+        const listed = probe.threads as Array<{ runState: { activity?: { toolCallCount: number } } }>;
+        return listed.length === 1 && listed[0]?.runState.activity?.toolCallCount === 1;
+      });
+      const response = await fetch(`${baseUrl}/api/v1/threads/active`);
+      expect(response.status).toBe(200);
+      const listing = await json(response);
+      expect((listing.threads as Array<{ id: string }>).map((thread) => thread.id)).toEqual([running]);
+      expect(listing).toMatchObject({
+        total: 1,
+        truncated: false,
+        runningCounts: { "agent-one": 1 },
+      });
+      // The bounded activity a card draws, from the frame this turn streamed.
+      expect((listing.threads as Array<{ runState: Record<string, unknown> }>)[0]?.runState.activity)
+        .toMatchObject({ toolCallCount: 1, phase: "working" });
+      // The unscoped listing and its `chats` behavior are untouched.
+      const bucket = await json(await fetch(
+        `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&scope=chats`,
+      ));
+      // Both of them. Deliberately compared as a SET: the two conversations are
+      // created a moment apart and `updated_at DESC, id DESC` lets a
+      // same-millisecond tie be settled by the id, so asserting an order here
+      // would make this test a coin flip on a loaded machine. What it is about
+      // is that the unscoped bucket still carries both.
+      expect([...(bucket.threads as Array<{ id: string }>)].map((thread) => thread.id).sort())
+        .toEqual([running, idle].sort());
+      // And the conversation read under the same prefix still resolves by id.
+      expect((await fetch(`${baseUrl}/api/v1/threads/${idle}`)).status).toBe(200);
+
+      // One bootstrap carries the listing AND the per-agent count, from the
+      // same store snapshot.
+      const bootstrap = await json(await fetch(`${baseUrl}/api/v1/bootstrap`));
+      expect(bootstrap.activeThreads).toMatchObject({ total: 1, runningCounts: { "agent-one": 1 } });
+      expect((bootstrap.agents as Array<{ sourceId: string; runningCount?: number }>)
+        .map((item) => [item.sourceId, item.runningCount]))
+        .toEqual([["agent-one", 1]]);
+    } finally {
+      stream?.enqueue(encoder.encode(`${JSON.stringify({ kind: "finish", finalText: "read" })}\n`));
+      stream?.close();
+    }
+  });
+
+  it("announces a running turn's activity as one turn.changed and not per text delta", async () => {
+    const encoder = new TextEncoder();
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const frame = (value: unknown) => encoder.encode(`${JSON.stringify(value)}\n`);
+    const { baseUrl } = await start({
+      host: "127.0.0.1",
+      fetchImpl: operatorFetch({
+        turns: () => new ReadableStream<Uint8Array>({
+          start(controller) { stream = controller; },
+        }),
+      }),
+    });
+    const threadId = await createThread(baseUrl, "agent-one");
+    // Deliberately UNSUBSCRIBED: a running card belongs to whichever
+    // conversation the operator is not in, and `turn.changed` is global.
+    const events = await fetch(`${baseUrl}/api/v1/events`);
+    const reader = events.body!.getReader();
+    const next = sseEventReader(reader);
+    expect(await next()).toMatchObject({ type: "ready" });
+    try {
+      await fetch(`${baseUrl}/api/v1/threads/${threadId}/turns`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "go" }),
+      });
+      await waitFor(() => stream !== undefined);
+      // The start of a turn is announced too, and is not what this is about.
+      for (;;) {
+        const event = await next();
+        if (event.type === "turn.changed") {
+          expect(event).toMatchObject({
+            payload: { turn: { status: "running", activity: { toolCallCount: 0, phase: "working" } } },
+          });
+          break;
+        }
+      }
+      // Prose only, and PERSISTED before the tool call goes out: every one of
+      // these rewrites the message and moves nothing the status line shows.
+      for (const delta of ["Reading", " the", " file."]) {
+        stream?.enqueue(frame({ kind: "append", delta }));
+      }
+      await waitFor(async () => {
+        const detail = await json(await fetch(`${baseUrl}/api/v1/threads/${threadId}`));
+        return JSON.stringify(detail.messages).includes("Reading the file.");
+      });
+      stream?.enqueue(frame({
+        kind: "event",
+        event: { type: "tool_call_started", id: "call-1", name: "mcp__host__ask_user" },
+      }));
+      const seen: Record<string, unknown>[] = [];
+      for (;;) {
+        const event = await next();
+        seen.push(event);
+        const turn = (event.payload as { turn?: { activity?: { phase?: string } } } | undefined)?.turn;
+        if (event.type === "turn.changed" && turn?.activity?.phase === "asking") break;
+      }
+      // Exactly ONE further turn.changed reached this console, and it was the
+      // tool call rather than any of the three text writes before it.
+      expect(seen.filter((event) => event.type === "turn.changed")).toHaveLength(1);
+      expect(seen.at(-1)).toMatchObject({
+        type: "turn.changed",
+        threadId,
+        payload: { turn: { status: "running", activity: { toolCallCount: 1, phase: "asking" } } },
+      });
+    } finally {
+      stream?.enqueue(frame({ kind: "finish", finalText: "done" }));
+      stream?.close();
+      await reader.cancel();
+    }
+  });
+
 });
 
 function sseEventReader(
@@ -2717,5 +3225,179 @@ describe("web event dispatch", () => {
     const throwing = harness("thread-1", () => { throw new Error("socket is gone"); });
     expect(throwing.send(event("message.delta", "thread-1", delta(1)))).toBe(false);
     expect(throwing.closes()).toBe(1);
+  });
+});
+
+describe("conversation projects", () => {
+  async function createProject(baseUrl: string, body: Record<string, unknown>): Promise<Response> {
+    return fetch(`${baseUrl}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("lists, creates, patches and deletes projects with validation", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+
+    const missingSource = await fetch(`${baseUrl}/api/v1/projects`);
+    expect(missingSource.status).toBe(400);
+    const unknownAgent = await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-missing`);
+    expect(unknownAgent.status).toBe(404);
+    expect(await json(await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-one`))).toEqual({ projects: [] });
+
+    const created = await createProject(baseUrl, { sourceId: "agent-one", name: "  Web console  ", context: "Brief" });
+    expect(created.status).toBe(201);
+    const project = (await json(created)).project as {
+      id: string; name: string; context: string; archivedAt: null; revision: number;
+      conversationCount: number; runningCount: number;
+    };
+    expect(project).toMatchObject({
+      name: "Web console",
+      context: "Brief",
+      archivedAt: null,
+      revision: 1,
+      conversationCount: 0,
+      runningCount: 0,
+    });
+
+    const defaulted = await createProject(baseUrl, { sourceId: "agent-one", name: "Plain" });
+    expect((await json(defaulted)).project).toMatchObject({ name: "Plain", context: "" });
+
+    for (const body of [
+      { sourceId: "agent-one", name: "   " },
+      { sourceId: "agent-one", name: "x".repeat(121) },
+      { sourceId: "agent-one", name: "line\nbreak" },
+      { sourceId: "agent-one", name: "ok", context: "x".repeat(4001) },
+      { sourceId: "agent-one", name: "ok", context: 7 },
+      { sourceId: "agent-one", name: "ok", extra: true },
+      { sourceId: "agent-one" },
+      { name: "ok" },
+      { sourceId: "agent-missing", name: "ok" },
+    ]) {
+      const response = await createProject(baseUrl, body);
+      expect(response.status).toBe(body.sourceId === "agent-missing" ? 404 : 400);
+    }
+
+    const patched = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ context: "Updated." }),
+    });
+    expect(patched.status).toBe(200);
+    expect((await json(patched)).project).toMatchObject({ context: "Updated.", revision: 2 });
+
+    for (const body of [{}, { archived: "yes" }, { name: "ok", unknown: 1 }]) {
+      const response = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+    const missingPatch = await fetch(`${baseUrl}/api/v1/projects/missing`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "x" }),
+    });
+    expect(missingPatch.status).toBe(404);
+
+    // Archived projects stay listed until they are deleted.
+    const archived = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ archived: true }),
+    });
+    expect(((await json(archived)).project as { archivedAt: unknown }).archivedAt).toEqual(expect.any(String));
+    expect(((await json(await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-one`))).projects as unknown[]))
+      .toHaveLength(2);
+
+    const deleted = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    expect(((await json(await fetch(`${baseUrl}/api/v1/projects?sourceId=agent-one`))).projects as unknown[]))
+      .toHaveLength(1);
+    const repeat = await fetch(`${baseUrl}/api/v1/projects/${project.id}`, { method: "DELETE" });
+    expect(repeat.status).toBe(404);
+  });
+
+  it("moves conversations through projects and detaches them on delete", async () => {
+    const { baseUrl } = await start({ host: "127.0.0.1" });
+    const first = (await json(await createProject(baseUrl, { sourceId: "agent-one", name: "First" }))).project as { id: string };
+    const second = (await json(await createProject(baseUrl, { sourceId: "agent-one", name: "Second" }))).project as { id: string };
+
+    const created = await fetch(`${baseUrl}/api/v1/threads`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sourceId: "agent-one", projectId: first.id }),
+    });
+    expect(created.status).toBe(201);
+    const thread = (await json(created)).thread as { id: string; projectId: string | null };
+    expect(thread.projectId).toBe(first.id);
+
+    for (const [body, status] of [
+      [{ projectId: "missing" }, 404],
+      [{ projectId: "" }, 400],
+      [{ projectId: 7 }, 400],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/v1/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sourceId: "agent-one", ...body }),
+      });
+      expect(response.status).toBe(status);
+    }
+
+    const moved = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: second.id }),
+    });
+    expect(moved.status).toBe(200);
+    expect((await json(moved)).thread).toMatchObject({ projectId: second.id });
+
+    const detached = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: null }),
+    });
+    expect((await json(detached)).thread).toMatchObject({ projectId: null });
+
+    const conflicted = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: second.id, ifRunConfigUnset: true }),
+    });
+    expect(conflicted.status).toBe(400);
+    const missing = await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: "missing" }),
+    });
+    expect(missing.status).toBe(404);
+
+    // The project page reads its members through the filtered listing.
+    await fetch(`${baseUrl}/api/v1/threads/${thread.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ projectId: first.id }),
+    });
+    await createThread(baseUrl, "agent-one");
+    const filtered = await json(await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&projectId=${first.id}&limit=1`,
+    ));
+    expect((filtered.threads as { id: string }[]).map((row) => row.id)).toEqual([thread.id]);
+    expect(filtered.nextCursor).toBeUndefined();
+    const unfiltered = await json(await fetch(`${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false`));
+    expect((unfiltered.threads as unknown[]).length).toBeGreaterThan(1);
+    const unknownFilter = await fetch(
+      `${baseUrl}/api/v1/threads?sourceId=agent-one&archived=false&projectId=missing`,
+    );
+    expect(unknownFilter.status).toBe(404);
+
+    // Deleting the project detaches its chats back to the agent.
+    const deleted = await fetch(`${baseUrl}/api/v1/projects/${first.id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(204);
+    expect((await json(await fetch(`${baseUrl}/api/v1/threads/${thread.id}`))).thread)
+      .toMatchObject({ projectId: null });
   });
 });

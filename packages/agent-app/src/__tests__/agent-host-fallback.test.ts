@@ -109,6 +109,9 @@ describe("configured agent runtime fallback models", () => {
       customModel: { provider_id: "private-local", model_name: "local-model" },
     });
     expect(cloud?.options).toEqual({});
+    // Lifecycle methods stay bound to the same inner runtime as the primary.
+    expect(local).not.toHaveProperty("runtime");
+    expect(cloud).not.toHaveProperty("runtime");
   });
 
   it("builds a retry-only single-entry chain when retries are on and no backups are configured", () => {

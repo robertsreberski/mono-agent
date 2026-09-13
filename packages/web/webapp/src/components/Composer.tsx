@@ -89,17 +89,14 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
   const [selection, setSelection] = useState({ start: composer.value.length, end: composer.value.length });
   const savedBrowseSelection = useRef(selection);
   const isRunning = useAuiState((state) => state.thread.isRunning);
-  const canUpload = !isRunning && canUploadInConsole(connection, selectedAgent, selectedThread);
+  const selectionUnavailable = store.selectionLoading || store.selectionError !== null;
+  const canUpload = !selectionUnavailable
+    && canUploadInConsole(connection, selectedAgent, selectedThread);
   const canSend = useAuiState((state) => state.composer.canSend);
   const attachmentCount = useAuiState((state) => state.composer.attachments.length);
-  const canOfferSteer = isRunning && selectedThread !== null && selectedThread.trigger?.kind !== "cron";
-  const steerDisabled = !canSend || attachmentCount > 0 || composer.value.trim().length === 0;
-  const steerHelp = attachmentCount > 0
-    ? "Steering is text-only."
-    : "Offer to the active run.";
   const commands = useMemo(() => buildComposerCommands({
     attachmentCount,
-    hasAgent: selectedAgent !== null,
+    hasAgent: selectedAgent !== null && !selectionUnavailable,
     hasRunSettings: store.modelOptions.length > 0 || store.effortOptions.length > 0,
     isRunning,
     createConversation: () => void store.createThread().catch(() => undefined),
@@ -124,27 +121,56 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
   );
 
   const draftContextKey = composerDraftKey(selectedAgentId, selectedThreadId);
+  /**
+   * Which conversation the assistant-ui runtime itself is on.
+   *
+   * The console store selects a conversation immediately; the runtime follows
+   * only once that conversation's detail resolves. Between the two, the visible
+   * composer still belongs to the PREVIOUS conversation: restoring into it wrote
+   * one conversation's text into another's composer, and the runtime's own reset
+   * -- arriving after the restore -- was then mirrored back as "the operator
+   * emptied this", which deleted the draft that had just been restored.
+   *
+   * `remoteId` is this console's conversation id; a conversation that does not
+   * exist yet has none, which is exactly the store's `null` selection.
+   */
+  const runtimeThreadId = useAuiState((state) => state.threadListItem?.remoteId ?? null);
+  const settled = runtimeThreadId === selectedThreadId;
   const restorationRef = useRef<{ readonly key: string | null; readonly text: string } | null>(null);
   useLayoutEffect(() => {
+    if (!settled) return;
     const text = readComposerDraft(selectedAgentId, selectedThreadId);
     restorationRef.current = { key: draftContextKey, text };
     if (composer.value !== text) composer.setText(text);
     setSelection({ start: text.length, end: text.length });
     savedBrowseSelection.current = { start: text.length, end: text.length };
-  }, [draftContextKey]);
+  }, [draftContextKey, settled]);
+
+  useEffect(() => {
+    noteComposerAttachments(attachmentCount > 0);
+  }, [attachmentCount]);
 
   // The layout restoration must be observed before passive mirroring starts;
   // otherwise assistant-ui's previous context value can overwrite the saved
   // target draft during a rapid A -> B -> A switch.
   useEffect(() => {
+    if (!settled) return;
     const restoration = restorationRef.current;
     if (restoration !== null && restoration.key === draftContextKey) {
       if (composer.value !== restoration.text) return;
       restorationRef.current = null;
     }
     writeComposerDraft(selectedAgentId, selectedThreadId, composer.value);
-    noteComposerAttachments(attachmentCount > 0);
-  }, [attachmentCount, composer.value, draftContextKey, selectedAgentId, selectedThreadId]);
+  }, [composer.value, draftContextKey, selectedAgentId, selectedThreadId, settled]);
+
+  useEffect(() => {
+    if (selectedThreadId === null || store.composerFocusThreadId !== selectedThreadId) return;
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+      store.consumeComposerFocus(selectedThreadId);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [selectedThreadId, store.composerFocusThreadId, store.consumeComposerFocus]);
 
   const captureSelection = useCallback((input = inputRef.current) => {
     if (input === null) return;
@@ -227,7 +253,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
               id="composer-input"
               className="composer-input"
               placeholder={statusText ?? (isRunning
-                ? `Steer ${selectedAgent?.label ?? "the agent"} while it works…`
+                ? `Message ${selectedAgent?.label ?? "the agent"} while it works…`
                 : `Message ${selectedAgent?.label ?? "an agent"}…`)}
               aria-label="Message"
               role="combobox"
@@ -241,7 +267,7 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
               unstable_focusOnScrollToBottom={false}
               unstable_focusOnThreadSwitched={false}
               onChange={(event) => {
-                writeComposerDraft(selectedAgentId, selectedThreadId, event.currentTarget.value);
+                if (settled) writeComposerDraft(selectedAgentId, selectedThreadId, event.currentTarget.value);
                 captureSelection(event.currentTarget);
               }}
               onSelect={(event) => captureSelection(event.currentTarget)}
@@ -268,34 +294,25 @@ export function Composer({ runSettings }: { readonly runSettings?: ReactNode } =
                 onSelect={(name) => insertSkill(name, "browse")}
               />
               <span className="composer-hint">
-                {statusText ?? (isRunning ? "Enter to steer this run" : "Enter to send · / commands · $ skills")}
+                {statusText ?? "Enter to send · / commands · $ skills"}
               </span>
             </div>
             <div className="composer-actions">
               {runSettings}
-              {canOfferSteer && (
-                <button
-                  type="button"
-                  className="composer-steer"
-                  aria-label="Steer this message"
-                  title={steerHelp}
-                  disabled={steerDisabled}
-                  onClick={() => composer.send({ steer: true })}
-                >
-                  Steer
-                </button>
-              )}
               <ComposerPrimitive.Send
                 className="composer-send"
-                aria-label={isRunning ? "Send live follow-up" : "Send message"}
+                aria-label="Send message"
                 disabled={!canSend}
               >
                 <Icon name="send" size={16} />
               </ComposerPrimitive.Send>
               {isRunning && (
-                <ComposerPrimitive.Cancel className="composer-stop" aria-label="Stop response">
+                <ComposerPrimitive.Cancel
+                  className="composer-stop"
+                  aria-label="Stop response"
+                  title="Stop"
+                >
                   <Icon name="stop" size={14} />
-                  <span>Stop</span>
                 </ComposerPrimitive.Cancel>
               )}
             </div>

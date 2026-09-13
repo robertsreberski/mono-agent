@@ -96,6 +96,7 @@ MONO_AGENT_CONCURRENCY_MAX_CONCURRENT_RUNS=4
 | `MONO_AGENT_LOCAL_PROVIDER_*` | `providers` | Legacy single-provider field overrides; still loaded. Prefer the provider map. |
 | `MONO_AGENT_PI_AUTH_PATH` | `providers.piAuthPath` | Pi credential file; a non-empty value wins over JSON and loses only to `auth login --pi-auth-path`. Default `~/.pi/agent/auth.json`; `~` expands to home and relative paths resolve from the agent/invocation working directory. |
 | `MONO_AGENT_PI_TRANSPORT` | `providers.piNative.transport` | Preferred Pi transport: `auto` (default), `sse`, `websocket`, or `websocket-cached`; unsupported providers ignore it. |
+| `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS` | `providers.piNative.promptCacheDiagnostics` | Metadata-only prompt-cache request fingerprints in run artifacts; default false. Never prompt text, tool arguments, cache keys, endpoints or credentials. |
 | `MONO_AGENT_PI_MAX_RETRIES` | `providers.piNative.piMaxRetries` | Pi-native transport retries, 0-8, default 2. |
 | `MONO_AGENT_MAX_RETRY_DELAY_MS` | `providers.piNative.maxRetryDelayMs` | Default 60000. |
 | `MONO_AGENT_PI_SESSIONS_ROOT` | `providers.piNative.piSessionsRoot` | Durable JSONL session storage (e.g. `.mono-agent/sessions`); unset = in-memory. |
@@ -310,6 +311,26 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_WHATSAPP_MENTION_TEXT_ALIASES` | plugin `config.mentionTextAliases` | Comma-separated text aliases that count as group mentions. |
 | `MONO_AGENT_WHATSAPP_STRIP_MENTION_TEXT` | plugin `config.stripMentionText` | Remove the matched mention or alias before the prompt reaches the agent. When unset, defaults to `true` only when `mentionTextAliases` is non-empty; `botJids` alone does not enable stripping, so otherwise it defaults to `false`. |
 
+### Messenger
+
+Messenger is loaded through `channels.plugins[]` with `package: "@mono-agent/messenger-adapter"`. These env vars override that plugin entry's `config` fields, except the three credentials, which are environment-only: `pageAccessToken`, `appSecret`, and `verifyToken` are rejected in JSON config with a typed `invalid_config` error.
+
+| Env var | JSON key it overrides | Notes |
+| --- | --- | --- |
+| `MONO_AGENT_MESSENGER_ENABLED` | plugin `config.enabled` | Opt-in switch; default `false`. |
+| `MONO_AGENT_MESSENGER_PAGE_ACCESS_TOKEN` | env-only (no JSON key) | Page access token used for the Send API. Required when enabled. |
+| `MONO_AGENT_MESSENGER_APP_SECRET` | env-only (no JSON key) | App secret used to verify `X-Hub-Signature-256` over the raw webhook body. Required when enabled. |
+| `MONO_AGENT_MESSENGER_VERIFY_TOKEN` | env-only (no JSON key) | Token Meta echoes during webhook registration. Required when enabled. |
+| `MONO_AGENT_MESSENGER_ALLOWED_USER_IDS` | plugin `config.allowedUserIds` | Comma-separated page-scoped user ids (PSIDs). Or `allowAllUsers`. |
+| `MONO_AGENT_MESSENGER_ALLOW_ALL_USERS` | plugin `config.allowAllUsers` | Allow any sender instead of requiring `allowedUserIds`; default `false`. |
+| `MONO_AGENT_MESSENGER_HOST` | plugin `config.host` | Bind host; default `127.0.0.1`. |
+| `MONO_AGENT_MESSENGER_PORT` | plugin `config.port` | Bind port; default `8650`. |
+| `MONO_AGENT_MESSENGER_WEBHOOK_PATH` | plugin `config.webhookPath` | Webhook route; default `/messenger/webhook`. `<path>/health` answers liveness checks. |
+| `MONO_AGENT_MESSENGER_API_VERSION` | plugin `config.apiVersion` | Graph API version used for sends; default `v21.0`. |
+| `MONO_AGENT_MESSENGER_ALLOW_NON_LOOPBACK` | plugin `config.allowNonLoopback` | Must be `true` for a non-loopback bind; enforced again immediately before `listen()`. |
+| `MONO_AGENT_MESSENGER_PROACTIVE_MESSAGING_TYPE` | plugin `config.proactiveMessagingType` | `RESPONSE` / `UPDATE` / `MESSAGE_TAG` for proactive cron/webhook deliveries; default `RESPONSE`. See [Messenger channel configuration](/channels/messenger/). |
+| `MONO_AGENT_MESSENGER_PROACTIVE_TAG` | plugin `config.proactiveTag` | Policy tag required with `MESSAGE_TAG`, e.g. `CONFIRMED_EVENT_UPDATE`. |
+
 ### Webhook
 
 | Env var | JSON key it overrides | Notes |
@@ -324,6 +345,7 @@ WhatsApp is loaded through `channels.plugins[]` with `package: "@mono-agent/what
 | `MONO_AGENT_WEBHOOK_API_KEY` | `webhook.apiKey` | Optional on loopback; required for any enabled non-loopback bind. Clients send it as a bearer. |
 | `MONO_AGENT_WEBHOOK_RETENTION_MS` | `webhook.retentionMs` | Async status retention in milliseconds; default `300000`. |
 | `MONO_AGENT_WEBHOOK_MAX_STORED_REQUESTS` | `webhook.maxStoredRequests` | Maximum retained async statuses; default `100`. |
+| `MONO_AGENT_WEBHOOK_MAX_ATTACHMENT_BYTES` | `webhook.maxAttachmentBytes` | Decoded-byte ceiling for one inbound audio upload; default `20971520`. Oversize uploads are rejected with HTTP `413`. |
 | `MONO_AGENT_WEBHOOK_ENDPOINTS_JSON` | `webhook.endpoints[]` | JSON array of named endpoints. |
 | `MONO_AGENT_WEBHOOK_NOTIFY` | `webhook.notify` | Single-endpoint native notification toggle. |
 | `MONO_AGENT_WEBHOOK_NOTIFY_CONVERSATION_ID` | `webhook.notifyConversationId` | Single-endpoint native notification destination. |

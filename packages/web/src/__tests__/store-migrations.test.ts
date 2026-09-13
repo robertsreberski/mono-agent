@@ -44,7 +44,7 @@ async function seeded(version: number, sequenced17 = false): Promise<string> {
 }
 
 function schema(database: DatabaseSync): unknown {
-  const tables = ["agents", "threads", "turns", "messages", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
+  const tables = ["pending_project_memberships", "project_transitions", "console_tool_operations", "agents", "threads", "projects", "turns", "messages", "live_inputs", "web_submissions", "cron_reply_operations", "attachments", "notification_deliveries", "monitor_wake_deliveries", "agent_run_overrides"];
   return tables.map((table) => ({
     table,
     // ALTER appends columns, so physical column ordinal is not a shape claim.
@@ -76,7 +76,7 @@ describe("web storage migration history", () => {
       } finally { store.close(); }
       const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
       try {
-        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 21 });
+        expect(database.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         expect(schema(database)).toEqual(expectedShape);
         expect(database.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
         expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
@@ -176,12 +176,14 @@ describe("web storage migration history", () => {
     store.close();
   });
 
-  it.each([22, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
+  it.each([WEB_STORAGE_SCHEMA_VERSION + 1, -1])("rejects unsupported/invalid version %i before bootstrap", async (version) => {
     const stateDir = await seeded(0);
     const database = new DatabaseSync(join(stateDir, "state.sqlite"));
     database.exec(`PRAGMA user_version = ${version}`);
     database.close();
-    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: version === 22 ? "unsupported_storage_schema" : "storage_corrupt" });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: version === WEB_STORAGE_SCHEMA_VERSION + 1 ? "unsupported_storage_schema" : "storage_corrupt",
+    });
     const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
     try {
       expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
@@ -207,12 +209,204 @@ describe("web storage migration history", () => {
       message: "Web storage migration postconditions failed.",
     });
   });
+
+  it("migrates schema 21 by adding a nullable live-input dispatch marker", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("ALTER TABLE live_inputs DROP COLUMN dispatch_started_at; PRAGMA user_version = 21");
+    database.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    migrated.close();
+    const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+      expect(inspected.prepare("PRAGMA table_info(live_inputs)").all()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "dispatch_started_at", type: "TEXT", notnull: 0 }),
+      ]));
+    } finally { inspected.close(); }
+  });
+
+  it("migrates schema 22 by provisioning the guarded submission ledger and reopens", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP TABLE web_submissions; PRAGMA user_version = 22");
+    database.close();
+
+    const migrated = await WebStore.open({ stateDir });
+    migrated.close();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reopened = await WebStore.open({ stateDir });
+      reopened.close();
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+        expect(inspected.prepare("PRAGMA table_info(web_submissions)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "thread_id", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "submission_id", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "payload_sha256", type: "TEXT", notnull: 1 }),
+        ]));
+      } finally { inspected.close(); }
+    }
+  });
+
+  const readIndexes = {
+    messages_by_turn: ["turn_id"],
+    turns_by_thread_started: ["thread_id", "started_at"],
+  } as const;
+  function indexColumns(database: DatabaseSync, index: string): string[] {
+    return (database.prepare(`PRAGMA index_info(${index})`).all() as Array<{ name: string }>).map((column) => column.name);
+  }
+
+  it.each([
+    "DROP INDEX messages_by_turn; CREATE INDEX messages_by_turn ON messages(thread_id)",
+    "DROP INDEX turns_by_thread_started; CREATE INDEX turns_by_thread_started ON turns(started_at, thread_id)",
+  ])("rejects a schema-24 stamp whose read index drifted: %s", async (sql) => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec(sql);
+    database.close();
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: "storage_corrupt", message: "Web storage migration postconditions failed.",
+    });
+  });
+
+  it("migrates schema 23 by adding the thread read indexes and reopens idempotently", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP INDEX messages_by_turn; DROP INDEX turns_by_thread_started; PRAGMA user_version = 23");
+    database.close();
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      try { expect(store.getThread("fixture-thread")).toBeUndefined(); } finally { store.close(); }
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+        for (const [index, columns] of Object.entries(readIndexes)) expect(indexColumns(inspected, index)).toEqual(columns);
+        expect(inspected.prepare("PRAGMA integrity_check").get()).toMatchObject({ integrity_check: "ok" });
+      } finally { inspected.close(); }
+    }
+  });
+
+  it("serves the run-state lookups from the thread read indexes on a fresh store", async () => {
+    const stateDir = await seeded(0);
+    const store = await WebStore.open({ stateDir });
+    store.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      for (const [index, columns] of Object.entries(readIndexes)) expect(indexColumns(database, index)).toEqual(columns);
+      const plan = (sql: string): string => (database.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+        .map((row) => row.detail).join("\n");
+      expect(plan("SELECT * FROM turns WHERE thread_id = 'x' ORDER BY started_at DESC, rowid DESC LIMIT 1"))
+        .toContain("USING INDEX turns_by_thread_started (thread_id=?)");
+      expect(plan("SELECT 1 FROM messages m WHERE m.turn_id = 'x' AND m.role = 'user'"))
+        .toContain("USING INDEX messages_by_turn (turn_id=?)");
+    } finally { database.close(); }
+  });
+
+  it("migrates a legacy database to conversation projects and reopens idempotently", async () => {
+    const stateDir = await seeded(20);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      try {
+        expect(store.getProject("missing")).toBeUndefined();
+        expect(store.listProjects("fixture-agent")).toEqual([]);
+      } finally { store.close(); }
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+        expect(inspected.prepare("PRAGMA table_info(projects)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "id", type: "TEXT", pk: 1 }),
+          expect.objectContaining({ name: "source_id", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "name", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "context", type: "TEXT", notnull: 1 }),
+          expect.objectContaining({ name: "revision", type: "INTEGER", notnull: 1 }),
+        ]));
+        expect(inspected.prepare("PRAGMA table_info(threads)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "project_id", type: "TEXT", notnull: 0 }),
+        ]));
+        expect(indexColumns(inspected, "projects_by_source"))
+          .toEqual(["source_id", "archived_at", "updated_at", "id"]);
+        expect(indexColumns(inspected, "threads_by_project"))
+          .toEqual(["project_id", "archived_at", "updated_at", "id"]);
+        const keys = inspected.prepare("PRAGMA foreign_key_list(threads)").all() as Array<{
+          from: string; table: string; to: string; on_delete: string;
+        }>;
+        expect(keys).toEqual(expect.arrayContaining([
+          expect.objectContaining({ from: "project_id", table: "projects", to: "id", on_delete: "SET NULL" }),
+        ]));
+        // The retained fixture conversation belongs to no project.
+        expect(inspected.prepare("SELECT project_id FROM threads WHERE id = 'fixture-thread'").get())
+          .toMatchObject({ project_id: null });
+      } finally { inspected.close(); }
+    }
+  });
+
+  it("migrates schema 24 by provisioning cron Reply operations and reopens idempotently", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP TABLE cron_reply_operations; PRAGMA user_version = 24");
+    database.close();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const store = await WebStore.open({ stateDir });
+      store.close();
+      const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+      try {
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
+        expect(inspected.prepare("PRAGMA table_info(cron_reply_operations)").all()).toEqual(expect.arrayContaining([
+          expect.objectContaining({ name: "operation_id", type: "TEXT", notnull: 0 }),
+          expect.objectContaining({ name: "snapshot_text", type: "TEXT", notnull: 0 }),
+          expect.objectContaining({ name: "state", type: "TEXT", notnull: 1 }),
+        ]));
+        expect(indexColumns(inspected, "cron_reply_operations_one_pending_run"))
+          .toEqual(["source_id", "job_id", "run_id"]);
+      } finally { inspected.close(); }
+    }
+  });
+
+  it("rolls the stamp and the read indexes back together when migration 24 fails", async () => {
+    const stateDir = await seeded(0);
+    const initial = await WebStore.open({ stateDir });
+    initial.close();
+    const database = new DatabaseSync(join(stateDir, "state.sqlite"));
+    database.exec("DROP INDEX messages_by_turn; DROP INDEX turns_by_thread_started; PRAGMA user_version = 23");
+    database.close();
+    const prepare = DatabaseSync.prototype.prepare;
+    let failures = 0;
+    vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (sql === "PRAGMA index_info(messages_by_turn)" && failures++ === 0) throw new Error("private stored content");
+      return prepare.call(this, sql);
+    });
+    await expect(WebStore.open({ stateDir })).rejects.toMatchObject({
+      code: "storage_corrupt", message: "Web storage migration 24 (thread-read-indexes) failed.",
+    });
+    vi.restoreAllMocks();
+    const inspected = new DatabaseSync(join(stateDir, "state.sqlite"), { readOnly: true });
+    try {
+      expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 23 });
+      expect(inspected.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('messages_by_turn', 'turns_by_thread_started')").all()).toEqual([]);
+    } finally { inspected.close(); }
+    const recovered = await WebStore.open({ stateDir });
+    recovered.close();
+  });
 });
 
 describe("named migration registry", () => {
   const step = (version: number, name: string): WebStorageMigration => ({ version, name, up: vi.fn() });
-  it("is immutable and derives schema 21 from its last step", () => {
-    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(21);
+  it("is immutable and derives schema 28 from its last step", () => {
+    expect(WEB_STORAGE_SCHEMA_VERSION).toBe(28);
     expect(WEB_STORAGE_SCHEMA_VERSION).toBe(WEB_STORAGE_MIGRATIONS.at(-1)?.version);
     expect(Object.isFrozen(WEB_STORAGE_MIGRATIONS)).toBe(true);
     expect(WEB_STORAGE_MIGRATIONS.every(Object.isFrozen)).toBe(true);
@@ -281,7 +475,7 @@ describe("migration 19 silent history", () => {
       store.close();
       const inspected = new DatabaseSync(join(stateDir, "state.sqlite"));
       try {
-        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 21 });
+        expect(inspected.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: WEB_STORAGE_SCHEMA_VERSION });
         expect(inspected.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
         expect(inspected.prepare("SELECT revision, updated_at FROM threads").get()).toEqual({ ...before, revision: before.revision + 1 });
         expect(inspected.prepare("SELECT seq, cron_suppressed FROM messages WHERE id = 'legacy-silent'").get()).toEqual({ seq: 9, cron_suppressed: 1 });

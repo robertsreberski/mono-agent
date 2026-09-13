@@ -14,7 +14,7 @@
 // The native bridge must return the SAME unified result shape and emit the
 // SAME normalized runtime events as the legacy pi-sdk bridge.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -40,32 +40,322 @@ import {
   PI_CONTEXT,
 } from "../../ai/providers/pi-native/harness-adapter.js";
 import { failureKindForPiError, withSubagentUsage } from "../../ai/providers/pi-native/result-builder.js";
-import { startLiveInput } from "../../ai/providers/pi-native/turn-runner.js";
+import {
+  createLiveInputPromptEpoch,
+  startLiveInput,
+} from "../../ai/providers/pi-native/turn-runner.js";
 import { createToolContext } from "../../agent/tools/shared/tool-context.js";
 
 const FAUX_MODEL = { api: "faux", provider: "faux", id: "faux-model" };
 
 describe("pi-native live input", () => {
-  it("acknowledges a follow-up only after native harness steering accepts it", async () => {
+  it("acknowledges only after the exact entry is consumed by the owned prompt operation", async () => {
+    let subscriber;
     const acknowledge = vi.fn();
+    const accepted = vi.fn();
     const reject = vi.fn();
-    const steer = vi.fn(async () => undefined);
+    const uncertain = vi.fn();
+    const steer = vi.fn(async () => "entry-1");
     const warnings = [];
     const liveInput = (async function* () {
-      yield { body: "Use the new limit", id: "input-1", acknowledge, reject };
+      yield { body: "Use the new limit", id: "input-1", accepted, acknowledge, uncertain, reject };
     })();
+    const harness = {
+      steer,
+      cancelQueued: vi.fn(async () => ({ kind: "already_consumed" })),
+      subscribe(handler) { subscriber = handler; return vi.fn(); },
+    };
+    const promptEpoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
     const consumer = startLiveInput({
-      harness: { steer },
+      harness,
       options: { liveInput },
       onEvent: (event) => warnings.push(event),
+      promptEpoch,
     });
 
     await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+    subscriber({ type: "run_start", lane: "main", runId: "run-1" });
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run-1",
+      entryId: "entry-1",
+      message: { role: "user" },
+    });
+    expect(acknowledge).not.toHaveBeenCalled();
+    promptEpoch.finish("run-1");
     await consumer.stop();
     expect(steer.mock.calls[0]?.[0]).toContain("Use the new limit");
+    expect(accepted).toHaveBeenCalledWith({ providerEntryId: "entry-1" });
     expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge).toHaveBeenCalledWith({ providerEntryId: "entry-1", providerRunId: "run-1" });
+    expect(uncertain).not.toHaveBeenCalled();
     expect(reject).not.toHaveBeenCalled();
     expect(warnings).toEqual([]);
+  });
+
+  // Regression: with the operation only confirmed by finish() at the end of the
+  // run, every steer Pi consumed mid-run stayed "Steering current run…" until
+  // the whole run settled and was acknowledged in one batch at the end.
+  it("acknowledges mid-run once the admitted operation is confirmed before run_start", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+
+    epoch.confirm("run-1");
+    subscriber({ type: "run_start", lane: "main", runId: "run-1" });
+    epoch.register("entry-1", { acknowledge, uncertain });
+    expect(acknowledge).not.toHaveBeenCalled();
+    subscriber({ type: "message_end", lane: "main", runId: "run-1", entryId: "entry-1", message: { role: "user" } });
+
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledge).toHaveBeenCalledWith({ providerEntryId: "entry-1", providerRunId: "run-1" });
+
+    // A second steer later in the same run settles on its own evidence too.
+    const acknowledgeLater = vi.fn();
+    epoch.register("entry-2", { acknowledge: acknowledgeLater, uncertain });
+    subscriber({ type: "message_end", lane: "main", runId: "run-1", entryId: "entry-2", message: { role: "user" } });
+    expect(acknowledgeLater).toHaveBeenCalledWith({ providerEntryId: "entry-2", providerRunId: "run-1" });
+
+    epoch.finish("run-1");
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(acknowledgeLater).toHaveBeenCalledTimes(1);
+    expect(uncertain).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it("acknowledges mid-run when confirm arrives after run_start", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
+
+    subscriber({ type: "run_start", lane: "main", runId: "run-1" });
+    epoch.register("entry-1", { acknowledge, uncertain });
+    subscriber({ type: "message_end", lane: "main", runId: "run-1", entryId: "entry-1", message: { role: "user" } });
+    expect(acknowledge).not.toHaveBeenCalled();
+    epoch.confirm("run-1");
+
+    expect(acknowledge).toHaveBeenCalledWith({ providerEntryId: "entry-1", providerRunId: "run-1" });
+    expect(uncertain).not.toHaveBeenCalled();
+  });
+
+  it("invalidates when the admitted operation does not match the observed run", () => {
+    let subscriber;
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+
+    const early = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const earlyMessage = { acknowledge: vi.fn(), uncertain: vi.fn() };
+    early.register("entry", earlyMessage);
+    early.confirm("op-admitted");
+    subscriber({ type: "run_start", lane: "main", runId: "run-other" });
+    subscriber({ type: "message_end", lane: "main", runId: "run-other", entryId: "entry", message: { role: "user" } });
+    early.finish("run-other");
+    expect(earlyMessage.acknowledge).not.toHaveBeenCalled();
+    expect(earlyMessage.uncertain).toHaveBeenCalledTimes(1);
+
+    const late = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    const lateMessage = { acknowledge: vi.fn(), uncertain: vi.fn() };
+    late.register("entry", lateMessage);
+    subscriber({ type: "run_start", lane: "main", runId: "run-other" });
+    late.confirm("op-admitted");
+    subscriber({ type: "message_end", lane: "main", runId: "run-other", entryId: "entry", message: { role: "user" } });
+    late.finish("run-other");
+    expect(lateMessage.acknowledge).not.toHaveBeenCalled();
+    expect(lateMessage.uncertain).toHaveBeenCalledTimes(1);
+
+    expect(warnings.filter((event) => event.warning_kind === "live_input_correlation_invalid"
+      && event.reason === "operation_mismatch")).toHaveLength(2);
+  });
+
+  it("keeps stop pending for unresolved steer then proves cancellation before safe rejection", async () => {
+    let resolveSteer;
+    const steer = vi.fn(() => new Promise((resolve) => { resolveSteer = resolve; }));
+    const reject = vi.fn();
+    const uncertain = vi.fn();
+    const accepted = vi.fn();
+    const consumer = startLiveInput({
+      harness: { steer, cancelQueued: vi.fn(async () => ({ kind: "cancelled" })) },
+      options: { liveInput: (async function* () { yield { body: "guide", accepted, reject, uncertain }; })() },
+      onEvent: vi.fn(),
+    });
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = consumer.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    resolveSteer("entry-late");
+    await stopping;
+    expect(accepted).toHaveBeenCalledWith({ providerEntryId: "entry-late" });
+    expect(reject).toHaveBeenCalledWith({ code: "native_queue_removed" });
+    expect(uncertain).not.toHaveBeenCalled();
+  });
+
+  it.each(["already_consumed", "not_found"])(
+    "settles %s without matching operation evidence as uncertain",
+    async (kind) => {
+      const uncertain = vi.fn();
+      const steer = vi.fn(async () => "entry");
+      const consumer = startLiveInput({
+        harness: {
+          steer,
+          cancelQueued: vi.fn(async () => ({ kind })),
+        },
+        options: { liveInput: (async function* () { yield { body: "guide", uncertain }; })() },
+        onEvent: vi.fn(),
+      });
+      await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(1));
+      await consumer.stop();
+      expect(uncertain).toHaveBeenCalledWith({
+        reason: "delivery_uncertain",
+        providerEntryId: "entry",
+      });
+    },
+  );
+
+  it("makes mismatched, runless, stale, and non-user events unable to prove consumption", async () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
+    const message = { acknowledge, uncertain };
+    epoch.register("entry", message);
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "entry", message: { role: "user" } });
+    subscriber({ type: "run_start", lane: "other", runId: "run" });
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    subscriber({ type: "message_end", lane: "main", entryId: "entry", message: { role: "user" } });
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "wrong", message: { role: "user" } });
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "entry", message: { role: "assistant" } });
+    subscriber({ type: "run_end", lane: "main", runId: "run" });
+    subscriber({ type: "message_end", lane: "main", runId: "run", entryId: "entry", message: { role: "user" } });
+    epoch.finish("wrong-operation");
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(uncertain).toHaveBeenCalledTimes(1);
+  });
+
+  it("buffers owned message evidence until steer resolves its entry id", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: vi.fn() });
+
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run",
+      entryId: "entry-late-register",
+      message: { role: "user" },
+    });
+    epoch.finish("run");
+    epoch.register("entry-late-register", { acknowledge, uncertain });
+
+    expect(acknowledge).toHaveBeenCalledWith({
+      providerEntryId: "entry-late-register",
+      providerRunId: "run",
+    });
+    expect(uncertain).not.toHaveBeenCalled();
+  });
+
+  it("keeps exact duplicate evidence idempotent when the unique-event buffer is full", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    epoch.register("entry-100", { acknowledge, uncertain });
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    for (let index = 0; index <= 100; index += 1) {
+      subscriber({
+        type: "message_end",
+        lane: "main",
+        runId: "run",
+        entryId: `entry-${index}`,
+        message: { role: "user" },
+      });
+    }
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run",
+      entryId: "entry-100",
+      message: { role: "user" },
+    });
+    epoch.finish("run");
+
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(uncertain).not.toHaveBeenCalled();
+    expect(warnings).toEqual([]);
+  });
+
+  it("still invalidates a genuinely new evidence tuple beyond capacity", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    epoch.register("entry-100", { acknowledge, uncertain });
+    subscriber({ type: "run_start", lane: "main", runId: "run" });
+    for (let index = 0; index <= 101; index += 1) {
+      subscriber({
+        type: "message_end",
+        lane: "main",
+        runId: "run",
+        entryId: `entry-${index}`,
+        message: { role: "user" },
+      });
+    }
+    epoch.finish("run");
+
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(uncertain).toHaveBeenCalledTimes(1);
+    expect(warnings).toContainEqual(expect.objectContaining({
+      warning_kind: "live_input_correlation_invalid",
+      reason: "event_buffer_overflow",
+    }));
+  });
+
+  it("invalidates correlation on a second distinct main-lane run_start", () => {
+    let subscriber;
+    const acknowledge = vi.fn();
+    const uncertain = vi.fn();
+    const warnings = [];
+    const harness = { subscribe(handler) { subscriber = handler; return vi.fn(); } };
+    const epoch = createLiveInputPromptEpoch({ harness, onEvent: (event) => warnings.push(event) });
+    epoch.register("entry", { acknowledge, uncertain });
+
+    subscriber({ type: "run_start", lane: "main", runId: "run-one" });
+    subscriber({ type: "run_start", lane: "main", runId: "run-one" });
+    subscriber({ type: "run_start", lane: "main", runId: "run-two" });
+    subscriber({
+      type: "message_end",
+      lane: "main",
+      runId: "run-one",
+      entryId: "entry",
+      message: { role: "user" },
+    });
+    epoch.finish("run-one");
+
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(uncertain).toHaveBeenCalledWith({
+      reason: "delivery_uncertain",
+      providerEntryId: "entry",
+      providerRunId: "run-one",
+    });
+    expect(warnings).toContainEqual(expect.objectContaining({
+      type: "runtime_warning",
+      warning_kind: "live_input_correlation_invalid",
+      reason: "multiple_run_start",
+    }));
   });
 
   it("stops without waiting for a third-party iterator return that never settles", async () => {
@@ -717,6 +1007,86 @@ describe("pi-native AgentHarness bridge", () => {
     }
   });
 
+  // Regression: pi-agent-core 0.85's lane.steer() settles with `{ entryId }`.
+  // The adapter must hand the bare id to the live-input runner; handing it the
+  // object settled every steer "uncertain" 18 ms after arrival even though Pi
+  // had queued it and the model consumed it, so the console showed "Delivery
+  // uncertain — not retried" and no Steered activity row.
+  //
+  // Second regression: acknowledgement must land when Pi consumes the steer
+  // (before the next provider request), not when the whole run settles. The
+  // second faux response therefore blocks until acknowledge() has fired; on
+  // the end-of-run-only behaviour that wait times out and the run errors.
+  it("acknowledges a live input steered through the real Pi harness as consumed by the run", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-native-live-input-"));
+    try {
+      writeFileSync(join(root, "notes.txt"), "important context\n");
+      const model = setup();
+      const capturedRequests = [];
+      let releaseFirstResponse = () => {};
+      const firstResponseReleased = new Promise((resolve) => { releaseFirstResponse = resolve; });
+      faux.setResponses([
+        async (context) => {
+          capturedRequests.push(context.messages);
+          // Hold the first request open until Pi has queued the steer, so the
+          // run still has a post-tool request in which to consume it.
+          await firstResponseReleased;
+          return fauxAssistantMessage([fauxToolCall("Read", { file_path: "notes.txt" }, { id: "call-1" })]);
+        },
+        async (context) => {
+          capturedRequests.push(context.messages);
+          // The steer is already in this request's messages, so Pi has
+          // consumed it; the runner must have acknowledged it by now.
+          await vi.waitFor(() => expect(acknowledge).toHaveBeenCalledTimes(1), { timeout: 2000 });
+          acknowledgedBeforeRunSettled = acknowledge.mock.calls.length === 1;
+          return fauxAssistantMessage([fauxText("done")]);
+        },
+      ]);
+      let acknowledgedBeforeRunSettled = false;
+      const accepted = vi.fn(() => { releaseFirstResponse(); });
+      const acknowledge = vi.fn();
+      const uncertain = vi.fn(() => { releaseFirstResponse(); });
+      const reject = vi.fn(() => { releaseFirstResponse(); });
+      const onEvent = vi.fn();
+      // Offer the steer once the first provider request is in flight.
+      const liveInput = (async function* () {
+        await vi.waitFor(() => expect(capturedRequests.length).toBeGreaterThanOrEqual(1));
+        yield { id: "steer-1", body: "Also mention the deadline.", accepted, acknowledge, uncertain, reject };
+      })();
+
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Read"],
+        messages: [{ role: "user", content: "read the notes" }],
+        liveInput,
+        onEvent,
+      }));
+
+      expect(result.error).toBeNull();
+      expect(result.text).toBe("done");
+      expect(uncertain).not.toHaveBeenCalled();
+      expect(reject).not.toHaveBeenCalled();
+      expect(accepted).toHaveBeenCalledTimes(1);
+      expect(typeof accepted.mock.calls[0]?.[0]?.providerEntryId).toBe("string");
+      expect(accepted.mock.calls[0][0].providerEntryId.length).toBeGreaterThan(0);
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+      expect(acknowledge.mock.calls[0]?.[0]?.providerEntryId).toBe(accepted.mock.calls[0][0].providerEntryId);
+      expect(acknowledgedBeforeRunSettled).toBe(true);
+
+      // live_input_* lifecycle events are emitted by the runtime layer that
+      // wraps liveInput (instrumentLiveInputAppliedEvents), not by the bridge;
+      // here only the bridge's own warnings are in scope.
+      const events = onEvent.mock.calls.map(([event]) => event);
+      expect(events.some((event) => event?.type === "runtime_warning"
+        && (event.warning_kind === "live_input_failed" || event.warning_kind === "live_input_cancellation_failed"))).toBe(false);
+      // The steer reached the provider: the second request carries its text.
+      const secondRequest = capturedRequests[1] ?? [];
+      expect(JSON.stringify(secondRequest)).toContain("Also mention the deadline.");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("serializes a Pi 0.85 batch when any offered tool requires sequential execution", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-native-sequential-tools-"));
     try {
@@ -1282,6 +1652,58 @@ describe("pi-native typed policy objects", () => {
       // NOT consulted (run impl > host impl).
       expect(runCalls.some((command) => (command.args || []).some((arg) => /echo hi/.test(arg)))).toBe(true);
       expect(hostCalls).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("spills a truncated Bash result through the run's persistArtifact sink and references the file", async () => {
+    // A configured app never sets toolArtifactDir on the ToolContext; the
+    // run-bound persistArtifact callback is its only artifact sink. The turn
+    // runner must attach it to the per-run ctx so the per-tool char cap can
+    // persist the full output instead of silently dropping it.
+    const root = mkdtempSync(join(tmpdir(), "pi-native-spill-"));
+    try {
+      const artifactDir = join(root, "tool-output", "run-spill");
+      mkdirSync(artifactDir, { recursive: true });
+      const saved = [];
+      const persistArtifact = ({ filename, buffer, toolName }) => {
+        const path = join(artifactDir, filename);
+        writeFileSync(path, buffer);
+        saved.push({ path, toolName, bytes: buffer.length });
+        return path;
+      };
+      const toolContext = createToolContext({ workspace: root });
+      const model = setup();
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("Bash", {
+          command: "printf 'HEAD'; printf '%04000d' 0; printf 'TAIL'",
+          workdir: root,
+          max_output_chars: 500,
+        }, { id: "b-spill" })]),
+        fauxAssistantMessage([fauxText("done")]),
+      ]);
+      const result = await generatePiNativeResponse("system", runOptions(model, {
+        cwd: root,
+        allowedTools: ["Bash"],
+        messages: [{ role: "user", content: "run it" }],
+        toolContext,
+        persistArtifact,
+      }));
+      expect(result.error).toBeNull();
+      expect(saved).toHaveLength(1);
+      expect(saved[0].toolName).toBe("Bash");
+      expect(saved[0].bytes).toBeGreaterThan(4000);
+      const written = readFileSync(saved[0].path, "utf8");
+      expect(written.startsWith("HEAD")).toBe(true);
+      expect(written.endsWith("TAIL")).toBe(true);
+      const toolResult = result.events.find((event) =>
+        event.type === "user" && event.message?.content?.some?.((block) => block.type === "tool_result" && block.tool_use_id === "b-spill"));
+      const text = JSON.stringify(toolResult);
+      expect(text).toContain("[truncated Bash output");
+      expect(text).toContain(`Full output saved to: ${saved[0].path}`);
+      // The host ToolContext itself is untouched: the sink rode on a per-run copy.
+      expect(toolContext.persistArtifact).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -261,6 +261,68 @@ describe("Agent tool result budget", () => {
     expect(text).toContain("1. Read");
     expect(text).toContain("10000. Read");
     expect(text).toMatch(/… 9945 calls elided …/u);
+    // No sink was offered, so the model is told the file does not exist.
+    expect(text).toContain("[result truncated; full result not saved: artifact persistence unavailable]");
+  });
+
+  it("spills an over-cap answer to the host artifact sink and references the file", async () => {
+    const answer = `${"a".repeat(30_000)}\nTHE-LAST-LINE`;
+    const saved = [];
+    const persistArtifact = vi.fn(({ filename, buffer, toolName, toolUseId }) => {
+      saved.push({ filename, text: buffer.toString("utf8"), toolName, toolUseId });
+      return `/artifacts/tool-output/run-1/${filename}`;
+    });
+    const tool = createAgentTool(subagentOptions({ run: okRun(answer) }), { persistArtifact });
+    const result = await tool.execute("call/with:odd chars", { name: "researcher", prompt: "x", description: "long report" });
+    const text = result.content[0].text;
+
+    expect(persistArtifact).toHaveBeenCalledTimes(1);
+    expect(saved[0]).toMatchObject({ filename: "Agent__call_with_odd_chars__full.txt", toolName: "Agent", toolUseId: "call/with:odd chars" });
+    // The persisted file carries the complete, unelided result.
+    expect(saved[0].text).toContain("<subagent: researcher · long report · ok ·");
+    expect(saved[0].text).toContain(answer);
+    expect(saved[0].text).not.toContain("[truncated");
+    // The retained text stays bounded, references the file right under the
+    // header, and keeps the visible truncation marker on the answer.
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(24_000);
+    expect(text.split("\n")[1]).toBe("[result truncated; full result saved to: /artifacts/tool-output/run-1/Agent__call_with_odd_chars__full.txt]");
+    expect(text).toContain("… [truncated 18014 chars]");
+    expect(text).not.toContain("THE-LAST-LINE");
+    // Recorded as an artifact reference the same way the bloat guard does.
+    expect(result.details.tool_payload_truncated).toBe(true);
+    expect(result.details.tool_payload_saved_paths).toEqual(["/artifacts/tool-output/run-1/Agent__call_with_odd_chars__full.txt"]);
+  });
+
+  it("keeps the file reference when the remaining turn budget is at the floor", async () => {
+    const persistArtifact = vi.fn(({ filename }) => `/artifacts/${filename}`);
+    const options = subagentOptions({ run: okRun("z".repeat(20_000)) });
+    const tool = createAgentTool(options, { persistArtifact, parentRunId: "run-floor" });
+    // Each ~12 KB result eats into the 120 KB per-turn budget; once it is spent
+    // a call gets only the 512-byte floor and must still name its file.
+    for (let i = 0; i < 10; i += 1) await tool.execute(`c${i}`, { prompt: "x" });
+    const text = (await tool.execute("c-last", { prompt: "x" })).content[0].text;
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(512);
+    expect(text.split("\n")[1]).toBe("[result truncated; full result saved to: /artifacts/Agent__c-last__full.txt]");
+    expect(text).toContain("[result truncated]");
+  });
+
+  it("persists nothing and adds no reference when the result fits", async () => {
+    const persistArtifact = vi.fn(() => "/never");
+    const tool = createAgentTool(subagentOptions({ run: okRun("short answer") }), { persistArtifact });
+    const result = await tool.execute("c1", { prompt: "x" });
+    expect(persistArtifact).not.toHaveBeenCalled();
+    expect(result.content[0].text).not.toContain("[result truncated");
+    expect(result.details.tool_payload_truncated).toBeUndefined();
+    expect(result.details.tool_payload_saved_paths).toBeUndefined();
+  });
+
+  it("reports a failed sink write honestly instead of naming a missing file", async () => {
+    const persistArtifact = vi.fn(() => { throw new Error("disk full"); });
+    const tool = createAgentTool(subagentOptions({ run: okRun("q".repeat(20_000)) }), { persistArtifact });
+    const result = await tool.execute("c1", { prompt: "x" });
+    expect(result.content[0].text.split("\n")[1]).toBe("[result truncated; full result not saved: artifact persistence unavailable]");
+    expect(result.details.tool_payload_truncated).toBe(true);
+    expect(result.details.tool_payload_saved_paths).toBeUndefined();
   });
 
 describe("Agent tool activity forwarding", () => {
@@ -717,7 +779,7 @@ describe("Agent tool in-flight subagent creation", () => {
     const { properties } = createAgentTool(subagentOptions({ inline: { enabled: false } })).parameters;
     expect(properties.systemPrompt).toBeUndefined();
     expect(properties.tools).toBeUndefined();
-    expect(properties.effort).toBeUndefined();
+    expect(properties.effort.enum).toContain("high");
     expect(properties.name.enum).toEqual(["researcher", "general-purpose"]);
   });
 
@@ -852,12 +914,11 @@ describe("Agent tool in-flight subagent creation", () => {
       .rejects.toThrow(/already a configured subagent/u);
   });
 
-  it("rejects tools or effort without a system prompt", async () => {
+  it("rejects tools without a system prompt", async () => {
     const tool = createAgentTool(inlineOptions());
     await expect(tool.execute("c1", { name: "researcher", tools: ["Read"], prompt: "x" }))
-      .rejects.toThrow(/only apply when you supply `systemPrompt`/u);
-    await expect(tool.execute("c2", { name: "researcher", effort: "high", prompt: "x" }))
-      .rejects.toThrow(/only apply when you supply `systemPrompt`/u);
+      .rejects.toThrow(/only applies when you supply `systemPrompt`/u);
+
   });
 
   it("still routes a configured profile by name", async () => {
@@ -925,5 +986,76 @@ describe("Agent tool activity log rendering", () => {
   it("falls back to unrelativized paths when the parent turn has no cwd", async () => {
     expect(await activityLine("Read", { file_path: "/srv/app/main.ts" }, {}))
       .toBe("1. Read /srv/app/main.ts → ok");
+  });
+});
+
+
+describe("Agent call-time routes", () => {
+  const parent = { provider: "anthropic", model: "parent", reference: "anthropic:parent" };
+  const pinned = { provider: "anthropic", model: "pinned", reference: "anthropic:pinned" };
+  const override = { provider: "openai", model: "override", reference: "openai:override" };
+  const models = [{ name: "fast", model: override, key: "openai:override" }];
+
+  it.each([undefined, { enabled: false }, { enabled: true }])("offers effort in every schema and model only with choices (%j)", (inline) => {
+    const options = subagentOptions({ inline });
+    expect(createAgentTool(options).parameters.properties.model).toBeUndefined();
+    expect(createAgentTool(options).description).not.toContain("`model`");
+    expect(createAgentTool({ ...options, models: [] }).parameters.properties.model).toBeUndefined();
+    const properties = createAgentTool({ ...options, models }).parameters.properties;
+    expect(properties.model.enum).toEqual(["fast"]);
+    expect(properties.model.description).toContain("fast → openai:override");
+    expect(properties.effort.enum).toContain("high");
+  });
+
+  it.each([
+    { name: "researcher" },
+    { name: "writer", systemPrompt: "Write", tools: ["Read", "Bash"] },
+    {},
+  ])("overrides the route on each call shape without widening tools: %j", async (shape) => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, models, inline: { enabled: true, allowedTools: ["Read"] },
+      definitions: [{ ...PROFILE, model: pinned, effort: "low" }],
+    }), { model: parent, effort: "xhigh" });
+    const result = await tool.execute("override", { ...shape, prompt: "x", model: "fast", effort: "high" });
+    expect(run.mock.calls[0][0]).toMatchObject({ model: parent, effort: "xhigh", definition: { model: override, effort: "high" } });
+    expect(run.mock.calls[0][0].definition.allowedTools).not.toContain("Bash");
+    expect(result.details.subagent.requested).toEqual({ model: "openai:override", effort: "high" });
+    expect(result.content[0].text).toContain("openai:override/high · ok");
+  });
+
+  it("preserves profile pins and leaves unpinned inheritance out of the common header", async () => {
+    const run = okRun();
+    const events = [];
+    const tool = createAgentTool(subagentOptions({ run, definitions: [{ ...PROFILE, model: pinned, effort: "low" }] }),
+      { model: parent, effort: "xhigh", onEvent: (event) => events.push(event) });
+    const result = await tool.execute("pin", { name: "researcher", prompt: "x" });
+    expect(run.mock.calls[0][0]).toMatchObject({ model: parent, effort: "xhigh", definition: { model: pinned, effort: "low" } });
+    expect(result.details.subagent.requested).toEqual({ model: "anthropic:pinned", effort: "low" });
+    expect(events.at(-1).subagent.attribution.requested).toEqual(result.details.subagent.requested);
+    const inherited = await tool.execute("inherit", { prompt: "x" });
+    expect(inherited.content[0].text).toContain("<subagent: general-purpose · ok");
+    expect(inherited.details.subagent.requested).toBeUndefined();
+    expect(run.mock.calls[1][0]).toMatchObject({ model: parent, effort: "xhigh" });
+    expect(run.mock.calls[1][0].definition.model).toBeUndefined();
+  });
+
+  it("keeps requested and executed routes distinct after fallback", async () => {
+    const run = vi.fn(async (request) => {
+      request.onEvent({ type: "provider_execution_config", model: "anthropic:pinned", effort: "low" });
+      return { text: "ok", model: "anthropic:pinned", effort: "low", effectiveEffort: "low" };
+    });
+    const tool = createAgentTool(subagentOptions({ run, models }));
+    const result = await tool.execute("fallback", { prompt: "x", model: "fast", effort: "high" });
+    expect(result.details.subagent.requested).toEqual({ model: "openai:override", effort: "high" });
+    expect(result.details.subagent.executed).toEqual({ model: "anthropic:pinned", effort: "low", effectiveEffort: "low" });
+  });
+
+  it("rejects unknown and unconfigured choices before spending a call", async () => {
+    const run = okRun();
+    const tool = createAgentTool(subagentOptions({ run, models }));
+    await expect(tool.execute("bad", { prompt: "x", model: "nope" })).rejects.toThrow('unknown model "nope". Choices: fast.');
+    await expect(createAgentTool(subagentOptions({ run })).execute("bad", { prompt: "x", model: "fast" }))
+      .rejects.toThrow("Choices: none configured");
+    expect(run).not.toHaveBeenCalled();
   });
 });

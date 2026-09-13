@@ -61,6 +61,7 @@ Keep bearer values out of source config when possible. Set
 
 - `GET {basePath}/v1/info` returns the wire `schema`, process id, and attachment
   capability. `capabilities.liveInput`, `capabilities.historyAppend`,
+  `capabilities.contextImport`,
   `capabilities.askUser`, `capabilities.askById`, and `capabilities.cron` are
   advertised additively when their routes are supported. `capabilities.cron`
   reports `status: "ready" | "degraded"` and separates read support from
@@ -73,6 +74,17 @@ Keep bearer values out of source config when possible. Set
   expose a bounded `skills` snapshot with ready/error state and per-item
   inlined/on-demand/unavailable status. `info` may be a function so local-model
   choices and skills can refresh without restarting the endpoint.
+- `POST {basePath}/v1/conversations/:id/context-imports` is present only when
+  `capabilities.contextImport = { version: 1, maxTextBytes: 32768 }` is
+  advertised. Its exact `{ text, idempotencyKey }` body imports canonical
+  provenance plus assistant context without a model turn. The decoded
+  conversation id is capped at 4096 UTF-8 bytes, the key at 512, and the JSON
+  parser ceiling is 199711 bytes (the sixfold escaping maximum). Results are
+  `appended`/`duplicate` (`200`), `context_import_conflict` with a bounded
+  canonical reason (`409`), `context_import_unsupported` (`501`), or a
+  sanitized `context_import_failed` (`500`); responses are private and
+  non-cacheable. Whitespace-only text/keys are invalid, while accepted opaque
+  values retain their original whitespace.
 - `GET {basePath}/v1/provider-auth` plus the paired session create, poll,
   input, and delete routes expose a host-injected `ProviderAuthOperator`.
   `capabilities.providerAuth = { version: 1 }` and every route are available
@@ -111,9 +123,15 @@ Keep bearer values out of source config when possible. Set
 - `POST {basePath}/v1/conversations/:id/cancel` - explicit cancel (202; 501
   when the responder has no `cancel`); pending AskUser state is cancelled too.
 - `POST {basePath}/v1/conversations/:id/live-input` - offer bounded
-  `{ id, text, receivedAt }` guidance to the active turn. The response waits for
-  `applied`, `requeue`, or `discarded`; inactive/unsupported offers return
-  `unavailable` without inventing success.
+  `{ id, text, receivedAt, targetTurnId?, targetRunId? }` guidance to the active
+  turn. When `/v1/info` advertises `liveInputTargeting.version: 1`, a Web
+  `targetTurnId` waits behind that exact operation's host-only harness ownership
+  and is forwarded with its actual `targetRunId`; closed, mismatched, timed-out,
+  disconnected, or stopped waiters detach without being offered to a successor.
+  The response waits for
+  `applied`, `requeue`, `discarded`, or `uncertain`; inactive/unsupported offers
+  return `unavailable`. A rejected accepted-settlement promise serializes as
+  `uncertain` rather than an untyped error or retry signal.
 - `POST {basePath}/v1/conversations/:id/verbatim` - authenticated
   `{ text, idempotencyKey }` durable-history append with no model turn (200; 501
   when the responder has no `deliverVerbatim`).
@@ -156,8 +174,9 @@ Event NDJSON lines are capped at 256 KiB. Oversized thought and tool payloads
 are reduced and remeasured; an event that still cannot fit becomes a bounded
 `oversized_event` marker. That size guard is not a redaction boundary.
 
-`replyAttachments` and `mcpApps` are additive capabilities: they are omitted
-when the responder does not implement the corresponding authorization routes.
+`liveInputTargeting`, `replyAttachments`, and `mcpApps` are additive capabilities: they are omitted
+when the responder does not implement the corresponding ownership or authorized
+resource surface.
 The web consumer retains the legacy 8 MiB input ceiling so it can read an older
 agent even though current producers emit at most 256 KiB per frame. See
 [Reply files and MCP Apps](https://mono-agent-docs.vercel.app/tools/rich-replies/).

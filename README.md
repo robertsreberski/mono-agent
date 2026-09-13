@@ -10,7 +10,7 @@ Maintainers should begin with [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`CONTR
 
 ## Quickstart: An Agent Folder From One Config File
 
-Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 22.19.0 or newer and credentials for the model you choose.
+Any folder — empty or already holding knowledge (`AGENTS.md`, `CLAUDE.md`, docs) — can become a running agent from one `mono-agent.config.json`. You need Node.js 24.15.0 or newer and credentials for the model you choose.
 
 Choose the wall-clock path up front: flags or non-TTY input use the fast scaffold-only path (unless explicit `--auth` adds provider setup) and never claim readiness. Bare `mono-agent init` on a TTY makes one real no-tool model call per selected route before committing the scaffold, with timeouts of 90s for each cloud route and 240s for each local route.
 
@@ -167,7 +167,7 @@ tui / web ── agent-contracts + config + observability
 Runtime-only composition (not manifest dependency edges)
 
 tui / web ── HTTP operator protocol ──> operator-adapter
-agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter
+agent-app ── channels.plugins[] ──> a2a-adapter / whatsapp-adapter / messenger-adapter
 agent-app ── selected memory backend ──> memory-supermemory
 custom host ── request-scoped extension ──> agent-orchestrator
 authoring harness ── explicit MCP companion ──> docs-mcp
@@ -331,6 +331,7 @@ flowchart TB
     Telegram["@mono-agent/telegram-adapter<br/>Bot API + long polling"]
     Webhook["@mono-agent/webhook-adapter<br/>HTTP sync/async invocation"]
     WhatsApp["@mono-agent/whatsapp-adapter<br/>extra plugin: Baileys socket + group trigger policy"]
+    Messenger["@mono-agent/messenger-adapter<br/>extra plugin: Meta webhook + Send API"]
   end
 
   subgraph Core["Core contracts and config"]
@@ -367,6 +368,7 @@ flowchart TB
   Host --> Cron
   Host -. optional package .-> Slack
   Host -. plugin .-> WhatsApp
+  Host -. plugin .-> Messenger
   Host -. runtime extension .-> Orchestrator
   Host --> Config
   Host --> AgentApp
@@ -380,6 +382,7 @@ flowchart TB
   Slack --> Contracts
   Webhook --> Contracts
   WhatsApp --> Contracts
+  Messenger --> Contracts
 
   Orchestrator --> Contracts
   Orchestrator -.->|runtime extension| Harness

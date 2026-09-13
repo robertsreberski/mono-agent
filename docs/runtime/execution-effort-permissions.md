@@ -22,7 +22,7 @@ A representative runtime block:
 
 ## Effort
 
-`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**.
+`runtime.effort` is the primary route's reasoning-effort hint. Canonical `runtime.fallbacks[]` entries have independent optional effort; omission means that route's provider default rather than inheritance from the primary. A model-only turn override follows the same route-aware rule: the configured primary keeps `runtime.effort`, a configured fallback uses its own pinned effort or provider default, and any other catalog/local model inherits `runtime.effort` only when its advertised ladder admits that grade. Unknown cloud metadata stays permissive. An explicit per-turn effort always wins. Higher effort trades latency and token cost for deeper reasoning. The wizard offers only the effort values advertised for the selected model plus **Provider default**.
 
 | Key | Values | Default | Env var |
 |-----|--------|---------|---------|

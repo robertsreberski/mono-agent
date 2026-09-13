@@ -28,6 +28,7 @@
     "src",
     "../src/mcp-app-document.ts",
     "../src/effort-ladder.ts",
+    "../src/message-cost.ts",
     "../src/push-preview.ts",
     "../src/contracts.ts"
   ]

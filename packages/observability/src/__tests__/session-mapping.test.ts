@@ -796,3 +796,12 @@ describe("mapRunToSession turn_context + systemPrompt", () => {
 
 /** Mirrors the digest cap in session-mapping (first line, ~120 chars). */
 const DIGEST_CAP = 121; // 120 chars + the ellipsis glyph
+
+it("preserves model_change on direct and nested session boundaries", () => {
+  const { summary } = loadFixture("notified");
+  const boundary = { type: "session_boundary", kind: "resume_replay", conversationId: "web:c",
+    providerSessionId: "new-id", reason: "model_change" };
+  const session = mapRunToSession(summary, [boundary, { type: "runtime_telemetry", kind: "session_boundary", data: boundary }], OPTS);
+  expect(boundarySteps(session.steps)).toHaveLength(2);
+  for (const step of boundarySteps(session.steps)) expect(step).toMatchObject({ kind: "resume_replay", providerSessionId: "new-id", reason: "model_change" });
+});

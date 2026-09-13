@@ -936,6 +936,9 @@ export function createMcpAppService(options: McpAppServiceOptions): McpAppServic
     const originalDispose = (responder as AgentResponder & { dispose?: () => Promise<void> }).dispose;
     return {
       ...responder,
+      ...(responder.importContext === undefined
+        ? {}
+        : { importContext: responder.importContext.bind(responder) }),
       async respond(request, stream) {
         const context = { runIds: new Set<string>() };
         let retainedRunId: string | undefined;

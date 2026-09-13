@@ -4,6 +4,10 @@ import { isAbsolute } from "node:path";
 
 import {
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
+  AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES,
+  AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES,
+  AGENT_CONTEXT_IMPORT_VERSION,
   DEFAULT_AGENT_ATTACHMENT_MAX_BYTES,
   DEFAULT_AGENT_ATTACHMENT_MIME_ALLOWLIST,
   MCP_APP_RESOURCE_MIME_TYPE,
@@ -29,6 +33,7 @@ import {
   parseProviderAuthStatusSnapshot,
   serializeAgentStreamFrame,
   type AgentAttachment,
+  type AgentContextImportRequest,
   type AgentMessageStream,
   type MonitorOperator,
   type AgentReplyAttachmentPart,
@@ -60,6 +65,34 @@ import {
   readAuthorizationBearer,
 } from "@mono-agent/agent-contracts";
 import express, { type NextFunction, type Request, type Response } from "express";
+
+const TARGET_WAITER_TIMEOUT_MS = 10 * 60 * 1_000;
+const MAX_TARGET_WAITERS_PER_OPERATION = 100;
+const MAX_TARGET_WAITERS_GLOBAL = 1_000;
+
+type LiveInputTargetWaiter = (runId: string | undefined) => void;
+
+interface LiveInputTarget {
+  state: "pending" | "ready" | "closed";
+  runId?: string;
+  readonly waiters: Set<LiveInputTargetWaiter>;
+}
+
+function liveInputTargetKey(conversationId: string, turnId: string): string {
+  return `${conversationId.length}:${conversationId}${turnId}`;
+}
+
+function settleLiveInputOffer(res: Response, offer: AgentLiveInputOffer): void {
+  if (offer.status === "unavailable") {
+    res.status(200).json(offer);
+    return;
+  }
+  void offer.settled.then((settlement) => {
+    if (!res.writableEnded) res.status(200).json(settlement);
+  }).catch(() => {
+    if (!res.writableEnded) res.status(200).json({ status: "uncertain", reason: "delivery_uncertain" });
+  });
+}
 
 import { DEFAULT_BASE_PATH, DEFAULT_HOST, DEFAULT_PORT, MAX_FRAME_BYTES, TUI_WIRE_SCHEMA } from "./constants.js";
 import {
@@ -106,6 +139,11 @@ export type TuiSkillRegistry =
 /** Static facts surfaced by GET /v1/info so the TUI can label the session. */
 export interface TuiModelOption {
   readonly effortLevels?: readonly string[];
+  /**
+   * Configured fallback-route effort. A string pins the route, `null` selects
+   * provider default, and absence means the producer predates this field.
+   */
+  readonly effort?: string | null;
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly label?: string;
@@ -270,6 +308,9 @@ const MAX_MODEL_CATALOG_PROVIDER_BYTES = 256;
 const MAX_MODEL_CATALOG_QUERY_BYTES = 512;
 const MAX_MODEL_CATALOG_CURSOR_BYTES = 4 * 1024;
 const MAX_VERBATIM_BODY_BYTES = 2 * 1024 * 1024;
+// `{"idempotencyKey":"","text":""}` is 31 bytes. Each legal decoded
+// text/key byte can require a six-byte JSON escape; 31 + 6*(32768+512).
+const MAX_CONTEXT_IMPORT_BODY_BYTES = 199_711;
 const MAX_VERBATIM_TEXT_CHARACTERS = 200_000;
 const MAX_VERBATIM_TEXT_BYTES = 1024 * 1024;
 const MAX_LIVE_INPUT_BODY_BYTES = 32 * 1024;
@@ -329,6 +370,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const app = express();
   const server = createServer(app);
   const activeTurns = new Set<AbortController>();
+  const liveInputTargets = new Map<string, LiveInputTarget>();
+  let pendingTargetWaiters = 0;
+  const settleTarget = (target: LiveInputTarget, runId: string | undefined): void => {
+    target.state = runId === undefined ? "closed" : "ready";
+    if (runId === undefined) delete target.runId;
+    else target.runId = runId;
+    for (const waiter of [...target.waiters]) waiter(runId);
+  };
   let stopping = false;
   let stopPromise: Promise<void> | undefined;
   const infoPath = `${basePath}/v1/info`;
@@ -336,6 +385,7 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
   const turnsPath = `${basePath}/v1/turns`;
   const cancelPath = `${basePath}/v1/conversations/:conversationId/cancel`;
   const verbatimPath = `${basePath}/v1/conversations/:conversationId/verbatim`;
+  const contextImportPath = `${basePath}/v1/conversations/:conversationId/context-imports`;
   const liveInputPath = `${basePath}/v1/conversations/:conversationId/live-input`;
   const replyArtifactPath = `${basePath}/v1/conversations/:conversationId/reply-artifacts/:artifactId`;
   const mcpAppPath = `${basePath}/v1/conversations/:conversationId/mcp-apps/:invocationId`;
@@ -400,7 +450,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
                 }
               : {}),
             ...(typeof options.responder.offerLiveInput === "function" ? { liveInput: true } : {}),
+            ...(typeof options.responder.offerLiveInput === "function"
+              && options.responder.liveInputOwnership?.version === 1
+              ? { liveInputTargeting: { version: 1 } }
+              : {}),
             ...(typeof options.responder.deliverVerbatim === "function" ? { historyAppend: true } : {}),
+            ...(typeof options.responder.importContext === "function"
+              ? { contextImport: { version: AGENT_CONTEXT_IMPORT_VERSION, maxTextBytes: AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES } }
+              : {}),
             ...(options.interaction === undefined ? {} : { askUser: true }),
             ...(typeof options.interaction?.getAsk === "function" ? { askById: true } : {}),
             ...(cronState.kind === "absent"
@@ -775,6 +832,58 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     }).catch(next);
   });
 
+  app.post(
+    contextImportPath,
+    (_req, res, next) => {
+      res.setHeader("Cache-Control", "private, no-store, max-age=0");
+      next();
+    },
+    express.json({ limit: MAX_CONTEXT_IMPORT_BODY_BYTES, strict: true }),
+    (req, res, next) => {
+      if (!authorize(req, res, apiKey)) return;
+      if (typeof options.responder.importContext !== "function") {
+        sendContextImportError(
+          res,
+          501,
+          "context_import_unsupported",
+          "This responder does not support canonical context import.",
+          "unsupported",
+        );
+        return;
+      }
+      let normalized: { readonly conversationId: string; readonly request: AgentContextImportRequest };
+      try {
+        normalized = normalizeContextImportBody(req.params.conversationId, req.body);
+      } catch (error) {
+        next(error);
+        return;
+      }
+      void options.responder.importContext(normalized.conversationId, normalized.request).then((result) => {
+        res.setHeader("Cache-Control", "private, no-store, max-age=0");
+        if (result.status === "conflict") {
+          sendContextImportError(
+            res,
+            409,
+            "context_import_conflict",
+            "Canonical context import conflicts with existing history.",
+            result.reason,
+          );
+          return;
+        }
+        res.status(200).json({ imported: true, status: result.status, conversationId: normalized.conversationId });
+      }).catch((error: unknown) => {
+        options.logger?.error?.("TUI context import failed.", { error: errorToMessage(error) });
+        sendContextImportError(
+          res,
+          500,
+          "context_import_failed",
+          "Canonical context import failed.",
+          "operation_failed",
+        );
+      });
+    },
+  );
+
   app.post(liveInputPath, express.json({ limit: MAX_LIVE_INPUT_BODY_BYTES, strict: true }), (req, res, next) => {
     if (!authorize(req, res, apiKey)) return;
     const conversationId = normalizeOptionalString(
@@ -796,6 +905,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         && (typeof body.deliveryKey !== "string"
           || body.deliveryKey.trim().length === 0
           || body.deliveryKey.length > 1_024))
+      || (body.targetTurnId !== undefined
+        && (typeof body.targetTurnId !== "string" || body.targetTurnId.trim().length === 0 || body.targetTurnId.length > 4_096))
+      || (body.targetRunId !== undefined
+        && (typeof body.targetRunId !== "string" || body.targetRunId.trim().length === 0 || body.targetRunId.length > 4_096))
     ) {
       next(new TuiAdapterError(
         "invalid_request",
@@ -808,6 +921,68 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
       res.status(200).json({ status: "unavailable", reason: "unsupported" });
       return;
     }
+    const inputId = body.id as string;
+    const inputText = body.text as string;
+    const receivedAt = body.receivedAt as string;
+    const targetTurnId = typeof body.targetTurnId === "string" ? body.targetTurnId : undefined;
+    const explicitRunId = typeof body.targetRunId === "string" ? body.targetRunId : undefined;
+    if (targetTurnId !== undefined) {
+      const target = liveInputTargets.get(liveInputTargetKey(conversationId, targetTurnId));
+      if (target === undefined || target.state === "closed") {
+        res.status(200).json({ status: "unavailable", reason: "inactive" });
+        return;
+      }
+      const offerToTarget = (runId: string | undefined): void => {
+        if (res.writableEnded || res.destroyed) return;
+        if (runId === undefined || (explicitRunId !== undefined && explicitRunId !== runId)) {
+          res.status(200).json({ status: "unavailable", reason: "inactive" });
+          return;
+        }
+        try {
+          settleLiveInputOffer(res, options.responder.offerLiveInput!({
+            conversationId,
+            id: inputId,
+            text: inputText,
+            receivedAt,
+            targetRunId: runId,
+            ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
+          }));
+        } catch (error) {
+          next(error);
+        }
+      };
+      if (target.state === "ready") {
+        offerToTarget(target.runId);
+        return;
+      }
+      if (target.waiters.size >= MAX_TARGET_WAITERS_PER_OPERATION || pendingTargetWaiters >= MAX_TARGET_WAITERS_GLOBAL) {
+        res.status(200).json({ status: "unavailable", reason: "full" });
+        return;
+      }
+      pendingTargetWaiters += 1;
+      let detached = false;
+      let timer: NodeJS.Timeout | undefined;
+      const abort = (): void => { detach(); };
+      const settle: LiveInputTargetWaiter = (runId) => {
+        detach();
+        offerToTarget(runId);
+      };
+      const detach = (): void => {
+        if (detached) return;
+        detached = true;
+        if (timer !== undefined) clearTimeout(timer);
+        req.off("aborted", abort);
+        res.off("close", abort);
+        target.waiters.delete(settle);
+        pendingTargetWaiters -= 1;
+      };
+      target.waiters.add(settle);
+      timer = setTimeout(() => { settle(undefined); }, TARGET_WAITER_TIMEOUT_MS);
+      timer.unref?.();
+      req.once("aborted", abort);
+      res.once("close", abort);
+      return;
+    }
     let offer: AgentLiveInputOffer;
     try {
       offer = options.responder.offerLiveInput({
@@ -815,19 +990,14 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         id: body.id,
         text: body.text,
         receivedAt: body.receivedAt,
+        ...(explicitRunId === undefined ? {} : { targetRunId: explicitRunId }),
         ...(typeof body.deliveryKey === "string" ? { deliveryKey: body.deliveryKey } : {}),
       });
     } catch (error) {
       next(error);
       return;
     }
-    if (offer.status === "unavailable") {
-      res.status(200).json(offer);
-      return;
-    }
-    void offer.settled.then((settlement) => {
-      res.status(200).json(settlement);
-    }).catch(next);
+    settleLiveInputOffer(res, offer);
   });
 
   app.get(askPath, (req, res) => {
@@ -1218,15 +1388,40 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
 
   async function handleTurn(req: Request, res: Response): Promise<void> {
     const body = normalizeTurnBody(req.body, options.requestToolEnvironment);
+    const requestId = randomUUID();
+    const web = isRecord(body.metadata.web) ? body.metadata.web : undefined;
+    const webTurnId = body.client === "web" && typeof web?.turnId === "string" && web.turnId.length > 0
+      ? web.turnId
+      : undefined;
+    const targetKey = webTurnId === undefined || options.responder.liveInputOwnership?.version !== 1
+      ? undefined
+      : liveInputTargetKey(body.conversationId, webTurnId);
+    if (targetKey !== undefined && liveInputTargets.has(targetKey)) {
+      throw new TuiAdapterError("invalid_request", "Web turn is already active.");
+    }
     const controller = new AbortController();
     activeTurns.add(controller);
     if (stopping) controller.abort(new Error("TUI adapter is stopping."));
-    const requestId = randomUUID();
+    let target: LiveInputTarget | undefined;
+    if (targetKey !== undefined) {
+      target = { state: "pending", waiters: new Set() };
+      liveInputTargets.set(targetKey, target);
+    }
     const request: AgentRequestBase = {
       conversationId: body.conversationId,
       text: body.text,
       abortSignal: controller.signal,
       metadata: requestMetadata(body, requestId),
+      ...(target === undefined ? {} : {
+        onLiveInputOwnership: (event) => {
+          if (target?.state === "closed") return;
+          if (event.status === "ready") {
+            settleTarget(target!, event.runId);
+          } else {
+            settleTarget(target!, undefined);
+          }
+        },
+      }),
       ...(body.attachments === undefined || body.attachments.length === 0
         ? {}
         : { attachments: body.attachments }),
@@ -1264,6 +1459,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
         cancelled,
       }).catch(() => undefined);
     } finally {
+      if (target !== undefined) {
+        settleTarget(target, undefined);
+        if (targetKey !== undefined && liveInputTargets.get(targetKey) === target) liveInputTargets.delete(targetKey);
+      }
       activeTurns.delete(controller);
       res.end();
     }
@@ -1279,6 +1478,10 @@ export async function startTuiAdapter(options: TuiAdapterOptions): Promise<TuiAd
     stop() {
       stopPromise ??= (async () => {
         stopping = true;
+        for (const target of liveInputTargets.values()) {
+          settleTarget(target, undefined);
+        }
+        liveInputTargets.clear();
         for (const controller of activeTurns) controller.abort(new Error("TUI adapter stopped."));
         await Promise.all([closeServerBounded(server), options.providerAuth?.stop()]);
         activeTurns.clear();
@@ -1751,6 +1954,48 @@ interface NormalizedVerbatimBody {
   readonly conversationId: string;
   readonly text: string;
   readonly idempotencyKey: string;
+}
+
+function normalizeContextImportBody(
+  rawConversationId: string | string[] | undefined,
+  body: unknown,
+): { readonly conversationId: string; readonly request: AgentContextImportRequest } {
+  const conversationId = normalizeOptionalString(
+    typeof rawConversationId === "string" ? rawConversationId : undefined,
+  );
+  if (
+    conversationId === undefined
+    || Buffer.byteLength(conversationId, "utf8") > AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
+    || conversationId.includes("\0")
+  ) {
+    throw new TuiAdapterError("invalid_request", "A bounded conversationId is required.");
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new TuiAdapterError("invalid_request", "Request body must be a JSON object.");
+  }
+  const record = body as Record<string, unknown>;
+  if (Object.keys(record).sort().join("\0") !== ["idempotencyKey", "text"].join("\0")) {
+    throw new TuiAdapterError("invalid_request", "Request body must contain only text and idempotencyKey.");
+  }
+  if (
+    typeof record.text !== "string"
+    || record.text.trim().length === 0
+    || Buffer.byteLength(record.text, "utf8") > AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+  ) {
+    throw new TuiAdapterError("invalid_request", "text must be a string within the context import byte limit.");
+  }
+  if (
+    typeof record.idempotencyKey !== "string"
+    || record.idempotencyKey.trim().length === 0
+    || record.idempotencyKey.includes("\0")
+    || Buffer.byteLength(record.idempotencyKey, "utf8") > AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
+  ) {
+    throw new TuiAdapterError("invalid_request", "idempotencyKey must be a bounded non-empty UTF-8 string.");
+  }
+  return {
+    conversationId,
+    request: { text: record.text, idempotencyKey: record.idempotencyKey },
+  };
 }
 
 function normalizeVerbatimBody(rawConversationId: string | string[] | undefined, body: unknown): NormalizedVerbatimBody {
@@ -2394,6 +2639,17 @@ function boundedProviderAuthSessionId(value: unknown): string | undefined {
 
 function sendJsonError(res: Response, status: number, error: unknown): void {
   res.status(status).type("application/json").send(boundedErrorBody(error));
+}
+
+function sendContextImportError(
+  res: Response,
+  status: 409 | 500 | 501,
+  code: "context_import_conflict" | "context_import_failed" | "context_import_unsupported",
+  message: string,
+  reason: "conversation_not_empty" | "idempotency_conflict" | "operation_failed" | "unsupported",
+): void {
+  res.setHeader("Cache-Control", "private, no-store, max-age=0");
+  res.status(status).json({ error: { code, message, reason } });
 }
 
 /** Appended to a message the fence had to cut, so a reader is never handed a

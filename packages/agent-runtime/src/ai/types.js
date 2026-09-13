@@ -132,6 +132,7 @@
  * @typedef {Object} RuntimeObserver
  * Per-call or host-level observer merged by createObserverHub (ai/observer.js).
  * Loose on purpose: observer.js is not a kernel seam file.
+ * @property {(event: RuntimeToolLifecycleEvent) => void} [recordToolLifecycle] Synchronous admission before queued lifecycle persistence.
  * @property {(event: RuntimeEvent) => (void|Promise<void>)} [onEvent]
  * @property {() => (void|Promise<void>)} [flush]
  */
@@ -191,9 +192,10 @@
  * @property {string} [sessionId]                         Host conversation/session key for resumable bridges.
  * @property {string} [providerSessionId]                 Provider-owned resume id for resumable bridges.
  * @property {string} [providerAttributionSessionId]      Host-owned provider attribution continuity key; does not authorize transcript resume.
+ * @property {{runId: string, revision: number}} [sessionRecovery] Host-owned durable recovery opt-in.
  * @property {boolean} [sessionKeepAlive]                 Keep resumable provider state alive after the turn.
  * @property {number} [sessionIdleTimeoutMs]              Idle TTL for resumable provider state.
- * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, acknowledge?: () => void, reject?: (error?: unknown) => void}>} [liveInput] Stream of in-flight user messages for steering an active run. Providers acknowledge only after accepting a message into the active turn.
+ * @property {AsyncIterable<{body: string, id?: string, receivedAt?: string, logicalOwner?: object, accepted?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, acknowledge?: (evidence?: {providerEntryId?: string, providerRunId?: string}) => unknown, uncertain?: (details: {reason: "delivery_uncertain", providerEntryId?: string, providerRunId?: string}) => unknown, reject?: (error?: unknown) => unknown}>} [liveInput] Stream of in-flight user messages for steering an active run. Native acceptance, exact transcript consumption, and uncertain delivery are distinct synchronous callbacks; thenables are never awaited as settlement confirmation. An optional opaque logicalOwner object proves that a later same-id value is a fresh callback lease for the first logical owner, not an independent duplicate.
  * @property {ReadonlyArray<*>} [observers]               Per-call observers (see RuntimeObserver) merged with host-level (createRuntime) observers.
  * @property {(event: RuntimeEvent) => void} [onEvent]
  * @property {boolean} [promptCacheDiagnostics] Emit metadata-only prompt-cache request fingerprints.
@@ -212,6 +214,7 @@
  * @property {Object} [outputSchema]
  * @property {string} [runArtifactDir]
  * @property {AbortSignal} [abortSignal]
+ * @property {(artifact: {filename: string, buffer: Buffer, toolName: string, toolUseId: (string|null)}) => (string|null)} [persistArtifact] Host-owned synchronous artifact writer bound to this run.
  * @property {{schema: 1, values: Readonly<Record<string, string>>, pathPrepend?: readonly string[]}} [toolEnvironment] Host-only environment for Bash, Exec, and nested subagents in this run.
  * @property {import('../agent/sandbox-seam.js').SandboxPolicy} [sandboxPolicy] Per-run sandbox policy; merged monotonically with the host policy (see resolveSandboxPolicy, agent/tools/shared/tool-context.js).
  * @property {import('../agent/sandbox-seam.js').RuntimeSandboxEngine} [sandboxEngine] Per-run concrete sandbox engine handed to the active sandbox implementation.
@@ -241,7 +244,7 @@
 
 /**
  * @typedef {RuntimeRunOptions
- *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "persistArtifact" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
+ *   & Pick<AgentRuntimeHostOptions, "resolveCustomPricing" | "resolvePiApiKey" | "onCompactionRecorded" | "onToolApprovalRequest" | "toolRiskTiers" | "approvalDefaultRiskTier" | "approvalTimeoutMs" | "approvalAlwaysAllowTools">
  *   & {runtimeBrand: import('../runtime-brand.js').RuntimeBrand, toolContext?: import('../agent/tools/shared/tool-context.js').ToolContext, observerHub: {emit: (event: RuntimeEvent) => void, flush: () => Promise<void>}}
  * } RuntimeRequest
  * The request shape a bridge's `execute(systemPrompt, req)` receives as its
@@ -259,7 +262,7 @@
  * @property {string} name Model-visible identifier and the tool's `name` enum value.
  * @property {string} description Model-visible: when to pick this profile.
  * @property {string} systemPrompt Full system prompt for the child run.
- * @property {RuntimeModelRef} [model] Absent inherits the parent's configured route.
+ * @property {RuntimeModelRef} [model] Absent inherits the parent's effective route.
  * @property {string} [effort]
  * @property {ReadonlyArray<string>} [allowedTools] Absent uses the safe read-only default set.
  * @property {ReadonlyArray<string>} [disallowedTools]
@@ -293,6 +296,7 @@
 /**
  * @typedef {Object} RuntimeSubagentsOptions
  * @property {ReadonlyArray<RuntimeSubagentDefinition>} [definitions] Named profiles.
+ * @property {ReadonlyArray<{name: string, model: RuntimeModelRef, key: string}>} [models] Call-time model choices. Absent means no model parameter.
  * @property {RuntimeInlineSubagentsOptions} [inline] Call-time authoring policy.
  * @property {number} [maxConcurrent] In-flight subagents per parent turn. Default 5.
  * @property {number} [maxPerTurn] Total Agent calls per parent turn. Default 20.
@@ -319,6 +323,7 @@
  * @property {string|null} [error]
  * @property {Object|null} [errorDetails]
  * @property {string|null} [failureKind]
+ * @property {{runId: string, revision: number, providerSessionId: string, modelKey: string, tipId: string}} [providerSessionRecovery]
  * @property {string|null} [providerSessionId]
  * @property {string|null} [stderrTail] Bounded stderr tail from a CLI-backed bridge; see createStderrTail (ai/failure.js).
  * @property {Array<Object>} [runtimeWarnings]
@@ -456,6 +461,7 @@
  * The object `createRuntime`/`createRouterRuntime` return.
  * @property {(systemPrompt: string, options: RuntimeRunOptions) => Promise<RuntimeResult>} run
  * @property {(next?: AgentRuntimeToolOptions) => void} configureTools
+ * @property {(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: {appliedInputIds: readonly string[]}) => Promise<boolean>} recoverSession
  * @property {(providerSessionId: string) => Promise<boolean>} syncSession
  * @property {(providerSessionId: string) => Promise<void>} refreshSession Guarantees the id has no reusable process-local handle; rejects on failure.
  * @property {(providerSessionId: string, sessionsRoot: string) => Promise<void>} retireDurableSession Deletes every currently materialized durable transcript with the exact id; callers retry after an active retired run settles to reclaim any late same-name append. Absence is success.

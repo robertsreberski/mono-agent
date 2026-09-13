@@ -1,6 +1,6 @@
 {
   "name": "@mono-agent/agent-harness",
-  "version": "0.20.14",
+  "version": "0.21.1",
   "description": "Composable agent request-to-runtime harness.",
   "type": "module",
   "license": "GPL-3.0-only",
@@ -11,7 +11,7 @@
   },
   "private": false,
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=24.15.0"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,11 +31,14 @@
     "test": "vitest run --no-file-parallelism"
   },
   "dependencies": {
-    "@mono-agent/agent-contracts": "workspace:0.20.14",
-    "@mono-agent/observability": "workspace:0.20.14",
-    "@mono-agent/runtime-adapter": "workspace:0.20.14"
+    "@mono-agent/agent-contracts": "workspace:0.21.1",
+    "@mono-agent/observability": "workspace:0.21.1",
+    "@mono-agent/runtime-adapter": "workspace:0.21.1"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.85.1"
   }
 }

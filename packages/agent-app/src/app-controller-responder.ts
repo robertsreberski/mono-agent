@@ -1,3 +1,4 @@
+import { createConsoleProjectsRuntimeExtension } from "./console-projects.js";
 import { resolve } from "node:path";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -251,6 +252,7 @@ export async function buildResponder(
     retentionDays: coreConfig.artifacts.retention.maxAgeDays,
     replyPartBudget,
     storageBudget: replyArtifactStorage,
+    ...(controller.logger === undefined ? {} : { logger: controller.logger }),
   });
   const mcpApps = mcpAppsEnabled
     ? createMcpAppService({
@@ -301,6 +303,11 @@ export async function buildResponder(
   const adapterSendToolsExtension = adapterSendTools.createExtension?.(
     () => false,
   );
+  const observabilityContext = await controller.observabilityContext();
+  const consoleProjectsExtension = observabilityContext.sourceId === undefined ? undefined : createConsoleProjectsRuntimeExtension({
+    sourceId: observabilityContext.sourceId, policy: coreConfig.tools,
+    onUnavailable: () => { controller.logger?.warn?.("Console project tools could not authenticate the active turn; tools are unavailable."); },
+  });
   const conversationTitleExtension = conversationTitleBase;
   const mcpAppsExtension = mcpAppsBase;
   const replyArtifactsExtension = replyArtifactsBase;
@@ -311,6 +318,7 @@ export async function buildResponder(
     runHistoryExtension,
     sessionHistoryExtension,
     conversationTitleExtension,
+    consoleProjectsExtension,
     mcpAppsExtension,
     replyArtifactsExtension,
     adapterSendToolsExtension,
@@ -326,7 +334,6 @@ export async function buildResponder(
   const runtimeForModel = runtimeUsesFallbackRouter(coreConfig.runtime)
     ? controller.buildRuntimeForModel(coreConfig)
     : undefined;
-  const observabilityContext = await controller.observabilityContext();
   const retiredSelectedSkills = coreConfig.context.selectedSkills.filter(isRetiredProjectSkillName);
   if (retiredSelectedSkills.length > 0) {
     controller.logger?.warn?.(
@@ -450,6 +457,10 @@ export function requestModelOverrideRuntimeOptions(
     ...(configuredRuntimeFallbackModels(coreConfig.runtime).length === 0
       ? {}
       : { fallbackModels: configuredRuntimeFallbackModels(coreConfig.runtime) }),
+    ...((coreConfig.runtime.fallbacks?.length ?? 0) === 0
+      ? {}
+      : { fallbackRoutes: coreConfig.runtime.fallbacks }),
+    ...(coreConfig.runtime.effort === undefined ? {} : { baseEffort: coreConfig.runtime.effort }),
     ...(coreConfig.providers?.local === undefined ? {} : { localProviders: coreConfig.providers.local }),
   };
   const extension = createRequestModelOverrideRuntimeExtension(options);

@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import * as agentHarness from "@mono-agent/agent-harness";
 import type { MonoAgentConfig } from "@mono-agent/config";
 import type {
   PhoenixExporterConfig,
@@ -138,6 +139,7 @@ describe("agent host composition helpers", () => {
       },
     });
 
+    expect(responder.liveInputOwnership).toEqual({ version: 1 });
     const streamText: string[] = [];
     const response = await responder.respond(
       { conversationId: "conversation-host", text: "What changed?", abortSignal: new AbortController().signal },
@@ -941,6 +943,22 @@ describe("agent host composition helpers", () => {
     }
   });
 
+  it.each([undefined, false, true])("plumbs prompt cache diagnostics %s only when configured", async (enabled) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const base = monoConfig({ dir, identityPath, artifactDir });
+    const responder = await createConfiguredAgentResponder({
+      config: { ...base, ...(enabled === undefined ? {} : { providers: { ...base.providers, piNative: { promptCacheDiagnostics: enabled } } }) },
+      runtime: fake.runtime,
+    });
+    await responder.respond({ conversationId: "c", text: "hi", abortSignal: new AbortController().signal }, { append: async () => {} });
+    if (enabled === undefined) expect(fake.calls[0]?.options).not.toHaveProperty("promptCacheDiagnostics");
+    else expect(fake.calls[0]?.options.promptCacheDiagnostics).toBe(enabled);
+  });
+
   it("lets host runtimeOptions override config flags and carry code-only runtime controls", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -1210,6 +1228,53 @@ describe("agent host composition helpers", () => {
     }
   });
 
+  it("preserves a custom store's positive context-import contract through configured ownership", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, ".mono-agent", "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const runtime = createFakeRuntime(async () => ({ text: "must not run" }));
+    const committed: HistoryMessage[] = [];
+    const historyStore: ConversationHistoryStore = {
+      load: async () => committed,
+      append: async (_id, messages) => { committed.push(...messages); },
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        beginExclusiveTurn: async () => ({
+          history: committed,
+          historyVersion: "a".repeat(64),
+          prepareCommit: async () => ({
+            append: { commit: async () => undefined, abort: async () => undefined },
+            committedHistoryVersion: "b".repeat(64),
+          }),
+          abort: async () => undefined,
+        }),
+        prepareImport: async (_conversationId, request) => ({
+          result: { status: "appended" },
+          append: {
+            commit: async () => { committed.push({ role: "assistant", content: request.text }); },
+            abort: async () => undefined,
+          },
+        }),
+      },
+    };
+    const harness = await createConfiguredAgentHarness({
+      config: monoConfig({ dir, identityPath, artifactDir }),
+      runtime: runtime.runtime,
+      historyStore,
+    });
+    try {
+      await expect(harness.importContext?.("custom-store", { text: "snapshot", idempotencyKey: "run:1" }))
+        .resolves.toEqual({ status: "appended" });
+      expect(committed).toEqual([{ role: "assistant", content: "snapshot" }]);
+      expect(runtime.calls).toEqual([]);
+    } finally {
+      await harness.dispose?.();
+    }
+  });
+
   it("overrides the config model when supplied at composition time", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -1296,6 +1361,7 @@ describe("agent host composition helpers", () => {
       render: "auto",
       browserCommand: "/opt/homebrew/bin/agent-browser",
     });
+    expect(fake.calls[0]?.options.persistArtifact).toBeTypeOf("function");
   });
 
   it("threads the same WebSearch and WebFetch config into subagent runs", async () => {
@@ -1361,6 +1427,8 @@ describe("agent host composition helpers", () => {
       render: "auto",
       browserCommand: "/opt/homebrew/bin/agent-browser",
     });
+    expect(fake.calls[0]?.options.persistArtifact).toBeTypeOf("function");
+    expect(childCall?.options.persistArtifact).toBeUndefined();
   });
 
   it("creates the default Mono runtime with config workspace and artifact directory", () => {
@@ -1407,6 +1475,27 @@ describe("agent host composition helpers", () => {
       network: { mode: "none", allowlist: [] },
     });
     expect(fake.calls[0]?.options.sandboxEngine).toBe(fakeSandboxEngine);
+  });
+
+  it("forwards the host terminal recovery settlement window to harness session options", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const createHarness = vi.spyOn(agentHarness, "createAgentHarness");
+    let harness: Awaited<ReturnType<typeof createConfiguredAgentHarness>> | undefined;
+    try {
+      harness = await createConfiguredAgentHarness({
+        config: monoConfig({ dir, identityPath, artifactDir: join(dir, "artifacts") }),
+        runtime: createFakeRuntime(async () => ({ text: "unused" })).runtime,
+        terminalRecoverySettlementMs: 30_000,
+      });
+      expect(createHarness).toHaveBeenCalledWith(expect.objectContaining({
+        session: expect.objectContaining({ terminalRecoverySettlementMs: 30_000 }),
+      }));
+    } finally {
+      createHarness.mockRestore();
+      await harness?.dispose?.();
+    }
   });
 
   it("forwards continuous session config so consecutive requests resume the provider session", async () => {
@@ -1475,7 +1564,7 @@ describe("agent host composition helpers", () => {
     expect(openaiApiHistory).not.toContain("TELEGRAM_FIRST");
   });
 
-  it("replays later-turn history for stateless fallbacks when maxTurns is unlimited", async () => {
+  it("replays later-turn history after a stateless fallback answer when maxTurns is unlimited", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -1483,7 +1572,6 @@ describe("agent host composition helpers", () => {
     let turn = 0;
     const fake = createFakeRuntime(async () => ({
       text: `answer-${++turn}`,
-      providerSessionId: "pi-provider-session",
     }));
     const base = monoConfig({ dir, identityPath, artifactDir });
     const harness = await createConfiguredAgentHarness({
@@ -1512,7 +1600,7 @@ describe("agent host composition helpers", () => {
     for (const call of fake.calls) {
       expect(call.options.sessionId).toBeUndefined();
       expect(call.options.providerSessionId).toBeUndefined();
-      expect(call.options.sessionKeepAlive).toBeUndefined();
+      expect(call.options.sessionKeepAlive).toBe(true);
     }
     expect(fake.calls[1]?.prompt).not.toContain("Conversation History");
     expect(fake.calls[1]?.prompt).toBe(fake.calls[0]?.prompt);
@@ -1521,7 +1609,7 @@ describe("agent host composition helpers", () => {
     expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("answer-1");
   });
 
-  it("keeps canonical fallback routes stateless even when every route supports resume", async () => {
+  it("resumes the primary across turns with canonical fallbacks configured", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
     const artifactDir = join(dir, "artifacts");
@@ -1553,14 +1641,16 @@ describe("agent host composition helpers", () => {
     await harness.run({ conversationId: "conv-canonical", userMessage: "first", abortSignal: new AbortController().signal });
     await harness.run({ conversationId: "conv-canonical", userMessage: "second", abortSignal: new AbortController().signal });
 
-    for (const call of fake.calls) {
-      expect(call.options.sessionId).toBeUndefined();
-      expect(call.options.providerSessionId).toBeUndefined();
-      expect(call.options.sessionKeepAlive).toBeUndefined();
-    }
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[0]?.options.sessionKeepAlive).toBe(true);
+    expect(fake.calls[1]?.options.sessionId).toBe("resumable-provider-session");
+    expect(fake.calls[1]?.options.providerSessionId).toBe("resumable-provider-session");
+    expect(fake.calls[1]?.options.sessionKeepAlive).toBe(true);
     expect(fake.calls[1]?.prompt).toBe(fake.calls[0]?.prompt);
-    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("first");
-    expect(JSON.stringify(fake.calls[1]?.options.messages)).toContain("answer-1");
+    expect(fake.calls[1]?.options.messages).toEqual([
+      { role: "user", content: expect.stringContaining("second") },
+    ]);
+    expect(JSON.stringify(fake.calls[1]?.options.messages)).not.toContain("answer-1");
   });
 
   it("never passes session keys in per-message mode", async () => {
@@ -2042,3 +2132,40 @@ function monoConfig(input: {
     ...(input.observability === undefined ? {} : { observability: input.observability }),
   };
 }
+
+it("retires configured override history through the cached owning runtime", async () => {
+  const dir = await tempDir();
+  const identityPath = join(dir, "IDENTITY.md");
+  await writeFile(identityPath, "You are Mono.");
+  const original = monoConfig({ dir, identityPath, artifactDir: join(dir, "artifacts") });
+  const model = { provider: "faux", model: "base", reference: "faux:base" };
+  const override = { provider: "faux", model: "override", reference: "faux:override" };
+  const config: MonoAgentConfig = { ...original,
+    runtime: { ...original.runtime, model, session: { mode: "continuous", idleTimeoutMs: 60000 } },
+    providers: { piNative: { piSessionsRoot: join(dir, "pi") } } };
+  const owner = () => ({ run: vi.fn(async (_prompt: string, options: RuntimeRunOptions) => ({ text: "answer", providerSessionId: String(options.sessionId) })),
+    refreshSession: vi.fn(async () => undefined), syncSession: vi.fn(async () => true),
+    invalidateSession: vi.fn(async () => true), disposeSession: vi.fn(async () => true), retireDurableSession: vi.fn(async () => undefined) });
+  const base = owner();
+  const alternate = owner();
+  const factory = vi.fn(() => alternate);
+  const options = { config, cwd: dir, runtime: base, runtimeForModel: factory, sandboxEngine: fakeSandboxEngine,
+    runtimeOptionsForRequest: ({ request }: { request: { metadata?: Readonly<Record<string, unknown>> } }) => ({
+      runtimeOptions: { model: request.metadata?.web ? override : model } }) };
+  const request = { conversationId: "bound-configured", userMessage: "hello", abortSignal: new AbortController().signal,
+    metadata: { web: { model: override.reference } } };
+  const first = await createConfiguredAgentHarness(options);
+  expect((await first.run(request)).text).toBe("answer");
+  const id = alternate.run.mock.calls[0]![1].sessionId;
+  await first.dispose?.();
+  const next = await createConfiguredAgentHarness(options);
+  expect((await next.run(request)).text).toBe("answer");
+  expect(alternate.run.mock.calls[1]![1].sessionId).toBe(id);
+  await next.resetConversation?.(request.conversationId);
+  expect(alternate.invalidateSession).toHaveBeenCalledWith(id);
+  expect(alternate.retireDurableSession).toHaveBeenCalledWith(id, join(dir, "pi"));
+  expect(base.invalidateSession).not.toHaveBeenCalled();
+  expect(base.retireDurableSession).not.toHaveBeenCalled();
+  expect(factory).toHaveBeenCalledTimes(2); // Once per recreated configured harness lifetime.
+  await next.dispose?.();
+});

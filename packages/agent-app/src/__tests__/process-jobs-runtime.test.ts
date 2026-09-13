@@ -298,6 +298,80 @@ describe("process-job request availability", () => {
     }
   });
 
+  /**
+   * The web console receipts a job wake once the agent ACCEPTS the follow-up
+   * turn, not when that turn finishes, so its delivery route settles — and the
+   * flight is deregistered — while the very request it raised is still running.
+   * Capability must survive that, because the responder binds the flight to the
+   * request identity synchronously on entry, before the route can settle.
+   */
+  it("keeps a bound wake capable after its delivery route settles at admission", async () => {
+    const coreConfig = {
+      runtime: { model: { provider: "openai-codex", model: "gpt-5.6-sol" }, workspace: "/agent" },
+      tools: { allowedTools: ["*"], disallowedTools: [] },
+    } as never;
+    const controller = vi.fn(() => ({ start: vi.fn(), stop: vi.fn() }));
+    const service = { settings: { maxChainDepth: 4 }, controller } as never;
+    const options = { service, coreConfig, channelId: "tui" as const, conversationScheme: "web" };
+    const extension = createProcessJobsRuntimeExtension({
+      ...processJobsBoundary(coreConfig), ...options, sandboxEngine: availableSandboxEngine,
+    });
+    const deliveryKey = "process-job:web-admission:1";
+    const request = {
+      conversationId: "web:thread-1",
+      text: "wake",
+      metadata: { source: "web", [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey },
+      abortSignal: new AbortController().signal,
+    };
+
+    let admitted!: () => void;
+    const admission = new Promise<void>((resolve) => { admitted = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let resolution: unknown;
+    let runtimeOptions: Record<string, unknown> | undefined;
+    let available: boolean | undefined;
+    const responder = bindProcessJobWakeContextToResponder({
+      respond: async (bound) => {
+        // The wrapper installed the binding before this body was entered.
+        admitted();
+        await gate;
+        resolution = processJobWakeContextForRequest(bound);
+        available = processJobsAvailableForRequest({ runId: "wake-run", request: bound } as never, options);
+        const result = await extension({ runId: "wake-run", request: bound } as never);
+        runtimeOptions = result.runtimeOptions as Record<string, unknown>;
+        await result.settleCleanup?.();
+        return { text: "ok" };
+      },
+    });
+
+    let turn!: Promise<unknown>;
+    await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 3 }, async () => {
+      turn = responder.respond(request as never, { append: async () => undefined });
+      await admission;
+    }, deliveryKey);
+
+    // The route has settled: an unbound request carrying the same key is denied.
+    const unbound = { metadata: { [PROCESS_JOB_WAKE_DELIVERY_METADATA]: deliveryKey } };
+    expect(processJobWakeContextForRequest(unbound)).toEqual({ kind: "missed" });
+    expect(processJobsAvailableForRequest({
+      runId: "unbound-run",
+      request: { conversationId: "web:thread-1", text: "wake", ...unbound },
+    } as never, options)).toBe(false);
+
+    release();
+    await turn;
+    expect(resolution).toEqual({ kind: "resolved", context: { jobId: "parent", chainDepth: 3 } });
+    expect(available).toBe(true);
+    expect(runtimeOptions).toHaveProperty("processJobs");
+    expect(runtimeOptions?.processJobsAvailability).toEqual({
+      chainDepth: 3,
+      maxChainDepth: 4,
+      remainingStarts: 1,
+    });
+    expect(controller).toHaveBeenCalledTimes(1);
+  });
+
   it("injects for canonical provider turns", async () => {
     const controller = vi.fn((_request: unknown, _depth: number | (() => number)) => ({ start: vi.fn() }));
     const coreConfig = {
@@ -657,18 +731,24 @@ describe("process-job request availability", () => {
     await flight;
   });
 
-  it("targets the exact active run and raises its controller depth only for applied wake steering", async () => {
-    const offers: Array<{ resolve(value: { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }): void }> = [];
+  it("targets the exact active run and keeps depth only for matching applied wake steering", async () => {
+    type Settlement =
+      | { status: "applied"; runId: string }
+      | { status: "requeue"; reason: "closed" }
+      | { status: "uncertain"; reason: "delivery_uncertain" };
+    const offers: Array<{ resolve(value: Settlement): void; reject(error: Error): void }> = [];
     const offeredRequests: Array<Record<string, unknown>> = [];
     const responder = bindProcessJobWakeContextToResponder({
       respond: async () => ({ text: "ok" }),
       offerLiveInput(request) {
         offeredRequests.push(request as unknown as Record<string, unknown>);
-        let resolve!: (value: { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }) => void;
-        const settled = new Promise<
-          { status: "applied"; runId: string } | { status: "requeue"; reason: "closed" }
-        >((resolvePromise) => { resolve = resolvePromise; });
-        offers.push({ resolve });
+        let resolve!: (value: Settlement) => void;
+        let reject!: (error: Error) => void;
+        const settled = new Promise<Settlement>((resolvePromise, rejectPromise) => {
+          resolve = resolvePromise;
+          reject = rejectPromise;
+        });
+        offers.push({ resolve, reject });
         return { status: "accepted", settled };
       },
     });
@@ -710,6 +790,36 @@ describe("process-job request availability", () => {
       offers[1]!.resolve({ status: "applied", runId: "active-run" });
       await expect(applied.settled).resolves.toEqual({ status: "applied", runId: "active-run" });
       expect(target.chainDepth()).toBe(3);
+
+      let wrongRun!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
+      await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 4 }, async () => {
+        wrongRun = responder.offerLiveInput!({
+          conversationId: "slack:C-exact:9.9",
+          id: "process-job:wrong-run",
+          text: "finished",
+          receivedAt: "2026-08-16T10:00:02.000Z",
+          deliveryKey: "process-job:wrong-run",
+        });
+      }, "process-job:wrong-run");
+      if (wrongRun.status !== "accepted") throw new Error("expected accepted offer");
+      offers[2]!.resolve({ status: "applied", runId: "different-run" });
+      await expect(wrongRun.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+      expect(target.chainDepth()).toBe(3);
+
+      let rejected!: ReturnType<NonNullable<typeof responder.offerLiveInput>>;
+      await runWithProcessJobWakeContext({ jobId: "parent", chainDepth: 5 }, async () => {
+        rejected = responder.offerLiveInput!({
+          conversationId: "slack:C-exact:9.9",
+          id: "process-job:rejected",
+          text: "finished",
+          receivedAt: "2026-08-16T10:00:03.000Z",
+          deliveryKey: "process-job:rejected",
+        });
+      }, "process-job:rejected");
+      if (rejected.status !== "accepted") throw new Error("expected accepted offer");
+      offers[3]!.reject(new Error("settlement lost"));
+      await expect(rejected.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
+      expect(target.chainDepth()).toBe(3);
     } finally {
       target.release();
     }
@@ -738,6 +848,14 @@ describe("process-job request availability", () => {
       first.release();
       second.release();
     }
+  });
+
+  it("preserves live-input ownership capability through the process-job decorator", () => {
+    const responder = bindProcessJobWakeContextToResponder({
+      liveInputOwnership: { version: 1 },
+      respond: async () => ({ text: "ok" }),
+    });
+    expect(responder.liveInputOwnership).toEqual({ version: 1 });
   });
 
   it("fails closed when overlapping wake flights reuse one exact delivery discriminator", async () => {
@@ -837,20 +955,28 @@ describe("process-job request availability", () => {
       expect(this).toBe(owner);
       return { accepted: true };
     });
+    const importContext = vi.fn(async function (this: object) {
+      expect(this).toBe(owner);
+      return { status: "duplicate" as const };
+    });
     owner = {
       respond: async () => ({ text: "ok" }),
       openReplyArtifact,
       loadMcpApp,
       requestMcpApp,
+      importContext,
     };
     const responder = bindProcessJobWakeContextToResponder(owner as never);
 
     await expect(responder.openReplyArtifact?.({} as never)).resolves.toEqual({});
     await expect(responder.loadMcpApp?.({} as never)).resolves.toEqual({});
     await expect(responder.requestMcpApp?.({} as never)).resolves.toEqual({ accepted: true });
+    await expect(responder.importContext?.("c", { text: "snapshot", idempotencyKey: "run:1" }))
+      .resolves.toEqual({ status: "duplicate" });
     expect(openReplyArtifact).toHaveBeenCalledOnce();
     expect(loadMcpApp).toHaveBeenCalledOnce();
     expect(requestMcpApp).toHaveBeenCalledOnce();
+    expect(importContext).toHaveBeenCalledOnce();
   });
 
   it("fails closed when a host wake lacks the private request-identity seam", async () => {

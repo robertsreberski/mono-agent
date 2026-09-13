@@ -60,8 +60,18 @@ export async function buildTurnTools(runState, {
   // through it; otherwise the host/default ToolContext is used unchanged. The
   // per-run policy DATA (sandboxPolicy) still merges monotonically inside
   // resolveSandboxPolicy (I13) regardless of which impl is chosen.
-  const runCtx = options.sandbox
-    ? { ...options.toolContext, sandbox: options.sandbox }
+  //
+  // The run-bound artifact sink rides on the same copy: the per-tool output
+  // caps (capChars / formatSearchLines) spill their full text through
+  // `ctx.persistArtifact`, which is the only sink a configured app provides
+  // (`toolArtifactDir` is never set there). A snapshot is safe because the
+  // router projects configureTools before each attempt, never mid-run.
+  const runCtx = options.sandbox || persistArtifact
+    ? {
+      ...options.toolContext,
+      ...(options.sandbox ? { sandbox: options.sandbox } : {}),
+      ...(persistArtifact ? { persistArtifact } : {}),
+    }
     : options.toolContext;
   const sandboxEngine = options.sandboxEngine ?? runCtx?.sandboxEngine;
   const nodeReplController = capabilities.tool_use === false
@@ -130,6 +140,7 @@ export async function buildTurnTools(runState, {
       // pins a model; the tool closure reads these to build each child request.
       subagentContext: {
         model: options.model,
+        effort: options.effort,
         cwd: options.cwd,
         parentRunId: runCtx?.runId,
         // Same policy + engine this turn's own tools are confined by, so a
@@ -351,10 +362,10 @@ export function activateTurnHarness(runState, {
  * the harness mid-run; the consumer is tied to run completion (an internal
  * runComplete flag) so it stops steering once the run finishes and does not
  * swallow a follow-up meant for a later turn. Returns a `stop()` teardown.
- * @param {{harness: any, options: any, onEvent: (event: any) => void}} deps
+ * @param {{harness: any, options: any, onEvent: (event: any) => void, promptEpoch?: any}} deps
  * @returns {{stop: () => Promise<void>}}
  */
-export function startLiveInput({ harness, options, onEvent }) {
+export function startLiveInput({ harness, options, onEvent, promptEpoch }) {
   if (!options.liveInput) return { stop: async () => {} };
   const iterator = typeof options.liveInput[Symbol.asyncIterator] === "function"
     ? options.liveInput[Symbol.asyncIterator]()
@@ -363,6 +374,8 @@ export function startLiveInput({ harness, options, onEvent }) {
   /** @type {() => void} */
   let signalStop = () => {};
   const stopped = new Promise((resolve) => { signalStop = () => resolve(); });
+  /** @type {Array<{entryId: string, message: any}>} */
+  const acceptedEntries = [];
   const task = (async () => {
     try {
       while (!runComplete && !options.abortSignal?.aborted) {
@@ -372,8 +385,19 @@ export function startLiveInput({ harness, options, onEvent }) {
         ]);
         if (next.done || runComplete || options.abortSignal?.aborted) break;
         try {
-          await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts));
-          next.value.acknowledge?.();
+          const entryId = await harness.steer(formatLiveInputGuidance(next.value.body, options.prompts));
+          if (typeof entryId !== "string" || entryId.length === 0) {
+            next.value.accepted?.();
+            next.value.uncertain?.({ reason: "delivery_uncertain" });
+            continue;
+          }
+          const evidence = {
+            providerEntryId: entryId,
+            ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId() }),
+          };
+          acceptedEntries.push({ entryId, message: next.value });
+          next.value.accepted?.(evidence);
+          promptEpoch?.register(entryId, next.value);
         } catch (err) {
           next.value.reject?.(err);
           throw err;
@@ -387,6 +411,8 @@ export function startLiveInput({ harness, options, onEvent }) {
       });
     }
   })();
+  /** @type {Promise<void>|undefined} */
+  let stopPromise;
   return {
     // The run is done: stop the live-steering consumer so it cannot steer a
     // finished harness or swallow a follow-up meant for the next turn. We signal
@@ -394,15 +420,214 @@ export function startLiveInput({ harness, options, onEvent }) {
     // race releases the task even when a third-party iterator's return() does
     // not unblock its pending next(); awaiting the task still closes any steer
     // acknowledgement already in progress.
-    stop: async () => {
+    stop: () => {
+      stopPromise ??= performStop();
+      return stopPromise;
+    },
+  };
+
+  async function performStop() {
       runComplete = true;
       signalStop();
       if (iterator && typeof iterator.return === "function") {
         try { void Promise.resolve(iterator.return()).catch(() => {}); } catch { /* best-effort */ }
       }
       await task;
+      for (const accepted of acceptedEntries) {
+        if (promptEpoch?.isConsumed(accepted.entryId)) continue;
+        try {
+          if (typeof harness.cancelQueued !== "function") {
+            accepted.message.uncertain?.({
+              reason: "delivery_uncertain",
+              providerEntryId: accepted.entryId,
+              ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId() }),
+            });
+            continue;
+          }
+          const cancellation = await harness.cancelQueued(accepted.entryId);
+          if (cancellation?.kind === "cancelled") {
+            accepted.message.reject?.({ code: "native_queue_removed" });
+          } else if (!promptEpoch?.isConsumed(accepted.entryId)) {
+            accepted.message.uncertain?.({
+              reason: "delivery_uncertain",
+              providerEntryId: accepted.entryId,
+              ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId() }),
+            });
+          }
+        } catch {
+          accepted.message.uncertain?.({
+            reason: "delivery_uncertain",
+            providerEntryId: accepted.entryId,
+            ...(promptEpoch?.ownedRunId() === undefined ? {} : { providerRunId: promptEpoch.ownedRunId() }),
+          });
+          onEvent({
+            type: "runtime_warning",
+            warning_kind: "live_input_cancellation_failed",
+            message: "Unable to prove whether queued live input was removed.",
+          });
+        }
+      }
+  }
+}
+
+/**
+ * Own exact Pi run/entry correlation for the one main prompt in this Mono run.
+ * @param {{harness: any, onEvent: (event: any) => void}} deps
+ */
+export function createLiveInputPromptEpoch({ harness, onEvent }) {
+  const BUFFER_LIMIT = 101;
+  /** @type {string|undefined} */
+  let runId;
+  let eventWindowClosed = false;
+  let invalid = false;
+  /** @type {Array<{entryId: string, runId: string}>} */
+  const buffered = [];
+  /** @type {Map<string, {message: any, observed: boolean, consumed: boolean}>} */
+  const entries = new Map();
+  // The operation id Pi admitted for the main prompt (via confirm) or that the
+  // settled prompt reported (via finish). Consumption is only acknowledged once
+  // the observed main-lane run_start carries this exact id.
+  /** @type {string|undefined} */
+  let admittedOperationId;
+  let operationConfirmed = false;
+
+  const remove = harness.subscribe((event) => {
+    if (!event || event.lane !== "main") return;
+    if (event.type === "run_start" && typeof event.runId === "string" && event.runId.length > 0) {
+      if (runId === undefined) {
+        runId = event.runId;
+        if (admittedOperationId !== undefined && admittedOperationId !== runId) {
+          invalidate("operation_mismatch");
+          return;
+        }
+        if (admittedOperationId !== undefined) operationConfirmed = true;
+        consumeBuffered();
+      } else if (runId !== event.runId) {
+        invalidate("multiple_run_start");
+      }
+      return;
+    }
+    if (event.type === "run_end" && event.runId === runId) {
+      eventWindowClosed = true;
+      return;
+    }
+    if (
+      event.type !== "message_end"
+      || eventWindowClosed
+      || event.message?.role !== "user"
+      || typeof event.entryId !== "string"
+      || event.entryId.length === 0
+      || typeof event.runId !== "string"
+      || event.runId.length === 0
+    ) return;
+    if (buffered.some((item) => item.entryId === event.entryId && item.runId === event.runId)) {
+      consumeBuffered();
+      return;
+    }
+    if (buffered.length >= BUFFER_LIMIT) {
+      invalidate("event_buffer_overflow");
+      return;
+    }
+    buffered.push({ entryId: event.entryId, runId: event.runId });
+    consumeBuffered();
+  });
+
+  return {
+    ownedRunId: () => runId,
+    consumedInputIds: () => invalid ? null : [...entries.values()].filter((entry) => entry.consumed).map((entry) => entry.message.id),
+    register(entryId, message) {
+      if (!entries.has(entryId)) entries.set(entryId, { message, observed: false, consumed: false });
+      if (invalid) {
+        settleUncertain(entries.get(entryId), entryId);
+        return;
+      }
+      consumeBuffered();
+    },
+    isConsumed: (entryId) => entries.get(entryId)?.consumed === true,
+    /**
+     * Own the admitted operation as soon as Pi reports its id, before the run
+     * settles, so entries consumed mid-run are acknowledged when their
+     * message_end arrives rather than in one batch at the end of the run.
+     * Safe in either order with run_start; a conflicting id invalidates.
+     */
+    confirm(operationId) {
+      if (invalid) return;
+      if (
+        typeof operationId !== "string"
+        || operationId.length === 0
+        || (admittedOperationId !== undefined && admittedOperationId !== operationId)
+        || (runId !== undefined && runId !== operationId)
+      ) {
+        invalidate("operation_mismatch");
+        return;
+      }
+      admittedOperationId = operationId;
+      if (runId === undefined) return;
+      operationConfirmed = true;
+      confirmObserved();
+    },
+    finish(operationId) {
+      if (
+        typeof operationId !== "string"
+        || operationId.length === 0
+        || runId === undefined
+        || operationId !== runId
+        || (admittedOperationId !== undefined && admittedOperationId !== operationId)
+      ) {
+        invalidate("operation_mismatch");
+        return;
+      }
+      admittedOperationId = operationId;
+      operationConfirmed = true;
+      confirmObserved();
+    },
+    close() {
+      remove?.();
     },
   };
+
+  function consumeBuffered() {
+    if (invalid || runId === undefined) return;
+    for (const evidence of buffered) {
+      if (evidence.runId !== runId) continue;
+      const entry = entries.get(evidence.entryId);
+      if (entry === undefined || entry.consumed) continue;
+      entry.observed = true;
+    }
+    if (operationConfirmed) confirmObserved();
+  }
+
+  function confirmObserved() {
+    if (!operationConfirmed || runId === undefined || invalid) return;
+    for (const [entryId, entry] of entries) {
+      if (!entry.observed || entry.consumed) continue;
+      entry.consumed = true;
+      entry.message.acknowledge?.({ providerEntryId: entryId, providerRunId: runId });
+    }
+  }
+
+  function invalidate(reason) {
+    if (invalid) return;
+    invalid = true;
+    try {
+      onEvent({
+        type: "runtime_warning",
+        warning_kind: "live_input_correlation_invalid",
+        message: "Live-input consumption could not be correlated to exactly one provider operation.",
+        reason,
+      });
+    } catch { /* diagnostics do not alter settlement */ }
+    for (const [entryId, entry] of entries) settleUncertain(entry, entryId);
+  }
+
+  function settleUncertain(entry, entryId) {
+    if (entry === undefined || entry.consumed) return;
+    entry.message.uncertain?.({
+      reason: "delivery_uncertain",
+      providerEntryId: entryId,
+      ...(runId === undefined ? {} : { providerRunId: runId }),
+    });
+  }
 }
 
 /**
@@ -412,23 +637,32 @@ export function startLiveInput({ harness, options, onEvent }) {
  * @param {any} harness
  * @param {string} promptText
  * @param {Array<any>} promptImages
- * @returns {Promise<{runError: any}>}
+ * @param {{onOperationAdmitted?: (operationId: string) => void}} [hooks]
+ *   `onOperationAdmitted` fires as soon as Pi admits the run, before any
+ *   provider request, so the live-input epoch can own the operation up front.
+ * @returns {Promise<{runError: any, operationId?: string}>}
  */
-export async function runHarnessPrompt(harness, promptText, promptImages) {
+export async function runHarnessPrompt(harness, promptText, promptImages, hooks) {
   let runError = null;
+  let operationId;
   try {
     // Pass structured images (when present) so multimodal input reaches the
     // model as image blocks rather than stringified text. AgentHarness.prompt
     // takes them under an options object (`{ images }`); a bare array would be
     // read as `options` and silently dropped (options?.images === undefined).
-    if (Array.isArray(promptImages) && promptImages.length > 0) {
-      await harness.prompt(promptText, { images: promptImages });
-    } else {
-      await harness.prompt(promptText);
-    }
+    const promptOptions = {
+      ...(Array.isArray(promptImages) && promptImages.length > 0 ? { images: promptImages } : {}),
+      ...(typeof hooks?.onOperationAdmitted === "function"
+        ? { onOperationAdmitted: hooks.onOperationAdmitted }
+        : {}),
+    };
+    const result = Object.keys(promptOptions).length > 0
+      ? await harness.prompt(promptText, promptOptions)
+      : await harness.prompt(promptText);
+    operationId = result?.operationId;
   } catch (err) {
     runError = err;
   }
   await harness.waitForIdle();
-  return { runError };
+  return { runError, ...(operationId === undefined ? {} : { operationId }) };
 }

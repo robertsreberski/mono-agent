@@ -12,13 +12,24 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import { WebUploadAttachmentAdapter } from "./attachment-adapter";
 import { ReplyAccessProvider } from "./components/reply-access";
 import { shouldShowMessageRunAttribution } from "./components/RunAttribution";
+import { RouteCapabilitiesProvider } from "./components/route-capabilities";
 import { ToolCallRepairProvider } from "./components/tool-call-repair";
 import { canSendInConsole, canUploadInConsole } from "./capabilities";
 import { clusterToolCalls } from "./activity-clustering";
 import { useConsoleStore, useUploadLimits } from "./console-store";
 import { noteComposerAttachments } from "./composer-draft";
+import {
+  isAssistantMessageBoundaryPart,
+  isContextCompactionPart,
+  parseProcessJobStartReceipt,
+  processJobTerminalEvent,
+  ProcessJobPresentationProvider,
+  projectProcessJobPresentation,
+  type ProcessJobActivityEvent,
+} from "./process-job-presentation";
 import type {
   MessagePart,
+  ProcessJobProjection,
   ToolCall,
   ToolCallArtifact,
   WebAttachment,
@@ -64,16 +75,6 @@ const quoteFromMetadata = (value: unknown): WebQuote | undefined => {
     : undefined;
 };
 
-const formatLiveInput = (text: string, quote: WebQuote | undefined): string => {
-  if (quote === undefined) return text;
-  const blockquote = quote.text
-    .trim()
-    .split(/\r?\n/u)
-    .map((line) => `> ${line}`)
-    .join("\n");
-  return `Quoted context:\n${blockquote}\n\n${text}`;
-};
-
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -92,40 +93,6 @@ const jsonObject = (value: unknown): JsonObject => {
     return normalized;
   }
   return value === undefined ? {} : { value: normalized };
-};
-
-const isContextCompactionPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
-  if (part.event === "context_compaction") return true;
-  let current = part.data;
-  const seen = new Set<object>();
-  for (let depth = 0; depth < 8; depth += 1) {
-    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) {
-      return false;
-    }
-    seen.add(current);
-    const record = current as Record<string, unknown>;
-    if (record.kind === "context_compaction" || record.type === "context_compaction") return true;
-    current = record.data;
-  }
-  return false;
-};
-
-const isAssistantMessageBoundaryPart = (part: Extract<MessagePart, { type: "telemetry" }>): boolean => {
-  let current = part.data;
-  const seen = new Set<object>();
-  for (let depth = 0; depth < 8; depth += 1) {
-    if (current === null || typeof current !== "object" || Array.isArray(current) || seen.has(current)) {
-      return false;
-    }
-    seen.add(current);
-    const record = current as Record<string, unknown>;
-    // context_usage was the only reliable message-end marker retained by older
-    // Pi runs. Keep it as a read-time compatibility boundary; new runs carry
-    // the explicit content-free marker even when usage is unavailable.
-    if (record.kind === "assistant_message_boundary" || record.kind === "context_usage") return true;
-    current = record.data;
-  }
-  return false;
 };
 
 const isLegacyMonitorToolPart = (part: MessagePart): boolean =>
@@ -189,12 +156,16 @@ const hasMonitorWakePresentationBoundary = (message: WebMessage): boolean =>
       case "monitor-activity":
         return false;
       case "tool-call":
-        return isMonitorWakeBoundaryTool(part);
+        return isMonitorWakeBoundaryTool(part)
+          || parseProcessJobStartReceipt(part.structuredResult, part.toolName) !== undefined;
       case "subagent":
         return part.calls.some(isMonitorWakeBoundaryTool);
       case "telemetry":
         return part.event === "cron_run";
       case "process-job":
+      case "process-job-wake":
+      case "steer":
+      case "cron-reply-context":
       case "error":
       case "attachment":
       case "mcp_app":
@@ -234,7 +205,9 @@ export const coalesceMonitorWakeMessages = (
 
   for (const message of messages) {
     const monitorId = monitorIdForMessage(message);
-    const hasBoundary = hasMonitorWakePresentationBoundary(message);
+    const hasBoundary = hasMonitorWakePresentationBoundary(message)
+      || (message.projectTransitions?.length ?? 0) > 0
+      || (message.modelTransitions?.length ?? 0) > 0;
     const currentCanCarry = message.role === "assistant"
       && monitorId !== undefined
       && (message.status === "running" || message.status === "complete")
@@ -272,7 +245,7 @@ type ConvertedPart = Exclude<ThreadMessageLike["content"], string>[number];
 
 /**
  * Per-tool-call metadata the console renders but assistant-ui cannot type: the durable
- * history record, and an MCP tool's structuredContent. Both ride in the part's single
+ * history record, and a bounded machine-readable tool result. Both ride in the part's single
  * `artifact` slot, so they are wrapped rather than fighting over it. Returns undefined
  * when neither is present, keeping ordinary tool calls unchanged.
  */
@@ -291,7 +264,10 @@ const toolCallArtifact = (part: ToolCall): ToolCallArtifact | undefined => {
   return Object.keys(artifact).length === 0 ? undefined : artifact;
 };
 
-const convertPart = (part: MessagePart): ConvertedPart | null => {
+const convertPart = (
+  part: MessagePart,
+  processJobs?: ReadonlyMap<string, ProcessJobProjection>,
+): ConvertedPart | null => {
   switch (part.type) {
     case "text":
       return { type: "text", text: part.text };
@@ -320,8 +296,22 @@ const convertPart = (part: MessagePart): ConvertedPart | null => {
       return { type: "data-subagent", data: jsonObject(part) };
     case "process-job":
       return { type: "data-process-job", data: jsonObject(part) };
+    case "process-job-wake": {
+      const job = processJobs?.get(part.jobId);
+      return job === undefined ? null : {
+        type: "data-process-job-event",
+        data: jsonObject(processJobTerminalEvent(job, part.deliveryKey)),
+      };
+    }
+    case "steer":
+      // A consumed steer renders as the operator's own message in place, so
+      // it converts to a named data part that deliberately belongs to neither
+      // the activity set nor the answer: it breaks the Activity band instead.
+      return { type: "data-steer", data: jsonObject(part) };
     case "monitor-activity":
       return { type: "data-monitor-activity", data: jsonObject(part) };
+    case "cron-reply-context":
+      return { type: "data-cron-reply-context", data: jsonObject(part) };
     case "telemetry":
       // Most telemetry remains store-only for chrome such as ContextDisplay.
       // Compaction is user-visible activity, so expose that one canonical kind
@@ -408,10 +398,14 @@ const ACTIVITY_PART_TYPES: ReadonlySet<string> = new Set([
   "data-context-compaction",
   "data-monitor-activity",
   "data-process-job",
+  "data-process-job-event",
 ]);
 
 const isBlankText = (part: ConvertedPart): boolean =>
   part.type === "text" && part.text.trim().length === 0;
+
+/** A consumed steer, which splits settled activity instead of joining it. */
+const isSteerPart = (part: ConvertedPart): boolean => part.type === "data-steer";
 
 /**
  * Lay a completed assistant turn out as one activity log over one answer.
@@ -422,6 +416,11 @@ const isBlankText = (part: ConvertedPart): boolean =>
  * wedged into three paragraphs. In a completed turn the last prose IS the answer
  * and everything before it is working-out, so interim prose becomes a `note`
  * (activity, like a tool row) and the whole run closes up.
+ *
+ * A consumed steer is an ordering barrier inside that log: activity produced
+ * before the steer stays before it and activity produced after stays after, so
+ * the band splits at exactly the point the run consumed the follow-up. The
+ * answer still closes the turn.
  *
  * An error part is neither: it stays behind the answer so it cannot split the
  * log, and so does any data part a newer server sends that this bundle cannot
@@ -435,21 +434,34 @@ const foldSettledActivity = (parts: readonly ConvertedPart[]): ConvertedPart[] =
   });
   if (answerIndex < 0) return visible;
 
-  const activity: ConvertedPart[] = [];
+  const folded: ConvertedPart[] = [];
+  let activity: ConvertedPart[] = [];
   const afterAnswer: ConvertedPart[] = [];
+  const flush = (): void => {
+    folded.push(...activity);
+    activity = [];
+  };
   visible.forEach((part, index) => {
     if (index === answerIndex) return;
+    if (isSteerPart(part)) {
+      flush();
+      folded.push(part);
+      return;
+    }
     if (part.type === "text") {
       activity.push({ type: "data-note", data: { text: part.text } });
       return;
     }
     (ACTIVITY_PART_TYPES.has(part.type) ? activity : afterAnswer).push(part);
   });
-  return [...activity, visible[answerIndex]!, ...afterAnswer];
+  flush();
+  return [...folded, visible[answerIndex]!, ...afterAnswer];
 };
 
 interface ConvertWebMessageOptions {
   readonly selectedModel?: string | null;
+  readonly processJobEvents?: readonly ProcessJobActivityEvent[];
+  readonly processJobs?: ReadonlyMap<string, ProcessJobProjection>;
 }
 
 export const convertWebMessage = (
@@ -457,10 +469,16 @@ export const convertWebMessage = (
   options: ConvertWebMessageOptions = {},
 ): ThreadMessageLike => {
   const hasMonitorActivity = message.parts.some((part) => part.type === "monitor-activity");
+  const hasCronReplyContext = message.parts.some((part) => part.type === "cron-reply-context");
   const legacyMonitorUpdates = hasMonitorActivity
     ? 0
     : message.parts.filter(isLegacyMonitorToolPart).length;
   let legacyMonitorInserted = false;
+  const processJobEvents = new Map<string, readonly ProcessJobActivityEvent[]>();
+  for (const event of options.processJobEvents ?? []) {
+    const current = processJobEvents.get(event.toolCallId) ?? [];
+    processJobEvents.set(event.toolCallId, [...current, event]);
+  }
   const joined = joinAdjacentText(message.parts.flatMap((part) => {
     if (isLegacyMonitorToolPart(part)) {
       if (hasMonitorActivity || legacyMonitorInserted) return [];
@@ -470,14 +488,30 @@ export const convertWebMessage = (
         data: { type: "monitor-activity", monitors: [], legacyUpdateCount: legacyMonitorUpdates },
       }];
     }
+    if (part.type === "cron-reply-context") {
+      const data = jsonObject(part);
+      return [
+        { type: "data-cron-reply-context" as const, data },
+        { type: "text" as const, text: part.result.text },
+        { type: "data-cron-reply-context-details" as const, data },
+      ];
+    }
     // The service worker precaches this bundle, so a console left open across a
     // server upgrade can be handed a part type it does not know yet. `== null`
     // covers that `undefined` too: pushing it into content breaks the whole
     // transcript over one unrecognized row.
     const convertedPart = convertPart(part.type === "telemetry" && part.event === "cron_run"
       ? { ...part, data: { ...(part.data as Record<string, unknown>), hasVisibleContent: !isLegacySilentCronMessage(message) } }
-      : part);
-    return convertedPart == null ? [] : [convertedPart];
+      : part, options.processJobs);
+    if (convertedPart == null) return [];
+    if (part.type !== "tool-call") return [convertedPart];
+    return [
+      convertedPart,
+      ...(processJobEvents.get(part.toolCallId) ?? []).map((event) => ({
+        type: "data-process-job-event" as const,
+        data: jsonObject(event),
+      })),
+    ];
   }));
   const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
   // Only a COMPLETED turn is known to have an answer. Streaming is still
@@ -485,7 +519,7 @@ export const convertWebMessage = (
   // (the store finalizes all three with no final text), so its last prose is
   // narration: folding would invert the chronology and dress that narration up
   // as the answer. Both keep arrival order.
-  const ordered = message.role === "assistant" && message.status === "complete"
+  const ordered = message.role === "assistant" && message.status === "complete" && !hasCronReplyContext
     ? foldSettledActivity(converted)
     : converted;
   // Clustering runs after folding so a settled turn and the streaming turn that
@@ -512,6 +546,8 @@ export const convertWebMessage = (
       message.role === "user" ? message.attachments.map(completeAttachment) : undefined,
     metadata: {
       custom: {
+        projectTransitions: message.projectTransitions,
+        modelTransitions: message.modelTransitions,
         turnId: message.turnId,
         updatedAt: message.updatedAt,
         ...(message.finishedAt === undefined ? {} : { finishedAt: message.finishedAt }),
@@ -593,7 +629,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   );
 
   const onNew = useCallback(
-    async (message: AppendMessage, options?: SubmissionOptions) => {
+    async (message: AppendMessage, _options?: SubmissionOptions) => {
       const text = message.content
         .filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> =>
           part.type === "text",
@@ -609,28 +645,8 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         agentId: store.selectedAgentId,
         threadId: store.selectedThreadId,
       };
-      if (options?.steer === true) {
-        const canForceSteer = !turnStartingRef.current
-          && store.selectedThread !== null
-          && store.selectedThreadId !== null
-          && store.selectedThread.trigger?.kind !== "cron"
-          && canSendInConsole(store.connection, store.selectedAgent, store.selectedThread);
-        // assistant-ui's shortcut can invoke this path without clicking the
-        // disabled button. Live input is text-only, so fail closed before
-        // either endpoint and put everything it cleared back in the composer.
-        if (!canForceSteer || text.length === 0 || attachments.length > 0) {
-          queueRecovery(text, attachments, quote, submissionContext);
-          return;
-        }
-        void store.sendLiveInput(formatLiveInput(text, quote)).catch(() => {
-          queueRecovery(text, [], quote, submissionContext);
-        });
-        return;
-      }
-      if (store.selectedThread?.runState.status === "running" && attachments.length === 0) {
-        void store.sendLiveInput(formatLiveInput(text, quote)).catch(() => {
-          queueRecovery(text, [], quote, submissionContext);
-        });
+      if (store.selectionLoading || store.selectionError !== null) {
+        queueRecovery(text, attachments, quote, submissionContext);
         return;
       }
       if (turnStartingRef.current) {
@@ -646,7 +662,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
       void (async () => {
         let resolvedThreadId = submissionContext.threadId;
         try {
-          await store.sendTurn(
+          await store.sendSubmission(
             {
               text: text || undefined,
               quote,
@@ -678,7 +694,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
           // exact resolved context and either rehydrate or clean it up.
           attachmentAdapter.recoverSend(attachments);
           queueRecovery(text, attachments, quote, recoveryContext);
-          // sendTurn owns the visible action error. assistant-ui does not await
+          // sendSubmission owns the visible action error. assistant-ui does not await
           // onNew, so containing the rejection here prevents an unhandled task.
         } finally {
           turnStartingRef.current = false;
@@ -704,7 +720,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   // moves, and these never change.
   const threadListActions = useMemo(() => ({
     onSwitchToNewThread: async () => {
-      if (!storeRef.current.selectedAgent) return;
+      if (!storeRef.current.selectedAgent
+        || storeRef.current.selectionLoading
+        || storeRef.current.selectionError !== null) return;
       await storeRef.current.createThread().catch(() => undefined);
     },
     onSwitchToThread: (threadId: string) => storeRef.current.selectThread(threadId),
@@ -725,7 +743,7 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   const threadList = useMemo(
     () => ({
       threadId: store.selectedThreadId ?? undefined,
-      isLoading: store.loading,
+      isLoading: store.loading || store.selectionLoading,
       threads: store.threads
         .filter(
           (thread) => thread.sourceId === store.selectedAgentId && !thread.archivedAt,
@@ -750,15 +768,22 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
         })),
       ...threadListActions,
     }),
-    [store.loading, store.selectedAgentId, store.selectedThreadId, store.threads, threadListActions],
+    [
+      store.loading,
+      store.selectedAgentId,
+      store.selectedThreadId,
+      store.selectionLoading,
+      store.threads,
+      threadListActions,
+    ],
   );
 
-  const selectedCanSend = canSendInConsole(
+  const selectedCanSend = store.selectionError === null && !store.selectionLoading && canSendInConsole(
     store.connection,
     store.selectedAgent,
     store.selectedThread,
   );
-  const selectedCanUpload = canUploadInConsole(
+  const selectedCanUpload = store.selectionError === null && !store.selectionLoading && canUploadInConsole(
     store.connection,
     store.selectedAgent,
     store.selectedThread,
@@ -767,11 +792,9 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
   const submissionQueue = useMemo<ExternalThreadQueueAdapter | undefined>(
     () => store.selectedThread !== null && store.selectedThread.trigger?.kind !== "cron"
       ? {
-          // The web service owns persisted live-input and fallback queue state.
-          // Exposing this for every existing interactive conversation lets
-          // assistant-ui carry explicit `{ steer: true }` intent even when the
-          // browser's displayed run state is stale. Ordinary sends still pass
-          // `{ steer: false }` and retain their existing routing below.
+          // The web service owns the one server-authoritative submission path.
+          // Browser run state affects presentation only; every composer action
+          // enters through `onNew` and the server chooses live input or a turn.
           items: [],
           enqueue: (message, options) => { void onNew(message, options); },
           steer: () => undefined,
@@ -782,25 +805,54 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     [onNew, store.selectedThread],
   );
 
-  const messages = useMemo(
-    () => coalesceMonitorWakeMessages((store.detail?.messages ?? []).filter((message) =>
-      !isLegacySilentCronMessage(message)
-      && !(message.role === "assistant" && message.status === "complete"
-        && message.attachments.length === 0 && convertWebMessage(message).content?.length === 0))),
-    [store.detail?.messages],
+  const presentation = useMemo(
+    () => projectProcessJobPresentation(
+      coalesceMonitorWakeMessages(
+        (store.detail?.messages ?? []).map((message) => {
+          const transitions = store.detail?.projectTransitions?.filter((item) => item.afterMessageId === message.id) ?? [];
+          const routeChanges = store.detail?.modelTransitions?.filter((item) => item.afterMessageId === message.id) ?? [];
+          return transitions.length === 0 && routeChanges.length === 0
+            ? message
+            : {
+                ...message,
+                ...(transitions.length === 0 ? {} : { projectTransitions: transitions }),
+                ...(routeChanges.length === 0 ? {} : { modelTransitions: routeChanges }),
+              };
+        }).filter((message) =>
+          !isLegacySilentCronMessage(message)
+          && !(message.role === "assistant" && message.status === "complete"
+            && message.attachments.length === 0
+            && !message.parts.some((part) => part.type === "process-job-wake" || part.type === "steer")
+            && (message.projectTransitions?.length ?? 0) === 0
+            && (message.modelTransitions?.length ?? 0) === 0
+            && convertWebMessage(message).content?.length === 0)),
+      ),
+      { selectedModel: store.effectiveModel, threadId: store.selectedThreadId },
+    ),
+    [
+      store.detail?.messages,
+      store.detail?.modelTransitions,
+      store.detail?.projectTransitions,
+      store.effectiveModel,
+      store.selectedThreadId,
+    ],
   );
   // Changing the selected model deliberately gives assistant-ui a new converter,
   // which reconverts every loaded message so its transient attribution visibility
   // stays current. Message ids survive that accepted full-cache refresh, so rows
   // update in place rather than remounting.
   const convertMessage = useCallback(
-    (message: WebMessage) => convertWebMessage(message, { selectedModel: store.effectiveModel }),
-    [store.effectiveModel],
+    (message: WebMessage) => convertWebMessage(message, {
+      selectedModel: store.effectiveModel,
+      processJobEvents: presentation.eventsByMessageId.get(message.id),
+      processJobs: presentation.jobsById,
+    }),
+    [presentation.eventsByMessageId, presentation.jobsById, store.effectiveModel],
   );
   const runtime = useExternalStoreRuntime<WebMessage>({
-    messages,
+    messages: presentation.messages,
     convertMessage,
-    isLoading: store.detailLoading,
+    isLoading: store.selectionLoading || store.detailLoading,
     isRunning,
     isSendDisabled: !selectedCanSend || turnStarting,
     onNew,
@@ -878,13 +930,32 @@ export function WebRuntimeProvider({ children }: { readonly children: ReactNode 
     })();
   }, [attachmentAdapter, recoveries, runtime, selectedCanUpload, turnStarting]);
 
+  // A detail can lag behind a selection during navigation. Never lend its
+  // transcript another agent's model scale, including a same-ID local model.
+  const transcriptThread = store.detail?.thread;
+  const routeOwner = transcriptThread && transcriptThread.id === store.selectedThreadId
+    ? store.agents.find((agent) => agent.sourceId === transcriptThread.sourceId) ?? null
+    : null;
+
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <ToolCallRepairProvider repair={store.loadFullToolCall}>
-        <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
-          {children}
-        </ReplyAccessProvider>
-      </ToolCallRepairProvider>
-    </AssistantRuntimeProvider>
+    <ProcessJobPresentationProvider
+      threadId={store.selectedThreadId}
+      messages={presentation.messages}
+      jobs={presentation.jobs}
+      historyIsBounded={store.hasOlderMessages}
+    >
+      <AssistantRuntimeProvider runtime={runtime}>
+        <ToolCallRepairProvider repair={store.loadFullToolCall}>
+          <RouteCapabilitiesProvider
+            agent={routeOwner}
+            catalogByProvider={routeOwner?.sourceId === store.selectedAgentId ? store.catalogByProvider : undefined}
+          >
+            <ReplyAccessProvider refreshAttachment={store.refreshReplyAttachmentAccess}>
+              {children}
+            </ReplyAccessProvider>
+          </RouteCapabilitiesProvider>
+        </ToolCallRepairProvider>
+      </AssistantRuntimeProvider>
+    </ProcessJobPresentationProvider>
   );
 }

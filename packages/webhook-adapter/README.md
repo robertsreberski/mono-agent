@@ -111,6 +111,54 @@ curl -X POST "$WEBHOOK_URL/webhook/invoke" \
 
 Async mode returns `202` with `requestId` and `statusUrl`; status is process-local memory and is not durable across restarts.
 
+### Audio input (Apple Shortcuts)
+
+An invoke route also accepts a recorded audio file (e.g. Apple's Record Audio
+`m4a`) as an ordinary `document` `AgentAttachment`, so an agent with a
+transcribe tool (an MCP request-context server such as the transcription
+agent's `transcribe`) can work on the file — the same path Telegram voice
+notes take. The adapter never transcribes: it only ingests bytes. Your agent
+needs such a tool to understand the audio.
+
+Two inbound formats, in addition to JSON (`text` stays required there):
+
+- `multipart/form-data`: exactly one file part under the `audio` or `file`
+  field, plus the usual text fields (`text`, `conversationId`, `mode`,
+  `model`, `effort`; `metadata` may be a JSON string field and must parse).
+  `text` is optional when the file is present.
+- Raw `audio/*` body: the whole body is the file; optional params ride the
+  query string (`text`, `conversationId`, `mode`, `model`, `effort`) and the
+  `X-File-Name` header (or `name` query param) gives the filename.
+
+```bash
+# Raw body (Shortcuts "Get Contents of URL" with Request Body: File).
+curl -X POST "$WEBHOOK_URL/webhook/invoke?mode=sync" \
+  -H 'content-type: audio/x-m4a' \
+  -H "authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY" \
+  --data-binary @note.m4a
+
+# Multipart (Shortcuts "Get Contents of URL" with Request Body: Form).
+curl -X POST "$WEBHOOK_URL/webhook/invoke" \
+  -H "authorization: Bearer $MONO_AGENT_WEBHOOK_API_KEY" \
+  -F 'audio=@note.m4a;type=audio/x-m4a' -F 'mode=sync'
+```
+
+Apple encoder aliases are normalized (`audio/x-m4a` and `audio/m4a` →
+`audio/mp4`, `audio/x-wav` → `audio/wav`, `audio/mp3` → `audio/mpeg`);
+anything outside the audio allowlist is rejected with HTTP `415`, empty files
+with `400`, and uploads past `webhook.maxAttachmentBytes` (default 20 MiB via
+`MONO_AGENT_WEBHOOK_MAX_ATTACHMENT_BYTES`) with `413`. Without `text` the
+user message is the endpoint `prompt`, or `Voice message attached.` when the
+endpoint has none. Sync and async responses are unchanged, and the audio bytes
+never appear in status JSON or metadata — only `hasAttachments` /
+`attachmentCount`.
+
+Shortcuts recipe: **Record Audio** → **Get Contents of URL** (`POST` the
+invoke URL, header `Authorization: Bearer <key>`, Request Body: File for the
+raw format or Form with an `audio` file field plus `mode=sync` for
+multipart) → **Get Dictionary Value** `text` → **Show Result** (or Speak
+Text).
+
 ### HTTP status contract
 
 | Route outcome | HTTP status | JSON `status` | Stored for status lookup? |
@@ -124,9 +172,12 @@ Async mode returns `202` with `requestId` and `statusUrl`; status is process-loc
 | Unknown or expired request id | `404` | `not_found` | No. |
 | Missing or invalid configured bearer | `401` | `unauthorized` | No. |
 | Invalid JSON/request shape | `400` | `failed` | No. |
+| Empty audio upload, malformed multipart, or unparsable multipart `metadata` | `400` | `failed` | No. |
+| Audio upload past `webhook.maxAttachmentBytes` | `413` | `failed` | No. |
+| Non-audio upload (multipart file or `audio/*` outside the allowlist) | `415` | `failed` | No. |
 | Adapter stopping before admission | `503` | `failed` | No. |
 
-`apiKey` is optional for loopback-only use. When configured, every invocation and async status lookup requires `Authorization: Bearer <key>`; authentication runs before invocation-body parsing, so malformed, missing, and incorrect credentials receive the same `401` response without decoding the JSON body. Any non-loopback bind requires both `allowNonLoopback: true` and a non-empty key. Host config reads the key from `webhook.apiKey` / `MONO_AGENT_WEBHOOK_API_KEY`, redacts it from config views, and should normally keep it in the environment rather than committed JSON.
+`apiKey` is optional for loopback-only use. When configured, every invocation and async status lookup requires `Authorization: Bearer <key>`; authentication runs before invocation-body parsing, so malformed, missing, and incorrect credentials receive the same `401` response without decoding the JSON or audio body. Any non-loopback bind requires both `allowNonLoopback: true` and a non-empty key. Host config reads the key from `webhook.apiKey` / `MONO_AGENT_WEBHOOK_API_KEY`, redacts it from config views, and should normally keep it in the environment rather than committed JSON.
 
 Webhook response metadata contains channel-safe run diagnostics such as the run id and status. Compiled system prompts are retained only in local run artifacts and are never returned by this external HTTP API. As defense in depth, the adapter removes `metadata.summary.systemPrompt` even when a custom responder supplies it; sibling summary fields and unrelated metadata are preserved.
 

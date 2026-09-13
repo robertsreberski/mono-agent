@@ -158,8 +158,9 @@ headers automatically:
 The session value is the raw internal provider-session identity. It is not a
 Telegram chat id, Slack channel id, web thread id, cron id, or other channel
 conversation id. Continuous conversations reuse it across turns and rotate it
-after a session reset or invalidation. Per-message, isolated, model-override, and
-otherwise unkeyed direct runtime calls use a fresh one-shot identity.
+after a session reset, invalidation, or requested-primary model change. A stable
+model override reuses the continuous conversation identity. Per-message, isolated,
+and otherwise unkeyed direct runtime calls use a fresh one-shot identity.
 
 Existing auth, model, and request headers win case-insensitively; an explicit
 `null` suppresses the automatic value, and a caller header transform can replace
@@ -189,3 +190,7 @@ export MONO_AGENT_PROVIDERS_JSON='{"ollama": {"type": "ollama"}, "piAuthPath": "
 - [Local providers](/runtime/local-providers/) — the full local-provider and env reference for self-hosted endpoints.
 - [Fallback & failover](/runtime/fallback/) — ordered backup routes using the same providers.
 - [Environment variables](/config/env-vars/) — `MONO_AGENT_PROVIDERS_JSON` and friends.
+
+## Prompt-cache diagnostics
+
+`providers.piNative.promptCacheDiagnostics` (default `false`; env `MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`) enables metadata-only request fingerprints in existing run artifacts. It never emits prompt text, tool arguments, raw cache keys, endpoints or credentials. See [Prompt-cache measurement](/runtime/prompt-cache-measurement/) for the artifact reader.

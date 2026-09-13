@@ -139,11 +139,21 @@ request further. Quota, output-token, and max-turn failures remain
 does not trigger failover. Mid-turn sandbox/safety failures are terminal because
 retrying them on another provider could weaken the established contract.
 
-Any configured fallback chain is stateless across provider sessions. The harness
-keeps the logical conversation replayable, strips route-owned session ids, and
-uses a bounded transcript-tail snapshot when moving between attempts. This avoids
-attaching one provider's session token to another provider or accumulating nested
-resume blocks across a long chain.
+The primary's first attempt owns the provider session. Retries and failovers run
+stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+any answer from a retry or backup retires the primary epoch. The next turn
+cold-reseeds from canonical history; after a primary first-attempt success,
+subsequent turns resume the new session and are eligible for provider caching.
+
+On a warm turn whose primary attempt fails, the retry or backup attempt runs
+stateless with the current message and a bounded snapshot of the failed attempt,
+without the earlier conversation; the next turn reseeds from canonical history.
+
+Provider attribution remains stable across attempts, but the router withholds the
+resumable result id from successful retries and backups so the harness cannot
+synchronize an untouched or failed primary transcript. Fresh stateless Pi calls
+use a private in-memory repository; they do not create a second durable session
+with the primary's attribution id.
 
 The runtime result includes `failoverHistory`. An
 exhausted chain reports `provider_unavailable_exhausted` with per-attempt models,

@@ -62,7 +62,132 @@ function agent(sourceId = "agent-one", supportsAttachments = true): WebAgentSumm
   };
 }
 
+/**
+ * How many statements one read asks the connection to RUN.
+ *
+ * Count what the connection is actually asked to run, not what it is asked to
+ * compile: a reader that prepares once and executes per row is the shape a
+ * listing is not allowed to have.
+ */
+function measureStatements<T>(store: WebStore, read: () => T): { statements: number; value: T } {
+  let statements = 0;
+  const holder = store as unknown as { database: DatabaseSync };
+  const real = holder.database;
+  holder.database = new Proxy(real, {
+    get(target, property) {
+      const value = Reflect.get(target, property) as unknown;
+      if (typeof value !== "function") return value;
+      if (property !== "prepare") return value.bind(target);
+      return (sql: string) => {
+        const statement = (value as (text: string) => object).call(target, sql);
+        return new Proxy(statement, {
+          get(inner, method) {
+            const run = Reflect.get(inner, method) as unknown;
+            if (typeof run !== "function") return run;
+            return (...args: unknown[]) => {
+              if (method === "get" || method === "all" || method === "run" || method === "iterate") {
+                statements += 1;
+              }
+              return (run as (...values: unknown[]) => unknown).apply(inner, args);
+            };
+          },
+        });
+      };
+    },
+  }) as DatabaseSync;
+  try {
+    // Read FIRST: a count taken in the same object literal as the call that
+    // moves it is taken before that call, and proves nothing.
+    const value = read();
+    return { statements, value };
+  } finally {
+    holder.database = real;
+  }
+}
+
 describe("WebStore", () => {
+  it("scopes chats before pagination and search while retaining webhook conversations", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+    const chats = Array.from({ length: 3 }, (_, index) => {
+      const row = store.createThread("agent-one");
+      return store.patchThread(row.id, { title: `scopedmatch chat ${String(index)}` });
+    });
+    const webhook = store.completeNotification(store.reserveNotification({
+      sourceId: "agent-one",
+      deliveryKey: "scoped-webhook",
+      triggerKind: "webhook",
+      text: "scopedmatch webhook result",
+    })).thread!;
+    store.syncCronOverview({
+      sourceId: "agent-one",
+      generatedAt: new Date(clockMs).toISOString(),
+      actionsEnabled: true,
+      jobs: Array.from({ length: 51 }, (_, index) => ({
+        jobId: `scopedmatch-cron-${String(index).padStart(2, "0")}`,
+        expression: "0 * * * *",
+        timezone: "UTC",
+        conversationId: `cron:scoped-${String(index)}`,
+        configured: true,
+        declaredEnabled: true,
+        effectiveEnabled: true,
+        health: "healthy" as const,
+      })),
+    });
+
+    // More than one ordinary page of newer cron channels must not consume the
+    // chat page's LIMIT or cursor window.
+    const first = store.listThreadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      limit: 2,
+      scope: "chats",
+    });
+    expect(first.threads.map((thread) => thread.trigger?.kind ?? "chat"))
+      .toEqual(["webhook", "chat"]);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const second = store.listThreadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      limit: 2,
+      before: first.nextCursor!,
+      scope: "chats",
+    });
+    expect([...first.threads, ...second.threads].map((thread) => thread.id))
+      .toEqual([webhook.id, ...chats.map((thread) => thread.id).reverse()]);
+    expect([...first.threads, ...second.threads].some((thread) => thread.trigger?.kind === "cron"))
+      .toBe(false);
+
+    const mixed = store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 1 });
+    expect(mixed.threads[0]?.trigger?.kind).toBe("cron");
+    expect(() => store.listThreadsPage({
+      sourceId: "agent-one",
+      archived: false,
+      before: mixed.nextCursor!,
+      scope: "chats",
+    })).toThrowError(expect.objectContaining({ code: "invalid_page" }));
+
+    const hits = store.searchThreads({
+      sourceId: "agent-one",
+      query: "scopedmatch",
+      scope: "chats",
+    }).hits;
+    expect(hits.map((hit) => hit.thread.id).sort())
+      .toEqual([webhook.id, ...chats.map((thread) => thread.id)].sort());
+    expect(hits.find((hit) => hit.thread.id === webhook.id)?.thread.trigger?.kind).toBe("webhook");
+    expect(hits.some((hit) => hit.thread.trigger?.kind === "cron")).toBe(false);
+    const mixedHits = store.searchThreads({ sourceId: "agent-one", query: "scopedmatch" }).hits;
+    expect(mixedHits).toHaveLength(WEB_THREAD_SEARCH_MAX);
+    expect(mixedHits.some((hit) => hit.thread.trigger?.kind === "cron")).toBe(true);
+    store.close();
+  });
+
   it("persists the provider-auth capability in agent projections", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -791,7 +916,117 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("projects synthetic steering events as one completed Steered tool row", async () => {
+  it("projects an applied human steer as one inline marker, not a Steered tool row", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const reserved = store.reserveLiveInput(
+      thread.id,
+      "Use the API instead",
+      { text: "the sync approach", messageId: turn.userMessageId },
+    );
+    expect(reserved.offered).toBe(true);
+    // The host settlement deletes the `live_inputs` row, so the stream receipt
+    // below resolves through the user message's own telemetry marker.
+    expect(store.markLiveInputApplied(reserved.input.id)?.liveInputStatus).toBe("applied");
+
+    const steerEvent = (type: "tool_call_started" | "tool_call_completed") => ({
+      kind: "event" as const,
+      event: {
+        type,
+        id: `live-input:${reserved.input.id}`,
+        name: "↪️ Steered: “Use the API instead”",
+        ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
+        metadata: {
+          liveInput: true,
+          synthetic: true,
+          inputId: reserved.input.id,
+          receivedAt: "2026-09-12T10:00:01.000Z",
+        },
+      },
+    });
+    const frames = [steerEvent("tool_call_started"), steerEvent("tool_call_completed")];
+    store.applyStreamFrames(turn.turnId, frames as never);
+    // A replayed receipt must not duplicate the marker.
+    store.applyStreamFrames(turn.turnId, frames as never);
+    const detail = store.completeTurn(turn.turnId, "done");
+    const assistant = detail.messages.at(-1);
+    expect(assistant?.parts.filter((part) => part.type === "tool-call")).toEqual([]);
+    expect(assistant?.parts).toContainEqual({
+      type: "steer",
+      inputId: reserved.input.id,
+      messageId: reserved.message.id,
+      text: "Use the API instead",
+      receivedAt: "2026-09-12T10:00:01.000Z",
+      quote: { text: "the sync approach", messageId: turn.userMessageId },
+    });
+    // The steered user row keeps its standalone identity for search and quotes.
+    expect(detail.messages.find((message) => message.id === reserved.message.id)).toMatchObject({
+      role: "user",
+      liveInputStatus: "applied",
+    });
+    store.close();
+  });
+
+  it("projects two applied steers in one turn as two markers at their own consumption points", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "start", attachmentIds: [] });
+    const first = store.reserveLiveInput(thread.id, "Use the API instead");
+    const second = store.reserveLiveInput(thread.id, "And keep the retry budget");
+    expect(first.offered && second.offered).toBe(true);
+    expect(store.markLiveInputApplied(first.input.id)?.liveInputStatus).toBe("applied");
+    expect(store.markLiveInputApplied(second.input.id)?.liveInputStatus).toBe("applied");
+
+    const steerFrames = (inputId: string, text: string, receivedAt: string) =>
+      (["tool_call_started", "tool_call_completed"] as const).map((type) => ({
+        kind: "event" as const,
+        event: {
+          type,
+          id: `live-input:${inputId}`,
+          name: `↪️ Steered: “${text}”`,
+          ...(type === "tool_call_completed" ? { content: "Applied to current run" } : {}),
+          metadata: { liveInput: true, synthetic: true, inputId, receivedAt },
+        },
+      }));
+    const tool = (id: string) => [
+      { kind: "event" as const, event: { type: "tool_call_started" as const, id, name: "Read", arguments: {} } },
+      { kind: "event" as const, event: { type: "tool_call_completed" as const, id, name: "Read", content: "ok" } },
+    ];
+    store.applyStreamFrames(turn.turnId, [
+      ...tool("tool-1"),
+      ...steerFrames(first.input.id, "Use the API instead", "2026-09-12T10:00:01.000Z"),
+      ...tool("tool-2"),
+      ...steerFrames(second.input.id, "And keep the retry budget", "2026-09-12T10:00:02.000Z"),
+      ...tool("tool-3"),
+    ] as never);
+    const detail = store.completeTurn(turn.turnId, "done");
+    const assistant = detail.messages.at(-1);
+    // Each steer lands between the work before and after it; no Steered rows remain.
+    expect(assistant?.parts.map((part) => part.type === "tool-call" ? part.toolCallId : part.type)).toEqual([
+      "tool-1", "steer", "tool-2", "steer", "tool-3", "text",
+    ]);
+    expect(assistant?.parts.filter((part) => part.type === "steer")).toEqual([
+      expect.objectContaining({ inputId: first.input.id, messageId: first.message.id, text: "Use the API instead" }),
+      expect.objectContaining({ inputId: second.input.id, messageId: second.message.id, text: "And keep the retry budget" }),
+    ]);
+    // Both user rows keep their standalone identity, each applied.
+    for (const reserved of [first, second]) {
+      expect(detail.messages.find((message) => message.id === reserved.message.id)).toMatchObject({
+        role: "user",
+        liveInputStatus: "applied",
+      });
+    }
+    store.close();
+  });
+
+  it("keeps a synthetic steering row without an inputId as a completed Steered tool row", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -969,6 +1204,52 @@ describe("WebStore", () => {
     store.close();
   });
 
+  it.each(["complete", "failed", "cancelled", "interrupted"] as const)(
+    "persists a process-job start receipt only on its %s launching assistant response",
+    async (status) => {
+      const base = await temporaryRoot();
+      cleanup.push(base);
+      const stateDir = join(base, "state");
+      const store = await WebStore.open({ stateDir });
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      store.selectThread(thread.id);
+      const turn = store.beginTurn({ threadId: thread.id, text: "run it", attachmentIds: [] });
+      const receipt = {
+        schema: "mono-agent.process-job-start-receipt.v1",
+        jobId: "job-1",
+        tool: "Exec",
+        state: "running",
+        startedAt: "2026-09-08T10:00:00.000Z",
+      } as const;
+      store.applyStreamFrames(turn.turnId, [
+        { kind: "event", event: { type: "tool_call_started", id: "launch-1", name: "Exec", arguments: {} } },
+        { kind: "event", event: { type: "tool_call_completed", id: "launch-1", name: "Exec", content: "Background process job started.", structuredContent: receipt } },
+      ]);
+      const finished = status === "complete"
+        ? store.completeTurn(turn.turnId, "started")
+        : status === "interrupted"
+          ? store.interruptTurn(turn.turnId)
+          : store.failTurn(turn.turnId, { message: status, cancelled: status === "cancelled" });
+      expect(finished.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({
+        type: "tool-call",
+        toolCallId: "launch-1",
+        structuredResult: receipt,
+      }));
+      expect(finished.messages.filter((entry) => entry.role === "user").some((entry) =>
+        entry.parts.some((part) => part.type === "tool-call" && part.structuredResult !== undefined))).toBe(false);
+      store.close();
+
+      const reopened = await WebStore.open({ stateDir });
+      expect(reopened.getThreadDetail(thread.id)?.messages.at(-1)?.parts).toContainEqual(expect.objectContaining({
+        type: "tool-call",
+        toolCallId: "launch-1",
+        structuredResult: receipt,
+      }));
+      reopened.close();
+    },
+  );
+
   it("omits structuredResult when the tool returned no structured payload", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -1048,7 +1329,60 @@ describe("WebStore", () => {
     await expect(store.deleteArchivedThread(used.id, { emptyOnly: true }))
       .rejects.toMatchObject({ code: "thread_not_empty" });
     expect(store.getThread(used.id)).toBeDefined();
+
+    const ledgerOnly = store.createThread("agent-one");
+    store.claimWebSubmission({
+      threadId: ledgerOnly.id,
+      submissionId: "11111111-1111-4111-8111-111111111111",
+      payloadSha256: "a".repeat(64),
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    });
+    store.patchThread(ledgerOnly.id, { archived: true });
+    await expect(store.deleteArchivedThread(ledgerOnly.id, { emptyOnly: true }))
+      .rejects.toMatchObject({ code: "thread_not_empty" });
+    await expect(store.deleteArchivedThread(ledgerOnly.id)).resolves.toEqual({ orphanedFiles: 0 });
+    expect(store.getThread(ledgerOnly.id)).toBeUndefined();
     store.close();
+  });
+
+  it("reopens and replays a durable submission ledger entry without recreating it", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    const payloadSha256 = "a".repeat(64);
+    expect(store.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      create: () => ({ outcome: "rejected", reason: "active_attachments_unsupported" }),
+    })).toMatchObject({ created: true });
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.webSubmission(thread.id, submissionId)).toEqual({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+    expect(reopened.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256,
+      create: () => { throw new Error("must not recreate"); },
+    })).toMatchObject({ created: false });
+    expect(() => reopened.claimWebSubmission({
+      threadId: thread.id,
+      submissionId,
+      payloadSha256: "b".repeat(64),
+      create: () => ({ outcome: "turn" }),
+    })).toThrowError(expect.objectContaining({ code: "submission_conflict" }));
+    reopened.close();
   });
 
   it("enforces one active turn per thread while allowing parallel threads", async () => {
@@ -1065,7 +1399,7 @@ describe("WebStore", () => {
     store.close();
   });
 
-  it("persists live follow-ups on the active turn and marks provider acknowledgement", async () => {
+  it("persists live follow-ups on the active turn and records proven consumption", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
     const store = await WebStore.open({ stateDir: join(base, "state") });
@@ -1099,6 +1433,33 @@ describe("WebStore", () => {
       ["assistant", undefined],
     ]);
     store.close();
+  });
+
+  it("keeps a quoted follow-up's quote across every live-input settlement", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Initial request", attachmentIds: [] });
+    const quote = { text: "the sync approach", messageId: turn.userMessageId };
+
+    const applied = store.reserveLiveInput(thread.id, "Applied steer", quote);
+    const queued = store.reserveLiveInput(thread.id, "Queued steer", quote);
+    expect(store.markLiveInputApplied(applied.input.id)).toMatchObject({
+      liveInputStatus: "applied",
+      quote,
+    });
+    expect(store.queueLiveInput(queued.input.id)).toMatchObject({
+      liveInputStatus: "queued",
+      quote,
+    });
+    // A reopened store reads the same durable quote back, not a stripped row.
+    store.close();
+    const reopened = await WebStore.open({ stateDir: join(base, "state") });
+    expect(reopened.getMessage(applied.message.id)).toMatchObject({ quote });
+    expect(reopened.getMessage(queued.message.id)).toMatchObject({ quote });
+    reopened.close();
   });
 
   it("promotes a queued follow-up with the idle thread's captured route", async () => {
@@ -1173,6 +1534,65 @@ describe("WebStore", () => {
       .toMatchObject({ liveInputStatus: "queued", parts: [{ type: "text", text: "Do not lose this" }] });
     expect(reopened.queuedLiveInputThreadIds()).toEqual([thread.id]);
     reopened.close();
+  });
+
+  it("recovers a dispatch-marked follow-up as uncertain without promotion", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Still running", attachmentIds: [] });
+    const live = store.reserveLiveInput(thread.id, "Maybe delivered");
+    expect(store.markLiveInputDispatchStarted(live.input.id, "wrong-turn")).toBe(false);
+    expect(store.markLiveInputDispatchStarted(live.input.id, turn.turnId)).toBe(true);
+    expect(store.markLiveInputDispatchStarted(live.input.id, turn.turnId)).toBe(false);
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getThreadDetail(thread.id)?.messages.find((message) => message.id === live.message.id))
+      .toMatchObject({ liveInputStatus: "uncertain", parts: [{ type: "text", text: "Maybe delivered" }] });
+    expect(reopened.queuedLiveInputThreadIds()).toEqual([]);
+    reopened.close();
+  });
+
+  it("clears a dispatch marker only in the proved-safe requeue transaction", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Still running", attachmentIds: [] });
+    const live = store.reserveLiveInput(thread.id, "Safely removed");
+    expect(store.markLiveInputDispatchStarted(live.input.id, turn.turnId)).toBe(true);
+    expect(store.queueLiveInput(live.input.id)?.liveInputStatus).toBe("queued");
+    store.close();
+
+    const reopened = await WebStore.open({ stateDir });
+    expect(reopened.getMessage(live.message.id)?.liveInputStatus).toBe("queued");
+    expect(reopened.queuedLiveInputThreadIds()).toEqual([thread.id]);
+    reopened.close();
+  });
+
+  it("cancels unmarked live input but permanently marks dispatch-started input uncertain", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "Still running", attachmentIds: [] });
+    const unmarked = store.reserveLiveInput(thread.id, "Definitely not dispatched");
+    const marked = store.reserveLiveInput(thread.id, "Dispatch may have started");
+    expect(store.markLiveInputDispatchStarted(marked.input.id, turn.turnId)).toBe(true);
+
+    const cancelled = store.cancelLiveInputs(thread.id);
+
+    expect(cancelled.find((message) => message.id === unmarked.message.id)?.liveInputStatus).toBe("cancelled");
+    expect(cancelled.find((message) => message.id === marked.message.id)?.liveInputStatus).toBe("uncertain");
+    expect(store.queuedLiveInputThreadIds()).toEqual([]);
+    store.close();
   });
 
   it("round-trips persisted and deferred canonical history metadata on the same rendered tool record", async () => {
@@ -2000,6 +2420,91 @@ describe("WebStore", () => {
     reopened.close();
   });
 
+  it("lists only the job cards that have not settled, oldest first and bounded", async () => {
+    const stateDir = join(await temporaryRoot(), "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    const thread = store.createThread("agent-one");
+    const otherAgent = store.createThread("agent-two");
+    const card = (sourceId: string, threadId: string, job: ReturnType<typeof fakeProcessJob>) =>
+      store.upsertProcessJobCard({
+        sourceId, threadId, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    const running = fakeProcessJob({
+      state: "running", jobId: "11111111-1111-4111-8111-111111111110",
+      conversationId: "web:" + thread.id,
+    });
+    const queued = fakeProcessJob({
+      state: "queued", jobId: "11111111-1111-4111-8111-111111111111",
+      conversationId: "web:" + thread.id,
+    });
+    const settled = fakeProcessJob({
+      state: "succeeded", jobId: "11111111-1111-4111-8111-111111111112",
+      conversationId: "web:" + thread.id,
+    });
+    card("agent-one", thread.id, running);
+    card("agent-one", thread.id, queued);
+    card("agent-one", thread.id, settled);
+    card("agent-two", otherAgent.id, fakeProcessJob({
+      state: "running", jobId: "11111111-1111-4111-8111-111111111113",
+      conversationId: "web:" + otherAgent.id,
+    }));
+
+    const unsettled = store.listUnsettledProcessJobCards("agent-one", 10);
+    // Only this agent's, only the ones still claiming to run, and each carries
+    // the projection and the delivery key a re-ask has to preserve.
+    expect(unsettled.map((item) => item.jobId)).toEqual([running.jobId, queued.jobId]);
+    expect(unsettled[0]).toMatchObject({
+      threadId: thread.id,
+      deliveryKey: running.wake.deliveryKey,
+      job: { state: "running", jobId: running.jobId },
+    });
+    expect(store.listUnsettledProcessJobCards("agent-one", 1).map((item) => item.jobId))
+      .toEqual([running.jobId]);
+
+    // Settling one takes it out of the set, which is how a bounded sweep gets
+    // through more than its limit over successive passes.
+    card("agent-one", thread.id, fakeProcessJob({
+      state: "cancelled", jobId: running.jobId, conversationId: "web:" + thread.id,
+    }));
+    expect(store.listUnsettledProcessJobCards("agent-one", 10).map((item) => item.jobId))
+      .toEqual([queued.jobId]);
+    store.close();
+  });
+
+  it("resumes an unsettled-card page after the card a previous pass stopped on", async () => {
+    const stateDir = join(await temporaryRoot(), "state");
+    // One frozen instant, so all three cards tie on the timestamp and the
+    // resume has nothing but the job id to break the tie with.
+    const store = await WebStore.open({ stateDir, clock: () => new Date("2026-09-10T10:00:00.000Z") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const jobIds = ["a", "b", "c"].map((suffix) => `11111111-1111-4111-8111-00000000000${suffix}`);
+    for (const jobId of jobIds) {
+      const job = fakeProcessJob({ state: "running", jobId, conversationId: "web:" + thread.id });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    }
+
+    const first = store.listUnsettledProcessJobCards("agent-one", 2);
+    expect(first.map((item) => item.jobId)).toEqual([jobIds[0], jobIds[1]]);
+    // The card carries its own ordering key, so the caller can say where it
+    // stopped without holding the whole page.
+    const after = { updatedAt: first[1]!.updatedAt, jobId: first[1]!.jobId };
+
+    // None of them settled, so an unresumed page would be the same two again.
+    const second = store.listUnsettledProcessJobCards("agent-one", 2, after);
+    expect(second.map((item) => item.jobId)).toEqual([jobIds[2]]);
+    expect(first[1]!.updatedAt).toBe(second[0]!.updatedAt);
+    // Past the end of the set is empty rather than wrapping: wrapping is the
+    // caller's decision, and it has to know it reached the end to make it.
+    expect(store.listUnsettledProcessJobCards("agent-one", 2, {
+      updatedAt: second[0]!.updatedAt, jobId: second[0]!.jobId,
+    })).toEqual([]);
+    store.close();
+  });
+
   it("summarizes jobs across the full thread without loading their output into the listing", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -2462,12 +2967,19 @@ describe("WebStore", () => {
         deliveryKey: processJob.wake.deliveryKey,
       })).toEqual({ kind: "new" });
     }
+    const admitted = store.beginAssistantTurn({
+      threadId: thread.id,
+      prompt: "Process the completed job",
+    });
+    store.associateProcessJobWakeTurn(completed.wake.deliveryKey, admitted.turnId);
     store.completeProcessJobWake({
       sourceId: "agent-one",
       jobId: completed.jobId,
       deliveryKey: completed.wake.deliveryKey,
       disposition: "follow_up",
+      turnId: admitted.turnId,
     });
+    expect(store.turnStatus(admitted.turnId)).toBe("running");
     store.close();
 
     const reopened = await WebStore.open({ stateDir });
@@ -2478,17 +2990,23 @@ describe("WebStore", () => {
       jobId: completed.jobId,
       deliveryKey: completed.wake.deliveryKey,
     })).toEqual({ kind: "completed", disposition: "follow_up" });
+    expect(reopened.turnStatus(admitted.turnId)).toBe("interrupted");
     expect(reopened.reserveProcessJobWake({
       sourceId: "agent-one",
       threadId: thread.id,
       jobId: uncertain.jobId,
       deliveryKey: uncertain.wake.deliveryKey,
     })).toEqual({ kind: "uncertain" });
-    reopened.abandonProcessJobWake({
+    expect(reopened.abandonProcessJobWake({
       sourceId: "agent-one",
       jobId: uncertain.jobId,
       deliveryKey: uncertain.wake.deliveryKey,
-    });
+    })).toBe(true);
+    expect(reopened.abandonProcessJobWake({
+      sourceId: "agent-one",
+      jobId: uncertain.jobId,
+      deliveryKey: uncertain.wake.deliveryKey,
+    })).toBe(false);
     expect(reopened.reserveProcessJobWake({
       sourceId: "agent-one",
       threadId: thread.id,
@@ -2922,7 +3440,7 @@ describe("WebStore", () => {
     initial.close();
 
     const future = new DatabaseSync(databasePath);
-    future.exec("PRAGMA user_version = 22");
+    future.exec(`PRAGMA user_version = ${String(WEB_STORAGE_SCHEMA_VERSION + 1)}`);
     future.close();
     await expect(WebStore.open({ stateDir })).rejects.toMatchObject({ code: "unsupported_storage_schema" });
 
@@ -4683,5 +5201,979 @@ describe("WebStore message sequence and part deltas", () => {
     expect(context.store.getMessage(context.messageId)?.parts.at(-2))
       .toEqual({ type: "text", text: "Exactly one file. Nothing else." });
     context.store.close();
+  });
+
+  it("lists what is running across agents and archive buckets, counted before the cap", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent("agent-one"), agent("agent-two")]);
+
+    // A running foreground turn on the FIRST agent.
+    const turning = store.createThread("agent-one");
+    store.beginTurn({ threadId: turning.id, text: "work", attachmentIds: [] });
+
+    // A job-only conversation on the SECOND agent, which this browser could
+    // never have loaded: no turn has ever run in it.
+    const jobbing = store.createThread("agent-two");
+    const job = fakeProcessJob({ conversationId: `web:${jobbing.id}` });
+    store.upsertProcessJobCard({
+      sourceId: "agent-two", threadId: jobbing.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+    });
+
+    // BOTH at once, and ARCHIVED: one row, and still a member.
+    const both = store.createThread("agent-one");
+    const bothJob = fakeProcessJob({
+      jobId: "33333333-3333-4333-8333-333333333333", conversationId: `web:${both.id}`,
+    });
+    store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: both.id, processJob: bothJob, deliveryKey: bothJob.wake.deliveryKey,
+    });
+    store.beginTurn({ threadId: both.id, text: "also work", attachmentIds: [] });
+    store.patchThread(both.id, { archived: true });
+
+    // A terminal job and a finished turn are not work in flight.
+    const quiet = store.createThread("agent-one");
+    const quietTurn = store.beginTurn({ threadId: quiet.id, text: "done", attachmentIds: [] });
+    store.completeTurn(quietTurn.turnId, "finished");
+    const doneJob = fakeProcessJob({
+      state: "succeeded", jobId: "44444444-4444-4444-8444-444444444444", conversationId: `web:${quiet.id}`,
+    });
+    store.upsertProcessJobCard({
+      sourceId: "agent-one", threadId: quiet.id, processJob: doneJob, deliveryKey: doneJob.wake.deliveryKey,
+    });
+
+    const listed = store.listActiveThreads();
+    expect([...listed.threads].map((thread) => thread.id).sort())
+      .toEqual([both.id, jobbing.id, turning.id].sort());
+    expect(listed.total).toBe(3);
+    expect(listed.truncated).toBe(false);
+    // Newest first, and deterministic between two rows sharing a stamp.
+    expect(listed.threads.map((thread) => thread.updatedAt))
+      .toEqual([...listed.threads].map((thread) => thread.updatedAt).sort().reverse());
+    // A zero for the third agent, which has nothing running: an absent key
+    // cannot be told apart from an agent the listing forgot.
+    store.replaceAgents([agent("agent-one"), agent("agent-two"), agent("agent-three")]);
+    expect(store.listActiveThreads().runningCounts)
+      .toEqual({ "agent-one": 2, "agent-two": 1, "agent-three": 0 });
+
+    // An agent discovery no longer reports has nowhere to be drawn, so its
+    // retained running conversation is neither listed nor counted.
+    store.replaceAgents([agent("agent-one")]);
+    const narrowed = store.listActiveThreads();
+    expect(narrowed.threads.map((thread) => thread.sourceId)).toEqual(["agent-one", "agent-one"]);
+    expect(narrowed.total).toBe(2);
+    expect(narrowed.runningCounts).toEqual({ "agent-one": 2 });
+    store.close();
+  });
+
+  it("reads the running listing in the same number of statements for two cards and fifty", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+
+    // Each pair is one of BOTH kinds of membership: a running foreground turn,
+    // and a settled turn whose conversation is only active because a retained
+    // job is queued. Growing the set by whole pairs keeps the work the listing
+    // has to do the same shape, so a count that still moves moved per row.
+    let jobs = 0;
+    const addPair = (): void => {
+      const running = store.createThread("agent-one");
+      const live = store.beginTurn({ threadId: running.id, text: "work", attachmentIds: [] });
+      store.applyStreamFrames(live.turnId, [
+        { kind: "append", delta: "reading the file" },
+        { kind: "event", event: { type: "tool_call_started", id: `call-${jobs}`, name: "Read" } },
+      ]);
+      const queued = store.createThread("agent-one");
+      const turn = store.beginTurn({ threadId: queued.id, text: "ask", attachmentIds: [] });
+      store.completeTurn(turn.turnId, "answered");
+      jobs += 1;
+      const job = fakeProcessJob({
+        state: "queued",
+        jobId: `${String(jobs).padStart(8, "0")}-1111-4111-8111-111111111111`,
+        conversationId: `web:${queued.id}`,
+      });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: queued.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    };
+
+    const measure = (): { statements: number; listed: ReturnType<WebStore["listActiveThreads"]> } => {
+      const { statements, value } = measureStatements(store, () => store.listActiveThreads());
+      return { statements, listed: value };
+    };
+
+    addPair();
+    const one = measure();
+    for (let index = 1; index < 5; index += 1) addPair();
+    const five = measure();
+    for (let index = 5; index < 25; index += 1) addPair();
+    const full = measure();
+
+    expect(one.listed.threads).toHaveLength(2);
+    expect(five.listed.threads).toHaveLength(10);
+    expect(full.listed.threads).toHaveLength(50);
+    expect(five.statements).toBe(one.statements);
+    expect(full.statements).toBe(one.statements);
+    // The projection is still the whole answer, not a cheaper one: both kinds
+    // of membership, the job activity that put half of them there, and the
+    // bounded activity that belongs only to a running turn.
+    expect(full.listed.total).toBe(50);
+    expect(full.listed.runningCounts).toEqual({ "agent-one": 50 });
+    expect(full.listed.threads.filter((thread) => thread.runState.status === "running")).toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.jobActivity?.queued === 1)).toHaveLength(25);
+    expect(full.listed.threads.every((thread) =>
+      (thread.runState.status === "running") === (thread.runState.activity !== undefined))).toBe(true);
+    // Each card's own newest message, not one thread's read spread over fifty.
+    expect(full.listed.threads.filter((thread) => thread.lastMessagePreview === "reading the file"))
+      .toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.lastMessagePreview === undefined)).toHaveLength(25);
+    expect(full.listed.threads.filter((thread) => thread.runState.activity?.toolCallCount === 1))
+      .toHaveLength(25);
+    store.close();
+  });
+
+  it("reads a silent legacy history in the same number of statements for one card and fifty", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+
+    // The one shape that used to drop this reader back to a thread at a time: a
+    // conversation active only through a retained job, whose whole
+    // prior-outcome window is historical Monitor no-ops. Old rows keep their
+    // raw sentinel bytes and normalize only on read, so nothing but a read of
+    // the parts can tell that those turns said nothing -- and the meaningful
+    // outcome the sidebar has to show sits behind all of them.
+    let cards = 0;
+    const silenced: string[] = [];
+    const addSilentCard = (depth: number): void => {
+      cards += 1;
+      const thread = store.createThread("agent-one");
+      const answered = store.beginTurn({ threadId: thread.id, text: "ask", attachmentIds: [] });
+      store.completeTurn(answered.turnId, "the answer that still stands");
+      const monitor = fakeMonitor({ conversationId: `web:${thread.id}` });
+      for (let index = 0; index < depth; index += 1) {
+        const deliveryKey = `monitor:${monitor.monitorId}:${String(cards)}:${String(index)}`;
+        const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "Host follow-up" });
+        store.reserveMonitorWake({
+          sourceId: "agent-one", threadId: thread.id, monitorId: monitor.monitorId,
+          deliveryKey, payloadSha256: "a".repeat(64), monitor,
+        });
+        store.completeMonitorWake({
+          sourceId: "agent-one", monitorId: monitor.monitorId,
+          deliveryKey, disposition: "follow_up", turnId: wake.turnId,
+        });
+        store.completeTurn(wake.turnId, "NOTHING_TO_REPORT", undefined, undefined, {
+          monitorWakeDeliveryKey: deliveryKey,
+        });
+        silenced.push(wake.assistantMessageId);
+      }
+      const job = fakeProcessJob({
+        state: "queued",
+        jobId: `${String(cards).padStart(8, "0")}-1111-4111-8111-111111111111`,
+        conversationId: `web:${thread.id}`,
+      });
+      store.upsertProcessJobCard({
+        sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey,
+      });
+    };
+
+    // Put the sentinel bytes back the way a store written before normalization
+    // still holds them. A current write strips them, which would make these
+    // turns cheap to reject in SQL and never reach the deep path at all.
+    const restoreHistoricalBytes = (): void => {
+      const raw = new DatabaseSync(store.paths.database);
+      try {
+        const parts = JSON.stringify([{ type: "text", text: "NOTHING_TO_REPORT" }]);
+        const update = raw.prepare("UPDATE messages SET parts_json = ? WHERE id = ?");
+        for (const id of silenced) update.run(parts, id);
+      } finally {
+        raw.close();
+      }
+    };
+
+    addSilentCard(9);
+    restoreHistoricalBytes();
+    const one = measureStatements(store, () => store.listActiveThreads());
+    // The same one card, twice as deep in silence: an eight-turn window used to
+    // be asked again for every further block of no-ops.
+    addSilentCard(17);
+    restoreHistoricalBytes();
+    const deeper = measureStatements(store, () => store.listActiveThreads());
+    for (let index = 2; index < 50; index += 1) addSilentCard(9);
+    restoreHistoricalBytes();
+    const full = measureStatements(store, () => store.listActiveThreads());
+
+    expect(one.value.threads).toHaveLength(1);
+    expect(deeper.value.threads).toHaveLength(2);
+    expect(full.value.threads).toHaveLength(50);
+    // Fifty silent histories cost what one costs, and a history twice as deep
+    // costs the same again: the candidates are read for the whole set down to
+    // the first turn nothing can silence, never a window at a time.
+    expect(deeper.statements).toBe(one.statements);
+    expect(full.statements).toBe(one.statements);
+    // The one card is drawn exactly as it was when it was the only card.
+    const alone = one.value.threads[0];
+    expect(full.value.threads.find((thread) => thread.id === alone?.id)).toEqual(alone);
+    // The outcome is the deep one, and it is each card's own. `null` would mean
+    // the reader gave up behind the window; `undefined` would mean it settled
+    // for the sentinel turn it is standing on.
+    const outcomes = full.value.threads.map((thread) => thread.runState.lastOutcome);
+    expect(outcomes.every((outcome) => outcome?.status === "complete")).toBe(true);
+    expect(new Set(outcomes.map((outcome) => outcome?.finishedAt)).size).toBe(50);
+    // The rest of the projection is the same whole answer as any other listing.
+    expect(full.value.total).toBe(50);
+    expect(full.value.threads.every((thread) => thread.runState.status === "complete")).toBe(true);
+    expect(full.value.threads.filter((thread) => thread.jobActivity?.queued === 1)).toHaveLength(50);
+    store.close();
+  });
+
+  it("caps the running cards at fifty while the counts stay exact", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    let clockMs = Date.parse("2026-09-10T08:00:00.000Z");
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clockMs += 1_000),
+    });
+    store.replaceAgents([agent()]);
+    const created = Array.from({ length: 53 }, () => {
+      const thread = store.createThread("agent-one");
+      store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      return thread.id;
+    });
+
+    const listed = store.listActiveThreads();
+    expect(listed.threads).toHaveLength(50);
+    expect(listed.total).toBe(53);
+    expect(listed.truncated).toBe(true);
+    expect(listed.runningCounts).toEqual({ "agent-one": 53 });
+    // The cards are the NEWEST fifty, not the first fifty the store happened to
+    // scan: the three oldest are the ones cut.
+    expect(listed.threads.map((thread) => thread.id)).toEqual([...created].reverse().slice(0, 50));
+    store.close();
+  });
+
+  it("projects bounded activity onto a running turn and nothing onto a settled one", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "run", attachmentIds: [] });
+
+    expect(store.getThread(thread.id)?.runState.activity)
+      .toEqual({ toolCallCount: 0, phase: "working" });
+
+    const frames: AgentStreamWireFrame[] = [
+      { kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Read" } },
+      { kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Read", content: "ok" } },
+      // The SAME call progressing is still one call.
+      { kind: "event", event: { type: "tool_call_started", id: "call-2", name: "Exec" } },
+      { kind: "event", event: { type: "tool_call_progress", id: "call-2", name: "Exec", partialResult: "half" } },
+      // A delegation and its child: the group owns both, so neither counts.
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started", id: "agent-1", name: "Agent",
+          metadata: { subagent: { id: "agent-1", name: "researcher" }, subagentLifecycle: true },
+        },
+      },
+      {
+        kind: "event",
+        event: {
+          type: "tool_call_started", id: "child-1", name: "Grep",
+          metadata: { subagent: { id: "agent-1", name: "researcher" } },
+        },
+      },
+      { kind: "append", delta: "thinking out loud" },
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: 2.44 } },
+    ];
+    store.applyStreamFrames(turn.turnId, frames);
+    expect(store.getThread(thread.id)?.runState.activity)
+      .toEqual({ toolCallCount: 2, phase: "working", cumulativeUsd: 2.44 });
+
+    // However the runtime qualified the name, a RUNNING AskUser is the phase.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "ask-1", name: "mcp__host__ask_user" } },
+    ]);
+    expect(store.getThread(thread.id)?.runState.activity)
+      .toMatchObject({ toolCallCount: 3, phase: "asking" });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "ask-1", name: "mcp__host__ask_user", content: "yes" } },
+    ]);
+    expect(store.getThread(thread.id)?.runState.activity).toMatchObject({ phase: "working" });
+
+    // A price that is not a finite non-negative number is not "this run cost
+    // nothing", so the last good reading stands and no zero is invented.
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: Number.NaN } },
+    ]);
+    expect(store.getThread(thread.id)?.runState.activity?.cumulativeUsd).toBe(2.44);
+
+    store.completeTurn(turn.turnId, "done");
+    expect(store.getThread(thread.id)?.runState.status).toBe("complete");
+    expect(store.getThread(thread.id)?.runState.activity).toBeUndefined();
+    store.close();
+  });
+
+  it("reports an activity change only when the projection moved, never per text delta", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: thread.id, text: "run", attachmentIds: [] });
+
+    expect(store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: "Reading" }]).activityChanged)
+      .toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [{ kind: "append", delta: " the file." }]).activityChanged)
+      .toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_started", id: "call-1", name: "Read" } },
+    ]).activityChanged).toBe(true);
+    // Completing a call this projection already counted moves nothing it draws.
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "tool_call_completed", id: "call-1", name: "Read", content: "ok" } },
+    ]).activityChanged).toBeUndefined();
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: 0.5 } },
+    ]).activityChanged).toBe(true);
+    // Same total reported again: cumulative, so nothing moved.
+    expect(store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: 0.5 } },
+    ]).activityChanged).toBeUndefined();
+    store.close();
+  });
+});
+
+describe("WebStore conversation projects", () => {
+  async function openStore(clockMs = Date.parse("2026-09-15T10:00:00.000Z")): Promise<{
+    store: WebStore;
+    clock: { now: number };
+  }> {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const clock = { now: clockMs };
+    const store = await WebStore.open({
+      stateDir: join(base, "state"),
+      clock: () => new Date(clock.now += 1),
+    });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    return { store, clock };
+  }
+
+  function pricedTurn(store: WebStore, threadId: string, cost: number): void {
+    const turn = store.beginTurn({ threadId, text: "priced work", attachmentIds: [] });
+    store.applyStreamFrames(turn.turnId, [
+      { kind: "event", event: { type: "usage_update", cumulativeUsd: cost } },
+    ]);
+    store.completeTurn(turn.turnId, "done", { runtime: { model: "provider/default" } });
+  }
+
+  it.each(["complete", "failed", "cancelled", "interrupted"] as const)("applies one last-intent transition after %s, preserving the active context", async (outcome) => {
+    const { store } = await openStore();
+    try {
+      const first = store.createProject({ sourceId: "agent-one", name: "First", context: "Original", color: "blue" });
+      const second = store.createProject({ sourceId: "agent-one", name: "Second", context: "Next", color: "rose" });
+      const thread = store.createThread("agent-one", { projectId: first.id });
+      const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      store.patchProject(first.id, { name: "Edited", context: "Edited context", color: "amber" });
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "First", context: "Original" });
+      store.patchThread(thread.id, { projectId: second.id });
+      expect(store.getThread(thread.id)).toMatchObject({ projectId: first.id, pendingProject: { projectId: second.id, turnId: turn.turnId } });
+      expect(() => store.deleteProject(first.id)).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      expect(() => store.deleteProject(second.id)).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      expect(() => store.patchProject(second.id, { archived: true })).toThrowError(expect.objectContaining({ code: "project_busy" }));
+      store.patchThread(thread.id, { projectId: null });
+      store.patchThread(thread.id, { projectId: first.id });
+      expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
+      store.patchThread(thread.id, { projectId: second.id });
+      store.patchThread(thread.id, { projectId: second.id });
+      expect(store.projectTransitions(thread.id)).toHaveLength(1);
+      if (outcome === "complete") store.completeTurn(turn.turnId, "done");
+      else if (outcome === "interrupted") store.interruptTurn(turn.turnId);
+      else store.failTurn(turn.turnId, { message: "stopped", cancelled: outcome === "cancelled" });
+      expect(store.getThread(thread.id)).toMatchObject({ projectId: second.id });
+      expect(store.getThread(thread.id)).not.toHaveProperty("pendingProject");
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "Second", context: "Next" });
+      expect(store.projectTransitions(thread.id)).toHaveLength(2);
+      expect(store.projectTransitions(thread.id)[1]).toMatchObject({
+        afterMessageId: turn.assistantMessageId, turnId: turn.turnId,
+        before: { id: first.id, name: "Edited", color: "amber" },
+        after: { id: second.id, name: "Second", color: "rose" },
+      });
+      store.deleteProject(second.id);
+      expect(store.projectTransitions(thread.id)[2]).toMatchObject({ before: { name: "Second", color: "rose" }, after: null });
+      expect(JSON.stringify(store.getThreadDetail(thread.id))).not.toContain("Edited context");
+    } finally { store.close(); }
+  });
+
+  it("freezes no-project context in assistant-only turns and persists color validation", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P", context: "Next" });
+      expect(project.color).toBe("default");
+      expect(() => store.patchProject(project.id, { color: "url(secret)" as "blue" })).toThrowError(expect.objectContaining({ code: "invalid_project" }));
+      const thread = store.createThread("agent-one");
+      const turn = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake" });
+      store.patchThread(thread.id, { projectId: project.id });
+      expect(store.projectContextForThread(thread.id)).toBeUndefined();
+      store.completeTurn(turn.turnId, "");
+      expect(store.projectContextForThread(thread.id)).toEqual({ name: "P", context: "Next" });
+      expect(store.projectTransitions(thread.id)[0]).toMatchObject({ afterMessageId: turn.assistantMessageId });
+    } finally { store.close(); }
+  });
+
+  it("pages every transition with its actual anchor, including start and repeated idle changes", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const thread = store.createThread("agent-one", { projectId: project.id });
+      expect(store.listMessagesPage(thread.id, { limit: 1 }).projectTransitions).toHaveLength(1);
+      const turn = store.beginTurn({ threadId: thread.id, text: "work", attachmentIds: [] });
+      store.patchThread(thread.id, { projectId: null });
+      store.completeTurn(turn.turnId, "done");
+      store.patchThread(thread.id, { projectId: project.id });
+      store.patchThread(thread.id, { projectId: null });
+      const latest = store.listMessagesPage(thread.id, { limit: 1 });
+      expect(latest.messages.map((message) => message.id)).toEqual([turn.assistantMessageId]);
+      expect(latest.projectTransitions).toHaveLength(3);
+      const oldest = store.listMessagesPage(thread.id, { limit: 1, before: latest.nextCursor! });
+      expect(oldest.messages.map((message) => message.id)).toEqual([turn.userMessageId]);
+      expect(oldest.projectTransitions).toHaveLength(1);
+      expect(oldest.projectTransitions?.[0]?.afterMessageId).toBeNull();
+      expect(store.getThread(thread.id)?.messageCount).toBe(2);
+    } finally { store.close(); }
+  });
+
+  it("settles persisted pending membership during restart before the next turn", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const stateDir = join(base, "state");
+    let store = await WebStore.open({ stateDir });
+    let threadId: string;
+    let projectId: string;
+    try {
+      store.replaceAgents([agent()]);
+      const project = store.createProject({ sourceId: "agent-one", name: "After restart", context: "Fresh", color: "purple" });
+      projectId = project.id;
+      const thread = store.createThread("agent-one");
+      threadId = thread.id;
+      store.beginTurn({ threadId, text: "work", attachmentIds: [] });
+      store.patchThread(threadId, { projectId });
+    } finally { store.close(); }
+    store = await WebStore.open({ stateDir });
+    try {
+      expect(store.getThread(threadId)).toMatchObject({ projectId });
+      expect(store.getThread(threadId)).not.toHaveProperty("pendingProject");
+      expect(store.projectTransitions(threadId)).toHaveLength(1);
+      expect(store.projectContextForThread(threadId)).toEqual({ name: "After restart", context: "Fresh" });
+    } finally { store.close(); }
+  });
+
+  it.each(["new", "queued"] as const)("keeps the %s turn after the membership boundary even with a frozen clock", async (mode) => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state"), clock: () => new Date("2026-09-12T00:00:00Z") });
+    try {
+      store.replaceAgents([agent()]);
+      const thread = store.createThread("agent-one");
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const first = store.beginTurn({ threadId: thread.id, text: "first", attachmentIds: [] });
+      store.patchThread(thread.id, { projectId: project.id });
+      const queued = mode === "queued" ? store.reserveLiveInput(thread.id, "second") : undefined;
+      if (queued !== undefined) store.queueLiveInput(queued.input.id);
+      store.completeTurn(first.turnId, "first answer");
+      const second = queued === undefined ? store.beginTurn({ threadId: thread.id, text: "second", attachmentIds: [] }) : store.promoteNextQueuedLiveInput(thread.id)!;
+      store.completeTurn(second.turnId, "second answer");
+      expect(store.listMessagesPage(thread.id).messages.map((item) => item.id)).toEqual([
+        first.userMessageId, first.assistantMessageId, second.userMessageId, second.assistantMessageId,
+      ]);
+    } finally { store.close(); }
+  });
+
+  it("creates, lists, reads and patches projects with revision bumps", async () => {
+    const { store } = await openStore();
+    try {
+      expect(store.listProjects("agent-one")).toEqual([]);
+      const project = store.createProject({ sourceId: "agent-one", name: "Web console", context: "Brief" });
+      expect(project).toMatchObject({
+        sourceId: "agent-one",
+        name: "Web console",
+        context: "Brief",
+        archivedAt: null,
+        revision: 1,
+        conversationCount: 0,
+        runningCount: 0,
+      });
+      expect(project).not.toHaveProperty("monthUsd");
+      expect(store.getProject(project.id)).toEqual(project);
+      expect(store.getProject("missing")).toBeUndefined();
+      expect(store.listProjects("agent-one")).toEqual([project]);
+      expect(store.listProjects("agent-two")).toEqual([]);
+      expect(() => store.listProjects("agent-missing")).toThrowError(
+        expect.objectContaining({ code: "agent_not_found" }),
+      );
+
+      const renamed = store.patchProject(project.id, { name: "Console" });
+      expect(renamed).toMatchObject({ name: "Console", context: "Brief", revision: 2 });
+      const archived = store.patchProject(project.id, { archived: true });
+      expect(archived.archivedAt).toEqual(expect.any(String));
+      expect(archived.revision).toBe(3);
+      const restored = store.patchProject(project.id, { archived: false, context: "" });
+      expect(restored).toMatchObject({ archivedAt: null, context: "", revision: 4 });
+      expect(() => store.patchProject("missing", { name: "x" })).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+      expect(() => store.createProject({ sourceId: "agent-missing", name: "x" })).toThrowError(
+        expect.objectContaining({ code: "agent_not_found" }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("joins conversations at creation and enforces membership rules", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const other = store.createProject({ sourceId: "agent-two", name: "Q" });
+      const archived = store.createProject({ sourceId: "agent-one", name: "A" });
+      store.patchProject(archived.id, { archived: true });
+
+      const member = store.createThread("agent-one", { projectId: project.id });
+      expect(member.projectId).toBe(project.id);
+      expect(store.createThread("agent-one").projectId).toBeNull();
+      expect(() => store.createThread("agent-one", { projectId: "missing" })).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+      expect(() => store.createThread("agent-one", { projectId: other.id })).toThrowError(
+        expect.objectContaining({ code: "project_agent_mismatch" }),
+      );
+      expect(() => store.createThread("agent-one", { projectId: archived.id })).toThrowError(
+        expect.objectContaining({ code: "project_archived" }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("moves and detaches membership without reordering the sidebar", async () => {
+    const { store } = await openStore();
+    try {
+      const first = store.createProject({ sourceId: "agent-one", name: "First" });
+      const second = store.createProject({ sourceId: "agent-one", name: "Second" });
+      const thread = store.createThread("agent-one");
+      const before = thread.updatedAt;
+
+      const moved = store.patchThread(thread.id, { projectId: first.id });
+      expect(moved.projectId).toBe(first.id);
+      expect(moved.revision).toBe(thread.revision + 1);
+      // A membership-only patch must not reorder the sidebar.
+      expect(moved.updatedAt).toBe(before);
+
+      const again = store.patchThread(thread.id, { projectId: second.id });
+      expect(again.projectId).toBe(second.id);
+      const detached = store.patchThread(thread.id, { projectId: null });
+      expect(detached.projectId).toBeNull();
+      expect(detached.updatedAt).toBe(before);
+
+      expect(() => store.patchThread(thread.id, { projectId: "missing" })).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+      const foreign = store.createProject({ sourceId: "agent-two", name: "Foreign" });
+      expect(() => store.patchThread(thread.id, { projectId: foreign.id })).toThrowError(
+        expect.objectContaining({ code: "project_agent_mismatch" }),
+      );
+      store.patchProject(first.id, { archived: true });
+      expect(() => store.patchThread(thread.id, { projectId: first.id })).toThrowError(
+        expect.objectContaining({ code: "project_archived" }),
+      );
+      // A failed move leaves the conversation where it was.
+      expect(store.getThread(thread.id)?.projectId).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  it("deletes a project by detaching its chats with a revision bump", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Doomed" });
+      const member = store.createThread("agent-one", { projectId: project.id });
+      const archivedMember = store.createThread("agent-one", { projectId: project.id });
+      store.patchThread(archivedMember.id, { archived: true });
+      const outsider = store.createThread("agent-one");
+      const memberRevision = store.getThread(member.id)?.revision;
+
+      const detached = store.deleteProject(project.id);
+      expect(new Set(detached)).toEqual(new Set([member.id, archivedMember.id]));
+      expect(store.getProject(project.id)).toBeUndefined();
+      expect(store.getThread(member.id)).toMatchObject({
+        projectId: null,
+        revision: (memberRevision ?? 0) + 1,
+      });
+      expect(store.getThread(archivedMember.id)?.projectId).toBeNull();
+      expect(store.getThread(outsider.id)?.projectId).toBeNull();
+      expect(store.listProjects("agent-one")).toEqual([]);
+      expect(() => store.deleteProject(project.id)).toThrowError(
+        expect.objectContaining({ code: "project_not_found" }),
+      );
+    } finally {
+      store.close();
+    }
+  });
+
+  it("filters the thread page by project with bound cursors", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P" });
+      const first = store.createThread("agent-one", { projectId: project.id });
+      const second = store.createThread("agent-one", { projectId: project.id });
+      store.createThread("agent-one");
+
+      const page = store.listThreadsPage({ sourceId: "agent-one", archived: false, projectId: project.id });
+      expect(page.threads.map((thread) => thread.id)).toEqual([second.id, first.id]);
+      expect(page.threads.every((thread) => thread.projectId === project.id)).toBe(true);
+
+      const one = store.listThreadsPage({ sourceId: "agent-one", archived: false, projectId: project.id, limit: 1 });
+      expect(one.threads).toHaveLength(1);
+      expect(one.nextCursor).toEqual(expect.any(String));
+      const two = store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: project.id,
+        limit: 1,
+        before: one.nextCursor!,
+      });
+      expect(two.threads.map((thread) => thread.id)).toEqual([first.id]);
+
+      // Cursors are bound to their filter: the unfiltered bucket cursor and a
+      // foreign project's cursor must not walk this page.
+      const unfiltered = store.listThreadsPage({ sourceId: "agent-one", archived: false, limit: 1 });
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: project.id,
+        limit: 1,
+        before: unfiltered.nextCursor!,
+      })).toThrowError(expect.objectContaining({ code: "invalid_page" }));
+      const foreign = store.createProject({ sourceId: "agent-two", name: "F" });
+      const foreignPage = store.listThreadsPage({ sourceId: "agent-two", archived: false, projectId: foreign.id });
+      expect(foreignPage.threads).toEqual([]);
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: project.id,
+      })).not.toThrow();
+      expect(() => store.listThreadsPage({
+        sourceId: "agent-one",
+        archived: false,
+        projectId: "missing",
+      })).toThrowError(expect.objectContaining({ code: "project_not_found" }));
+    } finally {
+      store.close();
+    }
+  });
+
+  it("carries the project's name on every conversation summary that belongs to one", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Console work" });
+      const member = store.createThread("agent-one", { projectId: project.id });
+      const direct = store.createThread("agent-one");
+      const archivedMember = store.createThread("agent-one", { projectId: project.id });
+      store.patchThread(archivedMember.id, { archived: true });
+
+      // A project's conversations are listed with the agent's own, and the
+      // name is what tells the two apart on the row.
+      const live = store.listThreadsPage({ sourceId: "agent-one", archived: false, scope: "chats" });
+      expect(live.threads.map((thread) => thread.id).sort()).toEqual([direct.id, member.id].sort());
+      expect(live.threads.find((thread) => thread.id === member.id)?.projectName).toBe("Console work");
+      expect(live.threads.find((thread) => thread.id === direct.id)?.projectName).toBeUndefined();
+
+      const shelf = store.listThreadsPage({ sourceId: "agent-one", archived: true, scope: "chats" });
+      expect(shelf.threads[0]?.projectName).toBe("Console work");
+
+      // Every other summary path carries it too, from the same row query.
+      store.patchThread(member.id, { title: "labelled member" });
+      const hit = store.searchThreads({ sourceId: "agent-one", query: "labelled", scope: "chats" })
+        .hits.find((item) => item.thread.id === member.id);
+      expect(hit?.thread.projectName).toBe("Console work");
+      store.beginTurn({ threadId: member.id, text: "work", attachmentIds: [] });
+      expect(store.listActiveThreads().threads.find((thread) => thread.id === member.id)?.projectName)
+        .toBe("Console work");
+      // A rename reaches the rows on their next read.
+      store.patchProject(project.id, { name: "Renamed" });
+      expect(store.listActiveThreads().threads.find((thread) => thread.id === member.id)?.projectName)
+        .toBe("Renamed");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("counts members and running turns per project", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P", context: "c" });
+      const idle = store.createThread("agent-one", { projectId: project.id });
+      const running = store.createThread("agent-one", { projectId: project.id });
+      store.beginTurn({ threadId: running.id, text: "work", attachmentIds: [] });
+      const archived = store.createThread("agent-one", { projectId: project.id });
+      store.patchThread(archived.id, { archived: true });
+      void idle;
+
+      expect(store.getProject(project.id)).toMatchObject({
+        conversationCount: 2,
+        runningCount: 1,
+      });
+      expect(store.listProjects("agent-one")).toMatchObject([{
+        conversationCount: 2,
+        runningCount: 1,
+      }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("sums only the current UTC month's priced usage", async () => {
+    const { store, clock } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "P", context: "c" });
+      const first = store.createThread("agent-one", { projectId: project.id });
+      const second = store.createThread("agent-one", { projectId: project.id });
+      pricedTurn(store, first.id, 1.5);
+      pricedTurn(store, second.id, 0.25);
+      expect(store.getProject(project.id)?.monthUsd).toBeCloseTo(1.75, 10);
+
+      // Last month's priced turn is out of the window.
+      clock.now = Date.parse("2026-08-20T10:00:00.000Z");
+      const elder = store.createThread("agent-one", { projectId: project.id });
+      pricedTurn(store, elder.id, 9);
+      clock.now = Date.parse("2026-09-16T10:00:00.000Z");
+      expect(store.getProject(project.id)?.monthUsd).toBeCloseTo(1.75, 10);
+
+      // Archiving a member removes its usage from the month.
+      store.patchThread(first.id, { archived: true });
+      expect(store.getProject(project.id)?.monthUsd).toBeCloseTo(0.25, 10);
+
+      // An unpriced project omits the month rather than reporting zero.
+      const bare = store.createProject({ sourceId: "agent-one", name: "Bare", context: "c" });
+      store.createThread("agent-one", { projectId: bare.id });
+      expect(store.getProject(bare.id)).not.toHaveProperty("monthUsd");
+    } finally {
+      store.close();
+    }
+  });
+
+  it("resolves the dispatch context only for members with real context", async () => {
+    const { store } = await openStore();
+    try {
+      const project = store.createProject({ sourceId: "agent-one", name: "Web <console>", context: "  Stay sharp.  " });
+      const member = store.createThread("agent-one", { projectId: project.id });
+      expect(store.projectContextForThread(member.id)).toEqual({
+        name: "Web <console>",
+        context: "  Stay sharp.  ",
+      });
+      expect(store.projectContextForThread(store.createThread("agent-one").id)).toBeUndefined();
+      const blank = store.createProject({ sourceId: "agent-one", name: "Blank", context: "   " });
+      const blankMember = store.createThread("agent-one", { projectId: blank.id });
+      expect(store.projectContextForThread(blankMember.id)).toBeUndefined();
+      expect(store.projectContextForThread("missing")).toBeUndefined();
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe("WebStore model transitions", () => {
+  async function openStore(): Promise<WebStore> {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent()]);
+    return store;
+  }
+
+  /** One settled turn on an explicitly resolved route, as a dispatch would record it. */
+  function ran(store: WebStore, threadId: string, text: string, model: string, effort?: string): { turnId: string; userMessageId: string; assistantMessageId: string } {
+    const turn = store.beginTurn({
+      threadId,
+      text,
+      attachmentIds: [],
+      requestedModel: model,
+      ...(effort === undefined ? {} : { requestedEffort: effort }),
+    });
+    store.completeTurn(turn.turnId, `answered ${text}`);
+    return turn;
+  }
+
+  it("records the route change between the turns it sits between, and nothing for the first one", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      const first = ran(store, thread.id, "one", "provider/sol", "low");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      const second = ran(store, thread.id, "two", "provider/astra", "high");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+        afterMessageId: first.assistantMessageId,
+        turnId: second.turnId,
+        before: { model: "provider/sol", effort: "low" },
+        after: { model: "provider/astra", effort: "high" },
+      });
+    } finally { store.close(); }
+  });
+
+  it("collapses picker noise: only what the next turn actually ran on is a change", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      ran(store, thread.id, "one", "provider/sol", "low");
+      // Flipped away and back with no turn in between: nothing happened.
+      store.patchThread(thread.id, { model: "provider/astra" });
+      store.patchThread(thread.id, { model: "provider/sol" });
+      ran(store, thread.id, "two", "provider/sol", "low");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      // Effort alone still counts, and it names itself by the pair it changed.
+      ran(store, thread.id, "three", "provider/sol", "high");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+        before: { model: "provider/sol", effort: "low" },
+        after: { model: "provider/sol", effort: "high" },
+      });
+    } finally { store.close(); }
+  });
+
+  it("never claims a change against a route nothing resolved", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      // A turn dispatched with no reported model is neither a change nor a
+      // baseline: the one before it is what the next turn is measured against.
+      const unreported = store.beginTurn({ threadId: thread.id, text: "unreported", attachmentIds: [] });
+      store.completeTurn(unreported.turnId, "answered");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      const first = ran(store, thread.id, "one", "provider/sol", "low");
+      expect(store.modelTransitions(thread.id)).toEqual([]);
+      const blind = store.beginTurn({ threadId: thread.id, text: "blind", attachmentIds: [] });
+      store.completeTurn(blind.turnId, "answered");
+      const next = ran(store, thread.id, "two", "provider/astra", "low");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      expect(store.modelTransitions(thread.id)[0]).toMatchObject({
+        afterMessageId: blind.assistantMessageId,
+        turnId: next.turnId,
+        before: { model: "provider/sol", effort: "low" },
+      });
+      // An effort only one side reports stays unclaimed while the model holds.
+      ran(store, thread.id, "three", "provider/astra");
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+    } finally { store.close(); }
+  });
+
+  it("records assistant-only and promoted turns, and serves each row with its own page", async () => {
+    const store = await openStore();
+    try {
+      const thread = store.createThread("agent-one");
+      const first = ran(store, thread.id, "one", "provider/sol", "low");
+      const wake = store.beginAssistantTurn({ threadId: thread.id, prompt: "wake", requestedModel: "provider/astra", requestedEffort: "low" });
+      store.completeTurn(wake.turnId, "woke");
+      expect(store.modelTransitions(thread.id)).toMatchObject([
+        { afterMessageId: first.assistantMessageId, turnId: wake.turnId, after: { model: "provider/astra" } },
+      ]);
+      const queued = store.reserveLiveInput(thread.id, "queued work");
+      store.queueLiveInput(queued.input.id);
+      store.patchThread(thread.id, { model: "provider/terra" });
+      const promoted = store.promoteNextQueuedLiveInput(thread.id);
+      expect(promoted).toBeDefined();
+      store.completeTurn(promoted!.turnId, "answered");
+      // The queued input froze the agent default, which resolves to no reported
+      // route, so the promotion claims nothing; the turn after it is measured
+      // against the last route that WAS reported.
+      expect(store.modelTransitions(thread.id)).toHaveLength(1);
+      const last = ran(store, thread.id, "last", "provider/terra", "high");
+      const rows = store.modelTransitions(thread.id);
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toMatchObject({
+        afterMessageId: promoted!.assistantMessageId,
+        turnId: last.turnId,
+        before: { model: "provider/astra" },
+        after: { model: "provider/terra", effort: "high" },
+      });
+      const detail = store.getThreadDetail(thread.id);
+      expect(detail?.modelTransitions).toHaveLength(2);
+      const latest = store.listMessagesPage(thread.id, { limit: 1 });
+      expect(latest.modelTransitions).toEqual([]);
+      const pageWithAnchor = store.listMessagesPage(thread.id, { limit: 3 });
+      expect(pageWithAnchor.modelTransitions).toHaveLength(1);
+      expect(pageWithAnchor.modelTransitions?.[0]?.afterMessageId).toBe(promoted!.assistantMessageId);
+    } finally { store.close(); }
+  });
+});
+
+describe("WebStore console discovery tools", () => {
+  it("lists and searches only the invoking agent's chats, and reads leave no receipt", async () => {
+    const base = await temporaryRoot();
+    cleanup.push(base);
+    const store = await WebStore.open({ stateDir: join(base, "state") });
+    store.replaceAgents([agent(), agent("agent-two")]);
+    const say = (threadId: string, prompt: string, answer: string): void => {
+      store.completeTurn(store.beginTurn({ threadId, text: prompt, attachmentIds: [] }).turnId, answer);
+    };
+    const other = store.createThread("agent-one");
+    store.patchThread(other.id, { title: "Exporter setup" });
+    say(other.id, "how do I reach the exporter", "Point it at the Tailscale address.");
+    const archived = store.createThread("agent-one");
+    store.patchThread(archived.id, { title: "Old tailscale notes" });
+    say(archived.id, "keep these", "Kept.");
+    store.patchThread(archived.id, { archived: true });
+    const foreign = store.createThread("agent-two");
+    say(foreign.id, "tailscale on the other agent", "Not yours.");
+    const origin = store.createThread("agent-one");
+    const turn = store.beginTurn({ threadId: origin.id, text: "Find the exporter thread", attachmentIds: [] });
+    const scope = { sourceId: "agent-one", threadId: origin.id, turnId: turn.turnId };
+    const run = (tool: "ListConversations" | "SearchConversations", args: Record<string, unknown>) =>
+      store.consoleToolOperation(scope, { operationId: `op-${tool}-${String(Object.keys(args).length)}-0000000000`, tool, args }).result;
+
+    const search = run("SearchConversations", { query: "tailscale" }) as { conversations: Array<Record<string, unknown>>; truncated: boolean };
+    expect(search.truncated).toBe(false);
+    expect(search.conversations.map((hit) => hit.id).sort()).toEqual([other.id, archived.id].sort());
+    const messageHit = search.conversations.find((hit) => hit.id === other.id)!;
+    expect(messageHit).toMatchObject({ title: "Exporter setup", titleMatch: false, messageMatches: 1, archived: false, projectId: null });
+    expect(messageHit.snippet).toContain("Tailscale");
+    expect(messageHit.snippet).not.toMatch(/[\u0002\u0003]/u);
+    expect(search.conversations.find((hit) => hit.id === archived.id)).toMatchObject({ titleMatch: true, archived: true });
+
+    const active = run("ListConversations", {}) as { conversations: Array<Record<string, unknown>>; cursor?: string };
+    expect(active.conversations.map((row) => row.id)).toEqual([origin.id, other.id]);
+    expect(active.conversations[1]).toMatchObject({ title: "Exporter setup", archived: false, updatedAt: expect.any(String) });
+    expect(active.cursor).toBeUndefined();
+    expect((run("ListConversations", { archived: true }) as { conversations: Array<{ id: string }> }).conversations.map((row) => row.id)).toEqual([archived.id]);
+    const first = run("ListConversations", { limit: 1 }) as { conversations: Array<{ id: string }>; cursor?: string };
+    expect(first.conversations.map((row) => row.id)).toEqual([origin.id]);
+    expect(first.cursor).toEqual(expect.any(String));
+    expect((run("ListConversations", { limit: 1, cursor: first.cursor }) as { conversations: Array<{ id: string }> }).conversations.map((row) => row.id)).toEqual([other.id]);
+
+    expect(() => run("SearchConversations", { query: "t" })).toThrow(WebConsoleError);
+    expect(() => run("ListConversations", { limit: 0 })).toThrow(WebConsoleError);
+    expect(() => run("ListConversations", { limit: 51 })).toThrow(WebConsoleError);
+    const receipts = (store as unknown as { database: DatabaseSync }).database
+      .prepare("SELECT COUNT(*) AS count FROM console_tool_operations").get() as { count: number };
+    expect(receipts.count).toBe(0);
+    store.close();
   });
 });

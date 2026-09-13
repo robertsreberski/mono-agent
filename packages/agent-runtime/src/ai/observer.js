@@ -21,6 +21,7 @@
  * @typedef Observer
  * @property {string=} name
  * @property {(event: object) => void} recordEvent
+ * @property {(event: object) => void=} recordToolLifecycle Synchronous native lifecycle admission before queued persistence.
  * @property {(metric: object) => void=} recordMetric
  * @property {() => (void | Promise<void>)=} flush
  */
@@ -39,6 +40,12 @@ export function createObserverHub({ observers = [], onEvent = null } = {}) {
     if (!event) return;
     for (const obs of list) {
       try { obs.recordEvent(event); } catch { /* swallow */ }
+    }
+  }
+
+  function recordToolLifecycle(event) {
+    for (const obs of list) {
+      try { obs.recordToolLifecycle?.(event); } catch { /* observers remain best-effort */ }
     }
   }
 
@@ -62,6 +69,7 @@ export function createObserverHub({ observers = [], onEvent = null } = {}) {
   return {
     emit,
     recordMetric,
+    recordToolLifecycle,
     flush,
     observers: () => list.slice(),
   };

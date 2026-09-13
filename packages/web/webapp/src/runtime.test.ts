@@ -5,8 +5,30 @@ import {
   coalesceMonitorWakeMessages,
   convertWebMessage,
 } from "./runtime";
+import { projectProcessJobPresentation } from "./process-job-presentation";
 import { agent, attachment, monitor, processJob, thread } from "./test/fixtures";
 import type { WebMessage } from "./types";
+
+const processJobReceipt = (
+  job = processJob(),
+  overrides: Record<string, unknown> = {},
+) => ({
+  schema: "mono-agent.process-job-start-receipt.v1",
+  jobId: job.jobId,
+  tool: job.tool,
+  state: job.timestamps.startedAt === null ? "queued" : "running",
+  startedAt: job.timestamps.startedAt,
+  maxRuntimeMs: job.limits.maxRuntimeMs,
+  ...overrides,
+});
+
+const launchPart = (job = processJob(), toolCallId = `launch-${job.jobId}`) => ({
+  type: "tool-call" as const,
+  toolCallId,
+  toolName: job.tool,
+  status: "complete" as const,
+  structuredResult: processJobReceipt(job),
+});
 
 const message = (overrides: Partial<WebMessage> = {}): WebMessage => ({
   id: "message-1",
@@ -42,6 +64,22 @@ const monitorWake = (
 });
 
 describe("coalesceMonitorWakeMessages", () => {
+  it("does not coalesce across a project transition anchor", () => {
+    const first = monitorWake("1");
+    const anchor = monitorWake("2", monitor(), { projectTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-2", before: null, after: { id: "p", name: "P", color: "blue" }, createdAt: "2026-09-12T00:00:00Z" }] });
+    const last = monitorWake("3");
+    const result = coalesceMonitorWakeMessages([first, anchor, last]);
+    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
+    expect(convertWebMessage(anchor).metadata?.custom?.projectTransitions).toEqual(anchor.projectTransitions);
+  });
+  it("does not coalesce across a route change anchor", () => {
+    const first = monitorWake("1");
+    const anchor = monitorWake("2", monitor(), { modelTransitions: [{ id: 1, afterMessageId: "2", turnId: "turn-3", before: { model: "provider/sol", effort: "low" }, after: { model: "provider/astra", effort: "high" }, createdAt: "2026-09-12T00:00:00Z" }] });
+    const last = monitorWake("3");
+    const result = coalesceMonitorWakeMessages([first, anchor, last]);
+    expect(result.map((item) => item.id)).toEqual(["1", "2", "3"]);
+    expect(convertWebMessage(anchor).metadata?.custom?.modelTransitions).toEqual(anchor.modelTransitions);
+  });
   it("uses the newest same-Monitor wake as one chronological presentation carrier", () => {
     const firstProjection = monitor({
       description: "First batch",
@@ -263,6 +301,511 @@ describe("coalesceMonitorWakeMessages", () => {
       expect(shaped.map((entry) => entry.id)).toEqual(["1", "separator", "2"]);
     },
   );
+
+  it("keeps a receipt-bearing background launch as its own Monitor wake boundary", () => {
+    const job = processJob();
+    const launchWake = monitorWake("2", monitor(), {
+      parts: [
+        launchPart(job, "background-launch"),
+        { type: "monitor-activity", monitors: [{ projection: monitor(), deliveryKeys: ["monitor:two"] }] },
+      ],
+    });
+    expect(coalesceMonitorWakeMessages([monitorWake("1"), launchWake]).map(({ id }) => id)).toEqual(["1", "2"]);
+    const withoutReceipt = {
+      ...launchWake,
+      parts: launchWake.parts.map((part) => part.type === "tool-call" ? { ...part, structuredResult: undefined } : part),
+    };
+    expect(coalesceMonitorWakeMessages([monitorWake("1"), withoutReceipt])).toHaveLength(1);
+  });
+});
+
+describe("projectProcessJobPresentation", () => {
+  const directAttribution = {
+    requested: { model: "provider:selected" },
+    attempted: { model: "provider:selected" },
+    executed: { model: "provider:selected" },
+    disposition: "requested" as const,
+    transitions: [],
+    retries: [],
+  };
+
+  it("extracts a job-only carrier without mutating it or retaining hidden ordinary attribution", () => {
+    const source = message({
+      role: "assistant",
+      parts: [{ type: "process-job", job: processJob() }],
+      attribution: directAttribution,
+    });
+
+    const projected = projectProcessJobPresentation([source], { selectedModel: "provider:selected" });
+
+    expect(projected.messages).toEqual([]);
+    expect(projected.jobs).toEqual([{ messageId: source.id, part: source.parts[0] }]);
+    expect(source.parts).toHaveLength(1);
+  });
+
+  it("retains exceptional attribution, message errors, attachments, and rich sibling parts", () => {
+    const visibleAttribution = message({
+      id: "attributed",
+      role: "assistant",
+      parts: [{ type: "process-job", job: processJob({ jobId: "job-attributed" }) }],
+      attribution: directAttribution,
+    });
+    const failed = message({
+      id: "failed",
+      role: "assistant",
+      status: "failed",
+      parts: [{ type: "process-job", job: processJob({ jobId: "job-failed" }) }],
+    });
+    const rich = message({
+      id: "rich",
+      role: "assistant",
+      parts: [
+        { type: "process-job", job: processJob({ jobId: "job-rich" }) },
+        { type: "text", text: "The report is ready." },
+        { type: "error", code: "artifact_warning", message: "One artifact expired." },
+      ],
+      attachments: [attachment("reply")],
+    });
+
+    const projected = projectProcessJobPresentation(
+      [visibleAttribution, failed, rich],
+      { selectedModel: "provider:other" },
+    );
+
+    expect(projected.messages.map(({ id }) => id)).toEqual(["attributed", "failed", "rich"]);
+    expect(projected.messages[0]?.parts).toEqual([]);
+    expect(projected.messages[1]?.parts).toEqual([]);
+    expect(projected.messages[2]?.parts.map(({ type }) => type)).toEqual(["text", "error"]);
+    expect(projected.messages[2]?.attachments).toEqual(rich.attachments);
+  });
+
+  it("keeps first-slot order while deduping each job to its newest monotonic projection and response", () => {
+    const complete = processJob({ jobId: "job-one" });
+    const running = processJob({
+      jobId: "job-one",
+      state: "running",
+      timestamps: { ...complete.timestamps, completedAt: null },
+      wake: { ...complete.wake, state: "pending", attempts: 0, lastAttemptAt: null },
+      output: { ...complete.output, stdoutBytes: 2, preview: "go" },
+      exitCode: null,
+      durationMs: null,
+    });
+    const stale = processJob({
+      ...running,
+      state: "starting",
+      output: { ...running.output, stdoutBytes: 0, preview: "" },
+    });
+    const other = processJob({ jobId: "job-two", tool: "Bash", summary: "second" });
+    const projected = projectProcessJobPresentation([
+      message({ id: "first", role: "assistant", parts: [{ type: "process-job", job: running }] }),
+      message({ id: "second", role: "assistant", parts: [{ type: "process-job", job: other }] }),
+      message({ id: "stale", role: "assistant", parts: [{ type: "process-job", job: stale }] }),
+      message({
+        id: "settled",
+        role: "assistant",
+        parts: [{ type: "process-job", job: complete, responseText: "Completed normally." }],
+      }),
+    ]);
+
+    expect(projected.messages).toEqual([]);
+    expect(projected.jobs.map(({ messageId, part }) => [messageId, part.job.jobId, part.job.state]))
+      .toEqual([
+        ["first", "job-one", "succeeded"],
+        ["second", "job-two", "succeeded"],
+      ]);
+    expect(projected.jobs[0]?.part.responseText).toBe("Completed normally.");
+  });
+
+  it("drops blank and transport-only siblings but preserves visible telemetry", () => {
+    const hidden = message({
+      id: "hidden",
+      role: "assistant",
+      parts: [
+        { type: "process-job", job: processJob({ jobId: "hidden-job" }) },
+        { type: "text", text: "  " },
+        { type: "telemetry", event: "runtime_telemetry", data: { kind: "usage" } },
+      ],
+    });
+    const visible = message({
+      id: "visible",
+      role: "assistant",
+      parts: [
+        { type: "process-job", job: processJob({ jobId: "visible-job" }) },
+        { type: "telemetry", event: "context_compaction", data: {} },
+      ],
+    });
+
+    expect(projectProcessJobPresentation([hidden, visible]).messages.map(({ id }) => id))
+      .toEqual(["visible"]);
+  });
+
+  it("attributes real start and terminal facts only to the exact receipt-bearing response", () => {
+    const job = processJob();
+    const origin = message({
+      id: "origin",
+      threadId: "thread",
+      role: "assistant",
+      parts: [launchPart(job, "launch-one"), { type: "text", text: "Answer." }],
+    });
+    const carrier = message({
+      id: "carrier",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ type: "process-job", job }],
+    });
+
+    const projected = projectProcessJobPresentation([origin, carrier], { threadId: "thread" });
+
+    expect(projected.messages.map(({ id }) => id)).toEqual(["origin"]);
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ id: `process-job:${job.jobId}:started`, toolCallId: "launch-one", phase: "started", occurredAt: job.timestamps.startedAt }),
+      expect.objectContaining({ id: `process-job:${job.jobId}:terminal`, toolCallId: "launch-one", phase: "terminal", state: "succeeded", occurredAt: job.timestamps.completedAt, durationMs: 2_000, exitCode: 0 }),
+    ]);
+    expect(projected.eventsByMessageId.has("carrier")).toBe(false);
+  });
+
+  it("keeps the start at launch but moves the terminal event to the chronological wake", () => {
+    const job = processJob();
+    const origin = message({
+      id: "origin",
+      threadId: "thread",
+      role: "assistant",
+      parts: [launchPart(job, "launch-one")],
+    });
+    const wake = message({
+      id: "wake",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{
+        type: "process-job-wake",
+        jobId: job.jobId,
+        deliveryKey: job.wake.deliveryKey,
+        disposition: "follow_up",
+      }],
+    });
+    const card = message({
+      id: "card",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ type: "process-job", job }],
+    });
+
+    const projected = projectProcessJobPresentation([origin, wake, card], { threadId: "thread" });
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ phase: "started", toolCallId: "launch-one" }),
+    ]);
+    expect(convertWebMessage(wake, { processJobs: projected.jobsById }).content).toEqual([
+      expect.objectContaining({
+        type: "data-process-job-event",
+        data: expect.objectContaining({ phase: "terminal", jobId: job.jobId, state: "succeeded" }),
+      }),
+    ]);
+  });
+
+  it.each([
+    "succeeded", "failed", "timed_out", "cancelled", "spawn_failed", "queue_expired", "interrupted",
+  ] as const)("derives the %s terminal outcome without inventing a missing completion", (state) => {
+    const job = processJob({
+      state,
+      timestamps: { ...processJob().timestamps, startedAt: null, completedAt: null },
+      durationMs: null,
+      exitCode: null,
+    });
+    const projected = projectProcessJobPresentation([
+      message({ id: "origin", threadId: "thread", role: "assistant", parts: [launchPart(job)] }),
+      message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] }),
+    ], { threadId: "thread" });
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ phase: "terminal", state }),
+    ]);
+    expect(projected.eventsByMessageId.get("origin")?.[0]).not.toHaveProperty("occurredAt");
+  });
+
+  it.each(["queued", "starting"] as const)("does not invent a start for %s admission", (state) => {
+    const job = processJob({
+      state,
+      timestamps: { ...processJob().timestamps, startedAt: null, completedAt: null },
+      durationMs: null,
+      exitCode: null,
+    });
+    const projected = projectProcessJobPresentation([
+      message({ id: "origin", threadId: "thread", role: "assistant", parts: [launchPart(job)] }),
+      message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] }),
+    ], { threadId: "thread" });
+    expect(projected.eventsByMessageId.size).toBe(0);
+  });
+
+  it("suppresses conflicting start evidence and contradictory completion time", () => {
+    const job = processJob({
+      timestamps: { ...processJob().timestamps, completedAt: "2026-07-17T09:59:59.000Z" },
+    });
+    const origin = message({
+      id: "origin",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ ...launchPart(job), structuredResult: processJobReceipt(job, { startedAt: "2026-07-17T10:00:02.000Z" }) }],
+    });
+    const projected = projectProcessJobPresentation([
+      origin,
+      message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] }),
+    ], { threadId: "thread" });
+    expect(projected.eventsByMessageId.get("origin")).toEqual([
+      expect.objectContaining({ phase: "terminal", state: "succeeded" }),
+    ]);
+    expect(projected.eventsByMessageId.get("origin")?.[0]).not.toHaveProperty("occurredAt");
+  });
+
+  it("fails closed for ambiguous, wrong-thread, and legacy prose-only launch identity", () => {
+    const job = processJob();
+    const twoReceipts = ["one", "two"].map((id) => message({
+      id,
+      threadId: "thread",
+      role: "assistant",
+      parts: [launchPart(job, `launch-${id}`)],
+    }));
+    const card = message({ id: "card", threadId: "thread", role: "assistant", parts: [{ type: "process-job", job }] });
+    expect(projectProcessJobPresentation([...twoReceipts, card], { threadId: "thread" }).eventsByMessageId.size).toBe(0);
+    expect(projectProcessJobPresentation([twoReceipts[0]!, card], { threadId: "other" }).eventsByMessageId.size).toBe(0);
+    const legacy = message({
+      id: "legacy",
+      threadId: "thread",
+      role: "assistant",
+      parts: [{ ...launchPart(job), structuredResult: undefined, result: JSON.stringify({ job_id: job.jobId }) }],
+    });
+    expect(projectProcessJobPresentation([legacy, card], { threadId: "thread" }).eventsByMessageId.size).toBe(0);
+  });
+});
+
+describe("inline steer", () => {
+  const steerPart = {
+    type: "steer" as const,
+    inputId: "input-1",
+    messageId: "user-1",
+    text: "Use the API instead, with the full operator prose intact",
+    receivedAt: "2026-09-12T10:00:01.000Z",
+    quote: { text: "the sync approach", messageId: "assistant-source" },
+  };
+  const appliedUser = (overrides: Partial<WebMessage> = {}): WebMessage => message({
+    id: "user-1",
+    threadId: "thread",
+    role: "user",
+    liveInputStatus: "applied",
+    parts: [{ type: "text", text: steerPart.text }],
+    ...overrides,
+  });
+  const steeredAssistant = (overrides: Partial<WebMessage> = {}): WebMessage => message({
+    id: "assistant-1",
+    threadId: "thread",
+    role: "assistant",
+    status: "complete",
+    finishedAt: "2026-07-17T10:00:12.000Z",
+    parts: [
+      { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+      steerPart,
+      { type: "tool-call", toolCallId: "t2", toolName: "Write", status: "complete" },
+      { type: "text", text: "Done." },
+    ],
+    ...overrides,
+  });
+
+  it("converts a steer marker to a band-breaking data part carrying the full text", () => {
+    const content = convertWebMessage(steeredAssistant({ status: "running" })).content as readonly {
+      readonly type: string; readonly data?: { readonly text?: unknown; readonly quote?: unknown };
+    }[];
+    // Streaming keeps arrival order: the marker sits between the two calls.
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-steer", "tool-call", "text"]);
+    expect(content[1]).toMatchObject({
+      type: "data-steer",
+      data: expect.objectContaining({ text: steerPart.text, quote: steerPart.quote }),
+    });
+  });
+
+  it("holds activity before the steer before it and activity after it after it, answer last", () => {
+    const content = convertWebMessage(steeredAssistant()).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-steer", "tool-call", "text"]);
+    expect(content.at(-1)).toMatchObject({ type: "text" });
+  });
+
+  it("folds interim prose into notes inside its own segment rather than across the steer", () => {
+    const content = convertWebMessage(steeredAssistant({
+      parts: [
+        { type: "text", text: "First I will look." },
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        steerPart,
+        { type: "text", text: "Now with the steer." },
+        { type: "tool-call", toolCallId: "t2", toolName: "Write", status: "complete" },
+        { type: "text", text: "Done." },
+      ],
+    })).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual([
+      "data-note",
+      "tool-call",
+      "data-steer",
+      "data-note",
+      "tool-call",
+      "text",
+    ]);
+  });
+
+  it("keeps genuinely unknown data parts after the answer, not wedged at the steer", () => {
+    const content = convertWebMessage(steeredAssistant({
+      parts: [
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        steerPart,
+        { type: "error", message: "Agent error" },
+        { type: "text", text: "Done." },
+      ],
+    })).content as readonly { readonly type: string }[];
+    expect(content.map((part) => part.type)).toEqual(["tool-call", "data-steer", "text", "data-error"]);
+  });
+
+  it("drops the standalone bubble exactly once while its marker is loaded", () => {
+    const projected = projectProcessJobPresentation(
+      [appliedUser(), steeredAssistant()],
+      { threadId: "thread" },
+    );
+    expect(projected.messages.map(({ id }) => id)).toEqual(["assistant-1"]);
+  });
+
+  it("keeps the standalone bubble when the marker's assistant message is paged out", () => {
+    const projected = projectProcessJobPresentation([appliedUser()], { threadId: "thread" });
+    expect(projected.messages.map(({ id }) => id)).toEqual(["user-1"]);
+  });
+
+  it("keeps two steers in one turn as two barriers, each with its own segment", () => {
+    const secondSteer = { ...steerPart, inputId: "input-2", messageId: "user-2", text: "And keep the retry budget" };
+    const secondUser = appliedUser({ id: "user-2", parts: [{ type: "text", text: secondSteer.text }] });
+    const assistant = steeredAssistant({
+      parts: [
+        { type: "text", text: "First I will look." },
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        steerPart,
+        { type: "tool-call", toolCallId: "t2", toolName: "Write", status: "complete" },
+        secondSteer,
+        { type: "text", text: "Now with both steers." },
+        { type: "tool-call", toolCallId: "t3", toolName: "Bash", status: "complete" },
+        { type: "text", text: "Done." },
+      ],
+    });
+    const content = convertWebMessage(assistant).content as readonly {
+      readonly type: string; readonly data?: { readonly inputId?: unknown };
+    }[];
+    expect(content.map((part) => part.type)).toEqual([
+      "data-note",
+      "tool-call",
+      "data-steer",
+      "tool-call",
+      "data-steer",
+      "data-note",
+      "tool-call",
+      "text",
+    ]);
+    expect(content.filter((part) => part.type === "data-steer").map((part) => part.data?.inputId))
+      .toEqual(["input-1", "input-2"]);
+    // Both standalone bubbles go, each by its own marker.
+    const projected = projectProcessJobPresentation([appliedUser(), secondUser, assistant], { threadId: "thread" });
+    expect(projected.messages.map(({ id }) => id)).toEqual(["assistant-1"]);
+  });
+
+  it("keeps non-applied follow-ups standalone even beside an unrelated marker", () => {
+    const pending = appliedUser({ id: "user-2", liveInputStatus: "pending" });
+    const projected = projectProcessJobPresentation(
+      [pending, appliedUser(), steeredAssistant()],
+      { threadId: "thread" },
+    );
+    expect(projected.messages.map(({ id }) => id)).toEqual(["user-2", "assistant-1"]);
+  });
+});
+
+describe("live input placement", () => {
+  // The store orders every turn-bound user row before that turn's assistant
+  // row, so this is the order a follow-up sent mid-run arrives in.
+  const turnOne = (): readonly WebMessage[] => [
+    message({ id: "user-1", threadId: "thread", turnId: "turn-1", role: "user", parts: [{ type: "text", text: "Start" }] }),
+    message({
+      id: "assistant-1",
+      threadId: "thread",
+      turnId: "turn-1",
+      role: "assistant",
+      status: "running",
+      parts: [{ type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" }],
+    }),
+  ];
+  const followUp = (overrides: Partial<WebMessage> = {}): WebMessage => message({
+    id: "user-steer",
+    threadId: "thread",
+    turnId: "turn-1",
+    role: "user",
+    liveInputStatus: "pending",
+    parts: [{ type: "text", text: "Also check the retry budget" }],
+    ...overrides,
+  });
+  const placement = (messages: readonly WebMessage[]): readonly string[] =>
+    projectProcessJobPresentation(messages, { threadId: "thread" }).messages.map(({ id }) => id);
+
+  it("holds a follow-up below the turn it is steering rather than above its work", () => {
+    const [opening, running] = turnOne();
+    expect(placement([opening!, followUp(), running!])).toEqual(["user-1", "assistant-1", "user-steer"]);
+  });
+
+  it("keeps that position for every status the bubble survives in", () => {
+    for (const status of ["pending", "queued", "cancelled", "uncertain"] as const) {
+      const [opening, running] = turnOne();
+      expect(placement([opening!, followUp({ liveInputStatus: status }), running!]))
+        .toEqual(["user-1", "assistant-1", "user-steer"]);
+    }
+  });
+
+  it("keeps several follow-ups in the order they were sent", () => {
+    const [opening, running] = turnOne();
+    const first = followUp({ id: "steer-1" });
+    const second = followUp({ id: "steer-2", liveInputStatus: "queued" });
+    expect(placement([opening!, first, second, running!]))
+      .toEqual(["user-1", "assistant-1", "steer-1", "steer-2"]);
+  });
+
+  it("stays inside its own turn when a later turn is loaded below it", () => {
+    const [opening, running] = turnOne();
+    const settled = message({ ...running!, status: "complete", parts: [{ type: "text", text: "Done." }] });
+    const later = message({ id: "user-2", threadId: "thread", turnId: "turn-2", role: "user", parts: [{ type: "text", text: "Next" }] });
+    expect(placement([opening!, followUp({ liveInputStatus: "cancelled" }), settled, later]))
+      .toEqual(["user-1", "assistant-1", "user-steer", "user-2"]);
+  });
+
+  it("leaves the message that opened the turn where it is", () => {
+    const [opening, running] = turnOne();
+    expect(placement([opening!, running!])).toEqual(["user-1", "assistant-1"]);
+  });
+
+  it("keeps the server position when the steered turn has no other loaded message", () => {
+    const later = message({ id: "user-2", threadId: "thread", turnId: "turn-2", role: "user", parts: [{ type: "text", text: "Next" }] });
+    expect(placement([followUp(), later])).toEqual(["user-steer", "user-2"]);
+    expect(placement([followUp({ turnId: undefined }), later])).toEqual(["user-steer", "user-2"]);
+  });
+
+  it("still renders an applied follow-up in place through its inline marker", () => {
+    const [opening] = turnOne();
+    const applied = followUp({ liveInputStatus: "applied", id: "user-steer" });
+    const assistant = message({
+      id: "assistant-1",
+      threadId: "thread",
+      turnId: "turn-1",
+      role: "assistant",
+      status: "complete",
+      parts: [
+        { type: "tool-call", toolCallId: "t1", toolName: "Read", status: "complete" },
+        {
+          type: "steer",
+          inputId: "input-1",
+          messageId: "user-steer",
+          text: "Also check the retry budget",
+          receivedAt: "2026-09-12T10:00:01.000Z",
+        },
+        { type: "text", text: "Done." },
+      ],
+    });
+    expect(placement([opening!, applied, assistant])).toEqual(["user-1", "assistant-1"]);
+  });
 });
 
 describe("convertWebMessage", () => {
@@ -326,6 +869,62 @@ describe("convertWebMessage", () => {
         data: { type: "failure", id: "job-failure", code: "artifact_missing", message: "File expired." },
       },
     ]);
+  });
+
+  it.each(["running", "complete", "failed", "cancelled", "interrupted"] as const)(
+    "keeps launch lifecycle rows adjacent for a %s response",
+    (status) => {
+      const job = processJob();
+      const source = message({
+        role: "assistant",
+        status,
+        parts: [launchPart(job, "launch"), { type: "text", text: "After launch." }],
+      });
+      const events = [
+        { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:started`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "started" as const, state: job.state, occurredAt: job.timestamps.startedAt! },
+        { schema: "mono-agent.process-job-activity-event.v1" as const, id: `process-job:${job.jobId}:terminal`, toolCallId: "launch", jobId: job.jobId, tool: job.tool, summary: job.summary, phase: "terminal" as const, state: job.state, occurredAt: job.timestamps.completedAt! },
+      ];
+      const content = convertWebMessage(source, { processJobEvents: events }).content as readonly { readonly type: string }[];
+      const types = content.map((part) => part.type);
+      expect(types).toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "text"]);
+    },
+  );
+
+  it("separates consecutive receipt-bearing launches while ordinary adjacent calls still cluster", () => {
+    const job = processJob();
+    const second = processJob({ jobId: "job-two" });
+    const launches = message({ role: "assistant", parts: [launchPart(job, "one"), launchPart(second, "two")] });
+    const events = [job, second].flatMap((item, index) => [{
+      schema: "mono-agent.process-job-activity-event.v1" as const,
+      id: `process-job:${item.jobId}:started`,
+      toolCallId: index === 0 ? "one" : "two",
+      jobId: item.jobId,
+      tool: item.tool,
+      summary: item.summary,
+      phase: "started" as const,
+      state: item.state,
+      occurredAt: item.timestamps.startedAt!,
+    }, {
+      schema: "mono-agent.process-job-activity-event.v1" as const,
+      id: `process-job:${item.jobId}:terminal`,
+      toolCallId: index === 0 ? "one" : "two",
+      jobId: item.jobId,
+      tool: item.tool,
+      summary: item.summary,
+      phase: "terminal" as const,
+      state: item.state,
+      occurredAt: item.timestamps.completedAt!,
+    }]);
+    const launchContent = convertWebMessage(launches, { processJobEvents: events }).content as readonly { readonly type: string }[];
+    expect(launchContent.map((part) => part.type))
+      .toEqual(["tool-call", "data-process-job-event", "data-process-job-event", "tool-call", "data-process-job-event", "data-process-job-event"]);
+
+    const ordinary = message({ role: "assistant", parts: [
+      { type: "tool-call", toolCallId: "one", toolName: "Exec", status: "complete" },
+      { type: "tool-call", toolCallId: "two", toolName: "Exec", status: "complete" },
+    ] });
+    const ordinaryContent = convertWebMessage(ordinary).content as readonly { readonly type: string }[];
+    expect(ordinaryContent.map((part) => part.type)).toEqual(["data-tool-cluster"]);
   });
 
   it("preserves attachment-only user messages without manufacturing text or running state", () => {

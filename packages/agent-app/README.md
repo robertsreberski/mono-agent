@@ -37,7 +37,9 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   commit. Cancellation preserves operator, shutdown, stale-session, signal,
   timeout, generic, and unrecorded-reason provenance; failure records a trusted
   host settlement category while bounding/redacting runtime/provider code and
-  detail as untrusted evidence. The next turn sees the account automatically;
+  detail as untrusted evidence. Eligible durable Pi recovery retains native context
+  without appending the account to Pi; cold reseed includes the account. The
+  on-disk history shape is unchanged by recovery;
   `RunHistory` and `SessionHistory` remain the deeper evidence paths.
 - Expose the request-scoped read-only `RunHistory` tool for safe normalized
   recovery, search, and paged evidence from settled prior runs in the logical
@@ -110,6 +112,11 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   companion's lifecycle. Opt-in `tools.web.coordination: "host"` injects the same private
   admission and cooldown store into parent and subagent runs;
   `mono-agent web-control status|reset` inspects or clears idle operational state.
+- Bind oversized tool-block persistence to the harness's authoritative run id,
+  writing owner-private raw payloads under `artifacts.dir/tool-output/<runId>/`.
+  The sink is not injected into out-of-harness child callbacks. The hourly
+  artifact sweep bounds run directories with the existing `artifacts.retention`
+  policy while conservatively retaining active, uncertain, or recently modified runs.
 - Operate the machine-wide `@mono-agent/web` assistant-ui console through
   `mono-agent web`, including persisted curated host themes and a console label
   that defaults to the hostname and can be restored with `--name -`; on macOS
@@ -129,7 +136,9 @@ Process-job chains keep the default depth budget of 4 and allow a configured
 ceiling of 64. Request diagnostics remain visible when the budget is exhausted.
 Background Exec/Bash accepts `wake_on_completion: false` for helpers that only
 need terminal card updates. Exact sentinel-only wakes suppress delivery; a
-receipt timeout settles as unknown and never automatically replays.
+receipt timeout before the destination confirms steering or durable follow-up
+admission settles as unknown and never automatically replays. A confirmed web
+follow-up receipt does not wait for that turn's later model outcome.
 
 ```bash
 # Install the scoped CLI host directly:
@@ -571,6 +580,19 @@ root, or private run path. Only regular files beneath the configured run-specifi
 outside or symlinked paths are dropped. Isolated/proactive
 runs persist but search excludes them unless explicitly requested.
 
+Configured harness runs install the run-bound tool-output sink. When a tool
+lifecycle record persists too, `SessionHistory` exposes only its opaque id and
+current availability, never the host path or contents. The immediate truncation
+summary still names a successfully saved path. These files contain raw,
+untrusted data. The hourly artifact sweep removes eligible run directories by
+the existing `artifacts.retention` age/count policy, with dry-run parity; it
+protects directories projected from running or uncertain summaries and can
+clean an aged orphan without a tool-history row. Recently modified directories
+are held through the next hourly interval, even under count pressure, and are
+revalidated before removal. Tool-history retention itself
+still owns only its database records and tombstones. After file pruning,
+`SessionHistory` recomputes the opaque reference as unavailable.
+
 For tool evidence from a failed, cancelled, or interrupted `RunHistory` candidate, use
 `{ "action": "search", "runIds": ["..."], "includeIsolated": true }` without
 a `states` filter. If it returns no records, do not broaden into another run or
@@ -673,6 +695,17 @@ written and checks that against configured credential values, known token shapes
 credential assignments, and terminal/bidi controls. A match is rejected rather
 than redacted, so a mangled value is never persisted behind a success result.
 
+### Console project tools
+
+Writable interactive web turns can use `ListProjects`, `GetProject`,
+`CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
+`SearchConversations`, `CreateConversation`, and `SetConversationProject` under
+per-tool allow/deny policy. The app authenticates through owner-private console discovery; metadata
+alone never authorizes a callback. Tools return real IDs and applied/pending
+results, restrict all targets to the originating agent, and reject late calls.
+Create-and-attach and its operation receipt commit atomically. There is no
+transport retry after unknown delivery. See [Console project tools](../../docs/tools/mcp.md#console-project-tools).
+
 ### Web conversation titles
 
 `SetConversationTitle` requires no config key. For an ordinary interactive web
@@ -694,6 +727,13 @@ host MCP seam. When the tool is absent or unused, the existing first-user-messag
 title remains the fallback.
 
 ### Channel interactions and conversation history
+
+The configured agent preserves the harness's positive `importContext`
+capability through root-ownership, monitor, process-job, posted-reply, reply-file,
+and MCP-App decorators. The default durable store exposes it only when complete
+batch retention and provider-state retirement or absence are provable. Slack's
+posted-reply wrapper overlays destination history only on the leased Send view;
+the canonical import itself stays scope-free.
 
 For missing context, the agent should use active conversation history first,
 `MemoryRecall` for a targeted intentionally captured durable fact,
@@ -871,6 +911,8 @@ line of long narration. Agent SQLite and retained activity keep the original
 text; failures and non-suppressed output retain their existing truncation rules.
 
 ## Architecture
+
+Configured continuous sessions persist the requested primary model with their durable epoch. Per-model runtime factories are cached for the harness lifetime, and history retirement resolves the owning runtime. A model switch cold-seeds one new epoch; repeated overrides stay warm. Existing fallback and proactive-isolation policies continue to apply. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
 ### Data flow
 
@@ -1148,6 +1190,11 @@ compose communication adapters; adapters never depend on it.
 - Low-level prompt/session/tool execution internals (owned by
   `@mono-agent/agent-harness` and `@mono-agent/runtime-adapter`).
 - Multi-agent orchestration (owned by `@mono-agent/agent-orchestrator`).
+
+Opt in to metadata-only prompt-cache request fingerprints with
+`providers.piNative.promptCacheDiagnostics` (default `false`) or
+`MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS`. The offline reader is documented in
+[Prompt-cache measurement](https://mono-agent-docs.vercel.app/runtime/prompt-cache-measurement/).
 
 ## Related Documentation
 

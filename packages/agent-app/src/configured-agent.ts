@@ -1,6 +1,7 @@
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
   createAgentHarness,
+  createSessionRuntimeResolver,
   createAgentResponder,
   acquireToolHistoryWriter,
   createDurableHistoryStore,
@@ -60,6 +61,7 @@ import type {
 import type { SandboxEngine, SandboxPolicy } from "@mono-agent/runtime-adapter";
 
 import { agentArtifactDerivedRoots } from "./agent-artifact-paths.js";
+import { createToolOutputArtifactsRuntimeExtension } from "./tool-output-artifacts.js";
 import {
   acquireAgentRootOwnership,
   assertAgentRootLeaseOutsideWorkspace,
@@ -134,6 +136,7 @@ export interface ConfiguredAgentRuntimeOptions {
 export type ConfiguredAgentSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
 
 export interface ConfiguredAgentSessionSnapshot {
+  readonly modelKey?: string;
   readonly conversationId: string;
   readonly providerSessionId: string;
   readonly createdAt: number;
@@ -142,6 +145,7 @@ export interface ConfiguredAgentSessionSnapshot {
 }
 
 export interface ConfiguredAgentSessionEvent {
+  readonly modelKey?: string;
   readonly kind: ConfiguredAgentSessionEventKind;
   readonly conversationId: string;
   readonly providerSessionId?: string;
@@ -201,6 +205,8 @@ export interface ConfiguredAgentHarnessOptions {
   /** Best-effort diagnostic for bounded lifecycle-sidecar write failures. */
   readonly onToolHistoryWarning?: (message: string) => void;
   readonly onSessionEvent?: ConfiguredAgentSessionEventHandler;
+  /** Host-only provider settlement window; defaults to 1,000 ms. */
+  readonly terminalRecoverySettlementMs?: number;
   /**
    * Factory for a runtime bound to a per-request override model (cron/webhook
    * per-trigger model). Wired by the app so override runtimes share the
@@ -700,6 +706,8 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly model?: RuntimeModelReference;
+  readonly effort?: string;
   readonly systemPrompt: string;
   readonly prompt: string;
   readonly definition: {
@@ -804,11 +812,8 @@ function subagentsRuntimeOptions(
     // `options.model` per chain entry, so handing a different model to the
     // shared router is silently ignored and the child would run on the chain
     // primary instead of the model its profile asked for.
-    const overrides = request.definition.model !== undefined
-      && modelReferenceKey(request.definition.model) !== modelReferenceKey(deps.baseModel);
-    const childModel = overrides
-      ? (request.definition.model as RuntimeModelReference)
-      : deps.baseModel;
+    const childModel = request.definition.model ?? request.model ?? deps.baseModel;
+    const overrides = modelReferenceKey(childModel) !== modelReferenceKey(deps.baseModel);
     const runtime = overrides && deps.runtimeForModel !== undefined
       ? deps.runtimeForModel(childModel)
       : deps.runtime;
@@ -861,7 +866,8 @@ function subagentsRuntimeOptions(
       ...(childSkills === undefined
         ? {}
         : { skills: childSkills, skillsRoot: request.skillsRoot }),
-      ...(request.definition.effort === undefined ? {} : { effort: request.definition.effort }),
+      ...((request.definition.effort ?? request.effort) === undefined
+        ? {} : { effort: request.definition.effort ?? request.effort }),
       allowedTools: request.definition.allowedTools ?? [...DEFAULT_SUBAGENT_TOOLS],
       disallowedTools: [...new Set([...(request.definition.disallowedTools ?? []), ...SUBAGENT_HARD_DENY])],
       // Only the servers this profile named. A profile that names none gets an
@@ -878,6 +884,11 @@ function subagentsRuntimeOptions(
   return {
     subagents: {
       definitions,
+      ...(subagents.models === undefined ? {} : { models: subagents.models.map((choice) => ({
+        name: choice.name ?? modelReferenceKey(choice.model),
+        model: choice.model,
+        key: modelReferenceKey(choice.model),
+      })) }),
       // Authoring is on unless an operator turns it off; the ceiling is what
       // keeps that safe, so it is always resolved here rather than left to the
       // kernel's conservative read-only fallback.
@@ -912,9 +923,8 @@ function fallbackChainForConfig(
     // and the router never runs — so same-model retries would silently do
     // nothing for every agent with no configured backups. Build a retry-only
     // single-entry chain instead whenever the primary asks for more than one
-    // attempt. `hasConfiguredFallback` deliberately stays false for this shape,
-    // keeping `sessionOptions.supportsResume` true: the router only drops the
-    // provider session on the retry itself (retryIndex > 0).
+    // attempt. Both retry-only and multi-entry chains keep sessions on the
+    // primary's first attempt; the router makes later attempts stateless.
     if (primaryAttempts <= 1) {
       return {};
     }
@@ -1068,6 +1078,11 @@ async function createConfiguredAgentHarnessInternal(
   }, {
     suppressSandboxEngine: processJobsProtectionPosture.suppressSyntheticSandbox,
   });
+  const runtimeForSession = createSessionRuntimeResolver({ runtime, model,
+    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
+  });
+  const runtimeForModel = options.runtimeForModel === undefined ? undefined
+    : (target: RuntimeModelReference) => runtimeForSession(modelReferenceKey(target));
   const clearSessionsBoundaryOptions = {
     cwd: agentRoot,
     workspace: config.runtime.workspace,
@@ -1174,7 +1189,7 @@ async function createConfiguredAgentHarnessInternal(
     routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
-  const runtimeOptionsForRequest = createMonitorsRuntimeExtension({
+  const monitoredRuntimeOptionsForRequest = createMonitorsRuntimeExtension({
     next: processJobsRuntimeOptionsForRequest,
     service: internalHooks.monitors?.service,
     coreConfig: config,
@@ -1185,10 +1200,15 @@ async function createConfiguredAgentHarnessInternal(
       ?? internalHooks.processJobs?.routesOnlyPiNative
       ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
   });
+  const toolOutputArtifactRoot = resolvePath(config.artifacts.dir, "tool-output");
+  const runtimeOptionsForRequest = createToolOutputArtifactsRuntimeExtension(
+    monitoredRuntimeOptionsForRequest,
+    toolOutputArtifactRoot,
+  );
   const subagents = subagentsRuntimeOptions(config, {
     runtime,
     baseModel: model,
-    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
+    ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
   });
   const runtimeOptions = mergeStaticRuntimeOptions(
     runtimeOptionsForLocalProvider(model, config.providers?.local),
@@ -1200,16 +1220,17 @@ async function createConfiguredAgentHarnessInternal(
   const sessionOptions: AgentHarnessSessionOptionsWithEvents = {
     mode: config.runtime.session.mode,
     idleTimeoutMs: config.runtime.session.idleTimeoutMs,
-    // Any fallback makes the logical run stateless. A provider-owned session
-    // cannot safely cross the route boundary, even when both bridges happen to
-    // expose resume support. History replay remains available to every attempt.
-    supportsResume: hasConfiguredFallback(config)
-      ? false
-      : supportsSessionResume(),
+    // Continuous sessions belong to the primary's first attempt. The router
+    // strips session state from retries and backups and withholds their resumable
+    // result id; an unsynchronized durable answer rotates the epoch before the next turn.
+    supportsResume: supportsSessionResume(),
     ...(config.runtime.session.isolateProactive === undefined
       ? {}
       : { isolateProactive: config.runtime.session.isolateProactive }),
     ...(options.onSessionEvent === undefined ? {} : { onSessionEvent: options.onSessionEvent }),
+    ...(options.terminalRecoverySettlementMs === undefined
+      ? {}
+      : { terminalRecoverySettlementMs: options.terminalRecoverySettlementMs }),
   };
   const piSessionsRoot = config.providers?.piNative?.piSessionsRoot;
   const retireDurableSession = runtime.retireDurableSession?.bind(runtime);
@@ -1220,8 +1241,16 @@ async function createConfiguredAgentHarnessInternal(
     ...(piSessionsRoot === undefined || retireDurableSession === undefined
       ? {}
       : {
-          retireProviderSession: async (providerSessionId: string): Promise<void> => {
-            await retireDurableSession(providerSessionId, piSessionsRoot);
+          retireProviderSession: async (providerSessionId: string, modelKey?: string): Promise<void> => {
+            const owner = runtimeForSession(modelKey);
+            if (owner.retireDurableSession === undefined) {
+              throw new Error("Session owner cannot retire durable provider state.");
+            }
+            // Durable retirement detaches an open Pi handle before unlinking;
+            // ordinary invalidation alone rejects while a cancelled turn unwinds.
+            await owner.retireDurableSession(providerSessionId, piSessionsRoot);
+            if (owner.invalidateSession !== undefined) await owner.invalidateSession(providerSessionId);
+            else await owner.disposeSession?.(providerSessionId);
           },
         }),
   });
@@ -1234,7 +1263,7 @@ async function createConfiguredAgentHarnessInternal(
   // create either the sidecar or its owner database.
   const toolHistory = lazyConfiguredToolHistory({
     root: historyRoot,
-    artifactRoot: resolvePath(config.artifacts.dir, "tool-output"),
+    artifactRoot: toolOutputArtifactRoot,
     rollover,
     ...(options.onToolHistoryWarning === undefined
       ? {}
@@ -1325,7 +1354,7 @@ async function createConfiguredAgentHarnessInternal(
             capabilityIssuer: options.continuationCapabilityIssuer,
           },
         }),
-    ...(options.runtimeForModel === undefined ? {} : { runtimeForModel: options.runtimeForModel }),
+    ...(runtimeForModel === undefined ? {} : { runtimeForModel }),
     ...(memory === undefined ? {} : { memory }),
     memoryWriteMode: config.memory?.writeMode ?? "disabled",
     ...(options.onMemoryWarning === undefined ? {} : { onMemoryWarning: options.onMemoryWarning }),
@@ -1369,6 +1398,7 @@ function harnessWithAgentRootOwnership(
 ): AgentHarness {
   let disposePromise: Promise<void> | undefined;
   return {
+    ...(harness.liveInputOwnership === undefined ? {} : { liveInputOwnership: harness.liveInputOwnership }),
     run: harness.run.bind(harness),
     ...(harness.submit === undefined ? {} : { submit: harness.submit.bind(harness) }),
     ...(harness.offerLiveInput === undefined
@@ -1381,6 +1411,9 @@ function harnessWithAgentRootOwnership(
     ...(harness.appendVerbatimTurn === undefined
       ? {}
       : { appendVerbatimTurn: harness.appendVerbatimTurn.bind(harness) }),
+    ...(harness.importContext === undefined
+      ? {}
+      : { importContext: harness.importContext.bind(harness) }),
     dispose: () => {
       disposePromise ??= Promise.resolve()
         .then(async () => await harness.dispose?.())
@@ -1762,10 +1795,6 @@ async function createConfiguredAgentResponderInternal(
 
 /** @internal Shared only with app-local history decorators; absent from the package root. */
 export const DEFAULT_HISTORY_MAX_MESSAGES = 64;
-
-function hasConfiguredFallback(config: MonoAgentConfig): boolean {
-  return (config.runtime.fallbacks?.length ?? 0) > 0;
-}
 
 function supportsSessionResume(): boolean {
   try {
@@ -2415,6 +2444,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
       };
   if (
     piNative?.transport === undefined
+    && piNative?.promptCacheDiagnostics === undefined
     && piNative?.piMaxRetries === undefined
     && piNative?.maxRetryDelayMs === undefined
     && compaction === undefined
@@ -2426,6 +2456,7 @@ function configRuntimeFlags(config: MonoAgentConfig): StaticRuntimeOptions | und
   }
   return {
     ...(piNative?.transport === undefined ? {} : { piTransport: piNative.transport }),
+    ...(piNative?.promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics: piNative.promptCacheDiagnostics }),
     ...(piNative?.piMaxRetries === undefined ? {} : { piMaxRetries: piNative.piMaxRetries }),
     ...(piNative?.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: piNative.maxRetryDelayMs }),
     ...(compaction === undefined ? {} : { compaction }),

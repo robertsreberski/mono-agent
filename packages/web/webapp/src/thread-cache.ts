@@ -1,4 +1,8 @@
+import { mergeModelTransitions } from "./model-transitions";
+import { mergeProjectTransitions } from "./project-transitions";
 import type {
+  ModelTransition,
+  ProjectTransition,
   MessageDelta,
   MessageDeltaOp,
   MessagePart,
@@ -48,6 +52,8 @@ const MESSAGE_STATUSES: ReadonlySet<string> = new Set<WebMessage["status"]>([
 ]);
 
 export interface ThreadCacheEntry {
+  readonly projectTransitions?: readonly ProjectTransition[];
+  readonly modelTransitions?: readonly ModelTransition[];
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
   /** The keyset cursor for the next OLDER page, absent at the transcript's start. */
@@ -480,6 +486,27 @@ export const isRunAttribution = (value: unknown): boolean => {
   });
 };
 
+/**
+ * A persisted inline-steer marker. `text` is operator prose, so newlines and
+ * tabs are legitimate content and the guard requires only non-blank text; the
+ * server already bounds its length. `receivedAt` stays a presence-and-shape
+ * check, like `deliveryKey` on the wake marker above.
+ */
+const isSteerPart = (part: Record<string, unknown>): boolean => {
+  if (typeof part.inputId !== "string" || part.inputId.length === 0
+    || typeof part.messageId !== "string" || part.messageId.length === 0
+    || typeof part.text !== "string" || part.text.trim().length === 0) {
+    return false;
+  }
+  if (part.receivedAt !== undefined && typeof part.receivedAt !== "string") return false;
+  const quote = part.quote;
+  if (quote === undefined) return true;
+  if (quote === null || typeof quote !== "object" || Array.isArray(quote)) return false;
+  const record = quote as Record<string, unknown>;
+  return typeof record.text === "string" && record.text.trim().length > 0
+    && typeof record.messageId === "string" && record.messageId.length > 0;
+};
+
 const isMessagePart = (value: unknown): value is MessagePart => {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const part = value as Record<string, unknown>;
@@ -497,8 +524,22 @@ const isMessagePart = (value: unknown): value is MessagePart => {
         && (part.attribution === undefined || isRunAttribution(part.attribution));
     case "process-job":
       return typeof part.job === "object" && part.job !== null;
+    case "process-job-wake":
+      return text("jobId") && text("deliveryKey")
+        && (part.disposition === "steered" || part.disposition === "follow_up");
+    case "steer":
+      return isSteerPart(part);
     case "monitor-activity":
       return Array.isArray(part.monitors);
+    case "cron-reply-context":
+      return part.schema === "mono-agent.web.cron-reply-context.v1"
+        && part.untrusted === true
+        && typeof part.source === "object" && part.source !== null
+        && typeof part.run === "object" && part.run !== null
+        && typeof part.snapshot === "object" && part.snapshot !== null
+        && typeof part.result === "object" && part.result !== null
+        && typeof part.failure === "object" && part.failure !== null
+        && text("prefix") && text("rawJson") && text("rawText");
     case "telemetry":
       return text("event");
     case "error":
@@ -763,7 +804,12 @@ export interface ThreadCache {
   ) => boolean;
   readonly prependOlder: (
     threadId: string,
-    page: { readonly messages: readonly WebMessage[]; readonly nextCursor?: string },
+    page: {
+      readonly projectTransitions?: readonly ProjectTransition[];
+      readonly modelTransitions?: readonly ModelTransition[];
+      readonly messages: readonly WebMessage[];
+      readonly nextCursor?: string;
+    },
   ) => boolean;
   /** The summary only. Never inserts: a conversation not held stays not held. */
   readonly patchThread: (threadId: string, thread: ThreadSummary) => boolean;
@@ -866,6 +912,8 @@ export interface ThreadCache {
    * not call `onCommit`.
    */
   readonly restore: (entry: {
+    readonly projectTransitions?: readonly ProjectTransition[];
+    readonly modelTransitions?: readonly ModelTransition[];
     readonly thread: ThreadSummary;
     readonly messages: readonly WebMessage[];
     readonly messagesNextCursor?: string;
@@ -1057,6 +1105,8 @@ export const createThreadCache = (
           {
             thread: detail.thread,
             messages: detail.messages,
+            projectTransitions: detail.projectTransitions ?? [],
+            modelTransitions: detail.modelTransitions ?? [],
             stale,
             syncedAt: now(),
             repairedToolCallIds: new Set<string>(),
@@ -1103,6 +1153,8 @@ export const createThreadCache = (
             ? held.thread
             : newerProjection(held.thread, detail.thread),
           messages,
+          projectTransitions: mergeProjectTransitions(reset ? [] : held.projectTransitions, detail.projectTransitions),
+          modelTransitions: mergeModelTransitions(reset ? [] : held.modelTransitions, detail.modelTransitions),
           stale,
           syncedAt: now(),
           repairedToolCallIds: held.repairedToolCallIds,
@@ -1149,13 +1201,16 @@ export const createThreadCache = (
       const next = withCursor({
         ...withoutCursor,
         messages,
+        projectTransitions: mergeProjectTransitions(entry.projectTransitions, page.projectTransitions),
+        modelTransitions: mergeModelTransitions(entry.modelTransitions, page.modelTransitions),
         // Remembered by ID: this is the only thing a later windowed answer can
         // be measured against to tell paged-back history from a deletion.
         pagedInIds: older.length === 0
           ? entry.pagedInIds
           : new Set([...entry.pagedInIds, ...older.map((message) => message.id)]),
       }, page.nextCursor);
-      return messages === entry.messages && next.messagesNextCursor === entry.messagesNextCursor
+      return messages === entry.messages && next.projectTransitions === entry.projectTransitions
+        && next.modelTransitions === entry.modelTransitions && next.messagesNextCursor === entry.messagesNextCursor
         ? entry
         : next;
     })),
@@ -1282,6 +1337,8 @@ export const createThreadCache = (
         {
           thread: stored.thread,
           messages: stored.messages,
+          projectTransitions: stored.projectTransitions ?? [],
+          modelTransitions: stored.modelTransitions ?? [],
           // NOT NEGOTIABLE. Everything that happened while this tab was closed
           // is exactly what is missing here.
           stale: true,

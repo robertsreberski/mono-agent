@@ -170,11 +170,29 @@ export async function runStart(
   args: ParsedCliArgs,
   env?: Record<string, string | undefined>,
   managedBackgroundWorker = false,
+  systemdBackgroundWorker = false,
 ): Promise<number> {
   if (args.foreground) {
-    return await runForeground(args, env, managedBackgroundWorker);
+    return await runForeground(args, env, managedBackgroundWorker, systemdBackgroundWorker);
   }
   return await runBackgroundCommand(args, "start", env);
+}
+
+/** Decode the secret-free worker transport and bind it to this exact invocation. */
+export function decodeAndVerifyWorkerSnapshot(
+  args: Pick<ParsedCliArgs, "envFile" | "expectedBackgroundSnapshot">,
+  cwd: string,
+  configPath: string,
+): BackgroundSnapshot {
+  if (args.expectedBackgroundSnapshot === undefined) {
+    throw new Error("The worker is missing its approved background snapshot.");
+  }
+  const snapshot = decodeBackgroundSnapshot(args.expectedBackgroundSnapshot);
+  const dotenvPath = resolve(cwd, args.envFile ?? ".env");
+  if (snapshot.configPath !== configPath || snapshot.dotenvPath !== dotenvPath) {
+    throw new Error("The approved snapshot paths do not match the worker arguments.");
+  }
+  return snapshot;
 }
 
 /**
@@ -186,6 +204,7 @@ async function runForeground(
   args: ParsedCliArgs,
   env: Record<string, string | undefined> = process.env,
   managedBackgroundWorker = false,
+  systemdBackgroundWorker = false,
 ): Promise<number> {
   const cwd = process.cwd();
   const configPath = await canonicalBackgroundConfigPath(cwd, args.configPath);
@@ -225,6 +244,21 @@ async function runForeground(
   }
   const startupEnvironment = { ...env };
 
+  let systemdBackgroundSnapshot: BackgroundSnapshot | undefined;
+  if (systemdBackgroundWorker) {
+    try {
+      systemdBackgroundSnapshot = decodeAndVerifyWorkerSnapshot(args, cwd, configPath);
+    } catch (error) {
+      process.stderr.write(ui.errorLine(
+        `Systemd worker could not verify its startup snapshot: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+      // systemd's Restart=on-failure policy is bounded by StartLimitBurst. A
+      // non-zero exit preserves a visible failed unit instead of disguising a
+      // malformed or mismatched installed worker as a clean shutdown.
+      return 1;
+    }
+  }
+
   let lease;
   try {
     lease = await acquireBackgroundWorkerLease(configPath);
@@ -245,14 +279,10 @@ async function runForeground(
   let app: MonoAgentApp | undefined;
   let logMonitor: ReturnType<typeof startManagedLaunchdLogMonitor> | undefined;
   try {
-    let backgroundSnapshot: BackgroundSnapshot | undefined;
+    let backgroundSnapshot = systemdBackgroundSnapshot;
     if (managedBackgroundWorker) {
       try {
-        backgroundSnapshot = decodeBackgroundSnapshot(args.expectedBackgroundSnapshot ?? "");
-        const dotenvPath = resolve(cwd, args.envFile ?? ".env");
-        if (backgroundSnapshot.configPath !== configPath || backgroundSnapshot.dotenvPath !== dotenvPath) {
-          throw new Error("The approved snapshot paths do not match the managed worker arguments.");
-        }
+        backgroundSnapshot = decodeAndVerifyWorkerSnapshot(args, cwd, configPath);
         runtimeInputs = await materializeBackgroundRuntimeInputs({
           snapshot: backgroundSnapshot,
           cwd,

@@ -98,7 +98,7 @@ latest envelope supersedes older copies; quoted surface labels, user/history,
 memory and tool output remain untrusted. Tool enforcement and delivery routes
 do not derive authority from envelope text.
 
-Every cold/stateless/stale-session retry supplies chronological canonical
+Every harness-prepared cold run and stale-session retry supplies chronological canonical
 messages with deterministic speaker/timestamp labels, then the bounded untrusted
 tool-history projection, then one current user message (envelope, existing
 speaker/preceding-message/user/attachment text, recall suffix). Legacy system/tool
@@ -106,6 +106,13 @@ history is labeled untrusted text, not system authority or native tool calls.
 Inspection, canonical history and provider transcripts remain distinct: the host
 never persists the envelope into canonical user text or memory capture and does
 not use it as a recall query. Configured last-64 retention is unchanged.
+
+Only the primary's first router attempt may retain a provider session. A retry or
+backup after a warm primary failure has the current message and bounded
+failed-attempt snapshot, without the earlier conversation. Its answer retires the
+coordinated durable epoch; the next turn reseeds from canonical history. Fresh
+stateless Pi calls use a private in-memory repository so their stable attribution
+id cannot collide with or delete the primary's transcript.
 
 ## Run Lifecycle
 
@@ -285,13 +292,23 @@ provider exposes queue-after-turn), not durability/cost:
 
 The pi runtime is built on pi-agent-core's native `AgentHarness` (the hand-rolled
 bridge was removed once native reached parity); it owns the session and
-pi-ai-managed retry. `AgentHarness` itself has **no** automatic compaction, so
-the pi bridge drives it through a one-shot `session_before_compact` hook: before
+pi-ai-managed retry. `AgentHarness` supports native checkpoint and overflow compaction; mono-agent
+disables that path and drives its own guarded policy through a one-shot `session_before_compact` hook: before
 each turn it compares the full request estimate with an adaptive trigger, and if
 a turn still overflows it retries exactly once only after a preview verifies a
 positive reduction. Runs report `context_compaction_applied` as `true` (a
 compaction fired), `false` (enabled but not needed), or `null` (disabled via
 `runtime.compaction.enabled: false`).
+
+`ai/providers/pi-native/compaction-summary.js` prepares copies for Pi's public
+`compact()`: bounded tool-result heads/tails, confirmed built-in file operations,
+and supplemental summary focus. Its model facade changes only summary context;
+model, options, request context and other model methods are forwarded. Each
+completion is accounted once at return or rejection. The driver attaches these
+rows to terminal compaction events, preserving spend even when a preview rejects
+persistence. File metadata and generated prose are measured separately. Native
+cut rules and reserve math remain Pi-owned. Payload diagnostics correlate
+assistant usage independently of these operation-scoped summary requests.
 
 | Active bridge | Warm session | Resume across turns | Survives process restart |
 |---|---|---|---|

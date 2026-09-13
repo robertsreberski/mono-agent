@@ -97,7 +97,7 @@ When you select **Scheduled jobs (cron)** in the guided `mono-agent init` wizard
 | `jobs[].notifyConversationId` | string | no | inferred if exactly one destination | Destination conversation id for native notification. Use exact `web:new` to create a new CRON-marked web conversation; web is never inferred. |
 | `jobs[].notifyFailureCooldownHours` | number | no | `6` | Per-job cooldown, in hours, for all-models-failed error notices on `notify: true` jobs. |
 | `jobs[].model` | string | no | `runtime.model` | Per-job model override. Becomes this turn's primary, keeping canonical `runtime.fallbacks` (or legacy backups). See [Per-trigger model & effort](#per-trigger-model--effort). |
-| `jobs[].effort` | string | no | `runtime.effort` | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` warns and names the nearest supported level when the configured value is outside the model's advertised set. Ranking above `max` only prevents keyword downgrade. |
+| `jobs[].effort` | string | no | route-resolved default | Per-job reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`/`ultra`), subject to model support. With a model-only override, the primary keeps `runtime.effort`, a configured fallback uses its own effort or provider default, and another advertised model inherits `runtime.effort` only when it admits that grade. Reasoning-capable models map `ultra` to LOW; models without reasoning use OFF. `max` degrades to `xhigh` unless the resolved model advertises it. `mono-agent doctor` warns and names the nearest supported level when the configured value is outside the model's advertised set. Ranking above `max` only prevents keyword downgrade. |
 
 These limits are checked after inline and folder jobs are merged. Values are measured as UTF-8 bytes and rejected rather than truncated, so an oversized operator-visible configuration fails closed before any jobs arm.
 
@@ -109,9 +109,9 @@ A job can run on a different model or reasoning effort than the agent's default 
 { "id": "deep-research", "expression": "0 3 * * *", "prompt": "…", "model": "anthropic:claude-opus-4-8", "effort": "high" }
 ```
 
-The override becomes that turn's **primary** model; configured canonical/legacy fallbacks remain. Static violations fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the job stays on its safe default. Only the overridden turn is affected.
+The override becomes that turn's **primary** model; configured canonical/legacy fallbacks remain. With no explicit job effort, selecting the configured primary keeps `runtime.effort`, selecting a configured fallback uses that route's pinned effort or provider default, and selecting another advertised model inherits `runtime.effort` only when its ladder admits the grade. Unknown cloud metadata stays permissive. Static violations fail `mono-agent validate`; dynamic invalid values are warned and ignored, so the job stays on its safe default. Only the overridden turn is affected.
 
-A model-override tick runs **ephemerally**: it does not resume or persist a shared continuous session (so a different model never mixes into the conversation's session lineage), though it still sees the job's run history. Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. An `effort`-only override keeps the same model chain and therefore must still be compatible with every retained fallback.
+A pinned model uses a warm session in the job's conversation when continuous sessions are enabled and `runtime.session.isolateProactive` is false. Repeated ticks on that model can resume the durable transcript when `piSessionsRoot` is configured; changing the model retires the old epoch and cold-seeds a new one from canonical history. With `isolateProactive: true`, cron ticks remain isolated. Overrides to configured local providers are supported: mono-agent recomputes the target provider's endpoint and capabilities. An unconfigured or invalid local target clears the inherited endpoint block and is rejected rather than accidentally using the host provider. An `effort`-only override keeps the same model chain and therefore must still be compatible with every retained fallback.
 
 ## Environment variables
 
@@ -172,11 +172,29 @@ Pick an `expression` whose interval comfortably exceeds the job's typical runtim
 
 ## Web console and operator APIs
 
-The web cron header is a quiet, read-only schedule line: human-language cadence plus the agent-authored next run in the viewer's local date/time. Wall-clock cadence names the scheduler timezone (UTC by default), while the next-run time exposes the viewer timezone. Unsupported cadence expressions remain normalized cron text plus timezone. Removed and disabled jobs say so; missing, invalid, past, or offline/stale next-run state says **Next run unavailable**. The console never reads `source.configPath` or computes a next run. Configuration stays in files/config JSON, and agents without cron capability remain readable through cached history.
+The web console has a dedicated **Automations** navigation destination populated from the agent-scoped overview, independently of the loaded Chats page. It lists configured jobs before their first run and shows each overview job once with its id, human-language cadence/timezone, enabled state, last or active run, and agent-authored next run. Selecting a row opens the existing stable `/agents/<sourceId>/cron/<jobId>` read-only history route, and opening that route directly selects Automations navigation. Loading, unsupported, unavailable, saved-snapshot, empty, and truncated states remain distinct. A saved overview and cached history remain readable while the agent is offline or lacks current cron capability, but stale schedule state is labelled, not actionable, and never presented as a live next-run prediction. Chats requests use a server-side scope that excludes cron channels before search, limits, and cursors are applied; webhook conversations remain Chats, and unscoped API callers retain the backward-compatible mixed listing.
 
-The running agent remains authoritative for configured/effective state, last and next run, health, run records, and the redacted configuration view exposed through operator APIs. The web HTTP config-view, run-now, and effective-enabled proxies remain available to operator clients; the browser header has no configuration view or action controls.
+The web cron header shows schedule, timezone, effective state, last and next run, and health from the agent-authored overview. **Run now** and **Enable/Disable** use the existing confirmation, authentication, idempotency, and capability gates. They remain visible but disabled with the authoritative reason when the live agent does not allow actions. **View config** opens the existing redacted, read-only configuration view whenever live cron reads are available. The console never reads `source.configPath`, edits configuration, computes a next run, or treats stale snapshot data as actionable; agents without current cron capability remain readable through cached history.
+
+The running agent remains authoritative for configured/effective state, last and next run, health, run records, the redacted configuration view, and all action outcomes.
 
 Run records use a durable per-job admission sequence. Scheduled ids are `cron:<encodedJobId>:<scheduledAt>`; manual ids use the disjoint `cron:<encodedJobId>:<observedAt>:m<sequence>` form. The feed orders every admitted, running, queued, succeeded, failed, cancelled, skipped, or dropped record by immutable `(orderedAt, sequence, runId)`. The artifact run id is a separate link when one exists.
+
+A visible terminal run also offers **Reply**. It creates a separate normal
+conversation for the same agent and leaves its composer empty and focused; it
+does not continue the cron session, rerun the job, invoke a provider, or send a
+message automatically. The imported context is an immutable, explicitly
+untrusted snapshot of the exact persisted source/job/run: summary by default,
+or detail only when that detail was already loaded before activation. The
+snapshot is capped at 32 KiB with explicit source and consumer truncation and
+excludes activity/tool payloads, files, artifacts, prompts/config, and adjacent
+history. Reply is unavailable without a live agent positively advertising
+context-import v1 and its full byte bound. If the request outcome is unknown,
+the console requires an explicit retry of the same operation and never replays
+it during startup. The current page retains that unresolved identity even when
+session storage is unavailable, and a temporary offline/unsupported preflight
+on its retry does not replace it with a new operation. Status, time, and Reply
+stay visible while secondary run diagnostics remain available under **Details**.
 
 Operator control APIs require all three gates: `cron.operatorActions.enabled`, an operator API key, and explicit confirmation returned by the agent. Run-now reuses the scheduler's fixed skip-overlap guard and watchdog. Consequently, a scheduled tick arriving while a manual run is active is recorded as `skipped_overlap`, attributed to that manual run, and does not make the job unhealthy. Enable/disable is a durable **runtime override**; it does not rewrite any of the layered config, environment, or Markdown sources.
 

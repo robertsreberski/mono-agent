@@ -255,6 +255,7 @@ export interface RuntimeResult {
   readonly errorDetails?: unknown;
   readonly failureKind?: string | null;
   readonly providerSessionId?: string | null;
+  readonly providerSessionRecovery?: { runId: string; revision: number; providerSessionId: string; modelKey: string; tipId: string };
   readonly runtimeWarnings?: unknown;
   readonly diagnostics?: unknown;
   readonly capabilitiesUsed?: unknown;
@@ -307,15 +308,39 @@ export interface RuntimePromptOverrides {
   readonly liveInputGuidance?: (body: string) => string;
 }
 
+/** Exact native identifiers that can correlate a live follow-up to one provider run. */
+export interface RuntimeLiveInputEvidence {
+  readonly providerEntryId?: string;
+  readonly providerRunId?: string;
+}
+
+/** A handed-off follow-up whose absence from the active provider run cannot be proved. */
+export interface RuntimeLiveInputUncertainty extends RuntimeLiveInputEvidence {
+  readonly reason: "delivery_uncertain";
+}
+
+/** Recognized synchronous host-settlement confirmation values. */
+export type RuntimeLiveInputCallbackDisposition = "recorded" | "ignored";
+
 /** One live follow-up delivered to a provider bridge. */
 export interface RuntimeLiveInputMessage {
   readonly body: string;
   readonly id?: string;
   readonly receivedAt?: string;
-  /** Called only after the provider's native steering boundary accepts it. */
-  readonly acknowledge?: () => void;
-  /** Per-attempt rejection; a later provider attempt may still replay it. */
-  readonly reject?: (reason?: unknown) => void;
+  /**
+   * Optional opaque in-process identity shared by fresh callback leases for
+   * this same logical message. Later same-id values without this exact object
+   * remain invalid duplicate owners.
+   */
+  readonly logicalOwner?: object;
+  /** Called after the provider's native queue accepts this exact attempt. */
+  readonly accepted?: (evidence?: RuntimeLiveInputEvidence) => unknown;
+  /** Called only after exact native transcript consumption is proved. */
+  readonly acknowledge?: (evidence?: RuntimeLiveInputEvidence) => unknown;
+  /** Called when delivery cannot be proved absent and must not be retried. */
+  readonly uncertain?: (details: RuntimeLiveInputUncertainty) => unknown;
+  /** Per-attempt safe rejection; a later provider attempt may still replay it. */
+  readonly reject?: (reason?: unknown) => unknown;
 }
 
 /** Provider transport requested for Pi-native runs. Unsupported providers ignore it. */
@@ -365,9 +390,18 @@ export interface RuntimeMcpAppHost {
 }
 
 export interface RuntimeRunOptions {
+  /** Host-owned opt-in for settled durable terminal recovery. */
+  readonly sessionRecovery?: { runId: string; revision: number } | undefined;
   readonly model: RuntimeModelReference;
   readonly messages: readonly RuntimeMessage[];
   readonly abortSignal: AbortSignal;
+  /** Host-owned synchronous artifact writer bound to this run. */
+  readonly persistArtifact?: (artifact: {
+    readonly filename: string;
+    readonly buffer: Buffer;
+    readonly toolName: string;
+    readonly toolUseId: string | null;
+  }) => string | null;
   /**
    * Host-owned provider attribution continuity key. Pi-native sends this raw
    * value only to providers that require session attribution; it does not by
@@ -481,6 +515,7 @@ export interface MonoRuntimeLike {
   configureTools?(next?: RuntimeToolOptions): void;
   /** Flush provider-owned durable transcript state before host history commit. */
   syncSession?(providerSessionId: string): Promise<boolean>;
+  recoverSession?(receipt: NonNullable<RuntimeResult["providerSessionRecovery"]>, context: { appliedInputIds: readonly string[] }): Promise<boolean>;
   /**
    * Guarantee that the next resume cannot reuse process-local provider state.
    * Resolves for both removed and already-absent handles; rejects if the

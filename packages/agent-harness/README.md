@@ -64,7 +64,7 @@ console.log(response.text);
 ```
 
 Hosts wire identity/context paths, runtime, model, execution mode, tool policy, sandbox policy, history, memory, skills, and recorder factory explicitly.
-Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution.
+Hosts that need request-scoped runtime setup can provide `runtimeOptionsForRequest`; the harness merges those options into the runtime call, keeps configured sandbox policy monotonic, and runs the returned cleanup after execution. Request effort is tri-state: a string pins the turn, `null` selects the provider default without inheriting the harness effort, and omission inherits the harness effort.
 The model-facing Skill Index defines exact `$skill-name` tokens as explicit
 requests to apply a matching skill; other dollar-prefixed text remains ordinary
 user text. With `skillDisclosure: "index"`, it lists names and descriptions
@@ -73,8 +73,8 @@ through `ReadSkill`; full disclosure does not emit guidance for that tool.
 
 `createAgentResponder()` exposes `offerLiveInput()` for an ordinary active turn.
 Its bounded mailbox delivers follow-ups only when the selected backend supports
-native steering. The provider acknowledges each message only after its native
-steering boundary accepts it. Applied human follow-ups and ProcessJob wakes are
+native steering. Native queue acceptance and exact owned-operation transcript
+consumption are separate. Applied human follow-ups and ProcessJob wakes are
 then recorded as ordered user history and included in memory persistence.
 Host-owned Monitor inputs, identified by their `monitor:` delivery key, are
 applied to the provider run but excluded from canonical user history and memory
@@ -82,9 +82,15 @@ persistence. The responder
 correlates the acknowledgement to the pending input and emits one completed
 synthetic tool lifecycle; human follow-ups use
 `↪️ Steered: “<safe preview>”`, while consumers correlate host-owned receipts by
-their exact delivery key. Unsupported, failed, or
-end-of-turn races settle as `requeue`, allowing Slack, Telegram, and the web
-console to run the reserved message as the next normal turn instead of losing it.
+their exact delivery key. Never-leased or proved-removed input settles as
+`requeue`, allowing the reserved message to run once as the next normal turn.
+Once handoff may have occurred, a failed, cancelled, or end-of-turn race settles
+as `uncertain` and is not retried. Mailbox settlement is a one-way
+compare-and-set: late evidence returns `ignored` and cannot rewrite applied
+history after the mailbox seals. Each replay also receives a distinct mailbox
+lease, so a custom runtime's stale callback cannot settle a newer attempt. The
+opaque logical-owner identity lets the standard runtime refresh that lease
+without granting callback ownership to an unrelated same-ID duplicate.
 
 For `append-host-summary` and `capture` write modes, the store must implement
 `persistCompletedTurn`; harness construction rejects an incompatible store.
@@ -94,13 +100,18 @@ remains successful if admission rejects; the harness emits
 Read-only stores need only `load` and use `memoryWriteMode: "disabled"` or omit it.
 
 The built-in default soul adds only a compact evidence router: active dialogue
-for what was just said, targeted memory search for a durable fact or decision,
-chronological memory browsing for a broad explicit-period retrospective, and
-history tools for exact execution evidence. It uses capability-conditional
-language because the harness itself does not own or assume any app MCP tool.
+for what was just said, `MemoryRecall` for a targeted durable fact or decision,
+`MemoryJournal` for a chronological retrospective over an explicit date range,
+and `RunHistory`/`SessionHistory` for exact execution evidence. It names those
+tools "when available" because the harness itself does not own or assume any
+app MCP tool.
 Unhinted interrupted-work recovery retains the `RunHistory {}` first step.
 
 ## Architecture
+
+Continuous provider sessions bind to the requested primary model. Repeated overrides stay warm; a model change retires the old owner's session and reseeds a new epoch from canonical history. `createSessionRuntimeResolver`, `SessionRuntimeResolver`, and `ProviderSessionHandle` preserve runtime ownership across cleanup paths; `ProviderSessionTurnBinding` is the durable coordinator's input. Without a runtime factory, all keys use the shared runtime with the effective per-run model.
+
+The built-in history store persists `providerSession.modelKey` and a strict version-4 recovery fence. Legacy unbound records load but take one cold reseed; older binaries reject newly bound records. Custom coordinators must advertise `providerSessionModelBinding: "v1"` to enable durable override sessions. See [session boundaries](../../docs/runtime/sessions-concurrency.md).
 
 The harness is the request-to-runtime composition boundary:
 
@@ -125,7 +136,10 @@ The harness is the request-to-runtime composition boundary:
    retries and failures after assembly.
 3. Merge fail-closed tool policy and request-scoped runtime options, attach the
    active conversation's live-input mailbox and incremental tool-lifecycle sink,
-   then invoke `MonoRuntimeLike.run()` under the provider-run concurrency bound.
+   publish its exact run ownership to an optional host observer, then invoke
+   `MonoRuntimeLike.run()` under the provider-run concurrency bound. Ownership
+   closes before the mailbox is removed on completion, cancellation, failure,
+   or disposal, so a late targeted offer cannot reach a successor run.
 4. Await each redacted/bounded lifecycle write before publishing its enriched
    tool block to the client. A 250 ms foreground ceiling releases a healthy but
    still-pending write as `persistence: "deferred"`; the accepted request keeps
@@ -135,7 +149,7 @@ The harness is the request-to-runtime composition boundary:
    successful turn keeps the existing atomic history-and-memory commit boundary;
    an admitted, non-isolated turn that settles as cancelled or failed before
    that boundary seals its accepted prefix, closes dangling tool starts with the
-   real outcome, publishes its bounded continuity account, and retires the
+   real outcome, publishes its bounded continuity account, and recovers or retires the
    provider epoch.
 6. Serialize cancelled/failed continuity publication ahead of the next
    same-conversation context build without waiting for an abort-ignoring
@@ -150,9 +164,9 @@ The harness is the request-to-runtime composition boundary:
 | `src/context/` / `src/skills/` | Deterministic context assembly and selected-skill loading |
 | `src/tool-policy/` | Tool and MCP normalization with a fail-closed default |
 | `src/responder.ts` | Structural request/stream adapter, applied-live-input activity correlation, cancellation, and session rollover |
-| `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, provider acknowledgement, failover replay, and settlement |
+| `src/live-input.ts` | Bounded idempotent mailbox, exact target-run admission, native acceptance/consumption callbacks, safe failover replay, and uncertain settlement |
 | `src/live-session.ts` / `src/sessions.ts` | Queue-after-turn coordination and provider-session lifecycle |
-| `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history |
+| `src/history.ts` / `src/durable-history.ts` | In-memory and crash-safe canonical conversation history, including positive atomic v1 context import and non-provider exclusive turns |
 | `src/tool-history-*.ts` | Secure sidecar schema, single-writer worker/ownership, incremental lifecycle persistence, recovery, bounded read/query, and cold projection |
 
 ## Public API
@@ -165,12 +179,19 @@ The harness is the request-to-runtime composition boundary:
 | `createAgentResponder()` | Expose a harness through the shared `AgentResponder` request/stream contract |
 | `createLiveInputMailbox()` | Build the provider-facing mailbox used to settle active-turn follow-ups without loss |
 | `createToolPolicy()` / `failClosedToolPolicy()` | Declare exactly which built-in and MCP tools may reach the runtime |
-| `createDurableHistoryStore()` | Persist canonical conversation history and coordinate durable provider-session retirement |
+| `createDurableHistoryStore()` | Persist canonical conversation history, coordinate provider-session retirement, and conditionally expose atomic v1 context import when a complete two-message batch fits |
+| `CONVERSATION_HISTORY_VERSION_MAX_BYTES` | Maximum UTF-8 size of an opaque custom-store history version token (512 bytes) |
 | `acquireToolHistoryWriter()` / `ToolHistoryReader` | Persist managed-tool lifecycle pairs or query retained records through a host-authorized bounded projection |
 | `createLiveSessionManager()` | Serialize same-conversation follow-ups while allowing different conversations to run concurrently |
 | `loadSelectedSkills()` / `createSkillsCache()` | Load only host-selected skill bodies and reuse unchanged reads |
 
 The exhaustive inventory below is generated from the package entrypoint.
+
+Custom stores advertising context import return opaque, non-empty history
+version tokens; the harness does not require hashes or interpret their format.
+Both acquired and committed tokens must fit
+`CONVERSATION_HISTORY_VERSION_MAX_BYTES`, and are validated before a model turn
+or staged history publication is trusted.
 
 <!-- public-api-inventory:start -->
 <!-- Generated by scripts/generate-public-api-docs.mjs. Do not edit by hand. -->
@@ -209,6 +230,7 @@ AgentSessionMode
 AppliedLiveInput
 BuildContextInput
 BuiltAgentContext
+CONVERSATION_HISTORY_VERSION_MAX_BYTES
 ContextBlockInput
 ContextRole
 ContextSection
@@ -217,6 +239,8 @@ ContextValidationError
 ContextValidationErrorCode
 ContextValidationErrorDetails
 ContinuationMcpServerTransport
+ConversationHistoryContextImport
+ConversationHistoryExclusiveTurn
 ConversationHistoryProviderSessionTurn
 ConversationHistoryStore
 CreateSkillsCacheOptions
@@ -240,12 +264,15 @@ MarkdownContextBlock
 MemoryWriteMode
 NoopRunRecorder
 PreparedHistoryAppend
+ProviderSessionHandle
+ProviderSessionTurnBinding
 ProviderSessionTurnCommitOptions
 RuntimeSessionEvictReason
 RuntimeSessionRecord
 RuntimeSessionSnapshot
 RuntimeSessionStore
 RuntimeSessionStoreOptions
+SessionRuntimeResolver
 SkillActivationError
 SkillIndexEntry
 SkillIndexSummary
@@ -261,6 +288,7 @@ TOOL_HISTORY_PERSISTENCE_CEILING_MS
 TOOL_HISTORY_SCHEMA
 TOOL_HISTORY_USER_VERSION
 ToolHistoryArtifactReference
+ToolHistoryArtifactSinkInput
 ToolHistoryGetInput
 ToolHistoryGetResult
 ToolHistoryReader
@@ -294,7 +322,9 @@ createInMemoryHistoryStore
 createLiveInputMailbox
 createLiveSessionManager
 createRuntimeSessionStore
+createSessionRuntimeResolver
 createSkillsCache
+createToolHistoryArtifactSink
 createToolPolicy
 failClosedToolPolicy
 isProcessAlive
@@ -320,7 +350,17 @@ toolPolicyToRuntimeOptions
 
 ### Continuous sessions
 
-With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every cold/fresh/stateless run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
+With `session: { mode: "continuous", idleTimeoutMs }` the harness keeps one live provider session per conversation. Confirmed warm runs pass `sessionId`/`sessionKeepAlive` and send only the current user message. A cold history-coordinated Pi reopen supplies canonical history as structured leading runtime messages, outside the system prompt; Pi seeds those messages when its durable JSONL is missing and skips them when the JSONL truly resumes. Every harness-prepared cold/fresh run, continuation and the one stale-session retry supplies structured canonical messages in chronological order. Deterministic per-message labels preserve speakers and stored timestamps; legacy system/tool roles become labeled untrusted user context, never native tool calls. Rotated provider session ids are tracked, `dispose()` retires this harness's live sessions, and history is appended after every successful turn.
+
+The primary's first attempt owns the provider session. Retries and failovers run
+stateless with bounded transcript-tail replay. With coordinated durable Pi history,
+any answer from a retry or backup retires the primary epoch. The next turn
+cold-reseeds from canonical history; after a primary first-attempt success,
+subsequent turns resume the new session and are eligible for provider caching.
+
+On a warm turn whose primary attempt fails, the retry or backup attempt runs
+stateless with the current message and a bounded snapshot of the failed attempt,
+without the earlier conversation; the next turn reseeds from canonical history.
 
 Every admitted, non-isolated run that settles as cancelled or failed before the
 success commit publishes a separate bounded continuity account before the next
@@ -337,9 +377,24 @@ are `status: "failed"`, one of `runtime_result`, `empty_response`, or
 `thrown_error`, and a fixed framework-authored notice. Runtime/provider codes
 and details for either outcome are bounded and redacted only as `untrustedCode`
 and `untrustedDetail` inside tag-safe JSON explicitly framed as untrusted
-evidence. The collector seals at settlement and rejects late runtime events.
-Provider epochs are retired and rotated even when an abort-ignoring provider is
-still unwinding, so the next turn seeds a consistent canonical transcript.
+evidence. The collector seals at settlement and rejects late runtime events. Native events
+admitted before the seal retain that admission while sidecar persistence is
+queued; continuity waits for those accepted writes before finalizing history.
+Eligible coordinated durable Pi turns retain their epoch after validated native
+settlement; the canonical revision advances once. Recovery adds no Pi message.
+Pi filters interrupted prose/reasoning and retains completed native tools and the
+cancelled user input. Cancellation permits 1,000 ms by default for provider settlement while
+the caller and mailbox close immediately. Hosts may override the window through
+`session.terminalRecoverySettlementMs` (a positive safe integer); the two-process
+smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
+reseed. A process-local budget allows one failed-turn recovery per epoch; user
+cancellation does not spend it, success does not reset it, and reconstruction may
+allow one extra attempt. Custom stores opt in with `providerSessionRecovery: "v1"`.
+A declined recovery reports a `terminal_recovery_skipped` runtime warning with
+`source: "harness"`, the terminal `outcome`, and the first failing gate in `reason`.
+The next cold turn reports `cancelled_turn_reseed` or `failed_turn_reseed` unless
+a prior boundary reason, such as model change, applies. These markers are process-local.
+The durable record shape is unchanged. See [session recovery](../../docs/runtime/sessions-concurrency.md).
 Cancelled and failed accounts never qualify for memory capture. Isolated
 proactive or continuation runs and queued requests that never started do not
 publish one. A hard process death that never unwinds through the harness remains
@@ -435,7 +490,21 @@ carry exact original byte counts for fully admitted payloads, a saturated
 over-limit count after secure omission, retained byte counts, and truncation,
 plus opaque artifact ids;
 artifact availability is recomputed and the reference does not extend artifact
-lifetime. Retention independently bounds completed calls (100,000), age (365
+lifetime. `createToolHistoryArtifactSink({ artifactRoot, runId })` creates a
+best-effort synchronous sink that creates missing directories one component at
+a time with mode `0700`. It accepts pre-existing path components only when they
+are non-symlink directories owned by the current user and are not group- or
+world-writable; components it creates are additionally verified at exact mode
+`0700`. Publication verifies directory and owner-private file identities and
+requires the final path to pass the same run-root containment checks. Node
+does not expose an fd-relative `openat` API, so these checks narrow but cannot
+eliminate the residual window in which another process running as the same user
+renames a verified directory. A failed final validation removes only the
+just-created file whose device/inode identity is still provable. The configured
+app's artifact sweep bounds those raw, untrusted run directories under
+`artifacts.retention`, independently of tool-history records; running or
+uncertain summaries and recent writes protect a directory, while recordless
+aged orphans remain eligible. Tool-history retention itself does not delete the files. It independently bounds completed calls (100,000), age (365
 days), retained payload (256 MiB), tombstones (10,000), and tombstone age (30
 days). Isolated/proactive runs persist but are excluded from default reads.
 

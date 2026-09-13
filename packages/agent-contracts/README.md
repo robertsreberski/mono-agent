@@ -5,6 +5,11 @@ runtimes, channels, and operator clients. Use this package when two packages
 need to exchange a request, stream a reply, run a channel driver, or share safe
 configuration and HTTP primitives without depending on one another.
 
+Canonical context import uses the distinct optional `AgentResponder.importContext`
+capability. `AGENT_CONTEXT_IMPORT_VERSION` and the shared 32 KiB text, 512-byte
+idempotency-key, and 4096-byte conversation-id limits define legal programmatic
+requests; legacy `deliverVerbatim` support never implies this capability.
+
 ## Category
 
 <!-- package-metadata:start -->
@@ -68,6 +73,13 @@ write continued toward bounded run-finalization reconciliation; it is not a
 durability or loss claim. `failed` is an explicit definitive fail-soft
 diagnostic. Neither changes the tool's provider outcome.
 
+A completed tool event may also carry bounded `structuredContent`. This is an
+opaque machine-readable result from MCP or a canonical host tool outcome; it is
+not the model-facing prose. Consumers must recognize and validate the specific
+schema they use. An exact `Exec`/`Bash` process-job start receipt can therefore
+bind later lifecycle evidence to its launch without parsing text or comparing
+timestamps.
+
 Responders may also implement `offerLiveInput()`. An adapter can then offer one
 plain-text follow-up to the active conversation without starting a parallel
 turn. The immediate result says whether the active run accepted ownership; the
@@ -127,8 +139,11 @@ The core turn boundary is deliberately structural:
 1. A channel normalizes transport input into an `AgentRequestBase`, including a
    required `AbortSignal`.
 2. The host calls `AgentResponder.respond(request, stream)`.
-3. While that response is active, the adapter may offer bounded live input and
-   retain normal-turn admission until the offer settles.
+3. A capable responder reports host-only live-input ownership as `ready` with
+   the exact harness run id, then `closed` before that mailbox can be replaced.
+   While ownership is active, the adapter may offer bounded live input and
+   retain normal-turn admission until the offer settles. These callbacks never
+   enter request metadata, prompts, history, or JSON transport.
 4. The responder sends deltas, replacement text, status, and telemetry through
    `AgentMessageStream` and returns an `AgentResponse` when the turn settles.
 5. A `ChannelDriver` combines config loading and the responder with a transport,
@@ -142,6 +157,12 @@ An addressable driver may additionally declare one unique
 `update` renders lifecycle state without invoking the model; `wake` must return
 an honest `steered` or `follow_up` receipt for the completion turn. Drivers that
 do not opt in remain ineligible for background schemas and delivery.
+
+Accepted live input settles as `applied` only after exact provider transcript
+consumption is host-confirmed, as `requeue` only when automatic fallback is
+proved safe, as `discarded` on safe explicit cancellation, or as `uncertain`
+when delivery may have occurred. Unknown or rejected settlement values are
+neither retry permission nor success.
 
 ### Package structure
 
@@ -223,6 +244,11 @@ Every symbol exported by each public code entrypoint is listed below.
 **`@mono-agent/agent-contracts`**
 
 ```text
+AGENT_CONTEXT_IMPORT_MAX_CONVERSATION_ID_BYTES
+AGENT_CONTEXT_IMPORT_MAX_IDEMPOTENCY_KEY_BYTES
+AGENT_CONTEXT_IMPORT_MAX_TEXT_BYTES
+AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE
+AGENT_CONTEXT_IMPORT_VERSION
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_BYTES
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGES
 AGENT_CONTINUATION_ORIGIN_CONTEXT_MAX_MESSAGE_BYTES
@@ -233,10 +259,14 @@ AGENT_PRECEDING_MESSAGES_MAX_COUNT
 AGENT_PRECEDING_MESSAGES_MAX_TOTAL_BYTES
 AGENT_PRECEDING_MESSAGE_MAX_TEXT_BYTES
 AgentAttachment
+AgentContextImportConflictReason
+AgentContextImportRequest
+AgentContextImportResult
 AgentContinuationContextMessage
 AgentContinuationOriginContext
 AgentContinuationTurn
 AgentLiveInputOffer
+AgentLiveInputOwnership
 AgentLiveInputRequest
 AgentLiveInputSettlement
 AgentLiveInputUnavailableReason

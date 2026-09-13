@@ -1,3 +1,4 @@
+import { parseProjectColor } from "./project-color.js";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { chmod, open, readFile, rename, unlink } from "node:fs/promises";
@@ -29,21 +30,27 @@ import {
   DEFAULT_WEB_THEME,
   WEB_API_VERSION,
   WEB_CONSOLE_NAME_MAX_CHARACTERS,
+  WEB_MAX_PROJECT_CONTEXT_CHARACTERS,
+  WEB_MAX_PROJECT_NAME_CHARACTERS,
   WEB_MAX_TURN_TEXT_CHARACTERS,
   WEB_THEMES,
+  type CreateWebProjectInput,
   type CreateWebThreadInput,
   type CreateWebUploadInput,
   type PatchWebAgentInput,
+  type PatchWebProjectInput,
   type PatchWebThreadInput,
   type PutWebAgentRunSettingsInput,
   type StartWebLiveInputInput,
   type StartWebTurnInput,
+  type StartWebSubmissionInput,
   type WebEvent,
   type WebConsoleIdentity,
   type WebMessageChangedPayload,
   type WebMessageDelta,
   type WebMessagePart,
   type WebTheme,
+  type WebThreadListScope,
 } from "./contracts.js";
 import { errorMessage, WebConsoleError } from "./errors.js";
 import {
@@ -99,10 +106,10 @@ const IMMUTABLE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 const WEB_THEME_MANIFEST_COLORS: Readonly<
   Record<WebTheme, { readonly themeColor: string; readonly backgroundColor: string }>
 > = {
-  evergreen: { themeColor: "#191c1a", backgroundColor: "#0f1110" },
-  ocean: { themeColor: "#191c1a", backgroundColor: "#0d1115" },
-  plum: { themeColor: "#191c1a", backgroundColor: "#120f14" },
-  terracotta: { themeColor: "#191c1a", backgroundColor: "#130f0d" },
+  evergreen: { themeColor: "#141715", backgroundColor: "#0f1110" },
+  ocean: { themeColor: "#13191e", backgroundColor: "#0d1115" },
+  plum: { themeColor: "#18141a", backgroundColor: "#120f14" },
+  terracotta: { themeColor: "#191411", backgroundColor: "#130f0d" },
 };
 
 export interface StartWebServerOptions extends CreateWebServiceOptions {
@@ -172,6 +179,14 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     res.setHeader("Cache-Control", "private, no-cache");
     next();
   });
+  app.use("/api/v1/threads/:id/submissions", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
+  app.use("/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId/reply-threads", (_req, res, next) => {
+    res.setHeader("Cache-Control", "private, no-store, max-age=0");
+    next();
+  });
   app.use("/api/v1", express.json({ limit: "256kb", strict: true }));
 
   app.get("/healthz", (_req, res) => {
@@ -195,6 +210,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         ...(sourceId === undefined ? {} : { sourceId }),
         archived: optionalArchivedQuery(req.query.archived) ?? false,
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
+        scope: optionalThreadListScope(req.query.scope),
       })
         .then((bootstrap) => res.status(200).json({ ...bootstrap, console: consoleIdentity }))
         .catch(next);
@@ -426,6 +442,23 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     ), activeOperations).then((message) => res.status(200).json({ message })).catch(next);
   });
 
+  app.post("/api/v1/agents/:id/cron/jobs/:jobId/runs/:runId/reply-threads", (req, res, next) => {
+    try {
+      exactRequestOrigin(req);
+      const input = parseCronReply(req.body);
+      void trackOperation(service.createCronReplyThread(
+        pathParam(req.params.id),
+        pathParam(req.params.jobId),
+        pathParam(req.params.runId),
+        input,
+      ), activeOperations).then((receipt) => {
+        res.status(receipt.duplicate ? 200 : 201).json(receipt);
+      }).catch(next);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post("/api/v1/agents/:id/cron/jobs/:jobId/run", (req, res, next) => {
     try {
       exactRequestOrigin(req);
@@ -465,7 +498,44 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       res.status(201).json({ thread: service.createThread(input.sourceId, {
         ...(input.model === undefined ? {} : { model: input.model }),
         ...(input.effort === undefined ? {} : { effort: input.effort }),
+        ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       }) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/projects", (req, res, next) => {
+    try {
+      const sourceId = requiredQueryString(req.query.sourceId, "sourceId", 512);
+      res.status(200).json({ projects: service.projects(sourceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/v1/projects", (req, res, next) => {
+    try {
+      const input = parseCreateProject(req.body);
+      res.status(201).json({ project: service.createProject(input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/v1/projects/:id", (req, res, next) => {
+    try {
+      const input = parsePatchProject(req.body);
+      res.status(200).json({ project: service.patchProject(pathParam(req.params.id), input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/v1/projects/:id", (req, res, next) => {
+    try {
+      service.deleteProject(pathParam(req.params.id));
+      res.status(204).end();
     } catch (error) {
       next(error);
     }
@@ -479,13 +549,16 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
       }
       const before = optionalQueryString(req.query.before, 4_096);
+      const projectId = optionalQueryString(req.query.projectId, 512);
       res.status(200).json(service.threadsPage({
         sourceId,
         archived,
+        scope: optionalThreadListScope(req.query.scope),
         // A sidebar shows a handful of rows and pages from there. This used to
         // answer with the whole per-bucket cap by default.
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_PAGE_MAX, WEB_THREAD_PAGE_DEFAULT),
         ...(before === undefined ? {} : { before }),
+        ...(projectId === undefined ? {} : { projectId }),
       }));
     } catch (error) {
       next(error);
@@ -501,7 +574,22 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
         sourceId,
         query: optionalSearchQuery(req.query.q, 512),
         limit: boundedQueryLimit(req.query.limit, WEB_THREAD_SEARCH_MAX, WEB_THREAD_SEARCH_MAX),
+        scope: optionalThreadListScope(req.query.scope),
       }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Registered above `/threads/:id`, for the same reason `search` is: Express
+  // would otherwise take "active" for a conversation id and answer 404.
+  //
+  // No query at all -- not a scope, not a cursor, not a limit. The projection
+  // is fixed and bounded by contract, and a console re-reads it after any event
+  // that could have changed what is running.
+  app.get("/api/v1/threads/active", (_req, res, next) => {
+    try {
+      res.status(200).json(service.activeThreads());
     } catch (error) {
       next(error);
     }
@@ -723,6 +811,28 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     void trackOperation(service.startTurn(threadId, input), activeOperations)
       .then((started) => res.status(202).json(started))
       .catch(next);
+  });
+
+  app.post("/api/v1/threads/:id/submissions", (req, res, next) => {
+    try {
+      const input = parseSubmission(req.body);
+      const receipt = service.submit(pathParam(req.params.id), input);
+      res.status(receipt.outcome === "rejected" ? 409 : 202).json(receipt);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/v1/threads/:id/submissions/:submissionId", (req, res, next) => {
+    try {
+      const receipt = service.submission(
+        pathParam(req.params.id),
+        parseSubmissionId(pathParam(req.params.submissionId)),
+      );
+      res.status(200).json(receipt);
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/v1/threads/:id/live-input", (req, res, next) => {
@@ -1390,10 +1500,72 @@ function parseCreateThread(value: unknown): CreateWebThreadInput {
   const body = requireRecord(value);
   const model = optionalNullableString(body.model, "model", 120);
   const effort = optionalNullableString(body.effort, "effort", 120);
+  const projectId = optionalProjectId(body.projectId);
   return {
     sourceId: requireString(body.sourceId, "sourceId", 256),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(projectId === undefined ? {} : { projectId }),
+  };
+}
+
+/** A project name: trimmed, one line, 1-120 characters. */
+function parseProjectName(value: unknown): string {
+  const name = requireString(value, "name", WEB_MAX_PROJECT_NAME_CHARACTERS).trim();
+  if (name.length === 0) throw invalidBody("name must be a non-empty string.");
+  if (/[\r\n]/u.test(name)) throw invalidBody("name must not contain line breaks.");
+  return name;
+}
+
+/** Optional project context: absent defaults to empty, present is bounded. */
+function parseProjectContext(value: unknown): string {
+  if (value === undefined) return "";
+  return requireString(value, "context", WEB_MAX_PROJECT_CONTEXT_CHARACTERS, true);
+}
+
+function optionalProjectId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  return requireString(value, "projectId", 512);
+}
+
+function optionalNullableProjectId(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  return requireString(value, "projectId", 512);
+}
+
+function parseCreateProject(value: unknown): CreateWebProjectInput {
+  const body = requireRecord(value);
+  const unknown = Object.keys(body).filter((key) => key !== "sourceId" && key !== "name" && key !== "context" && key !== "color");
+  if (unknown.length > 0) throw invalidBody(`Unknown project field: ${unknown[0]}.`);
+  if (!("sourceId" in body) || !("name" in body)) {
+    throw invalidBody("sourceId and name are required.");
+  }
+  return {
+    sourceId: requireString(body.sourceId, "sourceId", 512),
+    name: parseProjectName(body.name),
+    ...(body.color === undefined ? {} : { color: parseProjectColor(body.color) }),
+    ...(body.context === undefined ? {} : { context: parseProjectContext(body.context) }),
+  };
+}
+
+function parsePatchProject(value: unknown): PatchWebProjectInput {
+  const body = requireRecord(value);
+  const unknown = Object.keys(body).filter((key) => key !== "name" && key !== "context" && key !== "color" && key !== "archived");
+  if (unknown.length > 0) throw invalidBody(`Unknown project field: ${unknown[0]}.`);
+  const archived = body.archived;
+  if (archived !== undefined && typeof archived !== "boolean") throw invalidBody("archived must be boolean.");
+  const name = body.name === undefined ? undefined : parseProjectName(body.name);
+  const context = body.context === undefined ? undefined : parseProjectContext(body.context);
+  const color = body.color === undefined ? undefined : parseProjectColor(body.color);
+  if (name === undefined && context === undefined && archived === undefined && color === undefined) {
+    throw invalidBody("Provide name, context, or archived.");
+  }
+  return {
+    ...(name === undefined ? {} : { name }),
+    ...(context === undefined ? {} : { context }),
+    ...(color === undefined ? {} : { color }),
+    ...(archived === undefined ? {} : { archived }),
   };
 }
 
@@ -1432,7 +1604,12 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
   if (ifRunConfigUnset !== undefined && typeof ifRunConfigUnset !== "boolean") {
     throw invalidBody("ifRunConfigUnset must be boolean.");
   }
-  if (title === undefined && archived === undefined && model === undefined && effort === undefined) {
+  const projectId = optionalNullableProjectId(body.projectId);
+  if (projectId !== undefined && ifRunConfigUnset === true) {
+    throw invalidBody("projectId cannot be combined with ifRunConfigUnset.");
+  }
+  if (title === undefined && archived === undefined && model === undefined && effort === undefined
+    && projectId === undefined) {
     throw invalidBody("Provide title, archived, model, or effort.");
   }
   return {
@@ -1440,6 +1617,7 @@ function parsePatchThread(value: unknown): PatchWebThreadInput {
     ...(archived === undefined ? {} : { archived }),
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
+    ...(projectId === undefined ? {} : { projectId }),
     ...(ifRunConfigUnset === undefined ? {} : { ifRunConfigUnset }),
   };
 }
@@ -1473,6 +1651,32 @@ function parseTurn(value: unknown): StartWebTurnInput {
     ...(model === undefined ? {} : { model }),
     ...(effort === undefined ? {} : { effort }),
   };
+}
+
+function parseSubmission(value: unknown): StartWebSubmissionInput {
+  const body = requireRecord(value);
+  const submissionId = parseSubmissionId(body.submissionId);
+  return { ...parseTurn(body), submissionId };
+}
+
+function parseSubmissionId(value: unknown): string {
+  const submissionId = requireString(value, "submissionId", 36);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(submissionId)) {
+    throw invalidBody("submissionId must be a canonical UUID.");
+  }
+  return submissionId.toLowerCase();
+}
+
+function parseCronReply(value: unknown): { readonly operationId: string; readonly snapshotKind: "summary" | "detail" } {
+  const body = requireRecord(value);
+  if (Object.keys(body).sort().join("\0") !== ["operationId", "snapshotKind"].join("\0")) {
+    throw invalidBody("Cron Reply requires only operationId and snapshotKind.");
+  }
+  const operationId = parseSubmissionId(body.operationId);
+  if (body.snapshotKind !== "summary" && body.snapshotKind !== "detail") {
+    throw invalidBody("snapshotKind must be summary or detail.");
+  }
+  return { operationId, snapshotKind: body.snapshotKind };
 }
 
 function parseLiveInput(value: unknown): StartWebLiveInputInput {
@@ -1791,6 +1995,13 @@ function optionalArchivedQuery(value: unknown): boolean | undefined {
   if (value === "false") return false;
   if (value === undefined) return undefined;
   throw new WebConsoleError("invalid_page", "archived must be true or false.", 400);
+}
+
+/** Absent preserves the mixed listing older clients requested. */
+function optionalThreadListScope(value: unknown): WebThreadListScope {
+  if (value === undefined || value === "all") return "all";
+  if (value === "chats") return "chats";
+  throw new WebConsoleError("invalid_page", "scope must be all or chats.", 400);
 }
 
 function optionalEmptyOnlyQuery(value: unknown): boolean {

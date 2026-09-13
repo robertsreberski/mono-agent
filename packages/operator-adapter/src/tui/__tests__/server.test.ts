@@ -1,6 +1,6 @@
 import dns from "node:dns";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentResponseCancelledError,
@@ -1135,6 +1135,179 @@ describe("startTuiAdapter", () => {
     expect(recorded).toEqual([["web:notification-1", "Morning brief", "cron:job:one"]]);
   });
 
+  it("advertises, authorizes, validates, and maps canonical context import results", async () => {
+    const imported: Array<[string, string, string]> = [];
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        async importContext(conversationId, request) {
+          imported.push([conversationId, request.text, request.idempotencyKey]);
+          return request.idempotencyKey === "conflict"
+            ? { status: "conflict", reason: "conversation_not_empty" }
+            : request.idempotencyKey === "duplicate"
+              ? { status: "duplicate" }
+              : { status: "appended" };
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl, {
+      headers: { authorization: "Bearer fixture-secret" },
+    })).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).toMatchObject({ contextImport: { version: 1, maxTextBytes: 32_768 } });
+
+    const url = `${running.baseUrl}/v1/conversations/web%3Acron%3Ajob-1/context-imports`;
+    const unauthorized = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "result", idempotencyKey: "run:1" }),
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+
+    const post = async (body: unknown) => await fetch(url, {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const appended = await post({ text: "quote \" slash \\ control \u0000 and 東京", idempotencyKey: "run:1" });
+    expect(appended.status).toBe(200);
+    expect(appended.headers.get("cache-control")).toContain("no-store");
+    expect(await appended.json()).toEqual({
+      imported: true,
+      status: "appended",
+      conversationId: "web:cron:job-1",
+    });
+    expect((await post({ text: "same", idempotencyKey: "duplicate" })).status).toBe(200);
+    const conflict = await post({ text: "other", idempotencyKey: "conflict" });
+    expect(conflict.status).toBe(409);
+    expect(conflict.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await conflict.json()).toEqual({
+      error: {
+        code: "context_import_conflict",
+        message: "Canonical context import conflicts with existing history.",
+        reason: "conversation_not_empty",
+      },
+    });
+    const blankText = await post({ text: " \t\n", idempotencyKey: "k" });
+    expect(blankText.status).toBe(400);
+    expect(blankText.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await blankText.json()).toEqual({
+      error: { code: "invalid_request", message: "text must be a string within the context import byte limit." },
+    });
+    expect((await post({ text: "x", idempotencyKey: " \t\n" })).status).toBe(400);
+    expect((await post({ text: "  opaque  ", idempotencyKey: "  opaque-key  " })).status).toBe(200);
+    expect((await post({ text: "x", idempotencyKey: "k", extra: true })).status).toBe(400);
+    expect((await post({ text: "x".repeat(32_769), idempotencyKey: "k" })).status).toBe(400);
+    expect((await post({ text: "x", idempotencyKey: "é".repeat(257) })).status).toBe(400);
+    expect(imported[0]).toEqual(["web:cron:job-1", "quote \" slash \\ control \u0000 and 東京", "run:1"]);
+    expect(imported).toContainEqual(["web:cron:job-1", "  opaque  ", "  opaque-key  "]);
+
+    const exactEscaped = JSON.stringify({ text: "\u0000".repeat(32_768), idempotencyKey: "\u0001".repeat(512) });
+    expect(Buffer.byteLength(exactEscaped, "utf8")).toBe(199_711);
+    const escapedResponse = await fetch(url, {
+      method: "POST",
+      headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+      body: exactEscaped,
+    });
+    expect(escapedResponse.status).toBe(200);
+    expect((await post({ text: "é".repeat(16_384), idempotencyKey: "é".repeat(256) })).status).toBe(200);
+
+    const exactConversation = "é".repeat(2_048);
+    const exactConversationResponse = await fetch(
+      `${running.baseUrl}/v1/conversations/${encodeURIComponent(exactConversation)}/context-imports`,
+      {
+        method: "POST",
+        headers: { authorization: "Bearer fixture-secret", "content-type": "application/json" },
+        body: JSON.stringify({ text: "x", idempotencyKey: "boundary" }),
+      },
+    );
+    expect(exactConversationResponse.status).toBe(200);
+  });
+
+  it("marks context import parser, authorization, and validation rejections private before parsing", async () => {
+    const importContext = vi.fn(async () => ({ status: "appended" as const }));
+    running = await startTuiAdapter({
+      apiKey: "fixture-secret",
+      responder: { ...scriptedResponder(async () => ({ text: "ok" })), importContext },
+    });
+    const url = `${running.baseUrl}/v1/conversations/c/context-imports`;
+    const request = async (body: string, authorization = true) => await fetch(url, {
+      method: "POST",
+      headers: {
+        ...(authorization ? { authorization: "Bearer fixture-secret" } : {}),
+        "content-type": "application/json",
+      },
+      body,
+    });
+    const cases = [
+      await request(JSON.stringify({ text: "snapshot", idempotencyKey: "run:1" }), false),
+      await request('{"text":'),
+      await request(JSON.stringify({ text: "x".repeat(200_000), idempotencyKey: "run:1" })),
+      await request(JSON.stringify({ text: " \t\n", idempotencyKey: "run:1" })),
+    ];
+
+    expect(cases.map((response) => response.status)).toEqual([401, 400, 413, 400]);
+    for (const response of cases) {
+      expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    }
+    expect(importContext).not.toHaveBeenCalled();
+  });
+
+  it("keeps context import positively absent for legacy responders", async () => {
+    running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
+    const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).not.toHaveProperty("contextImport");
+    const response = await fetch(`${running.baseUrl}/v1/conversations/c/context-imports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "x", idempotencyKey: "k" }),
+    });
+    expect(response.status).toBe(501);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    expect(await response.json()).toEqual({
+      error: {
+        code: "context_import_unsupported",
+        message: "This responder does not support canonical context import.",
+        reason: "unsupported",
+      },
+    });
+  });
+
+  it("sanitizes context import operational failures while logging their detail", async () => {
+    const error = vi.fn();
+    running = await startTuiAdapter({
+      logger: { error },
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        async importContext() {
+          throw new Error("database failure at /srv/agent-secret/history.sqlite");
+        },
+      },
+    });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/c/context-imports`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "snapshot", idempotencyKey: "run:1" }),
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("cache-control")).toBe("private, no-store, max-age=0");
+    const body = await response.json();
+    expect(body).toEqual({
+      error: {
+        code: "context_import_failed",
+        message: "Canonical context import failed.",
+        reason: "operation_failed",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("/srv/agent-secret");
+    expect(error).toHaveBeenCalledWith("TUI context import failed.", {
+      error: "database failure at /srv/agent-secret/history.sqlite",
+    });
+  });
+
   it("advertises live input and holds the request until the active run settles it", async () => {
     let markOffered!: (request: AgentLiveInputRequest) => void;
     const offered = new Promise<AgentLiveInputRequest>((resolve) => { markOffered = resolve; });
@@ -1175,6 +1348,325 @@ describe("startTuiAdapter", () => {
     expect(await response.json()).toEqual({ status: "applied", runId: "run-1" });
   });
 
+  it("does not advertise targeting for an ownership-only responder", async () => {
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond() {
+          return { text: "done" };
+        },
+      },
+    });
+
+    const info = await (await fetch(running.infoUrl)).json() as { capabilities: Record<string, unknown> };
+    expect(info.capabilities).toEqual({ attachments: true });
+  });
+
+  it("holds a Web-targeted offer until the exact turn publishes mailbox ownership", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    let offered: AgentLiveInputRequest | undefined;
+    const responder: AgentResponder = {
+      liveInputOwnership: { version: 1 },
+      async respond(request) {
+        activeRequest = request;
+        await turnFinished;
+        return { text: "done" };
+      },
+      offerLiveInput(request) {
+        offered = request;
+        return { status: "accepted", settled: Promise.resolve({ status: "applied", runId: "run-owned" }) };
+      },
+    };
+    running = await startTuiAdapter({ responder });
+    await expect((await fetch(running.infoUrl)).json()).resolves.toMatchObject({
+      capabilities: { liveInput: true, liveInputTargeting: { version: 1 } },
+    });
+
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-1" } },
+    });
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-1",
+        text: "Use the exact target",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-1",
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(offered).toBeUndefined();
+
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "run-owned" });
+    await expect((await liveResponse).json()).resolves.toEqual({ status: "applied", runId: "run-owned" });
+    expect(offered).toMatchObject({
+      conversationId: "web:thread-1",
+      id: "input-1",
+      targetRunId: "run-owned",
+    });
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("rejects repeated duplicate Web turn keys without leaking controllers or disturbing the original target", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const abortSpy = vi.spyOn(AbortController.prototype, "abort");
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          return {
+            status: "accepted",
+            settled: Promise.resolve({ status: "applied", runId: request.targetRunId! }),
+          };
+        },
+      },
+    });
+    const body = {
+      conversationId: "web:duplicate-target",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "same-web-turn" } },
+    };
+    const original = await postTurn(running.baseUrl, body);
+
+    for (let index = 0; index < 2; index += 1) {
+      const duplicate = await postTurn(running.baseUrl, body);
+      expect(duplicate.status).toBe(400);
+      await expect(duplicate.json()).resolves.toMatchObject({ error: { code: "invalid_request" } });
+    }
+    expect(activeRequest?.abortSignal.aborted).toBe(false);
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "original-run" });
+    const liveResponse = await fetch(`${running.baseUrl}/v1/conversations/web%3Aduplicate-target/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-original",
+        text: "Reach only the original",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "same-web-turn",
+      }),
+    });
+    expect(await liveResponse.json()).toEqual({ status: "applied", runId: "original-run" });
+
+    finishTurn();
+    await readFrames(original);
+    abortSpy.mockClear();
+    await running.stop();
+    expect(abortSpy).not.toHaveBeenCalled();
+    running = undefined;
+  });
+
+  it("detaches a pending targeted offer on closure and never steers a successor", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-1" } },
+    });
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-closed",
+        text: "Do not send later",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-1",
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    activeRequest?.onLiveInputOwnership?.({ status: "closed", reason: "closed" });
+
+    await expect((await liveResponse).json()).resolves.toEqual({ status: "unavailable", reason: "inactive" });
+    expect(offered).toEqual([]);
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "successor-run" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("rejects mismatched explicit run ownership without offering live input", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-1" } },
+    });
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "run-owned" });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-wrong-run",
+        text: "Do not offer",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-1",
+        targetRunId: "run-wrong",
+      }),
+    });
+    expect(await response.json()).toEqual({ status: "unavailable", reason: "inactive" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("detaches an exact-turn waiter before its owned timeout response", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    let expireWaiter: (() => void) | undefined;
+    const nativeSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((...parameters: Parameters<typeof setTimeout>) => {
+      const [callback, delay, ...args] = parameters;
+      if (delay === 10 * 60 * 1_000) {
+        expireWaiter = () => { callback(...args); };
+        return { unref() {} } as ReturnType<typeof setTimeout>;
+      }
+      return nativeSetTimeout(...parameters);
+    }) as typeof setTimeout);
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-timeout" } },
+    });
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-timeout",
+        text: "Do not send after timeout",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-timeout",
+      }),
+    });
+    await new Promise((resolve) => nativeSetTimeout(resolve, 10));
+    expect(expireWaiter).toBeDefined();
+    expireWaiter?.();
+
+    await expect((await liveResponse).json()).resolves.toEqual({ status: "unavailable", reason: "inactive" });
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "late-run" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
+  it("detaches an exact-turn waiter when its HTTP client disconnects", async () => {
+    let activeRequest: AgentRequestBase | undefined;
+    let finishTurn!: () => void;
+    const turnFinished = new Promise<void>((resolve) => { finishTurn = resolve; });
+    const offered: AgentLiveInputRequest[] = [];
+    running = await startTuiAdapter({
+      responder: {
+        liveInputOwnership: { version: 1 },
+        async respond(request) {
+          activeRequest = request;
+          await turnFinished;
+          return { text: "done" };
+        },
+        offerLiveInput(request) {
+          offered.push(request);
+          return { status: "unavailable", reason: "inactive" };
+        },
+      },
+    });
+    const turnResponse = await postTurn(running.baseUrl, {
+      conversationId: "web:thread-1",
+      text: "Initial task",
+      client: "web",
+      metadata: { web: { turnId: "web-turn-disconnect" } },
+    });
+    const controller = new AbortController();
+    const liveResponse = fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-disconnect",
+        text: "Do not send after disconnect",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+        targetTurnId: "web-turn-disconnect",
+      }),
+      signal: controller.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    controller.abort();
+    await expect(liveResponse).rejects.toMatchObject({ name: "AbortError" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    activeRequest?.onLiveInputOwnership?.({ status: "ready", runId: "late-run" });
+    expect(offered).toEqual([]);
+
+    finishTurn();
+    await readFrames(turnResponse);
+  });
+
   it("reports unavailable live input for responders without an active mailbox", async () => {
     running = await startTuiAdapter({ responder: scriptedResponder(async () => ({ text: "ok" })) });
     const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
@@ -1188,6 +1680,28 @@ describe("startTuiAdapter", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "unavailable", reason: "unsupported" });
+  });
+
+  it("serializes rejected accepted-settlement promises as uncertainty", async () => {
+    running = await startTuiAdapter({
+      responder: {
+        ...scriptedResponder(async () => ({ text: "ok" })),
+        offerLiveInput() {
+          return { status: "accepted", settled: Promise.reject(new Error("private host failure")) };
+        },
+      },
+    });
+    const response = await fetch(`${running.baseUrl}/v1/conversations/web%3Athread-1/live-input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        id: "input-1",
+        text: "Follow up",
+        receivedAt: "2026-07-21T09:00:00.000Z",
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "uncertain", reason: "delivery_uncertain" });
   });
 
   it("validates verbatim history append and reports unsupported responders", async () => {
@@ -1644,6 +2158,30 @@ describe("startTuiAdapter", () => {
     expect(event.content.endsWith("… [truncated]")).toBe(true);
     expect(event.metadata?.truncated).toBe(true);
     expect(frames.at(-1)).toEqual({ kind: "finish", finalText: "done" });
+  });
+
+  it("preserves a bounded process-job start receipt through operator framing", async () => {
+    const structuredContent = {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: "job-1",
+      tool: "Exec",
+      state: "running",
+      startedAt: "2026-09-08T10:00:00.000Z",
+    } as const;
+    running = await startTuiAdapter({
+      responder: scriptedResponder(async (_request, stream) => {
+        await stream.event?.({
+          type: "tool_call_completed",
+          id: "launch-1",
+          name: "Exec",
+          content: "Background process job started.",
+          structuredContent,
+        });
+        return { text: "done" };
+      }),
+    });
+    const frames = await readFrames(await postTurn(running.baseUrl, { conversationId: "c", text: "hi" }));
+    expect(frames[0]).toMatchObject({ kind: "event", event: { structuredContent } });
   });
 
   it("splits oversized append frames without losing multibyte text", async () => {

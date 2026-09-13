@@ -420,6 +420,30 @@ describe("WhatsAppAdapter", () => {
     expect(socket.sent).toEqual([]);
   });
 
+  it("does not run a process-job fallback when live-input delivery is uncertain", async () => {
+    const responder: AgentResponder = {
+      respond: vi.fn(async () => ({ text: "duplicate fallback" })),
+      offerLiveInput: vi.fn(() => ({
+        status: "accepted" as const,
+        settled: Promise.resolve({ status: "uncertain" as const, reason: "delivery_uncertain" as const }),
+      })),
+    };
+    const { bridge, socket } = createBridge({ responder });
+
+    await expect(bridge.notify("123@s.whatsapp.net", "job finished", {
+      deliveryKey: "process-job:uncertain",
+      steerActive: true,
+    })).resolves.toMatchObject({
+      delivered: false,
+      code: "delivery_uncertain",
+      retryable: false,
+      ambiguous: true,
+    });
+
+    expect(responder.respond).not.toHaveBeenCalled();
+    expect(socket.sent).toEqual([]);
+  });
+
   it("runs a visible reserved follow-up turn whenever steering is unavailable", async () => {
     let captured: AgentRequest | undefined;
     const responder: AgentResponder = {

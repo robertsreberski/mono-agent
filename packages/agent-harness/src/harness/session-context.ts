@@ -307,7 +307,7 @@ const MONITOR_GUIDANCE = [
 const HOST_MANAGED_MEMORY_GUIDANCE = [
   "Long-term memory state is owned by the host; its configured memory pipeline decides whether and how qualifying successful turns are persisted.",
   "To remember something, acknowledge it in your reply and let the host handle capture; never edit memory Markdown, SQLite databases, indexes, manifests, or other internal memory state with file or shell tools.",
-  "Use the available recall/search tools to read memory.",
+  "Read memory through the available memory tools before assuming or asking: MemoryRecall for a targeted durable preference, fact or decision; MemoryJournal for a chronological retrospective over an explicit calendar-date range (it pages by cursor and states its coverage, so follow its returned continuation call until it reports the last page).",
 ].join(" ");
 
 /**

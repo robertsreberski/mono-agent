@@ -1,0 +1,121 @@
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
+
+import { useProcessJobPresentation } from "../process-job-presentation";
+import type { ProcessJobProjection } from "../types";
+import {
+  ProcessJobCard,
+  mergeProcessJobProjection,
+  TERMINAL_PROCESS_JOB_STATES,
+} from "./ProcessJob";
+import { Icon } from "./Icon";
+
+const isActive = (job: ProcessJobProjection): boolean =>
+  !TERMINAL_PROCESS_JOB_STATES.has(job.state);
+
+export function ProcessJobStack() {
+  const {
+    threadId,
+    jobs,
+    historyIsBounded,
+    historyOpen,
+    setHistoryOpen,
+  } = useProcessJobPresentation();
+  const stackId = useId();
+  const [liveByJobId, setLiveByJobId] = useState<ReadonlyMap<string, ProcessJobProjection>>(
+    () => new Map(jobs.map(({ part }) => [part.job.jobId, part.job])),
+  );
+
+  useEffect(() => {
+    setLiveByJobId((current) => {
+      const next = new Map<string, ProcessJobProjection>();
+      for (const { part } of jobs) {
+        const live = current.get(part.job.jobId);
+        next.set(
+          part.job.jobId,
+          live === undefined ? part.job : mergeProcessJobProjection(live, part.job),
+        );
+      }
+      return next;
+    });
+  }, [jobs]);
+
+  const onProjectionChange = useCallback((projection: ProcessJobProjection) => {
+    setLiveByJobId((current) => {
+      const previous = current.get(projection.jobId);
+      const merged = previous === undefined ? projection : mergeProcessJobProjection(previous, projection);
+      if (merged === previous) return current;
+      const next = new Map(current);
+      next.set(projection.jobId, merged);
+      return next;
+    });
+  }, []);
+
+  const projections = useMemo(
+    () => jobs.map(({ part }) => liveByJobId.get(part.job.jobId) ?? part.job),
+    [jobs, liveByJobId],
+  );
+  const activeCount = projections.filter(isActive).length;
+  const historyCount = projections.length - activeCount;
+  const totalLabel = historyIsBounded
+    ? `${String(jobs.length)} loaded`
+    : `${String(jobs.length)} ${jobs.length === 1 ? "job" : "jobs"}`;
+  const countLabel = `${totalLabel} · ${String(activeCount)} active · ${String(historyCount)} history`;
+  const hasHistoryDisclosure = historyIsBounded || historyCount > 0;
+  // Every terminal wrapper is hidden behind a closed history, so with nothing
+  // active the body renders nothing at all and its padding would be the only
+  // thing left under the header.
+  const bodyIsEmpty = activeCount === 0 && !historyOpen;
+
+  if (threadId === null || jobs.length === 0) return null;
+
+  return (
+    <section className="process-job-stack" aria-labelledby={`${stackId}-label`}>
+      <div className="process-job-stack-header">
+        {/* Title and counts are one label: kept in their own box so a taller
+            control beside them cannot stretch the line spacing between them. */}
+        <div className="process-job-stack-heading">
+          <span id={`${stackId}-label`} className="process-job-stack-title">Background jobs</span>
+          <span className="process-job-stack-counts" aria-live="polite" aria-atomic="true">
+            {countLabel}
+          </span>
+        </div>
+        {hasHistoryDisclosure && (
+          <button
+            type="button"
+            className="process-job-stack-toggle"
+            aria-label="Background job history"
+            aria-pressed={historyOpen}
+            onClick={() => setHistoryOpen(!historyOpen)}
+          >
+            <span>History</span>
+            <Icon className="process-job-stack-chevron" name="chevron-down" size={13} />
+          </button>
+        )}
+      </div>
+      <div className={`process-job-stack-body${bodyIsEmpty ? " is-empty" : ""}`}>
+        {historyIsBounded && (
+          <p className="process-job-stack-history" hidden={!historyOpen}>
+            Showing jobs in loaded messages. Load earlier messages to reveal older jobs.
+          </p>
+        )}
+        <div className="process-job-stack-list">
+          {jobs.map(({ part }, index) => {
+            const projection = projections[index] ?? part.job;
+            return (
+              <div
+                key={`${threadId}:${part.job.jobId}`}
+                className="process-job-stack-item"
+                hidden={TERMINAL_PROCESS_JOB_STATES.has(projection.state) && !historyOpen}
+              >
+                <ProcessJobCard
+                  part={part}
+                  onProjectionChange={onProjectionChange}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}

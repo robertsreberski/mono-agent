@@ -15,6 +15,8 @@ import type {
   RuntimeModelReference,
 } from "@mono-agent/runtime-adapter";
 
+import { resolveAdvertisedModelEffort } from "./model-effort-capabilities.js";
+
 /**
  * Per-request runtime-options extension that applies a per-turn model/effort
  * override carried on webhook (`metadata.webhook`), cron (`metadata.cron`), or
@@ -60,6 +62,16 @@ export interface RequestModelOverrideOptions {
   /** Host fallback chain retained behind a request-level primary override. */
   readonly fallbackModels?: readonly RuntimeModelReference[];
   /**
+   * Canonical fallback routes and their independently configured efforts.
+   * Omitted route effort means provider default.
+   */
+  readonly fallbackRoutes?: readonly {
+    readonly model: RuntimeModelReference;
+    readonly effort?: string;
+  }[];
+  /** Host effort inherited only when the effective route admits it. */
+  readonly baseEffort?: string;
+  /**
    * Configured local providers (`config.providers?.local`). When an override
    * names a model one of these serves, the extension recomputes the provider
    * endpoint block so the override reaches the right local endpoint instead of
@@ -78,7 +90,8 @@ interface RequestModelOverrideInput {
 interface RequestModelOverrideResult {
   readonly runtimeOptions: {
     model?: RuntimeModelReference;
-    effort?: string;
+    /** String pins effort; null explicitly selects the provider default. */
+    effort?: string | null;
     // `null` is an explicit CLEAR sentinel the harness merge reads as "delete the
     // host default's value" (undefined would leave it untouched) — see the module
     // doc. Set for a local override, null for a non-local one.
@@ -136,6 +149,7 @@ export function createRequestModelOverrideRuntimeExtension(
   return async (input) => {
     const { rawModel, rawEffort, model } = resolveAcceptedModelOverride(
       input.request.metadata,
+      options,
       logger,
     );
     const runtimeOptions: RequestModelOverrideResult["runtimeOptions"] = {};
@@ -153,10 +167,69 @@ export function createRequestModelOverrideRuntimeExtension(
           valid: [...EFFORT_SET],
         });
       }
+    } else if (model !== undefined) {
+      const inheritedEffort = inheritedEffortForModelOverride(model, options);
+      if (inheritedEffort !== undefined) runtimeOptions.effort = inheritedEffort;
     }
 
     return { runtimeOptions, cleanup: async () => {} };
   };
+}
+
+/**
+ * Resolve a model-only request override against the configured route policy.
+ * `undefined` means inherit the harness effort; `null` means provider default.
+ */
+function inheritedEffortForModelOverride(
+  model: RuntimeModelReference,
+  options: RequestModelOverrideOptions | undefined,
+): string | null | undefined {
+  if (options?.baseModel !== undefined
+    && modelReferenceKey(model) === modelReferenceKey(options.baseModel)) return undefined;
+
+  const fallback = options?.fallbackRoutes?.find(
+    (route) => modelReferenceKey(route.model) === modelReferenceKey(model),
+  );
+  if (fallback !== undefined) return fallback.effort ?? null;
+
+  const baseEffort = options?.baseEffort;
+  if (baseEffort === undefined) return undefined;
+  try {
+    const advertised = resolveAdvertisedModelEffort(model, {
+      ...(options?.localProviders === undefined ? {} : { localProviders: options.localProviders }),
+    });
+    return advertisedEffortAdmits(advertised, baseEffort) ? undefined : null;
+  } catch {
+    // Capability discovery is advisory. If it cannot judge the route, preserve
+    // the previously permissive inheritance behavior.
+    return undefined;
+  }
+}
+
+function advertisedEffortAdmits(
+  advertised: {
+    readonly reasoning?: boolean;
+    readonly reasoningMode?: string;
+    readonly effortLevels?: readonly string[];
+  },
+  effort: string,
+): boolean {
+  if (advertised.reasoning === false || advertised.reasoningMode === "none") return false;
+  if (advertised.effortLevels?.length === 0) return false;
+  if (advertised.reasoningMode === "toggle") return effort === "high" || effort === "none";
+  if (advertised.effortLevels !== undefined) return advertised.effortLevels.includes(effort);
+  if (advertised.reasoningMode === "effort") return EFFORT_SET.has(effort);
+  // `reasoning: true` alone is an unknown cloud ladder, not a denial.
+  return true;
+}
+
+/** Whether the accepted request route (or its configured base) is Pi-native. */
+export function requestModelOverrideTargetsPiNative(
+  metadata: Record<string, unknown> | undefined,
+  options?: RequestModelOverrideOptions,
+): boolean {
+  const accepted = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
+  return [accepted, ...(options?.fallbackModels ?? [])].some((model) => model !== undefined);
 }
 
 /**
@@ -165,7 +238,9 @@ export function createRequestModelOverrideRuntimeExtension(
  * stronger contract: a single non-Pi primary or fallback would move execution
  * to a provider-owned tool loop that cannot enforce the mono-agent sandbox.
  *
- * The chain projection mirrors `fallbackChainForConfig`: an
+ * Keep this separate from `requestModelOverrideTargetsPiNative`, whose
+ * intentionally permissive any-Pi meaning is used by other capability
+ * discovery. The chain projection mirrors `fallbackChainForConfig`: an
  * accepted request override replaces the primary and a configured fallback
  * equal to that effective primary is skipped without otherwise rewriting the
  * configured order. Missing, malformed, or duplicate reachable routes fail
@@ -177,7 +252,7 @@ export function requestModelOverrideRoutesOnlyPiNative(
   options?: RequestModelOverrideOptions,
 ): boolean {
   try {
-    const primary = resolveAcceptedModelOverride(metadata, undefined).model ?? options?.baseModel;
+    const primary = resolveAcceptedModelOverride(metadata, options, undefined).model ?? options?.baseModel;
     assertParsedRuntimeModelReference(primary);
     const fallbacks = options?.fallbackModels;
     if (fallbacks !== undefined && !Array.isArray(fallbacks)) {
@@ -219,6 +294,7 @@ interface ModelOverrideResolution {
 
 function resolveAcceptedModelOverride(
   metadata: Record<string, unknown> | undefined,
+  options: RequestModelOverrideOptions | undefined,
   logger: RequestModelOverrideLogger | undefined,
 ): ModelOverrideResolution {
   const { model: rawModel, effort: rawEffort } = readOverride(metadata);
@@ -279,10 +355,12 @@ function applyLocalProviderBlock(
 }
 
 /**
+ * Metadata precedence must match harness requestSessionModel so the declared
+ * session primary and executed model agree before context assembly.
  * Read model/effort from webhook, cron, web-console, TUI, Telegram, or Slack request metadata.
  * Webhook takes precedence, then cron, then the web block, then its optional TUI
  * compatibility mirror, then Telegram, then Slack. A turn carrying none of these blocks
- * returns `{}`, preserving the configured runtime defaults.
+ * returns `{}`, leaving only the keyword escalation scan.
  */
 function readOverride(metadata: Record<string, unknown> | undefined): {
   readonly model?: string;

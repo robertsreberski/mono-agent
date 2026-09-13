@@ -126,6 +126,7 @@ const EXPECTED_CORE_FIELD_TYPES: Record<ConfigViewFieldId, ConfigReferenceType> 
   providers: "object",
   "providers.piAuthPath": "string",
   "providers.piNative.transport": "string",
+  "providers.piNative.promptCacheDiagnostics": "boolean",
   "providers.piNative.piMaxRetries": "integer",
   "providers.piNative.maxRetryDelayMs": "integer",
   "providers.piNative.piSessionsRoot": "string",
@@ -165,6 +166,19 @@ function repoRoot(): string {
 }
 
 describe("config reference", () => {
+  it("describes string and strict named subagent model choices", () => {
+    const schema = buildMonoAgentConfigSchema();
+    expect((schema.properties as Record<string, unknown>).subagents).toMatchObject({
+      properties: { models: { type: "array", items: { anyOf: [
+        { type: "string", minLength: 1 },
+        { type: "object", additionalProperties: false, required: ["model"], properties: {
+          name: { type: "string", pattern: "^[a-z0-9][a-z0-9-]{0,39}$" },
+          model: { type: "string", minLength: 1 },
+        } },
+      ] } } },
+    });
+  });
+
   it("publishes the Monitor wake ceiling and expanded chain cap", () => {
     const schema = buildMonoAgentConfigSchema();
     expect((schema.properties as Record<string, unknown>).monitors).toMatchObject({

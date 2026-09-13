@@ -20,6 +20,7 @@ independently and reports back. It exists only on the pi runtime, and only when
   "subagents": {
     "enabled": true,
     "maxConcurrent": 5,
+    "models": [{ "name": "fable", "model": "anthropic:claude-fable-5-1" }, "openai-codex:gpt-6-astra"],
     "definitions": [
       {
         "name": "researcher",
@@ -34,15 +35,33 @@ independently and reports back. It exists only on the pi runtime, and only when
 ```
 
 Each definition needs exactly one of `prompt` or `promptPath`. The `Agent` tool
-takes `{prompt, name?, description?}`; with no `name` it runs a read-only
-general-purpose researcher on the parent's model.
+takes `{prompt, name?, description?, model?, effort?}`; with no `name` it runs a
+read-only general-purpose researcher. `model` is offered only when the operator
+configures a non-empty `subagents.models` allow-list. Entries can be full model
+reference strings or `{name?, model}` objects. An omitted name uses the canonical
+reference; explicit aliases must be lowercase kebab-case, 1–40 characters, unique,
+and distinct from profile names and `general-purpose`. Duplicate model references
+are rejected. Unknown call-time choices fail with the allowed names.
+
+Model and effort each resolve independently: **call-time override → profile pin →
+parent effective value → base/runtime default**. Inheritance follows the parent's
+current turn, including per-conversation model choices and effort overrides.
+Both options work with configured profiles, authored helpers, and general-purpose,
+even when authoring is disabled. The parent's fallback chain does not implicitly
+add choices to `subagents.models`.
+
+For example, `Agent({name: "researcher", prompt: "Find the relevant callers",
+model: "fable", effort: "high"})` keeps the researcher's prompt and tool policy
+while changing its route. Pinned or overridden values appear in the result header
+and structured `requested` details; `executed` details reflect the successful route
+when the child reports it, including fallback differences.
 
 **Subagents built at call time.** A pre-declared profile means editing config and
 restarting for every new specialization, so the agent can also author one on the
-spot: passing `systemPrompt` (plus a kebab-case `name`, and optionally `tools`
-and `effort`) builds a one-off subagent for that call instead of selecting a
-profile. `tools` and `effort` apply only alongside `systemPrompt` — a configured
-profile brings its own — and a name that collides with a configured profile is
+spot: passing `systemPrompt` (plus a kebab-case `name`, and optionally `tools`,
+`model`, and `effort`) builds a one-off subagent for that call instead of selecting a
+profile. Only `tools` requires `systemPrompt`; configured profiles retain their
+operator-defined tool policy. A name that collides with a configured profile is
 rejected so the activity log stays unambiguous.
 
 What an authored subagent may reach is an operator decision, not the model's.
@@ -74,6 +93,12 @@ compact log — one line per tool call with a short argument summary, ok/error,
 and duration — capped at roughly 24 KB. It does not receive raw tool output. A
 subagent that fails, times out, or returns nothing still reports its activity
 log, since that log is usually the most useful part of a failed delegation.
+When the answer exceeds 12,000 characters, the log is elided, or the result hits
+its byte cap, the complete result is written to the run's tool-output artifact
+directory through the same sink other oversized tool payloads use, and the
+retained text names that file directly under its header
+(`[result truncated; full result saved to: …]`) so the main agent can `Read` it.
+Without a configured artifact sink the text says the full result was not saved.
 
 **What operators see.** Every subagent tool call streams live to the TUI and web
 console as its own entry, named `<profile>▸<tool>` and bracketed by the
@@ -95,9 +120,11 @@ for one built at call time, unless its `tools` request survives the ceiling), an
 it never receives `Agent`, `AskUser`, or any channel-send tool — it cannot
 message the user or spawn subagents of its own. It inherits the parent's sandbox
 and cannot widen it, gets no MCP servers unless its profile names them, and runs
-with no provider session of its own. Omitting a profile's `model` inherits the
-parent's configured route, so subagents get the fallback chain and same-model
-retries too; naming a model routes that profile through it instead.
+with no provider session of its own. Without a call-time override or profile pin,
+it inherits the parent's effective model and effort. A child using the base model
+uses the shared fallback/retry runtime; a different resolved model goes through
+the host's `runtimeForModel` callback so the shared router cannot replace it with
+the base model.
 
 **Skills.** A subagent inherits the parent's skill index and the `ReadSkill` tool
 whenever the agent runs with `context.skillDisclosure: "index"` and a
@@ -210,9 +237,13 @@ pipes and avoids relying on Node's special IPC file descriptor.
 
 ## Tool-output bloat guard (auto)
 
-Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a result exceeds the budget, the guard attempts to save each original block through the artifact sink. The compact replacement references only paths the sink successfully returned; if the sink is absent or a write fails, omitted bytes are not recoverable. Successful files land under `artifacts.dir/tool-output/` and are separate from JSONL replay.
+Tool results are truncated at a 256KB budget so a single oversized result cannot blow up the context window or the model's reasoning. When a text-only result exceeds the budget, the guard keeps a UTF-8-safe 60/40 head/tail sample inside a new balanced untrusted-content frame. A host notice says that the omitted middle may contain more content, so the retained tail is not mistaken for the source ending. Image, binary, and mixed payloads retain the summary-only fallback.
+
+Before rewriting the result, the guard offers every original block to the configured app's per-run artifact sink. Successful files land as owner-private files under `artifacts.dir/tool-output/<runId>/`; only returned paths appear in the summary. A missing or failed sink is reported as `persistence unavailable` and never fails the tool call. These files contain raw, untrusted payloads: keep the artifact directory access-controlled. The configured app's hourly artifact sweep owns each run directory under the existing `artifacts.retention` age/count/dry-run policy. A directory associated with a `running` or uncertain summary, or modified within the last sweep interval, is kept; an aged orphan needs no tool-history record to be removed. Tool-history retention still owns only lifecycle rows and tombstones, not these files.
 
 Images get a separate, larger budget than text so vision payloads are not clipped at the text limit.
+
+The per-tool caps that fire well before that budget — `max_output_chars` on Bash, Exec, NodeRepl, Read and WebFetch, and the line/char limits on Grep and Glob listings — spill through the same per-run sink. When a result is trimmed, the full output is written to `artifacts.dir/tool-output/<runId>/` and the retained text ends with `Full output saved to: <path>` so the agent can `Read` it or narrow its request. Without a sink the notice omits that line rather than naming a file that was never written.
 
 This guard is always on (coverage: `auto`). You do not enable it; you only choose where artifacts are written:
 
@@ -233,6 +264,27 @@ Each run collects per-turn usage, cost, and cache metrics as events for its JSON
 Related per-turn timing also lands in the JSONL: a `provider_bridge_latency` event separates provider/tool/IO time from harness overhead, and per-tool `tool_timing` events carry `execution_ms`. See [Artifacts & traces](/observability/artifacts-and-traces/) and the [CLI reference](/observability/cli-reference/) for reading these, and [Phoenix & backfill](/observability/phoenix-and-backfill/) to export them as spans.
 
 ## Context compaction (Pi bridge-driven, configurable)
+
+Pi's native checkpoint and overflow compaction is disabled by mono-agent so only
+one guarded policy runs. Summary preparation preserves bounded tool-result heads
+and tails and distinguishes confirmed built-in file changes from failed attempts.
+Empty, malformed, aborted or output-truncated summaries retain the original
+context. Thresholds, tail size and output budgets are unchanged.
+
+`context_compaction.accounting` records operation duration, policy, comparable
+transcript/full-request estimates, tail estimate, summary text token estimates,
+appended file-metadata bytes and omission counts. Each summary request has its own
+ID, ordinal, status, duration and provider usage/cost when available, including
+requests whose summaries are rejected. Unknown values are `null`; estimates use
+`tokenCountsExact: false`. Accounting excludes prose, paths, arguments and raw
+cache keys. The recorder preserves boolean exactness and null summary/tail
+estimates through closed, typed redaction exceptions; strings under these field
+names remain redacted. With `providers.piNative.promptCacheDiagnostics: true`, assistant
+payload and usage events share request IDs; the prompt-cache summary script shows
+compaction boundaries and separates assistant and summary cost. Fingerprint
+changes do not prove cache misses, and delta/unsupported prefix comparisons remain
+unknown. Summary requests keep Pi's existing disabled-cache setting.
+
 
 Compaction is delegated to the active provider bridge rather than hand-rolled in the runtime. On the pi-native bridge, the bridge drives `AgentHarness.compact()`:
 

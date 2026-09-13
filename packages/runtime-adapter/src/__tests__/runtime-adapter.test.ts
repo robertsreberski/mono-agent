@@ -176,14 +176,19 @@ describe("runtime adapter fallback chain", () => {
   });
 
   it("forwards the actual attempted model and exact effort tri-state", async () => {
-    const attempts: Array<{ model: string; effort: unknown }> = [];
+    const attempts: Array<{ model: string; effort: unknown; persistArtifact: unknown }> = [];
     const configureTools = vi.fn();
     const fakeRuntime = {
       configureTools,
-      async run(_systemPrompt: string, options: { model: { model: string }; effort?: string }) {
+      async run(_systemPrompt: string, options: {
+        model: { model: string };
+        effort?: string;
+        persistArtifact?: unknown;
+      }) {
         attempts.push({
           model: options.model.model,
           effort: Object.hasOwn(options, "effort") ? options.effort : "provider-default",
+          persistArtifact: options.persistArtifact,
         });
         return { text: "ok", events: [], cancelled: false, usage: {} };
       },
@@ -197,21 +202,31 @@ describe("runtime adapter fallback chain", () => {
           retryIndex: 0,
           model,
         });
-        return { runtime: fakeRuntime as never, options: { privateSentinel: "not-telemetry" } };
+        return {
+          runtime: fakeRuntime as never,
+          options: {
+            privateSentinel: "not-telemetry",
+            persistArtifact: () => "/tmp/resolver-owned",
+          } as never,
+        };
       },
     });
+
+    const runSink = () => "/tmp/run-owned";
 
     const result = await runtime.run("SYSTEM", {
       model: parseMonoRuntimeModelReference("openai-codex:ignored-by-chain"),
       effort: "high",
       messages: [{ role: "user", content: "hi" }],
       abortSignal: new AbortController().signal,
+      persistArtifact: runSink,
     });
 
     expect(configureTools).toHaveBeenCalledOnce();
     expect(attempts).toEqual([{
       model: "claude-sonnet-4-6",
       effort: "provider-default",
+      persistArtifact: runSink,
     }]);
     expect(JSON.stringify(result)).not.toContain("privateSentinel");
   });

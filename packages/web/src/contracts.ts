@@ -74,6 +74,15 @@ export const DEFAULT_WEB_THEME: WebTheme = "evergreen";
 /** Canonical upper bound on the operator-chosen console label. */
 export const WEB_CONSOLE_NAME_MAX_CHARACTERS = 80;
 
+/**
+ * How many running conversations {@link WebActiveThreads} carries.
+ *
+ * A dashboard section, not a page: the cards fold behind a per-agent "more"
+ * control long before fifty of them, and the counts beside them are exact
+ * whatever this is. Raising it costs every connected console one bigger
+ * response per event.
+ */
+export const WEB_ACTIVE_THREAD_LIMIT = 50;
 export const WEB_MAX_FILES_PER_TURN = 10;
 export const WEB_MAX_TURN_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 export const WEB_STAGED_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -84,6 +93,10 @@ export const WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES = 64 * 1024 * 1024;
 export const WEB_MAX_QUEUED_ATTACHMENT_TURNS = 32;
 export const WEB_MAX_TURN_TEXT_CHARACTERS = 200_000;
 export const WEB_MAX_LIVE_INPUTS_PER_THREAD = AGENT_LIVE_INPUT_MAX_MESSAGES;
+/** Canonical upper bound on a project name, counted in characters. */
+export const WEB_MAX_PROJECT_NAME_CHARACTERS = 120;
+/** Canonical upper bound on a project's free-text context, counted in characters. */
+export const WEB_MAX_PROJECT_CONTEXT_CHARACTERS = 4_000;
 
 export type WebAgentStatus = "online" | "offline" | "degraded";
 export type WebThreadNotificationTriggerKind = "cron" | "webhook";
@@ -105,6 +118,8 @@ export interface WebCronCapability {
 
 export interface WebModelOption {
   readonly effortLevels?: readonly string[];
+  /** Configured fallback effort; null means provider default. */
+  readonly effort?: string | null;
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly label?: string;
@@ -181,6 +196,18 @@ export interface WebAgentSummary {
   /** Absent when the addressed agent predates first-class cron operator routes. */
   readonly cron?: WebCronCapability;
   readonly supportsAskById?: boolean;
+  /**
+   * Conversations of THIS agent with work in flight, fleet-wide.
+   *
+   * The same aggregate {@link WebActiveThreads.runningCounts} carries, counted
+   * over the whole qualifying set rather than over the capped listing, and
+   * supplied on every bootstrap summary -- so a console drawing a badge per
+   * agent never has to infer one from the conversations it happens to hold.
+   *
+   * Absent on summaries an older server built and on the ones a discovery pass
+   * or a pin writes back, which describe a capability rather than a moment.
+   */
+  readonly runningCount?: number;
   readonly updatedAt: string;
 }
 
@@ -261,6 +288,46 @@ export interface WebRunAttribution {
   readonly truncated?: true;
 }
 
+/**
+ * The little a status line can honestly say about a turn that is still going.
+ *
+ * Derived from the retained parts of the running foreground turn's assistant
+ * message and from nothing else -- no agent is polled for it, and no counter is
+ * kept beside the transcript. What is NOT here is deliberate: a
+ * provider-neutral "step" ordinal, an estimate of how much longer, a token or
+ * context percentage, and any accounting of the calls a subagent made. Each of
+ * those either does not exist across runtimes or would be a number the console
+ * cannot stand behind.
+ */
+export interface WebRunActivity {
+  /**
+   * Retained TOP-LEVEL tool calls, each counted once.
+   *
+   * Model steps are not tool calls and are not counted. A delegation's own
+   * calls belong to the subagent group that owns them and are not counted
+   * either -- concurrent subagents interleave, so a flat total would be a
+   * number with no owner.
+   */
+  readonly toolCallCount: number;
+  /**
+   * `asking` iff a retained AskUser tool call is still running.
+   *
+   * That is the one interruption the console can name from the transcript
+   * alone. It is NOT a claim about approvals, permission prompts or any other
+   * pending interaction: those are not tool calls and leave nothing retained to
+   * read.
+   */
+  readonly phase: "working" | "asking";
+  /**
+   * The latest cumulative run cost the runtime reported, in USD.
+   *
+   * Absent whenever no `usage_update` priced this run, and absent rather than
+   * zero for a value that is not a finite non-negative number: a run whose
+   * model has no price is not a run that cost nothing.
+   */
+  readonly cumulativeUsd?: number;
+}
+
 export interface WebRunState {
   readonly id?: string;
   readonly status: WebRunStatus;
@@ -272,6 +339,14 @@ export interface WebRunState {
   readonly model?: string;
   readonly effort?: string;
   readonly attribution?: WebRunAttribution;
+  /**
+   * Present ONLY while this run is the foreground turn and it is running.
+   *
+   * A terminal run has no activity: what a finished turn did is in its
+   * transcript, and a status line that kept counting after the answer arrived
+   * would be describing the past in the present tense.
+   */
+  readonly activity?: WebRunActivity;
 }
 
 /** Bounded activity derived from every retained process-job card in a thread. */
@@ -294,6 +369,17 @@ export interface WebThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly revision: number;
+  /** The project this conversation belongs to, or null when it belongs to the agent directly. */
+  readonly projectId: string | null;
+  /**
+   * That project's name, carried on the summary so a reader can label the row
+   * without holding the project list it came from. Present exactly when
+   * `projectId` is; a listing that crosses agents (Running) has no other way to
+   * say which project a card belongs to.
+   */
+  readonly projectName?: string;
+  /** Desired membership; effective only after the named active turn settles. */
+  readonly pendingProject?: { readonly projectId: string | null; readonly turnId: string };
   readonly trigger?: WebThreadTrigger;
   readonly lastMessagePreview?: string;
   readonly messageCount: number;
@@ -309,7 +395,141 @@ export interface WebThread {
 
 export type WebMessageStatus = "running" | "complete" | "failed" | "cancelled" | "interrupted";
 
+/**
+ * A per-agent named container of conversations.
+ *
+ * Membership is independent of archive state: archiving a project hides its
+ * navigation entry while keeping chats, membership and context injection.
+ * Deleting a project detaches its chats instead -- they reappear under the
+ * agent, never deleted or stopped.
+ *
+ * `monthUsd` is the current UTC calendar month's recognised priced usage over
+ * the project's current non-archived members. Absent when no priced
+ * observation exists; a measured zero is kept as zero.
+ */
+export type WebProjectColor = "default" | "blue" | "purple" | "amber" | "rose";
+
+export interface WebProjectTransition {
+  readonly id: number;
+  readonly afterMessageId: string | null;
+  readonly turnId: string | null;
+  readonly before: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
+  readonly after: { readonly id: string; readonly name: string; readonly color: WebProjectColor } | null;
+  readonly createdAt: string;
+}
+
+/** One end of a {@link WebModelTransition}: a resolved route, never a guess. */
+export interface WebRouteSelection {
+  /** Resolved model id, or null when nothing reported one for that turn. */
+  readonly model: string | null;
+  /** Resolved effort, or null when nothing reported one for that turn. */
+  readonly effort: string | null;
+}
+
+/**
+ * One change of the conversation's SELECTED route, recorded where it took
+ * effect: between the last turn that ran on the old model/effort and the first
+ * turn admitted on the new one.
+ *
+ * Deliberately not a log of picker writes. The model picker persists an
+ * override the moment it is touched and can be flipped any number of times
+ * before the next turn is sent, so each row is written at turn admission by
+ * comparing that turn's frozen resolved route with the last turn that reported
+ * one. A flip that came back to where it started leaves no row, a run of flips
+ * leaves one, and a route nothing resolved is never claimed as a change.
+ *
+ * A provider fallback is NOT a route change: what a run actually executed with
+ * stays in that run's own {@link WebRunAttribution}. `turnId` names the first
+ * turn on the new route, and `afterMessageId` the settled message it follows
+ * (null only for a row whose anchor predates the loaded page).
+ */
+export interface WebModelTransition {
+  readonly id: number;
+  readonly afterMessageId: string | null;
+  readonly turnId: string | null;
+  readonly before: WebRouteSelection;
+  readonly after: WebRouteSelection;
+  readonly createdAt: string;
+}
+
+export interface WebProject {
+  readonly color?: WebProjectColor;
+  readonly id: string;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context: string;
+  readonly archivedAt: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly revision: number;
+  /** Current non-archived member conversations. */
+  readonly conversationCount: number;
+  /** Members with a foreground turn running. */
+  readonly runningCount: number;
+  readonly monthUsd?: number;
+}
+
+export interface CreateWebProjectInput {
+  readonly color?: WebProjectColor;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context?: string;
+}
+
+export interface PatchWebProjectInput {
+  readonly color?: WebProjectColor;
+  readonly name?: string;
+  readonly context?: string;
+  readonly archived?: boolean;
+}
+
 export type WebToolCallStatus = "running" | "complete" | "failed";
+
+export interface WebCronReplyContextPart {
+  readonly type: "cron-reply-context";
+  readonly schema: "mono-agent.web.cron-reply-context.v1";
+  readonly untrusted: true;
+  readonly source: {
+    readonly sourceId: string;
+    readonly jobId: string;
+    readonly runId: string;
+  };
+  readonly run: {
+    readonly sequence: number;
+    readonly trigger: WebCronRunTrigger;
+    readonly status: WebCronRunStatus;
+    readonly scheduledAt: string;
+    readonly orderedAt: string;
+    readonly startedAt?: string;
+    readonly completedAt?: string;
+    readonly blockedByRunId?: string;
+    readonly blockedByTrigger?: WebCronRunTrigger;
+    readonly queueDepth?: number;
+  };
+  readonly snapshot: {
+    readonly capturedAt: string;
+    readonly kind: WebCronReplySnapshotKind;
+    readonly sourceTruncationKnown: boolean;
+    readonly sourceFieldsTruncated: readonly WebCronRunTruncatedField[];
+    readonly maxBytes: number;
+    readonly originalErrorBytes: number;
+    readonly retainedErrorBytes: number;
+    readonly originalResultBytes: number;
+    readonly retainedResultBytes: number;
+    readonly truncatedFields: readonly ("failure.message" | "result.text")[];
+  };
+  readonly result: { readonly text: string };
+  readonly failure: {
+    readonly code?: string;
+    readonly message?: string;
+  };
+  /** Exact human-readable framing which precedes the JSON on the agent wire. */
+  readonly prefix: string;
+  /** Exact JSON substring from the imported wire text; never re-serialized. */
+  readonly rawJson: string;
+  /** Exact imported wire text retained for diagnostics and copy-safe display. */
+  readonly rawText: string;
+}
 
 /** One tool call, whether the agent made it or one of its subagents did. */
 export interface WebToolCall {
@@ -318,9 +538,8 @@ export interface WebToolCall {
   readonly args?: unknown;
   readonly result?: unknown;
   /**
-   * An MCP tool's machine-readable result, when it returned one. `result` is the
-   * model-facing text and is lossy; renderers that must reason about the outcome
-   * (the AskUser card reads `interactionId`/`answered`) read this instead.
+   * A bounded machine-readable tool result, from MCP or a canonical host tool
+   * outcome. `result` is model-facing and lossy; consumers validate the schema here.
    */
   readonly structuredResult?: unknown;
   readonly status: WebToolCallStatus;
@@ -364,6 +583,7 @@ export interface WebToolCall {
 export type WebMessagePart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "reasoning"; readonly text: string }
+  | WebCronReplyContextPart
   | ({ readonly type: "tool-call" } & WebToolCall)
   /**
    * One `Agent` delegation and the tool calls its subagent made. The children
@@ -405,6 +625,35 @@ export type WebMessagePart =
       readonly job: ProcessJobProjection;
       /** Bounded normal-turn answer produced by the terminal wake, when ready. */
       readonly responseText?: string;
+    }
+  | {
+      /** Chronological marker for the point where a retained job wake was applied. */
+      readonly type: "process-job-wake";
+      readonly jobId: string;
+      readonly deliveryKey: string;
+      readonly disposition: "steered" | "follow_up";
+    }
+  | {
+      /**
+       * Chronological marker for the point where an operator's live follow-up
+       * ("steer") was consumed by the running turn. The steered user message
+       * row stays in the database and API untouched; the browser renders the
+       * inline bubble from this self-contained marker and drops the duplicate
+       * standalone bubble. Full operator text (bounded by
+       * `AGENT_LIVE_INPUT_MAX_CHARACTERS`) travels here so the marker needs
+       * no second fetch when the user row is paged out.
+       */
+      readonly type: "steer";
+      /** `live_inputs.id`, matching the synthetic event's `metadata.inputId`. */
+      readonly inputId: string;
+      /** The steered user message this marker duplicates inline. */
+      readonly messageId: string;
+      /** Full operator text, verbatim (never the 40-code-point preview). */
+      readonly text: string;
+      /** When the operator sent the steer, when known. Length/control-char checked only. */
+      readonly receivedAt?: string;
+      /** The steer author's quote, when the standalone bubble carries one. */
+      readonly quote?: WebQuote;
     }
   | {
       readonly type: "monitor-activity";
@@ -503,7 +752,7 @@ export interface WebMessage {
    */
   readonly finishedAt?: string;
   readonly status: WebMessageStatus;
-  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled";
+  readonly liveInputStatus?: "pending" | "applied" | "queued" | "cancelled" | "uncertain";
   readonly attribution?: WebRunAttribution;
   /**
    * How many times this message's parts have been persisted, counted from the
@@ -521,6 +770,8 @@ export interface WebQuote {
 }
 
 export interface WebThreadDetail {
+  readonly projectTransitions?: readonly WebProjectTransition[];
+  readonly modelTransitions?: readonly WebModelTransition[];
   readonly thread: WebThread;
   readonly messages: readonly WebMessage[];
   /** Opaque keyset cursor for the next older message page. */
@@ -532,7 +783,46 @@ export interface WebThreadPage {
   readonly nextCursor?: string;
 }
 
+/** Which durable conversation classes a list or search includes. */
+export type WebThreadListScope = "all" | "chats";
+
+/**
+ * Every conversation in the fleet with work in flight -- bounded, and counted
+ * before it is bounded.
+ *
+ * The one listing on this API that is NOT scoped to an agent or to an archive
+ * bucket, because "what is running right now" is not a question about either.
+ * Membership is one row per conversation whose foreground turn is running OR
+ * that has a retained process job queued, starting or running, joined to the
+ * agents discovery currently reports. A conversation retained for a source id
+ * discovery no longer reports is excluded: the console has nowhere to draw it.
+ *
+ * `threads` is capped, so it can only ever be part of the answer;
+ * {@link WebActiveThreads.total} and {@link WebActiveThreads.runningCounts} are
+ * computed over the whole qualifying set and are what a client counts from. A
+ * cap the counts also obeyed would silently report a busy fleet as a quiet one.
+ *
+ * Fixed scope and a fixed cap: no filters, no cursor. A projection with a
+ * cursor invites a console to walk it on every event, which is the cost this
+ * whole listing exists to avoid.
+ */
+export interface WebActiveThreads {
+  /** At most {@link WEB_ACTIVE_THREAD_LIMIT}, `updated_at DESC, id DESC`. */
+  readonly threads: readonly WebThread[];
+  /** Distinct qualifying conversations, before the cap. */
+  readonly total: number;
+  /** `total` exceeded the cap, so `threads` is part of the answer. */
+  readonly truncated: boolean;
+  /**
+   * Per discovered agent, INCLUDING the ones with nothing running: a key that
+   * is simply missing cannot be told apart from an agent the listing forgot.
+   */
+  readonly runningCounts: Readonly<Record<string, number>>;
+}
+
 export interface WebMessagePage {
+  readonly projectTransitions?: readonly WebProjectTransition[];
+  readonly modelTransitions?: readonly WebModelTransition[];
   readonly messages: readonly WebMessage[];
   readonly nextCursor?: string;
 }
@@ -563,6 +853,8 @@ export interface SearchWebThreadsInput {
   readonly sourceId: string;
   readonly query: string;
   readonly limit?: number;
+  /** Defaults to `all` for clients written before scoped navigation. */
+  readonly scope?: WebThreadListScope;
 }
 
 export type WebCronRunTrigger = CronOperatorRunTrigger;
@@ -585,6 +877,25 @@ export interface WebCronOverview extends Omit<CronOperatorOverview, "jobs"> {
 export interface WebCronRunPage extends CronOperatorRunPage {
   /** Canonical messages reconciled by the web backend for this page. */
   readonly messages?: readonly WebMessage[];
+}
+
+export type WebCronReplySnapshotKind = "summary" | "detail";
+
+export interface CreateWebCronReplyInput {
+  readonly operationId: string;
+  readonly snapshotKind: WebCronReplySnapshotKind;
+}
+
+/** One durable, server-owned import receipt. `duplicate` means local replay. */
+export interface WebCronReplyReceipt {
+  readonly operationId: string;
+  readonly sourceId: string;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly duplicate: boolean;
+  readonly thread: WebThread;
+  /** Presentation-shaped messages. The two canonical stored rows fold to one card. */
+  readonly messages: readonly WebMessage[];
 }
 
 /** One provider an agent advertises as supported. */
@@ -681,6 +992,8 @@ export interface WebBootstrapScope {
   readonly sourceId?: string;
   readonly archived?: boolean;
   readonly limit?: number;
+  /** Defaults to `all` for clients written before scoped navigation. */
+  readonly scope?: WebThreadListScope;
 }
 
 export interface WebBootstrap {
@@ -695,6 +1008,23 @@ export interface WebBootstrap {
   readonly threadsSourceId: string | null;
   /** Keyset cursor for the next older page of that bucket, or `null` at its end. */
   readonly threadsNextCursor: string | null;
+  /**
+   * The resolved agent's projects, archived included: the Dashboard and the
+   * conversation picker filter archived out locally.
+   */
+  readonly projects: readonly WebProject[];
+  /** The agent `projects` belong to, or `null` when there is no agent to open on. */
+  readonly projectsSourceId: string | null;
+  /**
+   * What is running across the WHOLE fleet, from the same store snapshot the
+   * `agents` above were counted from.
+   *
+   * Carried here so a cold console can draw its running section on the first
+   * response instead of paying a second round trip for it. Absent only on a
+   * bootstrap an older server built, which is exactly when a client has to fall
+   * back to what it can see for itself -- and say so.
+   */
+  readonly activeThreads?: WebActiveThreads;
   readonly currentThreadId?: string;
   readonly limits: {
     readonly maxFileBytes: number;
@@ -710,6 +1040,7 @@ export type WebEventType =
   | "cron.changed"
   | "threads.changed"
   | "thread.changed"
+  | "projects.changed"
   | "message.changed"
   | "message.delta"
   | "turn.changed"
@@ -728,6 +1059,18 @@ export type WebEventType =
 export type WebThreadChangedPayload =
   | { readonly thread: WebThread }
   | { readonly threadId: string; readonly removed: true };
+
+/**
+ * The payload of every `projects.changed` that names a
+ * project, mirroring {@link WebThreadChangedPayload}.
+ *
+ * The fresh summary travels WITH the event so a console never re-reads a
+ * listing to learn what changed about a row it already holds. A removal has
+ * no summary left to carry, so it says so.
+ */
+export type WebProjectChangedPayload =
+  | { readonly project: WebProject }
+  | { readonly projectId: string; readonly removed: true };
 
 /**
  * What an `agents.changed` says about itself.
@@ -821,6 +1164,8 @@ export interface CreateWebThreadInput {
   readonly model?: string | null;
   /** Explicit draft choice; absent inherits the web default and null selects config. */
   readonly effort?: string | null;
+  /** Optional project the new conversation joins; same agent, not archived. */
+  readonly projectId?: string;
 }
 
 export interface PutWebAgentRunSettingsInput {
@@ -837,6 +1182,11 @@ export interface PatchWebThreadInput {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  /**
+   * Move the conversation into a project, or detach it back to the agent with
+   * `null`. Never combined with `ifRunConfigUnset`.
+   */
+  readonly projectId?: string | null;
   /**
    * Compare-and-set: apply nothing unless this conversation still has NO run
    * override. The console's one-time adoption of a browser-local preference
@@ -860,6 +1210,33 @@ export interface StartWebTurnInput {
 
 export interface StartWebLiveInputInput {
   readonly text: string;
+}
+
+export interface StartWebSubmissionInput extends StartWebTurnInput {
+  readonly submissionId: string;
+}
+
+export interface WebSubmissionReceipt {
+  readonly submissionId: string;
+  readonly threadId: string;
+  readonly outcome: "turn" | "live-input" | "rejected";
+  readonly reason?:
+    | "active_attachments_unsupported"
+    | "unsupported_targeting"
+    | "closed_before_dispatch"
+    | "operator_inactive"
+    | "operator_unsupported"
+    | "operator_too_large"
+    | "operator_full"
+    | "operator_invalid"
+    | "mailbox_unsupported"
+    | "mailbox_closed"
+    | "mailbox_failed";
+  readonly disposition?: "pending" | "queued";
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly message?: WebMessage;
+  readonly turn?: WebRunState;
 }
 
 export interface WebLiveInputReceipt {

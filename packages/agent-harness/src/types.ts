@@ -1,7 +1,10 @@
 import type {
   AgentLiveInputOffer,
+  AgentLiveInputOwnership,
   AgentLiveInputRequest,
   AgentAttachment,
+  AgentContextImportRequest,
+  AgentContextImportResult,
   AgentContinuationOriginContext,
   AgentContinuationTurn,
   AgentMessageSender,
@@ -39,8 +42,16 @@ export interface ProviderSessionTurnCommitOptions {
   readonly providerSessionSynced: boolean;
 }
 
+export interface ProviderSessionTurnBinding {
+  readonly modelKey: string;
+}
+
 /** A conversation-exclusive provider turn owned by durable history state. */
 export interface ConversationHistoryProviderSessionTurn {
+  readonly modelKey?: string;
+  readonly previousModelKey?: string;
+  /** A pre-model-binding provider record was replaced without guessing its model owner. */
+  readonly previousModelWasUnbound?: boolean;
   /** Epoch-derived, filesystem-safe provider session id for this turn. */
   readonly providerSessionId: string;
   /** Durable transcript revision present before this turn starts. */
@@ -57,12 +68,45 @@ export interface ConversationHistoryProviderSessionTurn {
   abort(): Promise<void>;
 }
 
+/** Short-transaction exclusive turn used outside durable provider-session mode. */
+export interface ConversationHistoryExclusiveTurn {
+  readonly history: readonly HistoryMessage[];
+  /** Opaque, non-empty UTF-8 token capped by CONVERSATION_HISTORY_VERSION_MAX_BYTES. */
+  readonly historyVersion: string;
+  prepareCommit(messages: readonly HistoryMessage[]): Promise<{
+    readonly append: PreparedHistoryAppend;
+    /** Opaque version for the record that `append.commit()` will publish. */
+    readonly committedHistoryVersion: string;
+  }>;
+  abort(): Promise<void>;
+}
+
+export interface ConversationHistoryContextImport {
+  readonly version: 1;
+  readonly maxTextBytes: number;
+  readonly providerState: "absent" | "retire-fail-closed";
+  beginExclusiveTurn(conversationId: string): Promise<ConversationHistoryExclusiveTurn>;
+  prepareImport(
+    conversationId: string,
+    request: AgentContextImportRequest & { readonly timestamp: string },
+  ): Promise<{
+    readonly result: AgentContextImportResult;
+    readonly append?: PreparedHistoryAppend;
+  }>;
+}
+
 export interface ConversationHistoryStore {
+  /** Checks, persists and retires requested-primary model bindings. */
+  readonly providerSessionModelBinding?: "v1";
+  /** Accepts synced terminal continuity without changing the durable record shape. */
+  readonly providerSessionRecovery?: "v1";
   /**
    * Present only when epoch rotation/retention can fail closed while removing
    * provider-owned durable transcripts that canonical history supersedes.
    */
   readonly providerSessionRetirement?: "fail-closed" | undefined;
+  /** Positive v1 support contract; legacy append existence does not imply support. */
+  readonly contextImport?: ConversationHistoryContextImport | undefined;
   load(conversationId: string): Promise<readonly HistoryMessage[]>;
   append(conversationId: string, messages: readonly HistoryMessage[]): Promise<void>;
   /**
@@ -95,6 +139,7 @@ export interface ConversationHistoryStore {
   beginProviderSessionTurn?(
     conversationId: string,
     runId: string,
+    binding?: ProviderSessionTurnBinding,
   ): Promise<ConversationHistoryProviderSessionTurn>;
 }
 
@@ -103,6 +148,7 @@ export interface InMemoryHistoryStoreOptions {
 }
 
 export interface AgentHarnessRequest {
+  readonly onLiveInputOwnership?: (event: AgentLiveInputOwnership) => void;
   readonly conversationId: string;
   readonly userMessage: string;
   readonly abortSignal: AbortSignal;
@@ -158,6 +204,7 @@ export interface AgentHarnessResponse {
 }
 
 export interface AgentHarness {
+  readonly liveInputOwnership?: { readonly version: 1 };
   run(request: AgentHarnessRequest): Promise<AgentHarnessResponse>;
   /** Offer user guidance to this conversation's active interactive turn. */
   offerLiveInput?(request: AgentLiveInputRequest): AgentLiveInputOffer;
@@ -184,6 +231,11 @@ export interface AgentHarness {
     text: string,
     options?: { readonly idempotencyKey?: string },
   ): Promise<void>;
+  /** Import canonical provenance plus assistant context without a model turn. */
+  importContext?(
+    conversationId: string,
+    request: AgentContextImportRequest,
+  ): Promise<AgentContextImportResult>;
   /** Drain admitted work, retire live provider sessions, and permanently stop accepting turns. */
   dispose?(): Promise<void>;
 }
@@ -206,20 +258,25 @@ export interface AgentHarnessSessionBoundary {
 export type AgentHarnessSessionEventKind = "acquired" | "released" | "saved" | "evicted" | "isolated" | "cold";
 
 export interface AgentHarnessSessionSnapshot {
+  readonly modelKey?: string;
   readonly conversationId: string;
   readonly providerSessionId: string;
   /** Durable provider transcript revision held by this process, when coordinated. */
   readonly providerSessionRevision?: number;
+  /** Canonical host-history version consumed by this warm provider handle. */
+  readonly historyVersion?: string;
   readonly createdAt: number;
   readonly lastActivityAt: number;
   readonly busy: boolean;
 }
 
 export interface AgentHarnessSessionEvent {
+  readonly modelKey?: string;
   readonly kind: AgentHarnessSessionEventKind;
   readonly conversationId: string;
   readonly providerSessionId?: string;
   readonly providerSessionRevision?: number;
+  readonly historyVersion?: string;
   readonly createdAt?: number;
   readonly lastActivityAt?: number;
   readonly busy?: boolean;
@@ -230,6 +287,8 @@ export interface AgentHarnessSessionEvent {
 export interface AgentHarnessSessionOptions {
   readonly mode: AgentSessionMode;
   readonly idleTimeoutMs: number;
+  /** Provider settlement window after cancellation or failure. Defaults to 1,000 ms. */
+  readonly terminalRecoverySettlementMs?: number;
   /**
    * Overrides backend capability detection (monoRuntimeSupportsSessionResume)
    * — primarily for tests and custom runtimes.
@@ -491,7 +550,16 @@ export interface AgentHarnessRuntimeOptionsExtension {
   // `onEvent` stays harness-owned. Provider-session ids, keep-alive fields, and
   // piSessionsRoot are accepted structurally for compatibility but stripped
   // and replaced by the harness's coordinated decision.
-  readonly runtimeOptions?: Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">>;
+  readonly runtimeOptions?: Omit<
+    Partial<Omit<RuntimeRunOptions, "messages" | "abortSignal" | "onEvent" | "toolLifecycleSink">>,
+    "effort"
+  > & {
+    /**
+     * A string pins this turn's effort, `null` explicitly selects the provider
+     * default, and omission inherits the harness effort.
+     */
+    readonly effort?: string | null;
+  };
   /**
    * Authoritative request-scoped tool boundary. When present, it replaces the
    * host/static allowed, denied, MCP-server, and MCP-config-path fields instead

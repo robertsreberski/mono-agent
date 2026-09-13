@@ -16,6 +16,7 @@ import {
   RUN_PREFERENCES_STORAGE_KEY,
   sortAgentsPinnedFirst,
   startBoundedRequest,
+  threadBucketKey,
   withHydrationDeadline,
   THREAD_READ_TIMEOUT_MS,
   THREAD_WRITE_TIMEOUT_MS,
@@ -24,6 +25,14 @@ import {
 import { effortLevelsForAgentModel, GLOBAL_EFFORT_LEVELS } from "./components/model-catalog";
 import { agent, bootstrap, thread } from "./test/fixtures";
 import type { MessagePart, WebMessage } from "./types";
+
+describe("threadBucketKey", () => {
+  it("names the chat scope so legacy mixed-list cursors cannot hydrate into it", () => {
+    expect(threadBucketKey("alpha", false)).toBe("alpha\0chats-v1\0active");
+    expect(threadBucketKey("alpha", true)).toBe("alpha\0chats-v1\0archived");
+    expect(threadBucketKey("alpha", false)).not.toBe("alpha\0active");
+  });
+});
 
 describe("resolveBootstrapSelection", () => {
   it("restores the origin-local thread for the selected agent instead of backend global state", () => {

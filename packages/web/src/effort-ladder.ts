@@ -43,6 +43,11 @@ export interface EffortAdvertisement {
   readonly reasoning?: boolean;
   readonly reasoningMode?: string;
   readonly effortLevels?: readonly string[];
+  /**
+   * Configured fallback effort. A string pins it, null selects provider
+   * default, and absence means this may be an older agent advertisement.
+   */
+  readonly effort?: string | null;
 }
 
 /** The `modelOptions`/`efforts` pair an agent advertises on `/v1/info`. */
@@ -138,4 +143,56 @@ export function effortLevelsForModel(
   if (catalogLevels !== undefined) return catalogLevels;
   if (agent.modelOptions === undefined) return agent.efforts ?? GLOBAL_EFFORT_LEVELS;
   return GLOBAL_EFFORT_LEVELS;
+}
+
+/**
+ * Resolve the effort inherited by a model-only turn selection.
+ *
+ * The configured primary always keeps `runtime.effort`. A new agent publishes
+ * each fallback's tri-state route effort in `modelOptions`; older agents omit
+ * that field and retain the capability-ladder behavior. Catalog-only routes
+ * inherit only when their advertised reasoning shape admits the base effort.
+ */
+export function inheritedEffortForModel(
+  agent: EffortAgentContext,
+  model: string | undefined,
+  catalogAdvertisement: EffortAdvertisement | undefined,
+  defaultEffort: string | undefined,
+): string | undefined {
+  const effectiveModel = effectiveModelForAgent(agent, model);
+  const primaryModel = agent.defaultModel || agent.models?.[0] || undefined;
+  if (effectiveModel === undefined || effectiveModel === primaryModel) return defaultEffort;
+
+  const shortlistAdvertisement = agent.modelOptions?.[effectiveModel];
+  if (shortlistAdvertisement !== undefined && Object.hasOwn(shortlistAdvertisement, "effort")) {
+    return typeof shortlistAdvertisement.effort === "string"
+      ? shortlistAdvertisement.effort
+      : undefined;
+  }
+  if (defaultEffort === undefined) return undefined;
+
+  const admission = advertisedEffortAdmission(
+    shortlistAdvertisement ?? catalogAdvertisement,
+    defaultEffort,
+  );
+  return admission === false ? undefined : defaultEffort;
+}
+
+/** `undefined` means the advertisement cannot judge this effort. */
+function advertisedEffortAdmission(
+  advertisement: EffortAdvertisement | undefined,
+  effort: string,
+): boolean | undefined {
+  if (advertisement === undefined) return undefined;
+  if (advertisement.reasoning === false || advertisement.reasoningMode === "none") return false;
+  if (advertisement.effortLevels?.length === 0) return false;
+  if (advertisement.reasoningMode === "toggle") return TOGGLE_EFFORT_LEVELS.includes(
+    effort as (typeof TOGGLE_EFFORT_LEVELS)[number],
+  );
+  if (advertisement.effortLevels !== undefined) return advertisement.effortLevels.includes(effort);
+  if (advertisement.reasoningMode === "effort") return GLOBAL_EFFORT_LEVELS.includes(
+    effort as (typeof GLOBAL_EFFORT_LEVELS)[number],
+  );
+  // `reasoning: true` alone is unknown cloud metadata. Stay permissive.
+  return undefined;
 }

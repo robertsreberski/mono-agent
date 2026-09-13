@@ -1,3 +1,4 @@
+import { CONSOLE_READ_TOOL_NAMES, executeConsoleTool, type ConsoleToolScope, type ConsoleToolOperation, type ConsoleToolCommit } from "./console-tools.js";
 import { createECDH, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { chmod, lstat, readdir, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -7,6 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { normalizeMonitorTerminalReply, hasMonitorReplyContent, monitorReplyText } from "./monitor-reply.js";
 
 import {
+  AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE,
   AGENT_LIVE_INPUT_MAX_CHARACTERS,
   AGENT_LIVE_INPUT_MAX_MESSAGES,
   MAX_AGENT_REPLY_PARTS,
@@ -23,6 +25,7 @@ import {
 } from "@mono-agent/agent-contracts";
 
 import {
+  WEB_ACTIVE_THREAD_LIMIT,
   WEB_MAX_FILES_PER_TURN,
   WEB_MAX_LIVE_INPUTS_PER_THREAD,
   WEB_MAX_TURN_ATTACHMENT_BYTES,
@@ -40,9 +43,18 @@ import {
   type WebCronRun,
   type WebCronRunSummary,
   type WebCronRunPage,
+  type WebCronReplyReceipt,
+  type WebCronReplySnapshotKind,
   type WebMessagePage,
+  type WebProject,
+  type WebProjectColor,
+  type WebProjectTransition,
+  type WebModelTransition,
+  type WebRouteSelection,
   type WebThreadNotificationTriggerKind,
   type WebQuote,
+  type WebActiveThreads,
+  type WebRunActivity,
   type WebRunState,
   type WebRunAttribution,
   type WebRunExecution,
@@ -54,12 +66,17 @@ import {
   type WebToolCall,
   type WebThreadDetail,
   type WebThreadPage,
+  type WebThreadListScope,
   type WebThreadSearchHit,
   type WebThreadSearchPage,
   type WebPushSubscriptionState,
   type WebPushSubscriptionStatus,
 } from "./contracts.js";
+import { formatCronReplyContext, type CronReplySnapshotCandidate } from "./cron-reply-context.js";
+import { parseProjectColor } from "./project-color.js";
 import { WebConsoleError } from "./errors.js";
+import { latestMessageCostUsd, sumMessageCosts } from "./message-cost.js";
+import { runActivityFromParts, sameRunActivity } from "./run-activity.js";
 import { runWebStorageMigrations, validateWebStorageMigrationRegistry, WEB_STORAGE_SCHEMA_VERSION } from "./store-migrations.js";
 import { webPushPreview } from "./push-preview.js";
 import { prepareWebStatePaths, type WebStatePathOptions, type WebStatePaths } from "./state-paths.js";
@@ -70,6 +87,8 @@ interface ThreadPatch {
   readonly archived?: boolean;
   readonly model?: string | null;
   readonly effort?: string | null;
+  /** Present (even as `null`) moves or detaches the conversation's project membership. */
+  readonly projectId?: string | null;
 }
 
 interface AgentRow {
@@ -98,11 +117,40 @@ interface AgentRow {
 export interface CreateStoredThreadInput {
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly projectId?: string;
+}
+
+interface ProjectRow {
+  color: WebProjectColor;
+  id: string;
+  source_id: string;
+  name: string;
+  context: string;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+  revision: number;
+}
+
+export interface CreateStoredProjectInput {
+  readonly color?: WebProjectColor;
+  readonly sourceId: string;
+  readonly name: string;
+  readonly context?: string;
+}
+
+export interface PatchStoredProjectInput {
+  readonly color?: WebProjectColor;
+  readonly name?: string;
+  readonly context?: string;
+  readonly archived?: boolean;
 }
 
 interface ThreadRow {
   id: string;
   source_id: string;
+  project_id: string | null;
+  project_name: string | null;
   title: string;
   title_manual: number;
   archived_at: string | null;
@@ -117,6 +165,50 @@ interface ThreadRow {
   message_count: number;
   run_model: string | null;
   run_effort: string | null;
+}
+
+interface WebSubmissionRow {
+  thread_id: string;
+  submission_id: string;
+  payload_sha256: string;
+  outcome: "turn" | "live-input" | "rejected";
+  reason: StoredWebSubmissionReason | null;
+  message_id: string | null;
+  turn_id: string | null;
+  input_id: string | null;
+  created_at: string;
+}
+
+export type StoredWebSubmissionReason =
+  | "active_attachments_unsupported"
+  | "unsupported_targeting"
+  | "closed_before_dispatch"
+  | "operator_inactive"
+  | "operator_unsupported"
+  | "operator_too_large"
+  | "operator_full"
+  | "operator_invalid"
+  | "mailbox_unsupported"
+  | "mailbox_closed"
+  | "mailbox_failed";
+
+export interface StoredWebSubmission {
+  readonly threadId: string;
+  readonly submissionId: string;
+  readonly payloadSha256: string;
+  readonly outcome: WebSubmissionRow["outcome"];
+  readonly reason?: NonNullable<WebSubmissionRow["reason"]>;
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly inputId?: string;
+}
+
+export interface NewStoredWebSubmission {
+  readonly outcome: WebSubmissionRow["outcome"];
+  readonly reason?: NonNullable<WebSubmissionRow["reason"]>;
+  readonly messageId?: string;
+  readonly turnId?: string;
+  readonly inputId?: string;
 }
 
 interface NotificationDeliveryRow {
@@ -140,6 +232,56 @@ interface CronChannelRow {
   created_at: string;
   updated_at: string;
 }
+
+type CronReplyOperationState = "pending" | "completed" | "failed" | "tombstoned";
+
+interface CronReplyOperationRow {
+  operation_id: string;
+  source_id: string;
+  job_id: string;
+  run_id: string;
+  thread_id: string;
+  conversation_id: string;
+  provenance_message_id: string | null;
+  result_message_id: string | null;
+  idempotency_key: string;
+  state: CronReplyOperationState;
+  snapshot_kind: WebCronReplySnapshotKind;
+  snapshot_text: string | null;
+  snapshot_sha256: string | null;
+  title: string | null;
+  run_model: string | null;
+  run_effort: string | null;
+  canonical_status: "appended" | "duplicate" | null;
+  failure_reason: string | null;
+  created_at: string;
+  completed_at: string | null;
+  failed_at: string | null;
+  tombstoned_at: string | null;
+}
+
+export interface StoredCronReplyOperation {
+  readonly operationId: string;
+  readonly sourceId: string;
+  readonly jobId: string;
+  readonly runId: string;
+  readonly threadId: string;
+  readonly conversationId: string;
+  readonly idempotencyKey: string;
+  readonly state: CronReplyOperationState;
+  readonly snapshotKind: WebCronReplySnapshotKind;
+  readonly snapshotText?: string;
+  readonly snapshotSha256?: string;
+  readonly failureReason?: string;
+  readonly createdAt: string;
+}
+
+export type CronReplyReservationResult =
+  | { readonly kind: "reserved"; readonly operation: StoredCronReplyOperation }
+  | { readonly kind: "pending"; readonly operation: StoredCronReplyOperation }
+  | { readonly kind: "completed"; readonly receipt: WebCronReplyReceipt }
+  | { readonly kind: "failed"; readonly operation: StoredCronReplyOperation }
+  | { readonly kind: "tombstoned"; readonly operation: StoredCronReplyOperation };
 
 interface ProcessJobCardRow {
   source_id: string;
@@ -198,6 +340,21 @@ interface MessageRow {
   turn_finished_at?: string | null;
 }
 
+/** A settled turn that may carry a conversation's prior meaningful outcome. */
+interface PriorOutcomeRow {
+  thread_id: string;
+  id: string;
+  status: string;
+  finished_at: string | null;
+  assistant_message_id: string;
+  started_at: string;
+  /** `turns.rowid`, so the candidate read can break a shared start stamp. */
+  ordinal: number;
+  has_user: number;
+  /** Whether a completed host-owned Monitor delivery claims this turn. */
+  claimed: number;
+}
+
 interface TurnRow {
   id: string;
   thread_id: string;
@@ -224,6 +381,7 @@ interface LiveInputRow {
   model: string | null;
   effort: string | null;
   status: "offered" | "queued";
+  dispatch_started_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -473,6 +631,13 @@ export function escapeLikeTerm(raw: string): string {
 }
 
 const MAX_REVISIONS_PER_THREAD = 1_000;
+
+/**
+ * The Unicode whitespace SQLite's `trim` must strip for a candidate's reply
+ * text to be judged empty the same way JavaScript's `trim()` judges it.
+ */
+const OUTCOME_TEXT_TRIM = "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003"
+  + "\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
 export const WEB_THREAD_PAGE_MAX = 200;
 /**
  * What one page is when the caller does not say.
@@ -570,6 +735,14 @@ export interface StoredMessageWrite {
   readonly message: WebMessage;
   readonly delta?: WebMessageDelta;
   readonly attributionChanged?: true;
+  /**
+   * The run's bounded {@link WebRunActivity} projection MOVED with this write.
+   *
+   * Set only when the status line a card draws would now read differently, so
+   * the announcement the service makes from it is a semantic change rather than
+   * a per-delta heartbeat.
+   */
+  readonly activityChanged?: true;
 }
 
 /**
@@ -649,6 +822,22 @@ export function cronChannelReadOnlyError(): WebConsoleError {
     "Cron channels are read-only. Scheduled runs and history are managed by the agent.",
     409,
   );
+}
+
+/** One retained job card, with the projection it is currently drawing. */
+export interface WebProcessJobCardRef {
+  readonly jobId: string;
+  readonly threadId: string;
+  readonly deliveryKey: string;
+  /** The card's own ordering key, so a caller can resume after this one. */
+  readonly updatedAt: string;
+  readonly job: ProcessJobProjection;
+}
+
+/** Where a previous page of unsettled cards stopped, in the same order. */
+export interface WebProcessJobCardCursor {
+  readonly updatedAt: string;
+  readonly jobId: string;
 }
 
 export interface UpsertWebProcessJobCardInput {
@@ -1443,6 +1632,236 @@ export class WebStore {
     };
   }
 
+  captureCronReplySnapshot(
+    sourceId: string,
+    jobId: string,
+    runId: string,
+    snapshotKind: WebCronReplySnapshotKind,
+  ): CronReplySnapshotCandidate {
+    const row = this.database.prepare(`
+      SELECT r.payload_json, m.parts_json, m.cron_suppressed,
+        t.text, t.error_code, t.error_message
+      FROM cron_run_messages r
+      JOIN cron_channels c ON c.source_id = r.source_id AND c.job_id = r.job_id AND c.thread_id = r.thread_id
+      JOIN messages m ON m.id = r.message_id AND m.thread_id = r.thread_id
+      JOIN turns t ON t.id = r.turn_id AND t.thread_id = r.thread_id
+      WHERE r.source_id = ? AND r.job_id = ? AND r.run_id = ?
+    `).get(sourceId, jobId, runId) as unknown as {
+      payload_json: string;
+      parts_json: string;
+      cron_suppressed: number;
+      text: string;
+      error_code: string | null;
+      error_message: string | null;
+    } | undefined;
+    if (row === undefined) {
+      throw new WebConsoleError("cron_reply_run_not_found", "Cron run not found for this agent and job.", 404);
+    }
+    const run = parseStoredCronRun(row.payload_json);
+    if (run.jobId !== jobId || run.runId !== runId) {
+      throw new WebConsoleError("storage_corrupt", "Stored cron run identity is inconsistent.", 500);
+    }
+    if (row.cron_suppressed === 1 || !isTerminalCronRun(run.status)) {
+      throw new WebConsoleError("cron_reply_unavailable", "Only visible terminal cron results can be replied to.", 422);
+    }
+    if (snapshotKind === "summary") {
+      return {
+        sourceId,
+        jobId,
+        runId,
+        snapshotKind,
+        capturedAt: this.now(),
+        run,
+        text: run.text ?? "",
+        ...(run.failureKind === undefined ? {} : { errorCode: run.failureKind }),
+        ...(run.error === undefined ? {} : { errorMessage: run.error }),
+        sourceFieldsTruncated: run.fieldsTruncated ?? [],
+        sourceTruncationKnown: true,
+      };
+    }
+    const telemetry = parseParts(row.parts_json).find((part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
+      part.type === "telemetry" && part.event === "cron_run");
+    const data = record(telemetry?.data);
+    if (data?.activityLoaded !== true) {
+      throw new WebConsoleError("cron_reply_detail_unavailable", "Cron run detail was not loaded when Reply was activated.", 422);
+    }
+    const detailFields = Array.isArray(data.detailFieldsTruncated)
+      && data.detailFieldsTruncated.every((field) => typeof field === "string")
+      ? data.detailFieldsTruncated as string[]
+      : undefined;
+    return {
+      sourceId,
+      jobId,
+      runId,
+      snapshotKind,
+      capturedAt: this.now(),
+      run,
+      text: row.text,
+      ...(row.error_code === null ? {} : { errorCode: row.error_code }),
+      ...(row.error_message === null ? {} : { errorMessage: row.error_message }),
+      ...(detailFields === undefined ? {} : { sourceFieldsTruncated: detailFields }),
+      sourceTruncationKnown: detailFields !== undefined,
+    };
+  }
+
+  cronReplyOperation(operationId: string): CronReplyReservationResult | undefined {
+    return this.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+        .get(operationId) as unknown as CronReplyOperationRow | undefined;
+      return row === undefined ? undefined : this.cronReplyState(row);
+    });
+  }
+
+  reserveCronReplyOperation(
+    operationId: string,
+    candidate: CronReplySnapshotCandidate,
+  ): CronReplyReservationResult {
+    return this.transaction(() => {
+      const existing = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+        .get(operationId) as unknown as CronReplyOperationRow | undefined;
+      if (existing !== undefined) {
+        this.assertCronReplyIdentity(existing, candidate.sourceId, candidate.jobId, candidate.runId);
+        return this.cronReplyState(existing);
+      }
+      const pending = this.database.prepare(`
+        SELECT * FROM cron_reply_operations
+        WHERE source_id = ? AND job_id = ? AND run_id = ? AND state = 'pending'
+      `).get(candidate.sourceId, candidate.jobId, candidate.runId) as unknown as CronReplyOperationRow | undefined;
+      if (pending !== undefined) return { kind: "pending", operation: mapCronReplyOperation(pending) };
+      // Revalidate only eligibility/identity. The candidate remains the exact
+      // activation snapshot and is never replaced by a later detail refresh.
+      const eligible = this.database.prepare(`
+        SELECT r.payload_json, m.cron_suppressed
+        FROM cron_run_messages r JOIN messages m ON m.id = r.message_id
+        WHERE r.source_id = ? AND r.job_id = ? AND r.run_id = ?
+      `).get(candidate.sourceId, candidate.jobId, candidate.runId) as unknown as {
+        payload_json: string; cron_suppressed: number;
+      } | undefined;
+      if (eligible === undefined || eligible.cron_suppressed === 1
+        || !isTerminalCronRun(parseStoredCronRun(eligible.payload_json).status)) {
+        throw new WebConsoleError("cron_reply_unavailable", "This cron result is no longer eligible for Reply.", 422);
+      }
+      const threadId = randomUUID();
+      const conversationId = `web:${threadId}`;
+      const provenanceMessageId = randomUUID();
+      const resultMessageId = randomUUID();
+      const idempotencyKey = `web-cron-reply:v1:${createHash("sha256")
+        .update(`${candidate.sourceId}\0${candidate.jobId}\0${candidate.runId}\0${operationId}`)
+        .digest("hex")}`;
+      const snapshotText = formatCronReplyContext(candidate);
+      const snapshotSha256 = createHash("sha256").update(snapshotText).digest("hex");
+      const title = normalizeTitle(`Reply to ${candidate.jobId} · Run ${String(candidate.run.sequence)}`);
+      const override = this.database.prepare("SELECT model, effort FROM agent_run_overrides WHERE source_id = ?")
+        .get(candidate.sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
+      this.database.prepare(`
+        INSERT INTO cron_reply_operations (
+          operation_id, source_id, job_id, run_id, thread_id, conversation_id,
+          provenance_message_id, result_message_id, idempotency_key, state, snapshot_kind,
+          snapshot_text, snapshot_sha256, title, run_model, run_effort, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        operationId,
+        candidate.sourceId,
+        candidate.jobId,
+        candidate.runId,
+        threadId,
+        conversationId,
+        provenanceMessageId,
+        resultMessageId,
+        idempotencyKey,
+        candidate.snapshotKind,
+        snapshotText,
+        snapshotSha256,
+        title,
+        override?.model ?? null,
+        override?.effort ?? null,
+        candidate.capturedAt,
+      );
+      const row = this.requireCronReplyOperationRow(operationId);
+      return { kind: "reserved", operation: mapCronReplyOperation(row) };
+    });
+  }
+
+  completeCronReplyOperation(
+    operationId: string,
+    canonicalStatus: "appended" | "duplicate",
+  ): CronReplyReservationResult {
+    return this.transaction(() => {
+      const row = this.requireCronReplyOperationRow(operationId);
+      if (row.state !== "pending") return this.cronReplyState(row);
+      if (row.snapshot_text === null || row.snapshot_sha256 === null || row.title === null
+        || row.provenance_message_id === null || row.result_message_id === null
+        || createHash("sha256").update(row.snapshot_text).digest("hex") !== row.snapshot_sha256) {
+        throw new WebConsoleError("storage_corrupt", "Cron reply reservation is incomplete or changed.", 500);
+      }
+      const now = this.now();
+      this.database.prepare(`
+        INSERT INTO threads (
+          id, source_id, conversation_id, title, title_manual, archived_at,
+          created_at, updated_at, run_model, run_effort, revision
+        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, 1)
+      `).run(
+        row.thread_id,
+        row.source_id,
+        row.conversation_id,
+        row.title,
+        now,
+        now,
+        row.run_model,
+        row.run_effort,
+      );
+      this.database.prepare(`
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, NULL, 'system', ?, ?, ?, 'complete')
+      `).run(
+        row.provenance_message_id,
+        row.thread_id,
+        serializeParts([{ type: "text", text: AGENT_CONTEXT_IMPORT_SYSTEM_PROVENANCE }]),
+        now,
+        now,
+      );
+      this.database.prepare(`
+        INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
+        VALUES (?, ?, NULL, 'assistant', ?, ?, ?, 'complete')
+      `).run(
+        row.result_message_id,
+        row.thread_id,
+        serializeParts([{ type: "text", text: row.snapshot_text }]),
+        now,
+        now,
+      );
+      this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'cron_reply_imported', ?)")
+        .run(row.thread_id, now);
+      this.setSetting("current_thread_id", row.thread_id);
+      const settled = this.database.prepare(`
+        UPDATE cron_reply_operations
+        SET state = 'completed', canonical_status = ?, completed_at = ?
+        WHERE operation_id = ? AND state = 'pending'
+      `).run(canonicalStatus, now, operationId);
+      if (settled.changes !== 1) return this.cronReplyState(this.requireCronReplyOperationRow(operationId));
+      return { kind: "completed", receipt: this.cronReplyReceipt(this.requireCronReplyOperationRow(operationId), false) };
+    });
+  }
+
+  failCronReplyOperation(operationId: string, reason: string): CronReplyReservationResult {
+    return this.transaction(() => {
+      const row = this.requireCronReplyOperationRow(operationId);
+      if (row.state !== "pending") return this.cronReplyState(row);
+      const now = this.now();
+      this.database.prepare(`
+        UPDATE cron_reply_operations SET state = 'failed', provenance_message_id = NULL,
+          result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL,
+          failure_reason = ?, failed_at = ?
+        WHERE operation_id = ? AND state = 'pending'
+      `).run(reason.slice(0, 128), now, operationId);
+      return this.cronReplyState(this.requireCronReplyOperationRow(operationId));
+    });
+  }
+
+  reconcileCronRuns(sourceId: string, jobId: string, runs: readonly WebCronRun[]): WebMessage[] {
+    return [...this.reconcileCronRunsResult(sourceId, jobId, runs).messages];
+  }
   reconcileCronRunsResult(
     sourceId: string,
     jobId: string,
@@ -1883,6 +2302,11 @@ export class WebStore {
     return { kind: "new" };
   }
 
+  /**
+   * Confirm the wake's delivery path, independently of the associated turn's
+   * eventual outcome. `completed/follow_up` means the exact turn was durably
+   * admitted; it does not mean that turn completed successfully.
+   */
   completeProcessJobWake(input: {
     readonly sourceId: string;
     readonly jobId: string;
@@ -1949,16 +2373,17 @@ export class WebStore {
     `).run(deliveryKey, turnId);
   }
 
-  /** Release a reservation only while no operator delivery has begun. */
+  /** Release a reservation only while no operator delivery has begun, proving the exact claim was removed. */
   abandonProcessJobWake(input: {
     readonly sourceId: string;
     readonly jobId: string;
     readonly deliveryKey: string;
-  }): void {
-    this.database.prepare(`
+  }): boolean {
+    const result = this.database.prepare(`
       DELETE FROM process_job_wake_deliveries
       WHERE source_id = ? AND job_id = ? AND delivery_key = ? AND state = 'accepted'
     `).run(input.sourceId, input.jobId, input.deliveryKey);
+    return result.changes === 1;
   }
 
   /** Durably claim one Monitor wake before touching the operator. */
@@ -2150,6 +2575,66 @@ export class WebStore {
     }
   }
 
+  /** Resolve only an exact process-job live-input receipt belonging to this turn. */
+  private processJobWakeForTurn(turnId: string, deliveryKey: string): {
+    readonly jobId: string;
+    readonly deliveryKey: string;
+  } | undefined {
+    return this.database.prepare(`
+      SELECT cards.job_id AS jobId, cards.delivery_key AS deliveryKey
+      FROM process_job_cards AS cards
+      JOIN process_job_wake_deliveries AS deliveries
+        ON deliveries.source_id = cards.source_id
+        AND deliveries.job_id = cards.job_id
+        AND deliveries.delivery_key = cards.delivery_key
+      JOIN turns ON turns.id = ? AND turns.thread_id = cards.thread_id
+      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = cards.source_id
+      WHERE cards.delivery_key = ? AND deliveries.turn_id = turns.id
+    `).get(turnId, deliveryKey) as { jobId: string; deliveryKey: string } | undefined;
+  }
+
+  /**
+   * Resolve only an exact human live-input receipt belonging to this turn.
+   *
+   * The durable path is the steered user message itself: its `live_input`
+   * telemetry carries the `inputId`, so the mapping survives the `live_inputs`
+   * row that `markLiveInputApplied` deletes. The `live_inputs` lookup below
+   * covers only rows offered before this console learned to persist that
+   * marker. Anything else (queued, uncertain, cancelled, another turn) misses
+   * and keeps the legacy synthetic tool row.
+   */
+  private steerForTurn(turnId: string, inputId: string): {
+    readonly inputId: string;
+    readonly messageId: string;
+    readonly text: string;
+    readonly receivedAt: string;
+    readonly quote?: WebQuote;
+  } | undefined {
+    const turn = this.database.prepare(
+      "SELECT id, thread_id FROM turns WHERE id = ?",
+    ).get(turnId) as unknown as { id: string; thread_id: string } | undefined;
+    if (turn === undefined) return undefined;
+    const candidates = this.database.prepare(
+      "SELECT id, parts_json, created_at FROM messages WHERE turn_id = ? AND role = 'user'",
+    ).all(turnId) as unknown as Array<{ id: string; parts_json: string; created_at: string }>;
+    for (const candidate of candidates) {
+      const parts = parseParts(candidate.parts_json);
+      if (liveInputIdFromParts(parts) !== inputId) continue;
+      const marker = steerMarkerFromUserParts(inputId, candidate.id, parts, candidate.created_at);
+      if (marker !== undefined) return marker;
+    }
+    const legacy = this.database.prepare(
+      "SELECT message_id, thread_id, created_at FROM live_inputs WHERE id = ?",
+    ).get(inputId) as unknown as
+      { message_id: string; thread_id: string; created_at: string } | undefined;
+    if (legacy === undefined || legacy.thread_id !== turn.thread_id) return undefined;
+    const row = this.database.prepare(
+      "SELECT parts_json, created_at FROM messages WHERE id = ?",
+    ).get(legacy.message_id) as unknown as { parts_json: string; created_at: string } | undefined;
+    if (row === undefined) return undefined;
+    return steerMarkerFromUserParts(inputId, legacy.message_id, parseParts(row.parts_json), legacy.created_at);
+  }
+
   /** Release a Monitor reservation only before any operator delivery begins. */
   abandonMonitorWake(input: {
     readonly sourceId: string;
@@ -2160,6 +2645,61 @@ export class WebStore {
       DELETE FROM monitor_wake_deliveries
       WHERE source_id = ? AND monitor_id = ? AND delivery_key = ? AND state = 'accepted'
     `).run(input.sourceId, input.monitorId, input.deliveryKey);
+  }
+
+  /**
+   * One agent's retained job cards that have not settled, oldest first.
+   *
+   * A card is written `queued|starting|running` from the agent's notification
+   * and only leaves that state when a terminal projection arrives. If that
+   * notification never reaches this service -- the agent restarted while the
+   * console was disconnected, a wake was lost -- nothing else in the store
+   * would ever move it, and the card claims work that stopped days ago. This is
+   * what {@link WebService} re-asks the agent about.
+   *
+   * Bounded, and resumable: a sweep asks for one page and passes back where it
+   * stopped as `after`, so the next one continues past it in the same order.
+   * Without that, cards whose answer leaves them in this set -- a job still
+   * running, an agent that could not be reached -- would be re-selected for
+   * ever and nothing beyond the first page would ever be asked about.
+   */
+  listUnsettledProcessJobCards(
+    sourceId: string,
+    limit: number,
+    after?: WebProcessJobCardCursor,
+  ): readonly WebProcessJobCardRef[] {
+    const rows = this.database.prepare(`
+      SELECT c.job_id AS job_id, c.thread_id AS thread_id, c.delivery_key AS delivery_key,
+             c.updated_at AS updated_at,
+             json_extract(part.value, '$.job') AS job_json
+        FROM process_job_cards c
+        JOIN messages m ON m.id = c.message_id AND m.thread_id = c.thread_id
+        JOIN json_each(m.parts_json) part
+       WHERE c.source_id = ?
+         AND json_extract(part.value, '$.type') = 'process-job'
+         AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+         AND (? IS NULL
+              OR c.updated_at > ?
+              OR (c.updated_at = ? AND c.job_id > ?))
+       ORDER BY c.updated_at ASC, c.job_id ASC
+       LIMIT ?
+    `).all(
+      sourceId,
+      after?.updatedAt ?? null,
+      after?.updatedAt ?? null,
+      after?.updatedAt ?? null,
+      after?.jobId ?? null,
+      limit,
+    ) as unknown as Array<{
+      job_id: string; thread_id: string; delivery_key: string; updated_at: string; job_json: string;
+    }>;
+    return rows.map((row) => ({
+      jobId: row.job_id,
+      threadId: row.thread_id,
+      deliveryKey: row.delivery_key,
+      updatedAt: row.updated_at,
+      job: parseProcessJobProjection(JSON.parse(row.job_json)),
+    }));
   }
 
   /** Exact retained binding used before proxying a single operator job. */
@@ -2178,6 +2718,9 @@ export class WebStore {
     const id = randomUUID();
     const now = this.now();
     this.transaction(() => {
+      const projectId = explicit.projectId === undefined
+        ? null
+        : this.requireProjectForThread(explicit.projectId, sourceId).id;
       const override = this.database.prepare(`
         SELECT model, effort FROM agent_run_overrides WHERE source_id = ?
       `).get(sourceId) as unknown as { model: string | null; effort: string | null } | undefined;
@@ -2185,12 +2728,13 @@ export class WebStore {
       const effort = explicit.effort === undefined ? override?.effort ?? null : explicit.effort;
       this.database.prepare(`
         INSERT INTO threads (
-          id, source_id, conversation_id, title, title_manual, archived_at,
+          id, source_id, project_id, conversation_id, title, title_manual, archived_at,
           created_at, updated_at, run_model, run_effort, revision
-        ) VALUES (?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
-      `).run(id, sourceId, `web:${id}`, now, now, model, effort);
+        ) VALUES (?, ?, ?, ?, 'New conversation', 0, NULL, ?, ?, ?, ?, 1)
+      `).run(id, sourceId, projectId, `web:${id}`, now, now, model, effort);
       this.database.prepare("INSERT INTO revisions (entity_kind, entity_id, revision, event, created_at) VALUES ('thread', ?, 1, 'created', ?)")
         .run(id, now);
+      if (projectId !== null) this.applyProjectMembership(id, null, projectId, now);
       this.setSetting("current_thread_id", id);
     });
     return this.requireThread(id);
@@ -2201,30 +2745,44 @@ export class WebStore {
     readonly archived: boolean;
     readonly limit?: number;
     readonly before?: string;
+    readonly scope?: WebThreadListScope;
+    readonly projectId?: string;
   }): WebThreadPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const limit = boundedPageLimit(input.limit, WEB_THREAD_PAGE_MAX);
-    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before);
+    const scope = input.scope ?? "all";
+    const cursor = input.before === undefined ? undefined : decodeThreadCursor(input.before, scope, input.projectId);
     const archivedSql = input.archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL";
+    const scopeSql = threadListScopeSql(scope);
+    const projectSql = input.projectId === undefined ? "" : "AND t.project_id = ?";
+    if (input.projectId !== undefined && this.getProjectRow(input.projectId) === undefined) {
+      throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    }
     const beforeSql = cursor === undefined
       ? ""
       : "AND (t.updated_at < ? OR (t.updated_at = ? AND t.id < ?))";
     const values: Array<string | number> = [input.sourceId];
+    if (input.projectId !== undefined) values.push(input.projectId);
     if (cursor !== undefined) values.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
     values.push(limit + 1);
     const rows = this.database.prepare(threadSelectSql(`
-      WHERE t.source_id = ? AND ${archivedSql} ${beforeSql}
+      WHERE t.source_id = ? AND ${archivedSql} ${scopeSql} ${projectSql} ${beforeSql}
       ORDER BY t.updated_at DESC, t.id DESC LIMIT ?
     `)).all(...values) as unknown as ThreadRow[];
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit);
     const last = pageRows.at(-1);
     return {
-      threads: pageRows.map((row) => this.mapThread(row)),
+      threads: this.mapThreads(pageRows),
       ...(hasMore && last !== undefined
-        ? { nextCursor: encodeCursor({ updatedAt: last.updated_at, id: last.id }) }
+        ? { nextCursor: encodeCursor({
+            updatedAt: last.updated_at,
+            id: last.id,
+            ...(scope === "chats" ? { scope } : {}),
+            ...(input.projectId === undefined ? {} : { project: input.projectId }),
+          }) }
         : {}),
     };
   }
@@ -2242,12 +2800,14 @@ export class WebStore {
     readonly sourceId: string;
     readonly query: string;
     readonly limit?: number;
+    readonly scope?: WebThreadListScope;
   }): WebThreadSearchPage {
     if (this.getAgent(input.sourceId) === undefined) {
       throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
     }
     const query = input.query.trim();
     const limit = boundedPageLimit(input.limit, WEB_THREAD_SEARCH_MAX);
+    const scopeSql = threadListScopeSql(input.scope ?? "all");
     const match = query.length < WEB_THREAD_SEARCH_MIN_QUERY
       ? undefined
       : messageSearchMatchExpression(query);
@@ -2260,7 +2820,7 @@ export class WebStore {
         FROM message_search
         JOIN messages m ON m.rowid = message_search.rowid
         JOIN threads t ON t.id = m.thread_id
-       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")}
+       WHERE message_search MATCH ? AND t.source_id = ? AND ${visibleMessageSql("m")} ${scopeSql}
        ORDER BY rank
        LIMIT ?
     `).all(
@@ -2293,7 +2853,7 @@ export class WebStore {
     // because a title is short enough to scan and short enough to type part of.
     const titleRows = this.database.prepare(`
       SELECT t.id AS id FROM threads t
-       WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\'
+       WHERE t.source_id = ? AND t.title LIKE '%' || ? || '%' ESCAPE '\\' ${scopeSql}
        ORDER BY t.updated_at DESC, t.id DESC
        LIMIT ?
     `).all(input.sourceId, escapeLikeTerm(query), limit + 1) as unknown as Array<{ id: string }>;
@@ -2344,6 +2904,72 @@ export class WebStore {
     };
   }
 
+  /**
+   * Every conversation in the store with work in flight, whichever agent owns
+   * it -- bounded, and counted before it is bounded.
+   *
+   * The console's Running section used to be built from whatever the browser
+   * happened to be holding, so a turn on an agent that tab had never opened was
+   * invisible and an empty section proved nothing. This is the server's answer
+   * to the same question, and it is the only listing here that crosses agents
+   * and archive buckets: "what is running" is not a question about either.
+   *
+   * Membership is ONE relation, so the cards and the badges can never disagree:
+   * a conversation with a running foreground turn, or with a retained process
+   * job that is queued, starting or running. `UNION` is what deduplicates a
+   * conversation that is both. The join to `agents` is the discovery filter --
+   * a conversation retained for a source id discovery no longer reports has
+   * nowhere to be drawn, so it is not counted either.
+   *
+   * The counts come off the whole relation and the cards off its first
+   * {@link WEB_ACTIVE_THREAD_LIMIT} rows. A count that obeyed the cap would
+   * report a busy fleet as a quiet one, which is the failure this replaces.
+   */
+  listActiveThreads(): WebActiveThreads {
+    const rows = this.database.prepare(`
+      WITH active AS (
+        SELECT thread_id FROM turns WHERE status = 'running'
+        UNION
+        SELECT c.thread_id
+          FROM messages m
+          JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
+          JOIN json_each(m.parts_json) part
+         WHERE json_extract(part.value, '$.type') = 'process-job'
+           AND json_extract(part.value, '$.job.state') IN ('queued', 'starting', 'running')
+      )
+      SELECT t.id AS id, t.source_id AS source_id
+        FROM active a
+        JOIN threads t ON t.id = a.thread_id
+        JOIN agents ag ON ag.source_id = t.source_id AND ag.discovered = 1
+       ORDER BY t.updated_at DESC, t.id DESC
+    `).all() as unknown as Array<{ id: string; source_id: string }>;
+    // Seeded with a zero for every discovered agent: a key that is simply
+    // missing cannot be told apart from an agent the listing forgot, and the
+    // badge a console draws from it would go blank rather than read nought.
+    const runningCounts: Record<string, number> = Object.fromEntries(
+      (this.database.prepare("SELECT source_id FROM agents WHERE discovered = 1")
+        .all() as unknown as Array<{ source_id: string }>).map((row) => [row.source_id, 0]),
+    );
+    for (const row of rows) runningCounts[row.source_id] = (runningCounts[row.source_id] ?? 0) + 1;
+    // The cards are read as ONE set, in the order the active relation gave
+    // them: a section refreshed about once a second cannot afford to expand
+    // fifty conversations one at a time. See `mapThreads`.
+    const carded = rows.slice(0, WEB_ACTIVE_THREAD_LIMIT).map((row) => row.id);
+    const byId = new Map((this.database
+      .prepare(threadSelectSql("WHERE t.id IN (SELECT value FROM json_each(?))"))
+      .all(JSON.stringify(carded)) as unknown as ThreadRow[]).map((row) => [row.id, row]));
+    const threads = this.mapThreads(carded.flatMap((id) => {
+      const row = byId.get(id);
+      return row === undefined ? [] : [row];
+    }));
+    return {
+      threads,
+      total: rows.length,
+      truncated: rows.length > WEB_ACTIVE_THREAD_LIMIT,
+      runningCounts,
+    };
+  }
+
   resolveThreadId(id: string): string {
     let resolved = id;
     const seen = new Set<string>();
@@ -2377,6 +3003,8 @@ export class WebStore {
     return {
       thread,
       messages: page.messages,
+      projectTransitions: page.projectTransitions ?? [],
+      modelTransitions: page.modelTransitions ?? [],
       ...(page.nextCursor === undefined ? {} : { messagesNextCursor: page.nextCursor }),
     };
   }
@@ -2435,6 +3063,8 @@ export class WebStore {
     const oldest = pageRows[0];
     return {
       messages: pageRows.map((row) => this.mapMessage(row)),
+      projectTransitions: this.projectTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
+      modelTransitions: this.modelTransitions(resolved, { anchors: pageRows.map((row) => row.id), includeStart: !hasMore }),
       ...(hasMore && oldest !== undefined
         ? {
             nextCursor: encodeCursor({
@@ -2504,6 +3134,16 @@ export class WebStore {
     const archivedAt = patch.archived === undefined ? undefined : patch.archived ? now : null;
     const runModel = patch.model === undefined ? undefined : patch.model;
     const runEffort = patch.effort === undefined ? undefined : patch.effort;
+    if (patch.projectId !== undefined && patch.title === undefined && patch.archived === undefined
+      && patch.model === undefined && patch.effort === undefined) {
+      const pending = this.pendingProjectDto(id).pendingProject;
+      if ((pending === undefined && patch.projectId === current.projectId) || (pending !== undefined && patch.projectId === pending.projectId)) return current;
+    }
+    const projectId = patch.projectId === undefined
+      ? undefined
+      : patch.projectId === null
+        ? null
+        : patch.projectId === current.projectId ? current.projectId : this.requireProjectForThread(patch.projectId, current.sourceId).id;
     {
       const sets: string[] = [];
       const values: Array<string | null> = [];
@@ -2523,8 +3163,11 @@ export class WebStore {
         sets.push("run_effort = ?");
         values.push(runEffort);
       }
-      // A model/effort-only patch must not reorder the sidebar, so `updated_at`
-      // only advances when title or archived state actually changes.
+      if (projectId !== undefined) {
+        this.requestProjectMembership(id, current.projectId, projectId, now);
+      }
+      // A model/effort/project-only patch must not reorder the sidebar, so
+      // `updated_at` only advances when title or archived state actually changes.
       if (title !== undefined || archivedAt !== undefined) {
         sets.push("updated_at = ?");
         values.push(now);
@@ -2540,7 +3183,9 @@ export class WebStore {
             ? patch.archived
               ? "archived"
               : "unarchived"
-            : "run_config_changed",
+            : projectId !== undefined
+              ? "project_changed"
+              : "run_config_changed",
         now,
       );
       if (patch.archived === true && this.currentThreadId() === id) {
@@ -2548,6 +3193,377 @@ export class WebStore {
       }
     }
     return { ...this.requireThread(id), sourceId: current.sourceId };
+  }
+
+  /**
+   * One agent's projects, archived included, newest activity first.
+   *
+   * The Dashboard and the conversation picker filter archived out locally;
+   * bootstrap carries the same full set so an agent switch never refetches it.
+   */
+  listProjects(sourceId: string): WebProject[] {
+    if (this.getAgent(sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "Agent not found.", 404);
+    }
+    const rows = this.database.prepare(`
+      SELECT * FROM projects WHERE source_id = ? ORDER BY updated_at DESC, id DESC
+    `).all(sourceId) as unknown as ProjectRow[];
+    return rows.map((row) => this.mapProject(row));
+  }
+
+  getProject(id: string): WebProject | undefined {
+    const row = this.getProjectRow(id);
+    return row === undefined ? undefined : this.mapProject(row);
+  }
+
+  createProject(input: CreateStoredProjectInput): WebProject {
+    if (this.getAgent(input.sourceId) === undefined) {
+      throw new WebConsoleError("agent_not_found", "The selected agent is no longer available.", 404);
+    }
+    const id = randomUUID();
+    const now = this.now();
+    this.database.prepare(`
+      INSERT INTO projects (id, source_id, name, context, created_at, updated_at, archived_at, revision, color)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, 1, ?)
+    `).run(id, input.sourceId, input.name, input.context ?? "", now, now, parseProjectColor(input.color ?? "default"));
+    return this.mapProject(this.requireProject(id));
+  }
+
+  patchProject(id: string, patch: PatchStoredProjectInput): WebProject {
+    this.requireProject(id);
+    const now = this.now();
+    const sets: string[] = [];
+    const values: Array<string | null> = [];
+    if (patch.color !== undefined) {
+      sets.push("color = ?");
+      values.push(parseProjectColor(patch.color));
+    }
+    if (patch.archived === true && this.database.prepare("SELECT 1 FROM pending_project_memberships WHERE project_id = ? LIMIT 1").get(id)) {
+      throw new WebConsoleError("project_busy", "Wait for pending conversation turns before archiving this project.", 409);
+    }
+    if (patch.name !== undefined) {
+      sets.push("name = ?");
+      values.push(patch.name);
+    }
+    if (patch.context !== undefined) {
+      sets.push("context = ?");
+      values.push(patch.context);
+    }
+    if (patch.archived !== undefined) {
+      sets.push("archived_at = ?");
+      values.push(patch.archived ? now : null);
+    }
+    sets.push("updated_at = ?", "revision = revision + 1");
+    values.push(now, id);
+    this.database.prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+    return this.mapProject(this.requireProject(id));
+  }
+
+  /**
+   * Delete one project and detach its chats back to the agent.
+   *
+   * Returns the detached member ids, oldest activity first, so the caller can
+   * re-emit their summaries. The explicit update (rather than relying on the
+   * `ON DELETE SET NULL` cascade) bumps each member's revision, which is what
+   * lets a console's equal-revision guard accept the detached summaries.
+   */
+  deleteProject(id: string): string[] {
+    this.requireProject(id);
+    const now = this.now();
+    return this.transaction(() => {
+      const members = (this.database.prepare(`
+        SELECT id FROM threads WHERE project_id = ? ORDER BY updated_at ASC, id ASC
+      `).all(id) as Array<{ id: string }>).map((member) => member.id);
+      if (this.database.prepare(`
+        SELECT 1 FROM pending_project_memberships WHERE project_id = ?
+        UNION ALL SELECT 1 FROM turns JOIN threads ON threads.id = turns.thread_id
+        WHERE threads.project_id = ? AND turns.status = 'running' LIMIT 1
+      `).get(id, id)) {
+        throw new WebConsoleError("project_busy", "Wait for active and pending conversation turns before deleting this project.", 409);
+      }
+      for (const memberId of members) {
+        this.applyProjectMembership(memberId, id, null, now);
+        this.database.prepare("UPDATE threads SET revision = revision + 1 WHERE id = ?").run(memberId);
+      }
+      for (const memberId of members) this.recordThreadRevision(memberId, "project_changed", now);
+      this.database.prepare("DELETE FROM projects WHERE id = ?").run(id);
+      return members;
+    });
+  }
+
+  /**
+   * The injectable context for one conversation, resolved at dispatch time.
+   *
+   * Undefined when the conversation belongs to no project or its project's
+   * context is empty, so dispatch never prefixes then.
+   */
+  projectContextForThread(threadId: string): { readonly name: string; readonly context: string } | undefined {
+    const active = this.database.prepare("SELECT project_context_json FROM turns WHERE thread_id = ? AND status = 'running'")
+      .get(this.resolveThreadId(threadId)) as { project_context_json: string | null } | undefined;
+    if (active?.project_context_json != null) {
+      try {
+        const snapshot: unknown = JSON.parse(active.project_context_json);
+        if (snapshot === null) return undefined;
+        if (typeof snapshot !== "object" || Array.isArray(snapshot)
+          || !("name" in snapshot) || !("context" in snapshot)
+          || typeof snapshot.name !== "string" || typeof snapshot.context !== "string") throw new Error();
+        return snapshot.context.trim().length === 0 ? undefined : { name: snapshot.name, context: snapshot.context };
+      } catch { throw new WebConsoleError("storage_corrupt", "The active project context snapshot is invalid.", 500); }
+    }
+    const row = this.database.prepare(`
+      SELECT p.name AS name, p.context AS context
+        FROM threads t JOIN projects p ON p.id = t.project_id
+       WHERE t.id = ?
+    `).get(this.resolveThreadId(threadId)) as unknown as { name: string; context: string } | undefined;
+    if (row === undefined || row.context.trim().length === 0) return undefined;
+    return { name: row.name, context: row.context };
+  }
+
+  /**
+   * Commit the operation receipt with its mutations, including create-and-attach.
+   * Read-only tools authenticate and scope the same way but leave no receipt:
+   * a repeated read answers from current state, and a read never writes.
+   */
+  consoleToolOperation(scope: ConsoleToolScope, operation: ConsoleToolOperation): ConsoleToolCommit {
+    if (!/^[a-zA-Z0-9-]{16,128}$/u.test(operation.operationId)) throw new WebConsoleError("invalid_operation", "Invalid operation identity.", 400);
+    const readOnly = CONSOLE_READ_TOOL_NAMES.has(operation.tool);
+    const canonicalArgs = Object.fromEntries(Object.entries(operation.args).sort(([a], [b]) => a.localeCompare(b)));
+    const hash = createHash("sha256").update(JSON.stringify({ ...scope, tool: operation.tool, args: canonicalArgs })).digest("hex");
+    return this.transaction(() => {
+      const origin = this.requireThread(scope.threadId);
+      if (origin.sourceId !== scope.sourceId || origin.trigger !== undefined || origin.archivedAt !== null
+        || this.activeTurn(scope.threadId)?.id !== scope.turnId) throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
+      if (readOnly) return executeConsoleTool(this, scope, operation);
+      const prior = this.database.prepare("SELECT payload_sha256, result_json FROM console_tool_operations WHERE operation_id = ?")
+        .get(operation.operationId) as { payload_sha256: string; result_json: string } | undefined;
+      if (prior !== undefined) {
+        if (prior.payload_sha256 !== hash) throw new WebConsoleError("operation_conflict", "Operation identity was reused with a different request.", 409);
+        return { result: JSON.parse(prior.result_json), projects: [], threads: [], deletedProjects: [] };
+      }
+      const commit = executeConsoleTool(this, scope, operation);
+      this.database.prepare("INSERT INTO console_tool_operations(operation_id, thread_id, turn_id, payload_sha256, result_json) VALUES (?, ?, ?, ?, ?)")
+        .run(operation.operationId, scope.threadId, scope.turnId, hash, JSON.stringify(commit.result));
+      return commit;
+    });
+  }
+
+  private pendingProjectDto(threadId: string): Pick<WebThread, "pendingProject"> {
+    const row = this.database.prepare("SELECT project_id, turn_id FROM pending_project_memberships WHERE thread_id = ?")
+      .get(threadId) as { project_id: string | null; turn_id: string } | undefined;
+    return row === undefined ? {} : { pendingProject: { projectId: row.project_id, turnId: row.turn_id } };
+  }
+
+  private requestProjectMembership(threadId: string, before: string | null, after: string | null, now: string): void {
+    const active = this.database.prepare("SELECT id FROM turns WHERE thread_id = ? AND status = 'running'")
+      .get(threadId) as { id: string } | undefined;
+    if (before === after || active === undefined) {
+      this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
+      if (before !== after) this.applyProjectMembership(threadId, before, after, now);
+      return;
+    }
+    this.database.prepare(`INSERT INTO pending_project_memberships(thread_id, project_id, turn_id) VALUES (?, ?, ?)
+      ON CONFLICT(thread_id) DO UPDATE SET project_id = excluded.project_id, turn_id = excluded.turn_id`)
+      .run(threadId, after, active.id);
+  }
+
+  private applyPendingProjectMembership(threadId: string, now: string, turnId?: string): void {
+    const pending = this.pendingProjectDto(threadId).pendingProject;
+    if (pending === undefined || (turnId !== undefined && pending.turnId !== turnId)) return;
+    if (this.database.prepare("SELECT 1 FROM turns WHERE thread_id = ? AND status = 'running'").get(threadId)) return;
+    const before = this.requireThread(threadId).projectId;
+    this.applyProjectMembership(threadId, before, pending.projectId, now, pending.turnId);
+    this.database.prepare("DELETE FROM pending_project_memberships WHERE thread_id = ?").run(threadId);
+  }
+
+  private applyProjectMembership(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+    if (before === after) return;
+    this.recordProjectTransition(threadId, before, after, now, turnId);
+    this.database.prepare("UPDATE threads SET project_id = ? WHERE id = ?").run(after, threadId);
+    for (const id of [before, after]) if (id !== null) {
+      this.database.prepare("UPDATE projects SET revision = revision + 1 WHERE id = ?").run(id);
+    }
+  }
+
+  private recordProjectTransition(threadId: string, before: string | null, after: string | null, now: string, turnId?: string): void {
+    const identity = (id: string | null): WebProjectTransition["before"] => {
+      if (id === null) return null;
+      const project = this.requireProject(id);
+      return { id, name: project.name, color: project.color };
+    };
+    const anchor = turnId === undefined
+      ? this.database.prepare(`SELECT messages.id, messages.turn_id FROM messages
+          LEFT JOIN turns ON turns.id = messages.turn_id
+          WHERE messages.thread_id = ? AND (turns.status IS NULL OR turns.status <> 'running')
+            AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
+          ORDER BY messages.rowid DESC LIMIT 1`).get(threadId) as { id: string; turn_id: string | null } | undefined
+      : { id: this.requireTurn(turnId).assistant_message_id, turn_id: turnId };
+    this.database.prepare(`INSERT INTO project_transitions
+      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(threadId, anchor?.id ?? null, anchor?.turn_id ?? null, JSON.stringify(identity(before)), JSON.stringify(identity(after)), now);
+  }
+
+  /** Keep causal turn groups ordered when the wall clock ties or moves backwards. */
+  private projectTurnAdmissionTime(threadId: string): string {
+    const now = this.now();
+    const previous = this.database.prepare("SELECT MAX(started_at) AS latest FROM turns WHERE thread_id = ?")
+      .get(threadId) as { latest: string | null };
+    return previous.latest !== null && previous.latest >= now
+      ? new Date(Date.parse(previous.latest) + 1).toISOString() : now;
+  }
+
+  /** Internal context snapshot; JSON null explicitly freezes absence of membership. */
+  private captureProjectContext(turnId: string, threadId: string): void {
+    const row = this.database.prepare(`SELECT p.name, p.context FROM projects p JOIN threads t ON t.project_id = p.id WHERE t.id = ?`)
+      .get(threadId) as { name: string; context: string } | undefined;
+    this.database.prepare("UPDATE turns SET project_context_json = ? WHERE id = ?").run(JSON.stringify(row ?? null), turnId);
+  }
+
+  projectTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebProjectTransition[] {
+    return (this.database.prepare(`SELECT * FROM project_transitions WHERE thread_id = ?
+        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
+      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
+        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
+        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
+      }));
+  }
+
+  /**
+   * Record a change of the conversation's selected route at the boundary where
+   * it takes effect, for the turn `turnId` that was just admitted.
+   *
+   * The picker persists an override the instant it is touched, so a log of
+   * those writes would be a log of hesitation: three flips before one message,
+   * and a line for a model that never ran. This compares the admitted turn's
+   * OWN frozen resolved route with the last turn that reported one, which is
+   * the only pair a transcript can honestly put a rule between. A→B→A
+   * therefore leaves nothing behind, A→B→C leaves one line, and a change of
+   * the agent's own default is reported the same way as a picker change --
+   * because the route the next turn runs on is what actually changed.
+   *
+   * Called inside the admitting transaction, after that turn's own messages
+   * exist: the anchor is the newest settled message NOT part of this turn, so
+   * the rule renders between the two turns. Nothing is recorded when either
+   * side is unresolved, when this is the first routed turn (it establishes the
+   * baseline rather than changing anything), or when no message precedes it.
+   */
+  private recordModelTransition(threadId: string, turnId: string, now: string): void {
+    type RouteRow = { requested_model: string | null; requested_effort: string | null };
+    const selection = (row: RouteRow): WebRouteSelection =>
+      ({ model: row.requested_model, effort: row.requested_effort });
+    const current = this.database.prepare("SELECT requested_model, requested_effort FROM turns WHERE id = ?")
+      .get(turnId) as RouteRow | undefined;
+    if (current === undefined || current.requested_model === null) return;
+    // Turns that reported no model at all -- cron rows, a queued input frozen
+    // on the agent's default -- are neither a change nor a baseline: skipping
+    // them keeps the comparison between two routes that are actually known.
+    const previous = this.database.prepare(`SELECT requested_model, requested_effort FROM turns
+        WHERE thread_id = ? AND id <> ? AND requested_model IS NOT NULL
+        ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+      .get(threadId, turnId) as RouteRow | undefined;
+    if (previous === undefined) return;
+    const modelChanged = previous.requested_model !== current.requested_model;
+    // An effort that one side never reported is unknown, not "off": a rule
+    // claiming `— → high` would be inventing the half it does not have.
+    const effortChanged = previous.requested_effort !== null && current.requested_effort !== null
+      && previous.requested_effort !== current.requested_effort;
+    if (!modelChanged && !effortChanged) return;
+    const anchor = this.database.prepare(`SELECT messages.id FROM messages
+        LEFT JOIN turns ON turns.id = messages.turn_id
+        WHERE messages.thread_id = ? AND (messages.turn_id IS NULL OR messages.turn_id <> ?)
+          AND (turns.status IS NULL OR turns.status <> 'running')
+          AND ${visibleMessageSql("messages")}
+          AND NOT EXISTS (SELECT 1 FROM live_inputs WHERE message_id = messages.id)
+        ORDER BY messages.rowid DESC LIMIT 1`)
+      .get(threadId, turnId) as { id: string } | undefined;
+    if (anchor === undefined) return;
+    this.database.prepare(`INSERT INTO model_transitions
+      (thread_id, after_message_id, turn_id, before_json, after_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(threadId, anchor.id, turnId, JSON.stringify(selection(previous)), JSON.stringify(selection(current)), now);
+  }
+
+  modelTransitions(threadId: string, page?: { readonly anchors: readonly string[]; readonly includeStart: boolean }): WebModelTransition[] {
+    return (this.database.prepare(`SELECT * FROM model_transitions WHERE thread_id = ?
+        ${page === undefined ? "" : "AND (after_message_id IN (SELECT value FROM json_each(?)) OR (? = 1 AND after_message_id IS NULL))"} ORDER BY id`)
+      .all(this.resolveThreadId(threadId), ...(page === undefined ? [] : [JSON.stringify(page.anchors), page.includeStart ? 1 : 0])) as Array<{ id: number; after_message_id: string | null; turn_id: string | null; before_json: string; after_json: string; created_at: string }>).map((row) => ({
+        id: row.id, afterMessageId: row.after_message_id, turnId: row.turn_id,
+        before: JSON.parse(row.before_json), after: JSON.parse(row.after_json), createdAt: row.created_at,
+      }));
+  }
+
+  private getProjectRow(id: string): ProjectRow | undefined {
+    return this.database.prepare("SELECT * FROM projects WHERE id = ?").get(id) as unknown as ProjectRow | undefined;
+  }
+
+  private requireProject(id: string): ProjectRow {
+    const row = this.getProjectRow(id);
+    if (row === undefined) throw new WebConsoleError("project_not_found", "Project not found.", 404);
+    return row;
+  }
+
+  /**
+   * Resolve a membership destination: the project exists, belongs to the
+   * conversation's agent, and is not archived.
+   */
+  private requireProjectForThread(projectId: string, sourceId: string): ProjectRow {
+    const project = this.requireProject(projectId);
+    if (project.source_id !== sourceId) {
+      throw new WebConsoleError("project_agent_mismatch", "The project belongs to a different agent.", 409);
+    }
+    if (project.archived_at !== null) {
+      throw new WebConsoleError("project_archived", "Unarchive the project before adding conversations to it.", 409);
+    }
+    return project;
+  }
+
+  private mapProject(row: ProjectRow): WebProject {
+    const memberIds = (this.database.prepare(`
+      SELECT id FROM threads WHERE project_id = ? AND archived_at IS NULL
+    `).all(row.id) as Array<{ id: string }>).map((member) => member.id);
+    const runningCount = memberIds.length === 0
+      ? 0
+      : (this.database.prepare(`
+          SELECT COUNT(DISTINCT thread_id) AS count FROM turns
+          WHERE thread_id IN (SELECT value FROM json_each(?)) AND status = 'running'
+        `).get(JSON.stringify(memberIds)) as unknown as { count: number }).count;
+    const monthUsd = this.projectMonthUsd(memberIds, this.now());
+    return {
+      id: row.id,
+      sourceId: row.source_id,
+      name: row.name,
+      context: row.context,
+      color: row.color,
+      archivedAt: row.archived_at,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      revision: row.revision,
+      conversationCount: memberIds.length,
+      runningCount,
+      ...(monthUsd === undefined ? {} : { monthUsd }),
+    };
+  }
+
+  /**
+   * This UTC calendar month's recognised priced usage over a project's current
+   * non-archived members.
+   *
+   * One bounded indexed query (member threads by month range); the per-message
+   * latest-observation rule is the shared {@link latestMessageCostUsd}, so a
+   * project month always agrees with the conversation costs inside it.
+   * Recomputed when summaries are read, never per token.
+   */
+  private projectMonthUsd(memberIds: readonly string[], now: string): number | undefined {
+    if (memberIds.length === 0) return undefined;
+    const started = new Date(now);
+    if (Number.isNaN(started.getTime())) return undefined;
+    const monthStart = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth(), 1)).toISOString();
+    const monthEnd = new Date(Date.UTC(started.getUTCFullYear(), started.getUTCMonth() + 1, 1)).toISOString();
+    const rows = this.database.prepare(`
+      SELECT m.parts_json AS parts_json
+        FROM messages m
+       WHERE m.thread_id IN (SELECT value FROM json_each(?))
+         AND m.created_at >= ? AND m.created_at < ?
+    `).all(JSON.stringify(memberIds), monthStart, monthEnd) as Array<{ parts_json: string }>;
+    return sumMessageCosts(rows.map((member) => latestMessageCostUsd(parseParts(member.parts_json))));
   }
 
   /** Whether the current interactive thread still accepts agent-proposed titles. */
@@ -2610,12 +3626,14 @@ export class WebStore {
           UNION ALL SELECT 1 FROM turns WHERE thread_id = ?
           UNION ALL SELECT 1 FROM attachments WHERE thread_id = ?
           UNION ALL SELECT 1 FROM live_inputs WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM web_submissions WHERE thread_id = ?
+          UNION ALL SELECT 1 FROM cron_reply_operations WHERE thread_id = ? AND state = 'completed'
           UNION ALL SELECT 1 FROM process_job_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM monitor_wake_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM notification_deliveries WHERE thread_id = ?
           UNION ALL SELECT 1 FROM push_events WHERE thread_id = ?
           LIMIT 1
-        `).get(id, id, id, id, id, id, id, id) !== undefined;
+        `).get(id, id, id, id, id, id, id, id, id, id) !== undefined;
         if (hasContent) {
           throw new WebConsoleError(
             "thread_not_empty",
@@ -2625,6 +3643,13 @@ export class WebStore {
         }
       }
       const now = this.now();
+      this.database.prepare(`
+        UPDATE cron_reply_operations SET state = 'tombstoned', provenance_message_id = NULL,
+          result_message_id = NULL, snapshot_text = NULL, snapshot_sha256 = NULL,
+          title = NULL, run_model = NULL, run_effort = NULL, completed_at = NULL,
+          failure_reason = 'thread_deleted', tombstoned_at = ?
+        WHERE thread_id = ? AND state = 'completed'
+      `).run(now, id);
       this.database.prepare(`
         UPDATE push_deliveries SET status = 'dropped', updated_at = ?, finished_at = ?, last_error_code = 'thread_deleted'
         WHERE event_id IN (SELECT id FROM push_events WHERE thread_id = ?)
@@ -2864,8 +3889,9 @@ export class WebStore {
     const turnId = randomUUID();
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -2914,6 +3940,8 @@ export class WebStore {
             updated_at = ?, revision = revision + 1
         WHERE id = ?
       `).run(title, now, threadId);
+      this.captureProjectContext(turnId, threadId);
+      this.recordModelTransition(threadId, turnId, now);
       this.recordThreadRevision(threadId, "turn_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -2940,6 +3968,11 @@ export class WebStore {
     readonly effort?: string;
     readonly requestedModel?: string;
     readonly requestedEffort?: string;
+    readonly processJobWake?: {
+      readonly jobId: string;
+      readonly deliveryKey: string;
+      readonly disposition: "follow_up";
+    };
   }): BeginStoredAssistantTurnResult {
     const threadId = this.resolveThreadId(input.threadId);
     const thread = this.requireThread(threadId);
@@ -2959,8 +3992,27 @@ export class WebStore {
     }
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
+    const now = this.projectTurnAdmissionTime(threadId);
+    if (input.processJobWake !== undefined) {
+      const card = this.database.prepare(`
+        SELECT 1 FROM process_job_cards AS cards
+        JOIN threads ON threads.id = cards.thread_id AND threads.source_id = cards.source_id
+        JOIN process_job_wake_deliveries AS deliveries
+          ON deliveries.source_id = cards.source_id
+          AND deliveries.job_id = cards.job_id
+          AND deliveries.delivery_key = cards.delivery_key
+        WHERE cards.thread_id = ? AND cards.job_id = ? AND cards.delivery_key = ?
+          AND deliveries.state = 'accepted' AND deliveries.turn_id IS NULL
+      `).get(threadId, input.processJobWake.jobId, input.processJobWake.deliveryKey);
+      if (card === undefined) {
+        throw new WebConsoleError("invalid_notification", "The process-job wake does not match its retained card.", 409);
+      }
+    }
+    const initialParts: WebMessagePart[] = input.processJobWake === undefined
+      ? []
+      : [{ type: "process-job-wake", ...input.processJobWake }];
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -2979,11 +4031,16 @@ export class WebStore {
       );
       this.database.prepare(`
         INSERT INTO messages (id, thread_id, turn_id, role, parts_json, created_at, updated_at, status)
-        VALUES (?, ?, ?, 'assistant', '[]', ?, ?, 'running')
-      `).run(assistantMessageId, threadId, turnId, now, now);
+        VALUES (?, ?, ?, 'assistant', ?, ?, ?, 'running')
+      `).run(assistantMessageId, threadId, turnId, serializeParts(initialParts), now, now);
+      if (input.processJobWake !== undefined) {
+        this.associateProcessJobWakeTurn(input.processJobWake.deliveryKey, turnId);
+      }
       this.database.prepare(
         "UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?",
       ).run(now, threadId);
+      this.captureProjectContext(turnId, threadId);
+      this.recordModelTransition(threadId, turnId, now);
       this.recordThreadRevision(threadId, "background_follow_up_started", now);
       this.setSetting("current_thread_id", threadId);
     });
@@ -2997,7 +4054,12 @@ export class WebStore {
     };
   }
 
-  reserveLiveInput(threadId: string, text: string): ReserveStoredLiveInputResult {
+  reserveLiveInput(
+    threadId: string,
+    text: string,
+    quote?: WebQuote,
+    operatorText = text,
+  ): ReserveStoredLiveInputResult {
     threadId = this.resolveThreadId(threadId);
     const thread = this.requireThread(threadId);
     if (thread.archivedAt !== null) {
@@ -3010,12 +4072,20 @@ export class WebStore {
     if (text.trim().length === 0) {
       throw new WebConsoleError("empty_turn", "Enter a message.", 400);
     }
-    if (text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+    if (operatorText.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
       throw new WebConsoleError(
         "turn_text_too_large",
         `A live follow-up may contain at most ${AGENT_LIVE_INPUT_MAX_CHARACTERS} characters.`,
         413,
       );
+    }
+    if (quote !== undefined) {
+      const source = this.database.prepare(
+        `SELECT id FROM messages WHERE id = ? AND thread_id = ? AND ${visibleMessageSql("messages")}`,
+      ).get(quote.messageId, threadId);
+      if (quote.text.trim().length === 0 || source === undefined) {
+        throw new WebConsoleError("invalid_quote", "The quoted message does not belong to this conversation.", 400);
+      }
     }
     const usage = this.database.prepare(
       "SELECT COUNT(*) AS count FROM live_inputs WHERE thread_id = ?",
@@ -3038,7 +4108,10 @@ export class WebStore {
     const model = active === undefined ? thread.runModel : active.model;
     const effort = active === undefined ? thread.runEffort : active.effort;
     const parts: WebMessagePart[] = [
-      liveInputTelemetry(status === "offered" ? "pending" : "queued"),
+      liveInputTelemetry(status === "offered" ? "pending" : "queued", id),
+      ...(quote === undefined
+        ? []
+        : [{ type: "telemetry" as const, event: QUOTE_TELEMETRY_EVENT, data: quote }]),
       { type: "text", text },
     ];
     this.transaction(() => {
@@ -3055,7 +4128,7 @@ export class WebStore {
         threadId,
         messageId,
         active?.id ?? null,
-        text,
+        operatorText,
         model,
         effort,
         status,
@@ -3084,10 +4157,10 @@ export class WebStore {
   markLiveInputApplied(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
-    const message = this.requireMessage(row.message_id);
+    const parts = this.requireRawParts(row.message_id);
     const now = this.now();
     this.transaction(() => {
-      this.writeMessageParts(row.message_id, withLiveInputStatus(message.parts, "applied"), now);
+      this.writeMessageParts(row.message_id, withLiveInputStatus(parts, "applied", id), now);
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, row.thread_id);
@@ -3096,18 +4169,57 @@ export class WebStore {
     return this.requireMessage(row.message_id);
   }
 
-  queueLiveInput(id: string): WebMessage | undefined {
+  storedLiveInput(id: string): StoredLiveInput | undefined {
+    const row = this.getLiveInput(id);
+    return row === undefined ? undefined : mapLiveInput(row);
+  }
+
+  markLiveInputUncertain(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
-    const message = this.requireMessage(row.message_id);
+    const parts = this.requireRawParts(row.message_id);
+    const now = this.now();
+    this.transaction(() => {
+      this.writeMessageParts(row.message_id, withLiveInputStatus(parts, "uncertain", id), now, { turnId: null });
+      this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(id);
+      this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
+        .run(now, row.thread_id);
+      this.recordThreadRevision(row.thread_id, "live_input_uncertain", now);
+    });
+    return this.requireMessage(row.message_id);
+  }
+
+  markLiveInputDispatchStarted(id: string, activeTurnId: string): boolean {
+    const now = this.now();
+    return this.transaction(() => {
+      const result = this.database.prepare(`
+        UPDATE live_inputs SET dispatch_started_at = ?, updated_at = ?
+        WHERE id = ? AND status = 'offered' AND active_turn_id = ? AND dispatch_started_at IS NULL
+      `).run(now, now, id, activeTurnId);
+      return result.changes === 1;
+    });
+  }
+
+  queueLiveInput(id: string, submissionReason?: StoredWebSubmissionReason): WebMessage | undefined {
+    const row = this.getLiveInput(id);
+    if (row === undefined) return undefined;
+    const parts = this.requireRawParts(row.message_id);
     const now = this.now();
     this.transaction(() => {
       this.database.prepare(`
-        UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
+        UPDATE live_inputs
+        SET status = 'queued', active_turn_id = NULL, dispatch_started_at = NULL, updated_at = ?
+        WHERE id = ?
       `).run(now, id);
+      if (submissionReason !== undefined) {
+        this.database.prepare(`
+          UPDATE web_submissions SET reason = ?
+          WHERE input_id = ? AND outcome = 'live-input' AND reason IS NULL
+        `).run(submissionReason, id);
+      }
       this.writeMessageParts(
         row.message_id,
-        withLiveInputStatus(message.parts, "queued"),
+        withLiveInputStatus(parts, "queued", id),
         now,
         { turnId: null },
       );
@@ -3121,12 +4233,12 @@ export class WebStore {
   cancelLiveInput(id: string): WebMessage | undefined {
     const row = this.getLiveInput(id);
     if (row === undefined) return undefined;
-    const message = this.requireMessage(row.message_id);
+    const parts = this.requireRawParts(row.message_id);
     const now = this.now();
     this.transaction(() => {
       this.writeMessageParts(
         row.message_id,
-        withLiveInputStatus(message.parts, "cancelled"),
+        withLiveInputStatus(parts, "cancelled", id),
         now,
         { turnId: null },
       );
@@ -3147,10 +4259,13 @@ export class WebStore {
     const now = this.now();
     this.transaction(() => {
       for (const row of rows) {
-        const message = this.requireMessage(row.message_id);
         this.writeMessageParts(
           row.message_id,
-          withLiveInputStatus(message.parts, "cancelled"),
+          withLiveInputStatus(
+            this.requireRawParts(row.message_id),
+            row.dispatch_started_at === null ? "cancelled" : "uncertain",
+            row.id,
+          ),
           now,
           { turnId: null },
         );
@@ -3158,7 +4273,13 @@ export class WebStore {
       this.database.prepare("DELETE FROM live_inputs WHERE thread_id = ?").run(threadId);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
-      this.recordThreadRevision(threadId, "live_inputs_cancelled", now);
+      this.recordThreadRevision(
+        threadId,
+        rows.some((row) => row.dispatch_started_at !== null)
+          ? "live_inputs_cancelled_with_uncertainty"
+          : "live_inputs_cancelled",
+        now,
+      );
     });
     return rows.map((row) => this.requireMessage(row.message_id));
   }
@@ -3186,9 +4307,10 @@ export class WebStore {
     if (!thread.canSend || thread.archivedAt !== null) return undefined;
     const turnId = randomUUID();
     const assistantMessageId = randomUUID();
-    const now = this.now();
-    const userMessage = this.requireMessage(row.message_id);
+    const now = this.projectTurnAdmissionTime(threadId);
+    const userMessage = this.requireRawParts(row.message_id);
     this.transaction(() => {
+      this.applyPendingProjectMembership(threadId, now);
       this.database.prepare(`
         INSERT INTO turns (
           id, thread_id, status, text, model, effort, requested_model, requested_effort, assistant_message_id,
@@ -3197,7 +4319,7 @@ export class WebStore {
       `).run(turnId, threadId, row.text, row.model, row.effort, row.model, row.effort, assistantMessageId, now);
       this.writeMessageParts(
         row.message_id,
-        withoutLiveInputTelemetry(userMessage.parts),
+        withoutLiveInputTelemetry(userMessage),
         now,
         { turnId },
       );
@@ -3208,6 +4330,8 @@ export class WebStore {
       this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(row.id);
       this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
         .run(now, threadId);
+      this.captureProjectContext(turnId, threadId);
+      this.recordModelTransition(threadId, turnId, now);
       this.recordThreadRevision(threadId, "turn_started", now);
     });
     return {
@@ -3249,7 +4373,13 @@ export class WebStore {
         } else if (frame.kind === "replace") {
           replaceWholeText(parts, frame.text);
         } else if (frame.kind === "event") {
-          applyEvent(parts, frame.event, (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey));
+          applyEvent(
+            parts,
+            frame.event,
+            (deliveryKey) => this.monitorWakeProjection(turnId, deliveryKey),
+            (deliveryKey) => this.processJobWakeForTurn(turnId, deliveryKey),
+            (inputId) => this.steerForTurn(turnId, inputId),
+          );
           if (frame.event.type === "runtime_telemetry" && frame.event.kind === "run_config") {
             const model = canonicalRouteString(frame.event.data?.model);
             const effort = canonicalRouteString(frame.event.data?.effort, 64);
@@ -3336,9 +4466,19 @@ export class WebStore {
           turnId,
         );
       }
+      // Diffed on the parts already in hand, before and after: a text delta
+      // moves neither the tool-call count nor the phase nor the cost, and it is
+      // what nearly every one of these writes is. Announcing the projection per
+      // flush would put a `turn.changed` on every connected console several
+      // times a second for a status line that changes a handful of times a run.
+      const activityChanged = !sameRunActivity(
+        runActivityFromParts(message.parts),
+        runActivityFromParts(parts),
+      );
       return {
         delta: this.writeMessageDelta(message, parts, this.now()),
         ...(attributionChanged ? { attributionChanged: true as const } : {}),
+        ...(activityChanged ? { activityChanged: true as const } : {}),
       };
     });
     return { message: this.requireMessage(turn.assistant_message_id), ...write };
@@ -3847,9 +4987,24 @@ export class WebStore {
         updated_at TEXT NOT NULL,
         CHECK (model IS NOT NULL OR effort IS NOT NULL)
       );
+      CREATE TABLE IF NOT EXISTS projects (
+        color TEXT NOT NULL DEFAULT 'default' CHECK (color IN ('default','blue','purple','amber','rose')),
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        context TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        archived_at TEXT,
+        revision INTEGER NOT NULL DEFAULT 1
+      );
+      -- v26 conversation-projects creates projects_by_source and
+      -- threads_by_project: the membership column does not exist on legacy
+      -- layouts until that step adds it, so bootstrap must not index it first.
       CREATE TABLE IF NOT EXISTS threads (
         id TEXT PRIMARY KEY,
         source_id TEXT NOT NULL REFERENCES agents(source_id),
+        project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
         conversation_id TEXT NOT NULL UNIQUE,
         title TEXT NOT NULL,
         title_manual INTEGER NOT NULL DEFAULT 0,
@@ -3880,6 +5035,7 @@ export class WebStore {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS turns_one_active_per_thread
         ON turns(thread_id) WHERE status = 'running';
+      CREATE INDEX IF NOT EXISTS turns_by_thread_started ON turns(thread_id, started_at);
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -3892,6 +5048,7 @@ export class WebStore {
         seq INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, created_at);
+      CREATE INDEX IF NOT EXISTS messages_by_turn ON messages(turn_id);
       CREATE TABLE IF NOT EXISTS live_inputs (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -3901,11 +5058,63 @@ export class WebStore {
         model TEXT,
         effort TEXT,
         status TEXT NOT NULL CHECK (status IN ('offered', 'queued')),
+        dispatch_started_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS live_inputs_by_thread
         ON live_inputs(thread_id, status, created_at);
+      CREATE TABLE IF NOT EXISTS web_submissions (
+        thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+        submission_id TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        outcome TEXT NOT NULL CHECK (outcome IN ('turn', 'live-input', 'rejected')),
+        reason TEXT CHECK (reason IN (
+          'active_attachments_unsupported', 'unsupported_targeting', 'closed_before_dispatch',
+          'operator_inactive', 'operator_unsupported', 'operator_too_large', 'operator_full', 'operator_invalid',
+          'mailbox_unsupported', 'mailbox_closed', 'mailbox_failed'
+        )),
+        message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        turn_id TEXT REFERENCES turns(id) ON DELETE SET NULL,
+        input_id TEXT REFERENCES live_inputs(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (thread_id, submission_id)
+      );
+      CREATE TABLE IF NOT EXISTS cron_reply_operations (
+        operation_id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES agents(source_id),
+        job_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL UNIQUE,
+        conversation_id TEXT NOT NULL UNIQUE,
+        provenance_message_id TEXT UNIQUE,
+        result_message_id TEXT UNIQUE,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'completed', 'failed', 'tombstoned')),
+        snapshot_kind TEXT NOT NULL CHECK (snapshot_kind IN ('summary', 'detail')),
+        snapshot_text TEXT,
+        snapshot_sha256 TEXT,
+        title TEXT,
+        run_model TEXT,
+        run_effort TEXT,
+        canonical_status TEXT CHECK (canonical_status IN ('appended', 'duplicate')),
+        failure_reason TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT,
+        failed_at TEXT,
+        tombstoned_at TEXT,
+        CHECK (
+          (state IN ('pending', 'completed') AND snapshot_text IS NOT NULL AND snapshot_sha256 IS NOT NULL
+            AND title IS NOT NULL AND provenance_message_id IS NOT NULL AND result_message_id IS NOT NULL)
+          OR (state IN ('failed', 'tombstoned') AND snapshot_text IS NULL AND snapshot_sha256 IS NULL
+            AND title IS NULL AND provenance_message_id IS NULL AND result_message_id IS NULL)
+        ),
+        CHECK ((state = 'completed') = (completed_at IS NOT NULL)),
+        CHECK ((state = 'failed') = (failed_at IS NOT NULL)),
+        CHECK ((state = 'tombstoned') = (tombstoned_at IS NOT NULL))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS cron_reply_operations_one_pending_run
+        ON cron_reply_operations(source_id, job_id, run_id) WHERE state = 'pending';
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
         thread_id TEXT REFERENCES threads(id) ON DELETE CASCADE,
@@ -4497,7 +5706,9 @@ export class WebStore {
     const threadIds = new Set(rows.map((row) => row.thread_id));
     this.transaction(() => {
       const updateInput = this.database.prepare(`
-        UPDATE live_inputs SET status = 'queued', active_turn_id = NULL, updated_at = ? WHERE id = ?
+        UPDATE live_inputs
+        SET status = 'queued', active_turn_id = NULL, dispatch_started_at = NULL, updated_at = ?
+        WHERE id = ?
       `);
       for (const row of rows) {
         const persisted = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
@@ -4505,13 +5716,27 @@ export class WebStore {
         if (persisted === undefined) {
           throw new WebConsoleError("storage_corrupt", `Live input ${row.id} has no message.`, 500);
         }
-        updateInput.run(now, row.id);
-        this.writeMessageParts(
-          row.message_id,
-          withLiveInputStatus(parseParts(persisted.parts_json), "queued"),
-          now,
-          { turnId: null },
-        );
+        if (row.dispatch_started_at === null) {
+          updateInput.run(now, row.id);
+          this.database.prepare(`
+            UPDATE web_submissions SET reason = 'closed_before_dispatch'
+            WHERE input_id = ? AND outcome = 'live-input' AND reason IS NULL
+          `).run(row.id);
+          this.writeMessageParts(
+            row.message_id,
+            withLiveInputStatus(parseParts(persisted.parts_json), "queued", row.id),
+            now,
+            { turnId: null },
+          );
+        } else {
+          this.writeMessageParts(
+            row.message_id,
+            withLiveInputStatus(parseParts(persisted.parts_json), "uncertain", row.id),
+            now,
+            { turnId: null },
+          );
+          this.database.prepare("DELETE FROM live_inputs WHERE id = ?").run(row.id);
+        }
       }
       for (const threadId of threadIds) {
         this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
@@ -4619,6 +5844,7 @@ export class WebStore {
     const delta = this.writeMessageDelta(existing, parts, now, { status });
     this.database.prepare("UPDATE threads SET updated_at = ?, revision = revision + 1 WHERE id = ?")
       .run(now, turn.thread_id);
+    this.applyPendingProjectMembership(turn.thread_id, now, turnId);
     this.recordThreadRevision(turn.thread_id, `turn_${status}`, now);
     const recentEnoughForRecoveredInterruption = status !== "interrupted"
       || new Date(now).getTime() - new Date(existing.updatedAt).getTime() <= 60 * 60 * 1_000;
@@ -4668,37 +5894,69 @@ export class WebStore {
   }
 
   private mapThread(row: ThreadRow): WebThread {
-    const runState = this.latestRunState(row.id);
-    const preview = this.lastMessagePreview(row.id);
-    const jobActivity = this.jobActivity(row.id);
-    return {
-      id: row.id,
-      sourceId: row.source_id,
-      title: row.title,
-      archivedAt: row.archived_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      revision: row.revision,
-      ...(row.trigger_kind === "cron"
-        ? {
-            trigger: {
-              kind: "cron" as const,
-              ...(row.cron_job_id === null ? {} : { jobId: row.cron_job_id }),
-              ...(row.cron_configured === null ? {} : { configured: row.cron_configured === 1 }),
-            },
-          }
-        : row.trigger_kind === "webhook"
-          ? { trigger: { kind: "webhook" as const } }
-          : {}),
-      ...(preview === undefined ? {} : { lastMessagePreview: preview }),
-      messageCount: row.message_count,
-      runState,
-      ...(jobActivity === undefined ? {} : { jobActivity }),
-      canSend: row.can_send === 1,
-      canUpload: row.can_upload === 1,
-      runModel: row.run_model,
-      runEffort: row.run_effort,
-    };
+    return this.mapThreads([row])[0] as WebThread;
+  }
+
+  /**
+   * Project conversation rows with a number of statements that does not grow
+   * with how many rows there are.
+   *
+   * Every listing used to expand its rows one at a time -- latest turn, prior
+   * outcome, last message, job cards, run activity -- so a fifty-card Running
+   * section cost hundreds of statements, and stream invalidation asks for that
+   * section about once a second. Each reader below is keyed by the whole id set
+   * instead, including the deep-history path that used to drop back to a
+   * single thread: one card and fifty cards issue the same statements, however
+   * deep any card's silent history runs. The order is the caller's, because
+   * only the caller knows what the listing is ordered by.
+   */
+  private mapThreads(rows: readonly ThreadRow[]): WebThread[] {
+    if (rows.length === 0) return [];
+    const ids = rows.map((row) => row.id);
+    const runStates = this.latestRunStates(ids);
+    const previews = this.lastMessagePreviews(ids);
+    const jobActivities = this.jobActivities(ids);
+    const pending = new Map((this.database.prepare(`SELECT thread_id, project_id, turn_id FROM pending_project_memberships
+      WHERE thread_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{
+        thread_id: string; project_id: string | null; turn_id: string;
+      }>).map((row) => [row.thread_id, { projectId: row.project_id, turnId: row.turn_id }]));
+    return rows.map((row) => {
+      const preview = previews.get(row.id);
+      const jobActivity = jobActivities.get(row.id);
+      return {
+        id: row.id,
+        sourceId: row.source_id,
+        projectId: row.project_id,
+        ...(row.project_id === null || row.project_name === null
+          ? {}
+          : { projectName: row.project_name }),
+        ...(pending.has(row.id) ? { pendingProject: pending.get(row.id)! } : {}),
+        title: row.title,
+        archivedAt: row.archived_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        revision: row.revision,
+        ...(row.trigger_kind === "cron"
+          ? {
+              trigger: {
+                kind: "cron" as const,
+                ...(row.cron_job_id === null ? {} : { jobId: row.cron_job_id }),
+                ...(row.cron_configured === null ? {} : { configured: row.cron_configured === 1 }),
+              },
+            }
+          : row.trigger_kind === "webhook"
+            ? { trigger: { kind: "webhook" as const } }
+            : {}),
+        ...(preview === undefined ? {} : { lastMessagePreview: preview }),
+        messageCount: row.message_count,
+        runState: runStates.get(row.id) ?? { status: "idle" },
+        ...(jobActivity === undefined ? {} : { jobActivity }),
+        canSend: row.can_send === 1,
+        canUpload: row.can_upload === 1,
+        runModel: row.run_model,
+        runEffort: row.run_effort,
+      };
+    });
   }
 
   /**
@@ -4857,127 +6115,261 @@ export class WebStore {
     return turn?.finished_at ?? undefined;
   }
 
-  private latestRunState(threadId: string): WebRunState {
-    const row = this.database.prepare("SELECT * FROM turns WHERE thread_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1")
-      .get(threadId) as unknown as TurnRow | undefined;
-    if (row === undefined) return { status: "idle" };
-    const status = normalizeRunStatus(row.status);
-    const attribution = runAttribution(row);
-    // Successful assistant-only turns without visible reply content are host
-    // no-ops, not a new conversation outcome. Keep their real run state while
-    // projecting the prior meaningful outcome for status priority. Derive this
-    // from retained provenance/normalized parts so old stores need no migration.
-    // Match hasMonitorReplyContent without loading transcript bodies into lists.
-    const candidates = status === "complete" ? this.database.prepare(`
-      SELECT t.id, t.status, t.finished_at, t.assistant_message_id,
-        EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user
-      FROM turns t
-      WHERE t.thread_id = ? AND t.status <> 'running' AND (
-        t.status <> 'complete'
-        OR EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user')
-        OR EXISTS (
-          SELECT 1 FROM messages m, json_each(m.parts_json) p
-          WHERE m.id = t.assistant_message_id AND (
-            json_extract(p.value, '$.type') IN ('attachment', 'mcp_app', 'failure')
-            OR (json_extract(p.value, '$.type') = 'text'
-              AND length(trim(json_extract(p.value, '$.text'), ?)) > 0)
-          )
-        )
-      ) ORDER BY t.started_at DESC, t.rowid DESC
-    `).iterate(threadId, "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff") : [];
-    let outcome: { id: string; status: string; finished_at: string | null } | undefined;
-    for (const rawCandidate of candidates) {
-      const candidate = rawCandidate as unknown as { id: string; status: string; finished_at: string | null;
-        assistant_message_id: string; has_user: number };
-      // Legacy Monitor rows retain raw sentinel bytes and normalize only on
-      // read. Inspect one associated candidate at a time, never materialize the
-      // transcript or rewrite history merely to derive sidebar status.
-      if (candidate.status === "complete" && candidate.has_user === 0 && this.hasMonitorTurnAssociation(candidate.id)) {
-        const message = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?")
-          .get(candidate.assistant_message_id) as { parts_json: string };
-        if (!hasMonitorReplyContent(normalizeMonitorTerminalReply(parseParts(message.parts_json)).parts)) continue;
-      }
-      outcome = candidate;
-      break;
+  /** The newest turn of each listed conversation, by thread id. */
+  private latestRunStates(threadIds: readonly string[]): Map<string, WebRunState> {
+    const latest = this.database.prepare(`
+      SELECT * FROM (
+        SELECT t.*, ROW_NUMBER() OVER (
+          PARTITION BY t.thread_id ORDER BY t.started_at DESC, t.rowid DESC
+        ) AS rn
+        FROM turns t WHERE t.thread_id IN (SELECT value FROM json_each(?))
+      ) WHERE rn = 1
+    `).all(JSON.stringify(threadIds)) as unknown as TurnRow[];
+    const outcomes = this.priorOutcomes(latest.filter((row) => normalizeRunStatus(row.status) === "complete"));
+    // The newest turn IS the foreground turn, so a running one is the only run
+    // whose activity the console can be watching. A terminal turn gets none at
+    // all: see `WebRunState.activity`.
+    const activities = this.runActivities(latest.flatMap((row) =>
+      normalizeRunStatus(row.status) === "running" ? [row.assistant_message_id] : []));
+    const states = new Map<string, WebRunState>();
+    for (const row of latest) {
+      const status = normalizeRunStatus(row.status);
+      const attribution = runAttribution(row);
+      const outcome = outcomes.get(row.thread_id);
+      const lastOutcome = status !== "complete" || outcome?.id === row.id ? undefined
+        : outcome === undefined ? null : {
+          status: normalizeRunStatus(outcome.status),
+          ...(outcome.finished_at === null ? {} : { finishedAt: outcome.finished_at }),
+        };
+      states.set(row.thread_id, {
+        id: row.id,
+        status,
+        startedAt: row.started_at,
+        ...(lastOutcome === undefined ? {} : { lastOutcome }),
+        ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
+        ...(row.error_message === null
+          ? {}
+          : { error: { ...(row.error_code === null ? {} : { code: row.error_code }), message: row.error_message } }),
+        ...(row.model === null ? {} : { model: row.model }),
+        ...(row.effort === null ? {} : { effort: row.effort }),
+        ...(attribution === undefined ? {} : { attribution }),
+        ...(status === "running"
+          ? { activity: activities.get(row.assistant_message_id) ?? runActivityFromParts([]) }
+          : {}),
+      });
     }
-    const lastOutcome = status !== "complete" || outcome?.id === row.id ? undefined
-      : outcome === undefined ? null : {
-        status: normalizeRunStatus(outcome.status),
-        ...(outcome.finished_at === null ? {} : { finishedAt: outcome.finished_at }),
-      };
-    return {
-      id: row.id,
-      status,
-      startedAt: row.started_at,
-      ...(lastOutcome === undefined ? {} : { lastOutcome }),
-      ...(row.finished_at === null ? {} : { finishedAt: row.finished_at }),
-      ...(row.error_message === null
-        ? {}
-        : { error: { ...(row.error_code === null ? {} : { code: row.error_code }), message: row.error_message } }),
-      ...(row.model === null ? {} : { model: row.model }),
-      ...(row.effort === null ? {} : { effort: row.effort }),
-      ...(attribution === undefined ? {} : { attribution }),
-    };
+    return states;
   }
 
-  private lastMessagePreview(threadId: string): string | undefined {
-    const row = this.database.prepare(`SELECT * FROM messages WHERE thread_id = ? AND ${visibleMessageSql("messages")} ORDER BY created_at DESC, rowid DESC LIMIT 1`)
-      .get(threadId) as unknown as MessageRow | undefined;
-    if (row === undefined) return undefined;
-    const text = this.mapMessage(row).parts
-      .flatMap((part) => part.type === "text" ? [part.text]
-        : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
-      .join(" ")
-      .replace(/\s+/gu, " ")
-      .trim();
-    return text.length === 0 ? undefined : text.slice(0, 160);
+  /**
+   * The prior meaningful outcome of each settled conversation, by thread id.
+   *
+   * Successful assistant-only turns without visible reply content are host
+   * no-ops, not a new conversation outcome. Keep their real run state while
+   * projecting the prior meaningful outcome for status priority. Derive this
+   * from retained provenance/normalized parts so old stores need no migration.
+   * Match hasMonitorReplyContent without loading transcript bodies into lists.
+   *
+   * Two statements, whatever the listing holds and however deep its silence
+   * runs. Only a turn a completed Monitor delivery claims can be a no-op, and
+   * the candidate read knows which those are: it returns, for every thread at
+   * once, each candidate down to and including the first one nothing can
+   * silence. A second statement reads the parts of the claimed ones. Legacy
+   * rows keep their raw sentinel bytes and normalize only on read, so that
+   * read is the one place a silent turn is told apart from an answer.
+   */
+  private priorOutcomes(latest: readonly TurnRow[]): Map<string, PriorOutcomeRow> {
+    const threadIds = [...new Set(latest.map((row) => row.thread_id))];
+    if (threadIds.length === 0) return new Map();
+    const candidates = this.priorOutcomeCandidates(threadIds);
+    const noOps = this.monitorNoOpTurnIds(candidates);
+    const outcomes = new Map<string, PriorOutcomeRow>();
+    for (const candidate of candidates) {
+      if (!outcomes.has(candidate.thread_id) && !noOps.has(candidate.id)) {
+        outcomes.set(candidate.thread_id, candidate);
+      }
+    }
+    return outcomes;
   }
 
-  private jobActivity(threadId: string): WebJobActivity | undefined {
-    // Read only retained job cards, including those behind the message page.
-    // Aggregate in SQLite so neither transcripts nor output tails are loaded
-    // into the listing. These rows already advance the thread's revision.
-    const row = this.database.prepare(`
+  /**
+   * Every candidate of these threads that could still be the outcome, newest
+   * first within each thread.
+   *
+   * A candidate with a user message, an unsuccessful one, or one no Monitor
+   * delivery claims settles its thread on the spot; the read stops at it and
+   * carries only the claimed assistant-only completions above it, which are the
+   * only rows whose parts have to be asked.
+   */
+  private priorOutcomeCandidates(threadIds: readonly string[]): PriorOutcomeRow[] {
+    return this.database.prepare(`
+      SELECT thread_id, id, status, finished_at, assistant_message_id, started_at, ordinal, has_user, claimed
+      FROM (
+        SELECT r.*, MIN(CASE WHEN r.settles THEN r.rn END) OVER (PARTITION BY r.thread_id) AS settled_rn
+        FROM (
+          SELECT c.*,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY c.thread_id ORDER BY c.started_at DESC, c.ordinal DESC
+                 ) AS rn,
+                 (c.status <> 'complete' OR c.has_user = 1 OR c.claimed = 0) AS settles
+          FROM (${priorOutcomeCandidateSql()}) c
+        ) r
+      ) WHERE settled_rn IS NULL OR rn <= settled_rn
+      ORDER BY thread_id, rn
+    `).all(JSON.stringify(threadIds), OUTCOME_TEXT_TRIM) as unknown as PriorOutcomeRow[];
+  }
+
+  /**
+   * Which of these candidates are Monitor no-ops, in one statement.
+   *
+   * Legacy Monitor rows retain raw sentinel bytes and normalize only on read, so
+   * the answer needs their parts -- but only for the candidates a host-owned
+   * delivery actually claims, which is a small fraction of any listing. Nothing
+   * here materializes a transcript or rewrites history to derive sidebar status.
+   */
+  private monitorNoOpTurnIds(candidates: readonly PriorOutcomeRow[]): Set<string> {
+    const claimed = candidates.filter((row) => row.status === "complete" && row.has_user === 0 && row.claimed === 1);
+    const parts = this.messageParts(claimed.map((row) => row.assistant_message_id));
+    return new Set(claimed.flatMap((row) => hasMonitorReplyContent(
+      normalizeMonitorTerminalReply(parts.get(row.assistant_message_id) ?? []).parts,
+    ) ? [] : [row.id]));
+  }
+
+  /**
+   * Which of these turns a host-owned Monitor delivery claims, in one statement.
+   *
+   * The batched readers never resolve an in-flight receipt by delivery key --
+   * that is {@link WebStore.hasMonitorTurnAssociation}'s single-turn question --
+   * so this asks only about deliveries that completed by steering or following
+   * up.
+   */
+  private monitorAssociatedTurnIds(turnIds: readonly string[]): Set<string> {
+    if (turnIds.length === 0) return new Set();
+    const rows = this.database.prepare(`
+      SELECT DISTINCT turns.id AS id FROM monitor_wake_deliveries AS deliveries
+      JOIN turns ON turns.id IN (SELECT value FROM json_each(?)) AND turns.thread_id = deliveries.thread_id
+      JOIN threads ON threads.id = turns.thread_id AND threads.source_id = deliveries.source_id
+      WHERE deliveries.state = 'completed' AND deliveries.turn_id = turns.id
+        AND deliveries.disposition IN ('steered', 'follow_up')
+    `).all(JSON.stringify(turnIds)) as unknown as Array<{ id: string }>;
+    return new Set(rows.map((row) => row.id));
+  }
+
+  /** The stored parts of these messages, by message id, in one statement. */
+  private messageParts(messageIds: readonly string[]): Map<string, WebMessagePart[]> {
+    if (messageIds.length === 0) return new Map();
+    const rows = this.database.prepare(
+      "SELECT id, parts_json FROM messages WHERE id IN (SELECT value FROM json_each(?))",
+    ).all(JSON.stringify(messageIds)) as unknown as Array<{ id: string; parts_json: string }>;
+    return new Map(rows.map((row) => [row.id, parseParts(row.parts_json)]));
+  }
+
+  /**
+   * The bounded status-line projection of each running assistant message.
+   *
+   * Reads the parts of those rows and nothing else. The same messages are their
+   * threads' newest, so `lastMessagePreviews` is already reading them for every
+   * listed conversation; this adds no transcript to a listing that was not being
+   * read anyway. Deliberately not aggregated in SQL: the AskUser rule normalizes
+   * a tool name that arrives spelled three ways, and one shared reading of it in
+   * `run-activity.ts` is worth more than saving a parse.
+   */
+  private runActivities(assistantMessageIds: readonly string[]): Map<string, WebRunActivity> {
+    return new Map([...this.messageParts(assistantMessageIds)]
+      .map(([id, parts]) => [id, runActivityFromParts(parts)]));
+  }
+
+  /**
+   * The newest visible message of each listed conversation, as preview prose.
+   *
+   * Only the prose is wanted, so this reads the rows themselves rather than
+   * mapping whole messages: a preview never needed a listing to fetch every
+   * conversation's attachments, turn row and finish stamp. The one thing a raw
+   * row does not already say is whether a settled assistant reply was a Monitor
+   * no-op, and that is asked about all of them at once.
+   */
+  private lastMessagePreviews(threadIds: readonly string[]): Map<string, string> {
+    const rows = this.database.prepare(`
+      SELECT * FROM (
+        SELECT m.*, ROW_NUMBER() OVER (
+          PARTITION BY m.thread_id ORDER BY m.created_at DESC, m.rowid DESC
+        ) AS rn
+        FROM messages m
+        WHERE m.thread_id IN (SELECT value FROM json_each(?)) AND ${visibleMessageSql("m")}
+      ) WHERE rn = 1
+    `).all(JSON.stringify(threadIds)) as unknown as MessageRow[];
+    const monitor = this.monitorAssociatedTurnIds(rows.flatMap((row) =>
+      row.role === "assistant" && row.status === "complete" && row.turn_id !== null ? [row.turn_id] : []));
+    const previews = new Map<string, string>();
+    for (const row of rows) {
+      const stored = parseParts(row.parts_json);
+      const parts = row.turn_id !== null && monitor.has(row.turn_id)
+        ? normalizeMonitorTerminalReply(stored).parts : stored;
+      const text = parts
+        .flatMap((part) => part.type === "text" ? [part.text]
+          : part.type === "process-job" && part.responseText !== undefined ? [part.responseText] : [])
+        .join(" ")
+        .replace(/\s+/gu, " ")
+        .trim();
+      if (text.length > 0) previews.set(row.thread_id, text.slice(0, 160));
+    }
+    return previews;
+  }
+
+  /**
+   * The retained job-card activity of each listed conversation, by thread id.
+   *
+   * Reads only retained job cards, including those behind the message page.
+   * Aggregates in SQLite so neither transcripts nor output tails are loaded into
+   * the listing. These rows already advance their thread's revision.
+   */
+  private jobActivities(threadIds: readonly string[]): Map<string, WebJobActivity> {
+    const rows = this.database.prepare(`
       WITH jobs AS (
-        SELECT json_extract(part.value, '$.job.state') AS state,
+        SELECT m.thread_id AS thread_id,
+               json_extract(part.value, '$.job.state') AS state,
                json_extract(part.value, '$.job.timestamps.completedAt') AS completed_at,
                c.response_text, m.rowid AS ordinal
         FROM messages m
         JOIN process_job_cards c ON c.message_id = m.id AND c.thread_id = m.thread_id
         JOIN json_each(m.parts_json) part
-        WHERE m.thread_id = ? AND json_extract(part.value, '$.type') = 'process-job'
+        WHERE m.thread_id IN (SELECT value FROM json_each(?))
+          AND json_extract(part.value, '$.type') = 'process-job'
       )
-      SELECT count(*) AS total,
-             count(*) FILTER (WHERE state = 'queued') AS queued,
-             count(*) FILTER (WHERE state = 'starting') AS starting,
-             count(*) FILTER (WHERE state = 'running') AS running,
-             (SELECT json_object('state', state, 'completedAt', completed_at, 'reply', response_text)
-              FROM jobs WHERE completed_at IS NOT NULL
-              ORDER BY julianday(completed_at) DESC, (state <> 'succeeded') DESC, ordinal DESC
+      SELECT g.thread_id AS thread_id,
+             count(*) FILTER (WHERE g.state = 'queued') AS queued,
+             count(*) FILTER (WHERE g.state = 'starting') AS starting,
+             count(*) FILTER (WHERE g.state = 'running') AS running,
+             (SELECT json_object('state', j.state, 'completedAt', j.completed_at, 'reply', j.response_text)
+              FROM jobs j WHERE j.thread_id = g.thread_id AND j.completed_at IS NOT NULL
+              ORDER BY julianday(j.completed_at) DESC, (j.state <> 'succeeded') DESC, j.ordinal DESC
               LIMIT 1) AS latest_terminal
-      FROM jobs
-    `).get(threadId) as unknown as {
-      total: number; queued: number; starting: number; running: number; latest_terminal: string | null;
-    };
-    if (row.total === 0) return undefined;
-    const terminal = row.latest_terminal === null ? undefined : JSON.parse(row.latest_terminal) as {
-      state: NonNullable<WebJobActivity["latestTerminal"]>["state"];
-      completedAt: string;
-      reply: string | null;
-    };
-    const replyPreview = terminal?.reply?.replace(/\s+/gu, " ").trim().slice(0, 160);
-    return {
-      queued: row.queued,
-      starting: row.starting,
-      running: row.running,
-      ...(terminal === undefined ? {} : {
-        latestTerminal: {
-          state: terminal.state,
-          completedAt: terminal.completedAt,
-          ...(replyPreview ? { replyPreview } : {}),
-        },
-      }),
-    };
+      FROM jobs g GROUP BY g.thread_id
+    `).all(JSON.stringify(threadIds)) as unknown as Array<{
+      thread_id: string; queued: number; starting: number; running: number; latest_terminal: string | null;
+    }>;
+    const activities = new Map<string, WebJobActivity>();
+    for (const row of rows) {
+      const terminal = row.latest_terminal === null ? undefined : JSON.parse(row.latest_terminal) as {
+        state: NonNullable<WebJobActivity["latestTerminal"]>["state"];
+        completedAt: string;
+        reply: string | null;
+      };
+      const replyPreview = terminal?.reply?.replace(/\s+/gu, " ").trim().slice(0, 160);
+      activities.set(row.thread_id, {
+        queued: row.queued,
+        starting: row.starting,
+        running: row.running,
+        ...(terminal === undefined ? {} : {
+          latestTerminal: {
+            state: terminal.state,
+            completedAt: terminal.completedAt,
+            ...(replyPreview ? { replyPreview } : {}),
+          },
+        }),
+      });
+    }
+    return activities;
   }
 
   private cronChannel(sourceId: string, jobId: string): CronChannelRow | undefined {
@@ -5008,6 +6400,19 @@ export class WebStore {
     const row = this.database.prepare("SELECT * FROM messages WHERE id = ?").get(id) as unknown as MessageRow | undefined;
     if (row === undefined) throw new WebConsoleError("message_not_found", "Message not found.", 404);
     return this.mapMessage(row);
+  }
+
+  /**
+   * Raw stored parts for a write derived from the row itself. `requireMessage`
+   * strips quote and live-input telemetry for display, so deriving the next
+   * write from it would delete the quote and the input identity the steer
+   * marker resolves through.
+   */
+  private requireRawParts(id: string): WebMessagePart[] {
+    const row = this.database.prepare("SELECT parts_json FROM messages WHERE id = ?").get(id) as unknown as
+      { parts_json: string } | undefined;
+    if (row === undefined) throw new WebConsoleError("message_not_found", "Message not found.", 404);
+    return parseParts(row.parts_json);
   }
 
   private getLiveInput(id: string): LiveInputRow | undefined {
@@ -5154,8 +6559,115 @@ export class WebStore {
       .run(key, value);
   }
 
+  private transactionDepth = 0;
+
+  claimWebSubmission(input: {
+    readonly threadId: string;
+    readonly submissionId: string;
+    readonly payloadSha256: string;
+    readonly create: () => NewStoredWebSubmission;
+  }): { readonly created: boolean; readonly submission: StoredWebSubmission } {
+    return this.transaction(() => {
+      const threadId = this.resolveThreadId(input.threadId);
+      this.requireThread(threadId);
+      const existing = this.database.prepare(
+        "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
+      ).get(threadId, input.submissionId) as unknown as WebSubmissionRow | undefined;
+      if (existing !== undefined) {
+        if (existing.payload_sha256 !== input.payloadSha256) {
+          throw new WebConsoleError("submission_conflict", "Submission id was already used for different content.", 409);
+        }
+        return { created: false, submission: mapWebSubmission(existing) };
+      }
+      const created = input.create();
+      const now = this.now();
+      this.database.prepare(`
+        INSERT INTO web_submissions (
+          thread_id, submission_id, payload_sha256, outcome, reason, message_id, turn_id, input_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        threadId,
+        input.submissionId,
+        input.payloadSha256,
+        created.outcome,
+        created.reason ?? null,
+        created.messageId ?? null,
+        created.turnId ?? null,
+        created.inputId ?? null,
+        now,
+      );
+      return {
+        created: true,
+        submission: mapWebSubmission(this.database.prepare(
+          "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
+        ).get(threadId, input.submissionId) as unknown as WebSubmissionRow),
+      };
+    });
+  }
+
+  webSubmission(threadId: string, submissionId: string): StoredWebSubmission | undefined {
+    threadId = this.resolveThreadId(threadId);
+    this.requireThread(threadId);
+    const row = this.database.prepare(
+      "SELECT * FROM web_submissions WHERE thread_id = ? AND submission_id = ?",
+    ).get(threadId, submissionId) as unknown as WebSubmissionRow | undefined;
+    return row === undefined ? undefined : mapWebSubmission(row);
+  }
+
+  private requireCronReplyOperationRow(operationId: string): CronReplyOperationRow {
+    const row = this.database.prepare("SELECT * FROM cron_reply_operations WHERE operation_id = ?")
+      .get(operationId) as unknown as CronReplyOperationRow | undefined;
+    if (row === undefined) {
+      throw new WebConsoleError("cron_reply_operation_not_found", "Cron reply operation not found.", 404);
+    }
+    return row;
+  }
+
+  private assertCronReplyIdentity(
+    row: CronReplyOperationRow,
+    sourceId: string,
+    jobId: string,
+    runId: string,
+  ): void {
+    if (row.source_id !== sourceId || row.job_id !== jobId || row.run_id !== runId) {
+      throw new WebConsoleError("cron_reply_operation_conflict", "Cron reply operation id was used for another run.", 409);
+    }
+  }
+
+  private cronReplyState(row: CronReplyOperationRow): CronReplyReservationResult {
+    if (row.state === "completed") {
+      return { kind: "completed", receipt: this.cronReplyReceipt(row, true) };
+    }
+    if (row.state === "failed") return { kind: "failed", operation: mapCronReplyOperation(row) };
+    if (row.state === "tombstoned") return { kind: "tombstoned", operation: mapCronReplyOperation(row) };
+    return { kind: "pending", operation: mapCronReplyOperation(row) };
+  }
+
+  private cronReplyReceipt(row: CronReplyOperationRow, duplicate: boolean): WebCronReplyReceipt {
+    if (row.provenance_message_id === null || row.result_message_id === null) {
+      throw new WebConsoleError("storage_corrupt", "Completed cron reply is missing its projected messages.", 500);
+    }
+    const thread = this.getThread(row.thread_id);
+    const provenance = this.getMessage(row.provenance_message_id);
+    const result = this.getMessage(row.result_message_id);
+    if (thread === undefined || provenance === undefined || result === undefined) {
+      throw new WebConsoleError("storage_corrupt", "Completed cron reply projection is missing.", 500);
+    }
+    return {
+      operationId: row.operation_id,
+      sourceId: row.source_id,
+      jobId: row.job_id,
+      runId: row.run_id,
+      duplicate,
+      thread,
+      messages: [provenance, result],
+    };
+  }
+
   private transaction<T>(operation: () => T): T {
+    if (this.transactionDepth > 0) return operation();
     this.database.exec("BEGIN IMMEDIATE");
+    this.transactionDepth += 1;
     try {
       const result = operation();
       this.database.exec("COMMIT");
@@ -5163,12 +6675,45 @@ export class WebStore {
     } catch (error) {
       this.database.exec("ROLLBACK");
       throw error;
+    } finally {
+      this.transactionDepth -= 1;
     }
   }
 
   private now(): string {
     return this.clock().toISOString();
   }
+}
+
+function mapWebSubmission(row: WebSubmissionRow): StoredWebSubmission {
+  return {
+    threadId: row.thread_id,
+    submissionId: row.submission_id,
+    payloadSha256: row.payload_sha256,
+    outcome: row.outcome,
+    ...(row.reason === null ? {} : { reason: row.reason }),
+    ...(row.message_id === null ? {} : { messageId: row.message_id }),
+    ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
+    ...(row.input_id === null ? {} : { inputId: row.input_id }),
+  };
+}
+
+function mapCronReplyOperation(row: CronReplyOperationRow): StoredCronReplyOperation {
+  return {
+    operationId: row.operation_id,
+    sourceId: row.source_id,
+    jobId: row.job_id,
+    runId: row.run_id,
+    threadId: row.thread_id,
+    conversationId: row.conversation_id,
+    idempotencyKey: row.idempotency_key,
+    state: row.state,
+    snapshotKind: row.snapshot_kind,
+    ...(row.snapshot_text === null ? {} : { snapshotText: row.snapshot_text }),
+    ...(row.snapshot_sha256 === null ? {} : { snapshotSha256: row.snapshot_sha256 }),
+    ...(row.failure_reason === null ? {} : { failureReason: row.failure_reason }),
+    createdAt: row.created_at,
+  };
 }
 
 function mapPushSubscriptionStatus(row: PushSubscriptionRow): WebPushSubscriptionStatus {
@@ -5248,9 +6793,46 @@ function isValidVapidKeyPair(publicKey: string, privateKey: string): boolean {
   }
 }
 
+/**
+ * Settled turns that could be a conversation's prior meaningful outcome, for
+ * whichever conversations the bound id set names.
+ *
+ * The predicate is the cheap half of the question: it excludes a successful
+ * assistant-only turn with no visible reply content without reading any
+ * transcript. Whether the visible content it did find is a Monitor sentinel is
+ * the expensive half, and only the rows this returns are ever asked.
+ */
+function priorOutcomeCandidateSql(): string {
+  return `
+    SELECT t.thread_id, t.id, t.status, t.finished_at, t.assistant_message_id,
+           t.started_at, t.rowid AS ordinal,
+           EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user') AS has_user,
+           EXISTS (
+             SELECT 1 FROM monitor_wake_deliveries d
+             JOIN threads th ON th.id = t.thread_id AND th.source_id = d.source_id
+             WHERE d.thread_id = t.thread_id AND d.turn_id = t.id AND d.state = 'completed'
+               AND d.disposition IN ('steered', 'follow_up')
+           ) AS claimed
+    FROM turns t
+    WHERE t.thread_id IN (SELECT value FROM json_each(?)) AND t.status <> 'running' AND (
+      t.status <> 'complete'
+      OR EXISTS (SELECT 1 FROM messages m WHERE m.turn_id = t.id AND m.role = 'user')
+      OR EXISTS (
+        SELECT 1 FROM messages m, json_each(m.parts_json) p
+        WHERE m.id = t.assistant_message_id AND (
+          json_extract(p.value, '$.type') IN ('attachment', 'mcp_app', 'failure')
+          OR (json_extract(p.value, '$.type') = 'text'
+            AND length(trim(json_extract(p.value, '$.text'), ?)) > 0)
+        )
+      )
+    )
+  `;
+}
+
 function threadSelectSql(suffix: string): string {
   return `
-    SELECT t.id, t.source_id, t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
+    SELECT t.id, t.source_id, t.project_id, p.name AS project_name,
+           t.title, t.title_manual, t.trigger_kind, t.archived_at, t.created_at, t.updated_at, t.revision,
            t.run_model, t.run_effort,
            cc.job_id AS cron_job_id, cc.configured AS cron_configured,
            CASE WHEN t.trigger_kind = 'cron' THEN 0
@@ -5260,6 +6842,9 @@ function threadSelectSql(suffix: string): string {
            (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id AND ${visibleMessageSql("m")}) AS message_count
     FROM threads t JOIN agents a ON a.source_id = t.source_id
     LEFT JOIN cron_channels cc ON cc.thread_id = t.id
+    -- The member's own row carries its project's name, so a listing that
+    -- crosses agents can label the row without a second read per project.
+    LEFT JOIN projects p ON p.id = t.project_id
     ${suffix}
   `;
 }
@@ -5359,6 +6944,14 @@ function cronMessageStatus(status: WebCronRun["status"]): WebMessageStatus {
   return "complete";
 }
 
+function isTerminalCronRun(status: WebCronRun["status"]): boolean {
+  return status === "succeeded"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "skipped_overlap"
+    || status === "dropped";
+}
+
 /** Presentation queries only; storage validation/recovery and retention stay raw. */
 function visibleMessageSql(alias: "m" | "messages"): string { return `${alias}.cron_suppressed = 0`; }
 
@@ -5381,7 +6974,8 @@ function hasMeaningfulCronContent(parts: readonly WebMessagePart[]): boolean {
   return parts.some((part) => part.type === "text"
     ? !isSyntheticCronStateText(part.text) && classifyNotifySuppression(part.text) === "none"
     : part.type === "attachment" || part.type === "error" || part.type === "mcp_app"
-      || part.type === "failure" || part.type === "process-job" || part.type === "monitor-activity");
+      || part.type === "failure" || part.type === "process-job" || part.type === "process-job-wake"
+      || part.type === "monitor-activity");
 }
 
 function cronRunParts(
@@ -5403,6 +6997,10 @@ function cronRunParts(
   const priorActivityEventCount = Number.isSafeInteger(priorCronData?.activityEventCount)
     ? Number(priorCronData?.activityEventCount)
     : priorLoadedEventCount;
+  const priorDetailFieldsTruncated = Array.isArray(priorCronData?.detailFieldsTruncated)
+    && priorCronData.detailFieldsTruncated.every((field) => typeof field === "string")
+    ? priorCronData.detailFieldsTruncated as string[]
+    : undefined;
   const activityLoaded = run.projection === "detail"
     || (priorActivityLoaded && priorActivityEventCount === run.eventCount);
   const activityStale = run.projection === "summary"
@@ -5420,7 +7018,8 @@ function cronRunParts(
   const parts: WebMessagePart[] = run.projection === "summary"
     ? [...retained]
     : retained.filter((part) => part.type === "text" || part.type === "error" || part.type === "attachment"
-      || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job" || part.type === "monitor-activity");
+      || part.type === "mcp_app" || part.type === "failure" || part.type === "process-job"
+      || part.type === "process-job-wake" || part.type === "monitor-activity");
   for (const event of run.projection === "detail" ? run.events : []) applyEvent(parts, event);
   const preserveLoadedText = run.projection === "summary"
     && run.fieldsTruncated?.includes("text") === true
@@ -5488,6 +7087,9 @@ function cronRunParts(
         : {}),
       ...(activityStale ? { activityStale: true, loadedEventCount: priorLoadedEventCount } : {}),
       ...(eventsTruncated ? { eventsTruncated: true } : {}),
+      ...(run.projection === "detail"
+        ? { detailFieldsTruncated: run.fieldsTruncated ?? [] }
+        : priorDetailFieldsTruncated === undefined ? {} : { detailFieldsTruncated: priorDetailFieldsTruncated }),
       ...(run.fieldsTruncated === undefined ? {} : { fieldsTruncated: run.fieldsTruncated }),
     },
   });
@@ -5610,9 +7212,21 @@ function decodeCursor(value: string): Record<string, unknown> {
   }
 }
 
-function decodeThreadCursor(value: string): { readonly updatedAt: string; readonly id: string } {
+function threadListScopeSql(scope: WebThreadListScope): string {
+  return scope === "chats" ? "AND (t.trigger_kind IS NULL OR t.trigger_kind <> 'cron')" : "";
+}
+
+function decodeThreadCursor(
+  value: string,
+  scope: WebThreadListScope,
+  projectId?: string,
+): { readonly updatedAt: string; readonly id: string } {
   const cursor = decodeCursor(value);
-  if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string") {
+  if (typeof cursor.updatedAt !== "string" || typeof cursor.id !== "string"
+    || (scope === "chats" ? cursor.scope !== "chats" : cursor.scope !== undefined)
+    // A filtered page binds its project: a cursor minted for another project
+    // -- or for the unfiltered bucket -- must not walk this one.
+    || (projectId === undefined ? cursor.project !== undefined : cursor.project !== projectId)) {
     throw new WebConsoleError("invalid_page", "Pagination cursor is invalid.", 400);
   }
   return { updatedAt: cursor.updatedAt, id: cursor.id };
@@ -5737,6 +7351,18 @@ export function toWebAttachment(attachment: StoredAttachment): WebAttachment {
 }
 
 type MonitorWakeProjectionResolver = (deliveryKey: string) => MonitorProjection | undefined;
+type ProcessJobWakeResolver = (deliveryKey: string) => {
+  readonly jobId: string;
+  readonly deliveryKey: string;
+} | undefined;
+type SteerMarker = {
+  readonly inputId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly receivedAt: string;
+  readonly quote?: WebQuote;
+};
+type SteerResolver = (inputId: string) => SteerMarker | undefined;
 
 function appliedMonitorWake(
   event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
@@ -5758,6 +7384,8 @@ function applyEvent(
   parts: WebMessagePart[],
   event: AgentStreamEvent,
   resolveMonitorWake?: MonitorWakeProjectionResolver,
+  resolveProcessJobWake?: ProcessJobWakeResolver,
+  resolveSteer?: SteerResolver,
 ): void {
   if (event.type === "assistant_thought") {
     appendTextPart(parts, "reasoning", event.text);
@@ -5765,6 +7393,8 @@ function applyEvent(
   }
   if (event.type === "tool_call_started") {
     if (appliedMonitorWake(event, resolveMonitorWake) !== undefined) return;
+    if (appliedProcessJobWake(event, resolveProcessJobWake) !== undefined) return;
+    if (appliedSteer(event, resolveSteer) !== undefined) return;
     const historyUpdate = canonicalEventHistoryUpdate(event.history);
     const subagent = subagentOf(event);
     if (subagent !== undefined) {
@@ -5809,6 +7439,21 @@ function applyEvent(
     const monitorWake = appliedMonitorWake(event, resolveMonitorWake);
     if (monitorWake !== undefined) {
       upsertMonitorActivity(parts, monitorWake.projection, monitorWake.deliveryKey);
+      return;
+    }
+    const processJobWake = appliedProcessJobWake(event, resolveProcessJobWake);
+    if (processJobWake !== undefined) {
+      if (!parts.some((part) => part.type === "process-job-wake"
+        && part.deliveryKey === processJobWake.deliveryKey)) {
+        parts.push({ type: "process-job-wake", ...processJobWake, disposition: "steered" });
+      }
+      return;
+    }
+    const steer = appliedSteer(event, resolveSteer);
+    if (steer !== undefined) {
+      if (!parts.some((part) => part.type === "steer" && part.inputId === steer.inputId)) {
+        parts.push({ type: "steer", ...steer });
+      }
       return;
     }
     const status = event.isError === true ? "failed" : "complete";
@@ -5856,10 +7501,10 @@ function applyEvent(
       toolName: event.name ?? existingToolName(parts, event.id) ?? "Tool",
       ...(event.arguments === undefined ? {} : { args: event.arguments }),
       ...(event.content === undefined ? {} : { result: event.content }),
-      // `result` is the model-facing text and cannot answer "what did this tool
-      // actually decide". The AskUser card needs `interactionId`/`answered` to
-      // re-render an answered question after a reload, so keep the structured
-      // payload beside the prose rather than reparsing the sentence.
+      // `result` is model-facing and cannot answer "what did this tool actually
+      // decide". Keep bounded MCP and canonical host outcomes beside the prose:
+      // AskUser needs its answer identity after reload, and process-job launches
+      // need their exact causal receipt rather than reparsing a sentence.
       ...(event.structuredContent === undefined ? {} : { structuredResult: event.structuredContent }),
       ...(executionMs === undefined ? {} : { executionMs }),
       status,
@@ -5871,6 +7516,50 @@ function applyEvent(
     return;
   }
   parts.push({ type: "telemetry", event: event.type, data: event });
+}
+
+function appliedProcessJobWake(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+  resolveProcessJobWake: ProcessJobWakeResolver | undefined,
+): { readonly jobId: string; readonly deliveryKey: string } | undefined {
+  if (resolveProcessJobWake === undefined
+    || event.metadata?.liveInput !== true
+    || event.metadata?.synthetic !== true
+    || typeof event.metadata.inputId !== "string") {
+    return undefined;
+  }
+  return resolveProcessJobWake(event.metadata.inputId);
+}
+
+/**
+ * A human steer the run consumed: like the wake interceptors above, but the
+ * marker carries the operator's own full text instead of compact activity.
+ * Runs last so Monitor and process-job wakes keep their purpose-built rows.
+ */
+function appliedSteer(
+  event: Extract<AgentStreamEvent, { type: "tool_call_started" | "tool_call_completed" }>,
+  resolveSteer: SteerResolver | undefined,
+): SteerMarker | undefined {
+  if (resolveSteer === undefined
+    || event.metadata?.liveInput !== true
+    || event.metadata?.synthetic !== true
+    || typeof event.metadata.inputId !== "string") {
+    return undefined;
+  }
+  const marker = resolveSteer(event.metadata.inputId);
+  if (marker === undefined) return undefined;
+  const receivedAt = validSteerReceivedAt(event.metadata.receivedAt) ?? marker.receivedAt;
+  return receivedAt === marker.receivedAt ? marker : { ...marker, receivedAt };
+}
+
+/** Wire `receivedAt` stays a length/control-char check, like `deliveryKey`. */
+function validSteerReceivedAt(value: unknown): string | undefined {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 1_024
+    && !/[\u0000-\u001f\u007f]/u.test(value)
+    ? value
+    : undefined;
 }
 
 type MonitorActivityPart = Extract<WebMessagePart, { readonly type: "monitor-activity" }>;
@@ -6666,6 +8355,14 @@ function parseParts(value: string): WebMessagePart[] {
   if (parts.filter((part) => part.type === "monitor-activity").length > 1) {
     throw new WebConsoleError("storage_corrupt", "Persisted Monitor activity is duplicated.", 500);
   }
+  const wakeKeys = parts.flatMap((part) => part.type === "process-job-wake" ? [part.deliveryKey] : []);
+  if (new Set(wakeKeys).size !== wakeKeys.length) {
+    throw new WebConsoleError("storage_corrupt", "Persisted process-job wake activity is duplicated.", 500);
+  }
+  const steerKeys = parts.flatMap((part) => part.type === "steer" ? [part.inputId] : []);
+  if (new Set(steerKeys).size !== steerKeys.length) {
+    throw new WebConsoleError("storage_corrupt", "Persisted steer activity is duplicated.", 500);
+  }
   quoteFromParts(parts);
   return parts;
 }
@@ -6675,8 +8372,12 @@ const LIVE_INPUT_TELEMETRY_EVENT = "live_input";
 
 type WebLiveInputStatus = NonNullable<WebMessage["liveInputStatus"]>;
 
-function liveInputTelemetry(status: WebLiveInputStatus): WebMessagePart {
-  return { type: "telemetry", event: LIVE_INPUT_TELEMETRY_EVENT, data: { status } };
+function liveInputTelemetry(status: WebLiveInputStatus, inputId?: string): WebMessagePart {
+  return {
+    type: "telemetry",
+    event: LIVE_INPUT_TELEMETRY_EVENT,
+    data: { status, ...(inputId === undefined ? {} : { inputId }) },
+  };
 }
 
 function withoutLiveInputTelemetry(parts: readonly WebMessagePart[]): WebMessagePart[] {
@@ -6685,11 +8386,28 @@ function withoutLiveInputTelemetry(parts: readonly WebMessagePart[]): WebMessage
   );
 }
 
+function liveInputIdFromParts(parts: readonly WebMessagePart[]): string | undefined {
+  const markers = parts.filter(
+    (part): part is Extract<WebMessagePart, { type: "telemetry" }> =>
+      part.type === "telemetry" && part.event === LIVE_INPUT_TELEMETRY_EVENT,
+  );
+  if (markers.length !== 1) return undefined;
+  const data = markers[0]?.data;
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+  const inputId = (data as Record<string, unknown>).inputId;
+  return typeof inputId === "string" && validRichId(inputId) ? inputId : undefined;
+}
+
 function withLiveInputStatus(
   parts: readonly WebMessagePart[],
   status: WebLiveInputStatus,
+  inputId?: string,
 ): WebMessagePart[] {
-  return [liveInputTelemetry(status), ...withoutLiveInputTelemetry(parts)];
+  // The telemetry marker is the durable inputId carrier: `markLiveInputApplied`
+  // deletes the `live_inputs` row, so the later stream receipt can only map
+  // `metadata.inputId` back to its user message through this marker.
+  const preserved = inputId ?? liveInputIdFromParts(parts);
+  return [liveInputTelemetry(status, preserved), ...withoutLiveInputTelemetry(parts)];
 }
 
 function liveInputStatusFromParts(parts: readonly WebMessagePart[]): WebLiveInputStatus | undefined {
@@ -6706,8 +8424,12 @@ function liveInputStatusFromParts(parts: readonly WebMessagePart[]): WebLiveInpu
     throw new WebConsoleError("storage_corrupt", "Persisted live-input metadata is invalid.", 500);
   }
   const status = (data as Record<string, unknown>).status;
-  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled") {
+  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled" && status !== "uncertain") {
     throw new WebConsoleError("storage_corrupt", "Persisted live-input status is invalid.", 500);
+  }
+  const inputId = (data as Record<string, unknown>).inputId;
+  if (inputId !== undefined && !validRichId(inputId)) {
+    throw new WebConsoleError("storage_corrupt", "Persisted live-input metadata is invalid.", 500);
   }
   return status;
 }
@@ -6733,6 +8455,38 @@ function quoteFromParts(parts: readonly WebMessagePart[]): WebQuote | undefined 
     throw new WebConsoleError("storage_corrupt", "Persisted message quote metadata has an invalid shape.", 500);
   }
   return { text: quote.text, messageId: quote.messageId };
+}
+
+/**
+ * Build the self-contained inline marker from its steered user message.
+ *
+ * The display text is the message's own text parts joined verbatim (the same
+ * bytes the standalone bubble renders), never the 40-code-point activity
+ * preview. Anything unbounded or empty misses and keeps the legacy tool row
+ * rather than persisting a marker the renderers cannot honestly draw.
+ */
+function steerMarkerFromUserParts(
+  inputId: string,
+  messageId: string,
+  parts: readonly WebMessagePart[],
+  receivedAt: string,
+): {
+  readonly inputId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly receivedAt: string;
+  readonly quote?: WebQuote;
+} | undefined {
+  const text = parts.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
+  if (text.trim().length === 0 || text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) return undefined;
+  const quote = quoteFromParts(parts);
+  return {
+    inputId,
+    messageId,
+    text,
+    receivedAt,
+    ...(quote === undefined ? {} : { quote }),
+  };
 }
 
 function isWebToolCallStatus(value: unknown): boolean {
@@ -6931,6 +8685,45 @@ function isWebMessagePart(value: unknown): value is WebMessagePart {
       return false;
     }
   }
+  if (part.type === "process-job-wake") {
+    return hasOnlyKeys(part, new Set(["type", "jobId", "deliveryKey", "disposition"]))
+      && validRichId(part.jobId)
+      && typeof part.deliveryKey === "string"
+      && part.deliveryKey.length > 0
+      && part.deliveryKey.length <= 1_024
+      && !/[\u0000-\u001f\u007f]/u.test(part.deliveryKey)
+      && (part.disposition === "steered" || part.disposition === "follow_up");
+  }
+  if (part.type === "steer") {
+    // `text` is operator prose: newlines and tabs are legitimate content, so
+    // only the length bound (shared with `reserveLiveInput`) applies to it.
+    // `receivedAt` stays a length/control-char check like `deliveryKey`.
+    if (!hasOnlyKeys(part, new Set(["type", "inputId", "messageId", "text", "receivedAt", "quote"]))) {
+      return false;
+    }
+    if (!validRichId(part.inputId) || !validRichId(part.messageId)) return false;
+    if (typeof part.text !== "string"
+      || part.text.trim().length === 0
+      || part.text.length > AGENT_LIVE_INPUT_MAX_CHARACTERS) {
+      return false;
+    }
+    if (part.receivedAt !== undefined
+      && (typeof part.receivedAt !== "string"
+        || part.receivedAt.length === 0
+        || part.receivedAt.length > 1_024
+        || /[\u0000-\u001f\u007f]/u.test(part.receivedAt))) {
+      return false;
+    }
+    if (part.quote === undefined) return true;
+    const quote = part.quote;
+    if (typeof quote !== "object" || quote === null || Array.isArray(quote)) return false;
+    const record = quote as Record<string, unknown>;
+    return Object.keys(record).every((key) => key === "text" || key === "messageId")
+      && typeof record.text === "string"
+      && (record.text as string).trim().length > 0
+      && typeof record.messageId === "string"
+      && validRichId(record.messageId);
+  }
   if (part.type === "monitor-activity") {
     if (!hasOnlyKeys(part, new Set(["type", "monitors"]))
       || !Array.isArray(part.monitors)
@@ -7036,6 +8829,11 @@ function processJobCardParts(
 ): WebMessagePart[] {
   const card = processJobPart(job, responseText);
   return replyParts === undefined ? [card] : boundedWebReplyParts(replyParts, [card]);
+}
+
+/** Whether a process job has settled and will never report anything again. */
+export function isTerminalProcessJobState(state: ProcessJobState): boolean {
+  return isTerminalJobState(state);
 }
 
 function isTerminalJobState(state: ProcessJobState): boolean {

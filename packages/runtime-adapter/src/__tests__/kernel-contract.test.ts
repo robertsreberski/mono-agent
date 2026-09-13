@@ -26,6 +26,7 @@ import type {
   MonoRuntimeBackendCapabilities,
   MonoRuntimeHostOptions,
   RuntimeEventLike,
+  RuntimeLiveInputMessage,
   RuntimeModelReference,
   RuntimeResult,
   RuntimeRunOptions,
@@ -57,6 +58,7 @@ type RuntimeRunComparableKeys =
   | "abortSignal"
   | "onEvent"
   | "toolLifecycleSink"
+  | "persistArtifact"
   | "effort"
   | "cwd"
   | "mcpServers"
@@ -88,6 +90,18 @@ function assertAssignable<T>(_value: T): void {
 }
 
 describe("runtime-adapter facade / agent-runtime kernel structural contract", () => {
+  it("keeps live-input callbacks source-compatible with contextual-void expression returns", () => {
+    const calls: string[] = [];
+    const message: RuntimeLiveInputMessage = {
+      body: "guide",
+      accepted: () => calls.push("accepted"),
+      acknowledge: () => calls.push("acknowledge"),
+      uncertain: () => calls.push("uncertain"),
+      reject: () => calls.push("reject"),
+    };
+    expect(message.body).toBe("guide");
+  });
+
   it("excludes caller-owned sandbox implementations from createMonoRuntime options", () => {
     expectTypeOf<CreateMonoRuntimeOptions["sandbox"]>().toEqualTypeOf<undefined>();
     expectTypeOf<RuntimeRunOptions["sandbox"]>().toEqualTypeOf<undefined>();
@@ -114,6 +128,18 @@ describe("runtime-adapter facade / agent-runtime kernel structural contract", ()
         options: {
           // @ts-expect-error route plugins cannot replace the mono sandbox implementation.
           sandbox: {},
+        },
+      };
+      assertAssignable<MonoRuntimeAttemptResolution>(resolution);
+    }
+  });
+
+  it("keeps the run-bound artifact sink out of attempt-resolver ownership", () => {
+    if (false) {
+      const resolution: MonoRuntimeAttemptResolution = {
+        options: {
+          // @ts-expect-error route plugins cannot replace the host's run-bound artifact sink.
+          persistArtifact: () => "/tmp/resolver-owned",
         },
       };
       assertAssignable<MonoRuntimeAttemptResolution>(resolution);

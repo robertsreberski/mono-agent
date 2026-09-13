@@ -1389,7 +1389,7 @@ export class SlackAdapter {
       if (offer.status === "accepted") {
         void offer.settled.then(
           (settlement) => decision.resolve(settlement.status === "requeue" ? "run" : "skip"),
-          () => decision.resolve("run"),
+          () => decision.resolve("skip"),
         );
         if (this.api.reactionsAdd !== undefined) {
           await this.api.reactionsAdd({
@@ -1487,7 +1487,7 @@ export class SlackAdapter {
         && options.verbatim !== true
         && this.responder.offerLiveInput !== undefined
         && !queue.full) {
-        const decision = createDeferred<"run" | "steered">();
+        const decision = createDeferred<"run" | "steered" | "uncertain">();
         const reserved = queue.run(async () => {
           const next = await decision.promise;
           if (next === "run") {
@@ -1505,6 +1505,16 @@ export class SlackAdapter {
             return { ...outcome, disposition: "follow_up" as const };
           }
           this.unregisterController(runKey, conversationId, controller);
+          if (next === "uncertain") {
+            return {
+              delivered: false,
+              code: "delivery_uncertain",
+              reason: "Live-input delivery is uncertain and was not retried.",
+              retryable: false,
+              ambiguous: true,
+              channelId: "slack" as const,
+            };
+          }
           return {
             delivered: true,
             code: "delivered",
@@ -1531,8 +1541,14 @@ export class SlackAdapter {
         }
         if (offer.status === "accepted") {
           void offer.settled.then(
-            (settlement) => decision.resolve(settlement.status === "applied" ? "steered" : "run"),
-            () => decision.resolve("run"),
+            (settlement) => decision.resolve(
+              settlement.status === "applied"
+                ? "steered"
+                : settlement.status === "requeue"
+                  ? "run"
+                  : "uncertain",
+            ),
+            () => decision.resolve("uncertain"),
           );
         } else {
           decision.resolve("run");

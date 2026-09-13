@@ -11,6 +11,17 @@ describe("createObserverHub", () => {
     expect(b.recordEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("synchronously reports lifecycle admission and isolates observer errors", () => {
+    const seen = [];
+    const hub = createObserverHub({ observers: [
+      { recordEvent() {}, recordToolLifecycle() { throw new Error("observer failed"); } },
+      { recordEvent() {}, recordToolLifecycle(event) { seen.push(event); } },
+    ] });
+    const event = { phase: "result", toolCallId: "read", state: "success" };
+    hub.recordToolLifecycle(event);
+    expect(seen).toEqual([event]);
+  });
+
   it("registers an onEvent callback as a synthetic observer", () => {
     const calls = [];
     const hub = createObserverHub({ onEvent: (e) => calls.push(e) });

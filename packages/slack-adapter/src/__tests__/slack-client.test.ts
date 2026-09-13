@@ -61,7 +61,6 @@ describe("SlackWebApiClient", () => {
     expect(String(uploadUrl)).toBe("https://uploads.slack.test/opaque-capability");
     expect(uploadInit?.headers).toEqual({
       "content-type": "application/octet-stream",
-      "content-length": "5",
     });
     expect(JSON.stringify(uploadInit?.headers)).not.toContain(BOT_TOKEN);
     const [completeUrl, completeInit] = vi.mocked(fetchImpl).mock.calls[2] ?? [];
@@ -76,6 +75,30 @@ describe("SlackWebApiClient", () => {
       channel_id: "C1",
       thread_ts: "100.1",
     });
+  });
+
+  it("lets fetch derive the upload length instead of declaring content-length itself", async () => {
+    // A manual content-length is what fetch derives from the body anyway, and
+    // supplying both makes undici reject the upload outright with
+    // UND_ERR_INVALID_ARG. That failure is invisible in unit tests because a
+    // mocked fetch never validates headers, so the header's absence is the
+    // assertion that keeps real uploads working.
+    const fetchImpl = vi.fn(async () => new Response("OK", { status: 200 })) as unknown as typeof fetch;
+    const client = new SlackWebApiClient({
+      botToken: BOT_TOKEN,
+      apiBaseUrl: "https://slack.example/api",
+      fetchImpl,
+      requestTimeoutMs: 0,
+    });
+    const bytes = new TextEncoder().encode("a report worth several bytes");
+
+    await client.filesUploadExternal({ uploadUrl: "https://uploads.slack.test/opaque-capability", data: bytes });
+
+    const [, uploadInit] = vi.mocked(fetchImpl).mock.calls[0] ?? [];
+    const headerNames = Object.keys(uploadInit?.headers ?? {}).map((name) => name.toLowerCase());
+    expect(headerNames).not.toContain("content-length");
+    // The bytes still reach fetch untouched; only the declaration is gone.
+    expect(uploadInit?.body).toBe(bytes);
   });
 
   it("sends Slack write requests with bearer auth and JSON bodies", async () => {

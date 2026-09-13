@@ -176,6 +176,7 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
       }
     },
     ...(responder.cancel === undefined ? {} : { cancel: responder.cancel.bind(responder) }),
+    ...(responder.liveInputOwnership === undefined ? {} : { liveInputOwnership: responder.liveInputOwnership }),
     ...(responder.offerLiveInput === undefined
       ? {}
       : {
@@ -185,6 +186,9 @@ export function bindProcessJobWakeContextToResponder(responder: AgentResponder):
     ...(responder.deliverVerbatim === undefined
       ? {}
       : { deliverVerbatim: responder.deliverVerbatim.bind(responder) }),
+    ...(responder.importContext === undefined
+      ? {}
+      : { importContext: responder.importContext.bind(responder) }),
     ...(responder.openReplyArtifact === undefined
       ? {}
       : { openReplyArtifact: responder.openReplyArtifact.bind(responder) }),
@@ -236,16 +240,15 @@ function offerProcessJobWakeToActiveRun(
   return {
     status: "accepted",
     settled: offer.settled.then((settlement) => {
-      if (settlement.status !== "applied" || settlement.runId !== target.runId) {
-        rollback();
-        return settlement.status === "applied"
-          ? { status: "requeue" as const, reason: "failed" as const }
-          : settlement;
-      }
-      return settlement;
-    }, (error: unknown) => {
+      if (settlement.status === "applied" && settlement.runId === target.runId) return settlement;
       rollback();
-      throw error;
+      if (settlement.status === "requeue" || settlement.status === "discarded" || settlement.status === "uncertain") {
+        return settlement;
+      }
+      return { status: "uncertain" as const, reason: "delivery_uncertain" as const };
+    }, () => {
+      rollback();
+      return { status: "uncertain" as const, reason: "delivery_uncertain" as const };
     }),
   };
 }

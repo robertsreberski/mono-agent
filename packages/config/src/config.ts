@@ -44,7 +44,7 @@ import {
   MEMORY_MODES,
   MEMORY_WRITE_MODES,
 } from "./enums.js";
-import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
+import type { EffortLevel, MemoryBackend, MemoryConsolidationConfig, MemoryEmbeddingsCircuitBreakerConfig, MemoryEmbeddingsConfig, MemoryEmbeddingsProvider, MemoryLlmConfig, MemoryLlmProvider, MemoryMode, MemorySupermemoryConfig, MemoryWriteMode, MonoAgentConfig, ObservabilityExporterConfig, PiNativeProviderConfig, RedactedMonoAgentConfig, RedactedObservabilityConfig, ResolvedProviders, MonoAgentInlineSubagentsConfig, MonoAgentSubagentConfig, MonoAgentSubagentModelChoice, MonoAgentSubagentsConfig, RuntimeFallbackConfig, RuntimeRetryConfig, SessionMode, SessionRollover, SkillDisclosureMode, WebFetchRenderMode, WebSearchBackend } from "./types.js";
 
 export type MonoAgentConfigErrorCode =
   | "missing_required_env"
@@ -407,11 +407,13 @@ export interface ProviderCoverageRoute {
 function subagentProviderRoutes(
   subagents: MonoAgentConfig["subagents"] | undefined,
 ): readonly ProviderCoverageRoute[] {
-  return (subagents?.definitions ?? []).flatMap((definition, index) =>
+  return [...(subagents?.models ?? []).map((choice, index) => ({
+    model: choice.model, path: `subagents.models[${index}].model`,
+  })), ...(subagents?.definitions ?? []).flatMap((definition, index) =>
     definition.model === undefined
       ? []
       : [{ model: definition.model, path: `subagents.definitions[${index}].model` }],
-  );
+  )];
 }
 
 /**
@@ -730,6 +732,7 @@ function readSubagentsConfig(
   }
   const record = parsed as Record<string, unknown>;
   const definitions = readSubagentDefinitions(record.definitions, cwd);
+  const models = readSubagentModels(record.models, definitions);
   return {
     ...(record.enabled === undefined ? {} : { enabled: readSubagentBoolean(record.enabled, "enabled") }),
     ...(record.maxConcurrent === undefined ? {} : { maxConcurrent: readSubagentInteger(record.maxConcurrent, "maxConcurrent", 1, 10) }),
@@ -737,8 +740,54 @@ function readSubagentsConfig(
     ...(record.timeoutMs === undefined ? {} : { timeoutMs: readSubagentInteger(record.timeoutMs, "timeoutMs", 1_000, 3_600_000) }),
     ...(record.maxTurns === undefined ? {} : { maxTurns: readSubagentInteger(record.maxTurns, "maxTurns", 1, 200) }),
     ...(definitions === undefined ? {} : { definitions }),
+    ...(models === undefined ? {} : { models }),
     ...(record.inline === undefined ? {} : { inline: readInlineSubagentsConfig(record.inline) }),
   };
+}
+
+function readSubagentModels(
+  value: unknown,
+  definitions: readonly MonoAgentSubagentConfig[] | undefined,
+): readonly MonoAgentSubagentModelChoice[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw invalidSubagents("models must be an array.");
+  const names = new Set<string>();
+  const models = new Set<string>();
+  const reserved = new Set(["general-purpose", ...(definitions ?? []).map((definition) => definition.name)]);
+  return value.map((entry, index) => {
+    const subject = `models[${index}]`;
+    if (typeof entry !== "string" && (entry === null || typeof entry !== "object" || Array.isArray(entry))) {
+      throw invalidSubagents(`${subject} must be a model reference string or object.`);
+    }
+    const record = typeof entry === "string" ? { model: entry } : entry as Record<string, unknown>;
+    for (const key of Object.keys(record)) {
+      if (key !== "name" && key !== "model") throw invalidSubagents(`${subject} contains unknown field "${key}".`);
+    }
+    if (typeof record.model !== "string" || record.model.trim().length === 0) {
+      throw invalidSubagents(`${subject} model must be a model reference string.`);
+    }
+    let model: RuntimeModelReference;
+    try {
+      model = parseMonoRuntimeModelReference(record.model);
+    } catch (error) {
+      const reason = modelReferenceReason(error);
+      throw new MonoAgentConfigError("invalid_model_reference",
+        `MONO_AGENT_SUBAGENTS_JSON ${subject} model \`${modelReferenceEcho(record.model)}\` is not a valid runtime model reference: ${reason}`,
+        { env: "MONO_AGENT_SUBAGENTS_JSON", reason });
+    }
+    if (record.name !== undefined && (typeof record.name !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(record.name))) {
+      throw invalidSubagents(`${subject} name must be lowercase kebab-case, 1-40 characters, without a colon.`);
+    }
+    const key = modelReferenceKey(model);
+    const name = record.name as string | undefined;
+    const effectiveName = name ?? key;
+    if (reserved.has(effectiveName)) throw invalidSubagents(`${subject} name "${effectiveName}" collides with a subagent name.`);
+    if (models.has(key)) throw invalidSubagents(`${subject} duplicate model reference "${key}".`);
+    if (names.has(effectiveName)) throw invalidSubagents(`${subject} duplicate model name "${effectiveName}".`);
+    names.add(effectiveName);
+    models.add(key);
+    return { ...(name === undefined ? {} : { name }), model };
+  });
 }
 
 function readInlineSubagentsConfig(value: unknown): MonoAgentInlineSubagentsConfig {
@@ -2223,7 +2272,10 @@ function addConfiguredProvider(
 function readProviderPiNative(value: unknown): Readonly<Record<string, unknown>> {
   const source = "providers.piNative";
   const record = readPlainObject(value, source);
-  const allowed = new Set(["transport", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
+  if (record.promptCacheDiagnostics !== undefined && typeof record.promptCacheDiagnostics !== "boolean") {
+    throw new MonoAgentConfigError("invalid_env", "providers.piNative.promptCacheDiagnostics must be a boolean.");
+  }
+  const allowed = new Set(["transport", "promptCacheDiagnostics", "piMaxRetries", "maxRetryDelayMs", "piSessionsRoot"]);
   const unknownKeys = Object.keys(record).filter((key) => !allowed.has(key)).sort();
   if (unknownKeys.length > 0) {
     throw new MonoAgentConfigError("invalid_env", `${source} contains unknown field${unknownKeys.length === 1 ? "" : "s"}: ${unknownKeys.join(", ")}.`, {
@@ -2244,6 +2296,7 @@ function layerProviderReservedValuesOntoEnv(
   }
   const mappings = [
     ["transport", "MONO_AGENT_PI_TRANSPORT"],
+    ["promptCacheDiagnostics", "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS"],
     ["piMaxRetries", "MONO_AGENT_PI_MAX_RETRIES"],
     ["maxRetryDelayMs", "MONO_AGENT_MAX_RETRY_DELAY_MS"],
     ["piSessionsRoot", "MONO_AGENT_PI_SESSIONS_ROOT"],
@@ -2363,6 +2416,7 @@ function readPiNativeProviderConfig(
 ): PiNativeProviderConfig | undefined {
   const hasAny = [
     env.MONO_AGENT_PI_TRANSPORT,
+    env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS,
     env.MONO_AGENT_PI_MAX_RETRIES,
     env.MONO_AGENT_MAX_RETRY_DELAY_MS,
     env.MONO_AGENT_PI_SESSIONS_ROOT,
@@ -2379,11 +2433,15 @@ function readPiNativeProviderConfig(
         "auto",
         invalidEnv,
       );
+  const promptCacheDiagnostics = normalizeOptionalString(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS) === undefined
+    ? undefined
+    : readBoolean(env.MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS, "MONO_AGENT_PI_PROMPT_CACHE_DIAGNOSTICS", false, invalidEnv);
   const piMaxRetries = readOptionalInteger(env.MONO_AGENT_PI_MAX_RETRIES, "MONO_AGENT_PI_MAX_RETRIES", { min: 0, max: 8 });
   const maxRetryDelayMs = readOptionalInteger(env.MONO_AGENT_MAX_RETRY_DELAY_MS, "MONO_AGENT_MAX_RETRY_DELAY_MS", { min: 100, max: 3_600_000 });
   const piSessionsRoot = readOptionalPath(env.MONO_AGENT_PI_SESSIONS_ROOT, cwd);
   return {
     ...(transport === undefined ? {} : { transport }),
+    ...(promptCacheDiagnostics === undefined ? {} : { promptCacheDiagnostics }),
     ...(piMaxRetries === undefined ? {} : { piMaxRetries }),
     ...(maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs }),
     ...(piSessionsRoot === undefined ? {} : { piSessionsRoot }),

@@ -9,7 +9,7 @@ import {
   createCompactionSummaryMessage,
   getOrThrow,
 } from "@earendil-works/pi-agent-core";
-import { installPromptCacheDiagnostics } from "./prompt-cache-diagnostics.js";
+import { installPromptCacheDiagnostics, promptCacheRequest } from "./prompt-cache-diagnostics.js";
 
 export const PI_CONTEXT = BACKGROUND_CONTEXT;
 
@@ -246,6 +246,7 @@ export async function createPiHarnessAdapter(session, options) {
   const manuallyAppendedEntryIds = new Set();
 
   const adapter = {
+    getPromptCacheRequest: () => promptCacheRequest(rawHarness),
     models: options.models,
     getModel: () => currentModel,
     getThinkingLevel: () => currentThinkingLevel,
@@ -262,11 +263,44 @@ export async function createPiHarnessAdapter(session, options) {
       manuallyAppendedEntryIds.add(entryId);
       return entryId;
     },
+    // Mirror pi's own lane.prompt() (accept → drive) rather than calling it,
+    // so the operation id is known the moment Pi admits the run instead of
+    // only when it settles. The live-input epoch needs it up front: without
+    // it every steer consumed mid-run stays "pending" until the whole run
+    // ends and is only acknowledged in one batch at the end.
     async prompt(text, promptOptions) {
-      return getOrThrow(await lane.prompt(text, promptOptions?.images, PI_CONTEXT));
+      const images = promptOptions?.images;
+      const admission = getOrThrow(await lane.accept({
+        kind: "prompt",
+        prompt: text,
+        ...(Array.isArray(images) && images.length > 0 ? { images } : {}),
+      }, PI_CONTEXT));
+      const { operationId } = admission;
+      if (typeof operationId !== "string" || operationId.length === 0) {
+        throw new Error("Pi run was admitted without an operation id");
+      }
+      promptOptions?.onOperationAdmitted?.(operationId);
+      const driven = getOrThrow(await lane.drive({ operationId, waitForRetry: true }, PI_CONTEXT));
+      if (driven.kind === "settled") return driven.outcome;
+      if (driven.kind === "waiting" && driven.reason === "deferred") {
+        return { operationId, status: "suspended", deferred: driven.deferred };
+      }
+      throw new Error(`Pi run ${operationId} returned an unwaited retry`);
     },
+    // Pi's QueueResult carries `{ entryId }`; the live-input runner keys prompt
+    // epoch registration, `cancelQueued` and `message_end` correlation on the
+    // bare entry id, so unwrap it here (as appendMessage does) rather than hand
+    // the runner an object it would settle as "uncertain" without ever
+    // registering the steer.
     async steer(message) {
-      return getOrThrow(await lane.steer(message, undefined, PI_CONTEXT));
+      const { entryId } = getOrThrow(await lane.steer(message, undefined, PI_CONTEXT));
+      if (typeof entryId !== "string" || entryId.length === 0) {
+        throw new Error("Pi steer settled without a queue entry id");
+      }
+      return entryId;
+    },
+    async cancelQueued(entryId) {
+      return getOrThrow(await lane.cancelQueued(entryId, PI_CONTEXT));
     },
     async abort() {
       const result = await lane.abort(PI_CONTEXT);

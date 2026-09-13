@@ -98,12 +98,12 @@ describe("createRuntime", () => {
   });
 
   it("emits one metadata-only live_input_applied event after a bridge acknowledges guidance", async () => {
-    const acknowledge = vi.fn();
+    const acknowledge = vi.fn(() => "recorded");
     const events = [];
     executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
       const next = await options.liveInput[Symbol.asyncIterator]().next();
-      next.value.acknowledge();
-      next.value.acknowledge();
+      next.value.acknowledge({ providerEntryId: "entry-1", providerRunId: "run-1" });
+      next.value.acknowledge({ providerEntryId: "entry-1", providerRunId: "run-1" });
       return { text: "ok", events: [] };
     });
     const runtime = createRuntime();
@@ -124,14 +124,79 @@ describe("createRuntime", () => {
       onEvent: (event) => events.push(event),
     });
 
-    expect(acknowledge).toHaveBeenCalledTimes(2);
-    expect(events).toEqual([{
-      type: "live_input_applied",
-      inputId: "follow-up-1",
-      receivedAt: "2026-07-22T08:30:00.000Z",
-    }]);
-    expect(events[0]).not.toHaveProperty("body");
-    expect(events[0]).not.toHaveProperty("text");
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([
+      {
+        type: "live_input_consumed",
+        inputId: "follow-up-1",
+        receivedAt: "2026-07-22T08:30:00.000Z",
+        providerEntryId: "entry-1",
+        providerRunId: "run-1",
+      },
+      {
+        type: "live_input_applied",
+        inputId: "follow-up-1",
+        receivedAt: "2026-07-22T08:30:00.000Z",
+        providerEntryId: "entry-1",
+        providerRunId: "run-1",
+      },
+      {
+        type: "live_input_consumed",
+        inputId: "follow-up-1",
+        receivedAt: "2026-07-22T08:30:00.000Z",
+        providerEntryId: "entry-1",
+        providerRunId: "run-1",
+        late: true,
+      },
+    ]);
+    for (const event of events) {
+      expect(event).not.toHaveProperty("body");
+      expect(event).not.toHaveProperty("text");
+    }
+  });
+
+  it("keeps direct-runtime callback failures and uncertainty terminal without false applied events", async () => {
+    const uncertain = vi.fn(() => "recorded");
+    const events = [];
+    executeMock.mockImplementationOnce(async (_systemPrompt, options) => {
+      const iterator = options.liveInput[Symbol.asyncIterator]();
+      const consumed = await iterator.next();
+      consumed.value.acknowledge({ providerEntryId: "entry-consumed", providerRunId: "run-1" });
+      const ambiguous = await iterator.next();
+      ambiguous.value.accepted({ providerEntryId: "entry-uncertain", providerRunId: "run-1" });
+      ambiguous.value.uncertain({
+        reason: "delivery_uncertain",
+        providerEntryId: "entry-uncertain",
+        providerRunId: "run-1",
+      });
+      return { text: "ok", events: [] };
+    });
+    const runtime = createRuntime();
+    const liveInput = {
+      async *[Symbol.asyncIterator]() {
+        yield { body: "private consumed guidance", id: "consumed", acknowledge: () => undefined };
+        yield { body: "private uncertain guidance", id: "uncertain", uncertain };
+      },
+    };
+
+    await runtime.run("sys", {
+      model: modelRef("anthropic", "x"),
+      liveInput,
+      onEvent: (event) => events.push(event),
+    });
+
+    expect(uncertain).toHaveBeenCalledTimes(1);
+    expect(events.map((event) => event.type)).toEqual([
+      "live_input_consumed",
+      "live_input_settlement_unconfirmed",
+      "live_input_native_accepted",
+      "live_input_uncertain",
+    ]);
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "live_input_applied" }));
+    for (const event of events) {
+      expect(event).not.toHaveProperty("body");
+      expect(event).not.toHaveProperty("text");
+    }
   });
 
   it("run() forwards host defaults under per-call options to bridge.execute", async () => {
@@ -160,6 +225,20 @@ describe("createRuntime", () => {
       onCompactionRecorded,
       resolvePiApiKey,
     });
+  });
+
+  it("run() lets a run-bound artifact sink replace the host default", async () => {
+    executeMock.mockResolvedValue({ text: "ok" });
+    const hostSink = () => null;
+    const runSink = () => "/tmp/run/tool-output.txt";
+    const runtime = createRuntime({ persistArtifact: hostSink });
+
+    await runtime.run("sys", {
+      model: modelRef("anthropic", "x"),
+      persistArtifact: runSink,
+    });
+
+    expect(executeMock.mock.calls[0][1].persistArtifact).toBe(runSink);
   });
 
   it("run() does not bind host keys the RuntimeRequest shape no longer declares", async () => {
@@ -296,6 +375,20 @@ describe("createRuntime subagent seam", () => {
     const forwarded = executeMock.mock.calls[0][1];
     expect(typeof forwarded.subagents.run).toBe("function");
     expect(forwarded.subagents.definitions).toBe(subagents.definitions);
+  });
+
+  it.each([
+    [{}, "parent", "xhigh"],
+    [{ model: modelRef("faux", "pinned"), effort: "low" }, "pinned", "low"],
+    [{ model: modelRef("faux", "override"), effort: "high" }, "override", "high"],
+  ])("applies child definition over parent route: %j", async (definition, expectedModel, expectedEffort) => {
+    executeMock.mockResolvedValue({ text: "ok", events: [] });
+    const runtime = createRuntime();
+    await runtime.run("parent", { model, subagents });
+    const childRun = executeMock.mock.calls[0][1].subagents.run;
+    executeMock.mockClear();
+    await childRun({ systemPrompt: "child", prompt: "x", definition, model: modelRef("faux", "parent"), effort: "xhigh" });
+    expect(executeMock.mock.calls[0][1]).toMatchObject({ model: modelRef("faux", expectedModel), effort: expectedEffort });
   });
 
   it("does not overwrite a host-supplied run callback", async () => {

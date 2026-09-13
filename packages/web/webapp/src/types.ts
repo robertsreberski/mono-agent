@@ -116,9 +116,10 @@ export type SkillRegistryState =
       readonly truncated?: true;
     };
 
+
 /**
  * Per-tool-call metadata the console renders but assistant-ui's tool-call part cannot
- * type. Both fields ride in that part's single `artifact` slot, so they are wrapped
+ * type. These fields ride in that part's single `artifact` slot, so they are wrapped
  * together rather than competing for it.
  */
 export interface ToolCallArtifact {
@@ -132,12 +133,14 @@ export interface ToolCallArtifact {
   readonly argsBytes?: number;
 }
 
+
 export type McpAppPart = Extract<MessagePart, { readonly type: "mcp_app" }>;
 
 export interface McpAppResource extends Omit<AgentMcpAppResource, "app"> {
   readonly app: McpAppPart;
   readonly connected: boolean;
 }
+
 
 export const DEFAULT_UPLOAD_LIMITS: UploadLimits = {
   maxFileBytes: 20 * 1024 * 1024,

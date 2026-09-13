@@ -1,9 +1,9 @@
+import { ProjectBadge, StartProjectMarkers } from "./project/ProjectIdentity";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { Menu } from "@base-ui/react/menu";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type ConnectionState, useConsoleStore } from "../console-store";
 import { composerDraftKey } from "../composer-draft";
-import { NotificationBell } from "../notifications";
 import { ContextDisplay } from "./assistant-ui/ContextDisplay";
 import { ModelSelector } from "./assistant-ui/ModelSelector";
 import { SelectionToolbar } from "./assistant-ui/Quote";
@@ -16,6 +16,7 @@ import {
 import { Composer } from "./Composer";
 import { CronChannelHeader } from "./CronChannelHeader";
 import { Icon } from "./Icon";
+import { ProcessJobStack } from "./ProcessJobStack";
 import { RenderErrorBoundary } from "./RenderErrorBoundary";
 import { useRunControls } from "./run-controls";
 
@@ -146,7 +147,13 @@ export function ConnectionBanner({ connection }: { readonly connection: Connecti
 }
 
 function ConversationTitle() {
-  const { selectedThread, renameThread } = useConsoleStore();
+  const {
+    selectedThread,
+    renameThread,
+    selectionLoading,
+    creatingThread,
+    selectionError,
+  } = useConsoleStore();
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(selectedThread?.title ?? "New conversation");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -209,10 +216,16 @@ function ConversationTitle() {
         type="button"
         className="conversation-title"
         onClick={() => selectedThread && setEditing(true)}
-        disabled={!selectedThread}
+        disabled={!selectedThread || selectionLoading}
         title={selectedThread ? "Rename conversation" : undefined}
       >
-        {selectedThread?.title ?? "New conversation"}
+        {selectionError !== null
+          ? "Conversation unavailable"
+          : creatingThread
+            ? "Creating conversation…"
+            : selectionLoading
+            ? "Loading conversation…"
+            : selectedThread?.title ?? "New conversation"}
       </button>
       {triggerBadge}
     </div>
@@ -224,6 +237,7 @@ export function ModelControls() {
     usage, selectorModels, model, effort, setModel, setEffort,
     agentDefaultModel, hasRunOverride, resetRunOverride, disabled, hasSettings,
     catalogStatusByProvider, openCatalog, requestProvider, agentProviders,
+    changeNotice, showModelChangeHint,
   } = useRunControls();
   const [settingsOpen, setSettingsOpen] = useState(false);
   // `openCatalog` closes over the agent's providers and the shortlist, so its
@@ -278,22 +292,78 @@ export function ModelControls() {
           agentDefaultId={agentDefaultModel}
           providerStatus={catalogStatusByProvider}
           onProviderRequest={requestProvider}
+          showModelChangeHint={showModelChangeHint}
           {...(hasRunOverride ? { onReset: resetRunOverride } : {})}
         />
+      )}
+      {changeNotice !== null && (
+        <span className="composer-hint model-change-notice" role="status" aria-live="polite">
+          Model changed — the next reply rebuilds this conversation&apos;s context from its text history.
+        </span>
       )}
     </div>
   );
 }
 
+function ProjectPickerItems({ threadId, sourceId, currentProjectId }: {
+  readonly threadId: string;
+  readonly sourceId: string;
+  readonly currentProjectId: string | null;
+}) {
+  const { projectsByAgent, setThreadProject } = useConsoleStore();
+  const projects = (projectsByAgent[sourceId] ?? []).filter((project) => project.archivedAt === null);
+  return (
+    <>
+      {projects.length === 0 && (
+        <div className="conversation-menu-empty">No projects yet</div>
+      )}
+      {projects.map((project) => (
+        <Menu.Item
+          key={project.id}
+          className="conversation-menu-item"
+          onClick={() => {
+            if (project.id !== currentProjectId) {
+              void setThreadProject(threadId, project.id).catch(() => undefined);
+            }
+          }}
+        >
+          <Icon name={project.id === currentProjectId ? "check" : "folder"} size={16} />
+          <span>{project.name}</span>
+        </Menu.Item>
+      ))}
+    </>
+  );
+}
+
 function ConversationActions() {
-  const { selectedThread, archiveThread, unarchiveThread, deleteThread } = useConsoleStore();
+  const {
+    selectedThread,
+    archiveThread,
+    unarchiveThread,
+    deleteThread,
+    loadProjects,
+    projectsByAgent,
+    setThreadProject,
+  } = useConsoleStore();
   if (selectedThread === null) return null;
   const archived = selectedThread.archivedAt !== null;
   const canDelete = archived
     && (selectedThread.trigger?.kind !== "cron" || selectedThread.trigger.configured === false);
+  // Membership survives archiving (storage keeps it; the context still
+  // reaches a restored member), so the menu says where the chat is either way.
+  const memberProjectId = selectedThread.projectId;
+  const memberProjectName = memberProjectId === null
+    ? null
+    : (projectsByAgent[selectedThread.sourceId] ?? []).find((project) => project.id === memberProjectId)?.name ?? null;
 
   return (
-    <Menu.Root>
+    <Menu.Root
+      onOpenChange={(open) => {
+        // The picker lists this conversation's agent projects; make sure the
+        // tab holds them before it opens.
+        if (open) void loadProjects(selectedThread.sourceId).catch(() => undefined);
+      }}
+    >
       <Menu.Trigger
         type="button"
         className="icon-button header-more"
@@ -305,6 +375,52 @@ function ConversationActions() {
       <Menu.Portal>
         <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={5}>
           <Menu.Popup className="conversation-menu-popup" aria-label="Conversation actions">
+            {/* The drawer's menu: one "project" row with where the chat is now
+                as its hint, the list beneath it, and a new project made from
+                this chat. */}
+            <Menu.SubmenuRoot>
+              <Menu.SubmenuTrigger className="conversation-menu-item">
+                <Icon name="folder" size={16} />
+                <span>{memberProjectId === null ? "Add to project" : "Move to project"}</span>
+                {memberProjectName !== null && (
+                  <span className="conversation-menu-hint">{memberProjectName}</span>
+                )}
+                <Icon name="chevron" size={14} className="conversation-menu-chevron" />
+              </Menu.SubmenuTrigger>
+              <Menu.Portal>
+                <Menu.Positioner className="conversation-menu-positioner" side="bottom" align="end" sideOffset={4}>
+                  <Menu.Popup className="conversation-menu-popup" aria-label={memberProjectId === null ? "Add to project" : "Move to project"}>
+                    <ProjectPickerItems
+                      threadId={selectedThread.id}
+                      sourceId={selectedThread.sourceId}
+                      currentProjectId={memberProjectId}
+                    />
+                  </Menu.Popup>
+                </Menu.Positioner>
+              </Menu.Portal>
+            </Menu.SubmenuRoot>
+            <Menu.Item
+              className="conversation-menu-item is-accent"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent("mono-agent:project-settings", {
+                  detail: { mode: "create", sourceId: selectedThread.sourceId, threadId: selectedThread.id },
+                }));
+              }}
+            >
+              <Icon name="new" size={16} />
+              <span>New project from this chat</span>
+            </Menu.Item>
+            {memberProjectId !== null && (
+              <Menu.Item
+                className="conversation-menu-item"
+                onClick={() => {
+                  void setThreadProject(selectedThread.id, null).catch(() => undefined);
+                }}
+              >
+                <Icon name="close" size={16} />
+                <span>Remove from project</span>
+              </Menu.Item>
+            )}
             <Menu.Item
               className="conversation-menu-item"
               onClick={() => {
@@ -341,25 +457,57 @@ function ConversationActions() {
 }
 
 function EmptyConversation() {
-  const { selectedAgent, createThread, selectedThread } = useConsoleStore();
+  const {
+    selectedAgent,
+    createThread,
+    retrySelection,
+    selectedThread,
+    selectionLoading,
+    creatingThread,
+    selectionError,
+  } = useConsoleStore();
   const cron = selectedThread?.trigger?.kind === "cron";
   return (
     <ThreadPrimitive.Empty>
-      <div className="chat-empty">
+      <div className="chat-empty" role={selectionError === null ? undefined : "alert"}>
         <div className="empty-orbit" aria-hidden="true">
           <span />
           <Icon name="spark" size={22} />
         </div>
-        <span className="eyebrow">{selectedAgent?.label ?? "mono-agent"}</span>
-        <h2>{cron ? "No cron runs recorded yet" : selectedThread ? "What should we work on?" : "Start a new conversation"}</h2>
+        <span className="eyebrow">
+          {selectionError === null ? selectedAgent?.label ?? "mono-agent" : "Conversation unavailable"}
+        </span>
+        <h2>
+          {selectionError !== null
+            ? "Conversation could not be loaded"
+            : creatingThread
+            ? "Creating conversation…"
+            : selectionLoading
+            ? "Loading conversation…"
+            : cron
+              ? "No cron runs recorded yet"
+              : selectedThread
+                ? "What should we work on?"
+                : "Start a new conversation"}
+        </h2>
         <p>
-          {cron
+          {selectionError !== null
+            ? selectionError
+            : creatingThread
+            ? "Preparing an empty conversation."
+            : selectionLoading
+            ? "Resolving the conversation you selected."
+            : cron
             ? "Runs will appear here chronologically after the agent admits them."
             : selectedAgent
             ? "Messages, reasoning, tool calls, and files stay together in this conversation."
             : "No agents have been discovered yet. Start an agent and it will appear here automatically."}
         </p>
-        {selectedAgent && !selectedThread && !cron && (
+        {selectionError !== null ? (
+          <button type="button" className="primary-button" onClick={retrySelection}>
+            Retry conversation
+          </button>
+        ) : selectedAgent && !selectedThread && !cron && !selectionLoading && !creatingThread && (
           <button
             type="button"
             className="primary-button"
@@ -374,19 +522,16 @@ function EmptyConversation() {
   );
 }
 
-export function Chat({
-  onOpenAgents,
-  onOpenThreads,
-}: {
-  readonly onOpenAgents: () => void;
-  readonly onOpenThreads: () => void;
-}) {
+export function Chat({ onBack }: { readonly onBack: () => void }) {
   const {
     selectedAgent,
     selectedThread,
     selectedThreadId,
     connection,
     detailLoading,
+    selectionLoading,
+    creatingThread,
+    selectionError,
     unarchiveThread,
     hasOlderMessages,
     loadOlderMessages,
@@ -399,7 +544,11 @@ export function Chat({
     runStatus === "cancelled" ||
     runStatus === "interrupted";
   const status =
-    selectedAgent?.status === "offline"
+    selectionError !== null
+      ? "Error"
+      : selectionLoading
+      ? "Loading"
+      : selectedAgent?.status === "offline"
       ? "Offline"
       : connection === "offline"
         ? "Browser offline"
@@ -418,23 +567,25 @@ export function Chat({
   return (
     <main className="chat-panel">
       <header className="chat-header">
+        {/* On a phone this conversation is a screen pushed over the Dashboard,
+            and this is the way back -- at the left edge, before the title,
+            where a phone keeps it. */}
         <div className="mobile-navigation">
-          <button type="button" className="icon-button" onClick={onOpenAgents} aria-label="Choose agent">
-            <Icon name="agent" size={19} />
-          </button>
-          <button type="button" className="icon-button" onClick={onOpenThreads} aria-label="Open conversations">
-            <Icon name="menu" size={19} />
+          <button type="button" className="icon-button mobile-back" onClick={onBack} aria-label="Back to dashboard">
+            <Icon name="chevron-left" size={22} />
           </button>
         </div>
         <div className="chat-title-block">
-          <ConversationTitle />
-          <span className={`chat-status is-${statusTone}`}>
-            <i />
-            {status}
-          </span>
+          <ProjectBadge />
+          <div className="chat-title-row">
+            <ConversationTitle />
+            <span className={`chat-status is-${statusTone}`}>
+              <i />
+              {status}
+            </span>
+          </div>
         </div>
         <div className="chat-header-actions">
-          <NotificationBell />
           <ConversationActions />
         </div>
       </header>
@@ -476,6 +627,7 @@ export function Chat({
                     Load earlier messages
                   </button>
                 )}
+                <StartProjectMarkers />
                 <ThreadPrimitive.Messages
                   components={{
                     UserMessage,
@@ -484,11 +636,29 @@ export function Chat({
                   }}
                 />
               </div>
-              <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
-                <Icon name="arrow-down" size={16} />
-              </ThreadPrimitive.ScrollToBottom>
+              {/* The dock: what the operator acts on lives with the input, not
+                  at the end of the transcript. Background jobs are the surface
+                  a running turn keeps updating, so they ride above the composer
+                  and the scroll control anchors to whatever the dock's top edge
+                  currently is. */}
               <ThreadPrimitive.ViewportFooter className="thread-footer">
-                {selectedThread?.archivedAt ? (
+                <ThreadPrimitive.ScrollToBottom className="scroll-bottom" aria-label="Scroll to latest message">
+                  <Icon name="arrow-down" size={16} />
+                </ThreadPrimitive.ScrollToBottom>
+                <ProcessJobStack />
+                {selectionError !== null ? (
+                  <div className="cron-readonly-footer" role="status">
+                    Retry this conversation or choose another one before sending.
+                  </div>
+                ) : creatingThread ? (
+                  <div className="cron-readonly-footer" role="status">
+                    Creating conversation…
+                  </div>
+                ) : selectionLoading ? (
+                  <div className="cron-readonly-footer" role="status">
+                    Loading the selected conversation…
+                  </div>
+                ) : selectedThread?.archivedAt ? (
                   <div className="archived-footer">
                     <span>This conversation is archived.</span>
                     <button
@@ -500,7 +670,7 @@ export function Chat({
                   </div>
                 ) : selectedThread?.trigger?.kind === "cron" ? (
                   <div className="cron-readonly-footer" role="status">
-                    Cron channels are read-only. Open the originating session to continue the conversation.
+                    Cron channels are read-only. Use Reply on a finished run to start a separate conversation.
                   </div>
                 ) : (
                   <Composer
@@ -510,8 +680,12 @@ export function Chat({
                 )}
               </ThreadPrimitive.ViewportFooter>
             </ThreadPrimitive.Viewport>
-            {detailLoading && selectedThread && (
-              <div className="detail-loading" role="status" aria-label="Loading conversation">
+            {(selectionLoading || (detailLoading && selectedThread)) && (
+              <div
+                className="detail-loading"
+                role="status"
+                aria-label={creatingThread ? "Creating conversation" : "Loading conversation"}
+              >
                 <span />
               </div>
             )}

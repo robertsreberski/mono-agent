@@ -1,3 +1,5 @@
+import { MessageModelMarkers } from "./ModelMarkers";
+import { MessageProjectMarkers } from "./project/ProjectIdentity";
 import { isSilentCronData } from "../cron-visibility";
 import {
   ActionBarPrimitive,
@@ -28,6 +30,8 @@ import type {
   AskAnswer,
   AskSnapshot,
   CachedMonitorProjection,
+  CronReplyContextPart as CronReplyContextValue,
+  MonitorProjection,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
 } from "../types";
@@ -53,13 +57,13 @@ import { finiteDuration, formatToolDuration } from "./duration";
 import { Icon } from "./Icon";
 import { MessageGallery } from "./ImageGallery";
 import { toolHistoryFailure } from "./tool-history";
-import { ProcessJobPart } from "./ProcessJob";
 import { useToolCallRepair } from "./tool-call-repair";
 import { SubagentPart, toolArgumentPreview } from "./Subagent";
 import { QuoteBlock } from "./assistant-ui/Quote";
 import { cronRunAnchor } from "./CronChannelHeader";
 import { McpAppPart, ReplyAttachmentPart, ReplyFailurePart } from "./ReplyParts";
 import { RunAttribution } from "./RunAttribution";
+import { ProcessJobActivityEventPart } from "./ProcessJob";
 
 export const copyTextWithFallback = async (text: string): Promise<void> => {
   if (navigator.clipboard?.writeText) {
@@ -190,16 +194,18 @@ function MarkdownText() {
 
 function LiveInputStatus() {
   const status = useAuiState((state) => state.message.metadata.custom?.liveInputStatus);
-  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled") {
+  if (status !== "pending" && status !== "applied" && status !== "queued" && status !== "cancelled" && status !== "uncertain") {
     return null;
   }
   const label = status === "pending"
     ? "Steering current run…"
     : status === "applied"
-      ? "Applied to current run"
+      ? "Consumed by current run"
       : status === "queued"
         ? "Queued as next turn"
-        : "Cancelled";
+        : status === "uncertain"
+          ? "Delivery uncertain — not retried"
+          : "Cancelled";
   return <span className={`live-input-status is-${status}`} role="status">{label}</span>;
 }
 
@@ -913,7 +919,12 @@ export function CronRunPart({ data }: DataMessagePartProps) {
   const runId = typeof payload.runId === "string" ? payload.runId : undefined;
   const [copied, setCopied] = useState(false);
   const [activityLoading, setActivityLoading] = useState(false);
-  const { loadCronRunActivity } = useConsoleStore();
+  const {
+    cronReplyState,
+    loadCronRunActivity,
+    replyToCronRun,
+    selectedThread,
+  } = useConsoleStore();
   if (runId === undefined || (isSilentCronData(payload) && payload.hasVisibleContent !== true)) return null;
   const sequence = typeof payload.sequence === "number" ? payload.sequence : undefined;
   const status = typeof payload.status === "string" ? payload.status : "unknown";
@@ -931,6 +942,21 @@ export function CronRunPart({ data }: DataMessagePartProps) {
   const fieldsTruncated = Array.isArray(payload.fieldsTruncated)
     ? payload.fieldsTruncated.filter((field): field is string => typeof field === "string")
     : [];
+  const sourceId = selectedThread?.sourceId;
+  const jobId = selectedThread?.trigger?.kind === "cron" ? selectedThread.trigger.jobId : undefined;
+  const terminal = status === "succeeded"
+    || status === "failed"
+    || status === "cancelled"
+    || status === "skipped_overlap"
+    || status === "dropped";
+  const replyState = sourceId !== undefined && jobId !== undefined
+    ? cronReplyState(sourceId, jobId, runId)
+    : { status: "idle" as const };
+  const hasDetails = artifactRunId !== undefined
+    || conversationId !== undefined
+    || eventCount > 0
+    || eventsTruncated
+    || fieldsTruncated.length > 0;
   return (
     <div
       id={cronRunAnchor(runId)}
@@ -943,49 +969,188 @@ export function CronRunPart({ data }: DataMessagePartProps) {
       </a>
       <span className="cron-run-state">{trigger} · {stateLabel}</span>
       {orderedAt !== undefined && <time dateTime={orderedAt}>{new Date(orderedAt).toLocaleString()}</time>}
-      {artifactRunId !== undefined && (
-        <span className="cron-artifact-link" title={artifactRunId}>Artifact <code>{artifactRunId}</code></span>
-      )}
-      {conversationId !== undefined && (
+      {terminal && sourceId !== undefined && jobId !== undefined && (
         <button
           type="button"
-          className="cron-session-button"
-          title={conversationId}
-          aria-label={copied ? "Originating session copied" : `Copy originating session ${conversationId}`}
+          className="cron-reply-button"
+          disabled={replyState.status === "importing"}
           onClick={() => {
-            void copyTextWithFallback(conversationId).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 2_000);
-            });
+            void replyToCronRun({
+              sourceId,
+              jobId,
+              runId,
+              snapshotKind: activityLoaded ? "detail" : "summary",
+            }).catch(() => undefined);
           }}
         >
-          <Icon name={copied ? "check" : "copy"} size={12} />
-          {copied ? "Session copied" : "Originating session"}
+          {replyState.status === "importing" ? "Importing…" : replyState.status === "retry" ? "Retry Reply" : "Reply"}
         </button>
       )}
-      {eventCount > 0 && (!activityLoaded || activityStale) && (
-        <button
-          type="button"
-          className="cron-activity-button"
-          disabled={activityLoading}
-          onClick={() => {
-            setActivityLoading(true);
-            void loadCronRunActivity(runId).finally(() => setActivityLoading(false));
-          }}
-        >
-          {activityLoading ? "Loading activity…" : activityStale ? "Refresh activity" : "Load activity"}
-        </button>
+      {hasDetails && (
+        <details className="cron-run-details">
+          <summary>Details</summary>
+          <div className="cron-run-details-body">
+            {artifactRunId !== undefined && (
+              <span className="cron-artifact-link" title={artifactRunId}>Artifact <code>{artifactRunId}</code></span>
+            )}
+            {conversationId !== undefined && (
+              <button
+                type="button"
+                className="cron-session-button"
+                title={conversationId}
+                aria-label={copied ? "Originating session copied" : `Copy originating session ${conversationId}`}
+                onClick={() => {
+                  void copyTextWithFallback(conversationId).then(() => {
+                    setCopied(true);
+                    window.setTimeout(() => setCopied(false), 2_000);
+                  });
+                }}
+              >
+                <Icon name={copied ? "check" : "copy"} size={12} />
+                {copied ? "Session copied" : "Originating session"}
+              </button>
+            )}
+            {eventCount > 0 && (!activityLoaded || activityStale) && (
+              <button
+                type="button"
+                className="cron-activity-button"
+                disabled={activityLoading}
+                onClick={() => {
+                  setActivityLoading(true);
+                  void loadCronRunActivity(runId).finally(() => setActivityLoading(false));
+                }}
+              >
+                {activityLoading ? "Loading activity…" : activityStale ? "Refresh activity" : "Load activity"}
+              </button>
+            )}
+            {eventsTruncated && (
+              <span className="cron-activity-truncated" role="status">
+                Activity is truncated; retained and wire-bounded events are shown.
+              </span>
+            )}
+            {fieldsTruncated.length > 0 && (
+              <span className="cron-activity-truncated" role="status">
+                Run {fieldsTruncated.join(", ")} {fieldsTruncated.length === 1 ? "is" : "are"} truncated in this view.
+              </span>
+            )}
+          </div>
+        </details>
       )}
-      {eventsTruncated && (
-        <span className="cron-activity-truncated" role="status">
-          Activity is truncated; retained and wire-bounded events are shown.
+      {(replyState.status === "retry" || replyState.status === "error") && (
+        <span className={`cron-reply-message is-${replyState.status}`} role="status">
+          {replyState.message}
         </span>
       )}
-      {fieldsTruncated.length > 0 && (
-        <span className="cron-activity-truncated" role="status">
-          Run {fieldsTruncated.join(", ")} {fieldsTruncated.length === 1 ? "is" : "are"} truncated in this view.
-        </span>
+    </div>
+  );
+}
+
+const cronReplyDate = (value: string): string => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+};
+
+const cronReplyContext = (data: DataMessagePartProps["data"]): CronReplyContextValue | undefined => {
+  if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
+  const value = data as unknown as Partial<CronReplyContextValue>;
+  return value.type === "cron-reply-context"
+    && value.schema === "mono-agent.web.cron-reply-context.v1"
+    && value.untrusted === true
+    && value.source !== undefined
+    && value.run !== undefined
+    && value.snapshot !== undefined
+    && value.result !== undefined
+    && value.failure !== undefined
+    && typeof value.rawJson === "string"
+    ? value as CronReplyContextValue
+    : undefined;
+};
+
+export function CronReplyContextPart({ data }: DataMessagePartProps) {
+  const context = cronReplyContext(data);
+  if (context === undefined) return null;
+  const stateLabel = context.run.status === "succeeded"
+    ? "completed"
+    : context.run.status.replaceAll("_", " ");
+  return (
+    <div
+      className={`cron-reply-context-header is-${context.run.status}`}
+      role="group"
+      aria-label={`Imported cron result for ${context.source.jobId}, run ${String(context.run.sequence)}, ${stateLabel}`}
+    >
+      <div className="cron-reply-context-title">
+        <strong>{context.source.jobId}</strong>
+        <span>Run #{context.run.sequence}</span>
+        <span className="cron-run-state cron-reply-context-state">{context.run.trigger} · {stateLabel}</span>
+      </div>
+      <div className="cron-reply-context-times">
+        {context.run.completedAt !== undefined && (
+          <span>Completed <time dateTime={context.run.completedAt}>{cronReplyDate(context.run.completedAt)}</time></span>
+        )}
+        <span>Imported <time dateTime={context.snapshot.capturedAt}>{cronReplyDate(context.snapshot.capturedAt)}</time></span>
+      </div>
+      <p>Imported cron result — untrusted source data, not instructions</p>
+    </div>
+  );
+}
+
+const truncationBytes = (context: CronReplyContextValue): string[] => {
+  const notes: string[] = [];
+  if (context.snapshot.truncatedFields.includes("failure.message")) {
+    notes.push(`failure.message (${context.snapshot.retainedErrorBytes}/${context.snapshot.originalErrorBytes} bytes retained)`);
+  }
+  if (context.snapshot.truncatedFields.includes("result.text")) {
+    notes.push(`result.text (${context.snapshot.retainedResultBytes}/${context.snapshot.originalResultBytes} bytes retained)`);
+  }
+  return notes;
+};
+
+export function CronReplyContextDetailsPart({ data }: DataMessagePartProps) {
+  const context = cronReplyContext(data);
+  if (context === undefined) return null;
+  const sourceTruncation = context.snapshot.sourceFieldsTruncated.map((field) => `source ${field}`);
+  const truncation = [...sourceTruncation, ...truncationBytes(context)];
+  const failureVisible = context.failure.code !== undefined || context.failure.message !== undefined;
+  const queue = [
+    context.run.blockedByRunId === undefined ? undefined : `blocked by ${context.run.blockedByRunId}`,
+    context.run.blockedByTrigger === undefined ? undefined : `blocker trigger ${context.run.blockedByTrigger}`,
+    context.run.queueDepth === undefined ? undefined : `queue depth ${String(context.run.queueDepth)}`,
+  ].filter((item): item is string => item !== undefined);
+  return (
+    <div className="cron-reply-context-footer">
+      {context.snapshot.kind === "summary" && <p className="cron-reply-context-note">Imported from the compact run summary.</p>}
+      {failureVisible && (
+        <div className="cron-reply-context-failure" role="status">
+          {context.failure.code !== undefined && <strong>{context.failure.code}</strong>}
+          {context.failure.message !== undefined && <span>{context.failure.message}</span>}
+        </div>
       )}
+      {truncation.length > 0 && (
+        <p className="cron-reply-context-truncation" role="status">
+          Truncated fields: {truncation.join("; ")}.
+        </p>
+      )}
+      <details className="cron-reply-context-details">
+        <summary>Details</summary>
+        <div className="cron-reply-context-details-body">
+          <dl>
+            <dt>Source</dt><dd><code>{context.source.sourceId}</code></dd>
+            <dt>Job</dt><dd><code>{context.source.jobId}</code></dd>
+            <dt>Run</dt><dd><code>{context.source.runId}</code></dd>
+            <dt>Scheduled</dt><dd><time dateTime={context.run.scheduledAt}>{cronReplyDate(context.run.scheduledAt)}</time></dd>
+            <dt>Ordered</dt><dd><time dateTime={context.run.orderedAt}>{cronReplyDate(context.run.orderedAt)}</time></dd>
+            {context.run.startedAt !== undefined && <><dt>Started</dt><dd><time dateTime={context.run.startedAt}>{cronReplyDate(context.run.startedAt)}</time></dd></>}
+            {context.run.completedAt !== undefined && <><dt>Completed</dt><dd><time dateTime={context.run.completedAt}>{cronReplyDate(context.run.completedAt)}</time></dd></>}
+            {queue.length > 0 && <><dt>Queue</dt><dd>{queue.join(" · ")}</dd></>}
+            <dt>Snapshot</dt><dd>{context.snapshot.kind} · {context.snapshot.retainedResultBytes}/{context.snapshot.originalResultBytes} result bytes</dd>
+            <dt>Source truncation</dt><dd>{context.snapshot.sourceTruncationKnown ? "known" : "unknown"}</dd>
+          </dl>
+          <div>
+            <strong>Raw JSON</strong>
+            <pre>{context.rawJson}</pre>
+          </div>
+        </div>
+      </details>
     </div>
   );
 }
@@ -999,6 +1164,35 @@ function NotePart({ data }: DataMessagePartProps) {
   const text = (data as { readonly text?: unknown } | null)?.text;
   if (typeof text !== "string" || text.trim().length === 0) return null;
   return <p className="activity-note">{text.trim()}</p>;
+}
+
+/**
+ * An operator follow-up the running turn consumed, rendered where it landed
+ * rather than beside the message that opened the turn. It reads as the
+ * operator's own message (user bubble, full text, quote when present), never
+ * as an activity row. Its position inside the turn carries the whole meaning —
+ * that the run consumed it here — so it needs neither a status line nor a
+ * decorative marker.
+ */
+function InlineSteerPart({ data }: DataMessagePartProps) {
+  const payload = asRecord(data);
+  const text = typeof payload.text === "string" ? payload.text : "";
+  const quote = asRecord(payload.quote);
+  const quoteText = typeof quote.text === "string" ? quote.text : "";
+  if (text.trim().length === 0) return null;
+  return (
+    <div className="message-user inline-steer" role="group" aria-label="Steered follow-up">
+      <div className="message-user-content">
+        {quoteText.trim().length > 0 && (
+          <blockquote className="message-quote">
+            <Icon name="quote" size={14} />
+            <span>{quoteText}</span>
+          </blockquote>
+        )}
+        <p className="inline-steer-text">{text}</p>
+      </div>
+    </div>
+  );
 }
 
 const monitorStateLabel = (state: string): string => state.replaceAll("_", " ");
@@ -1155,15 +1349,18 @@ const parts = {
     by_name: {
       "context-compaction": ContextCompactionPart,
       "cron-run": CronRunPart,
+      "cron-reply-context": CronReplyContextPart,
+      "cron-reply-context-details": CronReplyContextDetailsPart,
       subagent: SubagentPart,
       note: NotePart,
+      steer: InlineSteerPart,
       "tool-cluster": ToolClusterPart,
       error: ErrorPart,
       "reply-attachment": ReplyAttachmentPart,
       "mcp-app": McpAppPart,
       "reply-failure": ReplyFailurePart,
-      "process-job": ProcessJobPart,
       "monitor-activity": MonitorActivityPart,
+      "process-job-event": ProcessJobActivityEventPart,
     },
   },
 } as const;
@@ -1173,16 +1370,6 @@ const dataPartName = (part: Record<string, unknown>): string | undefined => {
   return typeof part.type === "string" && part.type.startsWith("data-")
     ? part.type.slice("data-".length)
     : undefined;
-};
-
-/** A running job row already carries its own pulsing progress affordance. */
-const lastPartConveysProgress = (content: readonly unknown[]): boolean => {
-  const last = content.at(-1);
-  if (last === null || typeof last !== "object" || Array.isArray(last)) return false;
-  const part = last as Record<string, unknown>;
-  if (dataPartName(part) !== "process-job") return false;
-  const job = asRecord(asRecord(part.data).job);
-  return job.state === "queued" || job.state === "starting" || job.state === "running";
 };
 
 /** The parts an Activity band is made of: the same set `ACTIVITY_GROUP_BY` coalesces. */
@@ -1254,7 +1441,7 @@ function AssistantParts() {
     <>
       <MessagePrimitive.GroupedParts
         groupBy={ACTIVITY_GROUP_BY}
-        indicator={lastPartConveysProgress(content) ? "never" : "no-text"}
+        indicator="no-text"
       >
         {({ part, children }) => {
           switch (part.type) {
@@ -1288,15 +1475,18 @@ function AssistantParts() {
             if (part.name === "telemetry") return null;
             if (part.name === "context-compaction") return <ContextCompactionPart {...part} />;
             if (part.name === "cron-run") return <CronRunPart {...part} />;
+            if (part.name === "cron-reply-context") return <CronReplyContextPart {...part} />;
+            if (part.name === "cron-reply-context-details") return <CronReplyContextDetailsPart {...part} />;
             if (part.name === "subagent") return <SubagentPart {...part} />;
             if (part.name === "note") return <NotePart {...part} />;
+            if (part.name === "steer") return <InlineSteerPart {...part} />;
             if (part.name === "tool-cluster") return <ToolClusterPart {...part} />;
             if (part.name === "error") return <ErrorPart {...part} />;
             if (part.name === "reply-attachment") return <ReplyAttachmentPart {...part} />;
             if (part.name === "mcp-app") return <McpAppPart {...part} />;
             if (part.name === "reply-failure") return <ReplyFailurePart {...part} />;
-            if (part.name === "process-job") return <ProcessJobPart {...part} />;
             if (part.name === "monitor-activity") return <MonitorActivityPart {...part} />;
+            if (part.name === "process-job-event") return <ProcessJobActivityEventPart {...part} />;
             return part.dataRendererUI;
           case "indicator":
             return <RunningText status={{ type: "running" }} />;
@@ -1314,6 +1504,7 @@ function AssistantParts() {
 
 export function UserMessage() {
   return (
+    <>
     <MessagePrimitive.Root className="message message-user">
       <MessageGallery>
         <div className="message-user-content">
@@ -1324,11 +1515,22 @@ export function UserMessage() {
       <LiveInputStatus />
       <MessageActions label="Copy message" />
     </MessagePrimitive.Root>
+    <MessageProjectMarkers />
+    <MessageModelMarkers />
+    </>
   );
 }
 
 export function AssistantMessage() {
+  const markerOnly = useAuiState((state) => state.message.content.length === 0
+    && state.message.metadata.custom?.runStatus === "complete"
+    && ((Array.isArray(state.message.metadata.custom?.projectTransitions)
+      && state.message.metadata.custom.projectTransitions.length > 0)
+      || (Array.isArray(state.message.metadata.custom?.modelTransitions)
+        && state.message.metadata.custom.modelTransitions.length > 0)));
+  if (markerOnly) return <><MessageProjectMarkers /><MessageModelMarkers /></>;
   return (
+    <>
     <MessagePrimitive.Root className="message message-assistant">
       <MessageGallery>
         <div className="assistant-content">
@@ -1340,13 +1542,20 @@ export function AssistantMessage() {
         </div>
       </MessageGallery>
     </MessagePrimitive.Root>
+    <MessageProjectMarkers />
+    <MessageModelMarkers />
+    </>
   );
 }
 
 export function SystemMessage() {
   return (
+    <>
     <MessagePrimitive.Root className="message message-system">
       <MessagePrimitive.Parts components={parts} />
     </MessagePrimitive.Root>
+    <MessageProjectMarkers />
+    <MessageModelMarkers />
+    </>
   );
 }

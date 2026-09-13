@@ -2,6 +2,7 @@ import type {
   AgentSummary,
   Bootstrap,
   MonitorProjection,
+  ProjectSummary,
   ThreadSummary,
   UploadLimits,
   WebAttachment,
@@ -59,6 +60,7 @@ export const thread = (
   sourceId,
   title: id,
   archivedAt: null,
+  projectId: null,
   createdAt: "2026-07-17T10:00:00.000Z",
   updatedAt: "2026-07-17T10:00:00.000Z",
   revision: 1,
@@ -66,6 +68,24 @@ export const thread = (
   runState: { status: "idle" },
   canSend: true,
   canUpload: true,
+  ...overrides,
+});
+
+export const project = (
+  id: string,
+  sourceId: string,
+  overrides: Partial<ProjectSummary> = {},
+): ProjectSummary => ({
+  id,
+  sourceId,
+  name: id,
+  context: "",
+  archivedAt: null,
+  createdAt: "2026-07-17T10:00:00.000Z",
+  updatedAt: "2026-07-17T10:00:00.000Z",
+  revision: 1,
+  conversationCount: 0,
+  runningCount: 0,
   ...overrides,
 });
 
@@ -163,6 +183,8 @@ export const bootstrap = (
   scope: {
     readonly threadsSourceId?: string | null;
     readonly threadsNextCursor?: string | null;
+    readonly projects?: Bootstrap["projects"];
+    readonly projectsSourceId?: string | null;
   } = {},
 ): Bootstrap => ({
   version: 1,
@@ -180,6 +202,10 @@ export const bootstrap = (
     ? threads[0]?.sourceId ?? agents[0]?.sourceId ?? null
     : scope.threadsSourceId,
   threadsNextCursor: scope.threadsNextCursor ?? null,
+  projects: scope.projects ?? [],
+  projectsSourceId: scope.projectsSourceId === undefined
+    ? threads[0]?.sourceId ?? agents[0]?.sourceId ?? null
+    : scope.projectsSourceId,
   currentThreadId,
   limits: uploadLimits,
 });

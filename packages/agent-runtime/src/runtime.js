@@ -36,7 +36,7 @@ import {
 } from "./ai/runtime/sessions.js";
 import { createToolContext, updateToolContext } from "./agent/tools/shared/tool-context.js";
 import { resolveRuntimeBrand } from "./runtime-brand.js";
-import { retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
+import { recoverDurableNativeSession, retireDurableNativeSession } from "./ai/providers/pi-native/session-lifecycle.js";
 import { instrumentLiveInputAppliedEvents } from "./ai/runtime/live-input-events.js";
 import { createToolLifecycleEventGate } from "./ai/tool-lifecycle.js";
 import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
@@ -50,9 +50,8 @@ import { createWebSearchRunState } from "./agent/tools/web-search-state.js";
  */
 
 // Host-integration callbacks bound onto every request. This list is the runtime
-// half of the `Pick<AgentRuntimeHostOptions, ...>` clause in the `RuntimeRequest`
-// typedef (ai/types.js) -- the two must stay identical, or hosts get keys the
-// declared request shape does not admit.
+// host-default half of `RuntimeRequest` in ai/types.js. Every entry must be
+// admitted either by RuntimeRunOptions itself or by its host-option Pick.
 const HOST_KEYS = [
   "resolveCustomPricing",
   "resolvePiApiKey",
@@ -163,7 +162,8 @@ export function createRuntime(host = {}) {
    * @param {*} request
    */
   const defaultSubagentRun = async (request) => self.run(request.systemPrompt, {
-    model: request.model,
+    // The tool merges call-time overrides into the definition; otherwise inherit.
+    model: request.definition?.model ?? request.model,
     // A child must never be less confined than its parent. The policy is a
     // per-run option, not a host key, so without forwarding it the child would
     // run with no sandbox at all — and its default tools include WebFetch and
@@ -185,7 +185,7 @@ export function createRuntime(host = {}) {
     // A profile that pins effort — declared or authored at call time — means it
     // on this path too; dropping it would silently run the child at the
     // parent's level while reporting the profile's.
-    ...(request.definition?.effort === undefined ? {} : { effort: request.definition.effort }),
+    effort: request.definition?.effort ?? request.effort,
     messages: [{ role: "user", content: request.prompt }],
     maxTurns: request.maxTurns,
     allowedTools: request.definition?.allowedTools,
@@ -220,6 +220,7 @@ export function createRuntime(host = {}) {
         // Observer delivery keeps the runtime's synchronous contract. Only the
         // client-facing lifecycle event waits for its serialized persistence.
         onObserve: (event) => hub.emit(event),
+        onLifecycleAdmitted: (event) => hub.recordToolLifecycle(event),
         onEvent: options.onEvent,
         abortSignal: options.abortSignal,
       });
@@ -274,6 +275,9 @@ export function createRuntime(host = {}) {
     },
     configureTools(next = {}) {
       updateToolContext(toolContext, pickPresent(next, TOOL_RUNTIME_KEYS));
+    },
+    async recoverSession(receipt, context) {
+      return recoverDurableNativeSession(receipt, context);
     },
     async syncSession(providerSessionId) {
       return syncProviderSession(providerSessionId);

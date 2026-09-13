@@ -156,7 +156,7 @@ describe("turn overrides", () => {
         liveInputStatus: "pending" as const,
       },
     };
-    const fetchMock = vi.fn().mockResolvedValue(Response.json(receipt, { status: 202 }));
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json(receipt, { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(api.liveInput("thread/one", "Steer this run")).resolves.toEqual(receipt);
@@ -167,6 +167,38 @@ describe("turn overrides", () => {
         body: JSON.stringify({ text: "Steer this run" }),
       }),
     );
+  });
+
+  it("posts and recovers one UUID-bearing submission through encoded routes", async () => {
+    const receipt = {
+      submissionId: "11111111-1111-4111-8111-111111111111",
+      threadId: "thread/one",
+      outcome: "turn" as const,
+    };
+    const fetchMock = vi.fn().mockImplementation(async () => Response.json(receipt, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.submit("thread/one", receipt.submissionId, {
+      text: "One send",
+      quote: { text: "Context", messageId: "message-1" },
+      attachmentIds: ["upload-1"],
+    })).resolves.toEqual(receipt);
+    await expect(api.submission("thread/one", receipt.submissionId)).resolves.toEqual(receipt);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/thread%2Fone/submissions");
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
+    expect(JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body))).toEqual({
+      submissionId: receipt.submissionId,
+      text: "One send",
+      quote: { text: "Context", messageId: "message-1" },
+      attachmentIds: ["upload-1"],
+    });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `/api/v1/threads/thread%2Fone/submissions/${receipt.submissionId}`,
+    );
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({
+      headers: { Accept: "application/json" },
+    });
   });
 });
 
@@ -274,6 +306,56 @@ describe("provider authentication", () => {
   });
 });
 
+describe("cron Reply API", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("posts the exact captured identity with an exact-origin operation body", async () => {
+    const receipt = { operationId: "one", messages: [] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(receipt, { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.cronReply("agent/one", "job/one", "run/one", {
+      operationId: "11111111-1111-4111-8111-111111111111",
+      snapshotKind: "detail",
+    })).resolves.toEqual(receipt);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/agents/agent%2Fone/cron/jobs/job%2Fone/runs/run%2Fone/reply-threads",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+        body: JSON.stringify({
+          operationId: "11111111-1111-4111-8111-111111111111",
+          snapshotKind: "detail",
+        }),
+      }),
+    );
+  });
+
+  it("retains a server-owned pending operation id from nested error details", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: {
+        code: "cron_reply_pending",
+        message: "A Reply is already pending.",
+        details: {
+          operationId: "77777777-7777-4777-8777-777777777777",
+          pendingSince: "2026-09-10T18:03:36.024Z",
+        },
+      },
+    }, { status: 409 })));
+
+    await expect(api.cronReply("agent", "job", "run", {
+      operationId: "88888888-8888-4888-8888-888888888888",
+      snapshotKind: "summary",
+    })).rejects.toMatchObject({
+      code: "cron_reply_pending",
+      details: {
+        operationId: "77777777-7777-4777-8777-777777777777",
+        pendingSince: "2026-09-10T18:03:36.024Z",
+      },
+    });
+  });
+});
+
 describe("process-job API", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -340,6 +422,42 @@ describe("cron activity API", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/runs/cron%3Adaily%2Fone",
     );
+  });
+
+  it("uses the existing redacted config and confirmed cron action routes", async () => {
+    const confirmation = {
+      kind: "confirmation_required" as const,
+      confirmation: {
+        token: "confirmation-token",
+        expiresAt: "2026-08-14T10:01:00.000Z",
+        message: "Confirm this action.",
+      },
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({
+        configView: { id: "cron", label: "Cron", status: "active", fields: [] },
+      }))
+      .mockResolvedValueOnce(Response.json(confirmation, { status: 428 }))
+      .mockResolvedValueOnce(Response.json(confirmation, { status: 428 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.cronConfigView("agent/one")).resolves.toMatchObject({ id: "cron" });
+    await expect(api.cronRunNow("agent/one", "daily:brief", "run-key"))
+      .resolves.toEqual(confirmation);
+    await expect(api.cronSetEnabled("agent/one", "daily:brief", false, "toggle-key"))
+      .resolves.toEqual(confirmation);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/agents/agent%2Fone/cron/config-view",
+      "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/run",
+      "/api/v1/agents/agent%2Fone/cron/jobs/daily%3Abrief/effective-enabled",
+    ]);
+    for (const [, init] of fetchMock.mock.calls.slice(1)) {
+      expect(init).toMatchObject({
+        method: "POST",
+        headers: expect.objectContaining({ "X-Mono-Agent-Web-Origin": window.location.origin }),
+      });
+    }
   });
 });
 
@@ -732,11 +850,34 @@ describe("listing requests", () => {
 
     await api.threads("agent/one", false);
     expect(fetchMock.mock.calls[0]?.[0])
-      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=false&limit=50");
+      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=false&limit=50&scope=chats");
 
     await api.threads("agent/one", true, "cursor-1", undefined, 200);
     expect(fetchMock.mock.calls[1]?.[0])
-      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=true&limit=200&before=cursor-1");
+      .toBe("/api/v1/threads?sourceId=agent%2Fone&archived=true&limit=200&scope=chats&before=cursor-1");
+
+    await api.searchThreads("agent/one", "daily report");
+    expect(fetchMock.mock.calls[2]?.[0])
+      .toBe("/api/v1/threads/search?sourceId=agent%2Fone&q=daily+report&scope=chats");
+  });
+
+  it("asks for what is running fleet-wide with no scope of its own", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(Response.json({
+        threads: [], total: 0, truncated: false, runningCounts: { "agent-one": 0 },
+      })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const controller = new AbortController();
+    const listing = await api.activeThreads(controller.signal);
+    // A FIXED route: no source id, no bucket, no cursor. A console that could
+    // parameterise this would walk it on every event, which is the cost the
+    // listing exists to avoid.
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/threads/active");
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(listing).toEqual({
+      threads: [], total: 0, truncated: false, runningCounts: { "agent-one": 0 },
+    });
   });
 
   it("sends a bootstrap scope only when one is asked for", async () => {
@@ -747,9 +888,14 @@ describe("listing requests", () => {
     await api.bootstrap();
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/bootstrap");
 
-    await api.bootstrap(undefined, { sourceId: "agent/one", archived: false, limit: 50 });
+    await api.bootstrap(undefined, {
+      sourceId: "agent/one",
+      archived: false,
+      limit: 50,
+      scope: "chats",
+    });
     expect(fetchMock.mock.calls[1]?.[0])
-      .toBe("/api/v1/bootstrap?sourceId=agent%2Fone&archived=false&limit=50");
+      .toBe("/api/v1/bootstrap?sourceId=agent%2Fone&archived=false&limit=50&scope=chats");
   });
 });
 

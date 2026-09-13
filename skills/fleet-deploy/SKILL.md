@@ -19,6 +19,27 @@ console untouched.
 - `~/a8c-agents` has its own package graph, lifecycle manager, and runbook. It
   is never part of an inferred mono-agent fleet deployment.
 
+## Instances that own their own runtime version
+
+Two instances are excluded from any fleet-wide restart, including one the user
+asked for as "all". Restarting them with the global CLI silently overrides a
+deliberate contract.
+
+- **Super Jetpacker** (`~/agents/super-jetpacker`, label
+  `com.mono-agent.super-jetpacker-7bc3c1d5`) pins its runtime in
+  `host-versions.json` and installs that exact version from npm into
+  `.host/runtime` via `./bin/bootstrap`. `./bin/mono-agent` refuses any
+  background lifecycle command whose installed version disagrees with the pin,
+  exiting 78. The global `mono-agent restart` never consults that guard, so a
+  fleet restart pushes it off its pin and its next bootstrap pulls it back —
+  observed oscillating for eighteen startups. To move its version: edit
+  `host-versions.json`, run `./bin/bootstrap --profile writer
+  --skip-provider-login --skip-start`, then `./bin/mono-agent restart`. Never
+  the global CLI.
+- **Custode** (`~/agents/paola-bot/vault`) keeps its Telegram token one level
+  above the sandbox and needs `--env-file ../.env` on every lifecycle command.
+  A bare restart mutes it silently while cron keeps recording success.
+
 Development still happens in worktrees. The live `main` checkout stays clean,
 and is advanced only to an already-reviewed commit when deployment is requested.
 

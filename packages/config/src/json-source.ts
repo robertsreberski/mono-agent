@@ -84,6 +84,7 @@ export type MonoAgentProviderJson = Omit<MonoAgentLocalProviderJson, "id">;
 
 type MonoAgentPiNativeProviderJson = {
   readonly transport?: PiTransport;
+  readonly promptCacheDiagnostics?: boolean;
   readonly piMaxRetries?: number;
   readonly maxRetryDelayMs?: number;
   readonly piSessionsRoot?: string;
@@ -161,6 +162,7 @@ export interface MonoAgentConfigJson extends SettingsJson {
     };
   };
   readonly subagents?: {
+    readonly models?: readonly (string | { readonly name?: string; readonly model: string })[];
     readonly enabled?: boolean;
     readonly maxConcurrent?: number;
     readonly maxPerTurn?: number;

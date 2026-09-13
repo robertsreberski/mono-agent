@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
+// Exercise the private tool-to-app seam without adding a public runtime export.
+// @ts-expect-error -- package-private JavaScript has no public declaration.
+import { createAgentTool } from "../../../agent-runtime/src/agent/tools/agent-tool.js";
+import { createMonoRuntime } from "@mono-agent/runtime-adapter";
 
 const harnessMock = vi.fn((options: Record<string, unknown>) => ({
   options,
@@ -8,6 +12,26 @@ const harnessMock = vi.fn((options: Record<string, unknown>) => ({
   dispose: vi.fn(async () => undefined),
 }));
 
+// The single-runtime app describes every parseable model as the Pi backend,
+// which supports skills. The skills guard below still has to fail closed for a
+// route that does not advertise them, so one canonical reference is described
+// as such here; an unparseable reference no longer reaches the guard because
+// the harness re-parses the pinned model when binding its session (#829).
+const NO_SKILLS_MODEL_REFERENCE = "opencode:glm-5.2";
+vi.mock("@mono-agent/runtime-adapter", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mono-agent/runtime-adapter")>();
+  return {
+    ...actual,
+    describeMonoRuntimeSupport: (model: Parameters<typeof actual.describeMonoRuntimeSupport>[0]) => {
+      const support = actual.describeMonoRuntimeSupport(model);
+      if (model.reference !== NO_SKILLS_MODEL_REFERENCE || support.backend === undefined) return support;
+      return {
+        ...support,
+        backend: { ...support.backend, capabilities: { ...support.backend.capabilities, supports_skills: false } },
+      };
+    },
+  };
+});
 vi.mock("@mono-agent/agent-harness", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mono-agent/agent-harness")>();
   return { ...actual, createAgentHarness: (options: unknown) => harnessMock(options as Record<string, unknown>) };
@@ -169,6 +193,48 @@ describe("configured subagents", () => {
       subagents: { depth: 1 },
     });
     expect(options.disallowedTools).toContain("Agent");
+  });
+
+  it("projects named and shorthand model choices", async () => {
+    const { subagents } = await buildSubagents(monoConfig({ enabled: true,
+      models: [{ name: "haiku", model: HAIKU }, { model: PRIMARY }],
+    }));
+    expect(subagents?.models).toEqual([
+      { name: "haiku", model: HAIKU, key: HAIKU.reference },
+      { name: PRIMARY.reference, model: PRIMARY, key: PRIMARY.reference },
+    ]);
+  });
+
+  it.each([
+    [undefined, undefined, HAIKU, "xhigh"],
+    [PRIMARY, "low", PRIMARY, "low"],
+    [PRIMARY, undefined, PRIMARY, "xhigh"],
+  ])("resolves the profile over the effective parent: %j/%s", async (pin, effort, expectedModel, expectedEffort) => {
+    const childRuntime = { run: vi.fn(async (_prompt: string, _options: Record<string, unknown>) => ({ text: "child", events: [] })) };
+    const runtimeForModel = vi.fn(() => childRuntime);
+    const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true }), { runtimeForModel });
+    const run = subagents?.run as (request: unknown) => Promise<unknown>;
+    await run({ systemPrompt: "s", prompt: "x", definition: { name: "helper", model: pin, effort },
+      model: HAIKU, effort: "xhigh", maxTurns: 5, depth: 1, abortSignal: new AbortController().signal, onEvent: () => {},
+    });
+    const selected = expectedModel === PRIMARY ? runtime : childRuntime;
+    expect(selected.run.mock.calls[0]?.[1]).toMatchObject({ model: expectedModel, effort: expectedEffort });
+    if (expectedModel === HAIKU) expect(runtimeForModel).toHaveBeenCalledWith(HAIKU);
+    else expect(runtimeForModel).not.toHaveBeenCalled();
+  });
+
+  it.each([{ name: "researcher" }, {}, { name: "authored", systemPrompt: "s" }])("routes an actual Agent override through runtimeForModel: %j", async (shape) => {
+    const childRuntime = { run: vi.fn(async (_prompt: string, _options: Record<string, unknown>) => ({ text: "child", events: [] })) };
+    const runtimeForModel = vi.fn(() => childRuntime);
+    const { runtime, subagents } = await buildSubagents(monoConfig({ enabled: true,
+      definitions: [{ ...RESEARCHER, model: PRIMARY, effort: "low" }],
+      models: [{ name: "haiku", model: HAIKU }],
+    }), { runtimeForModel });
+    const tool = createAgentTool(subagents as never, { model: PRIMARY, effort: "xhigh" });
+    await tool.execute("call", { ...shape, prompt: "x", model: "haiku", effort: "high" });
+    expect(runtimeForModel).toHaveBeenCalledWith(HAIKU);
+    expect(childRuntime.run.mock.calls[0]?.[1]).toMatchObject({ model: HAIKU, effort: "high" });
+    expect(runtime.run).not.toHaveBeenCalled();
   });
 
   it("routes a profile with its own model through runtimeForModel, not the shared router", async () => {
@@ -336,7 +402,7 @@ describe("subagent confinement and context inheritance", () => {
     // entry that lacks it is skipped — so threading skills onto a direct-OpenCode
     // child turns a working subagent into skipped_capability_mismatch. Do not
     // "simplify" this guard away.
-    const OPENCODE = { sdk: "opencode", provider: "opencode", model: "glm-5.2", reference: "opencode:opencode:glm-5.2" } as const;
+    const OPENCODE = { provider: "opencode", model: "glm-5.2", reference: NO_SKILLS_MODEL_REFERENCE } as const;
     const overrideRuntime = { run: vi.fn(async () => ({ text: "answer", events: [] })) };
     const { subagents } = await buildSubagents(
       monoConfig({ enabled: true, definitions: [{ ...RESEARCHER, model: OPENCODE }] }),

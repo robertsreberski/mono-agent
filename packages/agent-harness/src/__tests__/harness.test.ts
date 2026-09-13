@@ -20,9 +20,10 @@ import {
   AgentHarnessFailureError,
   createAgentHarness,
   createAgentResponder,
+  createDurableHistoryStore,
   createInMemoryHistoryStore,
 } from "../index.js";
-import type { ExternalRunSummary } from "../index.js";
+import type { ConversationHistoryStore, ExternalRunSummary, HistoryMessage } from "../index.js";
 
 type ExternalRunSummaryOmitsSystemPrompt =
   "systemPrompt" extends keyof ExternalRunSummary ? false : true;
@@ -118,6 +119,377 @@ function createFakeRuntime(run: (prompt: string, options: RuntimeRunOptions) => 
 }
 
 describe("AgentHarness", () => {
+  it("imports canonical context without invoking the runtime and enforces direct byte limits", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const historyStore = createDurableHistoryStore({ root: join(dir, "history") });
+    const harness = createAgentHarness({ identityPath, runtime: fake.runtime, model, cwd: dir, historyStore });
+
+    expect(harness.importContext).toBeTypeOf("function");
+    await expect(harness.importContext!("web:cron:job-1", {
+      text: "  summary with 東京  ",
+      idempotencyKey: " agent/source:job-1:run-1 ",
+    })).resolves.toEqual({ status: "appended" });
+    await expect(harness.importContext!("web:cron:job-1", {
+      text: "  summary with 東京  ",
+      idempotencyKey: " agent/source:job-1:run-1 ",
+    })).resolves.toEqual({ status: "duplicate" });
+    expect((await historyStore.load("web:cron:job-1"))[1]).toMatchObject({
+      content: "  summary with 東京  ",
+      idempotencyKey: " agent/source:job-1:run-1 ",
+    });
+    expect(fake.calls).toEqual([]);
+    await expect(harness.importContext!("c", { text: " \t\n", idempotencyKey: "k" }))
+      .rejects.toThrow("text must be a non-empty string");
+    await expect(harness.importContext!("c", { text: "x", idempotencyKey: " \t\n" }))
+      .rejects.toThrow("idempotencyKey must be a non-empty string");
+    await expect(harness.importContext!("x".repeat(4_097), { text: "x", idempotencyKey: "k" }))
+      .rejects.toThrow("conversationId must not exceed 4096 UTF-8 bytes");
+    await expect(harness.importContext!("c", { text: "x", idempotencyKey: "é".repeat(257) }))
+      .rejects.toThrow("idempotencyKey must not exceed 512 UTF-8 bytes");
+  });
+
+  it.each([
+    { label: "successful", rejectImport: false },
+    { label: "failed", rejectImport: true },
+  ])("drains a $label admitted context import before disposing session resources", async ({ rejectImport }) => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let history: readonly HistoryMessage[] = [];
+    let version = 0;
+    let releaseImport!: () => void;
+    const importReleased = new Promise<void>((resolve) => { releaseImport = resolve; });
+    let markImportPrepared!: () => void;
+    const importPrepared = new Promise<void>((resolve) => { markImportPrepared = resolve; });
+    const disposedSessions: string[] = [];
+    const store: ConversationHistoryStore = {
+      load: async () => history,
+      append: async (_conversationId, messages) => { history = [...history, ...messages]; },
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        async beginExclusiveTurn() {
+          const capturedVersion = `revision-${String(version)}`;
+          return {
+            history,
+            historyVersion: capturedVersion,
+            async prepareCommit(messages) {
+              const committedHistoryVersion = `revision-${String(version + 1)}`;
+              return {
+                append: {
+                  async commit() {
+                    history = [...history, ...messages];
+                    version += 1;
+                  },
+                  async abort() {},
+                },
+                committedHistoryVersion,
+              };
+            },
+            async abort() {},
+          };
+        },
+        async prepareImport() {
+          markImportPrepared();
+          await importReleased;
+          if (rejectImport) throw new Error("import preparation failed");
+          return {
+            result: { status: "appended" },
+            append: { commit: async () => undefined, abort: async () => undefined },
+          };
+        },
+      },
+    };
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run() { return { text: "seed", providerSessionId: "provider-session" }; },
+        async disposeSession(providerSessionId: string) {
+          disposedSessions.push(providerSessionId);
+          return true;
+        },
+      },
+      model,
+      historyStore: store,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    await harness.run({ conversationId: "c", userMessage: "seed", abortSignal: new AbortController().signal });
+
+    const importing = harness.importContext!("c", { text: "snapshot", idempotencyKey: "run:1" });
+    await importPrepared;
+    let disposeSettled = false;
+    const disposing = harness.dispose!().then(() => { disposeSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(disposeSettled).toBe(false);
+    expect(disposedSessions).toEqual([]);
+
+    releaseImport();
+    if (rejectImport) await expect(importing).rejects.toThrow("import preparation failed");
+    else await expect(importing).resolves.toEqual({ status: "appended" });
+    await expect(disposing).resolves.toBeUndefined();
+    expect(disposeSettled).toBe(true);
+    expect(disposedSessions).toEqual(["provider-session"]);
+  });
+
+  it("fails capability discovery closed for provider-ineligible and legacy stores", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "ok" }));
+    const durableWithoutRetirement = createDurableHistoryStore({ root: join(dir, "history") });
+    expect(createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: durableWithoutRetirement,
+      piSessionsRoot: join(dir, "pi-sessions"),
+    }).importContext).toBeUndefined();
+    expect(createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: createInMemoryHistoryStore(),
+    }).importContext).toBeUndefined();
+  });
+
+  it("does not run or fall back to an unlocked append when the advertised lease fails", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "must not run" }));
+    const append = vi.fn(async () => undefined);
+    const prepareAppend = vi.fn(async () => ({ commit: async () => undefined, abort: async () => undefined }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: {
+        load: async () => [],
+        append,
+        prepareAppend,
+        contextImport: {
+          version: 1,
+          maxTextBytes: 32_768,
+          providerState: "absent",
+          beginExclusiveTurn: async () => { throw new Error("lease unavailable"); },
+          prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+        },
+      },
+    });
+    const response = await harness.run({
+      conversationId: "c",
+      userMessage: "hello",
+      abortSignal: new AbortController().signal,
+    });
+    expect(response.failure).toBeDefined();
+    expect(fake.calls).toEqual([]);
+    expect(append).not.toHaveBeenCalled();
+    expect(prepareAppend).not.toHaveBeenCalled();
+  });
+
+  it("cold-replays imported context when a stale warm handle observes a reset/import version", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const historyRoot = join(dir, "history");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const calls: RuntimeRunOptions[] = [];
+    const retired: string[] = [];
+    const runtime = {
+      async run(_prompt: string, options: RuntimeRunOptions): Promise<RuntimeResult> {
+        calls.push(options);
+        return { text: `answer-${String(calls.length)}`, providerSessionId: "warm-provider-id" };
+      },
+      async disposeSession(id: string) { retired.push(id); return true; },
+    };
+    const storeA = createDurableHistoryStore({ root: historyRoot });
+    const harnessA = createAgentHarness({
+      identityPath,
+      runtime,
+      model,
+      historyStore: storeA,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    await harnessA.run({ conversationId: "c", userMessage: "first", abortSignal: new AbortController().signal });
+    expect(calls[0]?.sessionId).toBeUndefined();
+
+    const storeB = createDurableHistoryStore({ root: historyRoot });
+    await storeB.reset("c");
+    const imported = await storeB.contextImport!.prepareImport("c", {
+      text: "background result",
+      idempotencyKey: "agent/source:job:run-2",
+      timestamp: "2026-09-08T10:00:00.000Z",
+    });
+    await imported.append!.commit();
+
+    await harnessA.run({ conversationId: "c", userMessage: "second", abortSignal: new AbortController().signal });
+    expect(retired).toContain("warm-provider-id");
+    expect(calls[1]?.sessionId).toBeUndefined();
+    expect(calls[1]?.messages?.map((message) => String(message.content)).join("\n"))
+      .toContain("background result");
+    await harnessA.dispose?.();
+  });
+
+  it("keeps a warm provider session after a retained duplicate import retry", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "warm-provider-id" }));
+    const historyStore = createDurableHistoryStore({ root: join(dir, "history") });
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+    const request = { text: "background result", idempotencyKey: "agent/source:job:run-1" };
+
+    await expect(harness.importContext!("c", request)).resolves.toEqual({ status: "appended" });
+    await harness.run({ conversationId: "c", userMessage: "first", abortSignal: new AbortController().signal });
+    await expect(harness.importContext!("c", request)).resolves.toEqual({ status: "duplicate" });
+    await harness.run({ conversationId: "c", userMessage: "second", abortSignal: new AbortController().signal });
+
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[0]?.options.sessionId).toBeUndefined();
+    expect(fake.calls[1]?.options.sessionId).toBe("warm-provider-id");
+    await harness.dispose?.();
+  });
+
+  it("round-trips bounded opaque history versions from a custom capable store", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let history: readonly HistoryMessage[] = [];
+    let version = "revision-1";
+    const store: ConversationHistoryStore = {
+      load: async () => history,
+      append: async (_conversationId, messages) => { history = [...history, ...messages]; },
+      contextImport: {
+        version: 1,
+        maxTextBytes: 32_768,
+        providerState: "absent",
+        async beginExclusiveTurn() {
+          const capturedVersion = version;
+          return {
+            history,
+            historyVersion: capturedVersion,
+            async prepareCommit(messages) {
+              const committedHistoryVersion = capturedVersion === "revision-1" ? "revision-2" : "revision-3";
+              return {
+                append: {
+                  async commit() {
+                    history = [...history, ...messages];
+                    version = committedHistoryVersion;
+                  },
+                  async abort() {},
+                },
+                committedHistoryVersion,
+              };
+            },
+            async abort() {},
+          };
+        },
+        async prepareImport() {
+          return { result: { status: "conflict", reason: "conversation_not_empty" } };
+        },
+      },
+    };
+    const fake = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "custom-provider" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      historyStore: store,
+      session: { mode: "continuous", idleTimeoutMs: 60_000, supportsResume: true },
+    });
+
+    await expect(harness.run({ conversationId: "c", userMessage: "first", abortSignal: new AbortController().signal }))
+      .resolves.toMatchObject({ text: "answer" });
+    await expect(harness.run({ conversationId: "c", userMessage: "second", abortSignal: new AbortController().signal }))
+      .resolves.toMatchObject({ text: "answer" });
+    expect(fake.calls[1]?.options.sessionId).toBe("custom-provider");
+    expect(version).toBe("revision-3");
+    await harness.dispose?.();
+  });
+
+  it("rejects oversized custom history versions before trusting a lease or staged append", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const leaseAbort = vi.fn(async () => undefined);
+    const leaseRuntime = createFakeRuntime(async () => ({ text: "must not run" }));
+    const leaseHarness = createAgentHarness({
+      identityPath,
+      runtime: leaseRuntime.runtime,
+      model,
+      historyStore: {
+        load: async () => [],
+        append: async () => undefined,
+        contextImport: {
+          version: 1,
+          maxTextBytes: 32_768,
+          providerState: "absent",
+          beginExclusiveTurn: async () => ({
+            history: [],
+            historyVersion: "x".repeat(513),
+            prepareCommit: async () => { throw new Error("must not prepare"); },
+            abort: leaseAbort,
+          }),
+          prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+        },
+      },
+    });
+    const leaseResponse = await leaseHarness.run({
+      conversationId: "lease",
+      userMessage: "hello",
+      abortSignal: new AbortController().signal,
+    });
+    expect(leaseResponse.failure?.message).toContain("historyVersion must not exceed 512 UTF-8 bytes");
+    expect(leaseRuntime.calls).toEqual([]);
+    expect(leaseAbort).toHaveBeenCalledOnce();
+
+    const appendAbort = vi.fn(async () => undefined);
+    const appendRuntime = createFakeRuntime(async () => ({ text: "answer", providerSessionId: "provider" }));
+    const appendHarness = createAgentHarness({
+      identityPath,
+      runtime: appendRuntime.runtime,
+      model,
+      historyStore: {
+        load: async () => [],
+        append: async () => undefined,
+        contextImport: {
+          version: 1,
+          maxTextBytes: 32_768,
+          providerState: "absent",
+          beginExclusiveTurn: async () => ({
+            history: [],
+            historyVersion: "revision-1",
+            prepareCommit: async () => ({
+              append: { commit: async () => undefined, abort: appendAbort },
+              committedHistoryVersion: "é".repeat(257),
+            }),
+            abort: async () => undefined,
+          }),
+          prepareImport: async () => ({ result: { status: "conflict", reason: "conversation_not_empty" } }),
+        },
+      },
+    });
+    const appendResponse = await appendHarness.run({
+      conversationId: "append",
+      userMessage: "hello",
+      abortSignal: new AbortController().signal,
+    });
+    expect(appendResponse.failure?.message).toContain("historyVersion must not exceed 512 UTF-8 bytes");
+    expect(appendRuntime.calls).toHaveLength(1);
+    expect(appendAbort).toHaveBeenCalledOnce();
+    await leaseHarness.dispose?.();
+    await appendHarness.dispose?.();
+  });
+
   it("feeds live follow-ups into the active runtime and commits them into durable history", async () => {
     const dir = await tempDir();
     const identityPath = join(dir, "IDENTITY.md");
@@ -144,12 +516,16 @@ describe("AgentHarness", () => {
       historyStore,
       createRunId: () => "run-live",
     });
+    const ownership: Array<{ status: string; runId?: string; reason?: string }> = [];
+    expect(harness.liveInputOwnership).toEqual({ version: 1 });
     const running = harness.run({
       conversationId: "telegram:42",
       userMessage: "Initial request",
       abortSignal: new AbortController().signal,
+      onLiveInputOwnership: (event) => ownership.push(event),
     });
     await started;
+    expect(ownership).toEqual([{ status: "ready", runId: "run-live" }]);
 
     const offered = harness.offerLiveInput?.({
       conversationId: "telegram:42",
@@ -163,11 +539,171 @@ describe("AgentHarness", () => {
       await expect(offered.settled).resolves.toEqual({ status: "applied", runId: "run-live" });
     }
     expect(seen).toEqual(["Use the new constraint"]);
+    expect(ownership).toEqual([
+      { status: "ready", runId: "run-live" },
+      { status: "closed", reason: "closed" },
+    ]);
     expect(await historyStore.load("telegram:42")).toMatchObject([
       { role: "user", content: "Initial request", runId: "run-live" },
       { role: "user", content: "Use the new constraint", timestamp: "2026-07-21T09:00:00.000Z", runId: "run-live" },
       { role: "assistant", content: "Updated answer", runId: "run-live" },
     ]);
+  });
+
+  it("revokes mailbox ownership and fails the request when the host observer rejects readiness", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    const artifactDir = join(dir, "artifacts");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let runtimeCalls = 0;
+    const observerError = new Error("ownership observer failed");
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          return { text: "must not run" };
+        },
+      },
+      model,
+      cwd: dir,
+      createRunId: () => "run-observer-failure",
+      recorderFactory: (input) => createJsonlRunRecorder({ ...input, artifactDir }),
+    });
+    const ownership: string[] = [];
+
+    const running = harness.run({
+      conversationId: "web:observer-failure",
+      userMessage: "Initial request",
+      abortSignal: new AbortController().signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "ready") throw observerError;
+      },
+    });
+    await expect(running).rejects.toBe(observerError);
+    expect(runtimeCalls).toBe(0);
+    expect(ownership).toEqual(["ready", "closed"]);
+    expect(harness.offerLiveInput?.({
+      conversationId: "web:observer-failure",
+      id: "late-input",
+      text: "Do not accept",
+      receivedAt: "2026-07-21T09:00:00.000Z",
+    })).toEqual({ status: "unavailable", reason: "inactive" });
+    const persisted = JSON.parse(await readFile(join(artifactDir, "run-observer-failure.summary.json"), "utf8")) as RunSummary;
+    expect(persisted).toMatchObject({
+      runId: "run-observer-failure",
+      conversationId: "web:observer-failure",
+      status: "failed",
+      failureKind: "Error",
+      diagnostics: { error: { message: observerError.message } },
+    });
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
+  it("preserves an already-aborted outcome when the terminal ownership observer throws", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    let runtimeCalls = 0;
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          runtimeCalls += 1;
+          return { text: "must not run" };
+        },
+      },
+      model,
+      cwd: dir,
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("cancel before admission"));
+    const ownership: string[] = [];
+
+    const response = await harness.run({
+      conversationId: "web:cancelled-observer",
+      userMessage: "Do not start",
+      abortSignal: controller.signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    expect(response.failure).toMatchObject({ kind: "cancelled" });
+    expect(runtimeCalls).toBe(0);
+    expect(ownership).toEqual(["closed"]);
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
+  it("runs an ownership-ineligible turn when its terminal observer throws", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const fake = createFakeRuntime(async () => ({ text: "scheduled result" }));
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: fake.runtime,
+      model,
+      cwd: dir,
+      session: {
+        mode: "continuous",
+        idleTimeoutMs: 60_000,
+        supportsResume: false,
+        isolateProactive: true,
+      },
+    });
+    const ownership: Array<{ status: string; reason?: string }> = [];
+
+    const response = await harness.run({
+      conversationId: "cron:ownership-ineligible",
+      userMessage: "Run the schedule",
+      abortSignal: new AbortController().signal,
+      metadata: { cron: { jobId: "ownership-ineligible" } },
+      onLiveInputOwnership(event) {
+        ownership.push(event);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    expect(response).toMatchObject({ text: "scheduled result" });
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]?.options.liveInput).toBeUndefined();
+    expect(ownership).toEqual([{ status: "closed", reason: "unsupported" }]);
+    await expect(harness.dispose!()).resolves.toBeUndefined();
+  });
+
+  it("releases mailbox ownership when the host observer throws on terminal closure", async () => {
+    const dir = await tempDir();
+    const identityPath = join(dir, "IDENTITY.md");
+    await writeFile(identityPath, "You are Mono.", "utf8");
+    const runIds = ["run-terminal-one", "run-terminal-two"];
+    const ownership: string[] = [];
+    const harness = createAgentHarness({
+      identityPath,
+      runtime: {
+        async run(): Promise<RuntimeResult> {
+          return { text: "completed" };
+        },
+      },
+      model,
+      cwd: dir,
+      createRunId: () => runIds.shift() ?? "unexpected-run",
+    });
+    const request = () => harness.run({
+      conversationId: "web:terminal-observer",
+      userMessage: "Complete this run",
+      abortSignal: new AbortController().signal,
+      onLiveInputOwnership(event) {
+        ownership.push(event.status);
+        if (event.status === "closed") throw new Error("terminal observer failed");
+      },
+    });
+
+    await expect(request()).resolves.toMatchObject({ text: "completed" });
+    await expect(request()).resolves.toMatchObject({ text: "completed" });
+    expect(ownership).toEqual(["ready", "closed", "ready", "closed"]);
   });
 
   it("keeps a concurrent non-owner abort or failure from removing an isolated interactive mailbox", async () => {
@@ -403,7 +939,7 @@ describe("AgentHarness", () => {
         expect(ownerResponse.failure).toMatchObject(
           outcome === "cancel" ? { kind: "cancelled" } : { kind: "Error" },
         );
-        await expect(ownerOffer.settled).resolves.toEqual({ status: "requeue", reason: "failed" });
+        await expect(ownerOffer.settled).resolves.toEqual({ status: "uncertain", reason: "delivery_uncertain" });
         expect(harness.offerLiveInput?.({
           conversationId,
           targetRunId: ownerRunId,

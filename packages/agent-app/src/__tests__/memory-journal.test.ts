@@ -97,6 +97,12 @@ function structured(result: Awaited<ReturnType<Client["callTool"]>>): Record<str
   return result.structuredContent as Record<string, any>;
 }
 
+function textBlocks(result: Awaited<ReturnType<Client["callTool"]>>): string[] {
+  return (result.content as Array<{ type: string; text?: string }>)
+    .filter((block) => block.type === "text")
+    .map((block) => block.text ?? "");
+}
+
 function cursorWithOffset(cursor: string, offset: number): string {
   const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Record<string, unknown>;
   return Buffer.from(JSON.stringify({ ...decoded, offset }), "utf8").toString("base64url");
@@ -191,12 +197,24 @@ describe("MemoryJournal MCP contract", () => {
         },
       });
       const nextCursor = structured(first).page.nextCursor as string;
+      // The model reads only text content: the exact continuation call and
+      // the snapshot coverage must be visible there, not just in structuredContent.
+      const firstNavigation = textBlocks(first)[0]!;
+      expect(firstNavigation).toContain("MemoryJournal navigation");
+      expect(firstNavigation).toContain(`Exact arguments: ${JSON.stringify({ cursor: nextCursor })}`);
+      expect(firstNavigation).toMatch(/returned 2 of 3 snapshot entries; more pages remain/u);
+      expect(firstNavigation).toMatch(/2026-09-01 through 2026-09-07 \(Europe\/Amsterdam\)/u);
+      expect(firstNavigation).toContain("The requested range was fully scanned.");
       const second = await connection.client.callTool({
         name: MEMORY_JOURNAL_TOOL_NAME,
         arguments: { cursor: nextCursor },
       });
       expect(structured(second).entries.map((entry: { recordRef: string }) => entry.recordRef)).toEqual(["c"]);
       expect(structured(second).page.nextCursor).toBeUndefined();
+      const secondNavigation = textBlocks(second)[0]!;
+      expect(secondNavigation).toMatch(/returned 1 of 3 snapshot entries; this is the last page/u);
+      expect(secondNavigation).toContain("No follow-up MemoryJournal call is available");
+      expect(secondNavigation).not.toContain("Exact arguments");
     } finally {
       await connection.close();
     }
@@ -220,6 +238,9 @@ describe("MemoryJournal MCP contract", () => {
         coverage: { rangeScanComplete: false, truncatedBy: ["entries"] },
       });
       expect(JSON.stringify(result)).toMatch(/narrower date range/iu);
+      const navigation = textBlocks(result)[0]!;
+      expect(navigation).toMatch(/NOT fully scanned \(truncated by entries; last included entry only at 2026-09-01T10:00:00\.000Z\)/u);
+      expect(navigation).toContain("No follow-up MemoryJournal call is available");
     } finally {
       await truncated.close();
     }

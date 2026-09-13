@@ -435,6 +435,23 @@ describe("readMessageDelta", () => {
     expect(setOp(null)).toBeUndefined();
   });
 
+  it("reads an inline-steer marker and refuses one without operator text", () => {
+    const setOp = (part: unknown) => readMessageDelta({ ...wire, ops: [{ op: "set", index: 0, part }] });
+
+    expect(setOp({
+      type: "steer",
+      inputId: "input-1",
+      messageId: "user-1",
+      text: "Use the API instead",
+      receivedAt: "2026-09-12T10:00:01.000Z",
+      quote: { text: "the sync approach", messageId: "assistant-source" },
+    })).toBeDefined();
+    expect(setOp({ type: "steer", inputId: "input-1", messageId: "user-1", text: "   " }))
+      .toBeUndefined();
+    expect(setOp({ type: "steer", messageId: "user-1", text: "Use the API instead" }))
+      .toBeUndefined();
+  });
+
   it("refuses an op whose own shape is wrong", () => {
     expect(readMessageDelta({ ...wire, ops: [{ op: "truncate" }] })).toBeUndefined();
     expect(readMessageDelta({ ...wire, ops: [{ op: "append", index: 0 }] })).toBeUndefined();
@@ -584,6 +601,42 @@ describe("createThreadCache", () => {
     expect(part.result).toBe("HEAD AND THE TAIL");
     expect(part.executionMs).toBe(12);
     expect(part.resultTruncated).toBeUndefined();
+  });
+
+  it("retains an opaque process-job receipt through delta, pagination, snapshot, and thread switches", () => {
+    const receipt = {
+      schema: "mono-agent.process-job-start-receipt.v1",
+      jobId: "job-1",
+      tool: "Exec",
+      state: "running",
+      startedAt: "2026-09-08T10:00:00.000Z",
+    } as const;
+    const launch: MessagePart = {
+      type: "tool-call",
+      toolCallId: "launch-1",
+      toolName: "Exec",
+      structuredResult: receipt,
+      status: "complete",
+    };
+    const cache = createThreadCache();
+    cache.upsertFull(detail([message("origin", { seq: 1, parts: [launch] })], "older"));
+    expect(cache.applyDelta("alpha-thread", delta({
+      messageId: "origin",
+      ops: [{ op: "set", index: 0, part: { ...launch, executionMs: 4 } }],
+    }))).toBe("applied");
+    cache.prependOlder("alpha-thread", { messages: [message("older")], nextCursor: undefined });
+    cache.upsertFull({
+      thread: thread("beta-thread", "alpha"),
+      messages: [message("beta", { threadId: "beta-thread" })],
+    });
+    expect(cache.get("beta-thread")?.messages[0]?.parts).not.toContainEqual(expect.objectContaining({ structuredResult: receipt }));
+    expect(cache.get("alpha-thread")?.messages.find(({ id }) => id === "origin")?.parts[0])
+      .toMatchObject({ structuredResult: receipt, executionMs: 4 });
+
+    const restored = createThreadCache();
+    for (const entry of cache.snapshot()) restored.restore(entry);
+    expect(restored.get("alpha-thread")?.messages.find(({ id }) => id === "origin")?.parts[0])
+      .toMatchObject({ structuredResult: receipt });
   });
 
   it("hands a rewritten body back to the server rather than keeping a stale repair", () => {

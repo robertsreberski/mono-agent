@@ -22,8 +22,10 @@ import {
   resetComposerDraft,
   writeComposerDraft,
 } from "./composer-draft";
+import { resetCronReplyRecoveryMemory } from "./cron-reply-recovery";
 import { resetServerClock, serverNow } from "./server-clock";
 import {
+  ACTIVE_THREADS_REFRESH_INTERVAL_MS,
   CATALOG_TTL_MS,
   ConsoleStoreProvider,
   LEAN_DELTA_BATCH_MS,
@@ -45,7 +47,7 @@ import {
 } from "./console-store";
 import type { RequestLanding } from "./console-store";
 import { canSendInConsole } from "./capabilities";
-import { agent, bootstrap, processJob, thread, uploadLimits } from "./test/fixtures";
+import { agent, bootstrap, processJob, project, thread, uploadLimits } from "./test/fixtures";
 import type { ThreadCacheEntry } from "./thread-cache";
 import {
   acquireReplyImageBlob,
@@ -63,6 +65,7 @@ import type {
   MessageDelta,
   MessagePart,
   ThreadDetail,
+  ThreadPage,
   ThreadSummary,
   WebEvent,
   WebMessage,
@@ -70,11 +73,11 @@ import type {
 import { WebRuntimeProvider } from "./runtime";
 import { threadPresentation } from "./thread-presentation";
 import { NotificationsProvider } from "./notifications";
-import { AgentRail } from "./components/AgentRail";
 import { Chat } from "./components/Chat";
 import { Composer } from "./components/Composer";
 import { AssistantMessage, SystemMessage, UserMessage } from "./components/Messages";
-import { ThreadSidebar } from "./components/ThreadSidebar";
+import { ProcessJobStack } from "./components/ProcessJobStack";
+import { Dashboard } from "./components/dashboard/Dashboard";
 
 // `importOriginal` so `ApiError` stays the REAL class: the store branches on
 // `instanceof ApiError` and on its status to tell a server that refused a
@@ -84,6 +87,7 @@ vi.mock("./api", async (importOriginal) => ({
   ...await importOriginal<typeof import("./api")>(),
   api: {
     bootstrap: vi.fn(),
+    activeThreads: vi.fn(),
     thread: vi.fn(),
     threads: vi.fn(),
     messages: vi.fn(),
@@ -100,11 +104,19 @@ vi.mock("./api", async (importOriginal) => ({
     cronOverview: vi.fn(),
     cronRuns: vi.fn(),
     cronRun: vi.fn(),
+    cronReply: vi.fn(),
     toolCallPart: vi.fn(),
     message: vi.fn(),
     threadIfChanged: vi.fn(),
     liveInput: vi.fn(),
+    submit: vi.fn(),
+    submission: vi.fn(),
     threadJob: vi.fn(),
+    projects: vi.fn(),
+    createProject: vi.fn(),
+    patchProject: vi.fn(),
+    deleteProject: vi.fn(),
+    projectThreads: vi.fn(),
   },
 }));
 
@@ -277,7 +289,21 @@ describe("ConsoleStoreProvider integration", () => {
     // Reset both; every case installs what it needs.
     vi.mocked(api.thread).mockReset();
     vi.mocked(api.threadIfChanged).mockReset();
+    vi.mocked(api.submit).mockReset();
+    vi.mocked(api.submission).mockReset();
+    vi.mocked(api.cronOverview).mockReset().mockRejectedValue(
+      new ApiError(
+        "This agent does not expose first-class cron operator state.",
+        404,
+        "cron_unavailable",
+      ),
+    );
+    vi.mocked(api.cronRuns).mockReset();
+    vi.mocked(api.cronRun).mockReset();
+    vi.mocked(api.cronReply).mockReset();
     localStorage.clear();
+    sessionStorage.clear();
+    resetCronReplyRecoveryMemory();
     window.history.replaceState(null, "", "/");
     FakeEventSource.latest = undefined;
     FakeEventSource.instances = [];
@@ -288,10 +314,17 @@ describe("ConsoleStoreProvider integration", () => {
         agent("beta", { label: "Beta" }),
       ], []),
     );
+    // Every render reads the fleet listing, so every case needs an answer for
+    // it. A case that is ABOUT the listing installs its own.
+    vi.mocked(api.activeThreads).mockReset().mockResolvedValue({
+      threads: [], total: 0, truncated: false, runningCounts: {},
+    });
     vi.mocked(api.agentSkills).mockResolvedValue({ status: "unsupported", items: [] });
     vi.mocked(api.threads).mockResolvedValue({ threads: [] });
     vi.mocked(api.messages).mockResolvedValue({ messages: [] });
     vi.mocked(api.cronRuns).mockResolvedValue({ runs: [] });
+    vi.mocked(api.projects).mockReset().mockResolvedValue([]);
+    vi.mocked(api.projectThreads).mockReset().mockResolvedValue({ threads: [] });
   });
 
   afterEach(() => {
@@ -311,6 +344,25 @@ describe("ConsoleStoreProvider integration", () => {
     const drift = Date.now() - serverNow();
     expect(drift).toBeGreaterThanOrEqual(3_000);
     expect(drift).toBeLessThan(3_500);
+  });
+
+  it("recovers a persisted submission reference with GET only and clears it after a known receipt", async () => {
+    const submissionId = "11111111-1111-4111-8111-111111111111";
+    sessionStorage.setItem("mono-agent.web.pending-submissions", JSON.stringify([{
+      threadId: "thread-one",
+      submissionId,
+    }]));
+    vi.mocked(api.submission).mockResolvedValue({
+      submissionId,
+      threadId: "thread-one",
+      outcome: "rejected",
+      reason: "active_attachments_unsupported",
+    });
+
+    await renderStore();
+    await waitFor(() => expect(api.submission).toHaveBeenCalledWith("thread-one", submissionId));
+    expect(api.submit).not.toHaveBeenCalled();
+    await waitFor(() => expect(sessionStorage.getItem("mono-agent.web.pending-submissions")).toBeNull());
   });
 
   it("keeps the real console shell mounted while switching agents and conversations", async () => {
@@ -416,9 +468,8 @@ describe("ConsoleStoreProvider integration", () => {
             <NotificationsProvider>
               <WebRuntimeProvider>
                 <div className="app-shell">
-                  <AgentRail expanded />
-                  <ThreadSidebar />
-                  <Chat onOpenAgents={() => {}} onOpenThreads={() => {}} />
+                  <Dashboard />
+                  <Chat onBack={() => {}} />
                 </div>
               </WebRuntimeProvider>
             </NotificationsProvider>
@@ -443,7 +494,7 @@ describe("ConsoleStoreProvider integration", () => {
         (value) => String(value).includes("useClientLookup"),
       )).toBe(false);
       expect(screen.getByRole("navigation", { name: "Agents" })).toBeInTheDocument();
-      expect(screen.getByRole("complementary", { name: "Conversations" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Recent" })).toBeInTheDocument();
       expect(screen.getByRole("main")).toBeInTheDocument();
       expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
     } finally {
@@ -453,6 +504,278 @@ describe("ConsoleStoreProvider integration", () => {
       if (scrollToDescriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
       else Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
     }
+  });
+
+  it("keeps unsent composer text when the operator switches conversations in the real shell", async () => {
+    const alphaAgent = agent("alpha", { label: "Alpha" });
+    const first = thread("alpha-first", "alpha", { title: "Alpha first", messageCount: 1 });
+    const second = thread("alpha-second", "alpha", { title: "Alpha second", messageCount: 1 });
+    const detail = (summary: ThreadSummary): ThreadDetail => ({
+      thread: summary,
+      messages: [{
+        id: `${summary.id}-assistant-1`,
+        threadId: summary.id,
+        role: "assistant",
+        parts: [{ type: "text", text: `${summary.title} answer` }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:00.000Z",
+        status: "complete",
+      }],
+    });
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: first.id }));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [alphaAgent],
+      [first, second],
+      first.id,
+      { threadsSourceId: "alpha" },
+    ));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [first, second] });
+    vi.mocked(api.thread).mockImplementation(async (threadId) => {
+      if (threadId === first.id) return detail(first);
+      if (threadId === second.id) return detail(second);
+      throw new Error(`Unexpected detail read: ${threadId}`);
+    });
+    vi.stubGlobal("Notification", {
+      permission: "default",
+      requestPermission: vi.fn().mockResolvedValue("default"),
+    });
+    const scrollToDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollTo");
+    Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
+
+    try {
+      render(
+        <ConsoleStoreProvider>
+          <NotificationsProvider>
+            <WebRuntimeProvider>
+              <div className="app-shell">
+                <Dashboard />
+                <Chat onBack={() => {}} />
+              </div>
+            </WebRuntimeProvider>
+          </NotificationsProvider>
+        </ConsoleStoreProvider>,
+      );
+
+      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      const input = () => screen.getByRole("combobox", { name: "Message" }) as HTMLTextAreaElement;
+      fireEvent.change(input(), { target: { value: "unfinished thought" } });
+      await waitFor(() => expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought"));
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Alpha second" }));
+      expect(await screen.findByText("Alpha second answer")).toBeInTheDocument();
+      await waitFor(() => expect(input().value).toBe(""));
+      // The other conversation's composer must not have inherited the text, and
+      // the draft must survive being switched away from.
+      expect(readComposerDraft("alpha", second.id)).toBe("");
+      expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
+
+      fireEvent.click(screen.getByRole("button", { name: "Open Alpha first" }));
+      expect(await screen.findByText("Alpha first answer")).toBeInTheDocument();
+      await waitFor(() => expect(input().value).toBe("unfinished thought"));
+      expect(readComposerDraft("alpha", first.id)).toBe("unfinished thought");
+    } finally {
+      cleanupDom();
+      if (scrollToDescriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
+      else Object.defineProperty(HTMLElement.prototype, "scrollTo", scrollToDescriptor);
+    }
+  });
+
+  it("publishes an owned pending create immediately and reconciles the server identity", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const prior = thread("prior", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" })],
+      [prior],
+      prior.id,
+    ));
+    vi.mocked(api.thread).mockResolvedValue(detail(prior, "prior transcript"));
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(prior.id));
+
+    const creating = store.current.createThread();
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    expect(store.current.selectionLoading).toBe(true);
+    expect(store.current.selectedThreadId).toBe(prior.id);
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    const created = thread("created", "alpha");
+    await act(async () => {
+      resolveCreate(created);
+      await creating;
+    });
+
+    expect(store.current.creatingThread).toBe(false);
+    expect(store.current.selectedThreadId).toBe(created.id);
+    expect(store.current.detail).toMatchObject({ thread: { id: created.id }, messages: [] });
+  });
+
+  it("coalesces a second create while the first still owns the current selection", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    const store = await renderStore();
+
+    const first = store.current.createThread();
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    await expect(store.current.createThread()).rejects.toThrow(/finish creating/iu);
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveCreate(thread("created", "alpha"));
+      await first;
+    });
+  });
+
+  it("rolls a failed create back to the prior selection and reports the action error", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const prior = thread("prior", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" })],
+      [prior],
+      prior.id,
+    ));
+    vi.mocked(api.thread).mockResolvedValue(detail(prior, "prior transcript"));
+    let rejectCreate!: (reason: Error) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((_resolve, reject) => {
+      rejectCreate = reject;
+    }));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(prior.id));
+
+    const creating = store.current.createThread();
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    await act(async () => {
+      rejectCreate(new Error("create unavailable"));
+      await expect(creating).rejects.toThrow("create unavailable");
+    });
+
+    expect(store.current.creatingThread).toBe(false);
+    expect(store.current.selectedThreadId).toBe(prior.id);
+    expect(store.current.detail?.thread.id).toBe(prior.id);
+    expect(store.current.actionError).toBe("create unavailable");
+  });
+
+  it("times out a pending create and restores the prior selection", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const prior = thread("prior", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+      [agent("alpha", { label: "Alpha" })],
+      [prior],
+      prior.id,
+    ));
+    vi.mocked(api.thread).mockResolvedValue(detail(prior, "prior transcript"));
+    vi.mocked(api.createThread).mockImplementation(() => new Promise<never>(() => undefined));
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(prior.id));
+
+    vi.useFakeTimers();
+    try {
+      const creating = store.current.createThread();
+      const timedOut = expect(creating).rejects.toThrow(/timed out/iu);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(store.current.creatingThread).toBe(true);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(THREAD_WRITE_TIMEOUT_MS);
+        await timedOut;
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(store.current.creatingThread).toBe(false);
+    expect(store.current.selectedThreadId).toBe(prior.id);
+    expect(store.current.actionError).toMatch(/timed out/iu);
+  });
+
+  it("shows pending creation before an implicit legacy send and sends only after creation", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const created = thread("implicit-legacy", "alpha");
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    vi.mocked(api.startTurn).mockResolvedValue({
+      thread: created,
+      turn: { id: "turn-1", status: "running" },
+    });
+    const store = await renderStore();
+
+    const sending = store.current.sendTurn({ text: "hello" });
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.startTurn).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveCreate(created);
+      await sending;
+    });
+
+    expect(api.startTurn).toHaveBeenCalledWith(created.id, { text: "hello" });
+    expect(store.current.creatingThread).toBe(false);
+  });
+
+  it("does not legacy-send when its implicit create fails", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.createThread).mockRejectedValue(new Error("implicit create failed"));
+    const store = await renderStore();
+
+    await act(async () => {
+      await expect(store.current.sendTurn({ text: "hello" })).rejects.toThrow("implicit create failed");
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.startTurn).not.toHaveBeenCalled();
+    expect(store.current.actionError).toBe("implicit create failed");
+    expect(store.current.creatingThread).toBe(false);
+  });
+
+  it("shows pending creation before an implicit guarded submission", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    const created = thread("implicit-guarded", "alpha");
+    let resolveCreate!: (value: ThreadSummary) => void;
+    vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+      resolveCreate = resolve;
+    }));
+    vi.mocked(api.submit).mockImplementation(async (threadId, submissionId) => ({
+      submissionId,
+      threadId,
+      outcome: "turn",
+    }));
+    const store = await renderStore();
+
+    const sending = store.current.sendSubmission({ text: "hello" });
+    await waitFor(() => expect(store.current.creatingThread).toBe(true));
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.submit).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveCreate(created);
+      await sending;
+    });
+
+    expect(api.submit).toHaveBeenCalledWith(created.id, expect.any(String), { text: "hello" });
+    expect(store.current.creatingThread).toBe(false);
+  });
+
+  it("does not submit when its implicit guarded create fails", async () => {
+    localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+    vi.mocked(api.createThread).mockRejectedValue(new Error("guarded create failed"));
+    const store = await renderStore();
+
+    await act(async () => {
+      await expect(store.current.sendSubmission({ text: "hello" }))
+        .rejects.toThrow("guarded create failed");
+    });
+
+    expect(api.createThread).toHaveBeenCalledTimes(1);
+    expect(api.submit).not.toHaveBeenCalled();
+    expect(store.current.actionError).toBe("guarded create failed");
+    expect(store.current.creatingThread).toBe(false);
   });
 
   it("sends authored draft run choices atomically with thread creation", async () => {
@@ -473,6 +796,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/model", effort: "high" },
       expect.any(AbortSignal),
+      undefined,
     );
     expect(store.current.selectedThread).toMatchObject({
       id: "created",
@@ -528,7 +852,7 @@ describe("ConsoleStoreProvider integration", () => {
       .toEqual(["provider/web", "high"]);
     await act(async () => { await store.current.createThread(); });
 
-    expect(api.createThread).toHaveBeenCalledWith("alpha", {}, expect.any(AbortSignal));
+    expect(api.createThread).toHaveBeenCalledWith("alpha", {}, expect.any(AbortSignal), undefined);
     expect([store.current.selectedThread?.runModel, store.current.selectedThread?.runEffort])
       .toEqual(["provider/web", "high"]);
   });
@@ -570,6 +894,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/other" },
       expect.any(AbortSignal),
+      undefined,
     );
 
     cleanupDom();
@@ -589,6 +914,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { effort: "low" },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -625,6 +951,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: "provider/low-only", effort: null },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -664,6 +991,7 @@ describe("ConsoleStoreProvider integration", () => {
       "alpha",
       { model: null },
       expect.any(AbortSignal),
+      undefined,
     );
   });
 
@@ -921,10 +1249,12 @@ describe("ConsoleStoreProvider integration", () => {
 
     const store = await renderStore();
 
-    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
     expect(store.current.selectedAgentId).toBe("alpha");
     expect(store.current.selectedThread?.canSend).toBe(false);
+    expect(store.current.navigationDestination).toBe("automations");
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).toEqual([cronThread.id]);
   });
 
   it("resolves a cron route whose channel is outside the bootstrap window", async () => {
@@ -932,14 +1262,121 @@ describe("ConsoleStoreProvider integration", () => {
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
       agent("alpha", { cron: { read: true, actions: false } }),
     ], []));
-    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
+    let resolveOverview!: (value: CronOverview) => void;
+    vi.mocked(api.cronOverview).mockImplementation(() => new Promise((resolve) => {
+      resolveOverview = resolve;
+    }));
     vi.mocked(api.thread).mockResolvedValue(detail());
 
     const store = await renderStore();
 
+    expect(store.current.selectedThreadId).toBeNull();
+    expect(store.current.selectionLoading).toBe(true);
+    expect(api.thread).not.toHaveBeenCalled();
+    await act(async () => resolveOverview(cronOverview({ actionsEnabled: false })));
+
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
     expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
+    expect(api.thread).toHaveBeenCalledTimes(1);
     expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+  });
+
+  it("opens an overview job on its canonical durable history route", async () => {
+    const ordinary = thread("ordinary", "alpha");
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], [ordinary], ordinary.id));
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
+    vi.mocked(api.thread).mockImplementation(async (threadId) =>
+      threadId === cronThread.id ? detail() : detail(ordinary, "ordinary"));
+
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    await waitFor(() => expect(api.cronOverview).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      store.current.setNavigationDestination("automations");
+      await Promise.resolve();
+    });
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+
+    act(() => store.current.selectCronJob("alpha", "daily:report", cronThread.id));
+
+    expect(window.location.pathname).toBe("/agents/alpha/cron/daily%3Areport");
+    expect(store.current.navigationDestination).toBe("automations");
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(cronThread.id));
+    expect(api.thread).toHaveBeenCalledWith(cronThread.id, expect.any(AbortSignal));
+    expect(api.cronOverview).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(api.cronRuns).toHaveBeenCalledWith("alpha", "daily:report"));
+
+    act(() => store.current.setNavigationDestination("chats"));
+    expect(window.location.pathname).toBe("/");
+  });
+
+  it("reports a truncated cron overview honestly without selecting a bootstrap fallback", async () => {
+    const fallback = thread("fallback", "alpha");
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: false } }),
+    ], [fallback], fallback.id));
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({
+      jobs: [],
+      jobsTruncated: true,
+    }));
+    vi.mocked(api.thread).mockResolvedValue(detail(fallback, "wrong fallback"));
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectionError).toMatch(/not in the jobs loaded/iu));
+    expect(store.current.selectedThreadId).toBeNull();
+    expect(store.current.selectionLoading).toBe(false);
+    expect(api.thread).not.toHaveBeenCalled();
+  });
+
+  it("settles a cron route whose agent exposes no cron capability instead of loading forever", async () => {
+    const fallback = thread("fallback", "alpha");
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha"),
+    ], [fallback], fallback.id));
+    vi.mocked(api.thread).mockResolvedValue(detail(fallback, "wrong fallback"));
+
+    const store = await renderStore();
+
+    await waitFor(() => expect(store.current.selectionError).toMatch(/does not expose first-class cron/iu));
+    expect(store.current.selectedThreadId).toBeNull();
+    expect(store.current.selectionLoading).toBe(false);
+    expect(api.cronOverview).toHaveBeenCalledWith("alpha");
+    expect(api.thread).not.toHaveBeenCalled();
+  });
+
+  it("follows browser history back onto a cron route the overview already names", async () => {
+    const ordinary = thread("ordinary", "alpha");
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread, ordinary]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread, ordinary] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.thread).mockImplementation(async (id) =>
+      id === ordinary.id ? detail(ordinary, "ordinary") : detail());
+
+    const store = await renderStore();
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.navigationDestination).toBe("automations");
+
+    act(() => store.current.selectThread(ordinary.id));
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(ordinary.id));
+    expect(store.current.navigationDestination).toBe("chats");
+    expect(window.location.pathname).toBe("/");
+
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+
+    await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
+    expect(store.current.navigationDestination).toBe("automations");
+    expect(store.current.selectionLoading).toBe(false);
+    expect(store.current.selectionError).toBeNull();
   });
 
   it("fetches, archives, and conditionally removes an empty out-of-window thread", async () => {
@@ -1193,17 +1630,65 @@ describe("ConsoleStoreProvider integration", () => {
     expect(store.current.hasOlderMessages).toBe(false);
   });
 
-  it("keeps a cached cron channel read-only when paired with an old agent", async () => {
+  it("labels a job stack as loaded when only the cron-run cursor has older history", async () => {
+    window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
+    vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([
+      agent("alpha", { cron: { read: true, actions: true } }),
+    ], [cronThread]));
+    vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview());
+    vi.mocked(api.cronRuns).mockResolvedValue({ runs: [], nextCursor: "older-run-page" });
+    const job = processJob({
+      origin: {
+        ...processJob().origin,
+        conversationId: `web:${cronThread.id}`,
+        historyBoundary: `web:${cronThread.id}`,
+      },
+    });
+    vi.mocked(api.thread).mockResolvedValue({
+      thread: cronThread,
+      messages: [{
+        id: "cron-job-message",
+        threadId: cronThread.id,
+        role: "assistant",
+        parts: [{ type: "process-job", job }],
+        attachments: [],
+        createdAt: "2026-08-14T08:00:00.000Z",
+        updatedAt: "2026-08-14T08:00:03.000Z",
+        status: "complete",
+      }],
+    });
+
+    render(
+      <ConsoleStoreProvider>
+        <WebRuntimeProvider>
+          <ThreadPrimitive.Root>
+            <ProcessJobStack />
+          </ThreadPrimitive.Root>
+        </WebRuntimeProvider>
+      </ConsoleStoreProvider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Background job history" }))
+      .toHaveAttribute("aria-pressed", "false");
+    expect(await screen.findByText("1 loaded · 0 active · 1 history")).toBeVisible();
+    expect(api.cronRuns).toHaveBeenCalled();
+  });
+
+  it("loads a stored cron overview and keeps its cached channel read-only with an old agent", async () => {
     window.history.replaceState(null, "", cronChannelPath("alpha", "daily:report"));
     vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha")], [cronThread]));
     vi.mocked(api.threads).mockResolvedValue({ threads: [cronThread] });
     vi.mocked(api.thread).mockResolvedValue(detail());
+    vi.mocked(api.cronOverview).mockResolvedValue(cronOverview({ actionsEnabled: false }));
 
     const store = await renderStore();
 
     await waitFor(() => expect(store.current.selectedThreadId).toBe(cronThread.id));
-    expect(store.current.cronOverview).toBeNull();
-    expect(api.cronOverview).not.toHaveBeenCalled();
+    await waitFor(() => expect(store.current.cronOverview?.actionsEnabled).toBe(false));
+    expect(api.cronOverview).toHaveBeenCalledWith("alpha");
+    expect(api.cronRuns).toHaveBeenCalledWith("alpha", "daily:report");
+    expect(store.current.navigationDestination).toBe("automations");
     expect(store.current.selectedThread?.canSend).toBe(false);
   });
 
@@ -1561,6 +2046,26 @@ describe("ConsoleStoreProvider integration", () => {
         await sent;
       });
       expect(order).toEqual(["start:0", "end:0", "startTurn"]);
+    });
+
+    it("reuses one submission UUID after an unknown transport result without persisting authored text", async () => {
+      seedOneThread();
+      vi.mocked(api.submit).mockRejectedValue(new Error("submission response lost"));
+      vi.mocked(api.submission).mockRejectedValue(new Error("receipt unavailable"));
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe("alpha-thread"));
+      const input = { text: "Do not persist this authored draft" };
+
+      await expect(store.current.sendSubmission(input)).rejects.toThrow("submission response lost");
+      await expect(store.current.sendSubmission(input)).rejects.toThrow("submission response lost");
+
+      expect(api.submit).toHaveBeenCalledTimes(2);
+      const submissionIds = vi.mocked(api.submit).mock.calls.map((call) => call[1]);
+      expect(new Set(submissionIds).size).toBe(1);
+      expect(vi.mocked(api.submission).mock.calls.map((call) => call[1])).toEqual(submissionIds);
+      const persisted = sessionStorage.getItem("mono-agent.web.pending-submissions") ?? "";
+      expect(persisted).toContain(submissionIds[0]!);
+      expect(persisted).not.toContain(input.text);
     });
 
     it("does not offer live input until prior writes land and keeps its captured conversation", async () => {
@@ -2241,7 +2746,7 @@ describe("ConsoleStoreProvider integration", () => {
 
       const store = await renderStore();
       const pending = store.current.createThread();
-      await settle();
+      await waitFor(() => expect(store.current.creatingThread).toBe(true));
 
       vi.mocked(api.bootstrap).mockResolvedValue(bootstrap([agent("alpha", { label: "Alpha" })], [fresh]));
       vi.mocked(api.threads).mockResolvedValue({ threads: [fresh] });
@@ -2325,6 +2830,8 @@ describe("ConsoleStoreProvider integration", () => {
         await pending;
       });
       expect(store.current.threads.map((item) => item.id)).toEqual(["fresh-thread"]);
+      expect(store.current.selectedThreadId).toBe(fresh.id);
+      expect(store.current.creatingThread).toBe(false);
     });
   });
 
@@ -3203,6 +3710,7 @@ describe("ConsoleStoreProvider integration", () => {
         sourceId: "alpha",
         archived: false,
         limit: THREAD_PAGE_LIMIT,
+        scope: "chats",
       });
       // The bucket the bootstrap carried is not re-read...
       expect(api.threads).not.toHaveBeenCalled();
@@ -3231,6 +3739,735 @@ describe("ConsoleStoreProvider integration", () => {
       // longer carries the other agents' rows for `selectAgent` to look in.
       expect(store.current.selectedThreadId).toBe("beta-thread");
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a current bucket rejection visible when its known transcript settles first", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let resolveTranscript!: (value: ThreadDetail) => void;
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => threadId === betaThread.id
+        ? new Promise((resolve) => { resolveTranscript = resolve; })
+        : Promise.resolve(detail(alphaThread, "alpha")));
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(api.thread).toHaveBeenCalledWith(betaThread.id, expect.any(AbortSignal)));
+      await act(async () => { resolveTranscript(detail(betaThread, "beta transcript")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+
+      await act(async () => { rejectBucket(new Error("beta conversations unavailable")); });
+      await waitFor(() => expect(store.current.actionError).toBe("beta conversations unavailable"));
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(false);
+
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      act(() => { store.current.retryThreadList(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
+        .toHaveLength(1);
+    });
+
+    it("does not misclassify an early current bucket rejection as a transcript failure", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let resolveTranscript!: (value: ThreadDetail) => void;
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => threadId === betaThread.id
+        ? new Promise((resolve) => { resolveTranscript = resolve; })
+        : Promise.resolve(detail(alphaThread, "alpha")));
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(api.thread).toHaveBeenCalledWith(betaThread.id, expect.any(AbortSignal)));
+      await act(async () => { rejectBucket(new Error("beta conversations unavailable")); });
+      await waitFor(() => expect(store.current.actionError).toBe("beta conversations unavailable"));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(true);
+
+      await act(async () => { resolveTranscript(detail(betaThread, "beta transcript")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.threadListError).toBe("beta conversations unavailable");
+      expect(store.current.selectionLoading).toBe(false);
+
+      vi.mocked(api.patchAgent).mockRejectedValueOnce(new Error("newer pin failure"));
+      await act(async () => {
+        await expect(store.current.setAgentPinned("beta", true)).rejects.toThrow("newer pin failure");
+      });
+      expect(store.current.actionError).toBe("newer pin failure");
+
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      act(() => { store.current.retryThreadList(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.threadListError).toBeNull());
+      expect(store.current.actionError).toBe("newer pin failure");
+      expect(vi.mocked(api.thread).mock.calls.filter(([threadId]) => threadId === betaThread.id))
+        .toHaveLength(1);
+    });
+
+    it("ignores a known-thread bucket rejection after a newer agent selection", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      emit("thread.changed", {
+        threadId: betaThread.id,
+        payload: { thread: betaThread },
+      });
+      await waitFor(() => expect(store.current.threads.some((item) => item.id === betaThread.id)).toBe(true));
+
+      let rejectBucket!: (error: Error) => void;
+      vi.mocked(api.threads).mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectBucket = reject;
+      }));
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === betaThread.id
+        ? detail(betaThread, "beta transcript")
+        : detail(alphaThread, "alpha transcript"));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+      await act(async () => { rejectBucket(new Error("stale beta conversations failure")); });
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.threadListError).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+    });
+
+    it("keeps a cold agent switch loading and blocks implicit conversation creation", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveBeta!: (page: { readonly threads: readonly ThreadSummary[] }) => void;
+      vi.mocked(api.threads).mockImplementation(() => new Promise((resolve) => {
+        resolveBeta = resolve;
+      }));
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      expect(store.current.selectedThreadId).toBeNull();
+      await expect(store.current.createThread()).rejects.toThrow(/finish loading/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/finish loading/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+
+      await act(async () => { resolveBeta({ threads: [betaThread] }); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("beta-thread"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.actionError).toBeNull();
+    });
+
+    it("coalesces a cold B to A to B switch while only the newest visit consumes it", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveBeta!: (page: { readonly threads: readonly ThreadSummary[] }) => void;
+      vi.mocked(api.threads).mockImplementation(() => new Promise((resolve) => {
+        resolveBeta = resolve;
+      }));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      await act(async () => { resolveBeta({ threads: [betaThread] }); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("beta-thread"));
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe("beta-thread");
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps a failed current cold bucket explicit after its notice expires", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockRejectedValue(new Error("bucket unavailable"));
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("bucket unavailable"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("bucket unavailable");
+      expect(api.threads).toHaveBeenCalledTimes(1);
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionError).toBe("bucket unavailable");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+    });
+
+    it("retries a failed current cold bucket through its owned recovery action", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads)
+        .mockRejectedValueOnce(new Error("bucket unavailable"))
+        .mockResolvedValueOnce({ threads: [betaThread] });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("bucket unavailable"));
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a cold bucket owned through repeated transcript failure and explicit retry", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let betaReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== betaThread.id) return detail(alphaThread, "alpha");
+        betaReads += 1;
+        if (betaReads === 1) throw new Error("first transcript failure");
+        if (betaReads === 2) throw new Error("second transcript failure");
+        return detail(betaThread, "recovered transcript");
+      });
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("first transcript failure"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("first transcript failure");
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(1);
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.selectionError).toBe("first transcript failure");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError).toBe("second transcript failure"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(2);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.threads).toHaveBeenCalledTimes(1);
+      expect(betaReads).toBe(3);
+    });
+
+    it("keeps an uncached archive replacement failure explicit until retry succeeds", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("replacement transcript unavailable"))
+        .mockRejectedValueOnce(new Error("replacement transcript still unavailable"))
+        .mockResolvedValueOnce(detail(olderAlpha, "replacement transcript"));
+      const createCalls = vi.mocked(api.createThread).mock.calls.length;
+      const turnCalls = vi.mocked(api.startTurn).mock.calls.length;
+      const liveInputCalls = vi.mocked(api.liveInput).mock.calls.length;
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.actionError).toBe("replacement transcript unavailable"));
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("replacement transcript unavailable");
+
+      act(() => { store.current.clearActionError(); });
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionError).toBe("replacement transcript unavailable");
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+      await expect(store.current.sendLiveInput("must not escape live")).rejects.toThrow(/retry or switch/iu);
+      expect(api.createThread).toHaveBeenCalledTimes(createCalls);
+      expect(api.startTurn).toHaveBeenCalledTimes(turnCalls);
+      expect(api.liveInput).toHaveBeenCalledTimes(liveInputCalls);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError)
+        .toBe("replacement transcript still unavailable"));
+      expect(store.current.selectionLoading).toBe(false);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("keeps an uncached unarchive replacement failure explicit until retry succeeds", async () => {
+      const archivedAlpha = { ...alphaThread, archivedAt: "2026-08-14T09:00:00.000Z", messageCount: 1 };
+      const archivedOlder = { ...olderAlpha, archivedAt: "2026-08-13T09:00:00.000Z", messageCount: 1 };
+      const store = await openOnAlpha([archivedAlpha, archivedOlder]);
+      vi.mocked(api.threads).mockResolvedValue({ threads: [archivedAlpha, archivedOlder] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => detail(
+        threadId === archivedOlder.id ? archivedOlder : archivedAlpha,
+        "archived transcript",
+      ));
+      act(() => { store.current.setShowArchived(true); });
+      await waitFor(() => expect(store.current.visibleThreads.map((item) => item.id))
+        .toEqual([archivedAlpha.id, archivedOlder.id]));
+      act(() => { store.current.selectThread(archivedAlpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(archivedAlpha.id));
+
+      vi.mocked(api.patchThread).mockResolvedValue({ ...archivedAlpha, archivedAt: null });
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("unarchive replacement unavailable"))
+        .mockResolvedValueOnce(detail(archivedOlder, "recovered archived transcript"));
+      await act(async () => { await store.current.unarchiveThread(archivedAlpha.id); });
+      await waitFor(() => expect(store.current.selectionError).toBe("unarchive replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(archivedOlder.id);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(archivedOlder.id));
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("keeps an uncached confirmed-delete replacement failure explicit until retry succeeds", async () => {
+      const selected = { ...alphaThread, messageCount: 1 };
+      const store = await openOnAlpha([selected, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(selected.id));
+      vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("delete replacement unavailable"))
+        .mockResolvedValueOnce(detail(olderAlpha, "recovered replacement"));
+
+      await act(async () => { await store.current.deleteThread(selected.id); });
+      await waitFor(() => expect(store.current.selectionError).toBe("delete replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+      await expect(store.current.sendTurn({ text: "must not escape" })).rejects.toThrow(/retry or switch/iu);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("keeps an uncached remote-removal replacement failure explicit until retry succeeds", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("remote replacement unavailable"))
+        .mockResolvedValueOnce(detail(olderAlpha, "recovered remote replacement"));
+
+      emit("thread.changed", {
+        threadId: alphaThread.id,
+        payload: { threadId: alphaThread.id, removed: true },
+      });
+      await waitFor(() => expect(store.current.selectionError).toBe("remote replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("keeps replacement transcript not-found authoritative", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+      vi.mocked(api.thread).mockRejectedValue(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("ignores an archive replacement rejection after the operator switches away", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let rejectReplacement!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === olderAlpha.id) {
+          return new Promise((_resolve, reject) => { rejectReplacement = reject; });
+        }
+        return Promise.resolve(detail(betaThread, "beta transcript"));
+      });
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      await act(async () => { rejectReplacement(new Error("stale replacement failure")); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(betaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+    });
+
+    it("publishes a cached archive replacement without entering selection loading", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      act(() => { store.current.selectThread(olderAlpha.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      act(() => { store.current.selectThread(alphaThread.id); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      const detailReads = vi.mocked(api.thread).mock.calls.length;
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+
+      expect(store.current.selectedThreadId).toBe(olderAlpha.id);
+      expect(store.current.detail?.thread.id).toBe(olderAlpha.id);
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+      expect(api.thread).toHaveBeenCalledTimes(detailReads);
+    });
+
+    it("settles a selected archive with no replacement as an intentional empty state", async () => {
+      const store = await openOnAlpha([alphaThread]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      vi.mocked(api.patchThread).mockResolvedValue({
+        ...alphaThread,
+        archivedAt: "2026-08-14T09:00:00.000Z",
+        messageCount: 1,
+      });
+
+      await act(async () => { await store.current.archiveThread(alphaThread.id); });
+
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("ignores a cold bucket transcript rejection after the operator switches away", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      let rejectBeta!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === betaThread.id) {
+          return new Promise((_resolve, reject) => { rejectBeta = reject; });
+        }
+        return Promise.resolve(detail(alphaThread, "alpha"));
+      });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(betaThread.id));
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      act(() => { store.current.selectAgent("alpha"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+
+      await act(async () => { rejectBeta(new Error("stale transcript failure")); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      expect(store.current.detail?.thread.id).toBe(alphaThread.id);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("keeps a cold bucket transcript not-found authoritative", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === betaThread.id) {
+          throw new ApiError("Conversation not found.", 404, "thread_not_found");
+        }
+        return detail(alphaThread, "alpha");
+      });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("keeps repeated bucket failures explicit until a retry confirms an empty agent", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads)
+        .mockRejectedValueOnce(new Error("first failure"))
+        .mockRejectedValueOnce(new Error("second failure"))
+        .mockResolvedValueOnce({ threads: [] });
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("first failure"));
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.selectionError).toBe("second failure"));
+      expect(store.current.selectionLoading).toBe(false);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(api.threads).toHaveBeenCalledTimes(3));
+      await waitFor(() => expect(store.current.selectionError).toBeNull());
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("clears a failed bucket selection when the operator switches away", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.threads).mockRejectedValue(new Error("bucket unavailable"));
+
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectionError).toBe("bucket unavailable"));
+      act(() => { store.current.selectAgent("alpha"); });
+
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("retries a failed uncached listed conversation when the same row is selected again", async () => {
+      const store = await openOnAlpha([alphaThread, olderAlpha]);
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let olderReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId !== olderAlpha.id) return detail(alphaThread, "alpha");
+        olderReads += 1;
+        if (olderReads === 1) throw new Error("detail unavailable");
+        return detail(olderAlpha, "older");
+      });
+
+      act(() => { store.current.selectThread(olderAlpha.id); });
+      await waitFor(() => expect(store.current.actionError).toBe("detail unavailable"));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBe("detail unavailable");
+      expect(store.current.detail).toBeNull();
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(olderAlpha.id));
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.actionError).toBeNull();
+      expect(olderReads).toBe(2);
+    });
+
+    it("retries a failed current unlisted conversation without losing its destination", async () => {
+      const outside = thread("outside-beta", "beta");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.thread)
+        .mockRejectedValueOnce(new Error("detail unavailable"))
+        .mockResolvedValueOnce(detail(outside, "recovered"));
+
+      act(() => { store.current.selectThread(outside.id); });
+      await waitFor(() => expect(store.current.selectionError).toBe("detail unavailable"));
+      expect(store.current.selectedThreadId).toBe(outside.id);
+      expect(store.current.detail).toBeNull();
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(outside.id));
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(api.thread).toHaveBeenCalledTimes(3);
+    });
+
+    it("keeps an authoritative current unlisted not-found as deletion rather than retryable failure", async () => {
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      vi.mocked(api.thread).mockRejectedValueOnce(
+        new ApiError("Conversation not found.", 404, "thread_not_found"),
+      );
+
+      act(() => { store.current.selectThread("deleted-outside"); });
+      await waitFor(() => expect(store.current.actionError).toBe("This conversation was deleted."));
+
+      expect(store.current.selectedThreadId).toBeNull();
+      expect(store.current.detail).toBeNull();
+      expect(store.current.selectionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+    });
+
+    it("lets only the newest unlisted selection publish agent, route, detail, and errors", async () => {
+      const outsideA = thread("outside-a", "alpha", { title: "Outside A" });
+      const outsideB = thread("outside-b", "beta", { title: "Outside B" });
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveA!: (answer: ThreadDetail) => void;
+      let resolveB!: (answer: ThreadDetail) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === outsideA.id) return new Promise((resolve) => { resolveA = resolve; });
+        if (threadId === outsideB.id) return new Promise((resolve) => { resolveB = resolve; });
+        return Promise.resolve(detail(alphaThread, "alpha"));
+      });
+
+      act(() => { store.current.selectThread(outsideA.id); });
+      act(() => { store.current.selectThread(outsideB.id); });
+      await act(async () => { resolveB(detail(outsideB, "newest")); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(outsideB.id));
+      await act(async () => { resolveA(detail(outsideA, "stale")); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(outsideB.id);
+      expect(store.current.detail?.messages[0]?.parts).toEqual([{ type: "text", text: "newest" }]);
+      expect(window.location.pathname).toBe("/");
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.threads.some((item) => item.id === outsideA.id)).toBe(false);
+    });
+
+    it.each([
+      ["network rejection", new Error("stale failure")],
+      ["not-found rejection", new ApiError("Conversation not found.", 404, "thread_not_found")],
+    ])("ignores an old unlisted %s after a newer navigation settles", async (_label, failure) => {
+      const outsideA = thread("outside-a", "alpha");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let rejectA!: (error: Error) => void;
+      vi.mocked(api.thread).mockImplementation((threadId) => {
+        if (threadId === outsideA.id) {
+          return new Promise((_resolve, reject) => { rejectA = reject; });
+        }
+        return Promise.resolve(detail(
+          threadId === betaThread.id ? betaThread : alphaThread,
+          threadId === betaThread.id ? "beta" : "alpha",
+        ));
+      });
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      act(() => { store.current.selectThread(outsideA.id); });
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      await act(async () => { rejectA(failure); });
+      await quiet();
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(betaThread.id);
+      expect(store.current.actionError).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
+    });
+
+    it("does not let a late create response take navigation back from another agent", async () => {
+      const created = thread("created-late", "alpha");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveCreate!: (answer: ThreadSummary) => void;
+      vi.mocked(api.createThread).mockImplementation(() => new Promise((resolve) => {
+        resolveCreate = resolve;
+      }));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      const creating = store.current.createThread();
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      await act(async () => {
+        resolveCreate(created);
+        await creating;
+      });
+
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.selectedThreadId).toBe(betaThread.id);
+      expect(store.current.detail?.thread.id).toBe(betaThread.id);
+      expect(store.current.threads.some((item) => item.id === created.id)).toBe(true);
+    });
+
+    it("allows a new create after navigation while the superseded create is still pending", async () => {
+      const createdA = thread("created-alpha-late", "alpha");
+      const createdB = thread("created-beta", "beta");
+      const store = await openOnAlpha();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe("alpha-thread"));
+      let resolveA!: (answer: ThreadSummary) => void;
+      let resolveB!: (answer: ThreadSummary) => void;
+      vi.mocked(api.createThread).mockImplementation((sourceId) => new Promise((resolve) => {
+        if (sourceId === "alpha") resolveA = resolve;
+        else resolveB = resolve;
+      }));
+      vi.mocked(api.threads).mockResolvedValue({ threads: [betaThread] });
+
+      const createA = store.current.createThread();
+      await waitFor(() => expect(store.current.creatingThread).toBe(true));
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(betaThread.id));
+      expect(store.current.creatingThread).toBe(false);
+
+      const createB = store.current.createThread();
+      await waitFor(() => expect(api.createThread).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(store.current.creatingThread).toBe(true));
+      await act(async () => {
+        resolveB(createdB);
+        await createB;
+      });
+      expect(store.current.selectedThreadId).toBe(createdB.id);
+
+      await act(async () => {
+        resolveA(createdA);
+        await createA;
+      });
+      expect(store.current.selectedThreadId).toBe(createdB.id);
+      expect(store.current.threads.some((item) => item.id === createdA.id)).toBe(true);
+      expect(store.current.creatingThread).toBe(false);
     });
 
     it("opens the conversation the operator last had with the agent they switch to", async () => {
@@ -3364,6 +4601,39 @@ describe("ConsoleStoreProvider integration", () => {
       expect(store.current.detail?.thread.id).toBe("alpha-thread");
       expect(JSON.parse(localStorage.getItem(SELECTED_THREADS_STORAGE_KEY) ?? "{}"))
         .toEqual({ alpha: "alpha-thread" });
+    });
+
+    it("keeps an uncached replacement for a restored archived conversation owned", async () => {
+      const archivedElsewhere = thread("archived-elsewhere", "alpha", {
+        archivedAt: "2026-07-17T09:30:00.000Z",
+        updatedAt: "2026-07-17T09:30:00.000Z",
+      });
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: archivedElsewhere.id }));
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [alphaThread],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      let replacementReads = 0;
+      vi.mocked(api.thread).mockImplementation(async (threadId) => {
+        if (threadId === archivedElsewhere.id) return detail(archivedElsewhere, "archived");
+        replacementReads += 1;
+        if (replacementReads === 1) throw new Error("restored replacement unavailable");
+        return detail(alphaThread, "replacement");
+      });
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.selectionError).toBe("restored replacement unavailable"));
+      expect(store.current.selectedThreadId).toBe(alphaThread.id);
+      expect(store.current.selectionLoading).toBe(false);
+      await expect(store.current.createThread()).rejects.toThrow(/retry or switch/iu);
+
+      act(() => { store.current.retrySelection(); });
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alphaThread.id));
+      expect(store.current.selectionError).toBeNull();
+      expect(replacementReads).toBe(2);
     });
 
     it("keeps an archived conversation the operator opened themselves", async () => {
@@ -4174,6 +5444,7 @@ describe("ConsoleStoreProvider integration", () => {
                 SystemMessage,
                 UserMessage,
               }} />
+              <ProcessJobStack />
               <Composer />
             </ThreadPrimitive.Root>
           </WebRuntimeProvider>
@@ -4262,7 +5533,8 @@ describe("ConsoleStoreProvider integration", () => {
       expect(screen.getByRole("group", { name: "Exec background job running" }))
         .toHaveClass("is-running");
       expect(view.container.querySelectorAll(".thinking-indicator")).toHaveLength(0);
-      expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".activity-job-icon")).toHaveLength(1);
+      expect(view.container.querySelectorAll(".activity-dot")).toHaveLength(0);
       expect(screen.queryByRole("button", { name: "Stop response" })).not.toBeInTheDocument();
       expect(screen.getByRole("combobox", { name: "Message" }))
         .toHaveAttribute("placeholder", "Message Alpha…");
@@ -4558,6 +5830,8 @@ describe("ConsoleStoreProvider integration", () => {
 
       await waitFor(() => expect(store.current.selectedThreadId).toBeNull());
       expect(store.current.actionError).toBe("This conversation was deleted.");
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
       expect(api.bootstrap).toHaveBeenCalledTimes(1);
 
       // The read the selection started is answered the way a server answers for
@@ -4567,6 +5841,8 @@ describe("ConsoleStoreProvider integration", () => {
         await new Promise((resolve) => { setTimeout(resolve, 0); });
       });
       expect(store.current.detail).toBeNull();
+      expect(store.current.selectionLoading).toBe(false);
+      expect(store.current.selectionError).toBeNull();
       expect([...store.current.threads].map((item) => item.id).sort())
         .toEqual(["alpha-thread", "other-thread"]);
     });
@@ -5599,9 +6875,12 @@ describe("ConsoleStoreProvider integration", () => {
           <StoreProbe onChange={onChange} />
         </ConsoleStoreProvider>,
       );
+      await waitFor(() => expect(api.thread).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
       emit("ready", { payload: { version: 1 } });
-      expect(api.thread).not.toHaveBeenCalled();
+      // Hydration starts the opening read immediately, but first-ready repair
+      // still waits until bootstrap establishes the server-owned selection.
+      expect(api.thread).toHaveBeenCalledTimes(1);
 
       act(() => { releaseBootstrap(); });
       await waitFor(() => expect(vi.mocked(api.thread).mock.calls.length).toBe(2));
@@ -6601,6 +7880,40 @@ describe("ConsoleStoreProvider integration", () => {
       };
     };
 
+    it("owns an uncached persisted selection in the first hydrated shell commit", async () => {
+      await previousVisit({ entries: [], listing: [alpha], openedOn: alpha.id });
+      let releaseBootstrap!: () => void;
+      let releaseThread!: () => void;
+      vi.mocked(api.bootstrap).mockImplementation(() => new Promise((resolve) => {
+        releaseBootstrap = () => resolve(bootstrap(
+          agents,
+          [alpha],
+          undefined,
+          { threadsSourceId: "alpha" },
+        ));
+      }));
+      vi.mocked(api.thread).mockImplementation(() => new Promise((resolve) => {
+        releaseThread = () => resolve({
+          thread: alpha,
+          messages: [kept("restored", "restored transcript")],
+        });
+      }));
+
+      const store = openConsole();
+
+      await waitFor(() => expect(store.current.selectionLoading).toBe(true));
+      expect(store.current.selectedThreadId).toBe(alpha.id);
+      expect(store.current.detail).toBeNull();
+      expect(api.thread).toHaveBeenCalledWith(alpha.id, expect.any(AbortSignal));
+
+      await act(async () => {
+        releaseBootstrap();
+        releaseThread();
+      });
+      await waitFor(() => expect(store.current.detail?.messages[0]?.parts)
+        .toEqual([{ type: "text", text: "restored transcript" }]));
+    });
+
     it("replaces device-restored background activity with the current server outcome", async () => {
       const running = { ...beta, revision: 2, jobActivity: { queued: 0, starting: 0, running: 1 } };
       await previousVisit({
@@ -7087,7 +8400,7 @@ describe("ConsoleStoreProvider integration", () => {
       await act(async () => { await store.current.clearCachedData(); });
 
       expect(await deviceStore.hydrate())
-        .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+        .toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
       // The conversation in front of the operator is not what they asked to
       // lose: it is still on screen, as the very transcript it was.
       expect(store.current.detail?.messages).toBe(held);
@@ -7252,7 +8565,13 @@ describe("ConsoleStoreProvider integration", () => {
         { timeout: HYDRATION_DEADLINE_MS + 3_000 },
       );
       await waitFor(
-        () => expect(screen.queryByTestId("kept-m1")).not.toBeNull(),
+        () => {
+          expect(screen.queryByTestId("kept-m1")).not.toBeNull();
+          // The transcript commits before StoreProbe's passive effect publishes
+          // the matching context value to this closure. Wait for both views of
+          // the same restored projection before making synchronous assertions.
+          expect(store.current.bootstrap).not.toBeNull();
+        },
         { timeout: HYDRATION_DEADLINE_MS + 3_000 },
       );
 
@@ -7347,7 +8666,7 @@ describe("ConsoleStoreProvider integration", () => {
       await written();
 
       expect(await deviceStore.hydrate())
-        .toEqual({ host: null, snapshot: null, buckets: [], threads: [] });
+        .toEqual({ host: null, snapshot: null, buckets: [], threads: [], seen: [] });
     });
 
     it("keeps the listing it stored while an agent switch is still in flight", async () => {
@@ -7534,5 +8853,1202 @@ describe("ConsoleStoreProvider integration", () => {
       expect(stored?.threads.flatMap((item) => item.messages.map((message) => message.id)))
         .toEqual(["m2"]);
     });
+
+    it("keeps another agent's confirmed activity in the dashboard projection, and the device's out of it", async () => {
+      // The Running section is the CACHE's set, not the listing's: a turn on an
+      // agent whose rows are nowhere on screen is still one this tab is
+      // watching. And a restored entry says nothing about it -- `runState` is
+      // stored verbatim, so the device's word alone must not put a card up.
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      let release: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        release = () => resolve(bootstrap(
+          agents,
+          [alpha, runningGamma],
+          undefined,
+          { threadsSourceId: "alpha" },
+        ));
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(alpha.id));
+      await quiet();
+      // Drawn from the device and confirmed by nothing.
+      expect(store.current.cachedRunningThreads).toEqual([]);
+
+      act(() => { release(); });
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+      // The listing on screen is alpha's, and the projection is not the listing.
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.visibleThreads.map((item) => item.id)).not.toContain(runningGamma.id);
+      expect(store.current.cachedRunningThreads[0]?.sourceId).toBe("beta");
+    });
+
+    it("opens another agent's archived running conversation from its card, and the selection holds", async () => {
+      // The riskiest path a card can take: the conversation belongs to another
+      // agent, sits in that agent's ARCHIVED bucket, and is nowhere in the
+      // listing on screen. The card points the console at all three in one
+      // handler -- agent, bucket, conversation -- and none of the reads that
+      // follow may quietly move the selection back.
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        archivedAt: "2026-08-14T08:30:00.000Z",
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      const betaLive = thread("beta-live", "beta", { title: "Beta live", updatedAt: "2026-08-14T08:00:00.000Z" });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockImplementation(async (_signal, scope) => bootstrap(
+        agents,
+        scope?.sourceId === "beta"
+          ? (scope.archived ? [runningGamma] : [betaLive])
+          : [alpha, runningGamma],
+        undefined,
+        { threadsSourceId: scope?.sourceId ?? "alpha" },
+      ));
+      vi.mocked(api.threads).mockImplementation(async (sourceId, archived) => ({
+        threads: sourceId === "beta" ? (archived ? [runningGamma] : [betaLive]) : [alpha],
+      }));
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+      vi.mocked(api.thread).mockImplementation(async (threadId) => threadId === runningGamma.id
+        ? { thread: runningGamma, messages: [kept("g1", "gamma", runningGamma.id)], etag: 'W/"gamma-1"' }
+        : { thread: alpha, messages: [kept("m1", "kept transcript")], etag: 'W/"alpha-1"' });
+
+      vi.stubGlobal("Notification", { permission: "default", requestPermission: vi.fn() });
+      let current: Store | undefined;
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={(store) => { current = store; }} />
+          <NotificationsProvider>
+            <WebRuntimeProvider>
+              <Dashboard />
+            </WebRuntimeProvider>
+          </NotificationsProvider>
+        </ConsoleStoreProvider>,
+      );
+      const store = { get current() { if (!current) throw new Error("Store did not initialize."); return current; } };
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.showArchived).toBe(false);
+
+      fireEvent.click(await screen.findByRole("button", { name: /^Open Gamma work/u }));
+
+      await waitFor(() => expect(store.current.detail?.thread.id).toBe(runningGamma.id));
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.showArchived).toBe(true);
+      expect(store.current.selectedThreadId).toBe(runningGamma.id);
+      expect(store.current.detail?.thread.id).toBe(runningGamma.id);
+      expect(store.current.navigationDestination).toBe("chats");
+    });
+
+    it("drops a conversation from the projection when its work finishes", async () => {
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningGamma], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+
+      emit("turn.changed", {
+        threadId: runningGamma.id,
+        payload: { turn: { id: "turn-g", status: "complete", finishedAt: "2026-08-14T09:30:00.000Z" } },
+      });
+
+      await waitFor(() => expect(store.current.cachedRunningThreads).toEqual([]));
+      // The reload guard and the projection answer different questions, and
+      // both of them agree that nothing is in flight now.
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("counts a background job the foreground turn has already left behind", async () => {
+      // `hasRunningThread` guards a reload and asks about foreground turns
+      // only. The dashboard asks what has WORK in flight, which a queued or
+      // running background job is.
+      const working = thread("job-thread", "beta", {
+        title: "Worker",
+        runState: { status: "complete" },
+        jobActivity: { queued: 0, starting: 0, running: 2 },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(working, [kept("j1", "job", working.id)], 'W/"job-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, working], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([working.id]));
+      expect(store.current.hasRunningThread).toBe(false);
+    });
+
+    it("empties the projection when the operator clears what this browser kept", async () => {
+      const runningGamma = thread("gamma-thread", "beta", {
+        title: "Gamma work",
+        runState: { status: "running", id: "turn-g" },
+        updatedAt: "2026-08-14T09:00:00.000Z",
+      });
+      await previousVisit({
+        entries: [
+          entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"'),
+          entry(runningGamma, [kept("g1", "gamma", runningGamma.id)], 'W/"gamma-1"'),
+        ],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha, runningGamma], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([runningGamma.id]));
+
+      // `clear` announces no commit of its own -- the caller recomputes what it
+      // derives from the held set, and this projection is one of those things.
+      await act(async () => { await store.current.clearCachedData(); });
+
+      expect(store.current.cachedRunningThreads).toEqual([]);
+    });
+
+    it("does not republish the projection for a message this tab streamed in", async () => {
+      // A running turn commits several times a second. What the section draws
+      // is a title, a status line and a time, and a message body moving is none
+      // of them -- so a delta must not re-render every consumer of the store.
+      await previousVisit({
+        entries: [entry(alpha, [kept("m1", "kept transcript")], 'W/"alpha-1"')],
+        listing: [alpha],
+        openedOn: alpha.id,
+      });
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.threadIfChanged).mockResolvedValue(NOT_MODIFIED);
+
+      const store = openConsole();
+      await waitFor(() => expect(store.current.hasServerSnapshot).toBe(true));
+      await waitFor(() => expect(FakeEventSource.latest).toBeDefined());
+      emit("turn.changed", {
+        threadId: alpha.id,
+        payload: { turn: { id: "turn-1", status: "running", startedAt: "2026-08-14T09:00:00.000Z" } },
+      });
+      await waitFor(() =>
+        expect(store.current.cachedRunningThreads.map((item) => item.id)).toEqual([alpha.id]));
+
+      const published = store.current.cachedRunningThreads;
+      for (const seq of [2, 3, 4]) {
+        emit("message.delta", {
+          threadId: alpha.id,
+          payload: {
+            messageId: "m1",
+            baseSeq: seq - 1,
+            seq,
+            status: "running",
+            updatedAt: "2026-08-14T09:00:00.000Z",
+            ops: [{ op: "append", path: "0", text: "." }],
+          },
+        });
+      }
+      await quiet();
+
+      // Same array, by reference: nothing the section draws moved.
+      expect(store.current.cachedRunningThreads).toBe(published);
+    });
+  });
+
+  describe("a console told what the WHOLE fleet is running", () => {
+    const agents = [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })];
+    const alpha = thread("alpha-thread", "alpha");
+    /** Beta's, archived, and in no page this console will ever load. */
+    const betaRun = thread("beta-run", "beta", {
+      title: "Beta work",
+      archivedAt: "2026-08-14T08:30:00.000Z",
+      updatedAt: "2026-08-14T09:00:00.000Z",
+      runState: {
+        status: "running",
+        id: "turn-b",
+        activity: { toolCallCount: 3, phase: "working", cumulativeUsd: 2.44 },
+      },
+    });
+    const listing = (
+      threads: readonly ThreadSummary[],
+      overrides: { readonly total?: number; readonly truncated?: boolean;
+        readonly runningCounts?: Readonly<Record<string, number>> } = {},
+    ) => ({
+      threads,
+      total: overrides.total ?? threads.length,
+      truncated: overrides.truncated ?? false,
+      runningCounts: overrides.runningCounts
+        ?? { alpha: 0, beta: threads.filter((item) => item.sourceId === "beta").length },
+    });
+
+    let eventSequence = 0;
+    const emit = (
+      type: WebEvent["type"],
+      extra: { readonly threadId?: string; readonly payload?: unknown } = {},
+    ) => {
+      eventSequence += 1;
+      act(() => FakeEventSource.latest?.emit(type, {
+        id: `fleet-event-${String(eventSequence)}`,
+        version: 1,
+        type,
+        at: "2026-08-14T09:00:00.000Z",
+        ...extra,
+      }));
+    };
+    const quiet = async (ms = 400) => {
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, ms); }); });
+    };
+    /** Past the coalescing window, so an invalidation that armed a timer has fired. */
+    const coalesced = async () => { await quiet(ACTIVE_THREADS_REFRESH_INTERVAL_MS + 400); };
+
+    beforeEach(() => {
+      vi.mocked(api.bootstrap).mockResolvedValue({
+        ...bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+        activeThreads: listing([betaRun]),
+      });
+    });
+
+    it("draws another agent's running conversation without reading it, or evicting anything", async () => {
+      const store = await renderStore();
+
+      await waitFor(() => expect(store.current.activeThreads?.threads.map((item) => item.id))
+        .toEqual([betaRun.id]));
+      // A server answer stands behind it, so the section may speak for the
+      // fleet rather than for this tab.
+      expect(store.current.activeThreads?.authoritative).toBe(true);
+      expect(store.current.activeThreads?.runningCounts).toEqual({ alpha: 0, beta: 1 });
+      // The listing is NOT a page and NOT a transcript: beta's conversation is
+      // in neither, and nothing was read to put its card up.
+      expect(store.current.visibleThreads.map((item) => item.id)).toEqual([alpha.id]);
+      expect(store.current.cachedRunningThreads).toEqual([]);
+      expect(vi.mocked(api.thread).mock.calls.map((call) => call[0])).not.toContain(betaRun.id);
+    });
+
+    it("re-reads the listing for an agent whose pages are not loaded, once per burst", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      vi.mocked(api.activeThreads).mockResolvedValue(listing([]));
+
+      // Every one of these names a conversation on an agent this tab has never
+      // opened, and each of them could have changed what is running.
+      emit("turn.changed", {
+        threadId: betaRun.id,
+        payload: { turn: { id: "turn-b", status: "complete" } },
+      });
+      emit("threads.changed", { threadId: "beta-other" });
+      emit("thread.changed", { threadId: "beta-other" });
+      await coalesced();
+
+      // One leading read for the burst and at most one trailing one -- never a
+      // request per event.
+      expect(vi.mocked(api.activeThreads).mock.calls.length).toBeLessThanOrEqual(2);
+      expect(store.current.activeThreads?.threads).toEqual([]);
+      expect(store.current.activeThreads?.total).toBe(0);
+      // An AUTHORITATIVE empty listing is an answer: the section says the fleet
+      // is idle because the server said so.
+      expect(store.current.activeThreads?.authoritative).toBe(true);
+    });
+
+    it("abandons the read in flight when the tree goes, and asks for nothing more", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        // A read that has not answered yet, and a second event behind it that
+        // marks the listing dirty while it is out.
+        let settle: (value: ReturnType<typeof listing>) => void = () => undefined;
+        const signals: AbortSignal[] = [];
+        vi.mocked(api.activeThreads).mockImplementation(async (signal?: AbortSignal) => {
+          if (signal !== undefined) signals.push(signal);
+          return new Promise<ReturnType<typeof listing>>((resolve) => { settle = resolve; });
+        });
+        emit("threads.changed", { threadId: "beta-other" });
+        emit("threads.changed", { threadId: "beta-another" });
+        expect(signals).toHaveLength(1);
+        const issued = vi.mocked(api.activeThreads).mock.calls.length;
+
+        cleanupDom();
+
+        // The request goes with the tree rather than being left to answer into
+        // one that is gone.
+        expect(signals[0]?.aborted).toBe(true);
+
+        // It answers anyway, which is what a transport does. Its `finally`
+        // consumed the dirty bit and invalidated, and that is what used to arm
+        // the interval again and put one more request on the wire.
+        await act(async () => {
+          settle(listing([]));
+          await vi.advanceTimersByTimeAsync(ACTIVE_THREADS_REFRESH_INTERVAL_MS + 400);
+        });
+
+        expect(vi.mocked(api.activeThreads).mock.calls).toHaveLength(issued);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("moves the card's activity from the event, while the listing is still on the wire", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      // Never answers: what the card shows may not wait for it.
+      vi.mocked(api.activeThreads).mockReturnValue(new Promise(() => undefined));
+
+      emit("turn.changed", {
+        threadId: betaRun.id,
+        payload: {
+          turn: {
+            id: "turn-b",
+            status: "running",
+            activity: { toolCallCount: 9, phase: "asking", cumulativeUsd: 3.5 },
+          },
+        },
+      });
+
+      await waitFor(() => expect(store.current.activeThreads?.threads[0]?.runState.activity)
+        .toEqual({ toolCallCount: 9, phase: "asking", cumulativeUsd: 3.5 }));
+      // And it is still the listing's membership: the event patched a card, it
+      // did not add or remove one.
+      expect(store.current.activeThreads?.total).toBe(1);
+    });
+
+    it("never inserts a conversation the listing does not carry", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      vi.mocked(api.activeThreads).mockReturnValue(new Promise(() => undefined));
+
+      emit("turn.changed", {
+        threadId: "gamma-unknown",
+        payload: { turn: { id: "turn-x", status: "running", activity: { toolCallCount: 1, phase: "working" } } },
+      });
+      await quiet();
+
+      // A card with no agent, no count and no place in the order is not a card.
+      expect(store.current.activeThreads?.threads.map((item) => item.id)).toEqual([betaRun.id]);
+    });
+
+    it("keeps a newer listing when an older bootstrap lands after it", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      // A bootstrap that goes out FIRST and answers LAST. What it carries
+      // describes the fleet as of the moment it was issued, which is before the
+      // listing read below -- so landing later must not make it the newer word.
+      let releaseBootstrap: () => void = () => undefined;
+      vi.mocked(api.bootstrap).mockReturnValue(new Promise((resolve) => {
+        releaseBootstrap = () => resolve({
+          ...bootstrap(agents, [alpha], undefined, { threadsSourceId: "alpha" }),
+          activeThreads: listing([betaRun]),
+        });
+      }));
+      vi.mocked(api.activeThreads).mockResolvedValue(listing([]));
+      // `agents.changed` buys the bootstrap; it is on the wire once this
+      // answers, and it stays there.
+      emit("agents.changed");
+      await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBe(2));
+
+      // Issued after it, and answered before it.
+      emit("thread.changed", { threadId: "beta-other" });
+      await coalesced();
+      expect(store.current.activeThreads?.total).toBe(0);
+
+      act(() => { releaseBootstrap(); });
+      await quiet();
+
+      // The older snapshot did not walk the card -- or the counts -- back.
+      expect(store.current.activeThreads?.threads).toEqual([]);
+      expect(store.current.activeThreads?.runningCounts).toEqual({ alpha: 0, beta: 0 });
+    });
+
+    it("keeps the last listing and stops calling it current when the read fails", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      vi.mocked(api.activeThreads).mockRejectedValue(new Error("offline"));
+
+      emit("thread.changed", { threadId: "beta-other" });
+      await waitFor(() => expect(store.current.activeThreads?.authoritative).toBe(false));
+
+      // Never a silent zero: the cards stay, labelled last known.
+      expect(store.current.activeThreads?.threads.map((item) => item.id)).toEqual([betaRun.id]);
+      expect(store.current.activeThreads?.total).toBe(1);
+    });
+
+    it("stops calling the listing current the moment the stream drops", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.authoritative).toBe(true));
+
+      act(() => { FakeEventSource.latest?.onerror?.(new Event("error")); });
+
+      // Without a stream this console misses the very events that would
+      // invalidate the listing, so what it holds is last known by definition.
+      await waitFor(() => expect(store.current.activeThreads?.authoritative).toBe(false));
+      expect(store.current.activeThreads?.threads.map((item) => item.id)).toEqual([betaRun.id]);
+    });
+
+    it("opens a card for a conversation in no page and no cache, and the selection holds", async () => {
+      // The card the cache could never have drawn: another agent's, ARCHIVED,
+      // absent from every listing this console has loaded and from every
+      // transcript it holds. One handler points the console at all three.
+      vi.mocked(api.bootstrap).mockImplementation(async (_signal, scope) => ({
+        ...bootstrap(
+          agents,
+          scope?.sourceId === "beta" ? (scope.archived ? [betaRun] : []) : [alpha],
+          undefined,
+          { threadsSourceId: scope?.sourceId ?? "alpha" },
+        ),
+        activeThreads: listing([betaRun]),
+      }));
+      vi.mocked(api.threads).mockImplementation(async (sourceId, archived) => ({
+        threads: sourceId === "beta" && archived === true ? [betaRun] : [],
+      }));
+      vi.mocked(api.thread).mockResolvedValue({
+        thread: betaRun,
+        messages: [],
+        etag: 'W/"beta-1"',
+      });
+      vi.stubGlobal("Notification", { permission: "default", requestPermission: vi.fn() });
+      let current: Store | undefined;
+      render(
+        <ConsoleStoreProvider>
+          <StoreProbe onChange={(store) => { current = store; }} />
+          <NotificationsProvider>
+            <WebRuntimeProvider>
+              <Dashboard />
+            </WebRuntimeProvider>
+          </NotificationsProvider>
+        </ConsoleStoreProvider>,
+      );
+      const store = {
+        get current() {
+          if (!current) throw new Error("Store did not initialize.");
+          return current;
+        },
+      };
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      expect(store.current.cachedRunningThreads).toEqual([]);
+      // What the server said this turn is doing, on the card itself.
+      const card = await screen.findByRole("button", { name: /^Open Beta work/u });
+      expect(card).toHaveTextContent("Working · 3 tool calls · $2.44");
+
+      fireEvent.click(card);
+
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(betaRun.id));
+      await quiet();
+      expect(store.current.selectedAgentId).toBe("beta");
+      expect(store.current.showArchived).toBe(true);
+      expect(store.current.detail?.thread.id).toBe(betaRun.id);
+    });
+
+    it("publishes nothing when a re-read draws the same section", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.activeThreads?.total).toBe(1));
+      const published = store.current.activeThreads;
+      // The same answer, as a NEW object -- which is what every response is.
+      vi.mocked(api.activeThreads).mockImplementation(async () => listing([{ ...betaRun }]));
+
+      emit("thread.changed", { threadId: "beta-other" });
+      await coalesced();
+
+      expect(vi.mocked(api.activeThreads)).toHaveBeenCalled();
+      expect(store.current.activeThreads).toBe(published);
+    });
+  });
+
+  describe("an unread marker this device owns", () => {
+    const agents = [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })];
+    const one = thread("alpha-one", "alpha", { revision: 1 });
+    const two = thread("alpha-two", "alpha", { revision: 1 });
+
+    let eventSequence = 0;
+    const emit = (
+      type: WebEvent["type"],
+      extra: { readonly threadId?: string; readonly payload?: unknown } = {},
+    ) => {
+      eventSequence += 1;
+      act(() => FakeEventSource.latest?.emit(type, {
+        id: `unread-event-${String(eventSequence)}`,
+        version: 1,
+        type,
+        at: "2026-09-10T09:00:00.000Z",
+        ...extra,
+      }));
+    };
+    const moved = (summary: ThreadSummary) =>
+      ({ ...summary, revision: summary.revision + 1, updatedAt: "2026-09-10T09:00:00.000Z" });
+
+    beforeEach(() => {
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [one, two], one.id, { threadsSourceId: "alpha" }),
+      );
+      vi.mocked(api.thread).mockResolvedValue({ thread: one, messages: [] });
+    });
+
+    it("opens with nothing unread, and marks only what moves afterwards", async () => {
+      const store = await renderStore();
+      // First sight seeds. A console where the whole fleet is unread on the
+      // first visit has told the operator nothing.
+      expect([...store.current.unreadThreadIds]).toEqual([]);
+
+      emit("thread.changed", { threadId: two.id, payload: { thread: moved(two) } });
+
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+      expect([...store.current.unreadCountByAgent]).toEqual([["alpha", 1]]);
+    });
+
+    it("clears the marker only while the conversation is actually on screen", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(one.id));
+      emit("thread.changed", { threadId: one.id, payload: { thread: moved(one) } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([one.id]));
+
+      // SELECTED is not looked at: on a phone this conversation is mounted
+      // behind the dashboard, inert, showing nobody anything.
+      await act(async () => { await Promise.resolve(); });
+      expect([...store.current.unreadThreadIds]).toEqual([one.id]);
+
+      act(() => { store.current.setConversationVisible(true); });
+
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      expect([...store.current.unreadCountByAgent]).toEqual([]);
+
+      // And the next turn on it makes it unread again, because the marker is a
+      // revision rather than a flag.
+      emit("thread.changed", {
+        threadId: one.id,
+        payload: { thread: { ...moved(one), revision: 5 } },
+      });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      act(() => { store.current.setConversationVisible(false); });
+      emit("thread.changed", {
+        threadId: one.id,
+        payload: { thread: { ...moved(one), revision: 6 } },
+      });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([one.id]));
+    });
+
+    it("adopts what another tab on this device has seen, without a reload", async () => {
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(one.id));
+      emit("thread.changed", { threadId: two.id, payload: { thread: moved(two) } });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+
+      // A SECOND tab on the same device reads that conversation and stores what
+      // it has seen. Two tabs are two readings of one device's memory, and they
+      // used to disagree for as long as both stayed open.
+      await act(async () => {
+        await deviceStore.save({
+          entries: [],
+          seen: [{ id: two.id, revision: moved(two).revision }],
+        });
+      });
+
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([]));
+      expect([...store.current.unreadCountByAgent]).toEqual([]);
+
+      // Adopted UPWARD only: the next turn on it is unread again, so what was
+      // adopted is a revision rather than a conversation being dismissed.
+      emit("thread.changed", {
+        threadId: two.id,
+        payload: { thread: { ...moved(two), revision: 9 } },
+      });
+      await waitFor(() => expect([...store.current.unreadThreadIds]).toEqual([two.id]));
+    });
+
+    it("keeps what it has seen on the device, across a restart", async () => {
+      const first = await renderStore();
+      await waitFor(() => expect(first.current.selectedThreadId).toBe(one.id));
+      emit("thread.changed", { threadId: two.id, payload: { thread: moved(two) } });
+      await waitFor(() => expect([...first.current.unreadThreadIds]).toEqual([two.id]));
+      // Long enough for the debounced write-through to have landed.
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, PERSIST_DEBOUNCE_MS + 400); }); });
+      cleanupDom();
+
+      // A second visit, told the same thing: what this device had seen is what
+      // decides, not what this visit happens to be shown first.
+      vi.mocked(api.bootstrap).mockResolvedValue(
+        bootstrap(agents, [one, moved(two)], one.id, { threadsSourceId: "alpha" }),
+      );
+      const second = await renderStore();
+
+      await waitFor(() => expect([...second.current.unreadThreadIds]).toEqual([two.id]));
+    });
+  });
+
+  describe("cron Reply navigation and recovery", () => {
+    const operationId = "44444444-4444-4444-8444-444444444444";
+    const imported = thread("reply-thread", "alpha", {
+      title: "Reply to daily:report · Run 1",
+      messageCount: 2,
+      lastMessagePreview: "Captured result",
+    });
+    const importedMessages: readonly WebMessage[] = [{
+      id: "reply-result",
+      threadId: imported.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "Captured result" }],
+      attachments: [],
+      createdAt: "2026-09-08T10:00:00.000Z",
+      updatedAt: "2026-09-08T10:00:00.000Z",
+      status: "complete",
+    }];
+    const source = {
+      sourceId: "alpha",
+      jobId: "daily:report",
+      runId: "cron:daily:report:one",
+      snapshotKind: "summary" as const,
+    };
+    const receipt = {
+      operationId,
+      ...source,
+      duplicate: false,
+      thread: imported,
+      messages: importedMessages,
+    };
+
+    it("persists before network, coalesces double activation, and selects the captured source after navigation", async () => {
+      let answer: ((value: typeof receipt) => void) | undefined;
+      vi.mocked(api.cronReply).mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+      const store = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+      act(() => store.current.setNavigationDestination("automations"));
+      expect(store.current.navigationDestination).toBe("automations");
+
+      const first = store.current.replyToCronRun(source);
+      const second = store.current.replyToCronRun(source);
+      expect(second).toBe(first);
+      expect(api.cronReply).toHaveBeenCalledTimes(1);
+      expect(sessionStorage.getItem("mono-agent:web:cron-reply-recovery:v1")).toContain(source.runId);
+      act(() => { store.current.selectAgent("beta"); });
+      await waitFor(() => expect(store.current.selectedAgentId).toBe("beta"));
+
+      await act(async () => {
+        const issuedOperationId = vi.mocked(api.cronReply).mock.calls[0]?.[3].operationId;
+        answer?.({ ...receipt, operationId: issuedOperationId ?? operationId });
+        await first;
+      });
+      expect(store.current.selectedAgentId).toBe("alpha");
+      expect(store.current.selectedThreadId).toBe(imported.id);
+      expect(store.current.navigationDestination).toBe("chats");
+      expect(store.current.visibleThreads.some((candidate) => candidate.id === imported.id)).toBe(true);
+      expect(store.current.detail).toEqual({ thread: imported, messages: importedMessages, projectTransitions: [], modelTransitions: [] });
+      expect(window.location.pathname).toBe("/");
+      expect(readComposerDraft("alpha", imported.id)).toBe("");
+      expect(store.current.composerFocusThreadId).toBe(imported.id);
+      expect(sessionStorage.getItem("mono-agent:web:cron-reply-recovery:v1")).toBeNull();
+    });
+
+    it("keeps an unknown outcome for explicit retry and reuses its operation after remount", async () => {
+      vi.mocked(api.cronReply).mockRejectedValueOnce(new TypeError("synthetic connection lost"));
+      vi.spyOn(crypto, "randomUUID").mockReturnValue(operationId);
+      const firstVisit = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(firstVisit.current.connection).toBe("live"));
+      await act(async () => {
+        await expect(firstVisit.current.replyToCronRun(source)).rejects.toThrow("connection lost");
+      });
+      expect(firstVisit.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+      cleanupDom();
+
+      vi.mocked(api.cronReply).mockResolvedValue(receipt);
+      const secondVisit = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(secondVisit.current.connection).toBe("live"));
+      expect(secondVisit.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+      await act(async () => { await secondVisit.current.replyToCronRun(source); });
+      expect(api.cronReply).toHaveBeenLastCalledWith(
+        source.sourceId,
+        source.jobId,
+        source.runId,
+        { operationId, snapshotKind: source.snapshotKind },
+        expect.any(AbortSignal),
+      );
+    });
+
+    it("shows friendly copy on a pending collision and retries with the server-owned operation", async () => {
+      const freshOperationId = "55555555-5555-4555-8555-555555555555";
+      const pendingOperationId = "66666666-6666-4666-8666-666666666666";
+      vi.spyOn(crypto, "randomUUID").mockReturnValue(freshOperationId);
+      vi.mocked(api.cronReply)
+        .mockRejectedValueOnce(new ApiError(
+          "A Reply for this cron result is already pending. Retry it explicitly.",
+          409,
+          "cron_reply_pending",
+          { operationId: pendingOperationId, pendingSince: "2026-09-10T18:03:36.024Z" },
+        ))
+        .mockResolvedValueOnce({ ...receipt, operationId: pendingOperationId });
+      const store = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+
+      await act(async () => {
+        await expect(store.current.replyToCronRun(source)).rejects.toMatchObject({
+          code: "cron_reply_pending",
+        });
+      });
+      const collided = store.current.cronReplyState(source.sourceId, source.jobId, source.runId);
+      expect(collided.status).toBe("retry");
+      const message = collided.status === "retry" ? collided.message : "";
+      expect(message).toContain("still being delivered");
+      expect(message).toContain("Retry Reply");
+      expect(message).toContain("no duplicate");
+      expect(message).toContain("since");
+      expect(message).not.toContain("already pending. Retry it explicitly");
+
+      await act(async () => { await store.current.replyToCronRun(source); });
+      expect(vi.mocked(api.cronReply).mock.calls.map((call) => call[3].operationId))
+        .toEqual([freshOperationId, pendingOperationId]);
+      expect(store.current.selectedThreadId).toBe(imported.id);
+    });
+
+    it("keeps one completed-server identity through refused storage and an offline retry", async () => {
+      let loseFirstResponse: ((error: unknown) => void) | undefined;
+      vi.spyOn(crypto, "randomUUID").mockReturnValue(operationId);
+      const setItem = Storage.prototype.setItem;
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+        if (this === sessionStorage && key === "mono-agent:web:cron-reply-recovery:v1") {
+          throw new DOMException("Synthetic quota exhausted.", "QuotaExceededError");
+        }
+        return setItem.call(this, key, value);
+      });
+      vi.mocked(api.cronReply)
+        .mockImplementationOnce(() => new Promise((_resolve, reject) => { loseFirstResponse = reject; }))
+        .mockRejectedValueOnce(new ApiError(
+          "This agent is offline; Reply was not started.",
+          503,
+          "cron_reply_agent_offline",
+        ))
+        .mockResolvedValueOnce({ ...receipt, duplicate: true });
+      const store = await renderStore();
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+
+      const first = store.current.replyToCronRun(source);
+      expect(api.cronReply).toHaveBeenCalledTimes(1);
+      expect(sessionStorage.getItem("mono-agent:web:cron-reply-recovery:v1")).toBeNull();
+      await act(async () => {
+        loseFirstResponse?.(new TypeError("Synthetic response was lost after server completion."));
+        await expect(first).rejects.toThrow("response was lost");
+      });
+      expect(store.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+
+      await act(async () => {
+        await expect(store.current.replyToCronRun(source)).rejects.toMatchObject({
+          code: "cron_reply_agent_offline",
+        });
+      });
+      expect(store.current.cronReplyState(source.sourceId, source.jobId, source.runId).status).toBe("retry");
+
+      await act(async () => { await store.current.replyToCronRun(source); });
+      expect(vi.mocked(api.cronReply).mock.calls.map((call) => call[3].operationId))
+        .toEqual([operationId, operationId, operationId]);
+      expect(store.current.threads.filter((candidate) => candidate.id === imported.id)).toHaveLength(1);
+      expect(store.current.selectedThreadId).toBe(imported.id);
+    });
+
+    it("does not resurrect a reply conversation deleted while its POST response is late", async () => {
+      localStorage.setItem(SELECTED_AGENT_STORAGE_KEY, "alpha");
+      localStorage.setItem(SELECTED_THREADS_STORAGE_KEY, JSON.stringify({ alpha: imported.id }));
+      vi.mocked(api.bootstrap).mockResolvedValue(bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [imported],
+        undefined,
+        { threadsSourceId: "alpha" },
+      ));
+      vi.mocked(api.thread).mockResolvedValue({ thread: imported, messages: importedMessages });
+      let answer: ((value: typeof receipt) => void) | undefined;
+      vi.mocked(api.cronReply).mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+      const archived = { ...imported, archivedAt: "2026-09-08T10:01:00.000Z", revision: imported.revision + 1 };
+      vi.mocked(api.patchThread).mockResolvedValue(archived);
+      vi.mocked(api.deleteThread).mockResolvedValue(undefined);
+
+      const store = await renderStore();
+      await waitFor(() => expect(store.current.selectedThreadId).toBe(imported.id));
+      act(() => FakeEventSource.latest?.onopen?.(new Event("open")));
+      await waitFor(() => expect(store.current.connection).toBe("live"));
+      const replying = store.current.replyToCronRun(source);
+      await act(async () => { await store.current.archiveThread(imported.id); });
+      await act(async () => { await store.current.deleteThread(imported.id); });
+
+      await act(async () => {
+        answer?.(receipt);
+        await expect(replying).rejects.toThrow("deleted");
+      });
+      expect(store.current.threads.some((candidate) => candidate.id === imported.id)).toBe(false);
+      expect(store.current.selectedThreadId).not.toBe(imported.id);
+      expect(store.current.detail?.thread.id).not.toBe(imported.id);
+    });
+  });
+
+  describe("projects", () => {
+  const webProject = project("project-web", "alpha", { name: "Web console", conversationCount: 1 });
+  const member = thread("member-one", "alpha", { title: "Member", projectId: webProject.id });
+
+  async function renderProjectStore() {
+    vi.mocked(api.bootstrap).mockResolvedValue(
+      bootstrap(
+        [agent("alpha", { label: "Alpha" }), agent("beta", { label: "Beta" })],
+        [member],
+        member.id,
+        { threadsSourceId: "alpha", projects: [webProject], projectsSourceId: "alpha" },
+      ),
+    );
+    return renderStore();
+  }
+
+  it("repairs transition sidecars on effective membership change but not pending intent", async () => {
+    const initial = detail(member);
+    vi.mocked(api.thread).mockResolvedValue(initial);
+    const store = await renderProjectStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
+    const reads = vi.mocked(api.thread).mock.calls.length;
+    const pending = { ...member, revision: member.revision + 1, pendingProject: { projectId: null, turnId: "active" } };
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:00Z", payload: { thread: pending } }));
+    await waitFor(() => expect(store.current.detail?.thread.pendingProject).toEqual(pending.pendingProject));
+    expect(api.thread).toHaveBeenCalledTimes(reads);
+    const moved = { ...member, revision: member.revision + 2, projectId: null };
+    const transition = { id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: null,
+      before: { id: webProject.id, name: webProject.name, color: "default" as const }, after: null, createdAt: "2026-09-12T00:00:01Z" };
+    vi.mocked(api.thread).mockResolvedValue({ ...initial, thread: moved, projectTransitions: [transition] });
+    act(() => FakeEventSource.latest?.emit("thread.changed", { version: 1, type: "thread.changed", at: "2026-09-12T00:00:01Z", payload: { thread: moved } }));
+    await waitFor(() => expect(store.current.detail?.projectTransitions).toEqual([transition]));
+  });
+
+  it("delivers a route-change sidecar with the read that follows the send", async () => {
+    // The picker's own write says nothing about the transcript: the marker is
+    // written when the next turn is admitted, and the read `sendTurn` already
+    // issues is what carries it. No new event, no extra request.
+    const initial = detail(member);
+    vi.mocked(api.thread).mockResolvedValue(initial);
+    const store = await renderProjectStore();
+    await waitFor(() => expect(store.current.detail?.thread.id).toBe(member.id));
+    expect(store.current.detail?.modelTransitions).toEqual([]);
+    const transition = {
+      id: 1, afterMessageId: initial.messages[0]?.id ?? null, turnId: "turn-next",
+      before: { model: "provider/sol", effort: "low" },
+      after: { model: "provider/astra", effort: "high" },
+      createdAt: "2026-09-12T00:00:02Z",
+    };
+    vi.mocked(api.startTurn).mockResolvedValue({ thread: member, turn: { id: "turn-next", status: "running" } });
+    vi.mocked(api.thread).mockResolvedValue({ ...initial, modelTransitions: [transition] });
+    await act(async () => { await store.current.sendTurn({ text: "go" }); });
+    await waitFor(() => expect(store.current.detail?.modelTransitions).toEqual([transition]));
+  });
+
+  it("seeds one agent's projects from bootstrap and lists the next agent on switch", async () => {
+    const store = await renderProjectStore();
+    expect(store.current.projectsByAgent.alpha).toEqual([webProject]);
+    expect(store.current.openProjectId).toBeNull();
+
+    // Seeded by the bootstrap: no listing read for the resolved agent.
+    expect(api.projects).not.toHaveBeenCalledWith("alpha", expect.any(AbortSignal));
+    act(() => store.current.selectAgent("beta"));
+    await waitFor(() => expect(api.projects).toHaveBeenCalledWith("beta", expect.any(AbortSignal)));
+  });
+
+  it("opens a project page and merges its members into the listing", async () => {
+    const store = await renderProjectStore();
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    expect(store.current.openProject).toMatchObject({ id: webProject.id });
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]));
+    expect(store.current.threads.some((row) => row.id === member.id)).toBe(true);
+    expect(api.projectThreads).toHaveBeenCalledWith(
+      "alpha",
+      webProject.id,
+      undefined,
+      expect.any(AbortSignal),
+      expect.any(Number),
+    );
+
+    act(() => store.current.closeProject());
+    expect(store.current.openProjectId).toBeNull();
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("applies project summaries and removals from events", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A stale revision loses to the held summary.
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { project: webProject },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:02:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+    expect(store.current.openProjectId).toBeNull();
+  });
+
+  it("moves a conversation through setThreadProject and closes the page on agent switch", async () => {
+    const store = await renderProjectStore();
+    const moved = { ...member, projectId: null as string | null, revision: member.revision + 1 };
+    vi.mocked(api.patchThread).mockResolvedValue(moved);
+
+    await act(async () => { await store.current.setThreadProject(member.id, null); });
+    expect(api.patchThread).toHaveBeenCalledWith(member.id, { projectId: null }, expect.any(AbortSignal));
+    await waitFor(() => expect(
+      store.current.threads.find((row) => row.id === member.id)?.projectId,
+    ).toBeNull());
+
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+    act(() => store.current.selectAgent("beta"));
+    expect(store.current.openProjectId).toBeNull();
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("ignores a late member page for the previously open project", async () => {
+    const projectA = project("project-a", "alpha", { name: "A" });
+    const projectB = project("project-b", "alpha", { name: "B" });
+    const memberA = thread("member-a", "alpha", { title: "A member", projectId: projectA.id });
+    const memberB = thread("member-b", "alpha", { title: "B member", projectId: projectB.id });
+    vi.mocked(api.bootstrap).mockResolvedValue(
+      bootstrap(
+        [agent("alpha", { label: "Alpha" })],
+        [],
+        undefined,
+        { threadsSourceId: "alpha", projects: [projectA, projectB], projectsSourceId: "alpha" },
+      ),
+    );
+    const store = await renderStore();
+    let resolveA!: (page: ThreadPage) => void;
+    let resolveB!: (page: ThreadPage) => void;
+    vi.mocked(api.projectThreads).mockImplementation(async (_sourceId, projectId) => {
+      if (projectId === projectA.id) return new Promise<ThreadPage>((resolve) => { resolveA = resolve; });
+      return new Promise<ThreadPage>((resolve) => { resolveB = resolve; });
+    });
+
+    act(() => store.current.openProjectById(projectA.id));
+    act(() => store.current.openProjectById(projectB.id));
+    await act(async () => { resolveB({ threads: [memberB] }); });
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([memberB.id]));
+    await act(async () => { resolveA({ threads: [memberA], nextCursor: "cursor-a" }); });
+
+    // A's slow page lands nowhere: not the ids, not the cursor, not loading.
+    expect(store.current.projectMembers.map((row) => row.id)).toEqual([memberB.id]);
+    expect(store.current.hasMoreProjectMembers).toBe(false);
+    expect(store.current.projectMembersLoading).toBe(false);
+  });
+
+  it("keeps newer event summaries and tombstoned removals across late listings", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A stale list response must not revert the newer event summary.
+    vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+    await act(async () => { await store.current.loadProjects("alpha"); });
+    expect(store.current.projectsByAgent.alpha).toEqual([updated]);
+
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+
+    // A resurrecting list response must not undo the tombstoned removal.
+    vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+    await act(async () => { await store.current.loadProjects("alpha"); });
+    expect(store.current.projectsByAgent.alpha).toEqual([]);
+  });
+
+  it("keeps newer event summaries and tombstoned removals across a late bootstrap", async () => {
+    const store = await renderProjectStore();
+    const updated = { ...webProject, revision: webProject.revision + 1, conversationCount: 2 };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: updated },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([updated]));
+
+    // A payload-less agents change re-reads the bootstrap, whose snapshot
+    // predates the event: it must not revert the summary.
+    const bootstrapsBefore = () => vi.mocked(api.bootstrap).mock.calls.length;
+    const revalidate = async (id: string) => {
+      const before = bootstrapsBefore();
+      act(() => FakeEventSource.latest?.emit("agents.changed", {
+        id, version: 1, type: "agents.changed", at: "2026-09-08T10:00:01.000Z",
+      }));
+      await waitFor(() => expect(bootstrapsBefore()).toBeGreaterThan(before));
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 50); }); });
+    };
+    await revalidate("stale-bootstrap-1");
+    expect(store.current.projectsByAgent.alpha).toEqual([updated]);
+
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:01:00.000Z",
+      payload: { projectId: webProject.id, removed: true },
+    }));
+    await waitFor(() => expect(store.current.projectsByAgent.alpha).toEqual([]));
+
+    // Nor may it resurrect a project this tab saw deleted.
+    await revalidate("stale-bootstrap-2");
+    expect(store.current.projectsByAgent.alpha).toEqual([]);
+  });
+
+  for (const read of ["listing", "bootstrap"] as const) {
+    it(`keeps a project created during a pending ${read}, but admits later authoritative removal`, async () => {
+      const store = await renderProjectStore();
+      const created = project("new-project", "alpha", { name: "New project" });
+      let release!: () => void;
+      const pending = new Promise<void>((resolve) => { release = resolve; });
+      let listing: ReturnType<typeof store.current.loadProjects> | undefined;
+      if (read === "listing") {
+        vi.mocked(api.projects).mockImplementationOnce(async () => {
+          await pending;
+          return [webProject];
+        });
+        act(() => { listing = store.current.loadProjects("alpha"); });
+      } else {
+        const before = vi.mocked(api.bootstrap).mock.calls.length;
+        vi.mocked(api.bootstrap).mockImplementationOnce(async () => {
+          await pending;
+          return bootstrap([agent("alpha")], [member], member.id, {
+            threadsSourceId: "alpha", projects: [webProject], projectsSourceId: "alpha",
+          });
+        });
+        act(() => FakeEventSource.latest?.emit("agents.changed", {
+          id: "pending-project-bootstrap", version: 1, type: "agents.changed",
+          at: "2026-09-08T10:00:00.000Z",
+        }));
+        await waitFor(() => expect(vi.mocked(api.bootstrap).mock.calls.length).toBeGreaterThan(before));
+      }
+      act(() => FakeEventSource.latest?.emit("projects.changed", {
+        version: 1, type: "projects.changed", at: "2026-09-08T10:00:01.000Z",
+        payload: { project: created },
+      }));
+      await waitFor(() => expect(store.current.projectsByAgent.alpha).toContainEqual(created));
+      await act(async () => { release(); await pending; await listing; });
+      expect(store.current.projectsByAgent.alpha).toContainEqual(created);
+
+      // A subsequent snapshot really can remove a project deleted while offline.
+      vi.mocked(api.projects).mockResolvedValueOnce([webProject]);
+      await act(async () => { await store.current.loadProjects("alpha"); });
+      expect(store.current.projectsByAgent.alpha).toEqual([webProject]);
+    });
+  }
+
+  it("closes the open page when a remote archive lands", async () => {
+    const store = await renderProjectStore();
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [member] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.openProjectId).toBe(webProject.id));
+
+    const archived = {
+      ...webProject,
+      archivedAt: "2026-09-08T10:00:00.000Z",
+      revision: webProject.revision + 1,
+    };
+    act(() => FakeEventSource.latest?.emit("projects.changed", {
+      version: 1,
+      type: "projects.changed",
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { project: archived },
+    }));
+    await waitFor(() => expect(store.current.openProjectId).toBeNull());
+    expect(store.current.projectMembers).toEqual([]);
+  });
+
+  it("derives membership from the reconciled projection, not the stale event", async () => {
+    const store = await renderProjectStore();
+    const held = { ...member, revision: 3, projectId: webProject.id };
+    vi.mocked(api.projectThreads).mockResolvedValue({ threads: [held] });
+    act(() => store.current.openProjectById(webProject.id));
+    await waitFor(() => expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]));
+
+    // A stale detach event (rev 2) races a held attach (rev 3): the member stays.
+    const stale = { ...member, revision: 2, projectId: null as string | null };
+    act(() => FakeEventSource.latest?.emit("thread.changed", {
+      version: 1,
+      type: "thread.changed",
+      threadId: member.id,
+      at: "2026-09-08T10:00:00.000Z",
+      payload: { thread: stale },
+    }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(store.current.projectMembers.map((row) => row.id)).toEqual([member.id]);
+    expect(store.current.threads.find((row) => row.id === member.id)?.projectId).toBe(webProject.id);
+  });
   });
 });

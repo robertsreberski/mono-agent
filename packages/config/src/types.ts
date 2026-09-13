@@ -242,11 +242,20 @@ export interface MonoAgentInlineSubagentsConfig {
   readonly allowedTools?: readonly string[];
 }
 
+/** One model the parent may pick per `Agent` call (`subagents.models`). */
+export interface MonoAgentSubagentModelChoice {
+  /** Optional short name; otherwise the canonical model reference is used. */
+  readonly name?: string;
+  readonly model: RuntimeModelReference;
+}
+
 /**
  * Subagent deployment policy. Absent or `enabled: false` means the `Agent` tool
  * is never registered.
  */
 export interface MonoAgentSubagentsConfig {
+  /** Operator allow-list for call-time Agent model overrides. */
+  readonly models?: readonly MonoAgentSubagentModelChoice[];
   readonly enabled?: boolean;
   /** In-flight subagents per parent turn. Default 5. */
   readonly maxConcurrent?: number;
@@ -487,6 +496,8 @@ export interface ResolvedProviders {
 export interface PiNativeProviderConfig {
   /** Preferred Pi provider transport (default auto; unsupported providers ignore it). */
   readonly transport?: PiTransport;
+  /** Emit metadata-only prompt-cache request fingerprints into run artifacts (default false). */
+  readonly promptCacheDiagnostics?: boolean;
   /** Max retry attempts for the pi provider transport (0-8; default 2). */
   readonly piMaxRetries?: number;
   /** Maximum delay between retry attempts, in milliseconds (default 60000). */

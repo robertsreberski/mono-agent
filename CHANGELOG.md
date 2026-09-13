@@ -11,6 +11,116 @@
   canonical implementations. See the [migration guide](./docs/reference/framework-simplification-migration.md)
   before upgrading an existing consumer.
 
+- Let `Agent` calls select a model from `subagents.models` and set effort for
+  configured, authored, or general-purpose helpers. Call-time values override
+  profile pins; unpinned children inherit the parent's effective model and effort.
+  Report requested and executed routes when a child route is pinned or overridden.
+
+- Label a conversation that belongs to a project wherever it is listed: on its
+  row in the console's conversation list and archive shelf, on its card in
+  Active now, and on a search hit. Conversation summaries carry the project's
+  name as `projectName`, so a card for another agent's project can name it
+  without that agent's project list. The chat header's project badge is set in
+  sentence case at the conversation title's left edge.
+
+- Add project colors, a tinted chat badge, and persisted join/leave/move markers.
+  Membership changes wait for the active turn boundary; steering retains frozen
+  project context. Busy deletion and pending-destination archival return conflicts.
+  Add authenticated, source-scoped console project/conversation MCP tools with
+  atomic create-and-attach and operation receipts, plus `SearchConversations`
+  (the search bar's full-text search) and archived/limit options on
+  `ListConversations`. Storage appends migration 27.
+
+- Add Projects to the web console: per-agent named containers of conversations
+  with a free-text context (at most 4,000 characters) that is prepended,
+  operator-facing text only and at dispatch time, to every turn of every member
+  conversation, so existing conversations pick it up on their next turn. The
+  Dashboard lists projects between Running and Recent, a project page shows the
+  context card and member conversations, and the conversation menu moves chats
+  in and out. Archiving a project hides its entry while keeping chats,
+  membership, and injection; deleting one detaches its chats back to the agent.
+  Project summaries carry conversation, running, and monthly-priced-usage
+  counts over `GET/POST /api/v1/projects`, `PATCH/DELETE
+  /api/v1/projects/:id`, thread `projectId` membership, and
+  `projects.changed` events. Storage migrates to schema 26
+  with `projects` and `threads.project_id`.
+
+- Conversation rows now show compact current model and effort labels across the
+  dashboard, running cards, and search results. Subagent activity shows a smaller
+  per-call route label, retaining fallback warnings and effective-effort details.
+  Model versions remain visible, with signal bars reflecting each model's
+  advertised effort levels (text when unknown). Phone layouts give delegation
+  tasks priority over their compact routing and timing metadata.
+
+- Per-tool output truncation now persists the full output in the configured
+  app. Bash, Exec, NodeRepl, Read, WebFetch, Grep and Glob trim oversized
+  results at their own character/line caps long before the 256 KiB tool-payload
+  guard, and the code path that saves the trimmed remainder to disk only knew
+  how to write under a `toolArtifactDir` that the configured app never sets —
+  so the console saw `[truncated Bash output …]` with no file behind it. The
+  per-run host artifact sink the payload guard already receives is now attached
+  to the run's tool context and preferred by that spill path, so the full output
+  lands under `artifacts.dir/tool-output/<runId>/` and the retained text ends
+  with `Full output saved to: <path>`. Hosts that configure `toolArtifactDir`
+  directly keep the previous behavior.
+
+- An over-cap `Agent` (subagent) result is now spilled to the run's tool-output
+  artifact directory instead of being silently cut. The retained tool result
+  kept its 12,000-character answer cap and 24 KB byte cap, but the text beyond
+  them was simply dropped — a long research report from a subagent lost its
+  tail with no way to recover it. When the answer exceeds the cap, the activity
+  log is elided, or the byte cap fires, the complete result is written through
+  the same host artifact sink the tool-payload guard uses, the retained text
+  names the file directly under its header
+  (`[result truncated; full result saved to: …]`), and the path is recorded as
+  a `tool_payload_saved_paths` artifact reference in tool history. Without a
+  sink the text says the full result was not saved.
+
+- **Breaking: the minimum supported Node.js version is now 24.15.0** (previously
+  22.19.0). Node 22 bundles ICU 77, whose `windows-1252` decoder maps the C1
+  bytes to raw control characters instead of the WHATWG code points, so
+  `WebFetch` returned `U+0093`/`U+0094` where a cp1252 page meant curly quotes.
+  ICU 78, shipped from Node 24.14.0 onward, decodes them correctly. Rather than
+  carry two decoding behaviours across the supported range, the floor moves to a
+  Node line that decodes retrieved documents correctly. Upgrade Node before
+  installing or updating mono-agent.
+
+- Cap every inline image handed to a model at 2,000 px per edge, down from
+  8,000 px, and apply the same normalization to MCP tool results. Anthropic
+  tightens its per-image dimension limit from 8,000 px to 2,000 px once a single
+  request carries more than 20 image blocks, counting images inside tool results
+  and every image replayed from earlier turns. A screenshot-heavy conversation
+  crosses that threshold easily, and one oversized capture then rejected the
+  whole request with an `invalid_request_error` that no retry or model failover
+  could clear, leaving the conversation permanently stuck. MCP screenshots
+  previously bypassed dimension checks entirely because they were measured only
+  in bytes, so a wide desktop capture passed every guard. Images already within
+  the ceiling are forwarded byte-identical, and source files are never modified.
+
+- Extend the configured app's startup-and-hourly artifact retention sweep to
+  own raw `tool-output/<runId>/` directories under the existing
+  `artifacts.retention` age, count, and dry-run policy. Selection is path/mtime
+  based so aged recordless orphans are cleaned; running, uncertain, or recently
+  modified directories are kept conservatively, symlinked or unsafe paths fail closed, and
+  pruned opaque `SessionHistory` references degrade to `available: false`.
+- Resolve inherited reasoning effort per selected model route. Model-only web,
+  Slack, Telegram, cron, and webhook overrides now keep `runtime.effort` only
+  for the configured primary or a model whose advertised ladder admits it;
+  configured fallbacks use their own pinned effort or provider default. The web
+  console labels provider-default inheritance accurately, and explicit effort
+  overrides remain unchanged.
+- Bound every WebSearch backend to 4,000-character marked snippets and a 64 KiB
+  ranked body, pass Ollama the caller's result limit, and preserve complete
+  trust framing. Oversized text tool results now retain a framed UTF-8-safe
+  head/tail sample, while configured app runs persist raw blocks best-effort in
+  owner-private `tool-output/<runId>` files that can become opaque
+  `SessionHistory` references. Publication creates and verifies directory
+  components individually at mode `0700`, accepts pre-existing owner-controlled
+  components only when they are not group- or world-writable, rechecks the
+  run-directory identity after opening, and removes identity-proven files after
+  final validation failure; Node's lack
+  of fd-relative `openat` leaves a documented residual same-user rename window.
+
 - **Breaking: framework self-configuration has been removed.** The dedicated
   SELF-CONFIG session, `ProposeAgentConfiguration`, `mono-agent tui --configure`,
   `/configure`, host-side proposal review/apply/restart transaction, and bundled

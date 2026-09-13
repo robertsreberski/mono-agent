@@ -29,7 +29,9 @@ import {
 } from "../background-snapshot.js";
 import {
   fingerprintBackgroundOperationalEnvironment,
+  fingerprintSystemdBackgroundOperationalEnvironment,
   selectBackgroundOperationalEnvironment,
+  selectSystemdBackgroundOperationalEnvironment,
 } from "../background-environment.js";
 import { managedBackgroundEnvironment, resolveInstanceTarget } from "../background.js";
 import { effectiveFirstRunEnvironment, resolveEffectivePiAuthPath } from "../first-run-readiness.js";
@@ -538,6 +540,41 @@ describe("background operational environment", () => {
     expect(fingerprintBackgroundOperationalEnvironment({ HOME: "/other", PATH: "/safe/bin" })).not.toBe(
       fingerprintBackgroundOperationalEnvironment(env),
     );
+  });
+
+  it("captures Linux systemd session values as operational without requiring them in dotenv", async () => {
+    const hostEnvironment = {
+      HOME: dir,
+      PATH: "/safe/bin",
+      XDG_CONFIG_HOME: join(dir, ".config"),
+      XDG_DATA_HOME: join(dir, ".local", "share"),
+      XDG_CACHE_HOME: join(dir, ".cache"),
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+    };
+    const systemdEnvironment = selectSystemdBackgroundOperationalEnvironment(hostEnvironment);
+    const effectiveEnvironment = { ...systemdEnvironment, MODEL_API_KEY: "top-secret" };
+
+    const snapshotInput = {
+      cwd: dir,
+      configPath: "mono-agent.config.json",
+      envFile: ".env",
+      env: effectiveEnvironment,
+      operationalEnvironmentPolicy: "systemd",
+    } as const;
+    const snapshot = await captureBackgroundSnapshot(snapshotInput);
+    expect(snapshot).toMatchObject({
+      configPath: join(dir, "mono-agent.config.json"),
+      dotenvPath: join(dir, ".env"),
+      operationalEnvironmentFingerprint: fingerprintSystemdBackgroundOperationalEnvironment(effectiveEnvironment),
+    });
+    expect(sameBackgroundSnapshot(snapshot, await captureBackgroundSnapshot(snapshotInput))).toBe(true);
+    expect(systemdEnvironment).toMatchObject({
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+    });
+    expect(selectBackgroundOperationalEnvironment(hostEnvironment)).not.toHaveProperty("XDG_RUNTIME_DIR");
+    expect(selectBackgroundOperationalEnvironment(hostEnvironment)).not.toHaveProperty("DBUS_SESSION_BUS_ADDRESS");
   });
 
   it("uses the same normalized PATH for the approved snapshot and the launchd worker", async () => {

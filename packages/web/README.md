@@ -26,6 +26,12 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   `~/.mono-agent/web`.
 - Persist optional per-agent model/effort defaults for new interactive web
   threads, copied at creation and clearable back to resolved config.
+- Show compact current model/effort labels on conversation, search, and running
+  rows, resolving each against its own agent's configured defaults. Effort uses
+  model-specific signal bars when the advertised scale is known, otherwise text;
+  off is an empty signal and positive levels each get one bar. Subagent
+  activity labels the delegation's reported route separately, with full routing
+  details in the disclosure and visible fallback warnings.
 - Preserve each turn's requested, attempted, and answering route plus the Pi
   wrapper's effective thinking level, and project bounded fallback/retry
   attribution without exposing raw provider diagnostics.
@@ -76,6 +82,17 @@ Catalog responsibility: Serves the always-on browser operator console for persis
   ingress, update one durable job card in place without a verbatim-history
   append, and poll its bounded redacted live output tail through the agent's
   independent owner operator capability without persisting each output chunk.
+  The browser collects cards from the loaded message window in one
+  conversation-level stack after the transcript. Queued, starting, and running
+  cards stay visible by default; terminal cards remain mounted behind
+  expandable history so status counts and live transitions stay current.
+  When a loaded launching `Exec`/`Bash` call has its exact persisted machine
+  receipt, that response's Activity also shows its actual start row. The
+  terminal row appears where the exact wake was consumed: at the steered point
+  in an active response or first in a follow-up response. If no retained wake
+  marker exists, the terminal row falls back beside the launch. These rows
+  never poll or duplicate card output; legacy or paginated-out launch receipts
+  remain stack-only.
 - Accept exact-source/thread Monitor wakes through that private ingress, steer
   them into the active run or serialize one assistant-only follow-up, retain
   delivery identity plus a payload hash for fail-closed duplicate handling, and
@@ -93,8 +110,12 @@ Catalog responsibility: Serves the always-on browser operator console for persis
 
 Process-job completion replies suppress only an exact sentinel-only terminal
 message with a verified wake association; narration and rich replies remain
-visible. Silent replies create no response push. Job cards distinguish an
-unknown wake receipt from failure and explain that replay was suppressed.
+visible. Silent replies create no response push. A web wake receipt confirms
+that steering was applied or that the agent accepted the exact follow-up turn
+request, which is also when the wake's host-owned chain depth and background
+starts bind to it; the turn's later model outcome remains separate. Job cards
+distinguish an unknown pre-confirmation receipt from failure and explain that
+replay was suppressed.
 
 `@mono-agent/agent-app` provides the normal managed-service lifecycle:
 
@@ -115,7 +136,7 @@ start or mutate the service. Use `mono-agent web run` for a foreground process
 or `--loopback` to bind only `127.0.0.1`. The curated `--theme` values are
 `evergreen` (default), `ocean`, `plum`, and `terracotta`. `--name <label>` sets
 the console label used for the installed PWA name/short name, browser title, and
-rail brand, defaulting to the machine hostname. Managed starts persist both
+the Dashboard's eyebrow, defaulting to the machine hostname. Managed starts persist both
 selections, restarts retain them unless explicitly replaced, `--name -` clears
 the stored label back to the hostname default, and `web status` reports the
 effective values.
@@ -155,27 +176,76 @@ Tailscale DNS name); suffix wildcards are intentionally not trusted. When a
 managed agent protects its loopback operator endpoint, discovery reads only
 `MONO_AGENT_TUI_API_KEY` from that agent's attested, owner-owned dotenv file.
 
-On desktop, the agent rail has fixed compact and expanded layouts selected by
-an explicit expand/collapse control. That choice is remembered by the browser.
-On narrow touch screens, a deliberate right swipe across the unoccupied chat
-surface or ordinary unselected transcript text opens the conversation drawer.
-A left swipe across either open navigation drawer closes it. Controls, active
-text selections, inputs, and any native horizontal scroller keep their normal
-touch behavior; short drags and vertically dominant scrolling do not trigger
-navigation. The two header navigation controls remain available as 44-pixel
-touch targets.
+One Dashboard is the console's whole navigation surface: a fixed 340-pixel left
+column on desktop, and the entrance screen on narrow touch screens. Its header
+carries the console name, the selected agent, and the notifications, agent
+settings and new-conversation controls; below it sit the agent strip,
+conversation search, a Running section for what the whole fleet has in flight,
+the Recent listing with its Chats and Automations chips, and a footer carrying
+the data-mode indicator and the archive shelf. Running comes from the service
+rather than from this browser's cache, so it names conversations on agents the
+tab has never opened; see the Running section below for what its cards say and
+when they say "last known".
+
+**Running.** One card per conversation the service reports as having work in
+flight — a foreground turn, or a queued/starting/running background job —
+across every discovered agent and both archive shelves, grouped by agent, two
+cards each with the rest behind an inline `+N more`. Membership, the per-agent
+counts and the truncation all come from `GET /api/v1/threads/active`, counted
+before the fifty-card cap, so a capped section says `Showing 50 of 63` rather
+than reporting fifty. Each card's status line says only what the turn's own
+transcript supports: `Working · 11 tool calls`, `Asking you a question` while a
+retained `AskUser` call is running, and `· $2.44` when the runtime priced the
+run. It does not show a step ordinal, an estimate of how much longer, token or
+context percentages, or a subagent's own tool calls. Without a live answer
+behind it — the stream dropped, the read failed, or a cold start off the device
+— the section says **last known** and falls back to what this browser holds. An
+authoritative empty listing takes it off screen as an answer: the fleet is
+idle. An empty fallback is omitted rather than drawn as a zero, which proves
+nothing either way. A card for a background job is only as current as the
+notification behind it, so the service re-asks each agent about the job cards
+it still draws as running; see Process-job card reconciliation below.
+
+**Unread.** A Recent row shows a dot, and an agent square a muted count, for a
+conversation that has moved since this device last looked at it. It is
+device-local: the service is not told, and each browser keeps its own. A
+conversation this browser has never seen is not unread, and the mark clears only
+while the conversation is on screen — on a phone, the conversation screen rather
+than the Dashboard. A running badge takes the agent square; the unread count
+comes back when the work ends. It is stored with the rest of this origin's
+console data and is cleared with it.
+
+A Recent row is marked as the open conversation only where that conversation
+is on screen: beside the list on desktop, and on a phone only once it has been
+pushed over the Dashboard. The service-side selection is unaffected; a phone
+showing only the list simply has nothing to point at with it. The agent
+settings dialog opens over whichever screen is showing and closing it leaves
+the operator there; only the new-conversation control navigates.
+
+On narrow touch screens the console opens on the Dashboard; a
+conversation is pushed over it when a row, a Running card or the new-conversation
+control is tapped, and popped by the 44-pixel **Back to dashboard** control at
+the left edge of the conversation header, by a deliberate right swipe across the
+unoccupied chat surface or ordinary unselected transcript text, or by Escape.
+Controls, active text selections, inputs, and any native horizontal scroller keep
+their normal touch behavior; short drags and vertically dominant scrolling do not
+navigate. Nothing is modal: neither screen traps focus, and the one not showing
+is simply out of reach. Only a cron channel has an address of its own, so only a
+URL naming one opens on the conversation.
 Offline agents that remain in the current discovery result are hidden behind a
 subtle count by default; pinned agents and the currently selected agent remain
 visible even while offline. An agent omitted by a successful discovery refresh
-is removed from every picker and from that count regardless of its prior pin or
+is removed from the strip and from that count regardless of its prior pin or
 selection. Its rows, conversations, and pin stay retained in SQLite and return
 if the same source id is discovered again. The same filter applies to the
-desktop rail, mobile picker, and command palette. Pin or unpin with the star
-control; pins live in the web service so favorites stay consistent over
-localhost, LAN, and Tailscale.
+agent strip and the command palette. Pin or unpin the selected agent with the
+star in the agent settings dialog or the palette's pin command; pins live in
+the web service so favorites stay consistent over localhost, LAN, and Tailscale,
+and pinned agents sort first on the strip, which marks each pinned square with
+the same star.
 
-The single-row mobile header keeps navigation, title, notifications, and a
-conversation actions menu together. Run settings sit beside **Send** in the
+The single-row mobile conversation header keeps the back control, title, and
+the conversation actions menu together; notifications belong to the Dashboard. Run settings sit beside **Send** in the
 composer, where the compact trigger shows only the resolved model and effort.
 Its popover combines searchable model selection with the selected model's
 supported reasoning-effort choices and becomes a viewport-safe bottom sheet on
@@ -205,9 +275,13 @@ turns and model changes are `Last measured`. A running or successful compaction
 suppresses the older number until the next exact snapshot, while legacy and
 unsupported-runtime threads show `Context —` instead of deriving a percentage
 from aggregate work.
-Structured reasoning, routine tools, and one update-in-place row per compaction
-share the stream-aware Activity disclosure, which collapses at every terminal
-message state without reordering answer parts.
+Structured reasoning, routine tools, process-job lifecycle evidence, and one
+update-in-place row per compaction share the stream-aware Activity disclosure,
+which collapses at every terminal message state without reordering answer
+parts. Receipt-bearing job launches keep their start row beside the exact
+launch call. Their terminal row follows the consumed wake chronologically, with
+launch-adjacent placement only as a fallback when no wake marker was retained;
+ordinary adjacent same-tool calls retain their existing clustering.
 
 The picker is labelled **Next turn**. The conversation header carries no run
 attribution. Below an assistant message, a normal route marker appears only when
@@ -220,7 +294,20 @@ level. Configured subagents keep independent attribution in their own Activity
 row. The browser never infers a fallback from selector state, and the
 route-attribution payload never carries raw provider errors or request identifiers.
 
-The agent rail's settings action opens a separate **Agent settings** dialog.
+Where the conversation's selected route changes, the transcript says so: a quiet
+rule between the last turn on the old model and the first turn admitted on the
+new one, reading `Model  Sol 5.6 · high → Astra 6 · medium` (or `Effort` alone
+when only the grade moved), with the full provider ids and effort names in its
+accessible name. It is written at turn admission from that turn's own frozen
+resolved route, not from picker writes: flipping the selector and coming back
+before sending leaves nothing behind, a run of flips leaves one marker, a route
+nothing resolved is never claimed as a change, and the first routed turn is a
+baseline rather than a change. A provider fallback is not a route change and
+stays in the message's own attribution, above. `modelTransitions` sidecars
+accompany detail and message pages exactly as `projectTransitions` do, and
+schema 28 adds their records.
+
+The dashboard header's settings action opens a separate **Agent settings** dialog.
 Its model and effort choices become the defaults for subsequently created web
 console conversations for that agent. Either field may inherit resolved config,
 and **Revert to config** clears both overrides in one action. These settings live
@@ -297,29 +384,37 @@ blockquote context; it does not rewrite the visible message text. The public
 turn DTO exposes this as `quote: { text, messageId }`, and the source message
 must belong to the same thread.
 
-The composer remains sendable while a response is running. A normal text-only
-send is persisted immediately and offered to the active provider as live
-guidance. An existing interactive conversation shows a secondary **Steer**
-action only while a turn is running. **Control/Command + Shift + Enter** still
-uses the same server-authoritative live-input path regardless of the browser's
-displayed state. With no active turn, the service queues the message as exactly
-one normal turn using the conversation route captured when it was offered.
+The composer has one **Send** action whether the thread looks idle or running.
+Button Send, desktop Enter, and **Control/Command + Shift + Enter** all submit
+one immutable UUID-bearing payload; Shift+Enter and touch Enter remain newline.
+The server, not browser run state, admits it as either a normal turn or targeted
+live guidance for the exact active Web operation. There is no secondary Steer
+button. With no active turn, the service starts exactly one normal turn using
+the conversation route captured at admission.
 
-The message shows `pending`, `applied`, `queued`, or `cancelled`; an unsupported
-provider, delivery failure, end-of-turn race, idle conversation, or web-service
-restart queues it as the next normal turn instead of dropping it. Steering is
-text-only: the Steer button is disabled when attachments are present, and the
-shortcut fails closed before either send endpoint while restoring the draft,
-quote, and attachments. Attachments retain the ordinary turn path. Cancelling
-the active turn also cancels its pending or queued live follow-ups. Live
-follow-ups are capped at 8,000 characters and 100 unsettled messages per thread.
+The message shows `pending`, `applied`, `queued`, `cancelled`, or `uncertain`.
+`applied` means exact owned-operation transcript consumption, not provider
+receipt or answer adherence. Unsupported targeting or proved-safe removal
+visibly queues one normal turn; a post-dispatch failure, end-of-turn race,
+cancellation, or restart is permanently uncertain and is not retried
+automatically. Active-turn attachments are rejected with
+`active_attachments_unsupported` before upload ownership changes; the browser
+restores the full text, structured quote, and staged files. The same payload may
+be deliberately sent after the response finishes with a new submission id.
+Cancelling the active turn also cancels its pending or queued live follow-ups.
+Live follow-ups are capped at 8,000 characters and 100 unsettled messages per
+thread.
 
-Once the provider applies a follow-up, the assistant's Activity disclosure also
-receives one completed `↪️ Steered: “<safe preview>”` tool row with result
-`Applied to current run`. The original follow-up remains the full human message;
-the synthetic activity carries only a one-line, redacted, 40-code-point preview.
+Once exact consumption is host-confirmed, the follow-up renders once more as the
+operator's own message at the point the run consumed it, with its full text and
+quote when one was attached: an undecorated user bubble inside the assistant
+turn that splits the Activity disclosure into the work before it and the work
+after it. The standalone bubble that carried the pending follow-up is dropped
+while the inline marker is loaded; other channels still show the completed
+`↪️ Steered: “<safe preview>”` tool row with result `Consumed by current run`,
+which carries only a one-line, redacted, 40-code-point preview.
 
-The header bell explicitly enables standards-based Web Push. Permission and
+The Dashboard header's bell explicitly enables standards-based Web Push. Permission and
 subscription creation happen only after that click; the server keeps one
 owner-private VAPID identity, subscription secrets, and a durable SQLite
 outbox. Completed responses, cron/webhook `web:new` results, blocking `AskUser`
@@ -356,6 +451,75 @@ come only from the running agent. Delivery is idempotent, best-effort, attempted
 once with a five-second bound, and has no outbox when the web service is
 unavailable. Other `web:*` destinations are not accepted.
 
+The dashboard lists ordinary conversations under **Recent** and offers
+**Automations** as the list's second chip beside **Chats**; the chip swaps the
+rows in place, with no separate view to return from. Its contents come from the
+agent-scoped cron overview rather
+than the currently loaded conversation page, so configured jobs appear before
+their first run and every overview job links to its stable read-only history channel.
+Each row shows the job id, cadence and timezone, enabled state, last/active run,
+and an agent-authored next run only while live authority is available. Loading,
+unsupported, unavailable, offline/saved-snapshot, empty, and truncated-overview
+states remain distinct. Saved history stays openable read-only, while stale
+schedule state is labelled and never made actionable. The Dashboard's one search
+field queries conversations under the Chats chip and filters the complete bounded
+overview under the Automations chip; the chips stay visible during a search, and
+switching chips clears the query. The Recent list uses a server-side scope for paging
+and search, so cron channels are excluded
+before limits and cursors are applied while ordinary and webhook conversations
+remain visible. A project's conversations stay in the list with the agent's own;
+what marks them is a label carrying the project's name, drawn on the row, on the
+Running card, on a search hit and on the archive shelf. Unscoped HTTP callers
+keep the backward-compatible mixed list.
+Automations is a system view of the list; this package defines project
+persistence and membership below, but no folders and no runtime context beyond
+the per-turn project envelope.
+
+**Projects.** One agent's named containers of conversations, listed in a
+**Projects** section between Running and Recent. A project carries a free-text
+context (at most 4,000 characters; names are one line of at most 120) that is
+prepended, operator-facing text only and at dispatch time, to every turn of
+every member conversation, so existing conversations pick it up on their next
+turn. The envelope is `<project_context name="…">…</project_context>` with
+reserved delimiters neutralised in prompt copies; it is never persisted in
+messages, live-input text, or submission hashes, and never shown as part
+of the user's message. Membership is independent of archive state: archiving a
+project hides its navigation entry while keeping chats, membership, and
+injection. Deleting a project detaches its chats back to the agent — never
+deletes or stops them — and they reappear under the agent immediately. The
+project page lists members only; Recent stays agent-wide. Project summaries
+carry `conversationCount`, `runningCount`, and the current UTC month's
+recognised priced usage as `monthUsd` (omitted when no priced observation
+exists). The browser API is `GET/POST /api/v1/projects`,
+`PATCH/DELETE /api/v1/projects/:id`, `projectId` on thread create/patch (null
+detaches; never combined with `ifRunConfigUnset`) and as a `GET /threads`
+filter, membership in `WebThread.projectId`, the resolved agent's projects on
+the bootstrap, and `projects.changed` events carrying the
+fresh summary or a removal.
+
+Projects have a fixed color palette: default, blue, purple, amber, or rose. The
+chat toolbar shows the effective project with a compact tinted badge. Creating
+a project from the conversation menu remains the same creation flow.
+
+Membership requests made during an active turn remain pending until that turn
+settles, including cancellation, failure, and restart recovery. The last request
+wins; returning to the effective membership cancels a pending move. Each turn
+internally snapshots the project name/context, including no project, so steering
+cannot adopt edits midway through a turn. The next turn uses fresh context.
+Color edits are immediate presentation changes. Deleting a project with active
+members or pending references is refused; archiving a pending destination is
+also refused until its turns finish.
+
+Immutable join/leave/move markers retain historical name/color and the actual
+message boundary. `projectTransitions` sidecars accompany detail and message
+pages; they are independent of model messages, prompts, search, cost, counts,
+and copy text. `pendingProject` on the conversation describes deferred intent.
+Schema 27 adds these records and atomic console-tool operation receipts; the
+existing web-state reset and conversation deletion cascade remove owned records.
+
+Interactive web turns can use the app-owned console tools described in
+[Console project tools](../../docs/tools/mcp.md#console-project-tools).
+
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
 deleted only after archival. Deletion leaves delivery receipts threadless and
@@ -364,13 +528,40 @@ late or replayed delivery cannot recreate the channel. Bootstrap and paging are
 bounded per source and archive state, with redirect-resolving thread fetches for selections
 or mutations outside the current window.
 
-The cron header is read-only: a quiet line shows human-language cadence and the
-agent-authored next run in the viewer's local date/time, with the viewer timezone
-available on the time label. Wall-clock cadence includes the scheduler timezone
-(UTC by default); unsupported expressions retain normalized cron text and timezone.
-Disabled or removed jobs say so. Missing, invalid, past, or offline/stale next-run
-state says **Next run unavailable**. Configuration stays in files/config JSON;
-the browser neither edits it nor computes a schedule.
+The cron header opens collapsed, on one line of the three facts an operator
+reads first: schedule, effective state and next run. Expanding its disclosure
+shows schedule, timezone, effective state, last and next run, and health from
+the agent-authored overview, together with the controls below. It is a native
+`details`, so its expanded state is exposed to assistive technology and driven
+from the keyboard by the browser, and nothing about it is persisted. The
+disclosure belongs to one agent's one job, so every cron channel opens
+collapsed, including a direct switch from one cron channel to another. **Run now** and **Enable/Disable**
+use the existing confirmed operator APIs when the live agent advertises action
+capability; otherwise they stay visible but disabled with the authoritative
+reason. **View config** exposes the existing redacted, read-only config view.
+Configuration stays file/config-JSON owned, and the browser neither edits it nor
+computes a schedule or promotes stale snapshot data into actionable live state.
+
+Each visible terminal run keeps **Reply**, status, and local time in its compact
+footer; secondary artifact, originating-session, activity, and truncation
+diagnostics live under an accessible **Details** disclosure. Reply snapshots the
+exact persisted result at activation—compact summary unless activity detail is
+already loaded—and imports at most 32 KiB of explicitly marked untrusted
+provenance/result into a separate normal conversation for the same agent. It
+does not fetch hidden detail, rerun cron, invoke a provider, submit the empty
+composer, include tools/files/config/neighbouring history, or continue the cron
+session. The agent must positively advertise context-import v1 with a sufficient
+byte limit. Unknown transport outcomes keep one operation for explicit Retry;
+they are never replayed on startup. The page keeps unresolved identity in
+memory even when bounded session persistence is unavailable, and temporary
+offline/unsupported retry preflight does not discard it. A later deliberate
+Reply after a definitive failure creates another operation and conversation.
+The imported conversation renders that immutable snapshot as a compact card:
+run provenance and status, Markdown result, optional failure/truncation notices,
+and an accessible **Details** disclosure with exact raw JSON. This is read-time
+presentation only. The two host-seeded rows, snapshot text and digest remain
+unchanged in SQLite and in the agent's canonical history; unparseable or
+non-v1 text remains ordinary text.
 
 The web HTTP config-view, run-now, and effective-enabled proxies remain available
 for operator clients. Mutations still require same-origin requests, source-qualified
@@ -408,7 +599,7 @@ expanding fetches the whole part from the message-bound tool-call route, and a
 device-restored repair is accepted only when that digest still matches.
 
 The console runs in a browser-local data mode — Auto, Lean, or Full — cycled
-from the sidebar-footer indicator or the command palette, alongside a session
+from the dashboard-footer indicator or the command palette, alongside a session
 byte total and per-minute rate marked estimated whenever any component is not a
 browser measurement. `Auto` reads the Network Information API and resolves to
 Full where there is none (Safari, and so iOS), which is why an installed PWA is
@@ -501,7 +692,7 @@ ledger; postconditions check the required effects.
 1. `server.ts` accepts the versioned browser API, staged uploads, and SSE
    subscriptions, then delegates stateful work to `WebConsoleService`.
 2. The service discovers agents from the trace-source registry, persists agent,
-   thread, message, part, process-job card, Monitor wake claim, turn, live-input, upload, preference,
+   thread, project, message, part, process-job card, Monitor wake claim, turn, live-input, upload, preference,
    Web Push subscription/event/delivery, notification, and cron projection
    records through the SQLite store, and
    drives each agent over its loopback operator endpoint.
@@ -520,26 +711,55 @@ ledger; postconditions check the required effects.
    Monitor activity, tool cards, composer, attachments, and push-subscription
    UI, keeping a per-conversation cache that is also written to the device
    (IndexedDB `mono-agent-web`, version 2, swept per writer on hydration) so a
-   cold start draws before the first response. Its service worker precaches the
+   cold start draws before the first response. The same store holds this
+   device's unread marker — one seen revision per conversation, never sent to
+   the service — which is why it is cleared with the rest of this origin's
+   console data. Its service worker precaches the
    shell, handles background push delivery and same-origin clicks, and is
    registered in `prompt` mode: a new build is staged and applied on the next
-   idle foreground moment or an explicit reload, never over a running turn or an
-   unsent draft.
+   idle foreground moment or an explicit reload, never over a running turn or
+   staged attachments. Unsent composer text is kept per agent and conversation
+   and retained on the device (`localStorage`, `mono-agent.web.composer-drafts`,
+   newest 40 conversations, 30-day expiry), so closing, reloading or evicting the
+   app returns it to the composer it was typed in.
 5. `deliverWebNotification` reads the owner-private live ingress record and
    performs one bearer-authenticated loopback delivery. Cron/webhook delivery
    first appends the result to agent history, then atomically exposes an
    idempotent assistant-only thread. A process-job delivery instead updates one
    source/thread-bound durable card; its normal wake turn owns the single agent
-   history entry. A Monitor delivery is steered into an active run or becomes an
-   assistant-only follow-up in the exact existing web thread; exact host-owned
-   receipts update one compact, secret-free activity row rather than creating
-   repeated steering cards. The browser may be closed, but the web service must
-   remain running.
+   history entry. Its receipt returns once that exact follow-up is durably
+   admitted rather than waiting for model completion. A Monitor delivery is
+   steered into an active run or becomes an assistant-only follow-up in the exact
+   existing web thread; exact host-owned receipts update one compact, secret-free
+   activity row rather than creating repeated steering cards. The browser may be
+   closed, but the web service must remain running.
 
 Monitor activity shows suppressed lines/batches and follow-up, steered, or
 unknown wake dispositions. These are host delivery counts, not model-turn or
 cost estimates. Historical v1 Monitor projections in SQLite and browser caches
 remain readable alongside v2 projections.
+
+**Process-job card reconciliation.** A retained job card is written
+`queued`, `starting` or `running` from the agent's notification and leaves that
+state only when a terminal projection arrives. When that notification never
+lands — the agent restarted while the web service was disconnected, a wake was
+lost — nothing else moves the card, so the service re-asks the agent. A sweep
+runs when an agent connection is re-established or its process generation
+changes, and otherwise no more than once every fifteen minutes per agent. One
+sweep is bounded for the whole service rather than per agent: at most four job
+reads in flight and at most fifty cards across the entire fleet, shared evenly
+between the agents that are due, so a fleet-wide reconnect cannot multiply
+either bound by the number of agents. The agents and the cards a pass does not
+reach are taken by the next one: an agent the budget ran out before keeps no
+sweep timestamp and stays due, and each agent resumes after the card its last
+pass stopped on, so a card behind a page of still-running ones is reached
+rather than waiting for that page to settle. For each card it reads the
+agent's projection: a terminal projection is applied exactly as its
+notification would have been and emits the same events; an agent that no longer knows the job retires the card
+as `interrupted` with `process_job_agent_restarted`; any other failure leaves
+the card untouched, because an agent this console could not reach has not said
+that the job ended. Agents without process-job support, and cards for a source
+id discovery no longer reports, are left alone.
 
 ### Package structure
 
@@ -550,7 +770,7 @@ remain readable alongside v2 projections.
 | [`store.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/store.ts) | Owner-private SQLite schema and transactional persistence, including race-safe automatic-title updates that never overwrite a user rename. |
 | [`operator-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/operator-client.ts) | Structured turn streaming, info/capabilities, live-input settlement, pending/submitted `AskUser`, cancellation, durable history append, conditionally bearer-authenticated provider-auth, and owner-authenticated process-job requests over the operator protocol. |
 | [`notification-client.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-client.ts) and [`notification-ingress.ts`](https://github.com/robertsreberski/mono-agent/blob/main/packages/web/src/notification-ingress.ts) | Bounded, authenticated cron/webhook delivery, source/thread-bound process-job cards, and Monitor wake turns. |
-| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, process-job live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
+| [`webapp/`](https://github.com/robertsreberski/mono-agent/tree/main/packages/web/webapp) | Isolated assistant-ui PWA, including compact Monitor activity, the loaded conversation-level process-job stack and live tails, atomic `AskUser` forms, tests, and its own dependency lockfile. |
 
 ## Public API
 
@@ -582,6 +802,11 @@ ACP_PROTOCOL_VERSION
 AcpBridgeDiscovery
 AcpBridgeSourceDescriptor
 AcpBridgeSourceHealth
+ConsoleToolName
+ConsoleToolOperation
+ConsoleToolScope
+CreateWebCronReplyInput
+CreateWebProjectInput
 CreateWebThreadInput
 CreateWebUploadInput
 DEFAULT_WEB_HOST
@@ -603,11 +828,13 @@ OperatorInfo
 OperatorTurnInput
 OperatorTurnResult
 PatchWebAgentInput
+PatchWebProjectInput
 PatchWebThreadInput
 PutWebAgentRunSettingsInput
 SearchWebThreadsInput
 StartWebLiveInputInput
 StartWebServerOptions
+StartWebSubmissionInput
 StartWebTurnInput
 WEB_API_VERSION
 WEB_CONSOLE_NAME_MAX_CHARACTERS
@@ -615,6 +842,8 @@ WEB_MAX_ACTIVE_ATTACHMENT_TURN_BYTES
 WEB_MAX_CONCURRENT_UPLOADS
 WEB_MAX_FILES_PER_TURN
 WEB_MAX_LIVE_INPUTS_PER_THREAD
+WEB_MAX_PROJECT_CONTEXT_CHARACTERS
+WEB_MAX_PROJECT_NAME_CHARACTERS
 WEB_MAX_QUEUED_ATTACHMENT_TURNS
 WEB_MAX_STAGED_UPLOADS
 WEB_MAX_STAGED_UPLOAD_BYTES
@@ -634,6 +863,9 @@ WebBootstrap
 WebBootstrapScope
 WebConsoleError
 WebConsoleIdentity
+WebCronReplyContextPart
+WebCronReplyReceipt
+WebCronReplySnapshotKind
 WebEvent
 WebEventType
 WebJobActivity
@@ -645,6 +877,10 @@ WebMessagePart
 WebMessageStatus
 WebModelOption
 WebNotificationTriggerKind
+WebProject
+WebProjectChangedPayload
+WebProjectColor
+WebProjectTransition
 WebPushBootstrap
 WebPushSubscriptionState
 WebPushSubscriptionStatus
@@ -664,14 +900,17 @@ WebSkillRegistry
 WebSkillUnavailableReason
 WebStatePathOptions
 WebStatePaths
+WebSubmissionReceipt
 WebTheme
 WebThread
 WebThreadChangedPayload
 WebThreadDetail
+WebThreadListScope
 WebThreadNotificationTriggerKind
 WebThreadSearchHit
 WebThreadSearchPage
 WebThreadTrigger
+createWebConsoleToolClient
 defaultTraceRegistryDir
 defaultWebStateDir
 deliverWebNotification
@@ -700,7 +939,9 @@ The browser API is rooted at `/api/v1`:
 - `GET /bootstrap` (one `?sourceId`/`?archived` thread bucket, `?limit` capped),
   `PATCH /agents/:id`, and `GET/PATCH/DELETE /threads/:id`
 - `POST /threads`, `/threads/:id/turns`, `/threads/:id/live-input`, and
-  `/threads/:id/cancel`
+  `/threads/:id/cancel`; the browser composer uses
+  `POST /threads/:id/submissions` plus recovery reads at
+  `GET /threads/:id/submissions/:submissionId`
 - `GET /threads/:id/messages/:messageId` for one message (delta gap recovery)
   and `GET /threads/:id/messages/:messageId/tool-calls/:toolCallId` for the
   unshaped body behind a truncated tool-call preview; `?full=1` on a transcript
@@ -720,6 +961,10 @@ The browser API is rooted at `/api/v1`:
 - `GET /events` (SSE); the optional `?thread=<id>` subscribes that connection to
   one conversation's `message.delta` frames, resolving a redirected id to the
   canonical one. `Last-Event-ID` is ignored — `ready` means resync
+- `POST /agents/:sourceId/cron/jobs/:jobId/runs/:runId/reply-threads` snapshots
+  one visible terminal run and imports it into one normal same-agent thread;
+  the exact-origin request carries a browser-owned operation UUID and summary
+  or already-loaded-detail selection
 
 `GET /healthz` is intentionally outside the versioned API for service probes.
 Its compatibility-stable `status` remains `ok` while the additive `push` field
@@ -731,12 +976,39 @@ The additive `WebBootstrap.console` object carries the server-derived
 `POST /threads/:id/live-input` accepts `{ text }` and returns a persisted message
 with `disposition: "pending" | "queued"`; SSE invalidation exposes its later
 `liveInputStatus` settlement.
+
+`POST /threads/:id/submissions` accepts a canonical UUID plus the ordinary turn
+payload. The thread-scoped immutable payload is recorded in `web_submissions`
+with its turn/live-input/rejection associations. Same-id same-payload replay
+returns the existing current receipt without dispatch; conflicting reuse is
+`409`. `GET /threads/:id/submissions/:submissionId` is side-effect-free and both
+receipt routes are `private, no-store`. Browser recovery persists only thread
+and submission ids in session storage—never draft text or file bytes—and checks
+the receipt without automatically posting again.
+
+Schema 22 adds a nullable `live_inputs.dispatch_started_at` marker committed
+before the operator request. On restart, an unmarked offered row is safe to
+queue once; a marked row becomes `uncertain` and non-promotable. Existing
+schema-21 rows migrate with a null marker, so their earlier dispatch history is
+not reconstructible. Schema 23 adds the durable `web_submissions` ledger and
+keeps it for the lifetime of its thread, including archive; permanent deletion
+cascades it. Schema 24 adds the read indexes used by conversation run-state
+lookups. Schema 25 adds `cron_reply_operations`, which owns the immutable
+snapshot, canonical-import identity, pending/terminal settlement, and deletion
+tombstone. Pending rows survive restart for explicit same-operation retry;
+failed or deleted rows cannot expose or resurrect a conversation. Stop the Web
+service and make a compatible database backup before migration. A schema-24
+binary refuses a schema-25 database; rollback requires
+restoring that compatible pre-upgrade backup and loses writes made afterward.
+Upgrade the operator-adapter before the Web producer so `liveInputTargeting`
+is available; an older operator is not guessed through and the receipt visibly
+queues `unsupported_targeting`. Deployment remains a separate operation.
 Permanent deletion is limited to archived, inactive conversations. It removes
 database descendants transactionally and deletes committed attachment files;
 startup and scheduled cleanup remove any file orphaned by a crash or transient
 filesystem failure after the database commit. Archiving a truly empty manual
 conversation conditionally removes it instead; any authoritative trigger,
-message, turn, attachment, live input, or delivery evidence makes the server
+message, turn, attachment, live input, submission receipt, or delivery evidence makes the server
 preserve it in Archived, including activity that arrives during the archive
 race.
 

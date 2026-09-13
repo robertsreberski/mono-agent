@@ -111,6 +111,17 @@ describe("webhook channel driver — native notification delivery", () => {
     expect(captured.apiKey).toBe("fixture-webhook-key");
   });
 
+  it("passes maxAttachmentBytes through only when configured", async () => {
+    const unset = await startCapturingWebhook(baseInput);
+    expect(unset).not.toHaveProperty("maxAttachmentBytes");
+
+    const configured = await startCapturingWebhook({
+      ...baseInput,
+      config: { ...baseInput.config, maxAttachmentBytes: 1024 },
+    });
+    expect(configured.maxAttachmentBytes).toBe(1024);
+  });
+
   it("passes endpoint maxRunMs overrides without replacing the adapter fallback", async () => {
     const captured = await startCapturingWebhook({
       ...baseInput,
