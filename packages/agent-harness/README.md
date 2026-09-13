@@ -383,7 +383,11 @@ Eligible coordinated durable Pi turns retain their epoch after validated native
 settlement; the canonical revision advances once. Recovery adds no Pi message.
 Pi filters interrupted prose/reasoning and retains completed native tools and the
 cancelled user input. Cancellation permits 1,000 ms by default for provider settlement while
-the caller and mailbox close immediately. Hosts may override the window through
+the caller and mailbox close immediately. The next same-conversation turn waits
+until the previous terminal account is published (cancellable; recorder/exporter
+finalization never delays it) and republishes a rejected account once before
+reporting the retryable continuity error; a wait past 5,000 ms emits one
+`turn_continuity_publication_slow` warning. Hosts may override the window through
 `session.terminalRecoverySettlementMs` (a positive safe integer); the two-process
 smoke uses a longer window to tolerate loaded runners. Unsafe or unsettled tails retire and
 reseed. A process-local budget allows one failed-turn recovery per epoch; user
