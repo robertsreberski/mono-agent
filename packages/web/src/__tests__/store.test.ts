@@ -2588,6 +2588,26 @@ describe("WebStore", () => {
     },
   );
 
+  it("round trips internal job progress through persisted web message parts", async () => {
+    const base = await temporaryRoot(); cleanup.push(base);
+    const stateDir = join(base, "state");
+    const store = await WebStore.open({ stateDir });
+    store.replaceAgents([agent()]);
+    const thread = store.createThread("agent-one");
+    const job = { ...fakeProcessJob({ conversationId: "web:" + thread.id }), tool: "Agent" as const,
+      kind: "internal" as const, instanceId: "helper", childStillBusy: false,
+      subagentProgress: { revision: 3, profile: "helper", toolCalls: 1, failedCalls: 0,
+        recent: [{ id: "call", toolName: "Read", status: "complete" as const, argsSummary: "src/file.ts" }], answerHead: "Safe report" } };
+    store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id, processJob: job, deliveryKey: job.wake.deliveryKey });
+    store.upsertProcessJobCard({ sourceId: "agent-one", threadId: thread.id,
+      processJob: { ...job, subagentProgress: { ...job.subagentProgress, revision: 1, recent: [], toolCalls: 0 } }, deliveryKey: job.wake.deliveryKey });
+    store.close();
+    const reopened = await WebStore.open({ stateDir });
+    const parts = reopened.getThreadDetail(thread.id)!.messages.flatMap((message) => message.parts);
+    expect(parts.find((part) => part.type === "process-job")).toMatchObject({ job: { subagentProgress: job.subagentProgress } });
+    reopened.close();
+  });
+
   it("orders terminal jobs by completion instead of card creation or wake retries", async () => {
     const base = await temporaryRoot();
     cleanup.push(base);
@@ -3587,6 +3607,28 @@ describe("WebStore subagent parts", () => {
     store.close();
     return detail.messages.at(-1)?.parts ?? [];
   }
+
+  it.each(["Agent", "AgentSend"])("preserves an exact detached %s receipt against late child bookends and calls", async (tool) => {
+    const receipt = { schema: "mono-agent.process-job-start-receipt.v1", tool, jobId: "job", state: "running", startedAt: "2026-09-13T10:00:00.000Z" };
+    const parts = await turnWith([
+      { kind: "event", event: { type: "tool_call_started", id: "launch", name: tool } },
+      { kind: "event", event: { type: "tool_call_completed", id: "launch", name: tool, structuredContent: receipt } },
+      bookend("launch", "helper"), childCall("launch", "helper", "c", "Read", { path: "x" }),
+      { kind: "event", event: { type: "tool_call_completed", id: "agent:launch:c", name: "helper▸Read", metadata: subagent("launch", "helper") } },
+    ]);
+    expect(parts.filter((part) => part.type === "subagent")).toEqual([]);
+    expect(parts.find((part) => part.type === "tool-call")).toMatchObject({ toolCallId: "launch", structuredResult: receipt });
+  });
+
+  it("does not suppress foreground activity for receipt-shaped noncanonical data", async () => {
+    const parts = await turnWith([
+      launch("launch", "helper"),
+      { kind: "event", event: { type: "tool_call_completed", id: "launch", name: "Agent", structuredContent: {
+        schema: "mono-agent.process-job-start-receipt.v1", tool: "Agent", jobId: "job", state: "running", startedAt: "invalid" } } },
+      bookend("launch", "helper"),
+    ]);
+    expect(parts.some((part) => part.type === "subagent")).toBe(true);
+  });
 
   it("converts the parent Agent tool call in place and owns its subagent's calls", async () => {
     const parts = await turnWith([

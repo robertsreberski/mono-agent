@@ -39,10 +39,28 @@ export type ProcessJobState =
   | "queue_expired"
   | "interrupted";
 
+/** Bounded, redacted UI evidence; never included in the parent's wake output. */
+export interface ProcessJobSubagentProgress {
+  readonly revision: number;
+  readonly profile: string;
+  readonly label?: string;
+  readonly toolCalls: number;
+  readonly failedCalls: number;
+  readonly recent: readonly {
+    readonly id: string;
+    readonly toolName: string;
+    readonly argsSummary?: string;
+    readonly status: "running" | "complete" | "failed";
+    readonly executionMs?: number;
+  }[];
+  readonly answerHead?: string;
+  readonly answerTruncated?: boolean;
+}
+
 export type ProcessJobProjection = ProcessJobProjectionBase & (
   | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
   | { readonly tool: "Agent" | "AgentSend"; readonly kind: "internal"; readonly instanceId: string;
-      readonly childStillBusy: boolean; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
+      readonly childStillBusy: boolean; readonly subagentProgress?: ProcessJobSubagentProgress; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
 );
 
 interface ProcessJobProjectionBase {

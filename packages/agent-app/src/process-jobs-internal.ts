@@ -1,3 +1,4 @@
+import type { SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import type { ProcessJobProcessResult, ProcessJobStartResult } from "@mono-agent/runtime-adapter";
 
 /** App-private closure lane. Only the safe identity and lifecycle enter the store. */
@@ -12,7 +13,7 @@ export interface InternalProcessJobRequest {
   readonly wakeOnCompletion?: boolean;
   readonly prepared?: never;
   readonly launch?: never;
-  run(signal: AbortSignal, writeOutput: (text: string) => void): Promise<{ output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }>;
+  run(signal: AbortSignal, writeOutput: (text: string) => void, reportProgress: (event: SubagentProgressEvent) => void): Promise<{ answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }>;
   /** Releases only this job's unstarted reservation; idempotent after begin. */
   cleanup(): Promise<void>;
 }
@@ -21,7 +22,7 @@ export interface InternalProcessJobsController {
   startInternal(request: InternalProcessJobRequest): Promise<ProcessJobStartResult>;
 }
 
-export type InternalProcessJobResult = ProcessJobProcessResult & { readonly childStillBusy?: boolean; readonly question?: { question: string; options?: string[] } };
+export type InternalProcessJobResult = ProcessJobProcessResult & { readonly answer?: string; readonly childStillBusy?: boolean; readonly question?: { question: string; options?: string[] } };
 
 /** Reporting is bounded; the actual child owns its separate true-settlement lease. */
 export function launchInternalProcessJob(
@@ -30,12 +31,13 @@ export function launchInternalProcessJob(
   maxOutputBytes: number,
   graceMs = 5_100,
   onOutput?: (chunk: Buffer) => void,
+  onProgress?: (event: SubagentProgressEvent) => void,
 ): { cancel(): void; completion: Promise<InternalProcessJobResult> } {
   const controller = new AbortController();
   const start = Date.now();
   let timedOut = false;
   let grace: ReturnType<typeof setTimeout> | undefined;
-  let finish!: (value: { output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }) => void;
+  let finish!: (value: { answer?: string; output: string; status: string; childStillBusy?: boolean; question?: { question: string; options?: string[] } }) => void;
   let settled = false;
   const chunks: Buffer[] = [];
   let storedBytes = 0;
@@ -69,12 +71,13 @@ export function launchInternalProcessJob(
         signal: null, stdout, stderr: "", aborted: controller.signal.aborted && !timedOut,
         timedOut: timedOut || value.status === "timeout", bufferExceeded: false,
         truncated: totalBytes > maxOutputBytes, bytes: totalBytes, storedBytes: bytes,
+        ...(value.answer === undefined ? {} : { answer: value.answer }),
         spawnError: null, durationMs: Date.now() - start, childStillBusy,
         ...(value.status === "awaiting_reply" && value.question ? { question: value.question } : {}) });
     };
   });
   // The caller has durably published running and active ownership before this microtask.
-  void Promise.resolve().then(() => request.run(controller.signal, writeOutput)).then(finish)
+  void Promise.resolve().then(() => request.run(controller.signal, writeOutput, (event) => { if (!settled) onProgress?.(event); })).then(finish)
     .catch(() => finish({ output: "Subagent execution failed.", status: "failed" }));
   return { cancel, completion };
 }

@@ -401,13 +401,15 @@ export function createAgentTool(subagents, context = {}, continuation) {
         try {
           const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentSend" : "Agent",
             jobId: reservation, instanceId: retained.id,
+            // `description` is the model-authored activity label (never the prompt); it names the job card.
+            ...(typeof params.description === "string" && params.description.trim() ? { description: params.description } : {}),
             timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)),
             // The identity is host-validated; raw prompts and tool parameters never enter job metadata.
             cleanup: () => instances.releaseReservation(retained.id, reservation),
-            run: async (childSignal) => {
+            run: async (childSignal, _writeOutput, reportProgress) => {
               try {
-                const result = await runTurn(childSignal);
-                return { status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
+                const result = await runTurn(childSignal, reportProgress);
+                return { answer: result.answer, status: result.details.subagent.status, ...(result.details.subagent.question ? { question: result.details.subagent.question } : {}), childStillBusy: result.details.subagent.childStillBusy === true,
                   output: JSON.stringify({ instanceId: retained.id, ...result.details.subagent,
                     answer: result.content[0].text, artifacts: result.details.tool_payload_saved_paths ?? [] }) };
               } finally { await instances.releaseReservation(retained.id, reservation); }
@@ -422,9 +424,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
       }
       return await runTurn(signal);
 
-      /** @param {AbortSignal} [signal] */
-      async function runTurn(signal) {
-        if (slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
+      /** @param {AbortSignal} [signal]
+       * @param {(event: *) => void} [reportProgress] */
+      async function runTurn(signal, reportProgress) {
+        if (!detached && slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
           budget.warnedQueued = true;
           context.onEvent?.({
             type: "runtime_warning",
@@ -483,7 +486,9 @@ export function createAgentTool(subagents, context = {}, continuation) {
           profileName: profile.name,
           callIndex,
           ...(params.description === undefined ? {} : { label: params.description }),
-          ...(context.onEvent === undefined ? {} : { emit: context.onEvent }),
+          ...(detached
+            ? { emit: (event) => reportDetachedProgress(event, reportProgress) }
+            : context.onEvent === undefined ? {} : { emit: context.onEvent }),
           // Synchronous spend is summed across router attempts. Detached spend
           // belongs only to its instance and job, even if it completes immediately.
           recordUsage: (spent) => {
@@ -612,6 +617,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         // artifact references from (the bloat guard sets the same one), so a
         // spilled subagent result is recorded in tool history like any other.
         return {
+          ...(detached ? { answer: outcome.answer } : {}),
           content: [{ type: "text", text }],
           details: {
             tool: continuation ? "AgentSend" : "Agent",
@@ -759,6 +765,30 @@ function appendRouteEntry(entries, entry, routeState) {
   if (entries.length <= ROUTE_HISTORY_MAX_ENTRIES) return;
   entries.splice(1, entries.length - ROUTE_HISTORY_MAX_ENTRIES);
   routeState.truncated = true;
+}
+
+/** Drop all provider payloads before the private job callback, especially prompts/results.
+ * @param {*} event
+ * @param {(event: *) => void} [report]
+ */
+function reportDetachedProgress(event, report) {
+  if (!report) return;
+  if (event.phase === "agent_started") {
+    report({ type: "started", profile: event.subagent.name,
+      ...(event.subagent.label ? { label: event.subagent.label } : {}) });
+  } else if (event.phase === "started") {
+    const args = event.arguments;
+    // No prompt/message or unknown-object fallback. Redaction precedes retention in the host.
+    const summary = args && typeof args === "object" && !Array.isArray(args)
+      ? ["file_path", "path", "filePath", "pattern", "command", "query", "url", "description", "name", "executable"]
+        .map((key) => args[key]).find((value) => typeof value === "string" && value.trim()) : undefined;
+    report({ type: "tool_started", id: event.id,
+      toolName: event.name.slice(event.name.indexOf("▸") + 1),
+      ...(summary === undefined ? {} : { argsSummary: summary }) });
+  } else if (event.phase === "completed" && !event.name.endsWith("▸?")) {
+    report({ type: "tool_completed", id: event.id, failed: event.isError === true,
+      ...(event.executionMs === undefined ? {} : { executionMs: event.executionMs }) });
+  }
 }
 
 /**

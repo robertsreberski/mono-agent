@@ -189,3 +189,27 @@ it("requires internal identity in the public TypeScript discriminated union", ()
   const id: string = internal.instanceId;
   expect(id).toBe("helper");
 });
+
+
+describe("internal subagent progress projection", () => {
+  const progress = { revision: 2, profile: "helper", toolCalls: 1, failedCalls: 0,
+    recent: [{ id: "call", toolName: "Read", status: "complete", argsSummary: "src/file.ts", executionMs: 12 }],
+    answerHead: "Report", answerTruncated: false };
+  const internal = () => ({ ...projection(), kind: "internal", tool: "Agent", instanceId: "helper", childStillBusy: false });
+  it("round trips new progress and still accepts legacy internal jobs", () => {
+    expect(parseProcessJobProjection(internal())).toEqual(internal());
+    const value = { ...internal(), subagentProgress: progress };
+    expect(parseProcessJobProjection(value)).toEqual(value);
+    expect(() => parseProcessJobProjection({ ...projection(), subagentProgress: progress })).toThrow();
+  });
+  it.each([
+    { recent: Array.from({ length: 51 }, (_, i) => ({ id: String(i), toolName: "Read", status: "running" })), toolCalls: 51 },
+    { answerHead: "😀".repeat(2_001) }, { profile: "😀".repeat(33) }, { failedCalls: 2 },
+    { prompt: "not allowed" }, { revision: -1 },
+    { recent: [{ id: "c", toolName: "Read", status: "unknown" }] },
+    { recent: [{ id: "c", toolName: "Read", status: "complete", result: "private" }] },
+    { recent: [{ id: "c", toolName: "Read", status: "running", argsSummary: "😀".repeat(65) }] },
+  ])("rejects malformed or overlarge progress %j", (patch) => {
+    expect(() => parseProcessJobProjection({ ...internal(), subagentProgress: { ...progress, ...patch } })).toThrow();
+  });
+});

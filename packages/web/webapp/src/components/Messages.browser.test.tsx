@@ -3,11 +3,14 @@ import {
   ThreadPrimitive,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { page } from "@vitest/browser/context";
 import { describe, expect, it, vi } from "vitest";
 import { coalesceMonitorWakeMessages, convertWebMessage } from "../runtime";
-import { projectProcessJobPresentation } from "../process-job-presentation";
+import { ProcessJobStack } from "./ProcessJobStack";
+import { backgroundSubagentJob, backgroundSubagentMessages } from "../test/background-subagent-fixtures";
+import { api } from "../api";
+import { ProcessJobPresentationProvider, projectProcessJobPresentation } from "../process-job-presentation";
 import type { ProcessJobActivityEvent } from "../process-job-presentation";
 import type { WebMessage } from "../types";
 import "../styles.css";
@@ -591,5 +594,71 @@ describe("inline steer in Chromium", () => {
     ]);
     expect(screen.getByText("Steering current run…")).toBeVisible();
     await capture(`steer-waiting-${label}-${width}x${height}`);
+  });
+});
+
+
+function SyntheticJobStack({ finished }: { readonly finished: boolean }) {
+  const job = backgroundSubagentJob(finished);
+  return <ProcessJobPresentationProvider threadId="thread" messages={[]} historyIsBounded={false}
+    jobs={[{ messageId: "synthetic-card", part: { type: "process-job", job } }]}>
+    <ProcessJobStack />
+  </ProcessJobPresentationProvider>;
+}
+
+describe("synthetic detached subagent evidence", () => {
+  it.each([[1280, 800, "desktop"], [390, 844, "mobile"]] as const)("contains Activity and job progress at %ipx (%s)", async (width, height, label) => {
+    await page.viewport(width, height);
+    const directory = import.meta.env.VITE_BACKGROUND_SUBAGENT_SHOTS as string | undefined;
+    const shot = async (state: string) => {
+      if (directory) await page.screenshot({ path: `${directory}/synthetic-agent-${label}-${state}.png` });
+    };
+    const fixtureWidth = Math.min(width - 24, 880);
+    const activity = render(<main style={{ width: fixtureWidth, margin: "12px auto" }}>
+      <h2>Synthetic fixture · detached Agent Activity</h2>
+      <SteerHarness width={fixtureWidth} messages={backgroundSubagentMessages()} />
+    </main>);
+    fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+    expect(screen.getByRole("group", { name: "Agent job started" }).querySelector("summary")).toBeVisible();
+    expect(screen.getByRole("group", { name: "Agent job succeeded" }).querySelector("summary")).toBeVisible();
+    expect(document.querySelectorAll(".process-job-event")).toHaveLength(2);
+    await shot("activity");
+    activity.unmount();
+
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse(backgroundSubagentJob().timestamps.startedAt!) + 12_000);
+    const poll = vi.spyOn(api, "threadJob").mockImplementation(() => new Promise(() => undefined));
+    const frame = (finished: boolean) => <main style={{ width: fixtureWidth, margin: "12px auto" }}>
+      <h2>Synthetic fixture · {finished ? "finished" : "running"} child</h2>
+      <SyntheticJobStack finished={finished} />
+    </main>;
+    const stack = render(frame(false));
+    const region = await screen.findByRole("region", { name: "Subagent progress" });
+    await waitFor(() => expect(region).toBeVisible());
+    const checkBounds = () => {
+      expect(region.clientHeight).toBeLessThanOrEqual(320);
+      expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
+      expect(region.scrollWidth).toBeLessThanOrEqual(region.clientWidth);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
+    };
+    checkBounds();
+    region.scrollTop = 0;
+    fireEvent.scroll(region);
+    expect(screen.getByText("Bash ×6")).toBeVisible();
+    expect(screen.getByText("Read ×3")).toBeVisible();
+    await shot("running");
+    stack.rerender(frame(true));
+    fireEvent.click(screen.getByRole("button", { name: "Background job history" }));
+    await waitFor(() => expect(screen.getByRole("region", { name: "Subagent report" })).toBeInTheDocument());
+    expect(region.scrollTop).toBe(0); // reading position survives terminal report arrival
+    checkBounds();
+    region.scrollTop = region.scrollHeight;
+    fireEvent.scroll(region);
+    const report = screen.getByRole("region", { name: "Subagent report" });
+    expect(report.getBoundingClientRect().bottom).toBeLessThanOrEqual(region.getBoundingClientRect().bottom + 1);
+    expect(region.getBoundingClientRect().bottom).toBeLessThanOrEqual(document.querySelector(".process-job-stack")!.getBoundingClientRect().bottom);
+    await shot("finished");
+    stack.unmount();
+    poll.mockRestore();
+    clock.mockRestore();
   });
 });

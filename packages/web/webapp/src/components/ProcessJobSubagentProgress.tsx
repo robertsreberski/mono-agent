@@ -1,0 +1,93 @@
+import { useLayoutEffect, useRef } from "react";
+import type { ProcessJobSubagentProgress as Progress } from "../types";
+import { ActivityStep, clusterSummary, failedLabel } from "./ActivityRow";
+import { formatToolDuration } from "./duration";
+import { toolArgumentPreview } from "./Subagent";
+
+type Call = Progress["recent"][number];
+
+function clusters(calls: readonly Call[]): Call[][] {
+  const groups: Call[][] = [];
+  for (const call of calls) {
+    const last = groups.at(-1);
+    if (last?.[0]?.toolName === call.toolName) last.push(call);
+    else groups.push([call]);
+  }
+  return groups;
+}
+
+/** The child's identity and call counts, rendered as facts beside State/Wake. */
+export function ProcessJobSubagentFacts({ progress }: { readonly progress?: Progress }) {
+  if (progress === undefined) return null;
+  return (
+    <>
+      <div><dt>Child</dt><dd>{progress.profile}</dd></div>
+      <div>
+        <dt>Tools</dt>
+        <dd>{progress.toolCalls}{progress.failedCalls > 0 ? ` · ${progress.failedCalls} failed` : ""}</dd>
+      </div>
+    </>
+  );
+}
+
+/**
+ * UI-only evidence of a detached child's work, built from the same step and
+ * payload primitives as a foreground subagent block so the card reads like the
+ * transcript. The parent wake continues to read the job's separate output tail.
+ */
+export function ProcessJobSubagentProgress({ progress, open }: {
+  readonly progress?: Progress;
+  readonly open: boolean;
+}) {
+  const region = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  useLayoutEffect(() => {
+    if (open && follow.current && region.current) region.current.scrollTop = region.current.scrollHeight;
+  }, [open, progress?.revision]);
+  return (
+    <div ref={region} className="process-job-subagent-progress" role="region" aria-label="Subagent progress" tabIndex={0}
+      onScroll={(event) => {
+        const target = event.currentTarget;
+        follow.current = target.scrollHeight - target.scrollTop - target.clientHeight <= 24;
+      }}>
+      {progress === undefined
+        ? <p className="subagent-empty">Progress is unavailable for this retained job.</p>
+        : <div className="activity-steps">
+          {progress.recent.length === 0 && <p className="subagent-empty">No tool calls yet.</p>}
+          {progress.toolCalls > progress.recent.length && (
+            <p className="subagent-empty">Showing the latest {progress.recent.length} of {progress.toolCalls} calls.</p>
+          )}
+          {clusters(progress.recent).map((calls) => {
+            const first = calls[0]!;
+            const failed = calls.filter((call) => call.status === "failed").length;
+            const running = calls.some((call) => call.status === "running");
+            const durations = calls.flatMap((call) => call.executionMs === undefined ? [] : [call.executionMs]);
+            const duration = durations.length ? formatToolDuration(durations.reduce((a, b) => a + b, 0)) : undefined;
+            const previews = calls.flatMap((call) => {
+              const preview = toolArgumentPreview(call.argsSummary);
+              return preview === undefined ? [] : [preview];
+            });
+            return <ActivityStep key={first.id} toolName={calls.length > 1 ? `${first.toolName} ×${calls.length}` : first.toolName}
+              summary={clusterSummary(previews)} failed={failedLabel(failed, calls.length > 1)}
+              duration={running ? "running" : duration ?? (failed ? "failed" : "complete")}>
+              <div className="activity-payload">
+                <ul className="process-job-subagent-calls">
+                  {calls.map((call) => <li key={call.id} data-status={call.status}>
+                    <span className="process-job-subagent-call">{call.argsSummary ?? call.toolName}</span>
+                    <span className="process-job-subagent-status">{call.status}</span>
+                  </li>)}
+                </ul>
+              </div>
+            </ActivityStep>;
+          })}
+          {progress.answerHead !== undefined && (
+            <section className="process-job-subagent-report" aria-label="Subagent report">
+              <ActivityStep toolName={`Report${progress.answerTruncated ? " (truncated)" : ""}`} defaultOpen>
+                <div className="activity-payload"><pre>{progress.answerHead}</pre></div>
+              </ActivityStep>
+            </section>
+          )}
+        </div>}
+    </div>
+  );
+}
