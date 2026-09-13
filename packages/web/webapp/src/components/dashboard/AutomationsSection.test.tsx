@@ -129,12 +129,14 @@ describe("Dashboard Automations chip", () => {
     storeMock.current!.cronOverview = overview;
   });
 
-  it("switches between the chips while resetting search semantics", () => {
+  it("restores the chips after clearing a search and resets their search semantics", () => {
     storeMock.current!.navigationDestination = "chats";
     const { rerender } = render(<Dashboard />);
 
     const chatSearch = screen.getByRole("searchbox", { name: "Search conversations" });
     fireEvent.change(chatSearch, { target: { value: "release" } });
+    expect(screen.queryByRole("button", { name: "Automations, 1 job" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
     const chip = screen.getByRole("button", { name: "Automations, 1 job" });
     expect(chip).toHaveTextContent("Automations1");
     fireEvent.click(chip);

@@ -99,6 +99,13 @@ const detail = (summary: ThreadSummary, text: string): ThreadDetail => {
 
 const persistence = createThreadPersistence();
 
+/** `VITE_DASHBOARD_SEARCH_SHOTS=<absolute dir>` captures the final search-only layout. */
+const shotDirectory = import.meta.env.VITE_DASHBOARD_SEARCH_SHOTS as string | undefined;
+const capture = async (name: string): Promise<void> => {
+  if (shotDirectory === undefined) return;
+  await page.screenshot({ path: `${shotDirectory}/${name}.png` });
+};
+
 const openConsole = () => render(
   <ConsoleStoreProvider>
     <WebRuntimeProvider>
@@ -202,13 +209,22 @@ describe("the dashboard as the desktop column", () => {
     openConsole();
     await settled();
 
+    const panel = screen.getByRole("navigation", { name: "Dashboard" });
+    expect(within(panel).getByRole("heading", { name: "Projects" })).toBeVisible();
+    expect(within(panel).getByRole("heading", { name: "Recent" })).toBeVisible();
+
     await userEvent.fill(screen.getByPlaceholderText("Search conversations"), "alpha");
 
     const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
     expect(hit).toHaveClass("thread-search-hit");
+    expect(within(panel).getByRole("heading", { name: "Conversations" })).toBeVisible();
+    expect(within(panel).queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(within(panel).queryByRole("heading", { name: "Recent" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Chats" })).toBeNull();
     // The conversation is in the column beside this one, so the hit that opens
     // it is marked exactly as its ordinary row would be.
     await waitFor(() => expect(document.querySelector(".thread-search-hit.is-active")).toBe(hit));
+    await capture("conversation-search-desktop");
   });
 
   it("puts the running cards and the conversation rows on one left edge", async () => {
@@ -413,11 +429,16 @@ describe("the dashboard as the mobile entrance screen", () => {
 
     const hit = await screen.findByRole("button", { name: "Open Alpha thread" });
     expect(hit).toHaveClass("thread-search-hit");
+    expect(within(panel()).getByRole("heading", { name: "Conversations" })).toBeVisible();
+    expect(within(panel()).queryByRole("heading", { name: "Projects" })).toBeNull();
+    expect(within(panel()).queryByRole("heading", { name: "Recent" })).toBeNull();
+    expect(within(panel()).queryByRole("button", { name: "Chats" })).toBeNull();
     // Search is the other face of the same list: the store still holds this
     // conversation -- its transcript is loaded behind the screen -- and this
     // screen still declines to point at it.
     expect(document.querySelector(".thread-search-hit.is-active")).toBeNull();
     expect(screen.getByText("Alpha transcript")).toBeInTheDocument();
+    await capture("conversation-search-mobile");
   });
 
   it("opens the settings dialog over this screen, and closing it stays here", async () => {
