@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, rename, writeFile, rm, symlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createSandboxPolicy, type ProcessJobProcessResult, type SandboxCommandSpec, type SandboxPolicy } from "@mono-agent/runtime-adapter";
@@ -67,10 +67,33 @@ it.each(["missing-engine", "unsandboxed"])("never falls back to host execution f
   else f.prepareCommand.mockImplementation(async (spec) => ({ ...spec, args: [...(spec.args ?? [])], cwd: spec.cwd!, sandboxed: false, cleanup: f.cleanup }));
   expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_unavailable"); expect(f.runProbe).not.toHaveBeenCalled();
 });
+it("refuses a prepared native command whose cwd differs from the declared observation root", async () => {
+  const f = await fixture(); const elsewhere = resolve(f.root, "elsewhere"); await mkdir(elsewhere);
+  f.prepareCommand.mockImplementation(async (spec) => ({ ...spec, args: [...(spec.args ?? [])], cwd: elsewhere, sandboxed: true, cleanup: f.cleanup }));
+  expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_unavailable");
+  expect(f.runProbe).not.toHaveBeenCalled(); expect(f.cleanup).toHaveBeenCalledOnce();
+});
 it("reports changing HEAD as inconsistent rather than acceptance", async () => {
   const f = await fixture(); let heads = 0;
   f.runProbe.mockImplementation(async (prepared) => completed(prepared.args.includes("config") ? "" : prepared.args.includes("status") ? "" : (++heads === 1 ? sha : "b".repeat(40))));
   expect((await observeSubagentVerification(f.target, f.access, [])).status).toBe("observation_inconsistent");
+});
+it("reports a replaced observation root and mid-probe Git metadata mutation as inconsistent", async () => {
+  const replaced = await fixture();
+  await rm(replaced.root, { recursive: true }); await mkdir(replaced.root); roots.splice(roots.indexOf(replaced.root), 1); roots.push(replaced.root);
+  expect((await observeSubagentVerification(replaced.target, replaced.access, [])).status).toBe("observation_inconsistent");
+  expect(replaced.runProbe).not.toHaveBeenCalled();
+
+  const mutated = await fixture(); let changed = false;
+  mutated.runProbe.mockImplementation(async (prepared) => {
+    if (prepared.args.includes("status") && !changed) {
+      changed = true; const replacement = resolve(mutated.root, ".git/config.replacement");
+      await writeFile(replacement, "[core]\nrepositoryformatversion = 0\n[changed]\nvalue = true\n");
+      await rename(replacement, resolve(mutated.root, ".git/config"));
+    }
+    return completed(prepared.args.includes("config") ? "" : prepared.args.includes("status") ? "" : sha);
+  });
+  expect((await observeSubagentVerification(mutated.target, mutated.access, [])).status).toBe("observation_inconsistent");
 });
 it("bounds path count and aggregate bytes without truncating a path into a different path", async () => {
   const f = await fixture();

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
@@ -29,7 +29,7 @@ async function fixture(continuity: "retained" | "lost" | "unknown" = "retained")
   await handle.publishOwned("confirm", { identity, sequence: 7, disposition: { status: "timeout", reason: "timeout", continuity }, released: true });
   return { root, handle, registry, identity, deny: () => { allowed = false; }, file: resolve(subagentConversationRoot(root, "conversation"), "instances.json") };
 }
-it.each(["detached", "foreground", "registry"])("G11: real Pi AgentSend lock failure cannot disclose private state or consume acknowledgement (%s)", async (mode) => {
+it.each(["detached", "foreground", "registry", "read", "write"])("G11: real Pi AgentSend private-state failure cannot disclose paths or consume acknowledgement (%s)", async (mode) => {
   const detached = mode !== "foreground";
   const f = await fixture(); const owner = createMonoRuntime();
   if (!detached) { await f.handle.close(spec.id); await f.handle.create(spec); }
@@ -40,7 +40,11 @@ it.each(["detached", "foreground", "registry"])("G11: real Pi AgentSend lock fai
   const run = vi.fn(); const startInternal = vi.fn();
   const subagents = { instances: f.handle, run, backgroundSubagentController: { startInternal } };
   const directory = subagentConversationRoot(f.root, "conversation");
-  const lock = await acquireContinuationStoreLock(mode === "registry" ? resolve(directory, "registry-lock") : resolve(directory, "turn-locks", spec.id));
+  const lock = ["read", "write"].includes(mode) ? undefined
+    : await acquireContinuationStoreLock(mode === "registry" ? resolve(directory, "registry-lock") : resolve(directory, "turn-locks", spec.id));
+  const backup = `${f.file}.g11-backup`;
+  if (mode === "read") { await rename(f.file, backup); await mkdir(f.file); }
+  if (mode === "write") await chmod(directory, 0o500);
   try {
     const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
     const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
@@ -59,8 +63,12 @@ it.each(["detached", "foreground", "registry"])("G11: real Pi AgentSend lock fai
     expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key);
     expect(JSON.stringify(toolMessage)).toContain("subagent_owner_unavailable");
     expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
-    expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
-  } finally { await lock.release(); await owner.disposeAllSessions?.(); }
+  } finally {
+    if (mode === "write") await chmod(directory, 0o700);
+    if (mode === "read") { await rm(f.file, { recursive: true }); await rename(backup, f.file); }
+    await lock?.release(); await owner.disposeAllSessions?.();
+  }
+  expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
   if (detached) await expect(f.handle.reserve(spec.id, randomUUID(), { ack: request.ack!, message: request.message, background: true })).resolves.toMatchObject({ status: "queued" });
   else { await f.handle.begin(spec.id); await f.handle.finish(spec.id, { status: "ok" }); }
 }, 10_000);

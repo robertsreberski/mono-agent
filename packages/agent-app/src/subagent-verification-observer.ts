@@ -147,7 +147,9 @@ export async function observeSubagentVerification(target: SubagentVerificationTa
         args: [`--work-tree=${target.workdir}`, "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.untrackedCache=false", ...args],
         env: { PATH: "/usr/bin:/bin", HOME: "/nonexistent", XDG_CONFIG_HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
       }, policy);
-      if (!prepared.sandboxed || Date.now() >= deadline) { await prepared.cleanup?.(); throw new Error("observation_unavailable"); }
+      if (!prepared.sandboxed || prepared.command !== executable.path || prepared.cwd !== target.workdir || Date.now() >= deadline) {
+        await prepared.cleanup?.(); throw new Error("observation_unavailable");
+      }
       const result = await current.runProbe!(prepared, Math.min(1500, deadline - Date.now()));
       if (result.groupExitConfirmed === true) await prepared.cleanup?.();
       if (result.truncated || result.bufferExceeded) throw new Error("observation_truncated");

@@ -598,8 +598,12 @@ completion response.
 `mono-agent validate` / `doctor` reports whether the feature is disabled or
 unsupported on Windows, then inspects only bounded local record counts and
 owner-only modes, including any quarantined transaction count and the bounded
-runtime health marker. It does not probe or mutate the live controller and
-never creates a missing store.
+runtime health marker. For valid internal child records it also reports path-free
+retained-ownership, unresolved-ownership, and owner-unavailable counts. The
+owner-unavailable count is the conservative subset whose persisted owner is
+unknown (including legacy busy records without structured ownership); it is not
+a live process probe. Doctor does not expose job ids, registry roots, or command
+paths, does not mutate the live controller, and never creates a missing store.
 
 ### Detached persistent children
 
@@ -709,6 +713,10 @@ submitted with a message; recovery of a detached job requires `background: true`
 The same token and request semantics return `subagent_recovery_already_consumed`
 without execution, even while the first continuation is busy. Changed semantics
 return conflict. Consumption and the new reservation are durable before admission.
+A requested `close:true` retires the child only after that acknowledged
+continuation succeeds. If it fails, any pending AskParent question and the child
+instance remain available for explicit recovery; repeating the consumed request
+does not execute it again.
 A proven rejected admission retains a not-started disposition; ambiguous absence
 never authorizes retry. Lost/unknown continuity cannot be acknowledged back into
 retained context: resolve ownership, then explicitly close/create instead.
@@ -744,8 +752,10 @@ active developer directory. Missing/redirected/untrusted tooling or an unsupport
 platform yields `observation_unavailable`. Existing sandbox runtime-read allowances
 for the executable do not grant repository/private-root read authority; explicit
 protection of the selected executable denies observation before preparation.
-Unsupported alternates, denied paths,
-changed identity/HEAD and unavailable sandboxing produce typed gaps. Report
-metadata records only a relative path and presence, never content or a hash.
+The prepared native command must preserve the selected executable and exact
+declared observation cwd. Unsupported alternates, denied paths, replaced roots,
+changed Git metadata/executable identity/HEAD and unavailable sandboxing produce
+typed gaps. Report metadata records only a relative path and presence, never
+content or a hash.
 Command facts and observations remain bounded; foreground-only recovery is marked
 `structured_job_recovery_unavailable`, not presented as a durable command job.

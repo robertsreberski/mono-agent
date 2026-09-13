@@ -89,11 +89,19 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   to mandatory ownership. Restart cleanup does not invent an exit receipt.
   Recovery inspection reauthorizes bounded facts; retained-only acknowledgement
   is consumed atomically with a new turn intent. Private keyed request bindings
-  never enter runtime handles, Session guidance or job/wake projections.
+  never enter runtime handles, Session guidance or job/wake projections. Private
+  registry directory/read/write failures collapse to a path-free unavailable
+  result without consuming an acknowledgement. A failed acknowledged
+  `close:true` continuation preserves its pending question and does not retire the
+  instance; the consumed request is never executed twice. Doctor reads only the
+  configured owner-only ProcessJobs records and reports bounded path-free retained,
+  unresolved, and owner-unavailable child-ownership counts without a live probe.
   Observation uses only fixed root-installed native Git (macOS Command Line Tools
   or Linux `/usr/bin/git`) through the read-only sandbox, never PATH wrappers or
   the macOS developer-selection shim. Missing/untrusted tooling yields a typed
-  gap; runtime executable access does not authorize repository/private data.
+  gap; runtime executable access does not authorize repository/private data. The
+  prepared command must retain the selected executable and declared observation
+  cwd, while root or Git-metadata replacement yields an inconsistent observation.
 - Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
   and existing web conversations receive coalesced event batches as exact-origin
   tool-capable wake turns; web uses ordinary assistant turns rather than a

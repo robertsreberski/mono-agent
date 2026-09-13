@@ -109,7 +109,7 @@ describe("persistent subagent registry", () => {
     const record = await handle.create(spec);
     await handle.begin(record.id);
     failAt = failureWrite;
-    await expect(handle.finish(record.id, { status: "ok" })).rejects.toThrow("injected disk full");
+    await expect(handle.finish(record.id, { status: "ok" })).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
     const reopened = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
     expect(await reopened.get(record.id)).toMatchObject({ status: "idle", lastStatus: "interrupted" });
     await expect(reopened.begin(record.id)).rejects.toThrow("subagent_recovery_required");

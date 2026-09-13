@@ -236,6 +236,22 @@ export function createSubagentInstanceRegistry(options: {
           throw new SubagentRecoveryError("subagent_owner_unavailable");
         }
       };
+      const privateRegistryIo = async <T>(operation: () => Promise<T>): Promise<T> => {
+        try { return await operation(); }
+        catch {
+          // Owner-only directory, read and write failures can contain the
+          // private registry pathname. Preserve the durable bytes and expose
+          // only the typed unavailable result to native tool/model input.
+          throw new SubagentRecoveryError("subagent_owner_unavailable");
+        }
+      };
+      const readPrivateRegistry = async (): Promise<string | undefined> => {
+        try { return await readBoundedOwnerOnlyFile(file, SUBAGENT_REGISTRY_MAX_BYTES, "Subagent instance registry"); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+          throw new SubagentRecoveryError("subagent_owner_unavailable");
+        }
+      };
       const retire = async (record: SubagentInstance): Promise<void> => {
         try { await options.retireSession(record.sessionId, sessionsRoot); } catch { /* Terminal record stays retired even if provider cleanup fails. */ }
       };
@@ -247,7 +263,7 @@ export function createSubagentInstanceRegistry(options: {
           records.splice(records.indexOf(terminal.shift()!), 1);
         }
         if (bytes() > SUBAGENT_REGISTRY_MAX_BYTES) throw new Error("Subagent instance registry exceeds its 16 MiB safety limit.");
-        await (options.writeRegistry ?? writeJsonAtomic)(file, records, true, SUBAGENT_REGISTRY_MAX_BYTES);
+        await privateRegistryIo(async () => await (options.writeRegistry ?? writeJsonAtomic)(file, records, true, SUBAGENT_REGISTRY_MAX_BYTES));
       };
       const assertCanDrive = (record: StoredSubagentInstance): void => {
         if (record.activeTurn?.kind === "detached" && !turns.has(turnPath(record.id))) throw new SubagentRecoveryError("subagent_owner_unavailable");
@@ -300,17 +316,18 @@ export function createSubagentInstanceRegistry(options: {
         delete record.reservation;
       };
       const transaction = async <T>(operation: (records: StoredSubagentInstance[]) => Promise<T>): Promise<T> => serialize(directory, async () => {
-        await ensureOwnerOnlyDirectory(directory);
+        await privateRegistryIo(async () => await ensureOwnerOnlyDirectory(directory));
         const lock = await acquirePrivateLock(resolve(directory, "registry-lock"));
         try {
           let records: StoredSubagentInstance[];
-          try {
-            const raw: unknown = JSON.parse(await readBoundedOwnerOnlyFile(file, SUBAGENT_REGISTRY_MAX_BYTES, "Subagent instance registry"));
+          const contents = await readPrivateRegistry();
+          if (contents === undefined) {
+            if (access?.existingOnly) throw new SubagentRecoveryError("subagent_owner_unavailable");
+            records = [];
+          } else {
+            const raw: unknown = JSON.parse(contents);
             if (!Array.isArray(raw)) throw new Error("Invalid subagent instance registry.");
             records = raw as StoredSubagentInstance[];
-          } catch (error) {
-            if (access?.existingOnly || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-            records = [];
           }
           const ids = new Set<string>();
           for (const record of records) {

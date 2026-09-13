@@ -962,6 +962,46 @@ it("failed child preserves a pending question and bounded question wakes survive
   expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending?" } });
 });
 
+it("G10: failed close after retained acknowledgement preserves the pending question and instance", async () => {
+  const f = await managedFixture(undefined, { maxRuntimeMs: 5_000 });
+  const timedSpec = { ...spec, definition: { ...spec.definition, timeoutMs: 1_500 } };
+  await f.instances.create(timedSpec); await f.instances.begin("helper");
+  await f.instances.markAwaiting("helper", { question: "Pending scope?", options: ["Small", "Large"] });
+  await f.instances.finish("helper", { status: "awaiting_reply", question: { question: "Pending scope?", options: ["Small", "Large"] } });
+  expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
+
+  const releaseConfirmation = deferred<void>(); let delayNextSuccess = true;
+  f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+    verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+    publish: async (phase, publication) => {
+      if (delayNextSuccess && phase === "confirm" && !publication.released && publication.disposition.status === "ok") {
+        delayNextSuccess = false; await releaseConfirmation.promise;
+      }
+      await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+    },
+  });
+  try {
+    const timeoutTools = tools(f, async () => ({ text: "This answer settled before reporting timed out" }));
+    const timedOut = await timeoutTools.send.execute("retained-timeout", { id: "helper", message: "Small", background: true });
+    await vi.waitFor(async () => expect((await f.store.get(timedOut.details.jobId))?.subagentOwnership?.disposition)
+      .toMatchObject({ reason: "timeout", continuity: "retained" }), { timeout: 8_000 });
+    releaseConfirmation.resolve(); expect((await done(f.service, timedOut.details.jobId)).state).toBe("timed_out");
+    expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
+
+    const inspected = await f.instances.inspect("helper", { workspace: f.root, readableRoots: [], sandboxPolicy: createSandboxPolicy({ root: f.root }) });
+    expect(inspected).toMatchObject({ status: "ready", recovery: { continuity: "retained" } });
+    const failedRun = vi.fn(async () => { throw new Error("provider unavailable"); });
+    const failedTools = tools(f, failedRun);
+    const request = { id: "helper", ack: inspected.ack!, message: "Verified; finish with Small scope", background: true, close: true };
+    const failed = await failedTools.send.execute("failed-close", request);
+    expect((await done(f.service, failed.details.jobId)).state).toBe("failed");
+    expect(await f.instances.get("helper")).toMatchObject({ status: "awaiting_reply", pendingQuestion: { question: "Pending scope?" } });
+    const duplicate = await failedTools.send.execute("failed-close-duplicate", request);
+    expect(duplicate.details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_already_consumed" } });
+    expect(failedRun).toHaveBeenCalledOnce();
+  } finally { releaseConfirmation.resolve(); }
+}, 15_000);
+
 it("queue expiry releases the reservation without invoking the child", async () => {
   const f = await fixture({ maxConcurrent: 1, maxQueueAgeMs: 1500 });
   const gate = deferred<any>(); const run = vi.fn(() => gate.promise); const { agent } = tools(f, run);

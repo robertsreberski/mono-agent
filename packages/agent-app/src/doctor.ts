@@ -93,6 +93,11 @@ import {
 } from "./continuation-store-types.js";
 import { CONTINUATION_STATES, continuationDigest, type ContinuationState } from "./continuations.js";
 import { isProcessJobState, PROCESS_JOB_STATES } from "@mono-agent/agent-contracts";
+import {
+  hasSubagentObligation,
+  hasUnresolvedSubagentOwnership,
+  isSubagentExecutionOwnership,
+} from "./subagent-execution-ownership.js";
 import { loadProcessJobsSettings } from "./process-jobs-config.js";
 import {
   attestProcessJobsRootRegistrySnapshot,
@@ -2411,6 +2416,7 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
   }
   if (names.length > 10_000) return { status: "error", details: ["Process-job record count exceeds the compiled inspection bound of 10000."] };
   const counts = Object.fromEntries(PROCESS_JOB_STATES.map((state) => [state, 0])) as Record<string, number>;
+  const childOwnership = { retained: 0, unresolved: 0, ownerUnavailable: 0 };
   for (const name of names) {
     const path = join(recordsPath, name);
     try {
@@ -2424,6 +2430,18 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
         throw new Error("record identity or state is invalid");
       }
       counts[raw.state] = (counts[raw.state] ?? 0) + 1;
+      if (raw.kind === "internal") {
+        if (raw.subagentOwnership !== undefined && !isSubagentExecutionOwnership(raw.subagentOwnership)) {
+          throw new Error("record child ownership is invalid");
+        }
+        const ownership = isSubagentExecutionOwnership(raw.subagentOwnership) ? raw.subagentOwnership : undefined;
+        const record = { kind: "internal" as const, childStillBusy: raw.childStillBusy === true, ...(ownership ? { subagentOwnership: ownership } : {}) };
+        if (hasSubagentObligation(record)) childOwnership.retained++;
+        if (hasUnresolvedSubagentOwnership(record)) {
+          childOwnership.unresolved++;
+          if (!ownership || ownership.owner.settlement === "unknown") childOwnership.ownerUnavailable++;
+        }
+      }
     } catch (error) {
       return { status: "error", details: [`Process-job record ${name} is unsafe or malformed: ${continuationReason(error)}`] };
     }
@@ -2433,6 +2451,7 @@ async function inspectProcessJobState(cwd: string, stateDir: string): Promise<{
     details: [
       `Local records: ${String(names.length)}.`,
       `States: ${PROCESS_JOB_STATES.map((state) => `${state}=${String(counts[state] ?? 0)}`).join(", ")}.`,
+      `Persistent child ownership: retained=${String(childOwnership.retained)}, unresolved=${String(childOwnership.unresolved)}, owner-unavailable=${String(childOwnership.ownerUnavailable)}.`,
     ],
   };
 }
