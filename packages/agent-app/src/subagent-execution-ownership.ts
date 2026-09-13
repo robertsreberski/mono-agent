@@ -13,7 +13,7 @@ export interface SubagentExecutionOwnership {
   turnToken: string;
   owner: { pid: number; incarnation: ProcessIncarnation; settlement: "not_started" | "running" | "settled" | "dead" | "unknown" };
   revoked: boolean;
-  publication: { sequence: number; state: "pending" | "confirmed" };
+  publication: { sequence: number; state: "pending" | "confirmed"; receiptPending?: boolean };
   command?: SubagentOwnedCommand;
   /** Host-bound attempt/call keys. Never evict keys while the turn can execute. */
   seenCalls: string[];
@@ -54,9 +54,17 @@ export function hasUnresolvedSubagentOwnership(record: OwnershipRecord): boolean
     || (ownership.command !== undefined && ownership.command.state !== "released");
 }
 
-/** P: the exact registry failure/release disposition is not durably confirmed. */
+/** A confirmed job must retain its evidence until the registry certificate is acknowledged. */
+export function hasPendingSubagentReleaseReceipt(record: OwnershipRecord): boolean {
+  const owner = record.kind === "internal" ? record.subagentOwnership : undefined;
+  return owner !== undefined && (owner.publication.receiptPending === true
+    // Older confirmed managed records did not acknowledge certificate durability.
+    || (owner.publication.receiptPending === undefined && owner.registryRoot !== undefined
+      && owner.disposition !== undefined && !hasUnresolvedSubagentOwnership(record)));
+}
+/** P includes the registry release-certificate acknowledgement, not just job confirmation. */
 export function hasPendingSubagentPublication(record: OwnershipRecord): boolean {
-  return record.kind === "internal" && record.subagentOwnership?.publication.state === "pending";
+  return record.kind === "internal" && (record.subagentOwnership?.publication.state === "pending" || hasPendingSubagentReleaseReceipt(record));
 }
 
 /** H: shared pin for recovery, retention, capacity and shutdown. */
@@ -76,7 +84,8 @@ export function isSubagentExecutionOwnership(value: unknown): value is SubagentE
     || !exact(value.owner, ["pid", "incarnation", "settlement"]) || !positive(value.owner.pid)
     || !incarnation(value.owner.incarnation)
     || !["not_started", "running", "settled", "dead", "unknown"].includes(String(value.owner.settlement))
-    || !object(value.publication) || !exact(value.publication, ["sequence", "state"])
+    || !object(value.publication) || !exact(value.publication, ["sequence", "state", ...(Object.hasOwn(value.publication, "receiptPending") ? ["receiptPending"] : [])])
+    || (value.publication.receiptPending !== undefined && typeof value.publication.receiptPending !== "boolean")
     || !positive(value.publication.sequence) || !["pending", "confirmed"].includes(String(value.publication.state))
     || !Array.isArray(value.seenCalls) || value.seenCalls.length > SUBAGENT_SEEN_CALLS_MAX_COUNT
     || !value.seenCalls.every((key) => text(key, 512)) || new Set(value.seenCalls).size !== value.seenCalls.length

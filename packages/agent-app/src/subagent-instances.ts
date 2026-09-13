@@ -81,7 +81,7 @@ export interface InstanceRegistryHandle {
   verifyOwner(identity: SubagentOwnerIdentity): Promise<{ retained: boolean; verification?: SubagentVerificationTarget }>;
   inspect(id: string, access?: unknown): Promise<SubagentRecoveryInspection>;
   checkAcknowledgement(id: string, acknowledgement: SubagentRecoveryAcknowledgement, access?: unknown): Promise<void>;
-  publishOwned(phase: "intent" | "confirm", publication: SubagentRegistryPublication): Promise<void>;
+  publishOwned(phase: "intent" | "confirm" | "finalize", publication: SubagentRegistryPublication): Promise<void>;
   list(): Promise<SubagentInstance[]>;
   get(id: string): Promise<SubagentInstance | undefined>;
   create(spec: InstanceSpec, access?: unknown): Promise<SubagentInstance>;
@@ -219,6 +219,11 @@ export function createSubagentInstanceRegistry(options: {
     async open(conversationId, access) {
       const directory = subagentConversationRoot(options.root, conversationId);
       const sessionsRoot = resolve(directory, "sessions");
+      // Per-loaded-record observation only; never erase a durable certificate
+      // because its service is unavailable or its safely retained job is gone.
+      const awaitingReceiptAcknowledgement = new WeakSet<StoredSubagentInstance>();
+      const receiptHeld = (record: StoredSubagentInstance): boolean => record.ownerReceipt !== undefined
+        && (!record.ownerReceipt.finalized || awaitingReceiptAcknowledgement.has(record));
       const file = resolve(directory, "instances.json");
       const turnPath = (id: string): string => resolve(directory, "turn-locks", id);
       const retire = async (record: SubagentInstance): Promise<void> => {
@@ -226,7 +231,7 @@ export function createSubagentInstanceRegistry(options: {
       };
       const publish = async (records: StoredSubagentInstance[]): Promise<void> => {
         for (const record of records) if (!validRecord(record, conversationId, sessionsRoot)) throw new Error("Invalid subagent instance registry record.");
-        const terminal = records.filter((record) => !isLiveSubagentInstance(record) && !record.activeTurn && !record.recovery && (!record.ownerReceipt || record.ownerReceipt.finalized)).sort((a, b) => a.updatedAt - b.updatedAt);
+        const terminal = records.filter((record) => !isLiveSubagentInstance(record) && !record.activeTurn && !record.recovery && (!receiptHeld(record))).sort((a, b) => a.updatedAt - b.updatedAt);
         const bytes = (): number => Buffer.byteLength(`${JSON.stringify(records, null, 2)}\n`, "utf8");
         while (terminal.length > SUBAGENT_TERMINAL_MAX_COUNT || (terminal.length > 0 && bytes() > SUBAGENT_REGISTRY_MAX_BYTES)) {
           records.splice(records.indexOf(terminal.shift()!), 1);
@@ -236,7 +241,7 @@ export function createSubagentInstanceRegistry(options: {
       };
       const assertCanDrive = (record: StoredSubagentInstance): void => {
         if (record.activeTurn?.kind === "detached" && !turns.has(turnPath(record.id))) throw new SubagentRecoveryError("subagent_owner_unavailable");
-        if (record.ownerReceipt && !record.ownerReceipt.finalized) throw new SubagentRecoveryError("subagent_owner_unavailable");
+        if (receiptHeld(record)) throw new SubagentRecoveryError("subagent_owner_unavailable");
         if (record.recovery) throw new SubagentRecoveryError("subagent_recovery_required");
       };
       const profileOf = (record: StoredSubagentInstance): unknown => [record.systemPrompt, record.definition];
@@ -261,7 +266,7 @@ export function createSubagentInstanceRegistry(options: {
         checkRecoveryAcknowledgement(record.recoveryBinding, acknowledgement, profileOf(record));
         await authorizeRecovery(record, access);
         if (!record.incarnation || !record.recovery || recoveryToken(record.incarnation, record.recovery) !== acknowledgement.ack) throw new SubagentRecoveryError("subagent_recovery_ack_stale");
-        if (record.activeTurn || (record.ownerReceipt && !record.ownerReceipt.finalized)) throw new SubagentRecoveryError("subagent_ownership_held");
+        if (record.activeTurn || (receiptHeld(record))) throw new SubagentRecoveryError("subagent_ownership_held");
         if (record.recovery.continuity !== "retained") throw new SubagentRecoveryError("subagent_recovery_not_retained");
         if (subjectOf(record).owner && acknowledgement.background !== true) throw new SubagentRecoveryError("subagent_recovery_background_required");
       };
@@ -306,12 +311,13 @@ export function createSubagentInstanceRegistry(options: {
           }
           // Validate the complete snapshot before recovery can retire any session.
           for (const record of records) {
-            if (!record.activeTurn && record.ownerReceipt && !record.ownerReceipt.finalized && record.incarnation && options.resolveOwner) {
+            if (record.ownerReceipt && record.incarnation && options.resolveOwner) {
               const receipt = record.ownerReceipt;
               const identity: SubagentOwnerIdentity = { storeRoot: receipt.storeRoot, jobId: receipt.jobId, conversationId,
                 instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: receipt.turnToken };
               const proof = await options.resolveOwner(identity).catch(() => ({ state: "unavailable" as const }));
-              if (proof.state === "released" && proof.sequence === receipt.sequence && sameSubagentOwner(identity, proof.identity)) receipt.finalized = true;
+              if (proof.state === "held" || (proof.state === "released" && (proof.receiptPending || proof.sequence !== receipt.sequence || !sameSubagentOwner(identity, proof.identity)))) awaitingReceiptAcknowledgement.add(record);
+              if (proof.state === "released" && !proof.receiptPending && proof.sequence === receipt.sequence && sameSubagentOwner(identity, proof.identity)) receipt.finalized = true;
             }
             if (["queued", "running"].includes(record.status) && !turns.has(turnPath(record.id))) {
               try {
@@ -333,14 +339,14 @@ export function createSubagentInstanceRegistry(options: {
                 if (!String(error).includes("already owned by another live process")) throw error;
               }
             }
-            if ((!record.ownerReceipt || record.ownerReceipt.finalized) && !record.activeTurn && !record.recovery && ["idle", "awaiting_reply"].includes(record.status) && record.updatedAt + (options.idleTtlMs ?? DAY) < now()) {
+            if ((!receiptHeld(record)) && !record.activeTurn && !record.recovery && ["idle", "awaiting_reply"].includes(record.status) && record.updatedAt + (options.idleTtlMs ?? DAY) < now()) {
               record.status = "expired";
               delete record.pendingQuestion;
               record.updatedAt = now();
               await retire(record);
             }
           }
-          records = records.filter((record) => isLiveSubagentInstance(record) || record.activeTurn || record.recovery || (record.ownerReceipt && !record.ownerReceipt.finalized) || record.updatedAt + DAY >= now());
+          records = records.filter((record) => isLiveSubagentInstance(record) || record.activeTurn || record.recovery || (receiptHeld(record)) || record.updatedAt + DAY >= now());
           // Persist recovery even when the requested operation is refused.
           await publish(records);
           const result = await operation(records);
@@ -377,7 +383,7 @@ export function createSubagentInstanceRegistry(options: {
           const base = { schema: "mono-agent.subagent-recovery.v1" as const, instanceId: record.id,
             ...(record.incarnation ? { incarnation: record.incarnation } : {}), ...(subject.owner ? { jobId: subject.owner.jobId } : {}),
             ...(record.recovery ? { recovery: structuredClone(record.recovery) } : {}), parentVerificationRequired: true as const };
-          if (record.activeTurn || (record.ownerReceipt && !record.ownerReceipt.finalized)) {
+          if (record.activeTurn || (receiptHeld(record))) {
             if (subject.owner) await options.refreshOwner?.(subject.owner).catch(() => undefined);
             return { ...base, status: "held" };
           }
@@ -408,7 +414,16 @@ export function createSubagentInstanceRegistry(options: {
             const identity = publication.identity;
             const record = records.find((entry) => entry.id === identity.instanceId);
             if (!record || record.incarnation !== identity.instanceIncarnation || record.conversationId !== identity.conversationId) throw new SubagentRecoveryError("subagent_stale_turn");
-            if (record.ownerReceipt?.jobId === identity.jobId && record.ownerReceipt.turnToken === identity.turnToken
+            if (phase === "finalize") {
+              const receipt = record.ownerReceipt;
+              if (!publication.released || record.activeTurn || !receipt || receipt.jobId !== identity.jobId || receipt.storeRoot !== identity.storeRoot
+                || receipt.turnToken !== identity.turnToken || receipt.sequence !== publication.sequence) throw new SubagentRecoveryError("subagent_stale_turn");
+              const proof = await options.resolveOwner?.(identity);
+              if (proof?.state !== "released" || proof.sequence !== receipt.sequence || !sameSubagentOwner(identity, proof.identity)) throw new SubagentRecoveryError("subagent_owner_unavailable");
+              receipt.finalized = true;
+              return;
+            }
+            if (record.ownerReceipt?.jobId === identity.jobId && record.ownerReceipt.storeRoot === identity.storeRoot && record.ownerReceipt.turnToken === identity.turnToken
               && record.ownerReceipt.sequence >= publication.sequence) return;
             if (!record.activeTurn || !record.ownerLink || !sameSubagentOwner(identity, { ...record.ownerLink,
               conversationId, instanceId: record.id, instanceIncarnation: record.incarnation, turnToken: record.activeTurn.token })) throw new SubagentRecoveryError("subagent_stale_turn");
@@ -453,7 +468,7 @@ export function createSubagentInstanceRegistry(options: {
           const verificationTarget = verification ? await options.registerVerification!(verification, access) : undefined;
           const index = await options.checkOwnerIndex?.(conversationId, records.map((record) => ({ instanceId: record.id, ...(record.incarnation === undefined ? {} : { incarnation: record.incarnation }), ...(record.reservation === undefined ? {} : { jobId: record.reservation.token }) }))).catch(() => "unavailable" as const);
           if (index && index !== "clear") throw new SubagentRecoveryError(index === "held" ? "subagent_ownership_held" : "subagent_owner_unavailable");
-          if (records.some((record) => (record.ownerReceipt && !record.ownerReceipt.finalized) || (record.activeTurn?.kind === "detached" && !turns.has(turnPath(record.id))))) throw new SubagentRecoveryError("subagent_owner_unavailable");
+          if (records.some((record) => (receiptHeld(record)) || (record.activeTurn?.kind === "detached" && !turns.has(turnPath(record.id))))) throw new SubagentRecoveryError("subagent_owner_unavailable");
           const live = records.filter(isLiveSubagentInstance);
           const suffix = ` Live ids: ${live.map((record) => record.id).join(", ") || "none"}.`;
           if (live.length >= (options.maxPerConversation ?? 8)) throw new Error(`Subagent maxPerConversation limit reached.${suffix}`);
@@ -468,7 +483,7 @@ export function createSubagentInstanceRegistry(options: {
           const previous = records.find((record) => record.id === id);
           if (previous && previous.status !== "closed") throw new Error(`Duplicate subagent instance "${id}".${suffix}`);
           if (previous) {
-            if (previous.ownerReceipt && !previous.ownerReceipt.finalized) throw new SubagentRecoveryError("subagent_owner_unavailable");
+            if (receiptHeld(previous)) throw new SubagentRecoveryError("subagent_owner_unavailable");
             // A reused id has the same durable session key: require successful cleanup before creating it.
             await options.retireSession(previous.sessionId, sessionsRoot);
             records.splice(records.indexOf(previous), 1);
@@ -611,7 +626,7 @@ export function createSubagentInstanceRegistry(options: {
           if (record.verificationTarget) await authorizeRecovery(record, access);
           if (record.activeTurn?.kind === "detached" && !turns.has(turnPath(id))) throw new SubagentRecoveryError("subagent_owner_unavailable");
           if (["queued", "running"].includes(record.status)) throw new Error(`Subagent instance "${id}" is busy.`);
-          if (record.ownerReceipt && !record.ownerReceipt.finalized) throw new SubagentRecoveryError("subagent_owner_unavailable");
+          if (receiptHeld(record)) throw new SubagentRecoveryError("subagent_owner_unavailable");
           record.status = "closed";
           delete record.pendingQuestion;
           delete record.recovery;

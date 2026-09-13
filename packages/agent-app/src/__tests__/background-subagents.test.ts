@@ -110,9 +110,67 @@ describe("managed detached production execution", () => {
     } finally { gate.resolve({ text: "cleanup" }); }
   }, 12_000);
 
-  // Confirmed open review finding, not a correctness pass. Remove `.fails` when
-  // durable registry certificate acknowledgement participates in retention.
-  it.fails("F2: retains a durable release certificate through startup retention without an intervening registry read", async () => {
+  it.each(["before-write", "after-write-lost-ack"])("F2 crash boundary %s pins delivered jobs through reopen-before-bind retention", async (fault) => {
+    const f = await managedFixture(); const provider = deferred<any>(); let intercepted = false;
+    let lastPublication: import("../subagent-managed-turn.js").SubagentRegistryPublication | undefined;
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        const instances = await f.registry.open(publication.identity.conversationId, { existingOnly: true });
+        if (phase === "finalize") {
+          lastPublication = publication;
+          if (fault === "after-write-lost-ack") await instances.publishOwned(phase, publication);
+          intercepted = true; throw new Error("injected certificate acknowledgement crash boundary");
+        }
+        await instances.publishOwned(phase, publication);
+      },
+    });
+    const run = vi.fn(() => provider.promise);
+    const { agent } = tools(f, run, { timeoutMs: 1500 });
+    const receipt = await agent.execute("certificate-fault", { persist: true, background: true, id: "helper", prompt: "work" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+    provider.resolve({ text: "late completion" });
+    await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: 3000 });
+    const registryFile = resolve(subagentConversationRoot(resolve(f.root, "children"), origin.conversationId), "instances.json");
+    expect(JSON.parse(await readFile(registryFile, "utf8"))[0].ownerReceipt.finalized).toBe(fault === "after-write-lost-ack");
+    expect(await f.store.get(receipt.details.jobId)).toMatchObject({ wake: { state: "delivered" },
+      subagentOwnership: { publication: { state: "confirmed", receiptPending: true } } });
+    if (fault === "after-write-lost-ack") {
+      // A durable certificate cannot be overwritten while its exact job ack is held.
+      await expect(f.instances.begin("helper")).rejects.toThrow("subagent_owner_unavailable");
+      await expect(f.instances.create({ ...spec, id: "bypass" })).rejects.toThrow("subagent_owner_unavailable");
+    }
+    await f.service.stop();
+    const reopened = await openProcessJobsService({ ...f.options, now: () => new Date(Date.now() + 10_000),
+      settings: { ...f.options.settings, retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxAgeMs: 1 } },
+    }); services.push(reopened);
+    expect(await f.store.get(receipt.details.jobId)).toMatchObject({ subagentOwnership: { publication: { receiptPending: true } } });
+    const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession: async () => {},
+      resolveOwner: (identity) => reopened.resolveSubagentOwner!(identity),
+    });
+    reopened.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+    await vi.waitFor(async () => expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.receiptPending).toBe(false), { timeout: 5000 });
+    expect(JSON.parse(await readFile(registryFile, "utf8"))[0].ownerReceipt.finalized).toBe(true);
+    const instances = await registry.open(origin.conversationId, { existingOnly: true });
+    for (const invalid of [
+      { ...lastPublication!, sequence: lastPublication!.sequence + 1 },
+      { ...lastPublication!, identity: { ...lastPublication!.identity, storeRoot: resolve(f.root, "wrong-store") } },
+      { ...lastPublication!, identity: { ...lastPublication!.identity, turnToken: randomUUID() } },
+    ]) await expect(instances.publishOwned("finalize", invalid)).rejects.toThrow("subagent_stale_turn");
+    await f.store.applyRetention(reopened.settings, new Date(Date.now() + 10_000)); expect(await f.store.get(receipt.details.jobId)).toBeUndefined();
+    await instances.close("helper");
+    const replacement = await instances.create(spec);
+    expect(replacement.incarnation).not.toBe(lastPublication!.identity.instanceIncarnation);
+    await expect(instances.publishOwned("finalize", lastPublication!)).rejects.toThrow("subagent_stale_turn");
+    expect((await instances.get("helper"))?.incarnation).toBe(replacement.incarnation);
+    expect(f.wake).toHaveBeenCalledOnce();
+  }, 20_000);
+
+  it("F2: retains a durable release certificate through startup retention without an intervening registry read", async () => {
     const f = await managedFixture();
     const { agent } = tools(f, async () => ({ text: "done without a registry-reading wake" }));
     const receipt = await agent.execute("retention", { persist: true, background: true, id: "helper", prompt: "work" });

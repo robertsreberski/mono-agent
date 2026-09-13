@@ -23,7 +23,7 @@ export interface SubagentOwnerIdentity extends SubagentOwnerLink {
 }
 export type SubagentOwnerResolution =
   | { readonly state: "held" | "unavailable" }
-  | { readonly state: "released" | "not_admitted"; readonly identity: SubagentOwnerIdentity; readonly sequence: number; readonly reason?: SubagentFailureReason; readonly continuity: SubagentContinuity };
+  | { readonly state: "released" | "not_admitted"; readonly identity: SubagentOwnerIdentity; readonly sequence: number; readonly receiptPending?: boolean; readonly reason?: SubagentFailureReason; readonly continuity: SubagentContinuity };
 
 export class SubagentRecoveryError extends Error {
   constructor(readonly code: "subagent_owner_unavailable" | "subagent_ownership_held" | "subagent_recovery_required" | "subagent_stale_turn" | "subagent_recovery_ack_invalid" | "subagent_recovery_ack_stale" | "subagent_recovery_already_consumed" | "subagent_recovery_ack_conflict" | "subagent_recovery_not_retained" | "subagent_recovery_background_required" | "subagent_recovery_policy_unavailable" | "subagent_recovery_policy_denied") {

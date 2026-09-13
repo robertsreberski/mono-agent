@@ -8,7 +8,7 @@ import type { InstanceOutcome } from "./subagent-instances.js";
 import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "./subagent-registry-ownership.js";
 import { reconcileSubagentExecutionOwnership } from "./subagent-ownership-recovery.js";
 import type { SubagentKnownOwner } from "./subagent-registry-ownership.js";
-import { hasPendingSubagentPublication, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "./subagent-execution-ownership.js";
+import { hasPendingSubagentPublication, hasPendingSubagentReleaseReceipt, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "./subagent-execution-ownership.js";
 import { SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
@@ -573,7 +573,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   bindManagedSubagents(registry: ManagedSubagentRegistry): void {
     if (this.managedRegistry && this.managedRegistry.root !== registry.root) throw new Error("Managed subagent registry root changed while owned.");
     this.managedRegistry = registry;
-    for (const record of this.recordSnapshot.values()) if (record.subagentOwnership?.publication.state === "pending" && isTerminalProcessJobState(record.state)) this.scheduleManagedPublication(record.jobId);
+    for (const record of this.recordSnapshot.values()) if (hasPendingSubagentPublication(record) && isTerminalProcessJobState(record.state)) this.scheduleManagedPublication(record.jobId);
   }
 
   async inspectSubagentRecovery(identity: SubagentOwnerIdentity): Promise<SubagentRecoverySnapshot | undefined> {
@@ -625,9 +625,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return { state: "unavailable" };
       const record = await this.storeGet(identity.jobId, "subagent.resolve");
       if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return { state: "unavailable" };
-      if (!isTerminalProcessJobState(record.state) || hasSubagentObligation(record)) return { state: "held" };
       const owner = record.subagentOwnership;
-      return { state: "released", identity, sequence: owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
+      if (!isTerminalProcessJobState(record.state) || hasUnresolvedSubagentOwnership(record) || owner.publication.state !== "confirmed") return { state: "held" };
+      // Positive job/disposition proof can certify the registry while its durable
+      // acknowledgement still pins retention/capacity. It is not absence evidence.
+      return { state: "released", identity, sequence: owner.publication.sequence, receiptPending: hasPendingSubagentReleaseReceipt(record), continuity: owner.disposition?.continuity ?? "unknown",
         ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}) };
     }).catch(() => ({ state: "unavailable" as const }));
   }
@@ -714,24 +716,39 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
       const record = await this.storeGet(jobId, "subagent.publication");
       const owner = record?.subagentOwnership;
-      if (!record || !owner?.disposition || owner.publication.state !== "pending") return;
+      if (!record || !owner?.disposition || !hasPendingSubagentPublication(record)) return;
       if (!this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
       const publication: SubagentRegistryPublication = { identity: this.managedIdentity(record), sequence: owner.publication.sequence,
         disposition: owner.disposition, released: !hasUnresolvedSubagentOwnership(record) && isTerminalProcessJobState(record.state),
         outcome: { status: owner.disposition.status, ...(owner.usage ? { usage: owner.usage } : {}), ...(record.subagentQuestion ? { question: record.subagentQuestion } : {}) } };
-      await this.managedRegistry.publish("intent", publication);
-      await this.managedRegistry.publish("confirm", publication);
-      await this.withManagedLock(async () => {
-        const occupied = this.runningOccupancy();
-        await this.storeMutate("subagent.publication_confirmed", (records) => {
+      if (owner.publication.state === "pending") {
+        await this.managedRegistry.publish("intent", publication);
+        await this.managedRegistry.publish("confirm", publication);
+        await this.withManagedLock(async () => await this.storeMutate("subagent.publication_confirmed", (records) => {
           const current = requireRecord(records, jobId).subagentOwnership!;
-          if (current.publication.sequence === publication.sequence) current.publication.state = "confirmed";
+          if (current.publication.sequence === publication.sequence) {
+            current.publication.state = "confirmed";
+            current.publication.receiptPending = publication.released;
+          }
+        }));
+      }
+      if (publication.released) {
+        // Never hold the service lock while entering the registry transaction.
+        // It verifies the committed job proof and durably writes its certificate.
+        await this.managedRegistry.publish("finalize", publication);
+        await this.withManagedLock(async () => {
+          const occupied = this.runningOccupancy();
+          await this.storeMutate("subagent.release_receipt_acknowledged", (records) => {
+            const current = requireRecord(records, jobId);
+            const owner = current.subagentOwnership!;
+            if (sameSubagentOwner(publication.identity, this.managedIdentity(current))
+              && owner.publication.sequence === publication.sequence && owner.publication.state === "confirmed"
+              && !hasUnresolvedSubagentOwnership(current) && isTerminalProcessJobState(current.state)) owner.publication.receiptPending = false;
+          });
+          // The exact durable acknowledgement owns the capacity transition.
+          if (this.runningOccupancy() < occupied) await this.drainQueue();
         });
-        // complete() could not drain this slot while P still pinned it. The
-        // matching durable acknowledgement (including late settlement) owns
-        // the capacity transition, not a later queue-expiry timer or wake.
-        if (this.runningOccupancy() < occupied) await this.drainQueue();
-      });
+      }
       if (publication.released) this.managedCommands.delete(jobId);
       this.scheduleWake(jobId);
     });

@@ -31,5 +31,5 @@ export interface SubagentRegistryPublication {
 export interface ManagedSubagentRegistry {
   readonly root: string;
   verify(identity: SubagentOwnerIdentity): Promise<void | { readonly retained: boolean; readonly verification?: SubagentVerificationTarget }>;
-  publish(phase: "intent" | "confirm", publication: SubagentRegistryPublication): Promise<void>;
+  publish(phase: "intent" | "confirm" | "finalize", publication: SubagentRegistryPublication): Promise<void>;
 }

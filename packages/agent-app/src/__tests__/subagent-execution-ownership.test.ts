@@ -32,6 +32,19 @@ describe("durable subagent ownership predicate", () => {
     value.command.state = "released";
     expect(hasSubagentObligation({ kind: "internal", subagentOwnership: value })).toBe(false);
   });
+  it.each([undefined, true])("pins confirmed managed release evidence until explicit receipt acknowledgement (%s)", (receiptPending) => {
+    const value = ownership(); value.registryRoot = "/registered/children";
+    value.owner.settlement = "settled"; value.revoked = true;
+    value.disposition = { status: "ok", continuity: "retained" };
+    value.publication = { sequence: 4, state: "confirmed", ...(receiptPending === undefined ? {} : { receiptPending }) };
+    const record = { kind: "internal" as const, subagentOwnership: value };
+    expect(isSubagentExecutionOwnership(value)).toBe(true);
+    expect(hasUnresolvedSubagentOwnership(record)).toBe(false);
+    expect(hasPendingSubagentPublication(record)).toBe(true); expect(hasSubagentObligation(record)).toBe(true);
+    value.publication.receiptPending = false;
+    expect(hasSubagentObligation(record)).toBe(false);
+    expect(isSubagentExecutionOwnership({ ...value, publication: { ...value.publication, receiptPending: "false" } })).toBe(false);
+  });
   it("does not promote legacy childStillBusy to released or ordinary commands to child owners", () => {
     expect(hasSubagentObligation({ kind: "internal", childStillBusy: true })).toBe(true);
     expect(hasSubagentObligation({ kind: "internal", childStillBusy: false })).toBe(false);
