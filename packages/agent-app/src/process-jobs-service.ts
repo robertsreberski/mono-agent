@@ -394,8 +394,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       throw new ProcessJobServiceError("process_job_conflict", `Process job is already ${overlay.state}.`);
     }
     return await this.withLock(async () => {
-      const before = await this.storeGet(jobId, "cancel.get");
-      if (before?.kind === "internal" && before.state === "queued") await this.cleanupPending(jobId);
       let cancelled = false;
       const record = await this.storeMutate("cancel", (records) => {
         const current = requireRecord(records, jobId);
@@ -764,12 +762,28 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     });
     if (isInternal(pending.request)) {
       const startedAt = this.now().toISOString();
-      await this.storeMutate("launch.running_internal", (records) => {
-        const record = requireRecord(records, jobId);
-        record.state = "running";
-        record.startedAt = startedAt;
-        record.runtimeDeadlineAt = new Date(Date.parse(startedAt) + record.maxRuntimeMs).toISOString();
-      });
+      try {
+        // No runner exists yet. A failed write is recoverable only after a
+        // successful terminal rollback; otherwise the normal degraded fence wins.
+        await this.storeMutate("launch.running_internal", (records) => {
+          const record = requireRecord(records, jobId);
+          record.state = "running";
+          record.startedAt = startedAt;
+          record.runtimeDeadlineAt = new Date(Date.parse(startedAt) + record.maxRuntimeMs).toISOString();
+        }, true);
+      } catch {
+        outputTail.discard();
+        try {
+          await this.storeMutate("launch.internal_rollback", (records) => {
+            const record = requireRecord(records, jobId);
+            if (!isTerminalProcessJobState(record.state)) transitionTerminal(record, "spawn_failed", this.now(),
+              "process_job_store_error", "Subagent was not started because running state could not be persisted.");
+          });
+        } finally { await this.cleanupPendingAfterTerminal(jobId); }
+        this.scheduleSurfaceUpdate(jobId);
+        this.scheduleWake(jobId);
+        throw new ProcessJobServiceError("process_job_store_error");
+      }
       const handle = launchInternalProcessJob(pending.request, current.maxRuntimeMs, current.maxOutputBytes, undefined, (chunk) => outputTail.writeStdout(chunk));
       this.active.set(jobId, { ...pending, handle, outputTail });
       const settlement = handle.completion.then((result) => this.complete(jobId, result))
@@ -959,7 +973,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (record.kind === "internal") {
             record.childStillBusy = result.childStillBusy === true;
             if (result.question) {
-              const options = [...new Set(result.question.options?.map((option) => redactOutput(option, active.redactionSecrets).slice(0, 200)).filter(Boolean))];
+              const options = [...new Set(result.question.options?.map((option) => redactOutput(option, active.redactionSecrets).slice(0, 200).trim()).filter(Boolean))].slice(0, 5);
               record.subagentQuestion = {
                 question: redactOutput(result.question.question, active.redactionSecrets).slice(0, 2000) || "Child requested a parent reply (question redacted).",
                 ...(options.length >= 2 ? { options } : {}),
@@ -1149,8 +1163,6 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private async expireJob(jobId: string): Promise<void> {
-    const before = await this.storeGet(jobId, "queue.expire_get");
-    if (before?.kind === "internal" && before.state === "queued") await this.cleanupPending(jobId);
     let transitioned = false;
     await this.storeMutate("queue.expire", (records) => {
       const record = records.get(jobId);
@@ -1646,6 +1658,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private async storeMutate<T>(
     operation: string,
     mutate: (records: Map<string, DurableProcessJobRecord>) => T | Promise<T>,
+    deferDegradation = false,
   ): Promise<T> {
     let callbackFailed = false;
     let desired: ProcessJobMutationSnapshot | undefined;
@@ -1663,7 +1676,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       if (desired !== undefined) this.reconcileMutation(desired);
       return result;
     } catch (error) {
-      if (!callbackFailed) {
+      if (!callbackFailed && !deferDegradation) {
         if (desired !== undefined) this.rememberFailedTerminalMutations(desired.candidates);
         await this.degradeStorage(operation, error);
       }

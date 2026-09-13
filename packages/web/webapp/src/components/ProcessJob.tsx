@@ -304,7 +304,7 @@ const processJobMeta = (job: ProcessJobProjection, terminal: boolean): ReactNode
   const timing = processJobTiming(job);
   const exit = processJobExitLabel(job);
   const items: ReactNode[] = [];
-  if (job.childStillBusy) items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
+  if (job.kind === "internal" && job.childStillBusy) items.push(<span key="child-busy" className="activity-row-alert">child still busy · awaiting actual settlement</span>);
   if (processJobStatus(job.state) !== "failed") items.push(processJobStateLabel(job.state));
   // A settled job with no finish stamp has nothing honest to show; leave the slot out.
   if (timing !== undefined && (!terminal || timing.finishedAt !== undefined)) {

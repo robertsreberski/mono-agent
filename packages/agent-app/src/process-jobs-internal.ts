@@ -50,7 +50,7 @@ export function launchInternalProcessJob(
   const cancel = (): void => {
     if (settled || controller.signal.aborted) return;
     clearTimeout(timer);
-    controller.abort();
+    controller.abort(timedOut ? new DOMException("Process-job runtime deadline exceeded", "TimeoutError") : undefined);
     grace = setTimeout(() => finish({ output: "", status: timedOut ? "timeout" : "cancelled", childStillBusy: true }), graceMs);
   };
   const timer = setTimeout(() => { timedOut = true; cancel(); }, timeoutMs);

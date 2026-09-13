@@ -140,14 +140,15 @@ export interface ProcessJobProjectionError {
  * it is the exact bound originating conversation and therefore the operator
  * projection's reply route, including any host-owned rollover bucket.
  */
-export interface ProcessJobProjection {
+export type ProcessJobProjection = ProcessJobProjectionBase & (
+  | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
+  | { readonly tool: "Agent" | "AgentSend"; readonly kind: "internal"; readonly instanceId: string;
+      readonly childStillBusy: boolean; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
+);
+
+interface ProcessJobProjectionBase {
   readonly schema: "mono-agent.process-job-projection.v1";
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash" | "Agent" | "AgentSend";
-  readonly kind?: "internal";
-  readonly instanceId?: string;
-  readonly childStillBusy?: boolean;
-  readonly subagentQuestion?: { readonly question: string; readonly options?: string[] };
   readonly state: ProcessJobState;
   readonly summary: string;
   readonly origin: ProcessJobProjectionOrigin;

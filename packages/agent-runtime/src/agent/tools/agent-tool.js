@@ -185,14 +185,12 @@ export function subagentInvocationCount(subagents, parentRunId) {
 }
 
 /**
- * What this logical run's subagents spent, summed across every delegation.
+ * What this logical run's synchronous subagents spent, summed across delegations.
  *
- * A delegation is work the run asked for, so its cost belongs to the run's
- * total — a provider folds this into its own usage before reporting, which is
- * what makes the console's cost, the TUI status bar and the exported metrics
- * agree with the bill. Same read-only-accessor contract as
- * `subagentInvocationCount`: `__budgets` stays private. All zeroes when nothing
- * delegated, which is the truthful answer for a run that never used the tool.
+ * Providers fold synchronous child usage into parent totals. Detached jobs own
+ * independent durable accounting and never mutate this budget after handoff.
+ * Like `subagentInvocationCount`, this accessor keeps `__budgets` private and
+ * returns zeroes when the run has no synchronous child spend.
  *
  * @param {*} subagents The run-scoped options object, or undefined.
  * @param {string|undefined} parentRunId
@@ -459,8 +457,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
         let timedOut = false;
         let graceTimer;
         const requestDeadline = () => { graceTimer ??= setTimeout(() => fireDeadline?.(), DEADLINE_GRACE_MS); };
-        const onParentAbort = () => { controller.abort(); if (detached) { clearTimeout(timer); requestDeadline(); } };
-        if (signal?.aborted) { controller.abort(); if (detached) requestDeadline(); }
+        const onParentAbort = () => { timedOut ||= detached && signal?.reason?.name === "TimeoutError"; controller.abort(signal?.reason); if (detached) { clearTimeout(timer); requestDeadline(); } };
+        if (signal?.aborted) { timedOut ||= detached && signal.reason?.name === "TimeoutError"; controller.abort(signal.reason); if (detached) requestDeadline(); }
         else signal?.addEventListener("abort", onParentAbort, { once: true });
         const timer = setTimeout(() => {
           timedOut = true;
@@ -486,9 +484,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
           callIndex,
           ...(params.description === undefined ? {} : { label: params.description }),
           ...(context.onEvent === undefined ? {} : { emit: context.onEvent }),
-          // Summed, not replaced: a turn can delegate a dozen times and the run
-          // owns all of it. Lives on the run budget so router attempts share it.
+          // Synchronous spend is summed across router attempts. Detached spend
+          // belongs only to its instance and job, even if it completes immediately.
           recordUsage: (spent) => {
+            if (detached) return;
             budget.usage.costUsd += spent.costUsd;
             budget.usage.input += spent.input;
             budget.usage.output += spent.output;
@@ -539,8 +538,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
             const pendingId = instance.id;
             // Keep the instance busy until the actual runner settles, even after the tool deadline.
             void Promise.resolve(running).then(
-              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", answerHead: late?.text ?? "" }),
-              () => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled" }),
+              (late) => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", answerHead: late?.text ?? "", ...(detached ? { usage: detachedUsage(late, collector.usage()) } : {}) }),
+              () => finishInstance(pendingId, { status: timedOut ? "timeout" : "cancelled", ...(detached ? { usage: detachedUsage(undefined, collector.usage()) } : {}) }),
             ).catch(() => undefined);
           }
           if (settled === DEADLINE) {
@@ -561,8 +560,8 @@ export function createAgentTool(subagents, context = {}, continuation) {
         if (instance && !abandoned) {
           const state = classifyOutcome({ result, thrown, timedOut });
           const usage = result?.usage ?? {};
-          instance = await finishInstance(instance.id, { status: signal?.aborted ? "cancelled" : state.status,
-            answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
+          instance = await finishInstance(instance.id, { status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
+            answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
               cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
               costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
           if (continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
@@ -616,7 +615,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
           content: [{ type: "text", text }],
           details: {
             tool: continuation ? "AgentSend" : "Agent",
-            subagent: { ...(detached ? { childStillBusy: abandoned } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
+            subagent: { ...(detached ? { childStillBusy: abandoned, usage: detachedUsage(result, collector.usage()) } : {}), ...(instance ? { instance: { id: instance.id, turns: instance.turns, status: instance.status } } : {}), name: profile.name, callIndex, status: outcome.status, ...(outcome.question ? { question: outcome.question } : {}), toolCalls: collector.entries().length,
               ...(routeLabel ? { requested, ...(collector.attribution()?.executed === undefined ? {} : { executed: collector.attribution().executed }) } : {}),
             },
             ...(truncated ? { tool_payload_truncated: true } : {}),
@@ -803,6 +802,7 @@ function createActivityCollector({ callId, profileName, callIndex, requested = {
   return {
     entries: () => done,
     attribution: () => finalAttribution,
+    usage: () => ({ ...usage }),
     /** Lifecycle bookends so the subagent is visible before its first tool call. */
     started() {
       publish({
@@ -1295,4 +1295,14 @@ function capBytes(value, maxBytes) {
   // point split at the boundary never lands in the output.
   const decoded = buffer.toString("utf8").replace(/�$/u, "");
   return `${decoded}\n… [result truncated]`;
+}
+
+/** Child accounting is independent of the parent run, including late settlement. */
+function detachedUsage(result, observed = {}) {
+  const usage = result?.usage ?? {};
+  return { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens ?? observed.input),
+    output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens ?? observed.output),
+    cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens ?? observed.cacheRead),
+    cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens ?? observed.cacheWrite),
+    costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total ?? observed.costUsd) };
 }
