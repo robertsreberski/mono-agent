@@ -585,7 +585,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: 0.45; }
    button with 3px of vertical padding, and that 3px is the same rhythm the
    project page keeps between its PROJECT label and the project name. */
 .chat-title-block { min-width: 0; flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 0; }
-.chat-title-row { min-width: 0; width: 100%; max-width: 100%; display: flex; align-items: center; gap: 10px; }
+.chat-title-row { min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 10px; }
 .conversation-title-group { min-width: 0; max-width: min(62vw, 650px); display: flex; align-items: center; gap: 7px; }
 .conversation-title { min-width: 0; max-width: min(52vw, 560px); overflow: hidden; padding: 3px 5px; color: var(--text); background: transparent; border-radius: 6px; font-size: 14px; font-weight: 650; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
 .trigger-badge { flex: none; padding: 2px 5px; color: var(--accent); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 5px; font-size: 8px; font-weight: 760; line-height: 1.1; text-transform: uppercase; letter-spacing: 0.07em; }
@@ -1415,7 +1415,7 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 @media (max-width: 560px) {
   .chat-header { flex-wrap: nowrap; padding-left: max(9px, env(safe-area-inset-left)); padding-right: max(9px, env(safe-area-inset-right)); }
   .chat-title-block { min-width: 0; flex: 1; gap: 0; }
-  .chat-title-row { gap: 6px; }
+  .chat-title-row { gap: 0; }
   .chat-project-identity { padding-left: 2px; }
   .conversation-title-group { max-width: 100%; }
   .conversation-title { max-width: 100%; min-width: 0; padding-inline: 2px; font-size: 13px; }
@@ -1581,7 +1581,11 @@ kbd { display: inline-flex; align-items: center; justify-content: center; min-wi
 [data-tag-color="green"] { --project-ink: light-dark(#28613c, #a0d7ae); --project-tint: light-dark(#e3f2e7, #233d2b); }
 [data-tag-color="teal"] { --project-ink: light-dark(#196467, #91d6d8); --project-tint: light-dark(#dff1f1, #203d3e); }
 [data-tag-color="red"] { --project-ink: light-dark(#a23832, #f4aaa3); --project-tint: light-dark(#fbe6e3, #492a28); }
-.conversation-tags { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 50%; flex: 0 1 auto; }
+.chat-metadata-row { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.chat-metadata-row .chat-project-identity { flex: 0 0 auto; max-width: 45%; }
+.conversation-tags > .tag-separator { display: none; }
+.chat-project-identity + .conversation-tags > .tag-separator { display: inline; }
+.conversation-tags { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; flex: 0 1 auto; }
 .conversation-tag-chips { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; }
 .conversation-tag-chips:empty { display: none; }
 .tag-separator { flex: none; color: var(--text-muted); }

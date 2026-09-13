@@ -176,7 +176,7 @@ describe.each([
   { label: "desktop", width: 1_280, height: 800 },
   { label: "mobile", width: 390, height: 844 },
 ])("projects at the $label viewport", ({ label, width, height }) => {
-  it("shows three rounded colored tags beside the title and their membership menu", async () => {
+  it("shows three rounded colored tags beside the project label and their membership menu", async () => {
     await page.viewport(width, height);
     const tags = [tag("planning", "alpha", { name: "planning", color: "blue" }), tag("implementing", "alpha", { name: "implementing", color: "amber" }), tag("reviewing", "alpha", { name: "reviewing", color: "green" })];
     storeMock.current = { ...chatStore(), selectedThread: { ...first, tagIds: tags.map((item) => item.id) }, tagsByAgent: { alpha: tags }, loadTags: vi.fn().mockResolvedValue(tags), setThreadTags: vi.fn().mockResolvedValue(undefined) };
@@ -184,8 +184,11 @@ describe.each([
     const line = screen.getByLabelText("Conversation tag line");
     const title = container.querySelector(".chat-title-row")!;
     const titleBounds = title.getBoundingClientRect();
-    expect(title).toContainElement(line);
-    expect(line.getBoundingClientRect().top).toBeLessThan(titleBounds.bottom);
+    const metadata = container.querySelector(".chat-metadata-row")!;
+    expect(metadata).toContainElement(line);
+    expect(metadata).toContainElement(screen.getByRole("button", { name: "Open project Web console" }));
+    expect(title).not.toContainElement(line);
+    expect(line.getBoundingClientRect().bottom).toBeLessThanOrEqual(titleBounds.top);
     const chipStyle = getComputedStyle(line.querySelector(".tag-chip")!);
     expect(chipStyle.borderRadius).toBe("999px");
     expect(chipStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
@@ -197,6 +200,19 @@ describe.each([
     for (const item of tags) expect(screen.getByRole("menuitem", { name: `Remove ${item.name}` })).toBeVisible();
     expect(title.getBoundingClientRect()).toEqual(titleBounds);
     await capture(`tags-header-menu-${label}`);
+  });
+
+  it("keeps tags above the title without a dangling separator when there is no project", async () => {
+    await page.viewport(width, height);
+    const tags = [tag("planning", "alpha", { name: "planning", color: "blue" })];
+    storeMock.current = { ...chatStore(), selectedThread: { ...first, projectId: undefined, tagIds: [tags[0]!.id] }, tagsByAgent: { alpha: tags }, loadTags: vi.fn().mockResolvedValue(tags), setThreadTags: vi.fn().mockResolvedValue(undefined) };
+    const { container } = render(<WebRuntimeProvider><Chat onBack={() => undefined} /></WebRuntimeProvider>);
+    const line = screen.getByLabelText("Conversation tag line");
+    expect(container.querySelector(".chat-project-identity")).toBeNull();
+    expect(line.querySelector(".tag-separator")).not.toBeVisible();
+    expect(line.getBoundingClientRect().bottom).toBeLessThanOrEqual(container.querySelector(".chat-title-row")!.getBoundingClientRect().top);
+    expect(screen.getByRole("button", { name: "Conversation tags" })).toBeVisible();
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
   });
 
   it("shows dashboard tag chips with a bounded overflow count", async () => {
@@ -220,14 +236,17 @@ describe.each([
     await capture(`tags-dashboard-chips-${label}`);
   });
 
-  it("keeps ten long tags scrollable beside the title with their menu visible", async () => {
+  it("keeps ten long tags scrollable beside the project label with their menu visible", async () => {
     await page.viewport(width, height);
     const tags = Array.from({ length: 10 }, (_, i) => ({ id: `tag-${String(i)}`, sourceId: "alpha", name: `planning long status ${String(i)} ` + "x".repeat(60), color: "green", revision: 1 }));
     storeMock.current = { ...chatStore(), selectedThread: { ...first, tagIds: tags.map((tag) => tag.id) }, tagsByAgent: { alpha: tags }, loadTags: vi.fn().mockResolvedValue(tags), setThreadTags: vi.fn().mockResolvedValue(undefined) };
     const { container } = render(<WebRuntimeProvider><Chat onBack={() => undefined} /></WebRuntimeProvider>);
     const line = screen.getByLabelText("Conversation tag line");
     const title = container.querySelector(".chat-title-row")!;
-    expect(title).toContainElement(line);
+    const metadata = container.querySelector(".chat-metadata-row")!;
+    expect(metadata).toContainElement(line);
+    expect(metadata).toContainElement(screen.getByRole("button", { name: "Open project Web console" }));
+    expect(title).not.toContainElement(line);
     const scroller = line.querySelector<HTMLElement>(".conversation-tag-chips")!;
     expect(scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth);
     const chips = [...line.querySelectorAll(".tag-chip")];
