@@ -158,6 +158,12 @@ deadline can stop commands sooner. This does not extend the whole-child
 `subagents.timeoutMs` or job budget. Child-owned background commands remain
 unsupported; foreground children and NodeRepl keep their 120-second caps.
 Disabling instances preserves stateless `Agent`.
+Detached recovery acknowledgement is exact-request, single-use and available
+only for proven retained context. Private registry failures are reported without
+paths and do not consume the acknowledgement. A failed acknowledged `close:true`
+continuation preserves the instance and pending question. `mono-agent doctor`
+reports only bounded path-free retained, unresolved and owner-unavailable counts;
+it does not perform live child discovery.
 
 ### Persistent child questions
 

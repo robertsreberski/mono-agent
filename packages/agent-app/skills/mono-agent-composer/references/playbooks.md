@@ -330,3 +330,8 @@ message and optional `background:true`. A durable started receipt schedules an
 exact-origin wake, including AskParent questions. Do not poll or replay; a
 terminal job with `childStillBusy:true` does not permit another send until the
 child actually settles. Restart interrupts and wakes without replay.
+Recovery acknowledgement is retained-context only and single-use. A failed
+acknowledged `close:true` continuation leaves the child and pending AskParent
+question available, while private registry I/O failures remain path-free and do
+not consume the acknowledgement. Use `mono-agent doctor` for bounded retained,
+unresolved and owner-unavailable counts; it never probes a live child.
