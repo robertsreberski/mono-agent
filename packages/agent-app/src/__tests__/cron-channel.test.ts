@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { MAX_CRON_OPERATOR_DEGRADED_REASON_BYTES, type AgentResponder } from "@mono-agent/agent-contracts";
@@ -10,7 +14,7 @@ import type {
 
 import type { ChannelStartInput, CronChannelOverrides } from "../channels.js";
 import { createCronChannelDriver } from "../channels.js";
-import type { CronControlStore } from "../cron-control-store.js";
+import { openCronControlStore, type CronControlStore } from "../cron-control-store.js";
 import { CronOperatorRegistry } from "../cron-operator-service.js";
 
 const noopResponder: AgentResponder = {
@@ -1008,5 +1012,136 @@ describe("cron channel driver — durable effective state", () => {
       degradedReason: "runtime store failed",
       jobs: [{ jobId: "j", effectiveEnabled: false, health: "unknown" }],
     });
+  });
+});
+
+describe("cron channel driver — target-independent run history", () => {
+  it("records identical lastRun and run pages for telegram, slack, web and undelivered runs", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "mono-agent-cron-target-"));
+    const store = await openCronControlStore(cwd, { now: () => new Date("2026-01-01T00:10:00.000Z") });
+    try {
+      const registry = new CronOperatorRegistry();
+      const notifyDestination = vi.fn(async () => ({ delivered: true }));
+      const jobConfigs = [
+        { id: "via-telegram", notify: true, notifyConversationId: "telegram:42" },
+        { id: "via-slack", notify: true, notifyConversationId: "slack:C123" },
+        { id: "via-web", notify: true, notifyConversationId: "web:new" },
+        { id: "via-nothing", notify: false },
+      ].map((job) => ({
+        ...job,
+        expression: "* * * * *",
+        timezone: "UTC",
+        prompt: "p",
+        enabled: true,
+      }));
+      let captured: CronAdapterOptions | undefined;
+      const driver = createCronChannelDriver(cronOverrides({
+        openControlStore: async () => store,
+        adapterFactory: (options): CronAdapterStartResult => {
+          captured = options;
+          return adapterResult(options);
+        },
+      }), registry);
+      const running = await driver.start({
+        ...baseInput,
+        notifyDestination,
+        config: { jobs: jobConfigs },
+      } as never);
+      try {
+        for (const job of jobConfigs) {
+          const successFiring = store.allocateFiring({
+            jobId: job.id,
+            scheduledAt: "2026-01-01T00:00:00.000Z",
+            observedAt: "2026-01-01T00:00:00.000Z",
+            trigger: "scheduled",
+          });
+          await captured?.onResult?.({
+            kind: "succeeded",
+            cronRunId: successFiring.runId,
+            jobId: successFiring.jobId,
+            scheduledAt: successFiring.scheduledAt,
+            orderedAt: successFiring.orderedAt,
+            sequence: successFiring.sequence,
+            trigger: successFiring.trigger,
+            startedAt: successFiring.orderedAt,
+            completedAt: "2026-01-01T00:00:01.000Z",
+            text: `Brief for ${job.id}`,
+          });
+          const failedFiring = store.allocateFiring({
+            jobId: job.id,
+            scheduledAt: "2026-01-01T00:05:00.000Z",
+            observedAt: "2026-01-01T00:05:00.000Z",
+            trigger: "scheduled",
+          });
+          await captured?.onResult?.({
+            kind: "failed",
+            cronRunId: failedFiring.runId,
+            jobId: failedFiring.jobId,
+            scheduledAt: failedFiring.scheduledAt,
+            orderedAt: failedFiring.orderedAt,
+            sequence: failedFiring.sequence,
+            trigger: failedFiring.trigger,
+            startedAt: failedFiring.orderedAt,
+            completedAt: "2026-01-01T00:05:01.000Z",
+            error: "No API key for provider: openai-codex",
+            failureKind: "provider_unavailable_exhausted",
+          });
+        }
+
+        // Native delivery follows each job's own destination (or none), while
+        // the durable history is identical for all four.
+        expect(notifyDestination).toHaveBeenCalledTimes(6);
+        for (const destination of ["telegram:42", "slack:C123", "web:new"]) {
+          expect(notifyDestination).toHaveBeenCalledWith(
+            destination,
+            expect.stringContaining("Brief for"),
+            expect.objectContaining({ verbatim: true }),
+          );
+        }
+
+        const overview = await registry.overview();
+        expect(overview.jobs.map((job) => job.jobId).sort()).toEqual(
+          ["via-nothing", "via-slack", "via-telegram", "via-web"],
+        );
+        for (const job of overview.jobs) {
+          expect(job.lastRun).toMatchObject({
+            status: "failed",
+            error: "No API key for provider: openai-codex",
+            failureKind: "provider_unavailable_exhausted",
+          });
+        }
+        const histories = new Map<string, unknown>();
+        for (const job of jobConfigs) {
+          const page = await registry.runs({ jobId: job.id, limit: 10 });
+          histories.set(job.id, page.runs.map((run) => ({
+            status: run.status,
+            text: "text" in run ? run.text : undefined,
+            error: "error" in run ? run.error : undefined,
+          })));
+          expect(page.runs).toHaveLength(2);
+        }
+        expect(histories.get("via-telegram")).toEqual([
+          { status: "failed", text: undefined, error: "No API key for provider: openai-codex" },
+          { status: "succeeded", text: "Brief for via-telegram", error: undefined },
+        ]);
+        expect(histories.get("via-slack")).toEqual([
+          { status: "failed", text: undefined, error: "No API key for provider: openai-codex" },
+          { status: "succeeded", text: "Brief for via-slack", error: undefined },
+        ]);
+        expect(histories.get("via-web")).toEqual([
+          { status: "failed", text: undefined, error: "No API key for provider: openai-codex" },
+          { status: "succeeded", text: "Brief for via-web", error: undefined },
+        ]);
+        expect(histories.get("via-nothing")).toEqual([
+          { status: "failed", text: undefined, error: "No API key for provider: openai-codex" },
+          { status: "succeeded", text: "Brief for via-nothing", error: undefined },
+        ]);
+      } finally {
+        await running.stop();
+      }
+    } finally {
+      await store.close();
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
