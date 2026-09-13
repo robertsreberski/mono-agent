@@ -1191,6 +1191,47 @@ describe("convertWebMessage", () => {
     ]);
   });
 
+  it.each(["complete", "running", "cancelled", "failed", "interrupted"] as const)(
+    "preserves reasoning-split text for %s replies", (status) => {
+      const converted = convertWebMessage(message({ role: "assistant", status, parts: [
+        { type: "text", text: "Tot" },
+        { type: "reasoning", text: "." },
+        { type: "text", text: "ally fair." },
+      ] }));
+      if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+      expect(converted.content).toEqual(status === "complete" ? [
+        { type: "reasoning", text: "." }, { type: "text", text: "Totally fair." },
+      ] : [
+        { type: "text", text: "Tot" }, { type: "reasoning", text: "." },
+        { type: "text", text: "ally fair." },
+      ]);
+    },
+  );
+
+  it("keeps answer fragments together across reasoning, without joining tool narration", () => {
+    const converted = convertWebMessage(message({
+      role: "assistant", status: "complete",
+      parts: [
+        { type: "text", text: "Looking." },
+        { type: "tool-call", toolCallId: "t1", toolName: "Search", args: {}, status: "complete" },
+        { type: "reasoning", text: "Checking" },
+        { type: "text", text: "Tot" },
+        { type: "reasoning", text: "." },
+        { type: "text", text: "ally" },
+        { type: "reasoning", text: "More" },
+        { type: "text", text: " " },
+        { type: "reasoning", text: "Done" },
+        { type: "text", text: "fair — yes." },
+      ],
+    }));
+    if (!Array.isArray(converted.content)) throw new Error("Expected structured content");
+    expect(converted.content.filter((part) => part.type === "text"))
+      .toEqual([{ type: "text", text: "Totally fair — yes." }]);
+    expect(converted.content.filter((part) => part.type === "data-note"))
+      .toEqual([{ type: "data-note", data: { text: "Looking." } }]);
+    expect(converted.content.filter((part) => part.type === "reasoning")).toHaveLength(4);
+  });
+
   it("folds a settled turn into one run of activity over the answer", () => {
     const converted = convertWebMessage(
       message({

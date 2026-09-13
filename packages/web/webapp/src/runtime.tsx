@@ -375,11 +375,14 @@ const completeAttachment = (attachment: WebAttachment): CompleteAttachment => {
  * repairs history rather than only protecting new turns. Concatenation is
  * verbatim: the parts were one continuous stream of deltas.
  */
-const joinAdjacentText = (parts: readonly ConvertedPart[]): ConvertedPart[] =>
+const joinAdjacentText = (parts: readonly ConvertedPart[], joinReasoning = false): ConvertedPart[] =>
   parts.reduce<ConvertedPart[]>((joined, part) => {
     if (part.type === "text") {
       let previousIndex = joined.length - 1;
-      while (joined[previousIndex]?.type === "data-monitor-activity") previousIndex -= 1;
+      // Reasoning can split a single answer even mid-word. Only settled
+      // replies may reorder it; every other visible part remains a barrier.
+      while (joined[previousIndex]?.type === "data-monitor-activity"
+        || (joinReasoning && joined[previousIndex]?.type === "reasoning")) previousIndex -= 1;
       const previous = joined[previousIndex];
       if (previous?.type === "text") {
         joined[previousIndex] = { ...previous, text: `${previous.text}${part.text}` };
@@ -511,7 +514,7 @@ export const convertWebMessage = (
         data: jsonObject(event),
       })),
     ];
-  }));
+  }), message.role === "assistant" && message.status === "complete" && !hasCronReplyContext);
   const converted = joined.filter((part) => part.type !== "data-assistant-message-boundary");
   // Only a COMPLETED turn is known to have an answer. Streaming is still
   // writing one, and a cancelled/failed/interrupted turn was stopped with none
