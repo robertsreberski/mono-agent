@@ -66,6 +66,23 @@ export type ModelCatalogPage = Wire.WebModelPage;
 export type AgentProvider = Wire.WebAgentProvider;
 export type CatalogModel = Wire.WebCatalogModel;
 export type StartTurnInput = Wire.StartWebTurnInput;
+export type RunActivity = Wire.WebRunActivity;
+export type RouteSelection = Wire.WebRouteSelection;
+export type ModelTransition = Wire.WebModelTransition;
+export type ProjectColor = Wire.WebProjectColor;
+export type ProjectSummary = Wire.WebProject;
+export type ProjectTransition = Wire.WebProjectTransition;
+export type ProjectChangedPayload = Wire.WebProjectChangedPayload;
+export type TagColor = Wire.WebTagColor;
+export type TagSummary = Wire.WebTag;
+export type CreateTagInput = Wire.CreateWebTagInput;
+export type PatchTagInput = Wire.PatchWebTagInput;
+export type TagChangedPayload = Wire.WebTagChangedPayload;
+export type ChannelConfigView = Wire.WebChannelConfigView;
+export type CronConfirmation = Wire.WebCronConfirmation;
+export type CronMutationResult<T> = Wire.WebCronMutationResult<T>;
+export type CronReplySnapshotKind = Wire.WebCronReplySnapshotKind;
+export type CronReplyContextPart = Wire.WebCronReplyContextPart;
 
 export type AskOption = ChannelAskOption;
 export type AskQuestion = ChannelAskQuestion;
@@ -79,7 +96,12 @@ export type UploadLimits = Wire.WebBootstrap["limits"];
 // server fields. Keep that browser compatibility explicit and narrowly scoped.
 export type ThreadSummary = Omit<Wire.WebThread, "runModel" | "runEffort">
   & Partial<Pick<Wire.WebThread, "runModel" | "runEffort">>;
-export type WebMessage = Omit<Wire.WebMessage, "seq"> & Partial<Pick<Wire.WebMessage, "seq">>;
+export type WebMessage = Omit<Wire.WebMessage, "seq"> & Partial<Pick<Wire.WebMessage, "seq">> & {
+  /** Browser presentation only, attached after loading the independent sidecars. */
+  readonly projectTransitions?: readonly ProjectTransition[];
+  /** Browser presentation only, attached after loading the independent sidecars. */
+  readonly modelTransitions?: readonly ModelTransition[];
+};
 export type ThreadDetail = Omit<Wire.WebThreadDetail, "thread" | "messages"> & {
   readonly thread: ThreadSummary;
   readonly messages: readonly WebMessage[];
@@ -89,8 +111,17 @@ export type ThreadSearchHit = Omit<Wire.WebThreadSearchHit, "thread"> & { readon
 export type ThreadSearchPage = Omit<Wire.WebThreadSearchPage, "hits"> & { readonly hits: readonly ThreadSearchHit[] };
 export type MessagePage = Omit<Wire.WebMessagePage, "messages"> & { readonly messages: readonly WebMessage[] };
 export type CronRunPage = Omit<Wire.WebCronRunPage, "messages"> & { readonly messages?: readonly WebMessage[] };
-export type Bootstrap = Omit<Wire.WebBootstrap, "threads"> & { readonly threads: readonly ThreadSummary[] };
+export type ActiveThreads = Omit<Wire.WebActiveThreads, "threads"> & { readonly threads: readonly ThreadSummary[] };
+export type Bootstrap = Omit<Wire.WebBootstrap, "threads" | "activeThreads"> & {
+  readonly threads: readonly ThreadSummary[];
+  readonly activeThreads?: ActiveThreads;
+};
 export type LiveInputReceipt = Omit<Wire.WebLiveInputReceipt, "message"> & { readonly message: WebMessage };
+export type SubmissionReceipt = Omit<Wire.WebSubmissionReceipt, "message"> & { readonly message?: WebMessage };
+export type CronReplyReceipt = Omit<Wire.WebCronReplyReceipt, "thread" | "messages"> & {
+  readonly thread: ThreadSummary;
+  readonly messages: readonly WebMessage[];
+};
 
 // Cached v1 activity predates the producer's v2 accounting fields. Keep its
 // rendering shape derived from the current contract without weakening live data.

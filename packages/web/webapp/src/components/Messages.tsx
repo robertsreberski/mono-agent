@@ -31,7 +31,6 @@ import type {
   AskSnapshot,
   CachedMonitorProjection,
   CronReplyContextPart as CronReplyContextValue,
-  MonitorProjection,
   ToolCallArtifact,
   RunAttribution as RunAttributionValue,
 } from "../types";

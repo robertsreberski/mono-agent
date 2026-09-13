@@ -45,7 +45,7 @@ Retain the same `runId` when retrying admission. Omit `captureText` for summary-
 
 Direct BuJo callers must migrate from `capture`, loose `captureTurn`, and the legacy capture queue to completed-turn persistence. Await `flush` for queued processing before closing an offline process. Strict extraction, durable intake and replay, Journal indexing, explicit forgetting, backup recovery, and graph expansion remain supported.
 
-The legacy `MemoryWriteResult` and loose-parser `Extraction` types are removed. Use `MemoryCompletedTurnResult` for admission results. Low-level extraction integrations retain `captureTurnStrict` and `extractCapturePlanStrict`; the permissive `extractCapturePlan` export is removed. Replace `queueSnapshot` or `runtime.queues.capture` inspection with durable intake/outbox status.
+The legacy `MemoryWriteResult` and loose-parser `Extraction` types are removed. Use `MemoryCompletedTurnResult` for admission results. Low-level extraction integrations retain `captureTurnStrict` and `extractCapturePlanStrict`; the permissive `extractCapturePlan` export is removed. The `queueSnapshot().capture` and `runtime.queues.capture` fields are removed; inspect `queueSnapshot().intake` (durable completed-turn intake) and the outbox status instead.
 
 The memory audit JSON field `backlog.captureQueue` is replaced by `backlog.completedTurnIntake`, which counts pending durable intake rather than legacy best-effort captures. Update scripts that inspect this field.
 

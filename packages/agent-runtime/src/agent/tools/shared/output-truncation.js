@@ -17,7 +17,8 @@ function sanitizeName(value) {
  *    toolUseId}) -> path | null` callback the tool-payload guard and the Agent
  *    tool use, so the file lands in the run's validated tool-output directory.
  *    This is the sink a configured app actually provides.
- * 2. A configured `toolArtifactDir` (deep-path hosts via configureToolRuntime),
+ * 2. A configured `toolArtifactDir` (deep-path hosts via `configureTools` on
+ *    their runtime instance, or a hand-built ToolContext),
  *    written directly under `<dir>/tool-output/<runId>/`.
  *
  * Null when neither is available or the write fails; callers then omit the
