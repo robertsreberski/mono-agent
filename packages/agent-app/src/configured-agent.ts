@@ -1,3 +1,4 @@
+import type { OwnedForegroundProcesses } from "@mono-agent/runtime-adapter";
 import { createSubagentInstanceRegistry, isLiveSubagentInstance, persistentSubagentsEnabled, subagentInstancesRoot, type InstanceRegistryHandle } from "./subagent-instances.js";
 import { createHostWebRequestCoordinator } from "./web-request-coordinator.js";
 import {
@@ -696,6 +697,7 @@ function inlineSubagentCeiling(config: MonoAgentConfig): readonly string[] {
 }
 
 interface SubagentRunRequest {
+  readonly ownedForegroundProcesses?: OwnedForegroundProcesses;
   readonly detached?: true;
   readonly deadlineAt?: number;
   readonly instance?: { readonly id: string; readonly sessionId: string; readonly sessionsRoot: string };
@@ -902,6 +904,7 @@ export function buildSubagentsOptions(
         ? selectMcpServers((toolPolicyInput(config).mcpServers ?? {}) as Record<string, unknown>, request.definition.mcpServerNames ?? [], request.definition.name)
         : request.definition.mcpServers ?? {},
       abortSignal: request.abortSignal,
+      ...(request.ownedForegroundProcesses ? { ownedForegroundProcesses: request.ownedForegroundProcesses } : {}),
       onEvent: request.onEvent,
       // Depth propagation is the recursion lock the kernel also enforces.
       subagents: { depth: request.depth },
@@ -1213,6 +1216,10 @@ async function createConfiguredAgentHarnessInternal(
     ? createSubagentInstanceRegistry({
         root: subagentInstancesRoot(config),
         ...config.subagents?.instances,
+        ...(internalHooks.processJobs?.service?.bindManagedSubagents ? {
+          ownerForReservation: (jobId: string) => ({ jobId, storeRoot: internalHooks.processJobs!.service!.settings.stateDir }),
+          resolveOwner: (identity: import("./subagent-registry-ownership.js").SubagentOwnerIdentity) => internalHooks.processJobs!.service!.resolveSubagentOwner!(identity),
+        } : {}),
         checkOwnerIndex: async (conversationId, known) => {
           // Only existing registered history is authoritative. Never scan/open an old root here.
           if (processJobsRegistry.kind === "empty") return "clear";
@@ -1227,6 +1234,12 @@ async function createConfiguredAgentHarnessInternal(
         },
       })
     : undefined;
+  if (instanceRegistry && internalHooks.processJobs?.service?.bindManagedSubagents) {
+    internalHooks.processJobs.service.bindManagedSubagents({ root: subagentInstancesRoot(config),
+      verify: async (identity) => await (await instanceRegistry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => await (await instanceRegistry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    });
+  }
   const persistentSubagents = instanceRegistry === undefined ? undefined
     : createSubagentsRuntimeExtension(config, subagentDeps, instanceRegistry);
   const composedRuntimeOptionsForRequest = composeRuntimeOptionExtensions([

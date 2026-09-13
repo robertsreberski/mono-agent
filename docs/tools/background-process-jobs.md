@@ -675,3 +675,16 @@ persistent instances around forgotten work. Do not delete ownership records to
 bypass this fence. Older runtimes reject records containing the new ownership or
 registry-intent fields; stripping those fields is not a safe downgrade. Existing
 legacy command cleanup cannot be retroactively proven from an interrupted job.
+
+For managed detached turns, Bash/Exec still returns its ordinary awaited tool
+result. The host persists preparation and PID/group incarnation before releasing
+the gated target, and borrows the existing child job slot rather than scheduling
+a second job. Overlapping commands and repeated host call identities reject
+without execution; no rejected owner falls back to an untracked command. Registry
+reservation identity is verified before admission. The provider's actual promise
+settlement is observed before the reporting race; reporting timeout cannot erase
+an unresolved lease or command. Clean instance release waits for terminal job
+publication, not merely provider return. A lost registry-confirmation receipt
+keeps continuation/close/reuse fenced until the registered owner confirms the
+same publication sequence. Private owner roots and publication receipts are not
+included in instance handle results.

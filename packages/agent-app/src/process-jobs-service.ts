@@ -1,6 +1,10 @@
+import { createSubagentOwnedCommands } from "./subagent-owned-commands.js";
+import type { ManagedSubagentExecution, ManagedSubagentRegistry, SubagentDisposition, SubagentRegistryPublication } from "./subagent-managed-turn.js";
+import type { InstanceOutcome } from "./subagent-instances.js";
+import { isSubagentUuid, sameSubagentOwner, type SubagentOwnerIdentity, type SubagentOwnerResolution } from "./subagent-registry-ownership.js";
 import { reconcileSubagentExecutionOwnership } from "./subagent-ownership-recovery.js";
 import type { SubagentKnownOwner } from "./subagent-registry-ownership.js";
-import { hasPendingSubagentPublication, hasSubagentObligation } from "./subagent-execution-ownership.js";
+import { hasPendingSubagentPublication, hasSubagentObligation, hasUnresolvedSubagentOwnership } from "./subagent-execution-ownership.js";
 import { SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
@@ -159,6 +163,8 @@ export interface ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
   readonly health: ProcessJobsHealth;
+  bindManagedSubagents?(registry: ManagedSubagentRegistry): void;
+  resolveSubagentOwner?(identity: SubagentOwnerIdentity): Promise<SubagentOwnerResolution>;
   checkSubagentOwnerIndex?(conversationId: string, known: readonly SubagentKnownOwner[]): Promise<"clear" | "held" | "unavailable">;
   controller(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): ProcessJobsController;
   internalController(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): InternalProcessJobsController;
@@ -257,6 +263,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   readonly operatorToken: string;
   readonly health: ProcessJobsHealth;
   private readonly mutableHealth: MutableProcessJobsHealth;
+  private managedWritesClosed = false;
+  private managedRegistry: ManagedSubagentRegistry | undefined;
+  private readonly managedCommands = new Map<string, ReturnType<typeof createSubagentOwnedCommands>>();
+  private readonly managedPublications = new Map<string, Promise<void>>();
   private readonly pending = new Map<string, PendingProcessJob>();
   private readonly active = new Map<string, ActiveProcessJob>();
   private readonly completionOverlays = new Map<string, ProcessJobProjection>();
@@ -342,7 +352,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
 
   internalController(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): InternalProcessJobsController {
     const captured = structuredClone(origin);
-    return Object.freeze({ startInternal: (request: InternalProcessJobRequest) => this.start(
+    return Object.freeze({ managed: this.managedRegistry !== undefined, startInternal: (request: InternalProcessJobRequest) => this.start(
       captured, typeof chainDepth === "function" ? chainDepth() : chainDepth, request,
     ) });
   }
@@ -430,7 +440,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         this.scheduleWake(jobId);
         await this.drainQueue();
       } else {
-        this.active.get(jobId)?.handle.cancel();
+        this.managedCommands.get(jobId)?.revoke();
+      this.active.get(jobId)?.handle.cancel();
       }
       return structuredClone(this.projectWithOutput(record));
     });
@@ -536,6 +547,140 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     return this.stopPromise;
   }
 
+  private async withManagedLock<T>(operation: () => Promise<T>): Promise<T> {
+    return await this.withLock(async () => {
+      if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+      return await operation();
+    });
+  }
+
+  bindManagedSubagents(registry: ManagedSubagentRegistry): void {
+    if (this.managedRegistry && this.managedRegistry.root !== registry.root) throw new Error("Managed subagent registry root changed while owned.");
+    this.managedRegistry = registry;
+    for (const record of this.recordSnapshot.values()) if (record.subagentOwnership?.publication.state === "pending" && isTerminalProcessJobState(record.state)) this.scheduleManagedPublication(record.jobId);
+  }
+
+  async resolveSubagentOwner(identity: SubagentOwnerIdentity): Promise<SubagentOwnerResolution> {
+    return await this.withManagedLock(async (): Promise<SubagentOwnerResolution> => {
+      if (!this.storageOperational || this.stopping || identity.storeRoot !== this.settings.stateDir) return { state: "unavailable" };
+      const record = await this.storeGet(identity.jobId, "subagent.resolve");
+      if (!record?.subagentOwnership || !sameSubagentOwner(identity, this.managedIdentity(record))) return { state: "unavailable" };
+      if (!isTerminalProcessJobState(record.state) || hasSubagentObligation(record)) return { state: "held" };
+      const owner = record.subagentOwnership;
+      return { state: "released", identity, sequence: owner.publication.sequence, continuity: owner.disposition?.continuity ?? "unknown",
+        ...(owner.disposition?.reason ? { reason: owner.disposition.reason } : {}) };
+    }).catch(() => ({ state: "unavailable" as const }));
+  }
+
+  private newManagedOwnership(request: InternalProcessJobRequest): NonNullable<DurableProcessJobRecord["subagentOwnership"]> {
+    if (!this.managedRegistry || !request.managed || !isSubagentUuid(request.managed.instanceIncarnation)
+      || request.managed.turnToken !== request.jobId) throw new ProcessJobServiceError("process_job_controller_unavailable");
+    return { schemaVersion: 1, registryRoot: this.managedRegistry.root, instanceIncarnation: request.managed.instanceIncarnation,
+      turnToken: request.managed.turnToken, owner: { pid: process.pid, incarnation: this.agentIncarnation, settlement: "not_started" },
+      revoked: false, publication: { sequence: 1, state: "pending" }, seenCalls: [] };
+  }
+
+  private managedIdentity(record: DurableProcessJobRecord): SubagentOwnerIdentity {
+    const owner = record.subagentOwnership!;
+    return { storeRoot: this.settings.stateDir, jobId: record.jobId, conversationId: record.origin.conversationId,
+      instanceId: record.instanceId!, instanceIncarnation: owner.instanceIncarnation, turnToken: owner.turnToken };
+  }
+
+  private managedExecution(jobId: string, deadlineAt: number): ManagedSubagentExecution {
+    const commands = createSubagentOwnedCommands({ deadlineAt, maxOutputBytes: this.settings.maxOutputBytes, now: () => this.now().getTime(),
+      readIncarnation: this.readIncarnation,
+      mutate: async (operation) => await this.withManagedLock(async () => await this.storeMutate("subagent.command", (records) => {
+        const owner = requireRecord(records, jobId).subagentOwnership;
+        if (!owner) throw new Error("Managed subagent ownership is unavailable.");
+        operation(owner);
+        if (owner.disposition) { owner.publication.sequence++; owner.publication.state = "pending"; }
+      })),
+      changed: async () => { await this.publishManaged(jobId); },
+    });
+    this.managedCommands.set(jobId, commands);
+    return { ownedForegroundProcesses: commands.processes,
+      started: async () => await this.withManagedLock(async () => await this.storeMutate("subagent.provider_start", (records) => {
+        const record = requireRecord(records, jobId);
+        const owner = record.subagentOwnership!;
+        if (record.state !== "running" || record.cancelRequested || owner.revoked || owner.owner.settlement !== "not_started" || this.now().getTime() >= deadlineAt) throw new Error("Managed subagent provider admission is revoked.");
+        owner.owner.settlement = "running";
+      })),
+      settled: async (outcome) => {
+        commands.revoke();
+        await this.withManagedLock(async () => await this.storeMutate("subagent.true_settlement", (records) => {
+          const owner = requireRecord(records, jobId).subagentOwnership!;
+          if (owner.owner.settlement === "settled") return;
+          owner.owner.settlement = "settled"; owner.revoked = true;
+          if (outcome?.usage) owner.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
+          if (owner.disposition) { owner.publication.sequence++; owner.publication.state = "pending"; }
+        }));
+        await this.publishManaged(jobId, outcome);
+      },
+      report: async (outcome) => { commands.revoke(); await this.reportManaged(jobId, outcome); },
+    };
+  }
+
+  private async reportManaged(jobId: string, outcome: InstanceOutcome): Promise<void> {
+    this.managedCommands.get(jobId)?.revoke();
+    if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+    const record = await this.storeGet(jobId, "subagent.report_intent");
+    const owner = record?.subagentOwnership;
+    if (!record || !owner || !this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
+    const status = (["ok", "awaiting_reply", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(outcome.status) ? outcome.status : "failed") as SubagentDisposition["status"];
+    const incomingFailure = !["ok", "awaiting_reply", "busy"].includes(status);
+    if (owner.disposition && (owner.disposition.reason || !incomingFailure)) { await this.publishManaged(jobId, outcome); return; }
+    const disposition: SubagentDisposition = { status,
+      ...(outcome.closeAfterSuccess ? { closeAfterSuccess: true } : {}),
+      continuity: outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown",
+      ...(["ok", "awaiting_reply", "busy"].includes(status) ? {} : { reason: outcome.failureKind ?? (status === "failed" ? "failed" : status as "timeout" | "cancelled" | "empty" | "interrupted") }) };
+    await this.managedRegistry.publish("intent", { identity: this.managedIdentity(record), sequence: owner.publication.sequence + 1,
+      disposition, released: false });
+    await this.withManagedLock(async () => await this.storeMutate("subagent.report", (records) => {
+      const record = requireRecord(records, jobId);
+      const current = record.subagentOwnership!;
+      if (!current.disposition?.reason) current.disposition = disposition;
+      if (outcome.usage) current.usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0, ...outcome.usage };
+      if (outcome.question) record.subagentQuestion = outcome.question;
+      current.revoked = true;
+      current.publication.sequence++; current.publication.state = "pending";
+    }));
+    await this.publishManaged(jobId, outcome);
+  }
+
+  private async publishManaged(jobId: string, outcome?: InstanceOutcome): Promise<void> {
+    const previous = this.managedPublications.get(jobId) ?? Promise.resolve();
+    const task = previous.catch(() => undefined).then(async () => {
+      if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+      const record = await this.storeGet(jobId, "subagent.publication");
+      const owner = record?.subagentOwnership;
+      if (!record || !owner?.disposition || owner.publication.state !== "pending") return;
+      if (!this.managedRegistry || owner.registryRoot !== this.managedRegistry.root) throw new Error("Managed subagent registry is unavailable.");
+      const publication: SubagentRegistryPublication = { identity: this.managedIdentity(record), sequence: owner.publication.sequence,
+        disposition: owner.disposition, released: !hasUnresolvedSubagentOwnership(record) && isTerminalProcessJobState(record.state),
+        outcome: { status: owner.disposition.status, ...(owner.usage ? { usage: owner.usage } : {}), ...(record.subagentQuestion ? { question: record.subagentQuestion } : {}) } };
+      await this.managedRegistry.publish("intent", publication);
+      await this.managedRegistry.publish("confirm", publication);
+      await this.withManagedLock(async () => await this.storeMutate("subagent.publication_confirmed", (records) => {
+        const current = requireRecord(records, jobId).subagentOwnership!;
+        if (current.publication.sequence === publication.sequence) current.publication.state = "confirmed";
+      }));
+      if (publication.released) this.managedCommands.delete(jobId);
+      this.scheduleWake(jobId);
+    });
+    this.managedPublications.set(jobId, task);
+    try { await task; } finally { if (this.managedPublications.get(jobId) === task) this.managedPublications.delete(jobId); }
+  }
+
+  private scheduleManagedPublication(jobId: string): void {
+    if (!this.managedRegistry || this.managedPublications.has(jobId)) return;
+    void Promise.resolve().then(async () => {
+      const record = await this.storeGet(jobId, "subagent.pending_publication");
+      if (!record?.subagentOwnership || !isTerminalProcessJobState(record.state)) return;
+      if (!record.subagentOwnership.disposition) await this.reportManaged(jobId, { status: record.state === "timed_out" ? "timeout" : record.state === "cancelled" ? "cancelled" : "interrupted" });
+      else await this.publishManaged(jobId);
+    }).catch(() => { /* P and registry intent remain durable; never replay execution. */ });
+  }
+
   async checkSubagentOwnerIndex(conversationId: string, known: readonly SubagentKnownOwner[]): Promise<"clear" | "held" | "unavailable"> {
     return await this.withLock(async () => {
       if (this.stopping || !this.storageOperational) return "unavailable";
@@ -571,7 +716,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (!current || current.generation !== record.generation) return;
           // Reporting terminality and owner-lock loss never prove an untracked child command exited.
           // Until exact owner reconciliation supplies proof, retain the original obligation.
-          if (ownership) current.subagentOwnership = ownership;
+          if (ownership) {
+            if (!isTerminalProcessJobState(current.state)) {
+              ownership.disposition = ownership.disposition?.reason ? ownership.disposition : { status: "interrupted", reason: "interrupted", continuity: ownership.disposition?.continuity ?? "unknown" };
+              ownership.publication.sequence++; ownership.publication.state = "pending";
+            }
+            current.subagentOwnership = ownership;
+          }
           else if (["starting", "running"].includes(current.state)) current.childStillBusy = true;
           transitionTerminal(current, "interrupted", this.now(), "process_job_agent_restarted", "Subagent interrupted by restart; never replayed.");
         });
@@ -665,8 +816,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     request: ServiceStartRequest,
   ): Promise<ProcessJobStartResult> {
     let handedOff = false;
-    const pending = pendingRequest(request);
+    const pending = pendingRequest(isInternal(request) && request.managed ? { ...request, cleanup: async () => {} } : request);
     try {
+      if (isInternal(request) && request.managed) {
+        if (!this.managedRegistry) throw new ProcessJobServiceError("process_job_controller_unavailable");
+        await this.managedRegistry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
+          instanceId: request.instanceId, instanceIncarnation: request.managed.instanceIncarnation, turnToken: request.managed.turnToken });
+      }
       const result = await this.withLock(async () => {
         this.assertAvailable(origin, chainDepth, request);
         const jobId = isInternal(request) ? request.jobId : this.randomId();
@@ -688,7 +844,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         );
         const record: DurableProcessJobRecord = {
           schemaVersion: 1,
-          ...(isInternal(request) ? { kind: "internal" as const, instanceId: request.instanceId, childStillBusy: false } : {}),
+          ...(isInternal(request) ? { kind: "internal" as const, instanceId: request.instanceId, childStillBusy: false,
+            ...(request.managed ? { subagentOwnership: this.newManagedOwnership(request) } : {}) } : {}),
           generation: randomUUID(),
           jobId,
           tool: request.tool,
@@ -822,7 +979,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       const progress = new SubagentJobProgress(pending.redactionSecrets);
       const handle = launchInternalProcessJob(pending.request, current.maxRuntimeMs, current.maxOutputBytes, undefined,
-        (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event), Date.parse(startedAt) + current.maxRuntimeMs);
+        (chunk) => outputTail.writeStdout(chunk), (event) => this.reportSubagentProgress(jobId, event), Date.parse(startedAt) + current.maxRuntimeMs,
+        pending.request.managed ? this.managedExecution(jobId, Date.parse(startedAt) + current.maxRuntimeMs) : undefined);
       this.active.set(jobId, { ...pending, handle, outputTail, progress });
       const settlement = handle.completion.then((result) => this.complete(jobId, result))
         .catch((error: unknown) => { if (this.stopping) this.shutdownFailures.push(error); })
@@ -995,6 +1153,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private async complete(jobId: string, result: InternalProcessJobResult): Promise<void> {
+    if (this.recordSnapshot.get(jobId)?.subagentOwnership && (result.timedOut || result.aborted || result.code !== 0)) {
+      await this.reportManaged(jobId, { status: result.timedOut ? "timeout" : result.aborted ? "cancelled" : "failed" });
+    }
     await this.withLock(async () => {
       const active = this.active.get(jobId);
       if (active === undefined) return;
@@ -1034,6 +1195,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (record === undefined) return;
           const alreadyTerminal = isTerminalProcessJobState(record.state);
           if (record.kind === "internal") {
+            if (record.subagentOwnership && !alreadyTerminal) {
+              record.subagentOwnership.publication.sequence++;
+              record.subagentOwnership.publication.state = "pending";
+            }
             record.childStillBusy = result.childStillBusy === true;
             if (finalProgress) record.subagentProgress = finalProgress;
             if (result.question) {
@@ -1301,6 +1466,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private scheduleWake(jobId: string): void {
+    const pendingOwner = this.recordSnapshot.get(jobId);
+    if (pendingOwner?.subagentOwnership && hasPendingSubagentPublication(pendingOwner)) {
+      this.scheduleManagedPublication(jobId);
+      return;
+    }
     if (!this.wakesActive || this.stopping || this.wakeTasks.has(jobId)) return;
     let task!: Promise<void>;
     task = Promise.resolve()
@@ -1501,6 +1671,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private async stopOnce(): Promise<void> {
     if (this.stopped) return;
     this.stopping = true;
+    for (const commands of this.managedCommands.values()) commands.revoke();
     this.wakesActive = false;
     this.wakeRearmPending.clear();
     for (const timer of this.wakeRearmTimers.values()) clearTimeout(timer);
@@ -1604,6 +1775,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       }
       await Promise.allSettled([...this.wakeTasks.values()]);
     } finally {
+      await this.withLock(async () => { this.managedWritesClosed = true; });
       try { await this.lock.release(); } catch (error) { failures.push(error); }
       this.stopped = true;
     }

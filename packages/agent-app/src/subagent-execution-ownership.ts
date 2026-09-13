@@ -1,9 +1,14 @@
+import type { InstanceUsage } from "./subagent-instances.js";
+import type { SubagentDisposition } from "./subagent-managed-turn.js";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import type { ProcessIncarnation } from "./process-incarnation.js";
 
 /** App-private, bounded evidence. Reporting terminality never discharges ownership. */
 export interface SubagentExecutionOwnership {
   schemaVersion: 1;
+  registryRoot?: string;
+  disposition?: SubagentDisposition;
+  usage?: InstanceUsage;
   instanceIncarnation: string;
   turnToken: string;
   owner: { pid: number; incarnation: ProcessIncarnation; settlement: "not_started" | "running" | "settled" | "dead" | "unknown" };
@@ -61,7 +66,10 @@ export function hasSubagentObligation(record: OwnershipRecord): boolean {
 /** Validate before a durable store or registry can act on owner identity. */
 export function isSubagentExecutionOwnership(value: unknown): value is SubagentExecutionOwnership {
   if (!object(value) || !exact(value, ["schemaVersion", "instanceIncarnation", "turnToken", "owner", "revoked", "publication", "seenCalls",
-    ...(Object.hasOwn(value, "command") ? ["command"] : [])])
+    ...["command", "registryRoot", "disposition", "usage"].filter((key) => Object.hasOwn(value, key))])
+    || (value.registryRoot !== undefined && !canonicalPath(value.registryRoot))
+    || (value.usage !== undefined && !usage(value.usage))
+    || (value.disposition !== undefined && !disposition(value.disposition))
     || value.schemaVersion !== 1 || !uuid(value.instanceIncarnation) || !uuid(value.turnToken)
     || typeof value.revoked !== "boolean" || !object(value.owner)
     || !exact(value.owner, ["pid", "incarnation", "settlement"]) || !positive(value.owner.pid)
@@ -106,3 +114,17 @@ function positive(value: unknown): value is number { return typeof value === "nu
 function text(value: unknown, bytes: number): value is string { return typeof value === "string" && value.trim().length > 0 && Buffer.byteLength(value, "utf8") <= bytes; }
 function object(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function exact(value: Record<string, unknown>, keys: readonly string[]): boolean { return Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key)); }
+
+function disposition(value: unknown): value is SubagentDisposition {
+  return object(value) && exact(value, ["status", "continuity", ...["reason", "closeAfterSuccess"].filter((key) => Object.hasOwn(value, key))])
+    && (value.closeAfterSuccess === undefined || typeof value.closeAfterSuccess === "boolean")
+    && ["ok", "awaiting_reply", "failed", "timeout", "cancelled", "empty", "interrupted", "busy"].includes(String(value.status))
+    && ["retained", "lost", "unknown"].includes(String(value.continuity))
+    && (value.reason === undefined || ["settlement_unknown", "session_continuity_lost", "timeout", "cancelled", "failed", "empty", "interrupted"].includes(String(value.reason)));
+}
+
+function usage(value: unknown): value is InstanceUsage {
+  return object(value) && exact(value, ["input", "output", "cacheRead", "cacheWrite", "costUsd"])
+    && ["input", "output", "cacheRead", "cacheWrite"].every((key) => Number.isSafeInteger(value[key]) && Number(value[key]) >= 0)
+    && typeof value.costUsd === "number" && Number.isFinite(value.costUsd) && value.costUsd >= 0;
+}

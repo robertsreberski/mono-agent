@@ -401,6 +401,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
         try {
           const started = await background.startInternal({ kind: "internal", tool: continuation ? "AgentSend" : "Agent",
             jobId: reservation, instanceId: retained.id,
+            ...(background.managed ? { managed: { instanceIncarnation: instance.incarnation ?? "", turnToken: instance.activeTurn?.token ?? "" } } : {}),
             // `description` is the model-authored activity label (never the prompt); it names the job card.
             ...(typeof params.description === "string" && params.description.trim() ? { description: params.description } : {}),
             timeoutMs: positiveInt(profile.timeoutMs, positiveInt(subagents.timeoutMs, DEFAULT_TIMEOUT_MS)),
@@ -427,7 +428,7 @@ export function createAgentTool(subagents, context = {}, continuation) {
       /**
        * @param {AbortSignal} [signal]
        * @param {(event: *) => void} [reportProgress]
-       * @param {{deadlineAt: number}} [execution]
+       * @param {{deadlineAt: number, managed?: any}} [execution]
        */
       async function runTurn(signal, reportProgress, execution) {
         if (!detached && slots.inFlight() >= maxConcurrent && !budget.warnedQueued) {
@@ -511,8 +512,10 @@ export function createAgentTool(subagents, context = {}, continuation) {
         let thrown;
         let abandoned = false;
         try {
-          const running = subagents.run({
+          await execution?.managed?.started();
+          const underlying = Promise.resolve().then(() => subagents.run({
             ...(detached && execution ? { detached: true, deadlineAt: execution.deadlineAt } : {}),
+            ...(execution?.managed ? { ownedForegroundProcesses: execution.managed.ownedForegroundProcesses } : {}),
             ...(instance ? { instance: { id: instance.id, sessionId: instance.sessionId, sessionsRoot: instance.sessionsRoot } } : {}),
             systemPrompt: instance?.systemPrompt ?? profile.systemPrompt,
             prompt: params.prompt,
@@ -539,11 +542,19 @@ export function createAgentTool(subagents, context = {}, continuation) {
             callIndex,
             depth: positiveInt(subagents.depth, 0) + 1,
             onEvent: collector.observe,
-          });
+          }));
+          // Observe the actual provider promise before racing reporting/deadline.
+          const running = execution?.managed ? Promise.resolve(underlying).then(async (value) => {
+            await execution.managed.settled({ status: "ok", usage: detachedUsage(value, collector.usage()) });
+            return value;
+          }, async (error) => {
+            await execution.managed.settled({ status: "failed", usage: detachedUsage(undefined, collector.usage()) });
+            throw error;
+          }) : underlying;
           // Never let an abandoned runner surface as an unhandled rejection.
           void Promise.resolve(running).catch(() => undefined);
           const settled = await Promise.race([running, deadline]);
-          if (settled === DEADLINE && instance) {
+          if (settled === DEADLINE && instance && !execution?.managed) {
             const pendingId = instance.id;
             // Keep the instance busy until the actual runner settles, even after the tool deadline.
             void Promise.resolve(running).then(
@@ -566,15 +577,22 @@ export function createAgentTool(subagents, context = {}, continuation) {
           releaseSlot();
         }
 
+        if (instance && abandoned && execution?.managed) {
+          await execution.managed.report({ status: timedOut ? "timeout" : "cancelled" });
+        }
         if (instance && !abandoned) {
           const state = classifyOutcome({ result, thrown, timedOut });
           const usage = result?.usage ?? {};
-          instance = await finishInstance(instance.id, { status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
+          const instanceOutcome = { ...(execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted ? { closeAfterSuccess: true } : {}), status: timedOut ? "timeout" : signal?.aborted ? "cancelled" : state.status,
             ...(result?.failureKind === "session_continuity_lost" ? { failureKind: "session_continuity_lost" } : {}),
             answerHead: state.answer, ...(state.question ? { question: state.question } : {}), usage: detached ? detachedUsage(result, collector.usage()) : { input: numberOrZero(usage.input_tokens ?? usage.input ?? usage.inputTokens), output: numberOrZero(usage.output_tokens ?? usage.output ?? usage.outputTokens),
               cacheRead: numberOrZero(usage.cache_read_tokens ?? usage.cacheRead ?? usage.cacheReadTokens), cacheWrite: numberOrZero(usage.cache_write_tokens ?? usage.cache_creation_tokens ?? usage.cacheWrite ?? usage.cacheWriteTokens),
-              costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } });
-          if (continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
+              costUsd: numberOrZero(usage.cost_usd ?? result?.cost?.total ?? result?.cost?.totalUsd ?? usage.cost?.total) } };
+          if (execution?.managed) {
+            await execution.managed.report(instanceOutcome);
+            instance = await instances.get(instance.id);
+          } else instance = await finishInstance(instance.id, instanceOutcome);
+          if (!execution?.managed && continuation?.close && state.status === "ok" && !signal?.aborted) instance = await instances.close(instance.id);
         }
         // The parent turn being cancelled is not a subagent outcome — surface it
         // as an aborted tool call the way every other built-in does. Close any

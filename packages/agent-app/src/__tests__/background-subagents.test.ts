@@ -1,3 +1,5 @@
+// @ts-expect-error Real direct kernel execution seam.
+import { execToolRun } from "../../../agent-runtime/src/agent/tools/exec.js";
 import { parseProcessJobProjection, type ProcessJobProjection } from "@mono-agent/agent-contracts";
 import { fileURLToPath } from "node:url";
 import { loadMonoAgentConfig } from "@mono-agent/config";
@@ -55,6 +57,99 @@ const done = async (service: ProcessJobsServiceHandle, id: string) => {
   if (job.kind !== "internal") throw new Error("Expected an internal subagent job");
   return job;
 };
+
+async function managedFixture(retireSession: (id: string, root: string) => Promise<unknown> = async () => {}) {
+  const f = await fixture({ maxConcurrent: 1, maxQueued: 0 }, retireSession);
+  const registry = createSubagentInstanceRegistry({ root: resolve(f.root, "children"), retireSession,
+    ownerForReservation: (jobId) => ({ jobId, storeRoot: f.service.settings.stateDir }),
+    resolveOwner: (identity) => f.service.resolveSubagentOwner!(identity),
+  });
+  f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+    verify: async (identity) => await (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+    publish: async (phase, publication) =>
+    await (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication) });
+  return { ...f, registry, instances: await registry.open(origin.conversationId) };
+}
+
+describe("managed detached production execution", () => {
+  it("awaits a real gated command on its original slot and permits a clean retained continuation", async () => {
+    const f = await managedFixture();
+    const sessions: string[] = [];
+    const run = async (request: any) => {
+      sessions.push(request.instance.sessionId);
+      const result = await execToolRun({ executable: process.execPath, args: ["-e", "process.stdout.write('verified')"], workdir: f.root }, {
+        ctx: { workspace: f.root }, toolCallId: "owned-call", ownedForegroundProcessController: request.ownedForegroundProcesses.forAttempt(),
+      });
+      expect(result.error).not.toBe(true);
+      expect(result.text).toContain("verified");
+      return { text: "done", usage: { input_tokens: 3 } };
+    };
+    const { agent, send } = tools(f, run);
+    const first = await agent.execute("managed", { persist: true, background: true, id: "helper", prompt: "work" });
+    expect(await done(f.service, first.details.jobId)).toMatchObject({ state: "succeeded", childStillBusy: false });
+    const stored = (await f.store.get(first.details.jobId))!;
+    expect(stored.subagentOwnership).toMatchObject({ owner: { settlement: "settled" }, publication: { state: "confirmed" }, command: { state: "released" }, seenCalls: ["1:owned-call"] });
+    expect(await f.instances.get("helper")).toMatchObject({ status: "idle", turns: 1, usage: { input: 3 } });
+    expect(await f.instances.get("helper")).not.toHaveProperty("ownerReceipt");
+    const second = await send.execute("managed-send", { id: "helper", background: true, message: "next" });
+    expect(await done(f.service, second.details.jobId)).toMatchObject({ state: "succeeded" });
+    expect(sessions).toEqual([sessions[0], sessions[0]]);
+    expect((await f.instances.get("helper"))?.turns).toBe(2);
+    expect(f.wake).toHaveBeenCalledTimes(2);
+  }, 15_000);
+  it.each(["delay-confirm", "fail-after-confirm"])("keeps admission and wakes fenced through %s", async (fault) => {
+    const f = await managedFixture(); const gate = deferred<void>();
+    let intercepted = false;
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => await (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        const handle = await f.registry.open(publication.identity.conversationId, { existingOnly: true });
+        if (phase === "confirm" && publication.released) {
+          intercepted = true;
+          if (fault === "delay-confirm") await gate.promise;
+          else { await handle.publishOwned(phase, publication); throw new Error("injected confirmation receipt failure"); }
+        }
+        await handle.publishOwned(phase, publication);
+      },
+    });
+    try {
+      const { agent, send } = tools(f, async () => ({ text: "clean result" }));
+      const receipt = await agent.execute("publication", { persist: true, background: true, id: "helper", prompt: "work" });
+      await vi.waitFor(() => expect(intercepted).toBe(true), { timeout: 5000 });
+      expect((await f.store.get(receipt.details.jobId))?.subagentOwnership?.publication.state).toBe("pending");
+      expect(f.wake).not.toHaveBeenCalled();
+      await expect(send.execute("blocked-publication", { id: "helper", message: "next" })).rejects.toThrow();
+      if (fault === "fail-after-confirm") {
+        await expect(f.instances.close("helper")).rejects.toThrow("subagent_owner_unavailable");
+        await expect(f.instances.create({ ...spec, id: "bypass" })).rejects.toThrow("subagent_owner_unavailable");
+        expect((await f.instances.get("helper"))?.status).toBe("idle");
+      } else {
+        expect((await f.instances.get("helper"))?.status).toBe("running");
+        gate.resolve(); await done(f.service, receipt.details.jobId);
+        expect((await f.instances.get("helper"))?.turns).toBe(1);
+        expect(f.wake).toHaveBeenCalledOnce();
+      }
+    } finally { gate.resolve(); }
+  }, 12_000);
+
+  it("reports a timeout fence once and releases only after the true late provider settles", async () => {
+    const f = await managedFixture(); const gate = deferred<any>();
+    const run = vi.fn(() => gate.promise);
+    const { agent, send } = tools(f, run, { timeoutMs: 1500 });
+    const receipt = await agent.execute("managed-late", { persist: true, background: true, id: "helper", prompt: "work" });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+    expect(await f.instances.get("helper")).toMatchObject({ status: "running", recovery: { reason: "timeout", continuity: "unknown" } });
+    expect((await f.store.get(receipt.details.jobId))?.subagentOwnership).toMatchObject({ owner: { settlement: "running" }, publication: { state: "confirmed" } });
+    await expect(send.execute("blocked", { id: "helper", message: "next" })).rejects.toThrow();
+    gate.resolve({ text: "late", usage: { input_tokens: 7 } });
+    await vi.waitFor(async () => expect((await f.instances.get("helper"))?.status).toBe("idle"), { timeout: 3000 });
+    expect(await f.instances.get("helper")).toMatchObject({ turns: 1, usage: { input: 7 }, recovery: { continuity: "unknown" } });
+    expect(await f.service.get(receipt.details.jobId)).toMatchObject({ state: "timed_out", childStillBusy: false });
+    expect(f.wake).toHaveBeenCalledOnce();
+    await expect(send.execute("not-retained", { id: "helper", message: "next" })).rejects.toThrow("subagent_recovery_required");
+  }, 15_000);
+});
 
 describe("detached persistent subagents", () => {
   it("returns before completion, keeps metadata prompt-free, and wakes the exact origin once", async () => {
@@ -227,9 +322,10 @@ describe("detached persistent subagents", () => {
 });
 
 
-it("real Pi fake transport: detached AskParent and background reply resume one JSONL, then close", async () => {
+it.each([false, true])("real Pi fake transport: detached AskParent and background reply resume one JSONL, then close (managed=%s)", async (managed) => {
   const owner = createMonoRuntime();
-  const f = await fixture({}, async (id, root) => owner.retireDurableSession!(id, root));
+  const retire = async (id: string, root: string) => owner.retireDurableSession!(id, root);
+  const f = managed ? await managedFixture(retire) : await fixture({}, retire);
   try {
     const config = loadMonoAgentConfig({ cwd: f.root, env: {
       MONO_AGENT_IDENTITY_PATH: resolve(f.root, "IDENTITY.md"),
