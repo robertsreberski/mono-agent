@@ -3,7 +3,13 @@ import { once } from "node:events";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { fileURLToPath } from "node:url";
+import { createMonoRuntime } from "@mono-agent/runtime-adapter";
+// @ts-expect-error Private kernel tool boundary.
+import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
+// @ts-expect-error Real native engine; only provider transport is fake.
+import { generatePiNativeResponse } from "../../../agent-runtime/src/ai/providers/pi-native.js";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { acquireContinuationStoreLock } from "../continuation-store-fs.js";
 import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
@@ -23,6 +29,92 @@ async function fixture(continuity: "retained" | "lost" | "unknown" = "retained")
   await handle.publishOwned("confirm", { identity, sequence: 7, disposition: { status: "timeout", reason: "timeout", continuity }, released: true });
   return { root, handle, registry, identity, deny: () => { allowed = false; }, file: resolve(subagentConversationRoot(root, "conversation"), "instances.json") };
 }
+it.each(["detached", "foreground", "registry"])("G11: real Pi AgentSend lock failure cannot disclose private state or consume acknowledgement (%s)", async (mode) => {
+  const detached = mode !== "foreground";
+  const f = await fixture(); const owner = createMonoRuntime();
+  if (!detached) { await f.handle.close(spec.id); await f.handle.create(spec); }
+  const key = "cafe".repeat(16); const disk = JSON.parse(await readFile(f.file, "utf8")); disk[0].recoveryBinding.key = key;
+  await writeFile(f.file, JSON.stringify(disk));
+  const inspection = await f.handle.inspect(spec.id);
+  const request = { id: spec.id, ...(detached ? { ack: inspection.ack! } : {}), message: "verified; continue", background: detached };
+  const run = vi.fn(); const startInternal = vi.fn();
+  const subagents = { instances: f.handle, run, backgroundSubagentController: { startInternal } };
+  const directory = subagentConversationRoot(f.root, "conversation");
+  const lock = await acquireContinuationStoreLock(mode === "registry" ? resolve(directory, "registry-lock") : resolve(directory, "turn-locks", spec.id));
+  try {
+    const piPath = fileURLToPath(new URL("../../../agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js", import.meta.url));
+    const { createModels, fauxProvider, fauxAssistantMessage, fauxText, fauxToolCall } = await import(piPath);
+    const model = { provider: "openai-codex", model: "gpt-5.5", reference: "openai-codex:gpt-5.5" };
+    const faux = fauxProvider({ provider: model.provider, models: [{ id: model.model }], tokensPerSecond: undefined });
+    const models = createModels(); models.setProvider(faux.provider); let input: any;
+    faux.setResponses([fauxAssistantMessage([fauxToolCall("AgentSend", request)]),
+      (value: any) => { input = value; return fauxAssistantMessage([fauxText("No continuation was started.")]); }]);
+    const result = await generatePiNativeResponse("Use AgentSend once, do not retry refusal.", { model, cwd: f.root,
+      sessionId: "privacy-parent", sessionKeepAlive: true, piSessionsRoot: resolve(f.root, "parent-sessions"),
+      messages: [{ role: "user", content: "Attempt the explicit acknowledgement once." }], allowedTools: ["Agent", "AgentSend"], subagents,
+      piResolvedModel: faux.getModel(), piResolvedModels: models, resolvePiApiKey: async () => "faux-key" });
+    expect(result.error).toBeFalsy(); expect(input).toBeDefined();
+    const toolMessage = input.messages.find((message: any) => message.role === "toolResult");
+    expect(toolMessage?.isError).toBe(true);
+    expect(JSON.stringify(input)).not.toContain(f.root); expect(JSON.stringify(input)).not.toContain(key);
+    expect(JSON.stringify(toolMessage)).toContain("subagent_owner_unavailable");
+    expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
+    expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
+  } finally { await lock.release(); await owner.disposeAllSessions?.(); }
+  if (detached) await expect(f.handle.reserve(spec.id, randomUUID(), { ack: request.ack!, message: request.message, background: true })).resolves.toMatchObject({ status: "queued" });
+  else { await f.handle.begin(spec.id); await f.handle.finish(spec.id, { status: "ok" }); }
+}, 10_000);
+function requestWithoutId({ id: _id, ...request }: { id: string; ack: string; message: string; background: boolean }) { return request; }
+
+it("G09: actual AgentSend rejects foreign-conversation and replaced-incarnation tokens without consuming or admitting", async () => {
+  const f = await fixture(); const original = await f.handle.inspect(spec.id);
+  const request = { id: spec.id, ack: original.ack!, message: "verified new instructions", background: true };
+  const run = vi.fn(); const startInternal = vi.fn();
+  const tool = (instances: typeof f.handle) => createAgentSendTool({ instances, run, backgroundSubagentController: { startInternal } });
+  const foreign = await f.registry.open("foreign-conversation");
+  const settle = async (handle: typeof f.handle, conversationId: string) => {
+    const record = (await handle.get(spec.id))!; const token = randomUUID(); await handle.reserve(spec.id, token); await handle.begin(spec.id, token);
+    await handle.publishOwned("confirm", { identity: { ...f.identity, conversationId, instanceIncarnation: record.incarnation!, jobId: token, turnToken: token },
+      sequence: 7, disposition: { status: "timeout", reason: "timeout", continuity: "retained" }, released: true });
+    return handle.inspect(spec.id);
+  };
+  await foreign.create(spec); const foreignInspection = await settle(foreign, "foreign-conversation");
+  const foreignFile = resolve(subagentConversationRoot(f.root, "foreign-conversation"), "instances.json");
+  const foreignBefore = JSON.parse(await readFile(foreignFile, "utf8"))[0].recoveryBinding;
+  expect((await tool(foreign).execute("foreign", request)).details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_ack_stale" } });
+  expect(JSON.parse(await readFile(foreignFile, "utf8"))[0].recoveryBinding).toEqual(foreignBefore);
+  await expect(foreign.checkAcknowledgement(spec.id, { ...requestWithoutId(request), ack: foreignInspection.ack! })).resolves.toBeUndefined();
+  await expect(f.handle.checkAcknowledgement(spec.id, requestWithoutId(request))).resolves.toBeUndefined();
+  await f.handle.close(spec.id); const replacement = await f.handle.create(spec);
+  expect(replacement.incarnation).not.toBe(f.identity.instanceIncarnation);
+  const current = await settle(f.handle, "conversation"); const before = JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding;
+  expect((await tool(f.handle).execute("replaced", request)).details).toMatchObject({ executed: false, recovery: { code: "subagent_recovery_ack_stale" } });
+  expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding).toEqual(before);
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...requestWithoutId(request), ack: current.ack! })).resolves.toBeUndefined();
+  expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
+});
+
+it("G09: current/previous consumption markers compact; the third-oldest token stays stale through actual AgentSend", async () => {
+  const f = await fixture(); const requests: { ack: string; message: string; background: boolean }[] = [];
+  for (let index = 0; index < 3; index++) {
+    const inspected = await f.handle.inspect(spec.id); const request = { ack: inspected.ack!, message: `verified continuation ${index}`, background: true }; requests.push(request);
+    const token = randomUUID(); await f.handle.reserve(spec.id, token, request); await f.handle.begin(spec.id, token);
+    await f.handle.publishOwned("confirm", { identity: { ...f.identity, jobId: token, turnToken: token }, sequence: 7,
+      disposition: { status: "timeout", reason: "timeout", continuity: "retained" }, released: true });
+  }
+  const current = await f.handle.inspect(spec.id); const before = JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding;
+  expect(before.consumed.token).toBe(requests[2]!.ack); expect(before.previous.token).toBe(requests[1]!.ack);
+  expect(JSON.stringify(before)).not.toContain(requests[0]!.ack);
+  const run = vi.fn(); const startInternal = vi.fn(); const send = createAgentSendTool({ instances: f.handle, run, backgroundSubagentController: { startInternal } });
+  for (const [index, request] of requests.entries()) {
+    expect((await send.execute(`old-${index}`, { id: spec.id, ...request })).details).toMatchObject({ executed: false,
+      recovery: { code: index === 0 ? "subagent_recovery_ack_stale" : "subagent_recovery_already_consumed" } });
+  }
+  expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding).toEqual(before);
+  await expect(f.handle.checkAcknowledgement(spec.id, { ack: current.ack!, message: "still valid", background: true })).resolves.toBeUndefined();
+  expect(run).not.toHaveBeenCalled(); expect(startInternal).not.toHaveBeenCalled();
+});
+
 it("issues a retained-only token, atomically consumes with reservation, and checks duplicates before busy", async () => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
   expect(inspection).toMatchObject({ status: "ready", recovery: { continuity: "retained" } }); expect(inspection.ack).toBeTypeOf("string");
@@ -66,7 +158,7 @@ it("does not consume a valid acknowledgement while the real turn lock is busy", 
   const request = { ack: inspection.ack!, message: "next", background: true };
   const lock = await acquireContinuationStoreLock(resolve(subagentConversationRoot(f.root, "conversation"), "turn-locks", spec.id));
   try {
-    await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toThrow("already owned");
+    await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toMatchObject({ code: "subagent_owner_unavailable" });
     expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
   } finally { await lock.release(); }
   await expect(f.handle.reserve(spec.id, randomUUID(), request)).resolves.toMatchObject({ status: "queued" });

@@ -1,9 +1,10 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { buildSubagentsOptions, createSubagentsRuntimeExtension } from "../configured-agent.js";
 // @ts-expect-error Private runtime seam.
 import { createAgentSendTool } from "../../../agent-runtime/src/agent/tools/agent-send-tool.js";
-import { createSubagentInstanceRegistry } from "../subagent-instances.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { MonoAgentConfig } from "@mono-agent/config";
@@ -492,6 +493,41 @@ describe("in-flight subagent ceiling", () => {
   });
 });
 
+
+it("G11: configured registry callback through actual harness Session context excludes private canaries from runtime input", async () => {
+  const root = await mkdtemp(resolve(process.cwd(), "node_modules/.session-privacy-"));
+  let harness: ReturnType<typeof import("@mono-agent/agent-harness")["createAgentHarness"]> | undefined;
+  try {
+    const registryRoot = resolve(root, "PRIVATE-REGISTRY-CANARY"); const key = "beef".repeat(16);
+    const observationPath = resolve(root, "PRIVATE-OBSERVATION-CANARY"); const reportBody = "PRIVATE-REPORT-BODY-CANARY";
+    const config = monoConfig({ enabled: true, instances: { root: registryRoot } }, { allowedTools: ["Agent", "AgentSend"], disallowedTools: [] });
+    const local = { ...config, runtime: { ...config.runtime, workspace: root }, context: { ...config.context, identityPath: resolve(root, "IDENTITY.md") },
+      artifacts: { ...config.artifacts, dir: resolve(root, "artifacts") }, traceability: { ...config.traceability, registryDir: resolve(root, "trace") } };
+    await writeFile(local.context.identityPath, "Handle the current request safely."); await writeFile(resolve(root, "report.txt"), reportBody);
+    const { runtime } = await buildSubagents(local);
+    const registry = createSubagentInstanceRegistry({ root: registryRoot, retireSession: async () => {} }); const handle = await registry.open("one");
+    const created = await handle.create({ id: "critic", name: "critic", systemPrompt: "review", definition: { name: "critic", description: "review", systemPrompt: "review" } });
+    const file = resolve(subagentConversationRoot(registryRoot, "one"), "instances.json");
+    const disk = JSON.parse(await readFile(file, "utf8"));
+    // Valid synthetic persisted private fields; no owner release is inferred.
+    disk[0].recoveryBinding.key = key; disk[0].recovery = { turnToken: randomUUID(), sequence: 1, reason: "timeout", continuity: "unknown" };
+    disk[0].verificationTarget = { workdir: observationPath, reportPath: "report.txt", device: "1", inode: "2" };
+    await writeFile(file, JSON.stringify(disk));
+    const options = harnessMock.mock.calls[0]![0];
+    const actual = await vi.importActual<typeof import("@mono-agent/agent-harness")>("@mono-agent/agent-harness");
+    harness = actual.createAgentHarness(options as never);
+    await harness.run({ conversationId: "one", userMessage: "Describe available recovery without replaying.", abortSignal: new AbortController().signal });
+    expect(runtime.run).toHaveBeenCalledOnce();
+    const [prompt, runtimeOptions] = runtime.run.mock.calls[0]!;
+    const visible = JSON.stringify([prompt, runtimeOptions.messages]);
+    expect(visible).toContain(created.id); expect(visible).toContain("recovery blocked: inspect with AgentSend");
+    expect(JSON.stringify(runtimeOptions.messages)).toContain("<host_turn_context>");
+    for (const canary of [key, registryRoot, observationPath, reportBody]) expect(visible).not.toContain(canary);
+    expect(JSON.stringify(runtimeOptions)).not.toContain(key);
+    expect(JSON.stringify(runtimeOptions)).not.toContain(observationPath);
+    expect(JSON.stringify(runtimeOptions)).not.toContain("recoveryBinding");
+  } finally { await harness?.dispose?.(); await rm(root, { recursive: true, force: true }); }
+});
 
 it("wires the Session envelope to the current conversation's live registry", async () => {
   const root = await mkdtemp(resolve(process.cwd(), ".subagent-envelope-"));

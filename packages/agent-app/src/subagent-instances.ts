@@ -227,6 +227,15 @@ export function createSubagentInstanceRegistry(options: {
         && (!record.ownerReceipt.acknowledged || awaitingReceiptAcknowledgement.has(record));
       const file = resolve(directory, "instances.json");
       const turnPath = (id: string): string => resolve(directory, "turn-locks", id);
+      const acquirePrivateLock = async (path: string) => {
+        try { return await acquireContinuationStoreLock(path); }
+        catch {
+          // Admission errors reach native tool results. Filesystem/lock errors
+          // include the private registry path; never disclose it to the model.
+          // Failure grants neither a reservation nor acknowledgement consumption.
+          throw new SubagentRecoveryError("subagent_owner_unavailable");
+        }
+      };
       const retire = async (record: SubagentInstance): Promise<void> => {
         try { await options.retireSession(record.sessionId, sessionsRoot); } catch { /* Terminal record stays retired even if provider cleanup fails. */ }
       };
@@ -292,7 +301,7 @@ export function createSubagentInstanceRegistry(options: {
       };
       const transaction = async <T>(operation: (records: StoredSubagentInstance[]) => Promise<T>): Promise<T> => serialize(directory, async () => {
         await ensureOwnerOnlyDirectory(directory);
-        const lock = await acquireContinuationStoreLock(resolve(directory, "registry-lock"));
+        const lock = await acquirePrivateLock(resolve(directory, "registry-lock"));
         try {
           let records: StoredSubagentInstance[];
           try {
@@ -519,7 +528,7 @@ export function createSubagentInstanceRegistry(options: {
             else assertCanDrive(record);
             if (["queued", "running"].includes(record.status)) throw new Error(`Subagent instance "${id}" is busy.`);
             if (record.turns >= (options.maxTurns ?? 60)) throw new Error(`Subagent instance "${id}" reached maxTurns.`);
-            acquired = await acquireContinuationStoreLock(turnPath(id));
+            acquired = await acquirePrivateLock(turnPath(id));
             turns.set(turnPath(id), { release: () => acquired!.release(), token });
             if (acknowledgement) {
               consumeRecoveryAcknowledgement(record.recoveryBinding!, acknowledgement, profileOf(record), token);
@@ -566,7 +575,7 @@ export function createSubagentInstanceRegistry(options: {
           else if (record.status !== "queued" || record.reservation?.token !== token) assertCanDrive(record);
           if (record.status === "running" || (record.status === "queued" && record.reservation?.token !== token)) throw new Error(`Subagent instance "${id}" is busy.`);
           if (record.turns >= (options.maxTurns ?? 60)) throw new Error(`Subagent instance "${id}" reached maxTurns; close it and create another.`);
-          const lock = record.status === "queued" ? turns.get(turnPath(id)) : await acquireContinuationStoreLock(turnPath(id));
+          const lock = record.status === "queued" ? turns.get(turnPath(id)) : await acquirePrivateLock(turnPath(id));
           if (!lock) throw new Error("Subagent reservation ownership was lost.");
           acquired = lock;
           turns.set(turnPath(id), lock);

@@ -77,6 +77,40 @@ async function managedFixture(retireSession: (id: string, root: string) => Promi
 }
 
 describe("managed detached production execution", () => {
+  it.each(["ok", "failed"])("G11: actual managed %s job and delivered wake omit private command/observation canaries", async (mode) => {
+    const f = await managedFixture(); const release = deferred<void>(); const entered = deferred<void>();
+    const privatePath = "PRIVATE-OBSERVATION-CANARY"; const body = "PRIVATE-REPORT-BODY-CANARY"; const pid = 991827364;
+    await writeFile(resolve(f.root, "report.txt"), body);
+    const run = vi.fn(async () => { entered.resolve(); await release.promise; return mode === "ok" ? { text: "public answer" } : { error: "public failure" }; });
+    try {
+      const receipt = await tools(f, run).agent.execute("privacy", { id: "helper", persist: true, background: true, prompt: "public task" });
+      await entered.promise;
+      // Valid synthetic private facts on a real admitted job, not a process proof.
+      // Released command metadata cannot create a live PID/signalling obligation.
+      await f.store.mutate((records) => {
+        const owner = records.get(receipt.details.jobId)!.subagentOwnership!;
+        owner.command = { id: randomUUID(), callKey: "private-canary-call", tool: "Exec", state: "released", cwd: f.root,
+          sandboxSettingsPath: resolve(f.root, "mono-agent-srt-settings-PRIVATE-SANDBOX-CANARY", "settings.json"), pid, pgid: pid,
+          incarnation: { schema: "mono-agent.process-incarnation.v1", bootSessionId: "synthetic-boot", processStartId: "synthetic-birth" }, deadlineAt: Date.now() };
+        owner.seenCalls.push(owner.command.callKey);
+        records.get(receipt.details.jobId)!.subagentObservation = { schemaVersion: 1, capturedAt: Date.now(), policyRevision: "ab".repeat(32), status: "observed",
+          workdir: f.root, headBefore: "a".repeat(40), headAfter: "a".repeat(40), paths: [{ path: privatePath, status: "untracked" }], omitted: 0,
+          report: { path: "report.txt", present: true } };
+      });
+      release.resolve(); const job = await done(f.service, receipt.details.jobId);
+      expect(job.state).toBe(mode === "ok" ? "succeeded" : "failed");
+      const privateJob = await f.store.get(receipt.details.jobId);
+      expect(privateJob?.subagentOwnership?.command?.pid).toBe(pid);
+      expect(privateJob?.subagentObservation?.paths?.[0]?.path).toBe(privatePath);
+      expect(f.wake).toHaveBeenCalledOnce(); expect(run).toHaveBeenCalledOnce(); expect(f.signalProcess).not.toHaveBeenCalled();
+      for (const projection of [receipt, job, f.wake.mock.calls[0]]) {
+        const encoded = JSON.stringify(projection);
+        for (const canary of [f.root, privatePath, body, String(pid), "PRIVATE-SANDBOX-CANARY", "synthetic-birth"])
+          expect(encoded).not.toContain(canary);
+      }
+    } finally { release.resolve(); }
+  });
+
   it("G01: drains an entered registry transaction before transferring the owner lock", async () => {
     const provider = deferred<any>(); const entered = deferred<void>(); const release = deferred<void>();
     let armed = false; let blocked = false; let stopped = false; let writesAfterStop = 0;
