@@ -580,12 +580,12 @@ export function Chat({ onBack }: { readonly onBack: () => void }) {
           <ProjectBadge />
           <div className="chat-title-row">
             <ConversationTitle />
+            <ConversationTags />
             <span className={`chat-status is-${statusTone}`}>
               <i />
               {status}
             </span>
           </div>
-          <ConversationTags />
         </div>
         <div className="chat-header-actions">
           <ConversationActions />

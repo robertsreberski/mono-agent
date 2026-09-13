@@ -176,7 +176,7 @@ describe.each([
   { label: "desktop", width: 1_280, height: 800 },
   { label: "mobile", width: 390, height: 844 },
 ])("projects at the $label viewport", ({ label, width, height }) => {
-  it("shows three colored tags below the title and their membership menu", async () => {
+  it("shows three rounded colored tags beside the title and their membership menu", async () => {
     await page.viewport(width, height);
     const tags = [tag("planning", "alpha", { name: "planning", color: "blue" }), tag("implementing", "alpha", { name: "implementing", color: "amber" }), tag("reviewing", "alpha", { name: "reviewing", color: "green" })];
     storeMock.current = { ...chatStore(), selectedThread: { ...first, tagIds: tags.map((item) => item.id) }, tagsByAgent: { alpha: tags }, loadTags: vi.fn().mockResolvedValue(tags), setThreadTags: vi.fn().mockResolvedValue(undefined) };
@@ -184,10 +184,14 @@ describe.each([
     const line = screen.getByLabelText("Conversation tag line");
     const title = container.querySelector(".chat-title-row")!;
     const titleBounds = title.getBoundingClientRect();
-    expect(line.getBoundingClientRect().top).toBeGreaterThanOrEqual(titleBounds.bottom);
+    expect(title).toContainElement(line);
+    expect(line.getBoundingClientRect().top).toBeLessThan(titleBounds.bottom);
+    const chipStyle = getComputedStyle(line.querySelector(".tag-chip")!);
+    expect(chipStyle.borderRadius).toBe("999px");
+    expect(chipStyle.backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
     expect(line.querySelectorAll(".tag-chip")).toHaveLength(3);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
-    if (label === "mobile") await capture("tags-header-phone");
+    await capture(`tags-header-${label}`);
     await userEvent.click(screen.getByRole("button", { name: "Conversation tags" }));
     expect(await screen.findByRole("menuitem", { name: "New tag…" })).toBeVisible();
     for (const item of tags) expect(screen.getByRole("menuitem", { name: `Remove ${item.name}` })).toBeVisible();
@@ -198,35 +202,39 @@ describe.each([
   it("shows dashboard tag chips with a bounded overflow count", async () => {
     await page.viewport(width, height);
     const tags = ["planning", "implementing", "reviewing", "ready to merge", "merged"].map((name, i) => tag(`tag-${String(i)}`, "alpha", { name, color: i % 2 === 0 ? "blue" : "green" }));
-    const rows = [{ ...first, tagIds: tags.map((item) => item.id) }, { ...second, tagIds: [tags[0]!.id] }];
+    const rows = [{ ...first, runState: { status: "complete" as const }, lastMessagePreview: "Do not show this excerpt", tagIds: tags.map((item) => item.id) }, { ...second, tagIds: [tags[0]!.id] }];
     storeMock.current = dashboardStore({ threads: rows, visibleThreads: rows, tagsByAgent: { alpha: tags } });
     render(<WebRuntimeProvider><Dashboard highlightSelected={false} /></WebRuntimeProvider>);
     expect(await screen.findByText("+2")).toBeVisible();
     expect(document.querySelectorAll(".thread-tags .tag-chip")).toHaveLength(4);
     for (const line of document.querySelectorAll(".thread-tags")) {
-      const preview = line.previousElementSibling!;
+      const preview = line.parentElement!;
       expect(preview).toHaveClass("thread-preview");
-      expect(line.getBoundingClientRect().top).toBeGreaterThanOrEqual(preview.getBoundingClientRect().bottom);
+      expect(line.getBoundingClientRect().top).toBeLessThan(preview.getBoundingClientRect().bottom);
     }
-    expect(document.querySelectorAll(".thread-preview .tag-chip")).toHaveLength(0);
+    expect(document.querySelectorAll(".thread-preview .tag-chip")).toHaveLength(4);
+    expect(screen.getByText("Completed")).toBeVisible();
+    expect(screen.queryByText("Do not show this excerpt")).toBeNull();
+    expect(getComputedStyle(document.querySelector(".dashboard-footer")!).borderTopWidth).toBe("0px");
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     await capture(`tags-dashboard-chips-${label}`);
   });
 
-  it("keeps ten long tags on a scrollable header line below the title", async () => {
+  it("keeps ten long tags scrollable beside the title with their menu visible", async () => {
     await page.viewport(width, height);
     const tags = Array.from({ length: 10 }, (_, i) => ({ id: `tag-${String(i)}`, sourceId: "alpha", name: `planning long status ${String(i)} ` + "x".repeat(60), color: "green", revision: 1 }));
     storeMock.current = { ...chatStore(), selectedThread: { ...first, tagIds: tags.map((tag) => tag.id) }, tagsByAgent: { alpha: tags }, loadTags: vi.fn().mockResolvedValue(tags), setThreadTags: vi.fn().mockResolvedValue(undefined) };
     const { container } = render(<WebRuntimeProvider><Chat onBack={() => undefined} /></WebRuntimeProvider>);
     const line = screen.getByLabelText("Conversation tag line");
     const title = container.querySelector(".chat-title-row")!;
-    expect(line.getBoundingClientRect().top).toBeGreaterThanOrEqual(title.getBoundingClientRect().bottom);
-    expect(line.scrollWidth).toBeGreaterThan(line.clientWidth);
+    expect(title).toContainElement(line);
+    const scroller = line.querySelector<HTMLElement>(".conversation-tag-chips")!;
+    expect(scroller.scrollWidth).toBeGreaterThan(scroller.clientWidth);
     const chips = [...line.querySelectorAll(".tag-chip")];
     expect(chips).toHaveLength(10);
     expect(new Set(chips.map((chip) => chip.getBoundingClientRect().top)).size).toBe(1);
-    line.scrollLeft = line.scrollWidth;
-    expect(line.scrollLeft).toBeGreaterThan(0);
+    scroller.scrollLeft = scroller.scrollWidth;
+    expect(scroller.scrollLeft).toBeGreaterThan(0);
     expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(width);
     await userEvent.click(screen.getByRole("button", { name: "Conversation tags" }));
     expect(await screen.findByRole("menuitem", { name: "New tag…" })).toBeVisible();
