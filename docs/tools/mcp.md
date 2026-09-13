@@ -460,15 +460,18 @@ For the full allow/deny semantics of built-in tools, see [Tool policy](/tools/po
 
 ## Console project tools
 
-Writable interactive web turns can use `ListProjects`, `GetProject`,
+Writable web turns can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`,
 `ListTags`, `CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags`. They
 require no new config.
 Each tool honors its bare name, `mcp__mono-agent-console-projects__<name>`,
 `mcp__mono-agent-console-projects__*`, and `*` in allow/deny policy; deny wins.
-They are scoped to the originating agent and unavailable to cron, background
-wakes, archived conversations, and requests without active console authority.
+Typed turns and background host wakes (process-job and monitor completions) on an
+ordinary conversation both carry the capability, so an agent may file or move the
+conversation while reacting to finished background work.
+They are scoped to the originating agent and unavailable to cron, archived
+conversations, and requests without active console authority.
 
 These tools perform synchronous authenticated callbacks and return real IDs and
 applied/pending membership results. `CreateProject` can atomically attach the
