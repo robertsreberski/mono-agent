@@ -1,3 +1,6 @@
+import { reconcileSubagentExecutionOwnership } from "./subagent-ownership-recovery.js";
+import type { SubagentKnownOwner } from "./subagent-registry-ownership.js";
+import { hasPendingSubagentPublication, hasSubagentObligation } from "./subagent-execution-ownership.js";
 import { SubagentJobProgress, type SubagentProgressEvent } from "./process-job-subagent-progress.js";
 import { launchInternalProcessJob, type InternalProcessJobRequest, type InternalProcessJobsController, type InternalProcessJobResult } from "./process-jobs-internal.js";
 import { randomUUID } from "node:crypto";
@@ -156,6 +159,7 @@ export interface ProcessJobsServiceHandle {
   readonly settings: ProcessJobsSettings;
   readonly operatorToken: string;
   readonly health: ProcessJobsHealth;
+  checkSubagentOwnerIndex?(conversationId: string, known: readonly SubagentKnownOwner[]): Promise<"clear" | "held" | "unavailable">;
   controller(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): ProcessJobsController;
   internalController(origin: ProcessJobOriginRecord, chainDepth: number | (() => number)): InternalProcessJobsController;
   list(): Promise<readonly ProcessJobProjection[]>;
@@ -532,16 +536,43 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     return this.stopPromise;
   }
 
+  async checkSubagentOwnerIndex(conversationId: string, known: readonly SubagentKnownOwner[]): Promise<"clear" | "held" | "unavailable"> {
+    return await this.withLock(async () => {
+      if (this.stopping || !this.storageOperational) return "unavailable";
+      const records = await this.storeList("subagent.owner_index");
+      for (const record of records) {
+        if (record.kind !== "internal" || record.origin.conversationId !== conversationId
+          || (isTerminalProcessJobState(record.state) && !hasSubagentObligation(record))) continue;
+        if (!known.some((owner) => owner.instanceId === record.instanceId && owner.jobId === record.jobId
+          && (!record.subagentOwnership || owner.incarnation === record.subagentOwnership.instanceIncarnation))) return "held";
+      }
+      return "clear";
+    }).catch(() => "unavailable" as const);
+  }
+
   async recover(): Promise<void> {
     this.agentIncarnation = await this.currentIncarnation();
     const records = await this.storeList("recover");
     for (const record of records) {
-      if (isTerminalProcessJobState(record.state)) continue;
+      if (isTerminalProcessJobState(record.state) && !hasSubagentObligation(record)) continue;
       if (record.kind === "internal") {
+        const ownership = record.subagentOwnership ? await reconcileSubagentExecutionOwnership(record.subagentOwnership, {
+          currentIncarnation: this.agentIncarnation,
+          readIncarnation: this.readIncarnation,
+          sameIncarnation: async (pid, expected) => await this.sameIncarnation(pid, expected),
+          groupAbsent: (pgid) => this.ownedProcessGroupIsAbsent(pgid),
+          signalGroup: (pgid, signal) => this.signalOwned(pgid, signal),
+          grace: async () => await this.sleep(RECOVERY_KILL_GRACE_MS),
+          waitForGroupExit: async (pgid) => await this.waitForOwnedProcessGroupExit(pgid),
+          cleanup: cleanupPersistedSandboxSettings,
+        }) : undefined;
         await this.storeMutate("recover.interrupt_internal", (draft) => {
           const current = draft.get(record.jobId);
-          if (!current || isTerminalProcessJobState(current.state)) return;
-          current.childStillBusy = false;
+          if (!current || current.generation !== record.generation) return;
+          // Reporting terminality and owner-lock loss never prove an untracked child command exited.
+          // Until exact owner reconciliation supplies proof, retain the original obligation.
+          if (ownership) current.subagentOwnership = ownership;
+          else if (["starting", "running"].includes(current.state)) current.childStillBusy = true;
           transitionTerminal(current, "interrupted", this.now(), "process_job_agent_restarted", "Subagent interrupted by restart; never replayed.");
         });
         this.scheduleSurfaceUpdate(record.jobId);
@@ -714,7 +745,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         }
         this.pending.set(jobId, pending);
         handedOff = true;
-        if (this.active.size < this.settings.maxConcurrent) {
+        if (this.runningOccupancy() < this.settings.maxConcurrent) {
           return await this.launch(jobId, false);
         }
         this.armQueueTimer();
@@ -1173,8 +1204,9 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await this.storeApplyRetention("complete.retention");
       await this.drainQueue();
       } finally {
-        // Store reads can fail before terminal mutation begins. Ownership must
-        // still retire so one poisoned record cannot leak the global slot.
+        // Retire reporting resources even if the read failed. Durable/snapshot
+        // U/P still occupies the original slot; deleting this map entry is not
+        // evidence of provider or command settlement.
         clearTimeout(this.active.get(jobId)?.progressTimer);
       this.active.delete(jobId);
         this.pending.delete(jobId);
@@ -1182,8 +1214,13 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     });
   }
 
+  private runningOccupancy(): number {
+    return Math.max(this.active.size, [...this.recordSnapshot.values()].filter((record) =>
+      record.state === "starting" || record.state === "running" || (isTerminalProcessJobState(record.state) && hasSubagentObligation(record))).length);
+  }
+
   private async drainQueue(): Promise<void> {
-    while (!this.stopping && this.storageOperational && this.active.size < this.settings.maxConcurrent) {
+    while (!this.stopping && this.storageOperational && this.runningOccupancy() < this.settings.maxConcurrent) {
       const queued = (await this.storeList("queue.drain"))
         .filter((record) => record.state === "queued")
         .sort((left, right) => left.admittedAt.localeCompare(right.admittedAt) || left.jobId.localeCompare(right.jobId))[0];
@@ -1309,6 +1346,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
           if (current === undefined
             || !isTerminalProcessJobState(current.state)
             || current.wake.state !== "pending"
+            || hasPendingSubagentPublication(current)
             || current.wake.attempts >= MAX_WAKE_ATTEMPTS) return;
           previousDelivery = {
             attempts: current.wake.attempts,
@@ -1792,7 +1830,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     // so the Set's O(1) first entry is the oldest cached terminal victim.
     for (let index = bounded.length - 1; index >= 0; index -= 1) {
       const record = bounded[index]!;
-      if (isTerminalProcessJobState(record.state)) this.terminalSnapshotIds.add(record.jobId);
+      if (isTerminalProcessJobState(record.state) && !hasSubagentObligation(record)) this.terminalSnapshotIds.add(record.jobId);
     }
     const durableIds = new Set(records.map((record) => record.jobId));
     for (const jobId of this.completionOverlays.keys()) {
@@ -1812,7 +1850,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     const cached = this.recordSnapshot.has(jobId);
     if (!cached && this.recordSnapshot.size >= MAX_IN_MEMORY_RECORDS) {
       // An uncached terminal read cannot displace the bounded fallback view.
-      if (isTerminalProcessJobState(ownedRecord.state)) {
+      if (isTerminalProcessJobState(ownedRecord.state) && !hasSubagentObligation(ownedRecord)) {
         this.pruneConsistentOverlay(ownedRecord);
         return;
       }
@@ -1823,7 +1861,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       this.completionOverlays.delete(terminalVictim);
     }
     this.recordSnapshot.set(jobId, ownedRecord);
-    if (isTerminalProcessJobState(ownedRecord.state)) this.terminalSnapshotIds.add(jobId);
+    if (isTerminalProcessJobState(ownedRecord.state) && !hasSubagentObligation(ownedRecord)) this.terminalSnapshotIds.add(jobId);
     else this.terminalSnapshotIds.delete(jobId);
     this.pruneConsistentOverlay(ownedRecord);
   }
@@ -2011,14 +2049,14 @@ function enforceAdmission(
       "Process-job pending-wake capacity is full until an earlier result settles.",
     );
   }
-  const nonterminal = [...records.values()].filter((record) => !isTerminalProcessJobState(record.state));
+  const nonterminal = [...records.values()].filter((record) => !isTerminalProcessJobState(record.state) || hasSubagentObligation(record));
   if (nonterminal.filter((record) => record.origin.normalizedReplyTarget === normalizedReplyTarget).length >= settings.maxActivePerConversation) {
     throw new ProcessJobServiceError(
       "process_job_conversation_capacity",
       `Conversation already has ${String(settings.maxActivePerConversation)} active process jobs.`,
     );
   }
-  const running = nonterminal.filter((record) => record.state === "starting" || record.state === "running").length;
+  const running = nonterminal.filter((record) => record.state === "starting" || record.state === "running" || (isTerminalProcessJobState(record.state) && hasSubagentObligation(record))).length;
   const queued = nonterminal.filter((record) => record.state === "queued").length;
   if (running >= settings.maxConcurrent && queued >= settings.maxQueued) {
     throw new ProcessJobServiceError("process_job_queue_full", "Process-job queue is full.");
@@ -2036,12 +2074,13 @@ function boundedNewestRecords(
     right.admittedAt.localeCompare(left.admittedAt) || left.jobId.localeCompare(right.jobId));
   if (sorted.length <= MAX_IN_MEMORY_RECORDS) return sorted;
 
-  const active = sorted.filter((record) => !isTerminalProcessJobState(record.state));
-  if (active.length >= MAX_IN_MEMORY_RECORDS) return active.slice(0, MAX_IN_MEMORY_RECORDS);
+  const active = sorted.filter((record) => !isTerminalProcessJobState(record.state) || hasSubagentObligation(record));
+  if (active.length > MAX_IN_MEMORY_RECORDS) throw new ProcessJobServiceError("process_job_store_error", "Unresolved ownership exceeds the bounded snapshot capacity.");
+  if (active.length === MAX_IN_MEMORY_RECORDS) return active;
 
   let terminalSlots = MAX_IN_MEMORY_RECORDS - active.length;
   return sorted.filter((record) => {
-    if (!isTerminalProcessJobState(record.state)) return true;
+    if (!isTerminalProcessJobState(record.state) || hasSubagentObligation(record)) return true;
     if (terminalSlots === 0) return false;
     terminalSlots -= 1;
     return true;

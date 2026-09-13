@@ -1213,6 +1213,14 @@ async function createConfiguredAgentHarnessInternal(
     ? createSubagentInstanceRegistry({
         root: subagentInstancesRoot(config),
         ...config.subagents?.instances,
+        checkOwnerIndex: async (conversationId, known) => {
+          // Only existing registered history is authoritative. Never scan/open an old root here.
+          if (processJobsRegistry.kind === "empty") return "clear";
+          const service = internalHooks.processJobs?.service;
+          if (processJobsRegistry.kind !== "ready" || !service?.checkSubagentOwnerIndex
+            || processJobsRegistry.roots.some((root) => root.canonicalPath !== service.settings.stateDir)) return "unavailable";
+          return await service.checkSubagentOwnerIndex(conversationId, known);
+        },
         retireSession: async (id, root) => {
           if (!runtime.retireDurableSession) throw new Error("Runtime cannot retire durable subagent sessions.");
           await runtime.retireDurableSession(id, root);

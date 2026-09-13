@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,9 +58,52 @@ const ORIGIN: ProcessJobOriginRecord = {
 };
 
 const services: ProcessJobsServiceHandle[] = [];
+const ownershipRoots: string[] = [];
 afterEach(async () => {
   await Promise.allSettled(services.splice(0).map(async (service) => await service.stop()));
+  await Promise.all(ownershipRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   vi.useRealTimers();
+});
+
+describe("held subagent obligations", () => {
+  it.each(["ownership", "publication", "legacy"])("pins terminal %s through retention, reopen, admission and projection", async (mode) => {
+    const cwd = await mkdtemp(join(process.cwd(), ".job-ownership-")); ownershipRoots.push(cwd);
+    const fixture = { cwd, settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir: join(cwd, "jobs"),
+      maxConcurrent: 1, maxQueued: 0, maxActivePerConversation: 1,
+      retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxAgeMs: 1, artifactMaxBytes: 1 } } };
+    const store = await openProcessJobStore(cwd, fixture.settings.stateDir);
+    const jobId = randomUUID();
+    const instanceIncarnation = randomUUID();
+    const record = durableRecord(jobId, { tool: "Agent", kind: "internal", instanceId: "child", childStillBusy: mode === "legacy",
+      pid: null, pgid: null, state: "timed_out", completedAt: "2026-08-14T10:00:03.000Z" });
+    delete record.processIncarnation;
+    if (mode !== "legacy") record.subagentOwnership = { schemaVersion: 1, instanceIncarnation, turnToken: jobId,
+      owner: { pid: 123, incarnation: INCARNATION, settlement: mode === "publication" ? "settled" : "running" },
+      revoked: mode === "publication", publication: { sequence: 1, state: mode === "publication" ? "pending" : "confirmed" }, seenCalls: [] };
+    record.wake.state = mode === "publication" ? "pending" : "delivered";
+    await store.mutate((draft) => { draft.set(jobId, record); });
+    await store.ensureArtifacts(jobId);
+    await store.writeArtifact(jobId, "stdout", "retained command evidence");
+    await store.applyRetention(fixture.settings, new Date("2030-01-01T00:00:00.000Z"));
+    expect((await store.get(jobId))?.stdoutRef).toBe(record.stdoutRef);
+    expect(await readFile(join(fixture.settings.stateDir, record.stdoutRef!), "utf8")).toBe("retained command evidence");
+    const wake = vi.fn(async () => ({ delivered: true as const }));
+    const service = await startService(fixture, { wake });
+    await service.activateWakes();
+    expect((await service.get(jobId))?.state).toBe("timed_out");
+    expect(JSON.stringify(await service.get(jobId))).not.toContain(instanceIncarnation);
+    expect(await service.checkSubagentOwnerIndex!(ORIGIN.conversationId, [])).toBe("held");
+    expect(await service.checkSubagentOwnerIndex!(ORIGIN.conversationId, [{ instanceId: "child", incarnation: instanceIncarnation, jobId }])).toBe("clear");
+    const launch = vi.fn(() => handleOf(deferred<ProcessJobProcessResult>()));
+    await expect(service.controller(ORIGIN, 0).start({ ...requestOf(handleOf(deferred<ProcessJobProcessResult>())), launch }))
+      .rejects.toMatchObject({ code: "process_job_conversation_capacity" });
+    expect(launch).not.toHaveBeenCalled();
+    expect(wake).not.toHaveBeenCalled();
+    await service.stop();
+    const reopened = await openProcessJobStore(cwd, fixture.settings.stateDir);
+    await reopened.applyRetention(fixture.settings, new Date("2030-01-01T00:00:00.000Z"));
+    expect(await reopened.get(jobId)).toBeDefined();
+  });
 });
 
 describe("process job service", () => {

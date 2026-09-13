@@ -69,6 +69,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   routes, and `mono-agent jobs` CLI at the app boundary. This
   local contract does not resist a hostile same-UID provider; use OS privilege
   separation when that is in the threat model.
+- Keep persistent child incarnation/turn intents and minimal recovery fences in
+  the owner-private registry. Abandoned linked turns cannot unblock without
+  exact registered-owner proof; retained-root index failure blocks replacement
+  creation. Terminal child ownership/publication obligations pin process-job
+  retention, admission and fallback snapshots independently of delivery status.
+  Foreground persistent turns do not gain supervised process ownership.
 - Opt in to Pi-native host-owned watches through `monitors.*`. Telegram, Slack,
   and existing web conversations receive coalesced event batches as exact-origin
   tool-capable wake turns; web uses ordinary assistant turns rather than a

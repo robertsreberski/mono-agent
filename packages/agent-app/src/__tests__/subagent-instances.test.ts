@@ -62,15 +62,20 @@ describe("persistent subagent registry", () => {
     const records = JSON.parse(await readFile(file, "utf8"));
     records[0].status = "running";
     await writeFile(file, JSON.stringify(records));
-    expect(await handle.get(record.id)).toMatchObject({ status: "idle", lastStatus: "interrupted" });
+    expect(await handle.get(record.id)).toMatchObject({ status: "idle", lastStatus: "interrupted", recovery: { continuity: "unknown" } });
+    await expect(handle.begin(record.id)).rejects.toThrow("subagent_recovery_required");
+    await handle.close(record.id);
+    await handle.create({ ...spec, id: record.id });
     await handle.begin(record.id);
     now += 100_000;
     expect((await handle.get(record.id))?.status).toBe("running");
     await handle.finish(record.id, { status: "failed" });
     now += 60_001;
-    expect((await handle.get(record.id))?.status).toBe("expired");
+    expect((await handle.get(record.id))?.status).toBe("idle");
+    expect((await handle.get(record.id))?.recovery).toMatchObject({ reason: "failed", continuity: "unknown" });
+    await expect(handle.begin(record.id)).rejects.toThrow("subagent_recovery_required");
+    await handle.close(record.id);
     expect(retireSession).toHaveBeenCalled();
-    await expect(handle.begin(record.id)).rejects.toThrow(/expired/u);
     now += 86_400_001;
     expect(await handle.list()).toEqual([]);
   });
@@ -86,7 +91,10 @@ describe("persistent subagent registry", () => {
       process.exit(0);
     `], { cwd: root, encoding: "utf8", timeout: 10_000 });
     child('await handle.begin("process-test");');
-    expect(await handle.get("process-test")).toMatchObject({ status: "idle", lastStatus: "interrupted" });
+    expect(await handle.get("process-test")).toMatchObject({ status: "idle", lastStatus: "interrupted", recovery: { reason: "settlement_unknown" } });
+    await expect(handle.begin("process-test")).rejects.toThrow("subagent_recovery_required");
+    await handle.close("process-test");
+    await handle.create({ ...spec, id: "process-test" });
     await handle.begin("process-test");
     expect(child('try { await handle.begin("process-test"); throw new Error("unexpected acquisition"); } catch (error) { if (!error.message.includes("busy")) throw error; console.log("busy"); }')).toContain("busy");
     await handle.finish("process-test", { status: "ok" });
@@ -104,6 +112,9 @@ describe("persistent subagent registry", () => {
     await expect(handle.finish(record.id, { status: "ok" })).rejects.toThrow("injected disk full");
     const reopened = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
     expect(await reopened.get(record.id)).toMatchObject({ status: "idle", lastStatus: "interrupted" });
+    await expect(reopened.begin(record.id)).rejects.toThrow("subagent_recovery_required");
+    await reopened.close(record.id);
+    await reopened.create({ ...spec, id: record.id });
     await reopened.begin(record.id);
     await reopened.finish(record.id, { status: "ok" });
   });
@@ -174,10 +185,15 @@ describe("awaiting child questions", () => {
     await handle.finish(id, { status: "awaiting_reply", question });
     const reopened = await createSubagentInstanceRegistry({ root, retireSession }).open("conversation");
     expect(await reopened.get(id)).toMatchObject({ status: "awaiting_reply", pendingQuestion: question });
-    for (const status of ["failed", "busy", "timeout", "cancelled", "empty"]) {
+    for (const status of ["failed", "timeout", "cancelled", "empty"]) {
       await reopened.begin(id);
       await reopened.finish(id, { status });
-      expect(await reopened.get(id)).toMatchObject({ status: "awaiting_reply", pendingQuestion: question, lastStatus: status });
+      expect(await reopened.get(id)).toMatchObject({ status: "awaiting_reply", pendingQuestion: question, lastStatus: status, recovery: { continuity: "unknown" } });
+      await expect(reopened.begin(id)).rejects.toThrow("subagent_recovery_required");
+      await reopened.close(id);
+      await reopened.create({ ...spec, id });
+      await reopened.begin(id);
+      await reopened.finish(id, { status: "awaiting_reply", question });
     }
     await reopened.begin(id);
     const replacement = { question: "Another?" };
@@ -212,7 +228,7 @@ describe("awaiting child questions", () => {
     await expect(handle.create(spec)).rejects.toThrow(/maxPerConversation/);
     await handle.begin(id); now += 60001;
     expect((await handle.get(id))?.status).toBe("running");
-    await handle.finish(id, { status: "failed" }); now += 60001;
+    await handle.finish(id, { status: "awaiting_reply", question }); now += 60001;
     expect(await handle.get(id)).toMatchObject({ status: "expired" });
     expect((await handle.get(id))?.pendingQuestion).toBeUndefined();
   });

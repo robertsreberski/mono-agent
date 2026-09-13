@@ -332,7 +332,7 @@
  * @property {(id: string, token: string) => Promise<RuntimeSubagentInstance>} [reserve]
  * @property {(id: string, token: string) => Promise<void>} [releaseReservation]
  * @property {(id: string, token?: string) => Promise<RuntimeSubagentInstance>} begin
- * @property {(id: string, outcome: {status: string, question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
+ * @property {(id: string, outcome: {status: string, failureKind?: "session_continuity_lost", question?: {question: string, options?: string[]}, usage?: {input?: number, output?: number, cacheRead?: number, cacheWrite?: number, costUsd?: number}, answerHead?: string}, token?: string) => Promise<RuntimeSubagentInstance>} finish
  * @property {(id: string) => Promise<RuntimeSubagentInstance>} close
  */
 

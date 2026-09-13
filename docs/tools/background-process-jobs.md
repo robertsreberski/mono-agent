@@ -655,9 +655,23 @@ replay a started job. Message plus close closes only after a successful answer.
 Timeout/cancellation requests abort and waits through the Agent grace period.
 If execution remains unresolved, the terminal job reports `childStillBusy:true`.
 The instance stays busy and retains its turn lock and independent runtime
-protection lease until actual settlement or process death. A late settlement
-updates only the instance and never sends another wake or changes the terminal
-job. The retained card describes the terminal observation; Session context shows
+protection lease until actual settlement. Process death alone does not prove
+that command descendants exited. A late settlement never sends another wake or
+changes the terminal outcome, and leaves a recovery fence when session continuity
+is unknown. Do not send a new message merely because the running lock disappeared. The retained card describes the terminal observation; Session context shows
 the current instance state. Service shutdown does not wait indefinitely for an
 abandoned child. Restart interrupts stored work and wakes its origin without
 replaying it; pending questions survive recovery.
+
+Persistent registry failures retain a minimal typed reason and turn identity.
+Lost or unknown continuity requires explicit close/create after ownership is
+resolved, not an implicit retry of unretained prose. Foreground persistent turns
+retain the ordinary command timeout and do not gain durable command ownership.
+Unresolved ownership or registry publication pins terminal records and their
+artifacts independently of wake delivery, age, and admission limits. Legacy
+`childStillBusy:true` is conservative unknown evidence, not proof of cleanup.
+A disabled service or an unavailable retained-root index cannot authorize new
+persistent instances around forgotten work. Do not delete ownership records to
+bypass this fence. Older runtimes reject records containing the new ownership or
+registry-intent fields; stripping those fields is not a safe downgrade. Existing
+legacy command cleanup cannot be retroactively proven from an interrupted job.

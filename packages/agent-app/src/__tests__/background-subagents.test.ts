@@ -108,7 +108,7 @@ describe("detached persistent subagents", () => {
     gate.resolve({ text: "done" }); await done(f.service, first.details.jobId);
   });
 
-  it.each(["timeout", "cancel"])("reports unresolved %s once, retains the lock/question, and permits continuation only after late settlement", async (mode) => {
+  it.each(["timeout", "cancel"])("reports unresolved %s once, retains the lock/question, and keeps an unknown-continuity fence after late settlement", async (mode) => {
     const f = await fixture(); const gate = deferred<any>();
     const { agent, send, options } = tools(f, async (request) => { await f.instances.markAwaiting(request.instance.id, { question: "Scope?" }); return gate.promise; },
       { timeoutMs: mode === "timeout" ? 30 : 60_000 });
@@ -129,8 +129,19 @@ describe("detached persistent subagents", () => {
     expect((await f.instances.get("helper"))?.usage).toMatchObject({ input: 7, output: 2, costUsd: 0.1 });
     expect(subagentUsageForRun(options)).toMatchObject({ input: 0, output: 0, costUsd: 0 });
     const next = tools(f, async () => ({ text: "replied" }));
-    expect((await next.send.execute("reply", { id: "helper", message: "Small", close: true })).details.subagent.instance.status).toBe("closed");
+    await expect(next.send.execute("reply", { id: "helper", message: "Small", close: true })).rejects.toThrow("subagent_recovery_required");
+    expect((await f.instances.get("helper"))?.recovery).toMatchObject({ continuity: "unknown" });
+    await f.instances.close("helper");
   }, 12_000);
+
+  it("carries typed native session loss through the actual Agent finish seam", async () => {
+    const f = await fixture();
+    const { agent, send } = tools(f, async () => ({ text: "unretained answer", failureKind: "session_continuity_lost" }));
+    const receipt = await agent.execute("lost", { persist: true, background: true, id: "helper", prompt: "work" });
+    expect(await done(f.service, receipt.details.jobId)).toMatchObject({ state: "failed" });
+    expect((await f.instances.get("helper"))?.recovery).toMatchObject({ reason: "session_continuity_lost", continuity: "lost" });
+    await expect(send.execute("no-replay", { id: "helper", message: "continue" })).rejects.toThrow("subagent_recovery_required");
+  });
 
   it("stop aborts active work, bounds waiting, and restart delivers the retained interruption once", async () => {
     const f = await fixture(); const gate = deferred<any>();
@@ -156,7 +167,7 @@ describe("detached persistent subagents", () => {
     const store = await openProcessJobStore(f.root, f.options.settings.stateDir);
     await store.mutate((records) => { const r = records.get(id)!; r.state = "running"; r.completedAt = null; r.exitCode = null; r.durationMs = null; r.wake.state = "pending"; });
     const restarted = await openProcessJobsService({ ...f.options, store }); services.push(restarted); await restarted.activateWakes();
-    expect(await done(restarted, id)).toMatchObject({ state: "interrupted", childStillBusy: false, lastError: { code: "process_job_agent_restarted" } });
+    expect(await done(restarted, id)).toMatchObject({ state: "interrupted", childStillBusy: true, lastError: { code: "process_job_agent_restarted" } });
     expect(f.wake).toHaveBeenCalledOnce(); expect(f.signalProcess).not.toHaveBeenCalled();
   });
 
