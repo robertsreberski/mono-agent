@@ -77,8 +77,47 @@ async function managedFixture(retireSession: (id: string, root: string) => Promi
 }
 
 describe("managed detached production execution", () => {
+  it("G01: drains an entered registry transaction before transferring the owner lock", async () => {
+    const provider = deferred<any>(); const entered = deferred<void>(); const release = deferred<void>();
+    let armed = false; let blocked = false; let stopped = false; let writesAfterStop = 0;
+    const f = await managedFixture(undefined, {}, true, async (...args) => {
+      if (armed && !blocked) { blocked = true; entered.resolve(); await release.promise; }
+      if (stopped) writesAfterStop++;
+      await writeJsonAtomic(...args);
+    });
+    const ownerLock = (f.service as unknown as { lock: { release(): Promise<void> } }).lock;
+    const releaseOwner = vi.spyOn(ownerLock, "release");
+    f.service.bindManagedSubagents!({ root: resolve(f.root, "children"),
+      verify: async (identity) => (await f.registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
+      publish: async (phase, publication) => {
+        if (publication.released && phase === "intent") armed = true;
+        await (await f.registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication);
+      },
+    });
+    const run = vi.fn(() => provider.promise);
+    let shutdown: Promise<void> | undefined;
+    try {
+      const receipt = await tools(f, run, { timeoutMs: 1500 }).agent.execute("entered-publication", { persist: true, background: true, id: "helper", prompt: "work" });
+      await vi.waitFor(async () => expect((await f.service.get(receipt.details.jobId))?.wake.state).toBe("delivered"), { timeout: 9000 });
+      provider.resolve({ text: "late settlement starts publication" });
+      await entered.promise; // Real registry transaction owns its lock and is at its actual write boundary.
+      shutdown = f.service.stop().then(() => { stopped = true; });
+      await vi.waitFor(() => expect((f.service as unknown as { managedWritesClosed: boolean }).managedWritesClosed).toBe(true));
+      expect(releaseOwner, "entered registry I/O must finish before owner-lock release").not.toHaveBeenCalled();
+      expect(stopped).toBe(false);
+      await expect(openProcessJobsService(f.options)).rejects.toMatchObject({ code: "process_job_controller_unavailable" });
+      release.resolve(); await shutdown;
+      expect(releaseOwner).toHaveBeenCalledOnce(); expect(writesAfterStop).toBe(0);
+      expect(run).toHaveBeenCalledOnce(); expect(f.wake).toHaveBeenCalledOnce();
+      // The incomplete publication stays recoverable; do not drop P to make shutdown pass.
+      expect((await f.store.get(receipt.details.jobId))?.subagentOwnership).toMatchObject({ owner: { settlement: "settled" }, publication: { state: "pending" } });
+    } finally { release.resolve(); provider.resolve({ text: "cleanup" }); await shutdown; }
+  }, 15_000);
+
   it.each(["retained", "job-removed", "registry-removed", "degraded"])("G01/G04/G06: live managed provider cannot regain write authority after same-process reopen (%s)", async (mode) => {
     let oldServiceStopped = false; let writesAfterStop = 0;
+    // Count only the original service-bound registry writer. The reopened registry
+    // and test observations below use separate capabilities, not this callback.
     const f = await managedFixture(undefined, {}, true, async (...args) => { if (oldServiceStopped) writesAfterStop++; await writeJsonAtomic(...args); });
     const provider = deferred<any>(); const observed = deferred<void>(); const reported = deferred<void>();
     const controller = f.service.internalController(origin, 0);
@@ -150,6 +189,7 @@ describe("managed detached production execution", () => {
       await observed.promise; // Actual old managed.settled callback has returned/rejected.
       expect(settlementError).toBeInstanceOf(Error); expect(String(settlementError)).toContain("ownership ended");
       expect(oldWrites).not.toHaveBeenCalled();
+      expect(writesAfterStop, "closed original registry writer must remain idle after late settlement").toBe(0);
       expect(await store.get(receipt.details.jobId)).toEqual(before);
       expect(await readFile(registryFile, "utf8")).toBe(registryBefore);
       expect(await Promise.all(artifactFiles.map((path) => readFile(path, "utf8")))).toEqual(artifactsBefore);

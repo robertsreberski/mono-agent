@@ -283,6 +283,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   private managedRegistry: ManagedSubagentRegistry | undefined;
   private readonly managedCommands = new Map<string, ReturnType<typeof createSubagentOwnedCommands>>();
   private readonly managedPublications = new Map<string, Promise<void>>();
+  private readonly managedRegistryOperations = new Set<Promise<unknown>>();
   private readonly pending = new Map<string, PendingProcessJob>();
   private readonly active = new Map<string, ActiveProcessJob>();
   private readonly completionOverlays = new Map<string, ProcessJobProjection>();
@@ -683,6 +684,19 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     };
   }
 
+  /** Track only entered host registry I/O, never the provider lifetime. */
+  private async withManagedRegistry<T>(operation: (registry: ManagedSubagentRegistry) => Promise<T>): Promise<T> {
+    if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+    const registry = this.managedRegistry;
+    if (!registry) throw new Error("Managed subagent registry is unavailable.");
+    const pending = Promise.resolve().then(async () => {
+      if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
+      return await operation(registry);
+    });
+    this.managedRegistryOperations.add(pending);
+    try { return await pending; } finally { this.managedRegistryOperations.delete(pending); }
+  }
+
   private async reportManaged(jobId: string, outcome: InstanceOutcome): Promise<void> {
     this.managedCommands.get(jobId)?.revoke();
     if (this.managedWritesClosed) throw new Error("Managed subagent service ownership ended.");
@@ -696,8 +710,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       ...(outcome.closeAfterSuccess ? { closeAfterSuccess: true } : {}),
       continuity: outcome.failureKind === "session_continuity_lost" ? "lost" : owner.disposition?.continuity === "retained" || (["ok", "awaiting_reply"].includes(status) && owner.owner.settlement === "settled") ? "retained" : "unknown",
       ...(["ok", "awaiting_reply", "busy"].includes(status) ? {} : { reason: outcome.failureKind ?? (status === "failed" ? "failed" : status as "timeout" | "cancelled" | "empty" | "interrupted") }) };
-    await this.managedRegistry.publish("intent", { identity: this.managedIdentity(record), sequence: owner.publication.sequence + 1,
-      disposition, released: false });
+    await this.withManagedRegistry(async (registry) => await registry.publish("intent", { identity: this.managedIdentity(record), sequence: owner.publication.sequence + 1,
+      disposition, released: false }));
     await this.withManagedLock(async () => await this.storeMutate("subagent.report", (records) => {
       const record = requireRecord(records, jobId);
       const current = record.subagentOwnership!;
@@ -722,8 +736,8 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         disposition: owner.disposition, released: !hasUnresolvedSubagentOwnership(record) && isTerminalProcessJobState(record.state),
         outcome: { status: owner.disposition.status, ...(owner.usage ? { usage: owner.usage } : {}), ...(record.subagentQuestion ? { question: record.subagentQuestion } : {}) } };
       if (owner.publication.state === "pending") {
-        await this.managedRegistry.publish("intent", publication);
-        await this.managedRegistry.publish("confirm", publication);
+        await this.withManagedRegistry(async (registry) => await registry.publish("intent", publication));
+        await this.withManagedRegistry(async (registry) => await registry.publish("confirm", publication));
         await this.withManagedLock(async () => await this.storeMutate("subagent.publication_confirmed", (records) => {
           const current = requireRecord(records, jobId).subagentOwnership!;
           if (current.publication.sequence === publication.sequence) {
@@ -736,7 +750,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         // Never hold the service lock while entering the registry transaction.
         // It verifies the committed job proof and durably writes its certificate.
         if (owner.publication.receiptRecorded !== publication.sequence) {
-          await this.managedRegistry.publish("finalize", publication);
+          await this.withManagedRegistry(async (registry) => await registry.publish("finalize", publication));
           await this.withManagedLock(async () => await this.storeMutate("subagent.release_certificate_recorded", (records) => {
             const current = requireRecord(records, jobId);
             if (!sameSubagentOwner(publication.identity, this.managedIdentity(current))
@@ -746,7 +760,7 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
         }
         // Registry deletion is safe only after the job has durably copied its
         // certificate. Reopen can finish this transfer even if that row is gone.
-        await this.managedRegistry.publish("acknowledge", publication);
+        await this.withManagedRegistry(async (registry) => await registry.publish("acknowledge", publication));
         await this.withManagedLock(async () => {
           const occupied = this.runningOccupancy();
           await this.storeMutate("subagent.release_receipt_acknowledged", (records) => {
@@ -768,9 +782,11 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
   }
 
   private scheduleManagedPublication(jobId: string): void {
-    if (!this.managedRegistry || this.managedPublications.has(jobId)) return;
+    if (this.stopping || this.managedWritesClosed || !this.managedRegistry || this.managedPublications.has(jobId)) return;
     void Promise.resolve().then(async () => {
+      if (this.stopping || this.managedWritesClosed) return;
       const record = await this.storeGet(jobId, "subagent.pending_publication");
+      if (this.stopping || this.managedWritesClosed) return;
       if (!record?.subagentOwnership || !isTerminalProcessJobState(record.state)) return;
       if (!record.subagentOwnership.disposition) await this.reportManaged(jobId, { status: record.state === "timed_out" ? "timeout" : record.state === "cancelled" ? "cancelled" : "interrupted" });
       else await this.publishManaged(jobId);
@@ -920,14 +936,15 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
     const pending = pendingRequest(isInternal(request) && request.managed ? { ...request, cleanup: async () => {} } : request);
     try {
       if (isInternal(request) && request.managed) {
+        const managed = request.managed;
         if (!this.managedRegistry) throw new ProcessJobServiceError("process_job_controller_unavailable");
         await this.withManagedLock(async () => {
           this.assertAvailable(origin, chainDepth, request);
           if (this.managedAdmissionTickets.has(request.jobId) || this.managedAdmissionTickets.size >= 128) throw new ProcessJobServiceError("process_job_conflict");
           this.managedAdmissionTickets.add(request.jobId); admissionTicket = request.jobId;
         });
-        const verified = await this.managedRegistry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
-          instanceId: request.instanceId, instanceIncarnation: request.managed.instanceIncarnation, turnToken: request.managed.turnToken });
+        const verified = await this.withManagedRegistry(async (registry) => await registry.verify({ storeRoot: this.settings.stateDir, jobId: request.jobId, conversationId: origin.conversationId,
+          instanceId: request.instanceId, instanceIncarnation: managed.instanceIncarnation, turnToken: managed.turnToken }));
         retainedBeforeAdmission = verified?.retained === true;
         verification = verified?.verification;
       }
@@ -1898,6 +1915,10 @@ class ProcessJobsService implements ProcessJobsServiceHandle {
       await Promise.allSettled([...this.wakeTasks.values()]);
     } finally {
       await this.withLock(async () => { this.managedWritesClosed = true; });
+      // Entered registry transactions may call back into service proof lookup.
+      // Drain them outside the service lock, before transferring the owner lock.
+      // Closed admission above makes this a stable set; provider promises are not included.
+      await Promise.allSettled([...this.managedRegistryOperations]);
       try { await this.lock.release(); } catch (error) { failures.push(error); }
       this.stopped = true;
     }
