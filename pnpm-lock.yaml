@@ -56,7 +56,7 @@ importers:
         specifier: workspace:0.21.1
         version: link:packages/observability
       '@mono-agent/observability-phoenix':
-        specifier: workspace:0.20.14
+        specifier: workspace:0.21.1
         version: link:extras/observability-phoenix
       '@mono-agent/openai-api-adapter':
         specifier: workspace:0.21.1
@@ -162,7 +162,7 @@ importers:
   extras/observability-phoenix:
     dependencies:
       '@mono-agent/observability':
-        specifier: workspace:0.20.14
+        specifier: workspace:0.21.1
         version: link:../../packages/observability
       '@opentelemetry/otlp-transformer':
         specifier: 0.219.0
@@ -456,7 +456,7 @@ importers:
         specifier: workspace:0.21.1
         version: link:../observability
       '@mono-agent/operator-adapter':
-        specifier: workspace:0.20.14
+        specifier: workspace:0.21.1
         version: link:../operator-adapter
       compression:
         specifier: 1.8.1
