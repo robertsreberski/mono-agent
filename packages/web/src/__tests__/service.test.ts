@@ -7106,6 +7106,55 @@ describe("authenticated console project callback", () => {
       await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
     } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }
   });
+
+  it("advertises and authorizes the capability on a background host wake, and never on a cron channel", async () => {
+    let stream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const turnBodies: Record<string, unknown>[] = [];
+    const service = await createService({ fetchImpl: operatorFetch({
+      onTurn(body) { turnBodies.push(body); },
+      cronOverview: operatorCronOverview(),
+      turns: () => new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }),
+    }) });
+    const ingress = await startWebNotificationIngress(service);
+    try {
+      const thread = service.createThread("agent-one");
+      const terminal = fakeProcessJob({ conversationId: `web:${thread.id}`, state: "succeeded" });
+      await expect(service.deliverNotification({
+        sourceId: "agent-one",
+        triggerKind: "job",
+        deliveryKey: terminal.wake.deliveryKey,
+        threadId: thread.id,
+        processJob: terminal,
+        wakePrompt: "Inspect the completed worker result",
+      })).resolves.toMatchObject({ delivery: { delivered: true } });
+      await waitFor(() => stream !== undefined);
+      const wakeBody = turnBodies.at(-1) as { metadata?: { web?: Record<string, unknown> } } | undefined;
+      expect(wakeBody?.metadata?.web).toMatchObject({ consoleProjects: { schema: 1 } });
+      // Title writability stays interactive-only; this change covers console tools alone.
+      expect(wakeBody?.metadata?.web).not.toHaveProperty("conversationTitle");
+
+      // The wake turn holds a real turn-bound capability, not merely the hint.
+      const turnId = service.store.activeTurn(thread.id)!.id;
+      const call = await createWebConsoleToolClient(
+        { sourceId: "agent-one", threadId: thread.id, turnId },
+        { stateDir: service.store.paths.root },
+      );
+      const created = await call({ operationId: randomUUID(), tool: "CreateProject", args: { name: "Woken by a job", attachCurrentConversation: true } });
+      expect(created).toMatchObject({ projectId: expect.any(String), attachment: { conversationId: thread.id, disposition: "pending" } });
+
+      stream?.enqueue(new TextEncoder().encode(`${JSON.stringify({ kind: "finish", finalText: "done" })}\n`));
+      stream?.close();
+      await waitFor(() => service.store.getThread(thread.id)?.runState.status === "complete");
+      expect(service.store.getThread(thread.id)?.projectId).toBe(created.projectId);
+      // Settlement still revokes it.
+      await expect(call({ operationId: randomUUID(), tool: "ListProjects", args: {} })).rejects.toMatchObject({ code: "console_tool_revoked" });
+
+      // A cron channel keeps its own exclusion, wake or not.
+      const cronThreadId = (await service.cronOverview("agent-one")).jobs[0]!.threadId;
+      expect(() => service.assertConsoleToolTurn({ sourceId: "agent-one", threadId: cronThreadId, turnId }))
+        .toThrowError(expect.objectContaining({ code: "console_tool_revoked" }));
+    } finally { try { stream?.close(); } catch { /* already settled */ } await ingress.stop(); await service.stop(); }
+  });
 });
 
 describe("conversation tags service", () => {

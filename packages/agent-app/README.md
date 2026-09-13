@@ -703,7 +703,7 @@ than redacted, so a mangled value is never persisted behind a success result.
 
 ### Console project tools
 
-Writable interactive web turns can use `ListProjects`, `GetProject`,
+Writable web turns, typed or woken by a background host job or monitor, can use `ListProjects`, `GetProject`,
 `CreateProject`, `UpdateProject`, `DeleteProject`, `ListConversations`,
 `SearchConversations`, `CreateConversation`, `SetConversationProject`, `ListTags`,
 `CreateTag`, `UpdateTag`, `DeleteTag`, and `UpdateConversationTags` under

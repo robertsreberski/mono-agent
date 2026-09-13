@@ -926,7 +926,7 @@ export class WebService {
     if (this.stopped || !this.consoleToolTurns.has(scope.turnId) || active?.turnId !== scope.turnId
       || active.controller.signal.aborted || thread?.sourceId !== scope.sourceId || thread.archivedAt !== null
       || thread.trigger !== undefined || this.store.activeTurn(scope.threadId)?.id !== scope.turnId) {
-      throw new WebConsoleError("console_tool_revoked", "The originating interactive turn is no longer writable.", 403);
+      throw new WebConsoleError("console_tool_revoked", "The originating turn is no longer writable.", 403);
     }
   }
 
@@ -2333,7 +2333,12 @@ export class WebService {
         ...(started.thread.runState.model === undefined ? {} : { model: started.thread.runState.model }),
         ...(started.thread.runState.effort === undefined ? {} : { effort: started.thread.runState.effort }),
       };
-      const consoleTools = hostWakeDeliveryKey === undefined && started.thread.trigger === undefined;
+      // A host wake (process-job or monitor completion) runs an ordinary live turn
+      // on an ordinary conversation, so it carries the same turn-bound console
+      // capability as a typed turn: an agent reacting to finished background work
+      // is exactly when filing or moving the conversation is useful. Cron and
+      // webhook channels stay excluded here and in `assertConsoleToolTurn`.
+      const consoleTools = started.thread.trigger === undefined;
       if (consoleTools) this.consoleToolTurns.add(started.turnId);
       const response = await client.turn({
         conversationId: started.conversationId,
