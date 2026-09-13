@@ -547,8 +547,10 @@ and copy text. `pendingProject` on the conversation describes deferred intent.
 Schema 27 adds these records and atomic console-tool operation receipts; the
 existing web-state reset and conversation deletion cascade remove owned records.
 
-Interactive web turns can use the app-owned console tools described in
-[Console project tools](../../docs/tools/mcp.md#console-project-tools).
+Web turns can use the app-owned console tools described in
+[Console project tools](../../docs/tools/mcp.md#console-project-tools). Turns
+woken by a background process job or monitor advertise the same capability;
+cron and webhook channels do not.
 
 Cron channels are non-sendable and non-uploadable. Configured channels may be
 archived but not deleted; removed jobs become historical tombstones and may be
