@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createSubagentInstanceRegistry, subagentConversationRoot } from "../subagent-instances.js";
+import { acquireContinuationStoreLock } from "../continuation-store-fs.js";
 import type { SubagentOwnerIdentity } from "../subagent-registry-ownership.js";
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -59,6 +60,30 @@ it("requires explicit detached acknowledgement and rejects a stale observation w
   await writeFile(f.file, JSON.stringify(disk));
   await expect(f.handle.reserve(spec.id, randomUUID(), { ...request, background: true })).rejects.toMatchObject({ code: "subagent_recovery_ack_stale" });
   expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
+});
+it("does not consume a valid acknowledgement while the real turn lock is busy", async () => {
+  const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
+  const request = { ack: inspection.ack!, message: "next", background: true };
+  const lock = await acquireContinuationStoreLock(resolve(subagentConversationRoot(f.root, "conversation"), "turn-locks", spec.id));
+  try {
+    await expect(f.handle.reserve(spec.id, randomUUID(), request)).rejects.toThrow("already owned");
+    expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
+  } finally { await lock.release(); }
+  await expect(f.handle.reserve(spec.id, randomUUID(), request)).resolves.toMatchObject({ status: "queued" });
+});
+it("rejects a retained profile change after inspection before consuming the token", async () => {
+  const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
+  const disk = JSON.parse(await readFile(f.file, "utf8")); disk[0].systemPrompt = disk[0].definition.systemPrompt = "Different retained profile";
+  await writeFile(f.file, JSON.stringify(disk));
+  await expect(f.handle.reserve(spec.id, randomUUID(), { ack: inspection.ack!, message: "next", background: true })).rejects.toMatchObject({ code: "subagent_recovery_ack_stale" });
+  expect(JSON.parse(await readFile(f.file, "utf8"))[0].recoveryBinding.consumed).toBeUndefined();
+});
+it.each([{ background: false }, { description: "changed purpose" }])("rejects conflicting consumed request semantics %j without another reservation", async (change) => {
+  const f = await fixture(); const inspection = await f.handle.inspect(spec.id);
+  const request = { ack: inspection.ack!, message: "next", background: true };
+  const turnToken = randomUUID(); await f.handle.reserve(spec.id, turnToken, request);
+  await expect(f.handle.checkAcknowledgement(spec.id, { ...request, ...change })).rejects.toMatchObject({ code: "subagent_recovery_ack_conflict" });
+  expect(JSON.parse(await readFile(f.file, "utf8"))[0].activeTurn.token).toBe(turnToken);
 });
 it("reopens persisted consumption without granting a second admission", async () => {
   const f = await fixture(); const inspection = await f.handle.inspect(spec.id);

@@ -12,7 +12,7 @@ import { acquireAgentRootOwnership } from "../../../dist/agent-root-coordinator.
 import { registerProcessJobsRoot } from "../../../dist/process-jobs-root-registry.js";
 import { openProcessJobsService } from "../../../dist/process-jobs-service.js";
 import { PROCESS_JOBS_DEFAULTS } from "../../../dist/process-jobs-config.js";
-import { createSubagentInstanceRegistry } from "../../../dist/subagent-instances.js";
+import { createSubagentInstanceRegistry, subagentConversationRoot } from "../../../dist/subagent-instances.js";
 import { buildSubagentsOptions } from "../../../dist/configured-agent.js";
 import { openProcessJobStore } from "../../../dist/process-jobs-store.js";
 import { readProcessIncarnation, processIncarnationsEqual } from "../../../dist/process-incarnation.js";
@@ -33,7 +33,7 @@ async function until(operation, timeout = 20_000) {
   while (Date.now() < deadline) { const value = await operation(); if (value) return value; await new Promise((done) => setTimeout(done, 25)); }
   throw new Error("Bounded physical proof condition timed out.");
 }
-async function open(root) {
+async function open(root, options = {}) {
   assert(root.startsWith(verification + sep));
   const ownership = await acquireAgentRootOwnership(root);
   const stateDir = resolve(root, "jobs");
@@ -41,9 +41,13 @@ async function open(root) {
   let wakes = 0;
   const store = await openProcessJobStore(root, stateDir);
   const service = await openProcessJobsService({ cwd: root, workspace: root, registration, store,
-    settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir, maxConcurrent: 1, maxQueued: 0, maxRuntimeMs: 300_000 },
+    settings: { ...PROCESS_JOBS_DEFAULTS, configured: true, enabled: true, stateDir, maxConcurrent: 1, maxQueued: 0, maxRuntimeMs: 300_000,
+      ...(options.expiredRetention ? { retention: { ...PROCESS_JOBS_DEFAULTS.retention, maxAgeMs: 1 } } : {}) },
+    ...(options.expiredRetention ? { now: () => new Date(Date.now() + 60_000) } : {}),
     wake: async () => { wakes++; return { delivered: true }; },
   });
+  await options.beforeBind?.(store);
+  let certificate;
   const registryRoot = resolve(root, "children");
   const registry = createSubagentInstanceRegistry({ root: registryRoot, retireSession: async () => {},
     ownerForReservation: (jobId) => ({ jobId, storeRoot: stateDir }), resolveOwner: (identity) => service.resolveSubagentOwner(identity),
@@ -51,15 +55,26 @@ async function open(root) {
   });
   service.bindManagedSubagents({ root: registryRoot,
     verify: async (identity) => (await registry.open(identity.conversationId, { existingOnly: true })).verifyOwner(identity),
-    publish: async (phase, publication) => (await registry.open(publication.identity.conversationId, { existingOnly: true })).publishOwned(phase, publication),
+    publish: async (phase, publication) => {
+      const instances = await registry.open(publication.identity.conversationId, { existingOnly: true });
+      if (phase === "finalize" && options.certificateBoundary) {
+        if (options.certificateBoundary === "certificate-lost-ack") await instances.publishOwned(phase, publication);
+        certificate = publication;
+        await new Promise(() => {}); // Only the proof parent may SIGKILL this owner.
+      }
+      await instances.publishOwned(phase, publication);
+    },
   });
   await service.activateWakes();
   const instances = await registry.open(origin.conversationId, mode === "recover" ? { existingOnly: true } : {});
-  return { service, instances, store, wakes: () => wakes, close: async () => { await service.stop(); ownership.release(); } };
+  return { service, instances, store, certificate: () => certificate, wakes: () => wakes, close: async () => { await service.stop(); ownership.release(); } };
 }
 async function owner(root, scenario) {
   setInterval(() => {}, 1000); // Scoped to this deliberately SIGKILLed fixture owner.
-  const f = await open(root);
+  const certificateScenario = scenario.startsWith("certificate-");
+  const f = await open(root, certificateScenario ? { certificateBoundary: scenario } : {});
+  let releaseProvider;
+  const providerGate = new Promise((done) => { releaseProvider = done; });
   const phase = { preparing: "preparing", attested: "attested", "release-fence": "running" }[scenario];
   if (phase) {
     const mutate = f.store.mutate.bind(f.store);
@@ -69,7 +84,8 @@ async function owner(root, scenario) {
       return result;
     };
   }
-  const timeoutMs = scenario === "terminal" ? 6000 : 300_000;
+  const shortCommand = scenario === "terminal" || certificateScenario;
+  const timeoutMs = shortCommand ? 6000 : 300_000;
   const config = loadMonoAgentConfig({ cwd: root, env: {
     MONO_AGENT_IDENTITY_PATH: resolve(root, "IDENTITY.md"), MONO_AGENT_MODEL: "openai-codex:gpt-5.5",
     MONO_AGENT_ALLOWED_TOOLS: "Agent,AgentSend,Exec", MONO_AGENT_SANDBOX_MODE: "off",
@@ -84,14 +100,14 @@ async function owner(root, scenario) {
   const runtime = createMonoRuntime({ fallbackChain: [{ model: config.runtime.model }], resolveAttempt: () => ({ runtime: driver }) });
   const subagents = buildSubagentsOptions(config, { runtime, baseModel: config.runtime.model }, { conversationId: origin.conversationId, runId: "crash", instances: f.instances }).subagents;
   subagents.backgroundSubagentController = f.service.internalController(origin, 0);
-  if (scenario === "terminal") {
-    // Fault injection at the actual subagents.run boundary, not its reporting promise.
+  if (shortCommand) {
+    // Hold the actual provider settlement, never its already-settled reporting race.
     const run = subagents.run;
-    subagents.run = async (request) => { await run(request); return await new Promise(() => {}); };
+    subagents.run = async (request) => { const result = await run(request); await providerGate; return result; };
   }
   const marker = resolve(root, "executions.txt");
-  const script = `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'start\\n'); ${scenario === "terminal" ? "process.stdout.write('done')" : "setInterval(() => {}, 1000)"}`;
-  faux.setResponses([fauxAssistantMessage([fauxToolCall("Exec", { executable: process.execPath, args: ["-e", script], workdir: root, timeout_ms: scenario === "terminal" ? 4000 : 290_000 })]), fauxAssistantMessage([fauxText("Verification returned.")])]);
+  const script = `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'start\\n'); ${shortCommand ? "process.stdout.write('done')" : "setInterval(() => {}, 1000)"}`;
+  faux.setResponses([fauxAssistantMessage([fauxToolCall("Exec", { executable: process.execPath, args: ["-e", script], workdir: root, timeout_ms: shortCommand ? 4000 : 290_000 })]), fauxAssistantMessage([fauxText("Verification returned.")])]);
   const receipt = await createAgentTool(subagents, { model: config.runtime.model, cwd: root }).execute("crash", { name: "verifier", persist: true, background: true, id: "proof", prompt: "Execute the supplied verification once." });
   const record = await until(async () => {
     const record = await f.store.get(receipt.details.jobId);
@@ -99,24 +115,59 @@ async function owner(root, scenario) {
     if (!record?.subagentOwnership?.command) return;
     if (phase) { if (record.subagentOwnership.command.state === phase) { assert.equal(started, ""); return record; } return; }
     if (!started) return;
+    if (certificateScenario) {
+      if (record.state === "timed_out" && record.wake.state === "delivered") releaseProvider();
+      if (f.certificate() && record.subagentOwnership.publication.receiptPending === true) return record;
+      return;
+    }
     if (scenario === "terminal" ? record.state === "timed_out" && record.wake.state === "delivered" : record.subagentOwnership.command.state === "running") return record;
   });
-  assert.equal(record.subagentOwnership.owner.settlement, "running");
-  if (scenario === "terminal") assert.equal(record.subagentOwnership.command.state, "released");
-  const evidence = { jobId: record.jobId, command: record.subagentOwnership.command, targetStarted: !phase, wakes: f.wakes() };
+  assert.equal(record.subagentOwnership.owner.settlement, certificateScenario ? "settled" : "running");
+  if (shortCommand) assert.equal(record.subagentOwnership.command.state, "released");
+  if (certificateScenario) {
+    const records = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), origin.conversationId), "instances.json"), "utf8"));
+    assert.equal(records[0].ownerReceipt.finalized, scenario === "certificate-lost-ack");
+    assert.equal(record.wake.state, "delivered"); assert.equal(f.wakes(), 1);
+  }
+  const evidence = { jobId: record.jobId, command: record.subagentOwnership.command, targetStarted: !phase, wakes: f.wakes(), certificateScenario, scenario };
   await writeFile(resolve(root, "proof.json"), JSON.stringify(evidence));
   process.send({ ready: true });
   // Kept alive only until the foreground proof parent sends physical SIGKILL.
   await new Promise(() => {});
 }
-async function recover(root, expectedWakes) {
+async function recover(root, expectedWakes, attempt) {
   const proof = JSON.parse(await readFile(resolve(root, "proof.json"), "utf8"));
   // The real host has channel servers; this headless fixture needs one scoped
   // event-loop reference while the service's unref'ed recovery grace elapses.
   const keepAlive = setInterval(() => {}, 1000);
   let f;
   try {
-    f = await open(root);
+    f = await open(root, proof.certificateScenario ? { expiredRetention: true, beforeBind: async (store) => {
+      const retained = await store.get(proof.jobId);
+      if (attempt === 0) {
+        assert.equal(retained.subagentOwnership.publication.receiptPending, true);
+        assert.equal(retained.wake.state, "delivered");
+      } else assert.equal(retained, undefined); // Prior durable certificate/ack permitted actual retention.
+    } } : {});
+    if (proof.certificateScenario) {
+      if (attempt === 0) {
+        const record = await until(async () => { const value = await f.store.get(proof.jobId); return value?.subagentOwnership.publication.receiptPending === false && value; });
+        assert.equal(record.subagentOwnership.owner.settlement, "settled");
+        assert.equal(record.state, "timed_out"); assert.equal(record.subagentOwnership.command.state, "released");
+        assert.equal(record.subagentCommandReceipts.commands[0].completion, "observed");
+        assert.equal(record.subagentCommandReceipts.commands[0].exitCode, 0);
+        const registry = JSON.parse(await readFile(resolve(subagentConversationRoot(resolve(root, "children"), origin.conversationId), "instances.json"), "utf8"));
+        assert.equal(registry[0].ownerReceipt.finalized, true);
+        await f.store.applyRetention(f.service.settings, new Date(Date.now() + 60_000));
+        assert.equal(await f.store.get(proof.jobId), undefined);
+      }
+      assert.equal((await f.instances.get("proof")).activeTurn, undefined);
+      await assert.rejects(f.instances.begin("proof"), { code: "subagent_recovery_required" });
+      assert.equal((await readFile(resolve(root, "executions.txt"), "utf8")).trim(), "start");
+      assert.equal(f.wakes(), 0);
+      console.log(JSON.stringify({ kind: "managed-certificate-reopen", attempt, retainedBeforeBind: attempt === 0, wakes: 0, result: "passed" }));
+      return;
+    }
     const record = await until(async () => { const record = await f.store.get(proof.jobId); return record?.subagentOwnership?.publication.state === "confirmed" && record.wake.state === "delivered" && record; });
     assert.equal(record.subagentOwnership.owner.settlement, "dead");
     assert.equal(record.subagentOwnership.command.state, "released");
@@ -145,9 +196,9 @@ function child(args) {
   return { process, exited, output: () => output };
 }
 if (mode === "owner") await owner(resolve(process.argv[3]), process.argv[4]);
-else if (mode === "recover") await recover(resolve(process.argv[3]), Number(process.argv[4]));
+else if (mode === "recover") await recover(resolve(process.argv[3]), Number(process.argv[4]), Number(process.argv[5]));
 else {
-  assert(["running", "terminal", "preparing", "attested", "release-fence"].includes(mode));
+  assert(["running", "terminal", "preparing", "attested", "release-fence", "certificate-before-write", "certificate-lost-ack"].includes(mode));
   await mkdir(verification, { recursive: true });
   const root = await mkdtemp(resolve(verification, "managed-crash-"));
   const host = child(["owner", root, mode]);
@@ -160,11 +211,13 @@ else {
     host.process.kill("SIGKILL");
     assert.equal((await host.exited).signal, "SIGKILL");
     if (mode === "running") process.kill(-proof.command.pgid, 0); // Survives the owner, really needs recovery.
-    const unavailable = await createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession: async () => {} }).open(origin.conversationId, { existingOnly: true });
-    await assert.rejects(unavailable.begin("proof"), { code: "subagent_owner_unavailable" });
-    await assert.rejects(unavailable.create({ ...spec, id: "bypass" }), { code: "subagent_owner_unavailable" });
-    for (const expectedWakes of [proof.wakes ? 0 : 1, 0]) {
-      helper = child(["recover", root, String(expectedWakes)]);
+    if (mode !== "certificate-lost-ack") {
+      const unavailable = await createSubagentInstanceRegistry({ root: resolve(root, "children"), retireSession: async () => {} }).open(origin.conversationId, { existingOnly: true });
+      await assert.rejects(unavailable.begin("proof"), { code: "subagent_owner_unavailable" });
+      await assert.rejects(unavailable.create({ ...spec, id: "bypass" }), { code: "subagent_owner_unavailable" });
+    } // Lost-ack already has a positive certificate; do not mutate it via an unrelated host.
+    for (const [attempt, expectedWakes] of [proof.wakes ? 0 : 1, 0].entries()) {
+      helper = child(["recover", root, String(expectedWakes), String(attempt)]);
       const result = await helper.exited;
       assert.equal(result.code, 0, result.output);
     }
