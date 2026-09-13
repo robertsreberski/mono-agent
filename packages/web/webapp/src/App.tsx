@@ -82,12 +82,23 @@ const isMobileViewport = (): boolean =>
  * a conversation is pushed over it and popped with the header's back control
  * or a right swipe. An open project page lives in the Dashboard slot and is
  * closed with its own header back control or the same right swipe.
- * Only a cron channel has an address of its own, so only a
- * URL that names one lands on the conversation directly.
+ * A cron channel has an address of its own, and a notification cold start
+ * carries `?thread=<id>`, so either URL lands on the conversation directly --
+ * otherwise the notification's thread would be selected behind the dashboard.
+ * Must stay in sync with `NOTIFICATION_OPEN_CONVERSATION_EVENT` in
+ * notifications.tsx, which pushes this same screen for a warm notification.
  */
+const NOTIFICATION_OPEN_CONVERSATION_EVENT = "mono-agent:open-conversation";
 type MobileScreen = "dashboard" | "conversation";
-const initialMobileScreen = (): MobileScreen =>
-  /^\/agents\//u.test(window.location.pathname) ? "conversation" : "dashboard";
+const initialMobileScreen = (): MobileScreen => {
+  if (/^\/agents\//u.test(window.location.pathname)) return "conversation";
+  try {
+    if (new URL(window.location.href).searchParams.has("thread")) return "conversation";
+  } catch {
+    return "dashboard";
+  }
+  return "dashboard";
+};
 
 interface DrawerGestureStart extends DrawerGesturePoint {
   readonly intent: "back" | "close-project";
@@ -415,6 +426,16 @@ export function App() {
   useEffect(() => {
     if (openProjectId !== null && mobile) setScreen("dashboard");
   }, [mobile, openProjectId]);
+
+  // A notification names a conversation, not a screen: selecting its thread
+  // without pushing it leaves the chat behind the mobile dashboard. The
+  // notifications provider dispatches this after `selectThread` for both the
+  // warm service-worker message and the cold-start `?thread=` deep link. On
+  // desktop both panels are always drawn, so this is a no-op there.
+  useEffect(() => {
+    window.addEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, openConversation);
+    return () => window.removeEventListener(NOTIFICATION_OPEN_CONVERSATION_EVENT, openConversation);
+  }, [openConversation]);
 
   const startDrawerGesture = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
     drawerGestureRef.current = null;
