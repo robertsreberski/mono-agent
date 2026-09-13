@@ -811,3 +811,8 @@ describe("ProcessJobPart", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+it("shows unresolved internal child ownership on a terminal job card", () => {
+  render(part({ type: "process-job", job: processJob({ tool: "Agent", kind: "internal", instanceId: "helper", state: "timed_out", childStillBusy: true }) }));
+  expect(screen.getByText("child still busy · awaiting actual settlement")).toBeInTheDocument();
+});

@@ -130,6 +130,12 @@ Turn a folder's `mono-agent.config.json` into a running agent host:
   preserving agent-owned configuration, workspace, sandbox, tools, MCP servers,
   and credentials.
 
+Persistent Agent/AgentSend can run detached through the app-private in-process
+ProcessJobs lane. Durable admission reserves the child; completion and AskParent
+wake the exact origin. Unresolved cancellation reports `childStillBusy:true`
+while retaining the child lock and runtime lease through actual settlement.
+See [background subagents](../../docs/tools/background-process-jobs.md#detached-persistent-children).
+
 ## Install / Usage
 
 Process-job chains keep the default depth budget of 4 and allow a configured

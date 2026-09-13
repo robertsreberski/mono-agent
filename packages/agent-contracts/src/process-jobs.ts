@@ -140,10 +140,15 @@ export interface ProcessJobProjectionError {
  * it is the exact bound originating conversation and therefore the operator
  * projection's reply route, including any host-owned rollover bucket.
  */
-export interface ProcessJobProjection {
+export type ProcessJobProjection = ProcessJobProjectionBase & (
+  | { readonly tool: "Exec" | "Bash"; readonly kind?: never }
+  | { readonly tool: "Agent" | "AgentSend"; readonly kind: "internal"; readonly instanceId: string;
+      readonly childStillBusy: boolean; readonly subagentQuestion?: { readonly question: string; readonly options?: string[] } }
+);
+
+interface ProcessJobProjectionBase {
   readonly schema: "mono-agent.process-job-projection.v1";
   readonly jobId: string;
-  readonly tool: "Exec" | "Bash";
   readonly state: ProcessJobState;
   readonly summary: string;
   readonly origin: ProcessJobProjectionOrigin;
@@ -187,12 +192,16 @@ const PROJECTION_KEYS = [
 
 /** Strictly parse one projection, rejecting unknown keys at every depth. */
 export function parseProcessJobProjection(value: unknown): ProcessJobProjection {
-  if (!isRecord(value) || !hasExactlyKeys(value, PROJECTION_KEYS)) {
+  if (!isRecord(value) || !hasExactlyKeys(value, [...PROJECTION_KEYS, ...["kind", "instanceId", "childStillBusy", "subagentQuestion"].filter((key) => Object.prototype.hasOwnProperty.call(value, key))])) {
     throw invalid("envelope");
   }
   if (value.schema !== "mono-agent.process-job-projection.v1"
     || !boundedNonEmptyString(value.jobId, 256)
-    || (value.tool !== "Exec" && value.tool !== "Bash")
+    || (value.kind === "internal" ? !["Agent", "AgentSend"].includes(String(value.tool))
+      || typeof value.instanceId !== "string" || !/^[a-z0-9][a-z0-9-]{0,39}$/u.test(value.instanceId)
+      || typeof value.childStillBusy !== "boolean" || (value.subagentQuestion !== undefined && !validSubagentJobQuestion(value.subagentQuestion))
+      : value.kind !== undefined || value.instanceId !== undefined || value.childStillBusy !== undefined || value.subagentQuestion !== undefined
+        || (value.tool !== "Exec" && value.tool !== "Bash"))
     || !isProcessJobState(value.state)
     || !boundedString(value.summary, 8_000)
     || typeof value.cancelRequested !== "boolean"
@@ -377,4 +386,14 @@ function validDate(value: unknown): value is string {
 
 function nullableValidDate(value: unknown): value is string | null {
   return value === null || validDate(value);
+}
+
+function validSubagentJobQuestion(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).every((key) => key === "question" || key === "options")
+    && typeof record.question === "string" && record.question.trim().length > 0 && record.question.length <= 2000
+    && (record.options === undefined || (Array.isArray(record.options) && record.options.length >= 2 && record.options.length <= 5
+      && record.options.every((option) => typeof option === "string" && option.trim().length > 0 && option.length <= 200)
+      && new Set(record.options).size === record.options.length));
 }

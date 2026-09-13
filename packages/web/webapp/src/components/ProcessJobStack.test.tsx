@@ -18,7 +18,7 @@ afterEach(() => {
 const activeJob = (
   threadId: string,
   state: "queued" | "starting" | "running" = "running",
-  overrides: Partial<ProcessJobProjection> = {},
+  overrides: NonNullable<Parameters<typeof processJob>[0]> = {},
 ): ProcessJobProjection => {
   const complete = processJob();
   return processJob({

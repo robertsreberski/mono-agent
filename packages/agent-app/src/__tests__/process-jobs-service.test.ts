@@ -3461,3 +3461,17 @@ function emptyStoreWorkCounter(): ProcessJobStoreWorkCounter {
 function resetStoreWorkCounter(counter: ProcessJobStoreWorkCounter): void {
   Object.assign(counter, emptyStoreWorkCounter());
 }
+
+it("external and internal jobs share the same durable admission and queue", async () => {
+  const fixture = await createFixture({ maxConcurrent: 1, maxQueued: 1 });
+  const completion = deferred<ProcessJobProcessResult>();
+  const service = await startService(fixture);
+  const external = await service.controller(ORIGIN, 0).start(requestOf(handleOf(completion)));
+  const internalRun = vi.fn(async () => ({ status: "ok", output: "child result" }));
+  const internal = await service.internalController(ORIGIN, 0).startInternal({ kind: "internal",
+    jobId: "22222222-2222-4222-8222-222222222222", instanceId: "helper", tool: "Agent", run: internalRun, cleanup: async () => {} });
+  expect(internal.state).toBe("queued"); expect(internalRun).not.toHaveBeenCalled();
+  completion.resolve(processResult());
+  await waitFor(async () => (await service.get(internal.jobId))?.state === "succeeded");
+  expect(internalRun).toHaveBeenCalledOnce(); expect((await service.get(external.jobId))?.state).toBe("succeeded");
+});

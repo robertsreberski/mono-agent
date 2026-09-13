@@ -1704,7 +1704,7 @@ export class SlackAdapter {
       );
     }
     try {
-      await this.api.chatUpdate({ channel: current.channelId, ts: current.messageTs, text });
+      await this.api.chatUpdate({ channel: current.channelId, ts: current.messageTs, text, ...(projection.kind === "internal" ? { mrkdwn: false } : {}) });
       this.rememberProcessJobMessage(lifecycle, {
         ...current,
         rank,
@@ -1764,6 +1764,7 @@ export class SlackAdapter {
       const sent = await this.api.chatPostMessage({
         channel: channelId,
         text,
+        ...(projection.kind === "internal" ? { mrkdwn: false } : {}),
         ...(threadTs === undefined ? {} : { thread_ts: threadTs }),
         client_msg_id: slackClientMessageId(
           `${projection.wake.deliveryKey}:${terminalFallback ? "terminal" : "running"}`,
@@ -4098,6 +4099,14 @@ function renderProcessJobSurface(projection: ProcessJobProjection): string {
             : "❌";
   const lines = [
     `${icon} Background ${projection.tool} job ${projection.jobId}: ${projection.state.replaceAll("_", " ")}`,
+    ...(projection.kind === "internal" ? [
+      `Instance: ${projection.instanceId}`,
+      ...(projection.childStillBusy ? ["Child remains busy (childStillBusy:true); sends must wait for actual settlement."] : []),
+      ...(projection.subagentQuestion ? [
+        `Pending question (child text): ${JSON.stringify(projection.subagentQuestion.question.slice(0, 1000))}`,
+        ...(projection.subagentQuestion.options ? [`Options: ${projection.subagentQuestion.options.slice(0, 5).map((option) => JSON.stringify(option.slice(0, 100))).join(", ")}`] : []),
+      ] : []),
+    ] : []),
     projection.summary,
   ];
   if (projection.durationMs !== null) lines.push(`Duration: ${String(projection.durationMs)} ms`);
@@ -4105,7 +4114,9 @@ function renderProcessJobSurface(projection: ProcessJobProjection): string {
   if (projection.signal !== null) lines.push(`Signal: ${projection.signal}`);
   if (projection.lastError !== null) lines.push(`Status: ${projection.lastError.message}`);
   if (projection.output.preview.trim().length > 0) lines.push(`Output preview:\n${projection.output.preview}`);
-  return slackTruncateCodePoints(lines.join("\n"), PROCESS_JOB_SURFACE_MAX_CHARS);
+  const text = lines.join("\n");
+  return slackTruncateCodePoints(projection.kind === "internal"
+    ? text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;") : text, PROCESS_JOB_SURFACE_MAX_CHARS);
 }
 
 /** First argument that is a non-blank string, else undefined. */

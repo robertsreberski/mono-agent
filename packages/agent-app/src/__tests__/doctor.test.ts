@@ -529,6 +529,19 @@ describe("validateMonoAgentFolder", () => {
     expect(await pathExists(stateDir)).toBe(false);
   });
 
+  it.each([false, true])("reports detached subagent configuration with persistence=%s", async (enabled) => {
+    await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
+    const configPath = await writeConfig({
+      runtime: { model: "openai-codex:gpt-5.5" }, tools: { allowedTools: ["Agent", "AgentSend"] },
+      context: { identityPath: "./IDENTITY.md" }, processJobs: { enabled: true },
+      subagents: { enabled, instances: { enabled } },
+    });
+    const report = await validateMonoAgentFolder({ env: {}, cwd: dir, configPath, liveness: false, allowFilesystemWrites: false });
+    const text = sectionById(report, "process-jobs").details.join("\n");
+    expect(text).toContain(enabled ? "Background subagents: configured" : "Background subagents unavailable");
+    expect(text).toContain("persistent Agent/AgentSend");
+  });
+
   it("reports enabled process jobs without creating their local state", async () => {
     await writeFile(join(dir, "IDENTITY.md"), "# Identity\n");
     const stateDir = join(dir, ".mono-agent", "process-jobs");

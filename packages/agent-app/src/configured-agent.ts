@@ -108,6 +108,7 @@ import type { MonitorsServiceHandle } from "./monitors-service.js";
 import {
   createProcessJobsRuntimeExtension,
   processJobsAvailableForRequest,
+  backgroundSubagentsAvailableForRequest,
   processJobsSandboxPolicy,
   PROCESS_JOBS_PI_NATIVE_REQUIRED_ERROR,
   PROCESS_JOBS_PROTECTION_UNAVAILABLE_ERROR,
@@ -1387,6 +1388,7 @@ async function createConfiguredAgentHarnessInternal(
     ...(instanceRegistry === undefined ? {} : { subagentInstancesFor: async ({ request }: { request: AgentHarnessRequest }) =>
       (await (await instanceRegistry.open(request.conversationId)).list()).filter(isLiveSubagentInstance).slice(0, 12).map((record) => ({
         id: record.id, name: record.name, status: record.status, turns: record.turns,
+        ...(record.reservation ? { jobId: record.reservation.token } : {}),
         ...(record.pendingQuestion ? { pendingQuestion: record.pendingQuestion } : {}),
         ageMs: Math.max(0, Date.now() - record.updatedAt),
         route: [record.definition.model?.reference, record.definition.effort].filter(Boolean).join("/"),
@@ -1396,6 +1398,14 @@ async function createConfiguredAgentHarnessInternal(
       : { runtimeOptionsForRequest }),
     // Same predicate the process-jobs extension uses, so the session block only
     // describes backgrounding on turns whose Exec/Bash actually offer it.
+    backgroundSubagentsAvailable: (input) => backgroundSubagentsAvailableForRequest(input, {
+      service: internalHooks.processJobs?.service,
+      coreConfig: config,
+      channelId: internalHooks.processJobs?.channelId,
+      conversationScheme: internalHooks.processJobs?.conversationScheme,
+      routesOnlyPiNative: internalHooks.processJobs?.routesOnlyPiNative
+        ?? (() => configuredRoutesOnlyPiNative(config, model).ok),
+    }),
     backgroundProcessJobsAvailable: (input) => processJobsAvailableForRequest(input, {
       service: internalHooks.processJobs?.service,
       coreConfig: config,

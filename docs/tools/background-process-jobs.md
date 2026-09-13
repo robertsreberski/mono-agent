@@ -600,3 +600,30 @@ unsupported on Windows, then inspects only bounded local record counts and
 owner-only modes, including any quarantined transaction count and the bounded
 runtime health marker. It does not probe or mutate the live controller and
 never creates a missing store.
+
+### Detached persistent children
+
+When ProcessJobs is enabled and healthy on an exact-conversation Pi-native route,
+`Agent({persist:true, background:true, prompt:"Review the change"})` returns a
+durable started receipt. `AgentSend({id:"helper", message:"Continue", background:true})`
+continues the same child transcript. Both require the ordinary Agent/AgentSend
+policy. Close-only calls remain synchronous. Bare runtime hosts need a supplied
+background controller; unsupported calls fail clearly.
+
+The child runs inside the owning host, using the existing process-job admission,
+queue, runtime/output limits, lineage, lifecycle card and exact-origin wake.
+A queued child is reserved before the receipt returns, so another send or close
+reports busy. Its prompt and raw parameters are never stored in job metadata.
+Completion, failure and AskParent deliver one terminal wake; AskParent preserves
+`awaiting_reply` and its structured question for a later AgentSend. Do not poll or
+replay a started job. Message plus close closes only after a successful answer.
+
+Timeout/cancellation requests abort and waits through the Agent grace period.
+If execution remains unresolved, the terminal job reports `childStillBusy:true`.
+The instance stays busy and retains its turn lock and independent runtime
+protection lease until actual settlement or process death. A late settlement
+updates only the instance and never sends another wake or changes the terminal
+job. The retained card describes the terminal observation; Session context shows
+the current instance state. Service shutdown does not wait indefinitely for an
+abandoned child. Restart interrupts stored work and wakes its origin without
+replaying it; pending questions survive recovery.
